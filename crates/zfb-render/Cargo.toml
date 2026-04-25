@@ -1,0 +1,21 @@
+[package]
+name = "zfb-render"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb rendering pipeline: SWC TSX compile, JS runtime host, Preact/React adapters."
+
+# NOTE (Sub 4 stub): This Cargo.toml is a minimal stub authored by Sub 4
+# (adapters layer) so that the adapter modules under src/adapters/ compile
+# in isolation. Sub 3 (topic-sub03-render) owns the authoritative version
+# of this file — at merge time the manager will reconcile this stub with
+# Sub 3's full definition (RenderHost trait, swc_pipeline, loader, render).
+
+[lib]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
