@@ -34,6 +34,10 @@ pub enum RenderError {
     #[error("`default` export missing or not callable in `{0}`")]
     MissingDefaultExport(String),
 
+    /// Framework adapter setup or rendering failure.
+    #[error("adapter error: {0}")]
+    Adapter(String),
+
     /// I/O failure (reading source files, etc.).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
