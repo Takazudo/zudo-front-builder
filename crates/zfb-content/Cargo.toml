@@ -1,0 +1,18 @@
+[package]
+name = "zfb-content"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb content engine: markdown/MDX pipeline, frontmatter, syntect, content collections"
+
+[lib]
+
+[dependencies]
+markdown = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+syntect = { workspace = true }
+garde = { workspace = true }
