@@ -14,3 +14,6 @@ node_modules/
 
 # Worktrees (managed by /x-wt-teams)
 worktrees/
+
+# Bundled third-party binaries (populated by release engineering, never committed)
+crates/zfb/binaries/tailwindcss-v4
