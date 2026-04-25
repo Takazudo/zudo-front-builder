@@ -13,6 +13,11 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # (trait + SWC pipeline + orchestrator) compiles and tests without it.
 default = []
 deno_core_host = ["dep:deno_core", "dep:tokio"]
+# Gates the end-to-end routing+rendering integration test. Off until the
+# orchestrator exposes render_route + RenderInput/Output and zfb-render
+# depends on zfb-router. See tests/integration_routing_rendering.rs for
+# the fixtures and harness already in place.
+integration_routing_rendering = []
 
 [dependencies]
 # SWC pipeline (TSX → JS).

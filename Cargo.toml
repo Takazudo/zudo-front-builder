@@ -12,3 +12,4 @@ thiserror = "2"
 syntect = "5"
 garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
+walkdir = "2"
