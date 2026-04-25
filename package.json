@@ -11,13 +11,19 @@
     "prepare": "lefthook install --reset-hooks-path",
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",
-
-    "//// === FORMAT ===": ""
+    "//// === FORMAT ===": "",
+    "format": "pnpm format:ts && pnpm format:mdx",
+    "format:check": "pnpm format:check:ts && pnpm format:check:mdx",
+    "format:ts": "prettier --write \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
+    "format:check:ts": "prettier --check \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\""
   },
   "devDependencies": {
-    "lefthook": "^2.1.6"
+    "lefthook": "^2.1.6",
+    "prettier": "^3.8.3"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["lefthook"]
+    "onlyBuiltDependencies": [
+      "lefthook"
+    ]
   }
 }
