@@ -1,26 +1,550 @@
-//! `meta` export handling — STUB.
+//! Page meta export handling.
 //!
-//! Sub 6 fills this in. Expected responsibilities:
-//! - Read `export const meta` from a page module via `RenderHost::get_export`.
-//! - Resolve `meta.layout` against the project's layouts directory.
-//! - Pass the resolved meta + layout pair into the page's render call.
-//! - Handle missing `meta` gracefully (default-layout convention).
+//! Reads the `export const meta` value from a page module, parses it into
+//! a typed [`PageMeta`], and resolves the layout module that should wrap
+//! the page output.
+//!
+//! # Default-layout convention
+//!
+//! When a page does not specify `meta.layout`, the renderer falls back to
+//! a project-wide default-layout convention. The caller (the orchestrator
+//! in `render.rs`) builds the candidate list; this module just walks it
+//! and picks the first existing file.
+//!
+//! The conventional candidate order is:
+//!
+//! - For `pages/blog/[slug].tsx`:
+//!   1. `layouts/blog.tsx` — matches the immediate parent dir name
+//!   2. `layouts/default.tsx` — project-wide fallback
+//! - For `pages/about.tsx`:
+//!   1. `layouts/default.tsx`
+//!
+//! When no candidate exists on disk, [`ResolvedMeta::layout_path`] is
+//! `None` and the page output is rendered raw.
+//!
+//! # `meta.layout` resolution
+//!
+//! When `meta.layout` is set explicitly, it is interpreted in this order:
+//!
+//! - Values prefixed with `@/` (e.g. `@/layouts/blog`) are resolved
+//!   relative to the project root (the directory that contains `pages/`).
+//! - Values prefixed with `/` are treated as project-root absolute, NOT
+//!   filesystem absolute. This keeps user-authored layout specs portable.
+//! - Any other value (e.g. `../layouts/blog`, `./blog`) is resolved
+//!   relative to the page file's parent directory.
+//!
+//! The file extension is optional; `.tsx` is auto-appended when the value
+//! does not already end in a known JS/TS extension (`tsx`, `ts`, `jsx`,
+//! `js`, `mjs`, `cjs`).
+//!
+//! # Signature note
+//!
+//! [`resolve_meta`] takes an extra `project_root` parameter beyond the
+//! initial spec, so that `@/`-aliases and `/`-rooted specs can be resolved
+//! cleanly without forcing the caller to pre-rewrite them.
+
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-/// Shape of the optional `meta` export. Sub 6 will lock the final schema.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// User-authored meta. Everything is optional — pages without a meta
+/// export still work.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct PageMeta {
-    /// Optional layout specifier (e.g. `"@/layouts/blog"`).
-    #[serde(default)]
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// Path or specifier (e.g. `"@/layouts/blog"` or `"../layouts/blog"`).
     pub layout: Option<String>,
-    /// Free-form additional fields the user wants to expose to layouts.
+    /// All other fields preserved as raw JSON for the layout to consume
+    /// freely (e.g. `openGraph`, custom flags).
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
+    pub extra: serde_json::Map<String, Value>,
 }
 
-/// Placeholder. Sub 6 will replace this with a real implementation that
-/// pulls `meta` off the loaded module via the `RenderHost`.
-pub fn extract_meta(_specifier: &str) -> Option<PageMeta> {
-    None
+/// A [`PageMeta`] paired with its resolved layout file path.
+#[derive(Clone, Debug)]
+pub struct ResolvedMeta {
+    pub meta: PageMeta,
+    /// Concrete layout module path resolved from `meta.layout` (or via
+    /// the default-layout convention). `None` means "no layout, render
+    /// the page output directly".
+    pub layout_path: Option<PathBuf>,
+}
+
+/// Errors produced while parsing or resolving a page meta export.
+#[derive(Debug, thiserror::Error)]
+pub enum MetaError {
+    #[error("invalid meta export shape: {0}")]
+    InvalidShape(String),
+    #[error("layout not found: {0}")]
+    LayoutNotFound(String),
+    #[error("layout escapes project root: {0}")]
+    LayoutOutsideProjectRoot(String),
+}
+
+const KNOWN_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "cjs"];
+
+/// Parse the raw JS-side meta export (a [`serde_json::Value`]) into a
+/// typed [`PageMeta`].
+///
+/// Returns `Ok(PageMeta::default())` when `meta_export` is absent or
+/// `null`. Any non-object value (number, string, array, bool) is rejected
+/// as [`MetaError::InvalidShape`], as is an object whose fields have the
+/// wrong types (e.g. `layout = 42`).
+pub fn parse_meta(meta_export: Option<&Value>) -> Result<PageMeta, MetaError> {
+    match meta_export {
+        None | Some(Value::Null) => Ok(PageMeta::default()),
+        Some(value) => {
+            if !value.is_object() {
+                return Err(MetaError::InvalidShape(format!(
+                    "expected object, got {}",
+                    json_type_name(value)
+                )));
+            }
+            serde_json::from_value::<PageMeta>(value.clone())
+                .map_err(|e| MetaError::InvalidShape(e.to_string()))
+        }
+    }
+}
+
+/// Resolve `meta.layout` (or, if unset, the default-layout convention) to
+/// a concrete file on disk.
+///
+/// - When `meta.layout` is `Some(spec)`, the spec is interpreted using
+///   the rules described in the module docs and the resolved path is
+///   required to exist (else [`MetaError::LayoutNotFound`]). The resolved
+///   path must stay within `project_root` — `..`-traversal that escapes
+///   the project (e.g. `"../../../etc/passwd"`) is rejected with
+///   [`MetaError::LayoutOutsideProjectRoot`].
+/// - When `meta.layout` is `None`, the first entry of
+///   `default_layout_candidates` that exists on disk wins. Default
+///   candidates are caller-supplied (typically built by the orchestrator
+///   from the page path) and are NOT re-validated against `project_root`
+///   — the caller is trusted to construct them correctly. Missing default
+///   candidates do NOT produce [`MetaError::LayoutNotFound`]; the result
+///   simply has `layout_path = None`.
+/// - When neither yields a file, the result has `layout_path = None`.
+///
+/// `project_root` should be the directory that contains `pages/` and is
+/// used to resolve `@/`-aliases and `/`-rooted specs as well as to bound
+/// relative resolutions.
+pub fn resolve_meta(
+    meta: PageMeta,
+    page_path: &Path,
+    project_root: &Path,
+    default_layout_candidates: &[PathBuf],
+) -> Result<ResolvedMeta, MetaError> {
+    let layout_path = match &meta.layout {
+        Some(spec) => {
+            let resolved = resolve_layout_spec(spec, page_path, project_root);
+            if !is_within(&resolved, project_root) {
+                return Err(MetaError::LayoutOutsideProjectRoot(
+                    resolved.display().to_string(),
+                ));
+            }
+            if !resolved.exists() {
+                return Err(MetaError::LayoutNotFound(resolved.display().to_string()));
+            }
+            Some(resolved)
+        }
+        None => default_layout_candidates
+            .iter()
+            .find(|c| c.exists())
+            .cloned(),
+    };
+    Ok(ResolvedMeta { meta, layout_path })
+}
+
+fn resolve_layout_spec(spec: &str, page_path: &Path, project_root: &Path) -> PathBuf {
+    let with_ext = ensure_extension(spec);
+    let raw = if let Some(rest) = with_ext.strip_prefix("@/") {
+        project_root.join(rest)
+    } else if let Some(rest) = with_ext.strip_prefix('/') {
+        project_root.join(rest)
+    } else {
+        // Relative spec — resolve from the page file's directory. If the
+        // page path is somehow rootless (e.g. just "[slug].tsx"), fall
+        // back to project_root rather than the empty path so that the
+        // result still lands inside the project tree.
+        let dir = page_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(project_root);
+        dir.join(&with_ext)
+    };
+    normalize(&raw)
+}
+
+/// Lexical containment check: is `candidate` equal to or below `root`?
+/// Both paths are normalized first so `..` segments cannot fool the check.
+fn is_within(candidate: &Path, root: &Path) -> bool {
+    let cand = normalize(candidate);
+    let root = normalize(root);
+    cand.starts_with(&root)
+}
+
+fn ensure_extension(spec: &str) -> String {
+    let lower = spec.to_ascii_lowercase();
+    let already = KNOWN_EXTENSIONS
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{ext}")));
+    if already {
+        spec.to_string()
+    } else {
+        format!("{spec}.tsx")
+    }
+}
+
+/// Collapse `.` and `..` components without touching the filesystem, so
+/// the result is stable for paths that don't yet exist.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    /// Build a minimal project tree under `root`:
+    ///
+    /// ```text
+    /// <root>/
+    ///   pages/
+    ///     about.tsx
+    ///     blog/
+    ///       [slug].tsx
+    ///   layouts/   (created on demand by callers)
+    /// ```
+    ///
+    /// Returns the temp dir handle (kept alive by the caller).
+    fn project_skeleton() -> TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("pages/blog")).unwrap();
+        std::fs::write(root.join("pages/about.tsx"), "// about").unwrap();
+        std::fs::write(root.join("pages/blog/[slug].tsx"), "// blog").unwrap();
+        std::fs::create_dir_all(root.join("layouts")).unwrap();
+        dir
+    }
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, "// layout").unwrap();
+    }
+
+    // ---- parse_meta -------------------------------------------------------
+
+    #[test]
+    fn parse_meta_missing_returns_default() {
+        let parsed = parse_meta(None).unwrap();
+        assert!(parsed.title.is_none());
+        assert!(parsed.layout.is_none());
+        assert!(parsed.extra.is_empty());
+    }
+
+    #[test]
+    fn parse_meta_null_returns_default() {
+        let v = Value::Null;
+        let parsed = parse_meta(Some(&v)).unwrap();
+        assert!(parsed.title.is_none());
+        assert!(parsed.layout.is_none());
+    }
+
+    #[test]
+    fn parse_meta_title_only() {
+        let v = json!({ "title": "Hello" });
+        let parsed = parse_meta(Some(&v)).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("Hello"));
+        assert!(parsed.layout.is_none());
+    }
+
+    #[test]
+    fn parse_meta_preserves_extra_fields() {
+        let v = json!({
+            "title": "Hello",
+            "openGraph": { "image": "/og.png" },
+            "draft": true,
+        });
+        let parsed = parse_meta(Some(&v)).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("Hello"));
+        assert_eq!(
+            parsed.extra.get("openGraph"),
+            Some(&json!({ "image": "/og.png" })),
+        );
+        assert_eq!(parsed.extra.get("draft"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn parse_meta_invalid_layout_type_is_invalid_shape() {
+        let v = json!({ "layout": 42 });
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(_) => {}
+            other => panic!("expected InvalidShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_meta_non_object_top_level_is_invalid_shape() {
+        let v = json!("just a string");
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(msg) => assert!(msg.contains("string")),
+            other => panic!("expected InvalidShape, got {other:?}"),
+        }
+    }
+
+    // ---- resolve_meta: explicit layout ------------------------------------
+
+    #[test]
+    fn resolve_layout_relative_parent_dir() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let layout = root.join("layouts/blog.tsx");
+        touch(&layout);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("../../layouts/blog".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+    }
+
+    #[test]
+    fn resolve_layout_at_alias_uses_project_root() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let layout = root.join("layouts/blog.tsx");
+        touch(&layout);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("@/layouts/blog".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+    }
+
+    #[test]
+    fn resolve_layout_dot_relative() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        // Sibling layout next to the page file itself.
+        let layout = root.join("pages/blog/blog.tsx");
+        touch(&layout);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("./blog".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+    }
+
+    #[test]
+    fn resolve_layout_root_absolute_treated_as_project_root() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let layout = root.join("layouts/blog.tsx");
+        touch(&layout);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("/layouts/blog".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+    }
+
+    #[test]
+    fn resolve_layout_keeps_explicit_extension() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let layout = root.join("layouts/blog.jsx");
+        touch(&layout);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("@/layouts/blog.jsx".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+    }
+
+    #[test]
+    fn resolve_layout_escaping_project_root_is_rejected() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/blog/[slug].tsx");
+        // From pages/blog/, this lexically escapes the project root.
+        let meta = PageMeta {
+            layout: Some("../../../etc/passwd".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
+        match err {
+            MetaError::LayoutOutsideProjectRoot(_) => {}
+            other => panic!("expected LayoutOutsideProjectRoot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_layout_at_alias_escaping_root_is_rejected() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/about.tsx");
+        let meta = PageMeta {
+            layout: Some("@/../sibling".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
+        match err {
+            MetaError::LayoutOutsideProjectRoot(_) => {}
+            other => panic!("expected LayoutOutsideProjectRoot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_layout_missing_file_errors() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/blog/[slug].tsx");
+        let meta = PageMeta {
+            layout: Some("@/layouts/nope".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
+        match err {
+            MetaError::LayoutNotFound(p) => assert!(p.contains("layouts/nope.tsx")),
+            other => panic!("expected LayoutNotFound, got {other:?}"),
+        }
+    }
+
+    // ---- resolve_meta: default-layout convention --------------------------
+
+    #[test]
+    fn default_layout_picks_parent_dir_match_first() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let blog = root.join("layouts/blog.tsx");
+        let default = root.join("layouts/default.tsx");
+        touch(&blog);
+        touch(&default);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let candidates = vec![blog.clone(), default];
+        let resolved =
+            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(blog.as_path()));
+    }
+
+    #[test]
+    fn default_layout_falls_through_to_default_tsx() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let blog = root.join("layouts/blog.tsx"); // not created
+        let default = root.join("layouts/default.tsx");
+        touch(&default);
+
+        let page = root.join("pages/blog/[slug].tsx");
+        let candidates = vec![blog, default.clone()];
+        let resolved =
+            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(default.as_path()));
+    }
+
+    #[test]
+    fn default_layout_about_resolves_to_default() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let default = root.join("layouts/default.tsx");
+        touch(&default);
+
+        let page = root.join("pages/about.tsx");
+        let candidates = vec![default.clone()];
+        let resolved =
+            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        assert_eq!(resolved.layout_path.as_deref(), Some(default.as_path()));
+    }
+
+    #[test]
+    fn no_meta_no_candidates_yields_none() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/about.tsx");
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &[]).unwrap();
+        assert!(resolved.layout_path.is_none());
+    }
+
+    #[test]
+    fn no_meta_candidates_all_missing_yields_none() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/about.tsx");
+        let candidates = vec![
+            root.join("layouts/about.tsx"),
+            root.join("layouts/default.tsx"),
+        ];
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        assert!(resolved.layout_path.is_none());
+    }
+
+    // ---- end-to-end through parse_meta + resolve_meta ---------------------
+
+    #[test]
+    fn parse_then_resolve_with_extra_fields_kept_in_resolved() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let layout = root.join("layouts/blog.tsx");
+        touch(&layout);
+
+        let v = json!({
+            "title": "Post",
+            "layout": "@/layouts/blog",
+            "openGraph": { "image": "/og.png" },
+        });
+        let meta = parse_meta(Some(&v)).unwrap();
+        let page = root.join("pages/blog/[slug].tsx");
+        let resolved = resolve_meta(meta, &page, root, &[]).unwrap();
+
+        assert_eq!(resolved.meta.title.as_deref(), Some("Post"));
+        assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
+        assert_eq!(
+            resolved.meta.extra.get("openGraph"),
+            Some(&json!({ "image": "/og.png" })),
+        );
+    }
 }
