@@ -2,10 +2,7 @@ import { defineConfig } from "astro/config";
 import { fileURLToPath } from "node:url";
 import mdx from "@astrojs/mdx";
 import preact from "@astrojs/preact";
-import {
-  transformerMetaHighlight,
-  transformerMetaWordHighlight,
-} from "@shikijs/transformers";
+import { transformerMetaHighlight, transformerMetaWordHighlight } from "@shikijs/transformers";
 import tailwindcss from "@tailwindcss/vite";
 import { colorSchemes } from "./src/config/color-schemes";
 import { settings } from "./src/config/settings";
@@ -25,19 +22,13 @@ import { rehypeStripMdExtension } from "./src/plugins/rehype-strip-md-extension"
 const activeScheme = colorSchemes[settings.colorScheme];
 const shikiTheme = activeScheme?.shikiTheme ?? "dracula";
 
-const shikiTransformers = [
-  transformerMetaHighlight(),
-  transformerMetaWordHighlight(),
-];
+const shikiTransformers = [transformerMetaHighlight(), transformerMetaWordHighlight()];
 
 const shikiConfig = settings.colorMode
   ? {
       themes: {
-        light:
-          colorSchemes[settings.colorMode.lightScheme]?.shikiTheme ??
-          "github-light",
-        dark:
-          colorSchemes[settings.colorMode.darkScheme]?.shikiTheme ?? "dracula",
+        light: colorSchemes[settings.colorMode.lightScheme]?.shikiTheme ?? "github-light",
+        dark: colorSchemes[settings.colorMode.darkScheme]?.shikiTheme ?? "dracula",
       },
       defaultColor: false as const,
       transformers: shikiTransformers,
@@ -49,6 +40,7 @@ const shikiConfig = settings.colorMode
 
 export default defineConfig({
   output: "static",
+  site: "https://takazudomodular.com",
   base: settings.base,
   integrations: [
     mdx(),
@@ -56,9 +48,7 @@ export default defineConfig({
     searchIndexIntegration(),
     ...(settings.llmsTxt ? [llmsTxtIntegration()] : []),
     ...(settings.docHistory ? [docHistoryIntegration()] : []),
-    ...(settings.claudeResources
-      ? [claudeResourcesIntegration(settings.claudeResources)]
-      : []),
+    ...(settings.claudeResources ? [claudeResourcesIntegration(settings.claudeResources)] : []),
   ],
   i18n: {
     defaultLocale: "en",
@@ -75,19 +65,22 @@ export default defineConfig({
     remarkPlugins: [
       remarkDirective,
       remarkAdmonitions,
-      [remarkResolveMarkdownLinks, {
-        rootDir: fileURLToPath(new URL(".", import.meta.url)),
-        docsDir: settings.docsDir,
-        locales: Object.fromEntries(
-          Object.entries(settings.locales).map(([code, config]) => [code, { dir: config.dir }])
-        ),
-        versions: settings.versions
-          ? settings.versions.map((v) => ({ slug: v.slug, docsDir: v.docsDir }))
-          : false,
-        base: settings.base,
-        trailingSlash: settings.trailingSlash,
-        onBrokenLinks: settings.onBrokenMarkdownLinks,
-      }],
+      [
+        remarkResolveMarkdownLinks,
+        {
+          rootDir: fileURLToPath(new URL(".", import.meta.url)),
+          docsDir: settings.docsDir,
+          locales: Object.fromEntries(
+            Object.entries(settings.locales).map(([code, config]) => [code, { dir: config.dir }]),
+          ),
+          versions: settings.versions
+            ? settings.versions.map((v) => ({ slug: v.slug, docsDir: v.docsDir }))
+            : false,
+          base: settings.base,
+          trailingSlash: settings.trailingSlash,
+          onBrokenLinks: settings.onBrokenMarkdownLinks,
+        },
+      ],
       ...(settings.cjkFriendly ? [remarkCjkFriendly] : []),
     ],
     rehypePlugins: [

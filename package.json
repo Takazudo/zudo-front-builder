@@ -11,6 +11,11 @@
     "prepare": "lefthook install --reset-hooks-path",
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",
+    "docs:dev": "pnpm --filter docs dev",
+    "docs:build": "pnpm --filter docs build",
+    "docs:preview": "pnpm --filter docs preview",
+    "docs:check": "pnpm --filter docs check",
+    "docs:format:check": "pnpm --filter docs format:check",
     "//// === FORMAT ===": "",
     "format": "pnpm format:ts && pnpm format:mdx",
     "format:check": "pnpm format:check:ts && pnpm format:check:mdx",
@@ -21,11 +26,13 @@
   },
   "devDependencies": {
     "lefthook": "^2.1.6",
-    "prettier": "^3.8.3"
+    "prettier": "^3.8.3",
+    "wrangler": "^4.85.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "lefthook"
+      "lefthook",
+      "wrangler"
     ]
   }
 }

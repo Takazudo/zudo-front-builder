@@ -24,9 +24,10 @@ export const settings = {
     darkScheme: "Default Dark",
     respectPrefersColorScheme: true,
   } satisfies ColorModeConfig,
+  defaultLocale: "en",
   siteName: "Docs",
   siteDescription: "" as string,
-  base: "/",
+  base: "/pj/zudo-front-builder",
   trailingSlash: false as boolean,
   noindex: false as boolean,
   editUrl: false as string | false,
@@ -57,9 +58,7 @@ export const settings = {
     links: [
       {
         title: "Docs",
-        items: [
-          { label: "Getting Started", href: "/docs/getting-started" },
-        ],
+        items: [{ label: "Getting Started", href: "/docs/getting-started" }],
       },
     ],
     copyright: "Copyright © 2026 Your Name. Built with zudo-doc.",
