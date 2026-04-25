@@ -10,6 +10,8 @@
     "//// === ROOT ===": "",
     "prepare": "lefthook install --reset-hooks-path",
     "//// === DOCS ===": "",
+    "docs:install": "pnpm --filter docs install",
+
     "//// === FORMAT ===": ""
   },
   "devDependencies": {
