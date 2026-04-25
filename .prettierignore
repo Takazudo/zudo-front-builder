@@ -1,0 +1,7 @@
+worktrees/
+node_modules/
+target/
+dist/
+.pnpm-store/
+pnpm-lock.yaml
+docs/dist/
