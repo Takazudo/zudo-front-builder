@@ -1,0 +1,11 @@
+[package]
+name = "zfb"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zudo-front-builder — frontend build orchestrator (placeholder)."
+publish = false
+
+[[bin]]
+name = "zfb"
+path = "src/main.rs"
