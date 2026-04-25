@@ -60,12 +60,41 @@ impl RenderHost for DenoCoreHost {
         );
         let mut try_catch = v8::TryCatch::new(scope);
         let compiled = v8::Script::compile(&mut try_catch, code, Some(&origin))
-            .ok_or_else(|| anyhow!("deno_core compile({}) failed", input.name))?;
-        let result = compiled
-            .run(&mut try_catch)
-            .ok_or_else(|| anyhow!("deno_core run({}) failed", input.name))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "deno_core compile({}) failed: {}",
+                    input.name,
+                    extract_exception(&mut try_catch)
+                )
+            })?;
+        let result = compiled.run(&mut try_catch).ok_or_else(|| {
+            anyhow!(
+                "deno_core run({}) failed: {}",
+                input.name,
+                extract_exception(&mut try_catch)
+            )
+        })?;
+        if !result.is_string() {
+            return Err(anyhow!(
+                "deno_core renderHTML({}) returned non-string ({:?})",
+                input.name,
+                result.type_repr()
+            ));
+        }
         let html: String =
             serde_v8::from_v8(&mut try_catch, result).context("serde_v8 from_v8")?;
         Ok(RenderOutput { html })
     }
+}
+
+/// Pull the JS exception message out of a `TryCatch` so the host's error
+/// chain shows the real failure instead of a generic "run failed". This is
+/// what makes V8's debuggability advantage actually visible to the caller.
+fn extract_exception(try_catch: &mut v8::TryCatch<v8::HandleScope>) -> String {
+    if let Some(ex) = try_catch.exception() {
+        if let Some(msg) = ex.to_string(try_catch) {
+            return msg.to_rust_string_lossy(try_catch);
+        }
+    }
+    "<no exception captured>".to_string()
 }

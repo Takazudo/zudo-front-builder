@@ -14,7 +14,7 @@
 
 use crate::host::{RenderHost, RenderInput, RenderOutput};
 use anyhow::{anyhow, Context as _, Result};
-use rquickjs::{Context, Function, Runtime};
+use rquickjs::{Context, Function, Runtime, Value};
 
 pub struct QuickJsHost {
     _runtime: Runtime,
@@ -45,9 +45,19 @@ impl RenderHost for QuickJsHost {
             let wrapped = format!(
                 "(function() {{\n{source}\n; return typeof renderHTML === 'function' ? renderHTML : null; }})()"
             );
-            let func: Function = ctx
-                .eval::<Function, _>(wrapped)
+            // Use the typed value first so we can distinguish a missing
+            // `renderHTML` (returns null) from a real eval error. Without
+            // this guard, a fixture that forgot to define renderHTML would
+            // surface as a confusing "value is not a function" panic
+            // downstream.
+            let value: Value = ctx
+                .eval::<Value, _>(wrapped)
                 .map_err(|e| anyhow!("rquickjs eval({name}): {e}"))?;
+            let func = Function::from_value(value).map_err(|_| {
+                anyhow!(
+                    "rquickjs fixture {name}: did not define a top-level `renderHTML` function"
+                )
+            })?;
             let html: String = func
                 .call(())
                 .map_err(|e| anyhow!("rquickjs renderHTML({name}): {e}"))?;
