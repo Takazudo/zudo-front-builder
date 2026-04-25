@@ -1,0 +1,31 @@
+{
+  "name": "zfb",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "zfb public SDK — Island JSX wrapper and hydration scheduling helpers",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "default": "./src/runtime.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "happy-dom": "^15.7.4",
+    "typescript": "^5.9.0",
+    "vitest": "^2.1.9"
+  }
+}
