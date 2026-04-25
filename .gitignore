@@ -1,1 +1,16 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+.pnpm-store/
+
+# Editors
+.DS_Store
+.vscode/
+.idea/
+
+# Worktrees (managed by /x-wt-teams)
 worktrees/
