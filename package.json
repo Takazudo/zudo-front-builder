@@ -10,6 +10,7 @@
     "//// === ROOT ===": "",
 
     "//// === DOCS ===": "",
+    "docs:install": "pnpm --filter docs install",
 
     "//// === FORMAT ===": ""
   },
