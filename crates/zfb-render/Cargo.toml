@@ -1,0 +1,20 @@
+[package]
+name = "zfb-render"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb render: file-based router + JSX layout rendering"
+
+# NOTE (Sub 6 stub): This Cargo.toml is a minimal stub created to compile
+# `meta.rs` in isolation. Sub 3 owns the real crate skeleton and will
+# replace this file at merge.
+
+[lib]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
