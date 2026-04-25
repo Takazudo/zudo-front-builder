@@ -15,7 +15,9 @@
     "format": "pnpm format:ts && pnpm format:mdx",
     "format:check": "pnpm format:check:ts && pnpm format:check:mdx",
     "format:ts": "prettier --write \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
-    "format:check:ts": "prettier --check \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\""
+    "format:check:ts": "prettier --check \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
+    "format:mdx": "pnpm dlx @takazudo/mdx-formatter --write '**/*.{md,mdx}'",
+    "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'"
   },
   "devDependencies": {
     "lefthook": "^2.1.6",

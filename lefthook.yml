@@ -5,3 +5,7 @@ pre-commit:
       glob: "*.{js,mjs,cjs,ts,tsx,json,yml,yaml}"
       run: "pnpm exec prettier --write {staged_files}"
       stage_fixed: true
+    format-mdx:
+      glob: "*.{md,mdx}"
+      run: "pnpm dlx @takazudo/mdx-formatter --write {staged_files}"
+      stage_fixed: true
