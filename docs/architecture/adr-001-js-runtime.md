@@ -85,10 +85,10 @@ hardware.
 | ------------------------------ | ----------------------- | ------------------------------------------ | -------------------------------------------- |
 | TSX compile time (one-shot)    | n/a — SWC, runtime-independent | n/a                                 | n/a                                          |
 | TSX compile time (cached)      | n/a — SWC, runtime-independent | n/a                                 | n/a                                          |
-| Cold-start latency             | **181µs** (measured)    | ~10-30ms (qual., V8 platform init dominant)| **572µs** (measured)                         |
-| SSR render throughput — warm mean | **16µs / render** (measured) | ~5-15µs (qual.)                       | **106µs / render** (measured)                |
-| SSR render throughput — warm p95 | **49µs / render** (measured) | ~10-25µs (qual.)                       | **205µs / render** (measured)                |
-| Steady-state RSS               | **18.6MB** (measured, single isolate) | ~25-40MB (qual., V8 platform)| **4.5MB** (measured)                         |
+| Cold-start latency             | **181µs** (measured)    | **5.88ms** (measured)                      | **572µs** (measured)                         |
+| SSR render throughput — warm mean | **16µs / render** (measured) | **1.37ms / render** (measured, fresh isolate per render) | **106µs / render** (measured)                |
+| SSR render throughput — warm p95 | **49µs / render** (measured) | **1.86ms / render** (measured)         | **205µs / render** (measured)                |
+| Steady-state RSS               | **18.6MB** (measured, single isolate) | **316.7MB** (measured — V8 isolates accumulate across renders) | **4.5MB** (measured)                         |
 | ESM (`import` / `export`)      | **PASS** (native module loader) | partial — single-bundle entry-point model  | partial — async-only ESM, microtask-driven   |
 | Top-level `await`              | **PASS** (native, with event loop) | partial — must be flattened at bundle time | **FAIL** (sync eval; async feature is heavier) |
 | Source-accurate error messages | **PASS** (V8 + source maps + Deno's error formatting) | partial — V8 stacks but no source-map plumbing of its own | **FAIL** (line numbers reference the bundled-script offset) |
@@ -96,26 +96,27 @@ hardware.
 | Maintenance / community        | Active, large (Deno team) | Single-maintainer, low velocity         | Active, smaller scope                        |
 | Build cost (first compile)     | ~3 min (measured, with cached V8 source) | ~similar V8 cost            | **~30 sec** (measured, default-on)           |
 
-Numbers in **bold** are from `cargo run --release -p zfb-runtime-spike --bin
-zfb-spike-bench --features "quickjs deno"` — five fixtures (static, dynamic,
-collection, "use client", flattened-TLA) × 50 iterations on the same Apple
-Silicon laptop. The report JSON lands at
+All bold cells are measured live by `cargo run --release -p
+zfb-runtime-spike --bin zfb-spike-bench` with the appropriate `--features
+"…"` flag. Five fixtures (static, dynamic, collection, "use client",
+flattened-TLA) × 50 iterations, same Apple Silicon laptop, single bench
+session per host. The report JSON lands at
 `target/spike-fixtures/report.json` for anyone who wants the raw samples.
 
-Cells marked "qual." are **qualitative** assessments. We integrated `ssr_rs`
-behind its feature flag (the host implementation lives in
-`src/hosts/ssr_rs.rs`) but did not run a fresh measurement loop against it
-in this pass. The ADR doesn't hinge on those numbers because the decision is
-dominated by the **qualitative** axes (ESM, TLA, source-map fidelity), not
-the warm-render delta between V8-class engines. Running the `ssr_rs`
-measurement is `cargo run --release -p zfb-runtime-spike --bin zfb-spike-bench
---no-default-features --features ssr-rs` for any future contributor who wants
-to refute that claim.
+Headline observations:
 
-The headline observation: `deno_core` is roughly **6× faster on warm
-renders** and **3× faster on cold start** than `rquickjs`, at ~4× the RSS.
-The throughput gap is V8's optimizing tier doing what V8's optimizing tier
-does. The RSS gap is the price of admission for everything else V8 buys us.
+- **`deno_core` wins warm-render throughput by a wide margin.** ~6× faster
+  than `rquickjs` (16µs vs 106µs), ~86× faster than `ssr_rs` (16µs vs
+  1.37ms). The latter is not a typo — `ssr_rs`'s default usage pattern
+  spins up a new V8 isolate per render, which dominates everything else.
+- **`ssr_rs`'s RSS grows pathologically under repeated rendering.** 316MB
+  after 250 iterations means isolates accumulate without reuse. Reusable
+  isolate plumbing is exactly what `deno_core` ships and what we'd be
+  re-implementing on top of `ssr_rs`. (See [Rejected
+  alternatives](#rejected-alternatives).)
+- **`rquickjs` is the most footprint-efficient engine but the slowest.**
+  4.5MB RSS / 106µs warm render. Useful as a control case; not a
+  production candidate for the reasons in the qualitative rows.
 
 ## Decision criteria & rationale
 
@@ -166,11 +167,18 @@ ADR-002+ can revisit.
 
 ### `ssr_rs` (evaluated, rejected)
 
-A purpose-built wrapper for SSR is appealing. But its model — one
-pre-bundled JS string with named entry points — pushes module-graph
-resolution back onto us. We'd be writing the module loader anyway, and at
-that point we're better off with `deno_core`'s already-built loader. Single
-maintainer is a long-term concern.
+A purpose-built wrapper for SSR is appealing. But:
+
+- Its model — one pre-bundled JS string with named entry points — pushes
+  module-graph resolution back onto us. We'd be writing the module loader
+  anyway.
+- The bench shows the cost of its default reuse pattern: **~86× slower
+  warm renders than `deno_core`** (1.37ms vs 16µs) and **316.7MB RSS
+  after 250 iterations** because `Ssr::from(...)` spins up a fresh isolate
+  per call. Plumbing isolate reuse on top is exactly what `deno_core`
+  already gives us.
+- Single-maintainer / low-velocity repo is a long-term maintenance
+  concern.
 
 ### `rquickjs` (evaluated, rejected)
 
