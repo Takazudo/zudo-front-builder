@@ -1,0 +1,13 @@
+[package]
+name = "zfb-render"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb rendering engine: TSX compilation, JS module loading, JSX render orchestration"
+
+[lib]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
