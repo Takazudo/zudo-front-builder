@@ -1,3 +1,7 @@
 pre-commit:
   parallel: true
-  commands: {}
+  commands:
+    format-mdx:
+      glob: "*.{md,mdx}"
+      run: "pnpm dlx @takazudo/mdx-formatter --write {staged_files}"
+      stage_fixed: true

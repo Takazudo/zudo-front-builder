@@ -1,0 +1,16 @@
+{
+  "exclude": [
+    "node_modules/**",
+    "target/**",
+    "worktrees/**",
+    "docs/dist/**",
+    "docs/.astro/**",
+    ".pnpm-store/**"
+  ],
+  "addEmptyLinesInBlockJsx": {
+    "blockComponents": ["Note", "Tip", "Info", "Warning", "Danger", "Details", "Tabs", "HtmlPreview"]
+  },
+  "formatMultiLineJsx": {
+    "ignoreComponents": ["HtmlPreview"]
+  }
+}

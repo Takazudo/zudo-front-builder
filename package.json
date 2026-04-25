@@ -12,7 +12,9 @@
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",
 
-    "//// === FORMAT ===": ""
+    "//// === FORMAT ===": "",
+    "format:mdx": "pnpm dlx @takazudo/mdx-formatter --write '**/*.{md,mdx}'",
+    "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'"
   },
   "devDependencies": {
     "lefthook": "^2.1.6"
