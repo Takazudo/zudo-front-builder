@@ -29,6 +29,8 @@ rquickjs = { version = "0.9", features = ["loader", "parallel"], optional = true
 # in a multi-hundred-MB V8 source bundle. Gated behind the `deno` feature so
 # CI / contributors only pay this cost when explicitly evaluating it.
 deno_core = { version = "0.319", optional = true }
+# tokio kept around for future use when we add the async event-loop axis;
+# the current synchronous bench shape doesn't need it.
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 
 # Purpose-built thin V8 wrapper for Preact/React SSR. Same V8 build cost as

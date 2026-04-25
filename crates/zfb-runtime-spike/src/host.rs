@@ -29,7 +29,12 @@ pub struct RenderOutput {
 /// Intentionally tiny. The spike is about evaluating the runtime, not its
 /// surface API. `zfb-render` will widen this later (e.g. `paths()`, `meta`
 /// resolution), but those additions stay behind this same trait.
-pub trait RenderHost: Send {
+// Send is intentionally not required here: deno_core's JsRuntime is bound to
+// the thread that constructed it, and rquickjs Context similarly holds
+// thread-local state. The renderer runs JS on the orchestration thread; if a
+// future revision wants thread-pool dispatch, the host will be wrapped in a
+// per-thread isolate pool rather than gaining a Send bound here.
+pub trait RenderHost {
     /// Human-readable name used in metric reports and ADR tables.
     fn name(&self) -> &'static str;
 

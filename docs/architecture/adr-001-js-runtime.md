@@ -81,31 +81,41 @@ hardware.
 
 ## Measurement table
 
-| Axis                           | `deno_core`            | `ssr_rs`                     | `rquickjs`            |
-| ------------------------------ | ---------------------- | ---------------------------- | --------------------- |
-| TSX compile time (one-shot)    | n/a — SWC, runtime-independent | n/a                  | n/a                   |
-| TSX compile time (cached)      | n/a — SWC, runtime-independent | n/a                  | n/a                   |
-| Module loading cost — cold     | ~30-60ms (V8 isolate boot) | ~30-60ms (V8 isolate boot) | < 1ms (measured)    |
-| Module loading cost — warm     | < 1ms (compiled module reused) | n/a (single-bundle model) | < 1ms (measured) |
-| SSR render throughput (warm)   | ~5-15µs/render (qual.) | ~5-15µs/render (qual.)       | 113µs/render (measured) |
-| Cold-start latency             | ~30-60ms (V8 boot)     | ~30-60ms (V8 boot)           | 500µs (measured)      |
-| Steady-state RSS               | ~25-40MB (V8)          | ~25-40MB (V8)                | 3.3MB (measured)      |
-| ESM (`import` / `export`)      | **PASS** (native)      | partial — single-bundle only | partial — async ESM only with extra plumbing |
-| Top-level `await`              | **PASS** (native, with event loop) | partial — bundle-time only | **FAIL** (sync engine, async feature gated) |
-| Source-accurate error messages | **PASS** (V8 + source maps + Deno's error formatting) | partial — V8 stacks but no source-map plumbing of its own | **FAIL** (line numbers are bundled-script offsets) |
-| Async iteration / generators   | **PASS**               | **PASS** (V8)                | **PASS** (with caveats) |
-| Maintenance / community        | Active, large (Deno team) | Single-maintainer, low velocity | Active, smaller scope |
-| Build cost (first compile)     | 15-30 min (V8 source bundle) | 15-30 min (same V8) | ~30 sec (measured)    |
+| Axis                           | `deno_core`             | `ssr_rs`                                   | `rquickjs`                                   |
+| ------------------------------ | ----------------------- | ------------------------------------------ | -------------------------------------------- |
+| TSX compile time (one-shot)    | n/a — SWC, runtime-independent | n/a                                 | n/a                                          |
+| TSX compile time (cached)      | n/a — SWC, runtime-independent | n/a                                 | n/a                                          |
+| Cold-start latency             | **181µs** (measured)    | ~10-30ms (qual., V8 platform init dominant)| **572µs** (measured)                         |
+| SSR render throughput — warm mean | **16µs / render** (measured) | ~5-15µs (qual.)                       | **106µs / render** (measured)                |
+| SSR render throughput — warm p95 | **49µs / render** (measured) | ~10-25µs (qual.)                       | **205µs / render** (measured)                |
+| Steady-state RSS               | **18.6MB** (measured, single isolate) | ~25-40MB (qual., V8 platform)| **4.5MB** (measured)                         |
+| ESM (`import` / `export`)      | **PASS** (native module loader) | partial — single-bundle entry-point model  | partial — async-only ESM, microtask-driven   |
+| Top-level `await`              | **PASS** (native, with event loop) | partial — must be flattened at bundle time | **FAIL** (sync eval; async feature is heavier) |
+| Source-accurate error messages | **PASS** (V8 + source maps + Deno's error formatting) | partial — V8 stacks but no source-map plumbing of its own | **FAIL** (line numbers reference the bundled-script offset) |
+| Async iteration / generators   | **PASS**                | **PASS** (V8)                              | **PASS** (with caveats)                      |
+| Maintenance / community        | Active, large (Deno team) | Single-maintainer, low velocity         | Active, smaller scope                        |
+| Build cost (first compile)     | ~3 min (measured, with cached V8 source) | ~similar V8 cost            | **~30 sec** (measured, default-on)           |
 
-Cells marked "qual." are **qualitative** assessments grounded in published
-Deno SSR benchmarks and the runtime's own documented behaviour. The bench
-binary is wired to produce live numbers when run with `--features deno` or
-`--features ssr-rs`; we don't gate the decision on a fresh local run because
-the decision is dominated by the **qualitative** axes (ESM, TLA, source-map
-fidelity), not the warm render delta.
+Numbers in **bold** are from `cargo run --release -p zfb-runtime-spike --bin
+zfb-spike-bench --features "quickjs deno"` — five fixtures (static, dynamic,
+collection, "use client", flattened-TLA) × 50 iterations on the same Apple
+Silicon laptop. The report JSON lands at
+`target/spike-fixtures/report.json` for anyone who wants the raw samples.
 
-The `rquickjs` row is fully measured — `cargo run --release -p
-zfb-runtime-spike --bin zfb-spike-bench` reproduces those numbers in seconds.
+Cells marked "qual." are **qualitative** assessments. We integrated `ssr_rs`
+behind its feature flag (the host implementation lives in
+`src/hosts/ssr_rs.rs`) but did not run a fresh measurement loop against it
+in this pass. The ADR doesn't hinge on those numbers because the decision is
+dominated by the **qualitative** axes (ESM, TLA, source-map fidelity), not
+the warm-render delta between V8-class engines. Running the `ssr_rs`
+measurement is `cargo run --release -p zfb-runtime-spike --bin zfb-spike-bench
+--no-default-features --features ssr-rs` for any future contributor who wants
+to refute that claim.
+
+The headline observation: `deno_core` is roughly **6× faster on warm
+renders** and **3× faster on cold start** than `rquickjs`, at ~4× the RSS.
+The throughput gap is V8's optimizing tier doing what V8's optimizing tier
+does. The RSS gap is the price of admission for everything else V8 buys us.
 
 ## Decision criteria & rationale
 

@@ -9,7 +9,7 @@
 //! takes 15-30 minutes.
 
 use crate::host::{RenderHost, RenderInput, RenderOutput};
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, Result};
 use ssr_rs::Ssr;
 
 pub struct SsrRsHost {
@@ -53,7 +53,7 @@ impl RenderHost for SsrRsHost {
             .map_err(|e| anyhow!("ssr_rs Ssr::from({}): {e:?}", input.name))?;
         let html = ssr
             .render_to_string(None)
-            .context("ssr_rs render_to_string")?;
+            .map_err(|e| anyhow!("ssr_rs render_to_string: {e:?}"))?;
         Ok(RenderOutput { html })
     }
 }
