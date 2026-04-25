@@ -25,6 +25,30 @@ cargo run -p zfb
 - `lefthook`, `rustfmt`, `clippy`, and JS/CSS formatters will be wired up in Subs 3–5. Until then, please run `cargo fmt` and `cargo clippy` manually before opening a PR.
 - Open a PR against `main` (or the relevant epic base branch). CI will be enabled later in the foundation work.
 
+## Formatting
+
+JavaScript, TypeScript, JSON, and YAML are formatted with **Prettier**. Markdown and MDX use a separate formatter wired up in Sub 5.
+
+Run formatters across the repo:
+
+```sh
+pnpm format         # autoformat all (TS/JS/JSON/YAML + MD/MDX)
+pnpm format:check   # check formatting (CI-friendly, exits non-zero on diffs)
+```
+
+Targeted variants:
+
+- `pnpm format:ts` / `pnpm format:check:ts` — Prettier over JS/TS/JSON/YAML
+- `pnpm format:mdx` / `pnpm format:check:mdx` — Markdown/MDX (see Sub 5)
+
+The pre-commit hook (lefthook) runs Prettier on staged matching files and re-stages the fixes.
+
+### Why Prettier (and not Oxfmt) for now
+
+[Oxfmt](https://oxc.rs/docs/guide/usage/formatter.html) is the formatter from the Oxc project and is the long-term direction the JS ecosystem is moving toward (30x faster than Prettier, 100% Prettier JS/TS conformance, supports JSON and YAML). At evaluation time (2026-04-26) it is published as `oxfmt` v0.46.0 and is officially in **Beta** ([announcement](https://oxc.rs/blog/2026-02-24-oxfmt-beta)) — sub-1.0 with no formal stable release yet, comparable to where Oxlint sat before its v1.0 stable announcement.
+
+To keep the foundation conservative we ship Prettier today and revisit the swap once Oxfmt cuts a 1.0 / "stable" release. Tracker: [oxc-project/oxc milestone 19](https://github.com/oxc-project/oxc/milestone/19).
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE).
