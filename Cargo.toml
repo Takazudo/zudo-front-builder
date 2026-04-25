@@ -11,3 +11,4 @@ anyhow = "1"
 thiserror = "2"
 syntect = "5"
 garde = { version = "0.22", features = ["derive"] }
+walkdir = "2"
