@@ -3,7 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { settings } from "../config/settings";
-import { stripMarkdown, collectMdFiles, slugToUrl, parseMarkdownFile, isExcluded } from "../utils/content-files";
+import {
+  stripMarkdown,
+  collectMdFiles,
+  slugToUrl,
+  parseMarkdownFile,
+  isExcluded,
+} from "../utils/content-files";
 
 /** Strip imports, exports, and HTML/JSX tags from markdown content (keep structure for LLM consumption) */
 function stripImportsAndJsx(content: string): string {
@@ -30,10 +36,7 @@ interface DocEntry {
 }
 
 /** Build doc entries for a content directory */
-function buildDocEntries(
-  contentDir: string,
-  locale: string | null,
-): DocEntry[] {
+function buildDocEntries(contentDir: string, locale: string | null): DocEntry[] {
   const absDir = resolve(contentDir);
   const files = collectMdFiles(absDir);
   const entries: DocEntry[] = [];
@@ -118,14 +121,8 @@ interface DevResponse {
 }
 
 /** Send generated llms content as a text response */
-function sendLlmsResponse(
-  res: DevResponse,
-  entries: DocEntry[],
-  isFull: boolean,
-): void {
-  const content = isFull
-    ? generateLlmsFullTxt(entries)
-    : generateLlmsTxt(entries);
+function sendLlmsResponse(res: DevResponse, entries: DocEntry[], isFull: boolean): void {
+  const content = isFull ? generateLlmsFullTxt(entries) : generateLlmsTxt(entries);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end(content);
 }
@@ -138,10 +135,7 @@ function serveLlmsTxt(url: string | undefined, res: DevResponse): boolean {
   if (settings.locales) {
     for (const code of Object.keys(settings.locales)) {
       const config = settings.locales[code as keyof typeof settings.locales];
-      if (
-        url === `${base}/${code}/llms.txt` ||
-        url === `${base}/${code}/llms-full.txt`
-      ) {
+      if (url === `${base}/${code}/llms.txt` || url === `${base}/${code}/llms-full.txt`) {
         const entries = buildDocEntries(config.dir, code);
         sendLlmsResponse(res, entries, url.endsWith("llms-full.txt"));
         return true;
@@ -169,13 +163,8 @@ export function llmsTxtIntegration(): AstroIntegration {
         // Default locale
         const defaultEntries = buildDocEntries(settings.docsDir, null);
         writeFileSync(join(outDir, "llms.txt"), generateLlmsTxt(defaultEntries));
-        writeFileSync(
-          join(outDir, "llms-full.txt"),
-          generateLlmsFullTxt(defaultEntries),
-        );
-        logger.info(
-          `Generated llms.txt and llms-full.txt (${defaultEntries.length} pages)`,
-        );
+        writeFileSync(join(outDir, "llms-full.txt"), generateLlmsFullTxt(defaultEntries));
+        logger.info(`Generated llms.txt and llms-full.txt (${defaultEntries.length} pages)`);
 
         // Locale docs
         if (settings.locales) {
@@ -183,14 +172,8 @@ export function llmsTxtIntegration(): AstroIntegration {
             const localeEntries = buildDocEntries(config.dir, code);
             const localeDir = join(outDir, code);
             mkdirSync(localeDir, { recursive: true });
-            writeFileSync(
-              join(localeDir, "llms.txt"),
-              generateLlmsTxt(localeEntries),
-            );
-            writeFileSync(
-              join(localeDir, "llms-full.txt"),
-              generateLlmsFullTxt(localeEntries),
-            );
+            writeFileSync(join(localeDir, "llms.txt"), generateLlmsTxt(localeEntries));
+            writeFileSync(join(localeDir, "llms-full.txt"), generateLlmsFullTxt(localeEntries));
             logger.info(
               `Generated ${code}/llms.txt and ${code}/llms-full.txt (${localeEntries.length} pages)`,
             );
@@ -216,11 +199,7 @@ export function llmsTxtIntegration(): AstroIntegration {
                     } catch (err) {
                       res.statusCode = 500;
                       res.setHeader("Content-Type", "text/plain");
-                      res.end(
-                        err instanceof Error
-                          ? err.message
-                          : "Internal error",
-                      );
+                      res.end(err instanceof Error ? err.message : "Internal error");
                     }
                   });
                 },

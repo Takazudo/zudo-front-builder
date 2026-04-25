@@ -9,10 +9,7 @@ interface MobileTocProps {
 }
 
 export function MobileToc({ headings, title = "On this page" }: MobileTocProps) {
-  const filtered = useMemo(
-    () => headings.filter((h) => h.depth >= 2 && h.depth <= 4),
-    [headings],
-  );
+  const filtered = useMemo(() => headings.filter((h) => h.depth >= 2 && h.depth <= 4), [headings]);
   const [open, setOpen] = useState(false);
 
   if (filtered.length === 0) return <div className="hidden" />;
@@ -38,11 +35,7 @@ export function MobileToc({ headings, title = "On this page" }: MobileTocProps) 
           stroke="currentColor"
           strokeWidth={2}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M19 9l-7 7-7-7"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {open && (

@@ -28,18 +28,14 @@ export function applyTrailingSlash(url: string): string {
 /** Prefix a path with the configured base directory. */
 export function withBase(path: string): string {
   const raw =
-    normalizedBase === ""
-      ? path
-      : `${normalizedBase}${path.startsWith("/") ? path : `/${path}`}`;
+    normalizedBase === "" ? path : `${normalizedBase}${path.startsWith("/") ? path : `/${path}`}`;
   return applyTrailingSlash(raw);
 }
 
 /** Strip the base prefix from a URL pathname. */
 export function stripBase(path: string): string {
   if (normalizedBase === "") return path;
-  return path.startsWith(normalizedBase)
-    ? path.slice(normalizedBase.length) || "/"
-    : path;
+  return path.startsWith(normalizedBase) ? path.slice(normalizedBase.length) || "/" : path;
 }
 
 /** Build a docs URL for the given slug and lang. */
@@ -72,18 +68,12 @@ export function navHref(
   const isNonDefaultLocale = lang != null && lang !== defaultLocale;
   const versionPrefix = currentVersion ? `/v/${currentVersion}` : "";
   return withBase(
-    isNonDefaultLocale
-      ? `/${lang}${versionPrefix}${path}`
-      : `${versionPrefix}${path}`,
+    isNonDefaultLocale ? `/${lang}${versionPrefix}${path}` : `${versionPrefix}${path}`,
   );
 }
 
 /** Build a locale-switched path from the current page path. */
-export function getPathForLocale(
-  path: string,
-  currentLang: Locale,
-  targetLang: Locale,
-): string {
+export function getPathForLocale(path: string, currentLang: Locale, targetLang: Locale): string {
   let relativePath = stripBase(path);
   if (currentLang !== defaultLocale) {
     relativePath = relativePath.replace(new RegExp(`^/${currentLang}/`), "/");
@@ -105,9 +95,14 @@ export function buildLocaleLinks(currentPath: string, currentLang: Locale): Loca
 }
 
 /** Build a versioned docs URL for the given slug, version, and lang. */
-export function versionedDocsUrl(slug: string, versionSlug: string, lang: Locale = defaultLocale): string {
-  const path = lang === defaultLocale
-    ? `/v/${versionSlug}/docs/${slug}`
-    : `/v/${versionSlug}/${lang}/docs/${slug}`;
+export function versionedDocsUrl(
+  slug: string,
+  versionSlug: string,
+  lang: Locale = defaultLocale,
+): string {
+  const path =
+    lang === defaultLocale
+      ? `/v/${versionSlug}/docs/${slug}`
+      : `/v/${versionSlug}/${lang}/docs/${slug}`;
   return withBase(path);
 }

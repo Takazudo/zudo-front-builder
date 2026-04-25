@@ -7,9 +7,7 @@ export interface ClaudeResourcesOptions {
   projectRoot?: string;
 }
 
-export function claudeResourcesIntegration(
-  options: ClaudeResourcesOptions,
-): AstroIntegration {
+export function claudeResourcesIntegration(options: ClaudeResourcesOptions): AstroIntegration {
   return {
     name: "claude-resources",
     hooks: {

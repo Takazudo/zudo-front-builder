@@ -9,10 +9,7 @@ interface TocProps {
 }
 
 export function Toc({ headings }: TocProps) {
-  const filtered = useMemo(
-    () => headings.filter((h) => h.depth >= 2 && h.depth <= 4),
-    [headings],
-  );
+  const filtered = useMemo(() => headings.filter((h) => h.depth >= 2 && h.depth <= 4), [headings]);
   const { activeId, activate } = useActiveHeading(filtered);
 
   if (filtered.length === 0) return <nav className="hidden" />;

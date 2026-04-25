@@ -319,7 +319,8 @@ function scanDir(baseDir: string, currentDir: string, result: Map<string, Catego
               label: typeof obj.label === "string" ? obj.label : undefined,
               position: typeof obj.position === "number" ? obj.position : undefined,
               description: typeof obj.description === "string" ? obj.description : undefined,
-              sortOrder: obj.sortOrder === "asc" || obj.sortOrder === "desc" ? obj.sortOrder : undefined,
+              sortOrder:
+                obj.sortOrder === "asc" || obj.sortOrder === "desc" ? obj.sortOrder : undefined,
               noPage: obj.noPage === true ? true : undefined,
             };
             const relativePath = path.relative(baseDir, fullPath);

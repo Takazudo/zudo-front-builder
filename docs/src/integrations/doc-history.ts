@@ -9,9 +9,7 @@ const DOC_HISTORY_SERVER_PORT = 4322;
 
 /** Build list of [localeKey | null, absoluteDir] pairs from settings */
 function getContentDirEntries(): Array<[string | null, string]> {
-  const entries: Array<[string | null, string]> = [
-    [null, resolve(settings.docsDir)],
-  ];
+  const entries: Array<[string | null, string]> = [[null, resolve(settings.docsDir)]];
   if (settings.locales) {
     for (const [key, locale] of Object.entries(settings.locales)) {
       entries.push([key, resolve(locale.dir)]);
@@ -27,9 +25,7 @@ export function docHistoryIntegration(): AstroIntegration {
       "astro:config:setup": ({ updateConfig, command, logger }) => {
         if (command !== "dev") return;
 
-        logger.info(
-          `Proxying /doc-history/* to localhost:${DOC_HISTORY_SERVER_PORT}`,
-        );
+        logger.info(`Proxying /doc-history/* to localhost:${DOC_HISTORY_SERVER_PORT}`);
 
         updateConfig({
           vite: {
@@ -57,15 +53,13 @@ export function docHistoryIntegration(): AstroIntegration {
                         res.statusCode = upstream.status;
                         res.setHeader(
                           "Content-Type",
-                          upstream.headers.get("content-type") ??
-                            "application/json",
+                          upstream.headers.get("content-type") ?? "application/json",
                         );
                         const body = await upstream.text();
                         res.end(body);
                       })
                       .catch((err) => {
-                        const msg =
-                          err instanceof Error ? err.message : String(err);
+                        const msg = err instanceof Error ? err.message : String(err);
                         logger.warn(
                           `Doc history proxy failed: ${msg}. Is the doc-history server running on port ${DOC_HISTORY_SERVER_PORT}?`,
                         );
@@ -118,9 +112,7 @@ export function docHistoryIntegration(): AstroIntegration {
           }
         }
 
-        logger.info(
-          `Generated doc history for ${totalFiles} files in doc-history/`,
-        );
+        logger.info(`Generated doc history for ${totalFiles} files in doc-history/`);
       },
     },
   };

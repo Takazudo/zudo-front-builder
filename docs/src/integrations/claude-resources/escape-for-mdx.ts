@@ -1,13 +1,76 @@
 const htmlTags = new Set([
-  "div", "span", "p", "a", "img", "br", "hr", "ul", "ol", "li",
-  "h1", "h2", "h3", "h4", "h5", "h6", "code", "pre", "blockquote",
-  "table", "tr", "td", "th", "thead", "tbody", "tfoot", "colgroup", "col",
-  "strong", "em", "b", "i", "u", "s", "del", "ins", "sub", "sup",
-  "details", "summary", "figure", "figcaption", "mark", "small",
-  "cite", "q", "abbr", "dfn", "time", "var", "samp", "kbd",
-  "section", "article", "aside", "header", "footer", "nav", "main",
-  "form", "input", "button", "select", "option", "textarea", "label",
-  "fieldset", "legend", "dl", "dt", "dd", "caption",
+  "div",
+  "span",
+  "p",
+  "a",
+  "img",
+  "br",
+  "hr",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "code",
+  "pre",
+  "blockquote",
+  "table",
+  "tr",
+  "td",
+  "th",
+  "thead",
+  "tbody",
+  "tfoot",
+  "colgroup",
+  "col",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "u",
+  "s",
+  "del",
+  "ins",
+  "sub",
+  "sup",
+  "details",
+  "summary",
+  "figure",
+  "figcaption",
+  "mark",
+  "small",
+  "cite",
+  "q",
+  "abbr",
+  "dfn",
+  "time",
+  "var",
+  "samp",
+  "kbd",
+  "section",
+  "article",
+  "aside",
+  "header",
+  "footer",
+  "nav",
+  "main",
+  "form",
+  "input",
+  "button",
+  "select",
+  "option",
+  "textarea",
+  "label",
+  "fieldset",
+  "legend",
+  "dl",
+  "dt",
+  "dd",
+  "caption",
 ]);
 
 /**
@@ -25,15 +88,11 @@ export function escapeForMdx(content: string): string {
     codeBlocks.push(match);
     return `${placeholder}${idx}\x00`;
   });
-  const parts = withPlaceholders.split(
-    new RegExp(`(${placeholder}\\d+\x00)`, "g"),
-  );
+  const parts = withPlaceholders.split(new RegExp(`(${placeholder}\\d+\x00)`, "g"));
 
   return parts
     .map((part) => {
-      const placeholderMatch = part.match(
-        new RegExp(`^${placeholder}(\\d+)\x00$`),
-      );
+      const placeholderMatch = part.match(new RegExp(`^${placeholder}(\\d+)\x00$`));
       if (placeholderMatch) return codeBlocks[Number(placeholderMatch[1])];
 
       // For non-code-block text, split on inline code to preserve it.
@@ -41,40 +100,28 @@ export function escapeForMdx(content: string): string {
       const inlineCodeRegex = /(`{1,3})(?!`)([\s\S]*?[^`])\1(?!`)/g;
       const inlineCodes: string[] = [];
       const inlinePlaceholder = "\x00INLINE_";
-      const withInlinePlaceholders = part.replace(
-        inlineCodeRegex,
-        (match) => {
-          const idx = inlineCodes.length;
-          inlineCodes.push(match);
-          return `${inlinePlaceholder}${idx}\x00`;
-        },
-      );
+      const withInlinePlaceholders = part.replace(inlineCodeRegex, (match) => {
+        const idx = inlineCodes.length;
+        inlineCodes.push(match);
+        return `${inlinePlaceholder}${idx}\x00`;
+      });
 
       let escaped = withInlinePlaceholders
         // Escape opening tags: <Name>, <Name attr="val">
-        .replace(
-          /<([A-Za-z][A-Za-z0-9_-]*)(\s[^>]*)?>(?!\/)/g,
-          (match, name: string) => {
-            if (htmlTags.has(name.toLowerCase())) return match;
-            return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          },
-        )
+        .replace(/<([A-Za-z][A-Za-z0-9_-]*)(\s[^>]*)?>(?!\/)/g, (match, name: string) => {
+          if (htmlTags.has(name.toLowerCase())) return match;
+          return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        })
         // Escape closing tags: </Name>
-        .replace(
-          /<\/([A-Za-z][A-Za-z0-9_-]*)>/g,
-          (match, name: string) => {
-            if (htmlTags.has(name.toLowerCase())) return match;
-            return `&lt;/${name}&gt;`;
-          },
-        )
+        .replace(/<\/([A-Za-z][A-Za-z0-9_-]*)>/g, (match, name: string) => {
+          if (htmlTags.has(name.toLowerCase())) return match;
+          return `&lt;/${name}&gt;`;
+        })
         // Escape self-closing tags: <Name />
-        .replace(
-          /<([A-Za-z][A-Za-z0-9_-]*)(\s[^>]*)?\s*\/>/g,
-          (match, name: string) => {
-            if (htmlTags.has(name.toLowerCase())) return match;
-            return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          },
-        )
+        .replace(/<([A-Za-z][A-Za-z0-9_-]*)(\s[^>]*)?\s*\/>/g, (match, name: string) => {
+          if (htmlTags.has(name.toLowerCase())) return match;
+          return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        })
         .replace(/<(-+|=+)/g, "&lt;$1")
         .replace(/<(\d)/g, "&lt;$1")
         // Escape curly braces (MDX interprets them as JSX expressions)

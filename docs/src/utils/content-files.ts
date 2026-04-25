@@ -39,9 +39,7 @@ export function stripMarkdown(md: string): string {
 }
 
 /** Walk a directory and collect all .md/.mdx files */
-export function collectMdFiles(
-  dir: string,
-): Array<{ filePath: string; slug: string }> {
+export function collectMdFiles(dir: string): Array<{ filePath: string; slug: string }> {
   const results: Array<{ filePath: string; slug: string }> = [];
 
   function walk(currentDir: string, baseDir: string): void {
@@ -91,7 +89,9 @@ export interface DocFrontmatter {
 }
 
 /** Parse a markdown file and return frontmatter + content */
-export function parseMarkdownFile(filePath: string): { data: DocFrontmatter; content: string } | null {
+export function parseMarkdownFile(
+  filePath: string,
+): { data: DocFrontmatter; content: string } | null {
   try {
     const raw = readFileSync(filePath, "utf-8");
     return matter(raw);

@@ -16,8 +16,7 @@ export function rehypeCodeTitle() {
       if (node.tagName !== "pre" || !parent || index === undefined) return;
 
       const codeEl = node.children.find(
-        (child): child is Element =>
-          child.type === "element" && child.tagName === "code",
+        (child): child is Element => child.type === "element" && child.tagName === "code",
       );
       if (!codeEl) return;
 

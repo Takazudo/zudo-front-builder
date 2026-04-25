@@ -45,11 +45,7 @@ export default function SidebarToggle({ children }: SidebarToggleProps) {
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 18L18 6M6 6l12 12"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
         ) : (
           <svg
@@ -60,11 +56,7 @@ export default function SidebarToggle({ children }: SidebarToggleProps) {
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 6h16M4 12h16M4 18h16"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
           </svg>
         )}
       </button>
@@ -86,9 +78,7 @@ export default function SidebarToggle({ children }: SidebarToggleProps) {
           ${open ? "translate-x-0" : "-translate-x-full"}
         `}
       >
-        <div className="flex-1 overflow-y-auto">
-          {children}
-        </div>
+        <div className="flex-1 overflow-y-auto">{children}</div>
       </aside>
     </>
   );

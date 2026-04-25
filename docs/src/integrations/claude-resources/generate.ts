@@ -85,10 +85,7 @@ function writeCategoryMeta(
 ) {
   const meta: Record<string, unknown> = { label, position, description };
   if (noPage) meta.noPage = true;
-  fs.writeFileSync(
-    path.join(outputDir, "_category_.json"),
-    JSON.stringify(meta, null, 2) + "\n",
-  );
+  fs.writeFileSync(path.join(outputDir, "_category_.json"), JSON.stringify(meta, null, 2) + "\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -123,9 +120,7 @@ function findClaudeMdFiles(dir: string, excludeDirs: string[]): string[] {
 // CLAUDE.md generation
 // ---------------------------------------------------------------------------
 
-function generateClaudemdDocs(
-  config: ClaudeResourcesConfig,
-): ClaudeMdItem[] {
+function generateClaudemdDocs(config: ClaudeResourcesConfig): ClaudeMdItem[] {
   const projectRoot = config.projectRoot ?? path.dirname(config.claudeDir);
   const outputDir = path.join(config.docsDir, "claude-md");
 
@@ -230,14 +225,9 @@ ${escapeForMdx(parsed.content.trim())}
 // Skills generation
 // ---------------------------------------------------------------------------
 
-type TreeEntry =
-  | { isDir: false; name: string }
-  | { isDir: true; name: string; children: string[] };
+type TreeEntry = { isDir: false; name: string } | { isDir: true; name: string; children: string[] };
 
-function getSkillFileTree(
-  skillDir: string,
-  subDirs: { name: string; files: string[] }[],
-): string {
+function getSkillFileTree(skillDir: string, subDirs: { name: string; files: string[] }[]): string {
   const lines: string[] = [`${skillDir}/`];
   const entries: TreeEntry[] = [{ isDir: false, name: "SKILL.md" }];
 
@@ -271,9 +261,7 @@ function getScriptDescription(filePath: string): string {
   try {
     const topLines = fs.readFileSync(filePath, "utf8").split("\n", 2);
     // Skip shebang, use second line if available
-    const commentLine = topLines[0].startsWith("#!")
-      ? topLines[1] || ""
-      : topLines[0];
+    const commentLine = topLines[0].startsWith("#!") ? topLines[1] || "" : topLines[0];
     // Match # comments (shell/python) or // comments (JS/TS)
     const match = commentLine.match(/^(?:#|\/\/)\s*(.+)/);
     return match ? ` — ${match[1]}` : "";
@@ -282,10 +270,7 @@ function getScriptDescription(filePath: string): string {
   }
 }
 
-function getSkillReferences(
-  skillsDir: string,
-  skillDir: string,
-): SkillReference[] {
+function getSkillReferences(skillsDir: string, skillDir: string): SkillReference[] {
   const refsDir = path.join(skillsDir, skillDir, "references");
   if (!fs.existsSync(refsDir)) return [];
 
@@ -312,10 +297,7 @@ function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
 
   const dirs = fs.readdirSync(skillsDir).filter((d) => {
     const skillPath = path.join(skillsDir, d);
-    return (
-      fs.statSync(skillPath).isDirectory() &&
-      fs.existsSync(path.join(skillPath, "SKILL.md"))
-    );
+    return fs.statSync(skillPath).isDirectory() && fs.existsSync(path.join(skillPath, "SKILL.md"));
   });
 
   if (dirs.length === 0) return [];
@@ -324,10 +306,7 @@ function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
   const items: SkillItem[] = [];
 
   for (const dir of dirs) {
-    const content = fs.readFileSync(
-      path.join(skillsDir, dir, "SKILL.md"),
-      "utf8",
-    );
+    const content = fs.readFileSync(path.join(skillsDir, dir, "SKILL.md"), "utf8");
     const parsed = parseFrontmatter(content);
     if (!parsed) continue;
 
@@ -372,9 +351,8 @@ function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
       fileStructureSection = `## File Structure\n\n${tree}${linkList}`;
     }
 
-    const shortDesc = description.length > 200
-      ? description.substring(0, 200) + "..."
-      : description;
+    const shortDesc =
+      description.length > 200 ? description.substring(0, 200) + "..." : description;
 
     // Rewrite references/scripts/assets links in skill body to match doc site URLs
     let skillBody = parsed.content.trim();
@@ -383,12 +361,7 @@ function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
       .replace(/\]\(scripts\/([^)]+)\.md\)/g, "](./script-$1)")
       .replace(/\]\(assets\/([^)]+)\.md\)/g, "](./asset-$1)");
 
-    const body = [
-      fileStructureSection,
-      escapeForMdx(skillBody),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const body = [fileStructureSection, escapeForMdx(skillBody)].filter(Boolean).join("\n\n");
 
     const mdx = `---
 title: "${escapeTitle(name)}"
@@ -423,10 +396,7 @@ ${escapeForMdx(ref.content.trim())}
     for (const f of scriptFiles.filter((s) => s.endsWith(".md"))) {
       const slug = f.replace(/\.md$/, "");
       const subSlug = `${skillSlugBase}/script-${slug}`;
-      const raw = fs.readFileSync(
-        path.join(skillsDir, dir, "scripts", f),
-        "utf8",
-      );
+      const raw = fs.readFileSync(path.join(skillsDir, dir, "scripts", f), "utf8");
       const h1Match = raw.match(/^#\s+(.+)$/m);
       const title = h1Match ? h1Match[1] : slug;
       fs.writeFileSync(
@@ -438,10 +408,7 @@ ${escapeForMdx(ref.content.trim())}
     for (const f of assetFiles.filter((a) => a.endsWith(".md"))) {
       const slug = f.replace(/\.md$/, "");
       const subSlug = `${skillSlugBase}/asset-${slug}`;
-      const raw = fs.readFileSync(
-        path.join(skillsDir, dir, "assets", f),
-        "utf8",
-      );
+      const raw = fs.readFileSync(path.join(skillsDir, dir, "assets", f), "utf8");
       const h1Match = raw.match(/^#\s+(.+)$/m);
       const title = h1Match ? h1Match[1] : slug;
       fs.writeFileSync(

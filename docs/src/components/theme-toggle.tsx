@@ -59,9 +59,7 @@ export default function ThemeToggle({ defaultMode = "dark" }: ThemeToggleProps) 
 
   useEffect(() => {
     const actual =
-      (document.documentElement.getAttribute("data-theme") as
-        | "light"
-        | "dark") || defaultMode;
+      (document.documentElement.getAttribute("data-theme") as "light" | "dark") || defaultMode;
     if (actual !== mode) {
       setMode(actual);
     }

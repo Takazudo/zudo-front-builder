@@ -25,12 +25,7 @@ function containsScript(head?: string, js?: string): boolean {
   return false;
 }
 
-function buildSrcdoc(
-  html: string,
-  css?: string,
-  head?: string,
-  js?: string,
-): string {
+function buildSrcdoc(html: string, css?: string, head?: string, js?: string): string {
   return `<!doctype html>
 <html>
 <head>
@@ -58,10 +53,7 @@ export default function HtmlPreview({
   componentHead,
   componentJs,
 }: HtmlPreviewProps): ReactNode {
-  const srcdoc = useMemo(
-    () => buildSrcdoc(html, css, head, js),
-    [html, css, head, js],
-  );
+  const srcdoc = useMemo(() => buildSrcdoc(html, css, head, js), [html, css, head, js]);
   const hasScripts = containsScript(head, js);
   const syncDelay = hasScripts ? 300 : 0;
   // allow-same-origin is needed alongside allow-scripts so that syncHeight
@@ -71,12 +63,8 @@ export default function HtmlPreview({
   const codeBlocks = useMemo(
     () => [
       { language: "html", title: "HTML", code: dedent(html) },
-      ...(componentCss
-        ? [{ language: "css", title: "CSS", code: dedent(componentCss) }]
-        : []),
-      ...(componentHead
-        ? [{ language: "html", title: "Head", code: dedent(componentHead) }]
-        : []),
+      ...(componentCss ? [{ language: "css", title: "CSS", code: dedent(componentCss) }] : []),
+      ...(componentHead ? [{ language: "html", title: "Head", code: dedent(componentHead) }] : []),
       ...(componentJs
         ? [
             {

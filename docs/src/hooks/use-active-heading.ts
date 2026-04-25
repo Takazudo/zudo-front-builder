@@ -54,9 +54,7 @@ interface UseActiveHeadingResult {
   activate: (id: string) => void;
 }
 
-export function useActiveHeading(
-  headings: Heading[],
-): UseActiveHeadingResult {
+export function useActiveHeading(headings: Heading[]): UseActiveHeadingResult {
   const [activeId, setActiveId] = useState<string | null>(null);
   const headingIdsRef = useRef<string[]>([]);
   const elementMapRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -86,9 +84,7 @@ export function useActiveHeading(
 
     function update() {
       timerId = null;
-      setActiveId(
-        getActiveHeadingId(headingIdsRef.current, elementMapRef.current),
-      );
+      setActiveId(getActiveHeadingId(headingIdsRef.current, elementMapRef.current));
     }
 
     let fallbackTimerId: ReturnType<typeof setTimeout> | null = null;

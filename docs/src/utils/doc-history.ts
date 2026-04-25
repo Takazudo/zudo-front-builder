@@ -30,22 +30,11 @@ function toRepoRelative(absolutePath: string): string {
  * Uses --follow to track renames.
  * Limits to maxEntries commits (default 50).
  */
-export function getFileCommits(
-  filePath: string,
-  maxEntries = 50,
-): string[] {
+export function getFileCommits(filePath: string, maxEntries = 50): string[] {
   try {
     const output = execFileSync(
       "git",
-      [
-        "log",
-        "--follow",
-        "--format=%H",
-        "-n",
-        String(maxEntries),
-        "--",
-        filePath,
-      ],
+      ["log", "--follow", "--format=%H", "-n", String(maxEntries), "--", filePath],
       QUIET,
     ).trim();
     return output ? [...new Set(output.split("\n"))] : [];
@@ -58,10 +47,7 @@ export function getFileCommits(
  * Get metadata for a specific commit on a file.
  * Returns { hash, date, author, message } with full hash for unique identification.
  */
-export function getCommitInfo(
-  hash: string,
-  filePath: string,
-): Omit<DocHistoryEntry, "content"> {
+export function getCommitInfo(hash: string, filePath: string): Omit<DocHistoryEntry, "content"> {
   try {
     const output = execFileSync(
       "git",
@@ -86,9 +72,7 @@ export function getCommitInfo(
  * Handles renamed files by falling back to the old path via git log --follow.
  */
 export function getFileAtCommit(hash: string, filePath: string): string {
-  const relPath = path.isAbsolute(filePath)
-    ? toRepoRelative(filePath)
-    : filePath;
+  const relPath = path.isAbsolute(filePath) ? toRepoRelative(filePath) : filePath;
 
   try {
     return execFileSync("git", ["show", `${hash}:${relPath}`], QUIET);
@@ -121,26 +105,14 @@ export function getFileAtCommit(hash: string, filePath: string): string {
     try {
       const followOutput = execFileSync(
         "git",
-        [
-          "log",
-          "--follow",
-          "--format=%H",
-          "--name-only",
-          "--diff-filter=AMRC",
-          "--",
-          relPath,
-        ],
+        ["log", "--follow", "--format=%H", "--name-only", "--diff-filter=AMRC", "--", relPath],
         QUIET,
       ).trim();
       const lines = followOutput.split("\n").filter(Boolean);
       // Lines alternate: hash, filename, hash, filename...
       for (let i = 0; i < lines.length - 1; i += 2) {
         if (lines[i] === hash && lines[i + 1]) {
-          return execFileSync(
-            "git",
-            ["show", `${hash}:${lines[i + 1]}`],
-            QUIET,
-          );
+          return execFileSync("git", ["show", `${hash}:${lines[i + 1]}`], QUIET);
         }
       }
     } catch {
@@ -155,11 +127,7 @@ export function getFileAtCommit(hash: string, filePath: string): string {
  * Get the complete history for a document file.
  * Returns DocHistoryData with all entries populated.
  */
-export function getDocHistory(
-  filePath: string,
-  slug: string,
-  maxEntries = 50,
-): DocHistoryData {
+export function getDocHistory(filePath: string, slug: string, maxEntries = 50): DocHistoryData {
   const commits = getFileCommits(filePath, maxEntries);
   const entries: DocHistoryEntry[] = commits.map((hash) => {
     const info = getCommitInfo(hash, filePath);
@@ -173,8 +141,6 @@ export function getDocHistory(
  * Collect all MDX/md files in a content directory.
  * Delegates to the shared collectMdFiles utility from content-files.ts.
  */
-export function collectContentFiles(
-  contentDir: string,
-): Array<{ filePath: string; slug: string }> {
+export function collectContentFiles(contentDir: string): Array<{ filePath: string; slug: string }> {
   return collectMdFiles(contentDir);
 }

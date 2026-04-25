@@ -38,7 +38,4 @@ export interface FrontmatterRendererProps {
  * status: ({ value }) => <strong>{String(value)}</strong>,
  * ```
  */
-export const frontmatterRenderers: Record<
-  string,
-  ComponentType<FrontmatterRendererProps>
-> = {};
+export const frontmatterRenderers: Record<string, ComponentType<FrontmatterRendererProps>> = {};

@@ -25,18 +25,14 @@ export function getNavSectionForSlug(slug: string): string | undefined {
   const all = getCategoryOrder();
 
   // First pass: find explicit matchers (not "!")
-  const explicitMatches = all.filter(
-    (cm) => cm !== "!" && topCategory.startsWith(cm),
-  );
+  const explicitMatches = all.filter((cm) => cm !== "!" && topCategory.startsWith(cm));
   if (explicitMatches.length > 0) {
     // Longest prefix match wins
     return explicitMatches.sort((a, b) => b.length - a.length)[0];
   }
 
   // Second pass: return the default ("!") matcher
-  const defaultItem = settings.headerNav.find(
-    (item) => item.categoryMatch === "!",
-  );
+  const defaultItem = settings.headerNav.find((item) => item.categoryMatch === "!");
   return defaultItem?.categoryMatch;
 }
 
@@ -46,17 +42,12 @@ export function getNavSectionForSlug(slug: string): string | undefined {
  * - "claude" means nodes whose slug starts with "claude"
  * - undefined means all nodes
  */
-export function getNavSubtree(
-  tree: NavNode[],
-  categoryMatch?: string,
-): NavNode[] {
+export function getNavSubtree(tree: NavNode[], categoryMatch?: string): NavNode[] {
   if (!categoryMatch) return tree;
 
   if (categoryMatch === "!") {
     const explicitPrefixes = getCategoryOrder().filter((cm) => cm !== "!");
-    return tree.filter(
-      (node) => !explicitPrefixes.some((prefix) => node.slug.startsWith(prefix)),
-    );
+    return tree.filter((node) => !explicitPrefixes.some((prefix) => node.slug.startsWith(prefix)));
   }
 
   return tree.filter((node) => node.slug.startsWith(categoryMatch));

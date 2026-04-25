@@ -76,34 +76,16 @@ function NodeList({ nodes, depth }: { nodes: NavNode[]; depth: number }) {
       {nodes.map((node, index) => {
         const isLast = index === nodes.length - 1;
         return node.children.length > 0 ? (
-          <CategoryNode
-            key={node.slug}
-            node={node}
-            depth={depth}
-            isLast={isLast}
-          />
+          <CategoryNode key={node.slug} node={node} depth={depth} isLast={isLast} />
         ) : (
-          <LeafNode
-            key={node.slug}
-            node={node}
-            depth={depth}
-            isLast={isLast}
-          />
+          <LeafNode key={node.slug} node={node} depth={depth} isLast={isLast} />
         );
       })}
     </>
   );
 }
 
-function CategoryNode({
-  node,
-  depth,
-  isLast,
-}: {
-  node: NavNode;
-  depth: number;
-  isLast: boolean;
-}) {
+function CategoryNode({ node, depth, isLast }: { node: NavNode; depth: number; isLast: boolean }) {
   const [open, setOpen] = useState(true);
   const toggle = () => setOpen((prev) => !prev);
   const paddingLeft = padLeft(depth);
@@ -158,11 +140,7 @@ function CategoryNode({
               stroke="currentColor"
               strokeWidth={2}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M9 5l7 7-7 7"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
           </button>
         </div>
@@ -176,15 +154,7 @@ function CategoryNode({
   );
 }
 
-function LeafNode({
-  node,
-  depth,
-  isLast,
-}: {
-  node: NavNode;
-  depth: number;
-  isLast: boolean;
-}) {
+function LeafNode({ node, depth, isLast }: { node: NavNode; depth: number; isLast: boolean }) {
   if (!node.href) return null;
   const isRoot = depth === 0;
   const paddingLeft = padLeft(depth);
@@ -195,9 +165,10 @@ function LeafNode({
         <ConnectorLines depth={depth} isLast={isLast} widthScale={2} />
         <a
           href={node.href}
-          className={isRoot
-            ? "flex items-center gap-hsp-xs py-[calc(var(--spacing-vsp-xs)+0.15rem)] text-small font-semibold text-fg hover:text-accent hover:underline focus:underline"
-            : `block py-vsp-2xs ${isLast ? "pb-vsp-xs" : ""} text-small text-fg hover:text-accent hover:underline focus:underline`
+          className={
+            isRoot
+              ? "flex items-center gap-hsp-xs py-[calc(var(--spacing-vsp-xs)+0.15rem)] text-small font-semibold text-fg hover:text-accent hover:underline focus:underline"
+              : `block py-vsp-2xs ${isLast ? "pb-vsp-xs" : ""} text-small text-fg hover:text-accent hover:underline focus:underline`
           }
           style={{ paddingLeft }}
         >

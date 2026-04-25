@@ -32,19 +32,11 @@ export function buildSidebarForSection(
   return resolveItems(config, tree, lang);
 }
 
-function resolveItems(
-  items: SidebarItem[],
-  tree: NavNode[],
-  lang: Locale,
-): NavNode[] {
+function resolveItems(items: SidebarItem[], tree: NavNode[], lang: Locale): NavNode[] {
   return items.flatMap((item) => resolveItem(item, tree, lang));
 }
 
-function resolveItem(
-  item: SidebarItem,
-  tree: NavNode[],
-  lang: Locale,
-): NavNode[] {
+function resolveItem(item: SidebarItem, tree: NavNode[], lang: Locale): NavNode[] {
   if (typeof item === "string") {
     // String shorthand = doc reference (always rendered as leaf, children stripped)
     const node = findNode(tree, item);
