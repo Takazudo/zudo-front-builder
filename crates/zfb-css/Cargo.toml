@@ -1,0 +1,25 @@
+[package]
+name = "zfb-css"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via lightningcss, hashed global asset emission"
+
+[lib]
+
+[dependencies]
+# Workspace-shared helpers.
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# CSS pipeline crates (direct deps — not yet in workspace deps).
+lightningcss = "1.0.0-alpha.71"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
