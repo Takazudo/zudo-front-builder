@@ -9,5 +9,5 @@ import type { DocsEntry } from "@/types/docs-entry";
  * the unsafe boundary to a single location.
  */
 export async function getDocsCollection(name: CollectionKey | string): Promise<DocsEntry[]> {
-  return await getCollection(name as CollectionKey) as unknown as DocsEntry[];
+  return (await getCollection(name as CollectionKey)) as unknown as DocsEntry[];
 }

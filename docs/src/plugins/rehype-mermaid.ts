@@ -15,19 +15,13 @@ import { extractText } from "./hast-utils";
 export function rehypeMermaid() {
   return (tree: Root) => {
     visit(tree, "element", (node: Element, index, parent) => {
-      if (
-        node.tagName !== "pre" ||
-        !parent ||
-        index === undefined
-      ) return;
+      if (node.tagName !== "pre" || !parent || index === undefined) return;
 
       // Match Shiki-processed mermaid blocks (data-language="mermaid")
       if (node.properties?.dataLanguage !== "mermaid") return;
 
       // Extract all text content recursively from the code/span tree
-      const text = node.children
-        .map((c) => extractText(c))
-        .join("");
+      const text = node.children.map((c) => extractText(c)).join("");
 
       // Replace the <pre> with a <div class="mermaid">
       (parent as Element).children[index] = {

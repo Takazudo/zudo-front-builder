@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect } from "react";
 
-export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible';
+export const SIDEBAR_STORAGE_KEY = "zudo-doc-sidebar-visible";
 
 function readState(): boolean {
-  if (typeof window === 'undefined') return true;
+  if (typeof window === "undefined") return true;
   try {
-    return localStorage.getItem(SIDEBAR_STORAGE_KEY) !== 'false';
+    return localStorage.getItem(SIDEBAR_STORAGE_KEY) !== "false";
   } catch {
     return true;
   }
@@ -13,9 +13,9 @@ function readState(): boolean {
 
 function setDataAttribute(isVisible: boolean) {
   if (isVisible) {
-    document.documentElement.removeAttribute('data-sidebar-hidden');
+    document.documentElement.removeAttribute("data-sidebar-hidden");
   } else {
-    document.documentElement.setAttribute('data-sidebar-hidden', '');
+    document.documentElement.setAttribute("data-sidebar-hidden", "");
   }
 }
 
@@ -37,7 +37,7 @@ export default function DesktopSidebarToggle() {
       type="button"
       onClick={() => setVisible((v) => !v)}
       className="zd-desktop-sidebar-toggle hidden lg:flex fixed bottom-vsp-xl z-40 items-center justify-center w-[1.5rem] h-[3rem] bg-surface border border-muted border-l-0 rounded-r-DEFAULT text-muted cursor-pointer transition-[left,color] duration-200 ease-in-out hover:text-fg"
-      aria-label={visible ? 'Hide sidebar' : 'Show sidebar'}
+      aria-label={visible ? "Hide sidebar" : "Show sidebar"}
       aria-pressed={visible}
     >
       <svg
@@ -52,7 +52,7 @@ export default function DesktopSidebarToggle() {
         <path
           strokeLinecap="round"
           strokeLinejoin="round"
-          d={visible ? 'M15 19l-7-7 7-7' : 'M9 5l7 7-7 7'}
+          d={visible ? "M15 19l-7-7 7-7" : "M9 5l7 7-7 7"}
         />
       </svg>
     </button>

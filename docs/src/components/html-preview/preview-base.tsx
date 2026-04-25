@@ -141,14 +141,14 @@ export default function PreviewBase({
         {codeOpen && (
           <div>
             {codeBlocks.map((block, idx) => (
-              <div key={block.title} className={`overflow-x-auto ${idx > 0 ? "border-t border-muted" : ""}`}>
+              <div
+                key={block.title}
+                className={`overflow-x-auto ${idx > 0 ? "border-t border-muted" : ""}`}
+              >
                 <span className="block px-hsp-md py-hsp-xs text-caption font-semibold text-muted bg-surface border-b border-muted uppercase tracking-wider">
                   {block.title}
                 </span>
-                <HighlightedCode
-                  code={block.code}
-                  language={block.language}
-                />
+                <HighlightedCode code={block.code} language={block.language} />
               </div>
             ))}
           </div>

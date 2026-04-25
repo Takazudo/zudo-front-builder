@@ -26,10 +26,7 @@ interface HighlightedCodeProps {
   language: string;
 }
 
-export default function HighlightedCode({
-  code,
-  language,
-}: HighlightedCodeProps) {
+export default function HighlightedCode({ code, language }: HighlightedCodeProps) {
   const [html, setHtml] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,9 +34,7 @@ export default function HighlightedCode({
     getHighlighter()
       .then((highlighter) => {
         if (cancelled) return;
-        const lang = highlighter.getLoadedLanguages().includes(language)
-          ? language
-          : "text";
+        const lang = highlighter.getLoadedLanguages().includes(language) ? language : "text";
         const result = highlighter.codeToHtml(code, {
           lang,
           themes: { light: "catppuccin-latte", dark: "vitesse-dark" },
@@ -58,17 +53,10 @@ export default function HighlightedCode({
   if (!html) {
     return (
       <pre className="m-0 p-hsp-md bg-code-bg text-caption leading-relaxed overflow-x-auto">
-        <code className="font-mono whitespace-pre">
-          {code}
-        </code>
+        <code className="font-mono whitespace-pre">{code}</code>
       </pre>
     );
   }
 
-  return (
-    <div
-      className="zd-html-preview-code"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div className="zd-html-preview-code" dangerouslySetInnerHTML={{ __html: html }} />;
 }

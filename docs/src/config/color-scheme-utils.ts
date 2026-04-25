@@ -61,7 +61,9 @@ export const lightDarkPairings = [
 export function getActiveScheme(): ColorScheme {
   const scheme = colorSchemes[settings.colorScheme];
   if (!scheme) {
-    throw new Error(`Unknown color scheme: "${settings.colorScheme}". Available: ${Object.keys(colorSchemes).join(", ")}`);
+    throw new Error(
+      `Unknown color scheme: "${settings.colorScheme}". Available: ${Object.keys(colorSchemes).join(", ")}`,
+    );
   }
   return scheme;
 }
@@ -167,7 +169,9 @@ export function generateLightDarkCssProperties(): string {
   const darkPairs = schemeToCssPairs(dark);
 
   if (lightPairs.length !== darkPairs.length) {
-    throw new Error(`Light scheme has ${lightPairs.length} properties but dark scheme has ${darkPairs.length}`);
+    throw new Error(
+      `Light scheme has ${lightPairs.length} properties but dark scheme has ${darkPairs.length}`,
+    );
   }
 
   const lines = [":root {", "  color-scheme: light dark;"];

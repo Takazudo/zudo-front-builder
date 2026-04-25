@@ -25,12 +25,9 @@ export function rehypeHeadingLinks() {
     visit(tree, "element", (node: Element) => {
       if (!headingTags.has(node.tagName)) return;
 
-      const text = node.children
-        .map((c) => extractText(c))
-        .join("");
+      const text = node.children.map((c) => extractText(c)).join("");
 
-      const id =
-        (node.properties?.id as string | undefined) || slugger.slug(text);
+      const id = (node.properties?.id as string | undefined) || slugger.slug(text);
 
       // Set the id if not already present
       if (!node.properties) node.properties = {};

@@ -1,6 +1,6 @@
-import type { Root, Element } from 'hast';
-import { visit } from 'unist-util-visit';
-import { isExternal } from './url-utils';
+import type { Root, Element } from "hast";
+import { visit } from "unist-util-visit";
+import { isExternal } from "./url-utils";
 
 /**
  * Rehype plugin that strips .md/.mdx extensions from relative link hrefs
@@ -15,37 +15,34 @@ import { isExternal } from './url-utils';
  */
 export function rehypeStripMdExtension() {
   return (tree: Root) => {
-    visit(tree, 'element', (node: Element) => {
-      if (node.tagName !== 'a') return;
+    visit(tree, "element", (node: Element) => {
+      if (node.tagName !== "a") return;
       const href = node.properties?.href;
-      if (typeof href !== 'string') return;
+      if (typeof href !== "string") return;
 
       // Only process relative links (not http://, https://, mailto:, #, etc.)
-      if (isExternal(href) || href.startsWith('#')) return;
+      if (isExternal(href) || href.startsWith("#")) return;
 
       let newHref = href;
 
       // Strip .md or .mdx extension (with optional hash fragment)
-      newHref = newHref.replace(
-        /\.mdx?(#.*)?$/,
-        (_match, hash) => (hash ? '/' + hash : '/'),
-      );
+      newHref = newHref.replace(/\.mdx?(#.*)?$/, (_match, hash) => (hash ? "/" + hash : "/"));
 
       // For relative links where Astro already stripped .md:
       // add trailing slash if missing and the last segment has no file extension
-      if (newHref === href && (newHref.startsWith('./') || newHref.startsWith('../'))) {
+      if (newHref === href && (newHref.startsWith("./") || newHref.startsWith("../"))) {
         // Split off query string and hash fragment
-        const qIdx = newHref.indexOf('?');
-        const hIdx = newHref.indexOf('#');
+        const qIdx = newHref.indexOf("?");
+        const hIdx = newHref.indexOf("#");
         const suffixIdx = qIdx >= 0 ? qIdx : hIdx >= 0 ? hIdx : -1;
         const path = suffixIdx >= 0 ? newHref.slice(0, suffixIdx) : newHref;
-        const suffix = suffixIdx >= 0 ? newHref.slice(suffixIdx) : '';
+        const suffix = suffixIdx >= 0 ? newHref.slice(suffixIdx) : "";
 
-        if (!path.endsWith('/')) {
-          const lastSegment = path.split('/').pop() || '';
+        if (!path.endsWith("/")) {
+          const lastSegment = path.split("/").pop() || "";
           // Only add slash if there's no file extension (like .png, .pdf, etc.)
           if (!/\.[a-zA-Z]\w*$/.test(lastSegment)) {
-            newHref = path + '/' + suffix;
+            newHref = path + "/" + suffix;
           }
         }
       }

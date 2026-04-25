@@ -27,7 +27,15 @@ export function CategoryLinkIcon({ className }: { className?: string }) {
   );
 }
 
-export function ConnectorLines({ depth, isLast, widthScale = 1 }: { depth: number; isLast: boolean; widthScale?: number }) {
+export function ConnectorLines({
+  depth,
+  isLast,
+  widthScale = 1,
+}: {
+  depth: number;
+  isLast: boolean;
+  widthScale?: number;
+}) {
   if (depth === 0) return null;
   const left = connectorLeft(depth);
   const width = widthScale === 1 ? CONNECTOR_WIDTH : `calc(${CONNECTOR_WIDTH} * ${widthScale})`;

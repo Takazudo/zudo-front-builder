@@ -104,9 +104,7 @@ interface DiffRow {
   type: "context" | "removed" | "added" | "changed";
 }
 
-function buildSideBySideRows(
-  changes: ReturnType<typeof diffLines>,
-): DiffRow[] {
+function buildSideBySideRows(changes: ReturnType<typeof diffLines>): DiffRow[] {
   const rows: DiffRow[] = [];
   let leftNum = 0;
   let rightNum = 0;
@@ -219,32 +217,28 @@ function DiffViewer({
           <tbody>
             {rows.map((row, idx) => {
               const leftBg =
-                row.type === "removed" || row.type === "changed"
-                  ? "diff-line-removed"
-                  : "";
+                row.type === "removed" || row.type === "changed" ? "diff-line-removed" : "";
               const rightBg =
-                row.type === "added" || row.type === "changed"
-                  ? "diff-line-added"
-                  : "";
+                row.type === "added" || row.type === "changed" ? "diff-line-added" : "";
               const leftEmpty = row.leftLine === null;
               const rightEmpty = row.rightLine === null;
 
               return (
                 <tr key={idx} className="diff-row">
                   {/* Left line number */}
-                  <td className={`diff-line-num ${leftBg}`}>
-                    {row.leftNum ?? ""}
-                  </td>
+                  <td className={`diff-line-num ${leftBg}`}>{row.leftNum ?? ""}</td>
                   {/* Left content */}
-                  <td className={`diff-line-content ${leftBg}${leftEmpty ? " diff-line-empty" : ""}`}>
+                  <td
+                    className={`diff-line-content ${leftBg}${leftEmpty ? " diff-line-empty" : ""}`}
+                  >
                     {row.leftLine ?? ""}
                   </td>
                   {/* Right line number */}
-                  <td className={`diff-line-num ${rightBg}`}>
-                    {row.rightNum ?? ""}
-                  </td>
+                  <td className={`diff-line-num ${rightBg}`}>{row.rightNum ?? ""}</td>
                   {/* Right content */}
-                  <td className={`diff-line-content ${rightBg}${rightEmpty ? " diff-line-empty" : ""}`}>
+                  <td
+                    className={`diff-line-content ${rightBg}${rightEmpty ? " diff-line-empty" : ""}`}
+                  >
                     {row.rightLine ?? ""}
                   </td>
                 </tr>
@@ -313,9 +307,7 @@ function RevisionList({
           >
             Compare
           </button>
-          <span className="text-caption text-muted">
-            Select two revisions (A / B)
-          </span>
+          <span className="text-caption text-muted">Select two revisions (A / B)</span>
         </div>
       )}
 
@@ -411,9 +403,7 @@ export function DocHistory({ slug, locale, basePath = "/" }: DocHistoryProps) {
   const [data, setData] = useState<DocHistoryData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [diffSelection, setDiffSelection] = useState<DiffSelection | null>(
-    null,
-  );
+  const [diffSelection, setDiffSelection] = useState<DiffSelection | null>(null);
 
   const base = basePath.replace(/\/+$/, "");
   const fetchPath = locale
@@ -556,11 +546,7 @@ export function DocHistory({ slug, locale, basePath = "/" }: DocHistoryProps) {
         <div className="h-[calc(100%-3rem)] overflow-hidden">
           {loading && <Spinner />}
 
-          {error && (
-            <div className="px-hsp-lg py-vsp-lg text-danger text-small">
-              {error}
-            </div>
-          )}
+          {error && <div className="px-hsp-lg py-vsp-lg text-danger text-small">{error}</div>}
 
           {/* Difit-style LR split: revision sidebar | diff area */}
           {!loading && !error && data && (
@@ -573,10 +559,7 @@ export function DocHistory({ slug, locale, basePath = "/" }: DocHistoryProps) {
                     : "flex flex-col w-full h-full"
                 }
               >
-                <RevisionList
-                  entries={data.entries}
-                  onSelectDiff={handleSelectDiff}
-                />
+                <RevisionList entries={data.entries} onSelectDiff={handleSelectDiff} />
               </div>
 
               {/* Right: diff viewer (on mobile, replaces the sidebar) */}

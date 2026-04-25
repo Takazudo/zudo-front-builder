@@ -35,18 +35,9 @@ function createFixture() {
     path.join(skillDir, "SKILL.md"),
     '---\nname: test-skill\ndescription: "A test skill"\n---\n\nSkill instructions here.\n\nSee [references/guide.md](references/guide.md) for details.',
   );
-  fs.writeFileSync(
-    path.join(skillDir, "references", "guide.md"),
-    "# Guide\n\nSome guide content",
-  );
-  fs.writeFileSync(
-    path.join(skillDir, "scripts", "run.sh"),
-    "#!/bin/bash\n# Run the test",
-  );
-  fs.writeFileSync(
-    path.join(skillDir, "assets", "template.md"),
-    "# Template\n\nA template",
-  );
+  fs.writeFileSync(path.join(skillDir, "references", "guide.md"), "# Guide\n\nSome guide content");
+  fs.writeFileSync(path.join(skillDir, "scripts", "run.sh"), "#!/bin/bash\n# Run the test");
+  fs.writeFileSync(path.join(skillDir, "assets", "template.md"), "# Template\n\nA template");
 
   // Agents
   const agentsDir = path.join(claudeDir, "agents");
@@ -57,10 +48,7 @@ function createFixture() {
   );
 
   // Root CLAUDE.md
-  fs.writeFileSync(
-    path.join(tmpDir, "CLAUDE.md"),
-    "# Project\n\nProject instructions",
-  );
+  fs.writeFileSync(path.join(tmpDir, "CLAUDE.md"), "# Project\n\nProject instructions");
 }
 
 describe("generateClaudeResourcesDocs", () => {
@@ -135,10 +123,7 @@ describe("generateClaudeResourcesDocs", () => {
         docsDir,
       });
 
-      const overview = fs.readFileSync(
-        path.join(docsDir, "claude", "index.mdx"),
-        "utf8",
-      );
+      const overview = fs.readFileSync(path.join(docsDir, "claude", "index.mdx"), "utf8");
       expect(overview).toContain('<CategoryTreeNav category="claude" />');
     });
 
@@ -206,11 +191,7 @@ describe("generateClaudeResourcesDocs", () => {
       let match;
       while ((match = linkPattern.exec(skillPage)) !== null) {
         const subPage = match[1];
-        const targetFile = path.join(
-          docsDir,
-          "claude-skills",
-          `test-skill--${subPage}.mdx`,
-        );
+        const targetFile = path.join(docsDir, "claude-skills", `test-skill--${subPage}.mdx`);
         expect(
           fs.existsSync(targetFile),
           `Link target "test-skill--${subPage}.mdx" should exist`,
@@ -340,9 +321,7 @@ describe("generateClaudeResourcesDocs", () => {
       });
 
       const readPos = (dir: string) => {
-        const cat = JSON.parse(
-          fs.readFileSync(path.join(docsDir, dir, "_category_.json"), "utf8"),
-        );
+        const cat = JSON.parse(fs.readFileSync(path.join(docsDir, dir, "_category_.json"), "utf8"));
         return cat.position;
       };
 

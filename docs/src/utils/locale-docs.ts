@@ -51,19 +51,13 @@ async function loadLocaleDocsImpl(lang: Locale): Promise<LocaleDocsResult> {
   const localeDocs = filterDrafts(await getDocsCollection(getCollectionName(lang)));
   const baseDocs = filterDrafts(await getDocsCollection("docs"));
 
-  const localeSlugSet = new Set<string>(
-    localeDocs.map((d) => d.data.slug ?? toRouteSlug(d.id)),
-  );
+  const localeSlugSet = new Set<string>(localeDocs.map((d) => d.data.slug ?? toRouteSlug(d.id)));
 
-  const fallbackDocs = baseDocs.filter(
-    (d) => !localeSlugSet.has(d.data.slug ?? toRouteSlug(d.id)),
-  );
+  const fallbackDocs = baseDocs.filter((d) => !localeSlugSet.has(d.data.slug ?? toRouteSlug(d.id)));
 
   const allDocs = [...localeDocs, ...fallbackDocs];
 
-  const fallbackSlugs = new Set<string>(
-    fallbackDocs.map((d) => d.data.slug ?? toRouteSlug(d.id)),
-  );
+  const fallbackSlugs = new Set<string>(fallbackDocs.map((d) => d.data.slug ?? toRouteSlug(d.id)));
 
   const baseCategoryMeta = loadCategoryMeta(settings.docsDir);
   const localeCategoryMeta = loadCategoryMeta(getContentDir(lang));

@@ -47,7 +47,9 @@ export function initSidebarResizer() {
   function applyWidth(w: number) {
     cachedWidth = Math.max(MIN_W, Math.min(MAX_W, w));
     document.documentElement.style.setProperty(CSS_PROP, cachedWidth + "px");
-    try { localStorage.setItem(LS_KEY, String(Math.round(cachedWidth))); } catch {}
+    try {
+      localStorage.setItem(LS_KEY, String(Math.round(cachedWidth)));
+    } catch {}
     handle.setAttribute("aria-valuenow", String(Math.round(cachedWidth)));
   }
 
@@ -122,13 +124,13 @@ export function initSidebarResizer() {
     });
     const sidebarRect = sidebar.getBoundingClientRect();
     const sidebarLeft = sidebarRect.left;
-    ghost.style.left = (sidebarLeft + sidebarRect.width) + "px";
+    ghost.style.left = sidebarLeft + sidebarRect.width + "px";
     document.body.appendChild(ghost);
     let targetWidth = 0;
 
     const onMove = (ev: PointerEvent) => {
       targetWidth = Math.max(MIN_W, Math.min(MAX_W, ev.clientX - sidebarLeft));
-      ghost.style.left = (sidebarLeft + targetWidth) + "px";
+      ghost.style.left = sidebarLeft + targetWidth + "px";
     };
 
     const cleanup = () => {

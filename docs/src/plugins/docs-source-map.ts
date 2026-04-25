@@ -20,9 +20,7 @@ export interface DocsSourceMapOptions {
  * Build a map of absolute file paths to URL paths.
  * Scans all configured docs directories for .md/.mdx files.
  */
-export function buildDocsSourceMap(
-  options: DocsSourceMapOptions,
-): Map<string, string> {
+export function buildDocsSourceMap(options: DocsSourceMapOptions): Map<string, string> {
   const map = new Map<string, string>();
   const { rootDir, docsDir, locales, versions, base, trailingSlash } = options;
 
@@ -42,9 +40,7 @@ export function buildDocsSourceMap(
 
   function withBase(path: string): string {
     const raw =
-      normalizedBase === ""
-        ? path
-        : `${normalizedBase}${path.startsWith("/") ? path : `/${path}`}`;
+      normalizedBase === "" ? path : `${normalizedBase}${path.startsWith("/") ? path : `/${path}`}`;
     return applyTS(raw);
   }
 

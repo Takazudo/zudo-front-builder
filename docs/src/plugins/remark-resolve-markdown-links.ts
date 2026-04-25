@@ -45,17 +45,10 @@ function parseUrl(url: string): {
  * directory-style links such as "./guide/".
  */
 function extensionlessCandidates(basePath: string): string[] {
-  return [
-    `${basePath}.mdx`,
-    `${basePath}.md`,
-    `${basePath}/index.mdx`,
-    `${basePath}/index.md`,
-  ];
+  return [`${basePath}.mdx`, `${basePath}.md`, `${basePath}/index.mdx`, `${basePath}/index.md`];
 }
 
-export function remarkResolveMarkdownLinks(
-  options: ResolveMarkdownLinksOptions,
-) {
+export function remarkResolveMarkdownLinks(options: ResolveMarkdownLinksOptions) {
   const onBrokenLinks = options.onBrokenLinks ?? "warn";
 
   return (tree: Root, file: { path?: string }) => {

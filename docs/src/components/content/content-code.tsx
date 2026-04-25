@@ -1,10 +1,8 @@
-import { SmartBreak as SmartBreakImpl } from '@/utils/smart-break';
+import { SmartBreak as SmartBreakImpl } from "@/utils/smart-break";
 
 // Preact VNode vs React.ReactNode type mismatch under compat mode; cast so the
 // content override type-checks. Runtime is fine since @astrojs/preact compat is on.
-const SmartBreak = SmartBreakImpl as unknown as (props: {
-  children?: unknown;
-}) => any;
+const SmartBreak = SmartBreakImpl as unknown as (props: { children?: unknown }) => any;
 
 type Props = {
   children?: React.ReactNode;
@@ -28,8 +26,7 @@ type Props = {
  * internal wrapping.
  */
 export function ContentCode({ children, className, ...rest }: Props) {
-  const isShikiBlock =
-    typeof className === 'string' && /(^|\s)language-/.test(className);
+  const isShikiBlock = typeof className === "string" && /(^|\s)language-/.test(className);
 
   const textFromChildren = isShikiBlock ? null : extractText(children);
 
@@ -56,23 +53,24 @@ export function ContentCode({ children, className, ...rest }: Props) {
  * code span and means we must not inject <wbr>.
  */
 function extractText(children: unknown): string | null {
-  if (typeof children === 'string') return children;
-  if (typeof children === 'number') return String(children);
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
   // Only accept a single VNode whose `props.value` is text (the Astro
   // StaticHtml wrapper used for pure-text MDX children). Deliberately do
   // NOT recurse into arbitrary VNode trees — that would match Shiki's
   // <span>-based block code output and inject <wbr> into syntax-highlighted
   // tokens, breaking block code rendering.
-  if (children && typeof children === 'object' && !Array.isArray(children)) {
+  if (children && typeof children === "object" && !Array.isArray(children)) {
     const v = children as { props?: { value?: unknown } };
     if (v.props && v.props.value != null) {
       if (
-        typeof v.props.value === 'string' ||
+        typeof v.props.value === "string" ||
         v.props.value instanceof String ||
-        (typeof v.props.value === 'object' && typeof (v.props.value as object).toString === 'function')
+        (typeof v.props.value === "object" &&
+          typeof (v.props.value as object).toString === "function")
       ) {
         const s = String(v.props.value);
-        if (!s || s.startsWith('[object')) return null;
+        if (!s || s.startsWith("[object")) return null;
         // Shiki block-code output also arrives as a StaticHtml wrapper, but
         // its value is escaped HTML (e.g. "&lt;span class=...&gt;"). Inline
         // code's value is the plain text of the backtick span (no HTML
@@ -105,13 +103,13 @@ function looksLikeHtmlMarkup(s: string): boolean {
  */
 function decodeEntities(s: string): string {
   return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#x27;/gi, "'")
-    .replace(/&nbsp;/g, ' ')
+    .replace(/&nbsp;/g, " ")
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-    .replace(/&amp;/g, '&');
+    .replace(/&amp;/g, "&");
 }
