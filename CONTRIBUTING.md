@@ -49,6 +49,14 @@ The pre-commit hook (lefthook) runs Prettier on staged matching files and re-sta
 
 To keep the foundation conservative we ship Prettier today and revisit the swap once Oxfmt cuts a 1.0 / "stable" release. Tracker: [oxc-project/oxc milestone 19](https://github.com/oxc-project/oxc/milestone/19).
 
+## CI secrets
+
+The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the following GitHub Actions secrets to be present on the repository:
+
+- **`CLOUDFLARE_API_TOKEN`** (required) — API token with `Pages:Edit` permission, used by `wrangler pages deploy`.
+- **`CLOUDFLARE_ACCOUNT_ID`** (required) — the Cloudflare account ID that owns the Pages project.
+- **`IFTTT_PROD_NOTIFY`** (optional) — IFTTT webhook key used to push a notification when a production deploy lands. Omit to skip notifications.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE).
