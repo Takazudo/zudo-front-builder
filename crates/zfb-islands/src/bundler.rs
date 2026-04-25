@@ -14,14 +14,13 @@
 //!
 //! ## Coordination with Sub 1
 //!
-//! The [`Island`] / [`BundleConfig`] / [`BundleOutput`] / [`ClientBundler`]
-//! types are drafted here so Sub 2 can be exercised in isolation. Sub 1
-//! (topic-ast-scanner) populates the islands set; if Sub 1 lands a refined
-//! `Island` shape (e.g. distinguishing `exported_name` from
-//! `component_name`), the bundler only needs `source_path` for esbuild
-//! entry points — the rest is read-through.
+//! The [`Island`] / [`BundleConfig`] / [`BundleOutput`] / [`ModuleId`] /
+//! [`ClientBundler`] types and the [`bundle_link_href`] helper are drafted
+//! here so Sub 2 can be exercised in isolation. Sub 1 (topic-ast-scanner)
+//! owns the canonical scanner population of [`Island`]; the trait shape
+//! here mirrors what Sub 1 published so the team-lead's merge is a no-op
+//! aside from de-duplication.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,18 +28,22 @@ use std::process::Command;
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
+/// String alias for an exported module id inside the bundled JS asset.
+/// One per island; the order matches the order of the islands slice that
+/// produced the bundle.
+pub type ModuleId = String;
+
 /// A single island: one component flagged with `"use client"` that the
 /// scanner found in the project sources. Bundler entry points are derived
 /// from `source_path`; `component_name` is recorded in the bundle's
-/// `module_ids` map so the hydration runtime can look up an export by name.
+/// `module_ids` list so the hydration runtime can correlate a DOM marker
+/// to its hydratable export.
 ///
-/// Sub 1 owns the canonical population of this type; Sub 2 only consumes it.
-/// Field names are deliberately conservative — if Sub 1 needs to extend
-/// (e.g. add `exported_name`), additive fields are fine.
+/// Sub 1 owns the canonical population of this type. Default exports
+/// surface as the literal string `"default"` for `component_name`.
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Island {
     /// The exported component name as it appears in the source file.
-    /// Used as the lookup key in [`BundleOutput::module_ids`].
     pub component_name: String,
 
     /// Absolute or workspace-relative path to the TS/TSX source file that
@@ -54,80 +57,96 @@ pub struct Island {
 /// per-engine config struct — see [`EsbuildSubprocessConfig`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
-    /// Where to write the bundle asset. The pipeline emits
-    /// `{output_root}/assets/islands-{hash}.js` under this directory.
-    /// Default: `dist/`.
-    pub output_root: PathBuf,
-
-    /// Public base URL prefix for the asset, e.g. `"/"` (default) or
-    /// `"https://cdn.example.com/"`. Used by [`link_href`].
-    pub base_url: String,
-
     /// Production minification: maps to esbuild's `--minify`.
     pub minify: bool,
-
-    /// Tree-shaking: maps to esbuild's `--tree-shaking=true`. Esbuild
-    /// tree-shakes by default for ESM bundles, but we set the flag
-    /// explicitly so the contract is visible at the call site.
-    pub tree_shaking: bool,
 
     /// Source maps: maps to esbuild's `--sourcemap=linked`. Recommended on
     /// in dev builds, off in production.
     pub sourcemap: bool,
+
+    /// Where to write the bundle asset. The pipeline emits
+    /// `{outdir}/assets/islands-{hash}.js` under this directory.
+    /// Default: `dist/`.
+    pub outdir: PathBuf,
+
+    /// Public base URL prefix for the asset, e.g. `"/"` (default) or
+    /// `"https://cdn.example.com/"`. Used by [`bundle_link_href`].
+    pub base_url: String,
 }
 
 impl Default for BundleConfig {
+    /// Dev-equivalent default: minify off, sourcemap on, outdir `dist/`,
+    /// base_url `/`.
     fn default() -> Self {
         Self {
-            output_root: PathBuf::from("dist"),
-            base_url: "/".to_string(),
             minify: false,
-            tree_shaking: true,
-            sourcemap: false,
+            sourcemap: true,
+            outdir: PathBuf::from("dist"),
+            base_url: "/".to_string(),
         }
     }
 }
 
 impl BundleConfig {
-    /// Production preset: minify on, tree-shaking on, sourcemap off.
+    /// Production preset: minify on, sourcemap off.
     pub fn production() -> Self {
         Self {
             minify: true,
-            tree_shaking: true,
             sourcemap: false,
             ..Self::default()
         }
     }
 
-    /// Development preset: minify off, tree-shaking on, sourcemap on.
-    pub fn development() -> Self {
-        Self {
-            minify: false,
-            tree_shaking: true,
-            sourcemap: true,
-            ..Self::default()
-        }
+    /// Development preset: same as [`Self::default`].
+    pub fn dev() -> Self {
+        Self::default()
+    }
+
+    /// Override the output root directory (chainable).
+    pub fn with_outdir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.outdir = dir.into();
+        self
+    }
+
+    /// Override the public base URL prefix (chainable).
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
+    }
+
+    /// Override the minify flag (chainable).
+    pub fn with_minify(mut self, on: bool) -> Self {
+        self.minify = on;
+        self
+    }
+
+    /// Override the sourcemap flag (chainable).
+    pub fn with_sourcemap(mut self, on: bool) -> Self {
+        self.sourcemap = on;
+        self
     }
 }
 
 /// Result of running [`ClientBundler::bundle`].
+///
+/// `asset_path` and `asset_url` are derived from the same hash; the
+/// renderer (Sub 3) typically uses `asset_url` directly for the
+/// `<script type="module" src="...">` tag.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
-    /// 8-character hex hash (first 8 chars of SHA-256 of the bundled JS).
-    /// Mirrors the hash style from `zfb-css::pipeline::hash_8`.
-    pub hash: String,
-
-    /// Absolute or output-root-relative path the asset was written to.
-    /// Convention: `{output_root}/assets/islands-{hash}.js`.
+    /// Absolute or `outdir`-relative path the asset was written to.
+    /// Convention: `{outdir}/assets/islands-{hash}.js`.
     pub asset_path: PathBuf,
 
-    /// Map of `component_name → exported module id` inside the bundle.
-    /// The hydration runtime (Sub 3) uses this to resolve an island element
-    /// to its hydratable export. Empty when no islands were bundled.
-    ///
-    /// Stored as a `BTreeMap` so iteration order — and therefore the
-    /// downstream hash inputs that consume it — is deterministic.
-    pub module_ids: BTreeMap<String, String>,
+    /// Public URL for the asset, derived via [`bundle_link_href`].
+    /// Convention: `{base_url}/assets/islands-{hash}.js` (slash-normalised).
+    pub asset_url: String,
+
+    /// Per-island module ids exported by the bundle, in the same order as
+    /// the islands slice passed to [`ClientBundler::bundle`].
+    /// Hydration glue uses this to look up the hydratable export for each
+    /// island's DOM marker.
+    pub module_ids: Vec<ModuleId>,
 }
 
 /// Abstraction over "bundle these island entry points into a single hashed
@@ -137,17 +156,17 @@ pub struct BundleOutput {
 ///
 /// We currently shell out to the official esbuild CLI binary
 /// ([`EsbuildSubprocessBundler`]). When a Rust-native option becomes viable
-/// (see [`crate::native_bundler::NativeRustBundler`]), we want to swap it in
-/// at one site without rewriting hashing, asset emission, or hydration
-/// glue.
+/// (see [`crate::future_rust_native::NativeRustBundler`]), we want to swap
+/// it in at one site without rewriting hashing, asset emission, or
+/// hydration glue.
 ///
 /// ## Contract
 ///
 /// - The bundler MUST return a [`BundleOutput`] whose `asset_path` is
 ///   present on disk by the time `bundle` returns.
-/// - The bundler MUST be deterministic for a given (islands, config) pair —
-///   the same inputs must produce byte-identical bundle bytes (and thus an
-///   identical 8-char hash).
+/// - The bundler MUST be deterministic for a given (islands, config) pair
+///   — the same inputs must produce byte-identical bundle bytes (and thus
+///   an identical 8-char hash).
 /// - The bundler MAY widen the bundle's contents beyond the listed entry
 ///   points (transitive imports are expected). It MUST NOT silently drop
 ///   listed entry points.
@@ -236,10 +255,13 @@ impl EsbuildSubprocessConfig {
 
 /// The default [`ClientBundler`]: shells out to the esbuild CLI binary.
 ///
-/// The binary is invoked with each island's `source_path` as an entry point,
-/// `--bundle --format=esm --splitting=false`, and writes to a temp file
-/// (`-o`). The file is read back, hashed, and written to its final location
-/// at `{output_root}/assets/islands-{hash}.js`.
+/// The binary is invoked with each island's `source_path` as an entry
+/// point, plus `--bundle --format=esm --splitting=false
+/// --tree-shaking=true` (esbuild tree-shakes ESM by default but we set the
+/// flag explicitly so the contract is visible). `--minify` and
+/// `--sourcemap=linked` are appended per [`BundleConfig`]. The payload is
+/// written to a temp file (`--outfile=`), read back, hashed, and written
+/// to its final location at `{outdir}/assets/islands-{hash}.js`.
 ///
 /// ### Example
 ///
@@ -256,7 +278,7 @@ impl EsbuildSubprocessConfig {
 ///     source_path: PathBuf::from("components/counter.tsx"),
 /// }];
 /// let out = bundler.bundle(&islands, &BundleConfig::production()).unwrap();
-/// assert_eq!(out.hash.len(), 8);
+/// assert!(out.asset_url.starts_with("/assets/islands-"));
 /// ```
 #[derive(Debug, Clone)]
 pub struct EsbuildSubprocessBundler {
@@ -309,9 +331,9 @@ impl EsbuildSubprocessBundler {
         cmd.arg("--bundle");
         cmd.arg("--format=esm");
         cmd.arg("--splitting=false");
-        if config.tree_shaking {
-            cmd.arg("--tree-shaking=true");
-        }
+        // Tree-shaking is on by default for ESM in esbuild; we set the
+        // flag explicitly so the contract is visible at the call site.
+        cmd.arg("--tree-shaking=true");
         if config.minify {
             cmd.arg("--minify");
         }
@@ -350,7 +372,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
 
         let hash = hash_8(&js);
         let asset_path = config
-            .output_root
+            .outdir
             .join("assets")
             .join(format!("islands-{hash}.js"));
 
@@ -361,19 +383,19 @@ impl ClientBundler for EsbuildSubprocessBundler {
         std::fs::write(&asset_path, js.as_bytes())
             .with_context(|| format!("failed to write {}", asset_path.display()))?;
 
-        // Default `module_ids` mapping: component_name → component_name.
-        // Sub 1's scanner is the source of truth for the canonical mapping
-        // (e.g. when `exported_name` differs from `component_name`); until
-        // it lands a richer Island shape, the identity mapping is the right
+        let asset_url = bundle_link_href(&config.base_url, &asset_path);
+
+        // Default `module_ids` mapping: identity per-island. Sub 1's
+        // scanner is the source of truth for the canonical mapping (e.g.
+        // when the exported name differs from the component name); until
+        // it lands a richer Island shape, `component_name` is the right
         // contract for the hydration runtime to assume.
-        let module_ids = islands
-            .iter()
-            .map(|i| (i.component_name.clone(), i.component_name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let module_ids: Vec<ModuleId> =
+            islands.iter().map(|i| i.component_name.clone()).collect();
 
         Ok(BundleOutput {
-            hash,
             asset_path,
+            asset_url,
             module_ids,
         })
     }
@@ -397,20 +419,21 @@ pub fn hash_8(js: &str) -> String {
 ///
 /// `base_url` is concatenated with the asset path's filename portion under
 /// an `assets/` segment. `base_url` is normalised to drop any trailing `/`.
+/// Exact mirror of `zfb_css::link_href`.
 ///
 /// Examples:
 /// ```
 /// use std::path::PathBuf;
-/// use zfb_islands::link_href;
+/// use zfb_islands::bundle_link_href;
 ///
 /// let p = PathBuf::from("dist/assets/islands-abc12345.js");
-/// assert_eq!(link_href("/", &p), "/assets/islands-abc12345.js");
+/// assert_eq!(bundle_link_href("/", &p), "/assets/islands-abc12345.js");
 /// assert_eq!(
-///     link_href("https://cdn.example.com", &p),
+///     bundle_link_href("https://cdn.example.com", &p),
 ///     "https://cdn.example.com/assets/islands-abc12345.js",
 /// );
 /// ```
-pub fn link_href(base_url: &str, asset_path: &Path) -> String {
+pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
     let filename = asset_path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -439,31 +462,48 @@ mod tests {
     }
 
     #[test]
-    fn link_href_normalises_trailing_slash() {
+    fn bundle_link_href_normalises_trailing_slash() {
         let p = PathBuf::from("dist/assets/islands-deadbeef.js");
-        assert_eq!(link_href("/", &p), "/assets/islands-deadbeef.js");
-        assert_eq!(link_href("", &p), "/assets/islands-deadbeef.js");
+        assert_eq!(bundle_link_href("/", &p), "/assets/islands-deadbeef.js");
+        assert_eq!(bundle_link_href("", &p), "/assets/islands-deadbeef.js");
         assert_eq!(
-            link_href("https://cdn.example.com/", &p),
+            bundle_link_href("https://cdn.example.com/", &p),
             "https://cdn.example.com/assets/islands-deadbeef.js"
         );
         assert_eq!(
-            link_href("https://cdn.example.com", &p),
+            bundle_link_href("https://cdn.example.com", &p),
             "https://cdn.example.com/assets/islands-deadbeef.js"
         );
     }
 
     #[test]
-    fn bundle_config_presets_set_expected_flags() {
+    fn bundle_config_dev_default_matches_default() {
+        let dev = BundleConfig::dev();
+        let default = BundleConfig::default();
+        assert_eq!(dev.minify, default.minify);
+        assert_eq!(dev.sourcemap, default.sourcemap);
+        assert_eq!(dev.outdir, default.outdir);
+        assert_eq!(dev.base_url, default.base_url);
+    }
+
+    #[test]
+    fn bundle_config_production_flips_minify_and_sourcemap() {
         let prod = BundleConfig::production();
         assert!(prod.minify);
-        assert!(prod.tree_shaking);
         assert!(!prod.sourcemap);
+    }
 
-        let dev = BundleConfig::development();
-        assert!(!dev.minify);
-        assert!(dev.tree_shaking);
-        assert!(dev.sourcemap);
+    #[test]
+    fn bundle_config_chainable_setters() {
+        let cfg = BundleConfig::default()
+            .with_outdir("custom-dist")
+            .with_base_url("https://cdn.example.com/")
+            .with_minify(true)
+            .with_sourcemap(false);
+        assert_eq!(cfg.outdir, PathBuf::from("custom-dist"));
+        assert_eq!(cfg.base_url, "https://cdn.example.com/");
+        assert!(cfg.minify);
+        assert!(!cfg.sourcemap);
     }
 
     #[test]

@@ -21,6 +21,10 @@
 //! Until then, this stub guards the API surface against drift: if someone
 //! widens [`crate::ClientBundler`] without updating both bundlers, the
 //! build breaks here, not in production.
+//!
+//! Module name mirrors `zfb_css::native_engine` — Sub 1 named the same
+//! analog `future_rust_native` here, so that name is canonical for
+//! `zfb_islands`.
 
 use anyhow::{anyhow, Result};
 
@@ -46,7 +50,7 @@ impl ClientBundler for NativeRustBundler {
     fn bundle(&self, _islands: &[Island], _config: &BundleConfig) -> Result<BundleOutput> {
         Err(anyhow!(
             "NativeRustBundler: not yet implemented. \
-             Use EsbuildSubprocessBundler for now; see crate::native_bundler for the roadmap."
+             Use EsbuildSubprocessBundler for now; see crate::future_rust_native for the roadmap."
         ))
     }
 }
