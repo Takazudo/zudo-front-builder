@@ -16,3 +16,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 syntect = { workspace = true }
 garde = { workspace = true }
+
+[dev-dependencies]
+# Used by tests/mdx_jsx_emit.rs to pipe emitter output through SWC and
+# assert it parses as valid JS. Pure dev-only — keeps zfb-content's
+# runtime dependency surface minimal.
+zfb-render = { path = "../zfb-render" }

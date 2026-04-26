@@ -1,0 +1,157 @@
+---
+title: Installation
+description: How to install and set up zudo-doc for local development.
+sidebar_position: 2
+---
+
+## Prerequisites
+
+- **Node.js 18+** — required for Astro 6
+- **pnpm** — recommended package manager
+
+<Info>
+
+You can also use npm, yarn, or bun, but this guide uses pnpm for all examples.
+
+</Info>
+
+## Create a New Project
+
+The fastest way to get started is with the `create-zudo-doc` CLI. It scaffolds a new project with an interactive setup wizard.
+
+```bash
+pnpm create zudo-doc
+```
+
+Or with other package managers:
+
+```bash
+npm create zudo-doc
+yarn create zudo-doc
+bunx create-zudo-doc
+```
+
+For non-interactive usage (CI, automation, AI agents), use `--yes` to accept defaults or pass flags directly:
+
+```bash
+pnpm create zudo-doc my-docs --yes
+pnpm create zudo-doc my-docs --lang ja --scheme Dracula --no-i18n --pm pnpm --install
+```
+
+See the [CLI reference](/docs/reference/create-zudo-doc) for all available flags.
+
+The CLI walks you through the following options:
+
+### Project Name
+
+Enter a name for your project directory (default: `my-docs`).
+
+### Default Language
+
+Choose the default language for your documentation site. Supported languages include English, Japanese, Chinese (Simplified/Traditional), Korean, Spanish, French, German, and Portuguese.
+
+### Color Scheme Mode
+
+Choose how your site handles color schemes:
+
+- **Light & Dark (toggle)** — users can switch between light and dark themes. Pick from pre-configured pairings (GitHub, Catppuccin, Solarized, Rosé Pine, Atom One, Everforest, Gruvbox, Ayu) or choose light and dark schemes individually.
+- **Single scheme** — one fixed color scheme for the entire site. 40 schemes are available, including Dracula, Nord, TokyoNight, and more.
+
+When using light/dark mode, you can also set the default mode (light or dark) and whether to respect the user's system color scheme preference.
+
+### Features
+
+Select which optional features to include:
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| [i18n (multi-language)](/docs/guides/i18n/) | Off | Add a secondary language with mirrored content directories |
+| [Pagefind search](/docs/guides/search/) | On | Full-text search across all documentation |
+| [Sidebar filter](/docs/guides/sidebar-filter/) | On | Real-time filtering of sidebar navigation items |
+| [Claude Resources](/docs/guides/claude-resources/) | Off | Auto-generated documentation for Claude Code components |
+| [Color scheme preview](/docs/guides/color-scheme-preview/) | Off | Browse 50+ preset color schemes via the Color Tweak Panel |
+
+### Package Manager
+
+Choose your preferred package manager: pnpm (recommended), npm, yarn, or bun. After scaffolding, the CLI will ask whether to install dependencies for you.
+
+<Tip>
+
+The installer generates a `src/config/settings.ts` file with your choices. You can change these settings at any time after project creation.
+
+</Tip>
+
+## Alternative: Clone the Repository
+
+You can also start by cloning the full repository directly:
+
+```bash
+git clone https://github.com/zudolab/zudo-doc.git my-docs
+cd my-docs
+pnpm install
+```
+
+<Note>
+
+Cloning the repository gives you the complete project including the documentation source and all features enabled. Use this approach if you want to explore the full codebase or contribute to zudo-doc itself.
+
+</Note>
+
+## Development
+
+```bash
+pnpm dev
+```
+
+The dev server starts on port 4321 with Vite for instant hot module replacement.
+
+<Warning>
+
+Make sure port 4321 is available. If another process is using it, Astro will automatically pick the next available port.
+
+</Warning>
+
+## Build
+
+```bash
+pnpm build
+```
+
+This generates static HTML in the `dist/` directory. You can deploy it to any static hosting service.
+
+## Type Checking
+
+```bash
+pnpm check
+```
+
+Runs Astro's built-in type checker with strict TypeScript mode.
+
+<Danger>
+
+Never commit the `dist/` directory to source control. It is already excluded via `.gitignore`.
+
+</Danger>
+
+## Project Structure
+
+After installation, your project looks like this:
+
+```
+src/
+├── components/          # Astro + Preact components
+│   └── admonitions/     # Note, Tip, Info, Warning, Danger
+├── config/
+│   ├── settings.ts      # Site name, active color scheme
+│   ├── color-schemes.ts # All available color presets
+│   └── color-scheme-utils.ts
+├── content/
+│   ├── docs/            # English MDX content
+│   └── docs-ja/         # Japanese MDX content
+├── layouts/             # Page layouts
+├── pages/               # File-based routing
+└── styles/
+    └── global.css       # Design tokens & Tailwind config
+```
+
+See the [Writing Docs](/docs/getting-started/writing-docs) guide for how to create and organize your documentation pages.
