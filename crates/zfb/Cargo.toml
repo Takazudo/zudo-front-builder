@@ -22,9 +22,12 @@ indicatif = "0.17"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }
 zfb-build = { path = "../zfb-build" }
+zfb-graph = { path = "../zfb-graph" }
+zfb-server = { path = "../zfb-server" }
+zfb-watcher = { path = "../zfb-watcher" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
