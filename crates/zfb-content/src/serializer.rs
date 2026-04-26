@@ -20,8 +20,8 @@ use crate::pipeline::HastNode;
 
 /// Canonical HTML5 void-element list. Matched case-insensitively.
 const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
-    "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr",
 ];
 
 /// Serialize a hast tree to an HTML fragment string.

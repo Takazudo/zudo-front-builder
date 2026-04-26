@@ -1,11 +1,18 @@
 //! zfb-content: markdown/MDX pipeline, syntect, frontmatter, content collections.
 
+pub mod collection;
 pub mod frontmatter;
+pub mod mdx_jsx_emit;
 pub mod pipeline;
 pub mod plugins;
-pub mod syntect_highlight;
 pub mod serializer;
-pub mod collection;
+pub mod syntect_highlight;
+
+pub use mdx_jsx_emit::{
+    compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,
+    parse_mdx_specifier, CompiledMdx, MdxJsxOptions, MdxModuleCache, MdxModuleSpecifier,
+    SpecifierError,
+};
 
 /// Crate-wide error type. Concrete variants are added by feature modules.
 pub type Result<T> = std::result::Result<T, Error>;

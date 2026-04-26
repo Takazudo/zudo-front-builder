@@ -54,6 +54,47 @@ Until that work happens, keep the source-first stance: `exports` should
 keep pointing at `./src/*.ts` so workspace siblings type-check and run
 without an extra build step in the dev loop.
 
+## Bridge contract — `globalThis.__zfb.content`
+
+`zfb/content` exposes a `Content` field on every `CollectionEntry`. At call
+time, that component consults a small namespaced bridge installed by the
+Rust-side `zfb-render` `Renderer` before each page module is evaluated:
+
+```ts
+declare global {
+  var __zfb: {
+    content: {
+      // Returns a renderable component for the entry, or undefined when
+      // the bridge isn't present (JS-only environments / unit tests).
+      get(specifier: string): ((props: { components?: Record<string, unknown> }) => unknown) | undefined;
+    };
+  };
+}
+```
+
+The bridge is keyed by `entry.module_specifier`, which the JS stub
+constructs as `mdx://<collection>/<slug>` (no hash). The Rust-side
+`zfb_content::collection::Entry::module_specifier` adds a `#<hash>` suffix
+for cache addressing — the bridge resolver must accept either form.
+
+**Fallback path.** When `globalThis.__zfb?.content?.get(specifier)` returns
+`undefined` — or when the `__zfb` namespace is absent entirely (typical of
+unit tests, dev sandboxes, and any non-renderer evaluation context) —
+`Content` returns a JSX element wrapping the raw markdown body in
+`<pre data-zfb-content-fallback>` with a leading `[zfb fallback render]`
+marker line. The marker survives unstyled environments and doubles as a
+grep target for "production renderer didn't run" diagnostics.
+
+**Why a bridge.** Keeps `packages/zfb` runtime-agnostic: the SDK never
+imports preact or react, and never has to know which JSX runtime the user
+chose. The Rust renderer owns module evaluation, so it owns the namespace
+that hands compiled-MDX components back to user code at the call site.
+
+The contract is mirrored in JSDoc on `CollectionEntry.Content`
+(`packages/zfb/src/content.ts`) and cross-referenced from
+`crates/zfb-render/src/loader.rs` so the two halves stay in sync. When
+either half changes, update both.
+
 ## Surface stability
 
 The public surface is whatever `package.json` `exports` lists today. Adding

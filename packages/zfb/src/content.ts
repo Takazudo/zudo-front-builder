@@ -24,6 +24,67 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import type { ReactNode } from "./jsx-types.js";
+
+/**
+ * Props accepted by an entry's [`CollectionEntry.Content`] component.
+ *
+ * `components` mirrors Astro's `<Content components={...}>` contract:
+ * a flat record of element-name → override component (e.g. `{ h1: MyH1 }`).
+ * The default-components convention ships from `zfb`'s root export
+ * (`defaultComponents`, lands in Sub 6) and users compose with their own
+ * via `{ ...defaultComponents, ...mine }`.
+ */
+export interface ContentProps {
+  /** Element-name → override component map. Optional. */
+  components?: Record<string, unknown>;
+}
+
+/**
+ * Public JSX-element shape returned by [`CollectionEntry.Content`].
+ *
+ * Matches the structural shape that both Preact's and React's `jsx-runtime`
+ * accept on either side of the boundary, mirroring the Island wrapper's
+ * approach. Consumers should treat this as opaque — its only contract is
+ * "renderable JSX value".
+ *
+ * Aliased as `JSX.Element` in the field signature: the JS runtime is
+ * type-erased and the actual VNode shape is supplied by the framework
+ * adapter at evaluation time.
+ */
+export type ContentElement = {
+  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
+/**
+ * Bridge contract published by the Rust-side `zfb-render` `Renderer` before
+ * evaluating each page module. Cross-referenced from the Rust side in
+ * `crates/zfb-render/src/loader.rs` so the two halves stay in sync — see
+ * `packages/zfb/CONTRIBUTING.md` for the full contract narrative.
+ *
+ * The renderer installs `globalThis.__zfb.content.get(specifier)` keyed on
+ * the entry's `module_specifier` (Sub 4 convention: `mdx://<collection>/<slug>#<hash>`,
+ * collapsed to `mdx://<collection>/<slug>` from the JS stub side which has
+ * no hash to compute). When `get` returns `undefined` (or the bridge as a
+ * whole is absent — typical of unit tests, dev sandboxes, and any
+ * non-renderer evaluation context), `Content` renders a clearly-marked
+ * `<pre data-zfb-content-fallback>` fallback so the visual distinction is
+ * obvious even in unstyled environments.
+ */
+type ContentBridge = {
+  get(specifier: string): ((props: ContentProps) => unknown) | undefined;
+};
+
+type ZfbBridgeNamespace = {
+  content?: ContentBridge;
+};
+
+type BridgeGlobal = typeof globalThis & {
+  __zfb?: ZfbBridgeNamespace;
+};
+
 /**
  * Generic shape returned for one entry in a content collection. The `data`
  * field carries parsed frontmatter, typed by the caller via the generic
@@ -36,6 +97,43 @@ export type CollectionEntry<T = Record<string, unknown>> = {
   data: T;
   /** Raw markdown body (frontmatter stripped). */
   body: string;
+  /**
+   * Stable module specifier used as the bridge lookup key. Format:
+   * `mdx://<collection>/<slug>` (no hash component — the JS stub does
+   * not compile MDX, so it has no body hash to attach; the production
+   * Rust-side `zfb-content::collection::Entry::module_specifier` adds a
+   * `#<hash>` suffix and the bridge is responsible for matching either
+   * form against its registered components).
+   *
+   * This field is part of the v0+ JS surface so the bridge has something
+   * deterministic to key on without consulting per-call state.
+   */
+  module_specifier: string;
+  /**
+   * Renderable component for this entry.
+   *
+   * **Bridge contract.** At call time, `Content` consults
+   * `globalThis.__zfb?.content?.get(entry.module_specifier)`. If the
+   * bridge is present and returns a function, that function is invoked
+   * with `props` and its result returned verbatim.
+   *
+   * **Fallback.** Outside the renderer (unit tests, dev sandboxes, or any
+   * environment where `globalThis.__zfb.content.get` is absent or returns
+   * `undefined`), `Content` returns a JSX-shaped element rendering the
+   * raw markdown body inside a `<pre data-zfb-content-fallback>` block,
+   * with a leading `[zfb fallback render]` marker line so the visual
+   * distinction survives unstyled environments. The marker is also a
+   * grep target for "did the production renderer not run?" diagnostics.
+   *
+   * **Typed signature.** Returns `ContentElement` (a structural alias for
+   * `JSX.Element`) so consumers can drop `<entry.Content components={...} />`
+   * into both React and Preact JSX without per-framework type setup.
+   *
+   * @example
+   *   const post = (await getCollection("blog"))[0];
+   *   return <post.Content components={{ ...defaultComponents, h1: MyH1 }} />;
+   */
+  Content: (props: ContentProps) => ContentElement;
 };
 
 /**
@@ -48,6 +146,64 @@ function resolveCollectionDir(name: string): string {
   const root = envRoot ? resolve(envRoot) : resolve(process.cwd(), "content");
   return join(root, name);
 }
+
+/**
+ * Build the v0 stub's bridge specifier for an entry. Mirrors the Rust-side
+ * convention (`mdx://<collection>/<slug>`) minus the body hash — the JS
+ * stub does not compile MDX, so it has no hash to attach. The bridge
+ * resolver on the renderer side is responsible for matching either form.
+ */
+function buildModuleSpecifier(collection: string, slug: string): string {
+  return `mdx://${collection}/${slug}`;
+}
+
+/**
+ * Build the `Content` component for an entry. Captures `module_specifier`
+ * + `body` in the closure so the returned function takes only `props`.
+ *
+ * The bridge lookup is done lazily on every call (not at entry-construction
+ * time) so the renderer can install / swap `globalThis.__zfb.content` at
+ * any point before the first render without ordering hazards.
+ */
+function buildContentComponent(
+  module_specifier: string,
+  body: string,
+): (props: ContentProps) => ContentElement {
+  return function Content(props: ContentProps): ContentElement {
+    const bridge = (globalThis as BridgeGlobal).__zfb?.content;
+    const renderer = bridge?.get(module_specifier);
+    if (typeof renderer === "function") {
+      // Trust the bridge to return a JSX-element-shaped value — we don't
+      // try to validate; both Preact and React JSX runtimes accept any
+      // structural `{ type, props, key }` object on either side of the
+      // boundary, and the renderer is the source of truth here.
+      return renderer(props) as ContentElement;
+    }
+    return renderFallback(body);
+  };
+}
+
+/**
+ * Build the structural JSX element returned when the bridge is absent.
+ *
+ * Shape: `<pre data-zfb-content-fallback>{marker}\n{body}</pre>` — the
+ * leading `[zfb fallback render]` marker line is part of the public
+ * fallback contract (it's both a visual signal and a grep target). Tests
+ * pin both the attribute and the marker line.
+ */
+function renderFallback(body: string): ContentElement {
+  return {
+    type: "pre",
+    props: {
+      "data-zfb-content-fallback": "",
+      children: `${FALLBACK_MARKER}\n${body}`,
+    },
+    key: null,
+  };
+}
+
+/** Leading marker line emitted by [`renderFallback`]. Public contract. */
+const FALLBACK_MARKER = "[zfb fallback render]";
 
 /**
  * Load every `*.md` file in the named collection. Files starting with `.`
@@ -75,7 +231,14 @@ export async function getCollection<T = Record<string, unknown>>(
     const raw = await readFile(fullPath, "utf8");
     const { data, body } = parseFrontmatter(raw);
     const slug = filename.slice(0, -".md".length);
-    return { slug, data: data as T, body };
+    const module_specifier = buildModuleSpecifier(name, slug);
+    return {
+      slug,
+      data: data as T,
+      body,
+      module_specifier,
+      Content: buildContentComponent(module_specifier, body),
+    };
   });
   return entries;
 }
@@ -238,3 +401,155 @@ function unwrapScalar(value: string): string {
   }
   return value;
 }
+
+// ---------------------------------------------------------------------------
+// `defaultComponents` — htmlOverrides convention
+//
+// Ported from zudo-doc's `src/components/content/component-map.ts`. Users opt
+// in by spreading the map into their own `components` prop:
+//
+//   import { defaultComponents } from "zfb";
+//   <entry.Content components={{ ...defaultComponents, h2: MyH2 }} />
+//
+// Each component is a thin passthrough mirroring its zudo-doc counterpart
+// (e.g. `ContentParagraph` → `<p {...rest}>{children}</p>`). v0 ships the
+// passthroughs unstyled; layering smart-break / heading-anchor / link-icon
+// behaviour on top is independent follow-up — keeping the v0 deliverable
+// focused on infrastructure (issue #33).
+//
+// **`h1` is deliberately not in the map** — page titles render `<h1>` from
+// frontmatter, per the zudo-doc convention. Adding `h1` here would silently
+// double-render the page title.
+//
+// **Each override is exported as a named const AND included in
+// `defaultComponents`** so consumers can tree-shake-import a single component
+// (`import { ContentLink } from "zfb"`) without dragging in the whole map.
+//
+// Implementation note: components return the structural JSX-element shape
+// directly — same pattern as `Island`. This keeps the package
+// JSX-runtime-agnostic so it works under either Preact or React without
+// importing a runtime. Both `jsx-runtime` implementations accept the
+// `{ type, props, key }` object on either side of the boundary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Public JSX-element shape returned by every override in [`defaultComponents`].
+ *
+ * Mirrors [`ContentElement`] and [`IslandElement`]: a structural alias for
+ * `JSX.Element` so consumers can drop these overrides into both React and
+ * Preact JSX without per-framework type setup.
+ */
+export type ContentComponentElement = {
+  readonly type: string;
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
+/**
+ * Props accepted by every default override. `children` and any extra
+ * attributes (`className`, `id`, `href`, …) are passed through verbatim
+ * to the underlying HTML element.
+ */
+export interface ContentComponentProps {
+  children?: ReactNode;
+  [key: string]: unknown;
+}
+
+/** Internal helper: build a structural JSX element of the given tag. */
+function buildOverrideElement(tag: string, props: ContentComponentProps): ContentComponentElement {
+  const { children, ...rest } = props;
+  return {
+    type: tag,
+    props: { ...rest, children: children as ReactNode },
+    key: null,
+  };
+}
+
+/**
+ * `<h2>` passthrough override. Ported from zudo-doc's `HeadingH2`, stripped
+ * of styling — v0 ships pass-through behaviour; visual treatment is layered
+ * on by the consumer (or by a follow-up enhancement pass).
+ */
+export function ContentH2(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h2", props);
+}
+
+/** `<h3>` passthrough override. See [`ContentH2`] for the contract. */
+export function ContentH3(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h3", props);
+}
+
+/** `<h4>` passthrough override. See [`ContentH2`] for the contract. */
+export function ContentH4(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h4", props);
+}
+
+/** `<p>` passthrough override. Mirrors zudo-doc's `ContentParagraph`. */
+export function ContentParagraph(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("p", props);
+}
+
+/** `<a>` passthrough override. Mirrors zudo-doc's `ContentLink`. */
+export function ContentLink(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("a", props);
+}
+
+/** `<strong>` passthrough override. Mirrors zudo-doc's `ContentStrong`. */
+export function ContentStrong(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("strong", props);
+}
+
+/** `<blockquote>` passthrough override. Mirrors zudo-doc's `ContentBlockquote`. */
+export function ContentBlockquote(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("blockquote", props);
+}
+
+/** `<ul>` passthrough override. Mirrors zudo-doc's `ContentUl`. */
+export function ContentUl(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("ul", props);
+}
+
+/** `<ol>` passthrough override. Mirrors zudo-doc's `ContentOl`. */
+export function ContentOl(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("ol", props);
+}
+
+/** `<table>` passthrough override. Mirrors zudo-doc's `ContentTable`. */
+export function ContentTable(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("table", props);
+}
+
+/** `<code>` passthrough override. Mirrors zudo-doc's `ContentCode`. */
+export function ContentCode(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("code", props);
+}
+
+/**
+ * Default per-element override map — eleven entries covering the markdown
+ * tags the zudo-doc convention overrides (`h2`, `h3`, `h4`, `p`, `a`,
+ * `strong`, `blockquote`, `ul`, `ol`, `table`, `code`).
+ *
+ * `h1` is intentionally absent: page titles render from frontmatter, per
+ * the zudo-doc convention.
+ *
+ * Spread into a `components` prop to compose with custom overrides:
+ *
+ * ```tsx
+ * import { defaultComponents } from "zfb";
+ *
+ * <entry.Content components={{ ...defaultComponents, h2: MyFancyH2 }} />
+ * ```
+ */
+export const defaultComponents = {
+  h2: ContentH2,
+  h3: ContentH3,
+  h4: ContentH4,
+  p: ContentParagraph,
+  a: ContentLink,
+  strong: ContentStrong,
+  blockquote: ContentBlockquote,
+  ul: ContentUl,
+  ol: ContentOl,
+  table: ContentTable,
+  code: ContentCode,
+} as const;

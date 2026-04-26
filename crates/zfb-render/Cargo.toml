@@ -20,6 +20,11 @@ deno_core_host = ["dep:deno_core", "dep:tokio"]
 integration_routing_rendering = []
 
 [dependencies]
+# Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
+# `mdx://` specifiers through `mdx_to_jsx_module` before handing the
+# resulting JSX text to the SWC pipeline below.
+zfb-content = { path = "../zfb-content" }
+
 # SWC pipeline (TSX → JS).
 swc_core = { version = "64", features = [
     "common",

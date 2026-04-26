@@ -16,3 +16,15 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 syntect = { workspace = true }
 garde = { workspace = true }
+
+# Hashing for the per-module content hash that drives `mdx://` specifiers
+# and the in-memory compile cache. Same crate+version pair used by
+# `zfb-css::pipeline::hash_8` so the project speaks one hashing dialect.
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+# Used by tests/mdx_jsx_emit.rs to pipe emitter output through SWC and
+# assert it parses as valid JS. Pure dev-only — keeps zfb-content's
+# runtime dependency surface minimal.
+zfb-render = { path = "../zfb-render" }

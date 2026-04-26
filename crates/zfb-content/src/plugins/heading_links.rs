@@ -166,7 +166,10 @@ mod tests {
         let HastNode::Element { attrs, .. } = node else {
             return None;
         };
-        attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
@@ -178,17 +181,10 @@ mod tests {
         };
         assert_eq!(first_attr(&children[0], "id"), Some("hello-world"));
 
-        let HastNode::Element {
-            children: hc,
-            ..
-        } = &children[0]
-        else {
+        let HastNode::Element { children: hc, .. } = &children[0] else {
             panic!()
         };
-        let HastNode::Element {
-            tag, attrs, ..
-        } = &hc[0]
-        else {
+        let HastNode::Element { tag, attrs, .. } = &hc[0] else {
             panic!()
         };
         assert_eq!(tag, "a");
