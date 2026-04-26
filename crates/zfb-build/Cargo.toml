@@ -1,0 +1,23 @@
+[package]
+name = "zfb-build"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb build orchestrator: ties watcher + dependency graph + render/css/islands pipelines together for the dev loop, with atomic dist writes"
+
+[lib]
+
+[dependencies]
+zfb-watcher = { path = "../zfb-watcher" }
+zfb-graph = { path = "../zfb-graph" }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
