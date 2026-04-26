@@ -1,0 +1,98 @@
+---
+title: Customizing Markdown
+description: How zfb renders Markdown today, what is configurable, and what is on the roadmap.
+sidebar_position: 3
+---
+
+<Warning title="v0 status">
+
+  Body rendering depends on the JS runtime decision tracked in ADR-001.
+  The parser pipeline in `crates/zfb-content` is wired and stable, but
+  the per-page consumption pattern shown below will firm up once that
+  decision lands.
+
+</Warning>
+
+zfb's Markdown story lives in the `zfb-content` Rust crate. It is
+deliberately small in v0: parse the file, hand you the body as a string,
+let your component decide how to render it. This page documents what is
+available today and what is planned.
+
+## The pipeline today
+
+When zfb reads a Markdown file from a content collection it does three
+things:
+
+1. Splits front matter using a `gray-matter`-style `---` separator.
+2. Parses the front matter into `entry.data` against the schema you
+   declared in `zfb.config`.
+3. Parses the body as CommonMark plus the GitHub-Flavored Markdown
+   extensions (tables, task lists, strikethrough, autolinks) and emits
+   it as an HTML string on `entry.body`.
+
+That string is what your TSX page receives. There is no virtual DOM
+representation, no AST handed to user code, and no per-page hook to
+intercept the parse.
+
+## Rendering Markdown in a page
+
+The standard pattern is to receive a content entry through `paths()` and
+inject the parsed HTML into your JSX:
+
+```tsx
+import { getCollection } from "zfb/content";
+
+export async function paths() {
+  const posts = await getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post },
+  }));
+}
+
+export default function PostPage({ post }) {
+  return (
+    <article
+      className="prose"
+      dangerouslySetInnerHTML={{ __html: post.body }}
+    />
+  );
+}
+```
+
+`dangerouslySetInnerHTML` reads alarmingly, but the input is your own
+Markdown — the same source you would have rendered in any other SSG. If
+you accept Markdown from untrusted users, sanitize before storing.
+
+## What is customisable today
+
+- **Front-matter schema** — every collection can declare its own field
+  types in `zfb.config`. Schema mismatches fail the build.
+- **GFM features** — enabled by default; there is no toggle to turn
+  individual extensions off in v0.
+- **HTML wrapping** — fully under your control. The `entry.body` string
+  is plain HTML; wrap, slot, and style it however you like.
+
+## What is planned, not built
+
+The following are deliberately out of scope for v0 and tracked for a
+later release:
+
+- Per-collection rehype / remark plugins.
+- Custom container directives — for example, `:::note` blocks that
+  expand into admonition components.
+- Shortcodes — inline component calls embedded in Markdown.
+- MDX support for content collections. (The docs site itself uses MDX,
+  but that runs through Astro and zudo-doc, not through zfb.)
+
+If your site needs any of these today, the practical options are: do
+the post-processing yourself in the page component, or ship a small
+remark step outside zfb and feed the rendered HTML back through your
+collection.
+
+<Tip>
+
+  When in doubt, render the body and style it. Most "I want to customize
+  Markdown" requests turn out to be styling questions that CSS solves.
+
+</Tip>
