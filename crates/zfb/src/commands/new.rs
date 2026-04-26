@@ -6,6 +6,11 @@
 //! After the files are in place we attempt to run `pnpm install`; if pnpm is
 //! missing we print a friendly notice and continue successfully so the user can
 //! run install themselves later.
+//!
+//! Status messages go through [`crate::output`] so they look consistent with
+//! the rest of the zfb CLI. `zfb new` deliberately does NOT load
+//! `zfb.config.{json,ts}` — at the moment this command runs the project does
+//! not yet exist on disk, so there is no config to apply.
 
 use std::io::ErrorKind;
 use std::path::Path;
@@ -15,6 +20,7 @@ use std::fs;
 use tokio::process::Command;
 
 use crate::cli::NewArgs;
+use crate::output;
 
 /// Compile-time embedding of `crates/zfb/templates/`.
 ///
@@ -63,19 +69,23 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
     match try_pnpm_install(dest).await {
         PnpmOutcome::Ran => {}
         PnpmOutcome::Missing => {
-            println!(
-                "pnpm not found on PATH \u{2014} skipping install. Run pnpm install manually before zfb dev."
+            output::warn(
+                "pnpm not found on PATH \u{2014} skipping install. Run pnpm install manually before zfb dev.",
             );
         }
         PnpmOutcome::Failed(msg) => {
-            println!("pnpm install failed: {msg}. Run pnpm install manually before zfb dev.");
+            output::warn(&format!(
+                "pnpm install failed: {msg}. Run pnpm install manually before zfb dev."
+            ));
         }
     }
 
-    println!(
-        "\u{2713} Created {} (template: {}). Next: cd {} && zfb dev",
+    // `output::success` already prefixes a green checkmark; do not include
+    // one in the message body or the user sees `✓ ✓ Created ...`.
+    output::success(&format!(
+        "Created {} (template: {}). Next: cd {} && zfb dev",
         args.name, args.template, args.name
-    );
+    ));
 
     Ok(())
 }
