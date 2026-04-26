@@ -1,0 +1,56 @@
+---
+title: Installation
+description: Install the zfb CLI from source while v0 is still in development.
+sidebar_position: 2
+---
+
+zfb (zudo-front-builder) is shipped as a single Rust binary. While the project is in v0, there are no published releases on crates.io and no prebuilt binaries — you build the CLI yourself from this repository.
+
+## Prerequisites
+
+You will need:
+
+- **Rust toolchain** — install via [rustup](https://rustup.rs/). A recent stable toolchain (1.75 or newer) is fine.
+- **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
+
+You do not need Node.js separately for the CLI itself. The runtime that executes your project's TypeScript is bundled with zfb (see the [JS runtime architecture page](/architecture/js-runtime)).
+
+## Build and install the CLI
+
+Clone the repository and install the `zfb` binary into your Cargo bin directory:
+
+```bash
+git clone https://github.com/Takazudo/zudo-front-builder.git
+cd zudo-front-builder
+cargo install --path crates/zfb
+```
+
+`cargo install` puts the binary at `~/.cargo/bin/zfb`. Make sure that directory is on your `PATH` (rustup configures this for you on a fresh install).
+
+If you would rather not install globally — for example, while hacking on the framework itself — build in place and call the binary directly:
+
+```bash
+cargo build -p zfb
+./target/debug/zfb --help
+```
+
+## Verify the install
+
+```bash
+zfb --help
+```
+
+You should see four subcommands:
+
+- `zfb new` — scaffold a new project
+- `zfb dev` — start the dev server with watcher and live-reload
+- `zfb build` — produce a static build
+- `zfb preview` — serve the build output
+
+If `zfb --help` prints all four, you're ready to move on to [Your first site](/getting-started/your-first-site).
+
+<Info title="v0 distribution">
+
+  This source-build flow is the only supported install path right now. Released crates and prebuilt binaries will land once the framework reaches a stable surface.
+
+</Info>
