@@ -15,8 +15,10 @@
 //!    Rust-native bundler (placeholder lives in [`future_rust_native`],
 //!    analog of `zfb_css::native_engine`).
 //!
-//! 3. Emit hydration markup and the runtime glue script (Sub 3 — landed in
-//!    the `hydration` module by topic-hydration-emit).
+//! 3. Server-side HTML rewrite that turns each rendered island's
+//!    marker-bracketed output into the `<div data-zfb-island="…"
+//!    data-props="…">` wrapper the client-side hydration runtime walks
+//!    (Sub 3 — see [`hydration`]).
 //!
 //! ## Layering
 //!
@@ -29,6 +31,7 @@
 pub mod bundler;
 pub mod esbuild;
 pub mod future_rust_native;
+pub mod hydration;
 pub mod scanner;
 
 pub use bundler::{
@@ -36,6 +39,7 @@ pub use bundler::{
 };
 pub use esbuild::{hash_8, EsbuildSubprocessBundler, EsbuildSubprocessConfig};
 pub use future_rust_native::NativeRustBundler;
+pub use hydration::{hydration_script_tag, rewrite_islands, IslandDescriptor, IslandRewriteError};
 pub use scanner::{
     is_bare_specifier, normalize_path_lexical, scan_islands, FsResolver, InMemoryResolver,
     IslandsSet, Resolver, ScanError, ScanResult,

@@ -3,7 +3,7 @@ name = "zfb-islands"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "zfb islands runtime: \"use client\" AST scanner, esbuild subprocess bundler, hydration emit"
+description = "zfb islands runtime: \"use client\" AST scanner, esbuild subprocess bundler, hydration HTML emit"
 
 [lib]
 
@@ -30,3 +30,4 @@ hex = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+serde_json = { workspace = true }
