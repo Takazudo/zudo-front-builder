@@ -36,11 +36,20 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
     })?;
 
     let dest = Path::new(&args.name);
-    if dest.exists() && !is_empty_dir(dest)? {
-        anyhow::bail!(
-            "destination '{}' already exists and is not empty",
-            args.name
-        );
+    if dest.exists() {
+        let meta = fs::metadata(dest)?;
+        if !meta.is_dir() {
+            anyhow::bail!(
+                "destination '{}' already exists and is not a directory",
+                args.name
+            );
+        }
+        if !is_empty_dir(dest)? {
+            anyhow::bail!(
+                "destination '{}' already exists and is not empty",
+                args.name
+            );
+        }
     }
 
     fs::create_dir_all(dest)?;
