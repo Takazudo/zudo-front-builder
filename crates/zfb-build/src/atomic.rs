@@ -57,13 +57,19 @@ pub fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
     }
 
-    fs::rename(&temp_path, dest).with_context(|| {
-        format!(
-            "failed to rename {} -> {}",
-            temp_path.display(),
-            dest.display()
-        )
-    })?;
+    if let Err(e) = fs::rename(&temp_path, dest) {
+        // Best-effort cleanup so repeated rename failures don't accumulate
+        // sibling temp files in the destination directory. Ignore the
+        // remove error — the rename failure is the actionable signal.
+        let _ = fs::remove_file(&temp_path);
+        return Err(e).with_context(|| {
+            format!(
+                "failed to rename {} -> {}",
+                temp_path.display(),
+                dest.display()
+            )
+        });
+    }
 
     Ok(())
 }
