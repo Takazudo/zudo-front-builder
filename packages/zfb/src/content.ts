@@ -24,6 +24,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import type { ReactNode } from "./jsx-types.js";
+
 /**
  * Props accepted by an entry's [`CollectionEntry.Content`] component.
  *
@@ -399,3 +401,155 @@ function unwrapScalar(value: string): string {
   }
   return value;
 }
+
+// ---------------------------------------------------------------------------
+// `defaultComponents` — htmlOverrides convention
+//
+// Ported from zudo-doc's `src/components/content/component-map.ts`. Users opt
+// in by spreading the map into their own `components` prop:
+//
+//   import { defaultComponents } from "zfb";
+//   <entry.Content components={{ ...defaultComponents, h2: MyH2 }} />
+//
+// Each component is a thin passthrough mirroring its zudo-doc counterpart
+// (e.g. `ContentParagraph` → `<p {...rest}>{children}</p>`). v0 ships the
+// passthroughs unstyled; layering smart-break / heading-anchor / link-icon
+// behaviour on top is independent follow-up — keeping the v0 deliverable
+// focused on infrastructure (issue #33).
+//
+// **`h1` is deliberately not in the map** — page titles render `<h1>` from
+// frontmatter, per the zudo-doc convention. Adding `h1` here would silently
+// double-render the page title.
+//
+// **Each override is exported as a named const AND included in
+// `defaultComponents`** so consumers can tree-shake-import a single component
+// (`import { ContentLink } from "zfb"`) without dragging in the whole map.
+//
+// Implementation note: components return the structural JSX-element shape
+// directly — same pattern as `Island`. This keeps the package
+// JSX-runtime-agnostic so it works under either Preact or React without
+// importing a runtime. Both `jsx-runtime` implementations accept the
+// `{ type, props, key }` object on either side of the boundary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Public JSX-element shape returned by every override in [`defaultComponents`].
+ *
+ * Mirrors [`ContentElement`] and [`IslandElement`]: a structural alias for
+ * `JSX.Element` so consumers can drop these overrides into both React and
+ * Preact JSX without per-framework type setup.
+ */
+export type ContentComponentElement = {
+  readonly type: string;
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
+/**
+ * Props accepted by every default override. `children` and any extra
+ * attributes (`className`, `id`, `href`, …) are passed through verbatim
+ * to the underlying HTML element.
+ */
+export interface ContentComponentProps {
+  children?: ReactNode;
+  [key: string]: unknown;
+}
+
+/** Internal helper: build a structural JSX element of the given tag. */
+function buildOverrideElement(tag: string, props: ContentComponentProps): ContentComponentElement {
+  const { children, ...rest } = props;
+  return {
+    type: tag,
+    props: { ...rest, children: children as ReactNode },
+    key: null,
+  };
+}
+
+/**
+ * `<h2>` passthrough override. Ported from zudo-doc's `HeadingH2`, stripped
+ * of styling — v0 ships pass-through behaviour; visual treatment is layered
+ * on by the consumer (or by a follow-up enhancement pass).
+ */
+export function ContentH2(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h2", props);
+}
+
+/** `<h3>` passthrough override. See [`ContentH2`] for the contract. */
+export function ContentH3(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h3", props);
+}
+
+/** `<h4>` passthrough override. See [`ContentH2`] for the contract. */
+export function ContentH4(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("h4", props);
+}
+
+/** `<p>` passthrough override. Mirrors zudo-doc's `ContentParagraph`. */
+export function ContentParagraph(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("p", props);
+}
+
+/** `<a>` passthrough override. Mirrors zudo-doc's `ContentLink`. */
+export function ContentLink(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("a", props);
+}
+
+/** `<strong>` passthrough override. Mirrors zudo-doc's `ContentStrong`. */
+export function ContentStrong(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("strong", props);
+}
+
+/** `<blockquote>` passthrough override. Mirrors zudo-doc's `ContentBlockquote`. */
+export function ContentBlockquote(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("blockquote", props);
+}
+
+/** `<ul>` passthrough override. Mirrors zudo-doc's `ContentUl`. */
+export function ContentUl(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("ul", props);
+}
+
+/** `<ol>` passthrough override. Mirrors zudo-doc's `ContentOl`. */
+export function ContentOl(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("ol", props);
+}
+
+/** `<table>` passthrough override. Mirrors zudo-doc's `ContentTable`. */
+export function ContentTable(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("table", props);
+}
+
+/** `<code>` passthrough override. Mirrors zudo-doc's `ContentCode`. */
+export function ContentCode(props: ContentComponentProps): ContentComponentElement {
+  return buildOverrideElement("code", props);
+}
+
+/**
+ * Default per-element override map — eleven entries covering the markdown
+ * tags the zudo-doc convention overrides (`h2`, `h3`, `h4`, `p`, `a`,
+ * `strong`, `blockquote`, `ul`, `ol`, `table`, `code`).
+ *
+ * `h1` is intentionally absent: page titles render from frontmatter, per
+ * the zudo-doc convention.
+ *
+ * Spread into a `components` prop to compose with custom overrides:
+ *
+ * ```tsx
+ * import { defaultComponents } from "zfb";
+ *
+ * <entry.Content components={{ ...defaultComponents, h2: MyFancyH2 }} />
+ * ```
+ */
+export const defaultComponents = {
+  h2: ContentH2,
+  h3: ContentH3,
+  h4: ContentH4,
+  p: ContentParagraph,
+  a: ContentLink,
+  strong: ContentStrong,
+  blockquote: ContentBlockquote,
+  ul: ContentUl,
+  ol: ContentOl,
+  table: ContentTable,
+  code: ContentCode,
+} as const;

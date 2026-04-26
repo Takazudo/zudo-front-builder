@@ -26,6 +26,20 @@ surface. Today it covers:
   helpers exported from `zfb/content`. `parseFrontmatter` is part of the
   public SDK surface so consumers can write custom content loaders that
   reuse the v0 frontmatter parser without re-implementing it.
+- `defaultComponents` — eleven-entry per-element override map (`h2`, `h3`,
+  `h4`, `p`, `a`, `strong`, `blockquote`, `ul`, `ol`, `table`, `code`)
+  ported from zudo-doc's `htmlOverrides` convention. **`h1` is deliberately
+  omitted** because page titles render `<h1>` from frontmatter. Each entry
+  is a thin passthrough and is also exported as a named const
+  (`ContentParagraph`, `ContentLink`, …) so consumers can tree-shake-import a
+  single override. Spread into a `components` prop to compose with custom
+  overrides:
+
+  ```tsx
+  import { defaultComponents } from "zfb";
+
+  <entry.Content components={{ ...defaultComponents, h2: MyFancyH2 }} />
+  ```
 - `paginate(items, opts)`, plus `PaginatedPage<T>` / `PaginateRoute<T>` —
   exported from `zfb/paginate`.
 - `defineConfig(config)` — exported from `zfb/config` for the eventual

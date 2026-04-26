@@ -9,11 +9,24 @@ export { Island, resolveWhen, type IslandProps } from "./island.js";
 export { scheduleHydrate } from "./runtime.js";
 export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 
-// Sub 6 will introduce `defaultComponents` (the htmlOverrides convention)
-// and re-export it from this module so `import { defaultComponents } from "zfb"`
-// is the canonical entry point. Sub 5 only adds the `Content` bridge field
-// on `CollectionEntry` (consumed via the `zfb/content` subpath); this
-// placeholder marks where the re-export will land without forcing Sub 6
-// to invent the location.
-//
-// TODO(sub-6): export { defaultComponents } from "./default-components.js";
+// `defaultComponents` (htmlOverrides convention) is re-exported from the
+// root entry point so `import { defaultComponents } from "zfb"` is the
+// canonical access path. Each named override is also re-exported so
+// consumers can tree-shake-import a single one (`import { ContentLink } from "zfb"`)
+// without dragging in the whole map.
+export {
+  ContentBlockquote,
+  ContentCode,
+  ContentH2,
+  ContentH3,
+  ContentH4,
+  ContentLink,
+  ContentOl,
+  ContentParagraph,
+  ContentStrong,
+  ContentTable,
+  ContentUl,
+  defaultComponents,
+  type ContentComponentElement,
+  type ContentComponentProps,
+} from "./content.js";
