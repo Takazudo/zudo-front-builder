@@ -171,21 +171,14 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
         MdastNode::Emphasis(e) => element("em", vec![], convert_children(&e.children)),
         MdastNode::Strong(s) => element("strong", vec![], convert_children(&s.children)),
         MdastNode::Delete(d) => element("del", vec![], convert_children(&d.children)),
-        MdastNode::InlineCode(c) => element(
-            "code",
-            vec![],
-            vec![HastNode::Text(c.value.clone())],
-        ),
+        MdastNode::InlineCode(c) => element("code", vec![], vec![HastNode::Text(c.value.clone())]),
         MdastNode::Code(c) => {
             // Fenced code block. Wrap raw text in <pre><code>; expose
             // `lang` and `meta` as data-* attrs so Sub 4 plugins (e.g.
             // rehypeCodeTitle) and Sub 5 (syntect) can inspect them.
             let mut code_attrs: Vec<(String, String)> = Vec::new();
             if let Some(lang) = &c.lang {
-                code_attrs.push((
-                    "class".to_string(),
-                    format!("language-{lang}"),
-                ));
+                code_attrs.push(("class".to_string(), format!("language-{lang}")));
                 code_attrs.push(("data-lang".to_string(), lang.clone()));
             }
             if let Some(meta) = &c.meta {
@@ -234,9 +227,7 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
             element(tag, attrs, convert_children(&l.children))
         }
         MdastNode::ListItem(li) => element("li", vec![], convert_children(&li.children)),
-        MdastNode::Blockquote(b) => {
-            element("blockquote", vec![], convert_children(&b.children))
-        }
+        MdastNode::Blockquote(b) => element("blockquote", vec![], convert_children(&b.children)),
         MdastNode::ThematicBreak(_) => HastNode::Element {
             tag: "hr".to_string(),
             attrs: vec![],
@@ -250,12 +241,16 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
             void: true,
         },
         MdastNode::Html(h) => HastNode::Raw(h.value.clone()),
-        MdastNode::MdxJsxFlowElement(j) => {
-            HastNode::Raw(reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children))
-        }
-        MdastNode::MdxJsxTextElement(j) => {
-            HastNode::Raw(reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children))
-        }
+        MdastNode::MdxJsxFlowElement(j) => HastNode::Raw(reconstruct_jsx(
+            j.name.as_deref(),
+            &j.attributes,
+            &j.children,
+        )),
+        MdastNode::MdxJsxTextElement(j) => HastNode::Raw(reconstruct_jsx(
+            j.name.as_deref(),
+            &j.attributes,
+            &j.children,
+        )),
         MdastNode::MdxFlowExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
         MdastNode::MdxTextExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
         // Unhandled: degrade to empty Raw so we never crash on
@@ -542,7 +537,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_inner, "expected nested <blockquote>, got {bq_children:?}");
+        assert!(
+            found_inner,
+            "expected nested <blockquote>, got {bq_children:?}"
+        );
     }
 
     // 10. MDX JSX element passes through as Raw.
@@ -575,9 +573,8 @@ mod tests {
         let mut raws = Vec::new();
         collect_raw(&h, &mut raws);
         assert!(
-            raws.iter().any(|r| r.contains("<Note")
-                && r.contains("hello")
-                && r.contains("</Note>")),
+            raws.iter()
+                .any(|r| r.contains("<Note") && r.contains("hello") && r.contains("</Note>")),
             "expected a Raw containing the <Note>…</Note> source, got raws={raws:?} from {h:?}"
         );
 

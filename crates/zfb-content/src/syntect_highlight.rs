@@ -84,7 +84,9 @@ impl Highlighter {
         theme: Option<&str>,
     ) -> Result<String, HighlightError> {
         // Normalize empty theme to the configured default for symmetry with `lang`.
-        let theme_name = theme.filter(|s| !s.is_empty()).unwrap_or(&self.default_theme);
+        let theme_name = theme
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.default_theme);
         let theme_obj: &Theme = self
             .theme_set
             .themes

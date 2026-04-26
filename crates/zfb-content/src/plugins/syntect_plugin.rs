@@ -60,11 +60,7 @@ impl HastVisitor for SyntectPlugin {
     }
 }
 
-fn rewrite_children(
-    children: &mut [HastNode],
-    highlighter: &Highlighter,
-    theme: Option<&str>,
-) {
+fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, theme: Option<&str>) {
     for child in children.iter_mut() {
         if let Some((lang, code)) = lang_and_code(child) {
             if lang == "mermaid" {

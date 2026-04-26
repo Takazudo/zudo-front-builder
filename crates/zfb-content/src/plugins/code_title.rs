@@ -184,12 +184,23 @@ mod tests {
         let HastNode::Root { children } = tree else {
             panic!()
         };
-        let HastNode::Element { tag, attrs, children, .. } = &children[0] else {
+        let HastNode::Element {
+            tag,
+            attrs,
+            children,
+            ..
+        } = &children[0]
+        else {
             panic!()
         };
         assert_eq!(tag, "figure");
         assert!(attrs.contains(&("class".to_string(), "code-figure".to_string())));
-        let HastNode::Element { tag: cap_tag, children: cap_children, .. } = &children[0] else {
+        let HastNode::Element {
+            tag: cap_tag,
+            children: cap_children,
+            ..
+        } = &children[0]
+        else {
             panic!()
         };
         assert_eq!(cap_tag, "figcaption");

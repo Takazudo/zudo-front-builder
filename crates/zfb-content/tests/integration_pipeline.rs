@@ -61,12 +61,12 @@ fn render_fixture(name: &str) -> String {
 /// pipeline (e.g. with extra visitors).
 fn render_fixture_with(name: &str, mut pipeline: Pipeline) -> String {
     let path = fixtures_dir().join(name);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
     // Strip frontmatter so the pipeline only sees the body. For files
     // without frontmatter, `parse` returns the whole input as body.
-    let parsed = frontmatter::parse(&raw)
-        .unwrap_or_else(|e| panic!("parse frontmatter for {path:?}: {e}"));
+    let parsed =
+        frontmatter::parse(&raw).unwrap_or_else(|e| panic!("parse frontmatter for {path:?}: {e}"));
     let hast = pipeline
         .run(&parsed.body)
         .unwrap_or_else(|e| panic!("pipeline failed for {path:?}: {e}"));
@@ -154,7 +154,9 @@ fn assert_snapshot_eq(actual: &str, snapshot_path: &Path) {
         .zip(actual.lines())
         .enumerate()
         .find(|(_, (e, a))| e != a)
-        .map(|(i, (e, a))| format!("first divergence at line {i}:\n  expected: {e:?}\n  actual:   {a:?}"))
+        .map(|(i, (e, a))| {
+            format!("first divergence at line {i}:\n  expected: {e:?}\n  actual:   {a:?}")
+        })
         .unwrap_or_else(|| {
             format!(
                 "trailing-content mismatch: expected {} lines, actual {} lines",
@@ -304,8 +306,7 @@ fn fixture_07_image_wraps_with_image_enlarge() {
     let actual = render_fixture_with("07-image.md", build_image_pipeline());
     let snap_path = snapshots_dir().join("07-image.html");
     assert_snapshot_eq(&actual, &snap_path);
-    let snapshot = std::fs::read_to_string(&snap_path)
-        .expect("snapshot present after first run");
+    let snapshot = std::fs::read_to_string(&snap_path).expect("snapshot present after first run");
     // The hero image with width should be wrapped in an ImageEnlarge marker.
     assert!(
         snapshot.contains("<ImageEnlarge"),
