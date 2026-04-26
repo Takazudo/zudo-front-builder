@@ -18,8 +18,12 @@ with the crate that owns the runtime contract.
 | Path                              | Purpose                                                       | Owner crate     |
 | --------------------------------- | ------------------------------------------------------------- | --------------- |
 | `tailwindcss-v4`                  | Tailwind CSS v4 standalone CLI binary (subprocess invocation) | `zfb-css`       |
+| `esbuild/esbuild`                 | esbuild standalone CLI binary (subprocess invocation)         | `zfb-islands`   |
 
 See `crates/zfb-css/README.md` for the pinned Tailwind version and rationale.
+See `crates/zfb-islands/README.md` for the pinned esbuild version and rationale,
+and `crates/zfb/binaries/esbuild/README.md` for the slot-shape rationale
+(the esbuild slot uses a subdirectory rather than a single file path).
 
 ## Why no binaries are committed
 

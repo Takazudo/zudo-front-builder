@@ -17,3 +17,4 @@ worktrees/
 
 # Bundled third-party binaries (populated by release engineering, never committed)
 crates/zfb/binaries/tailwindcss-v4
+crates/zfb/binaries/esbuild/esbuild
