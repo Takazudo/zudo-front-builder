@@ -16,6 +16,15 @@ use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModu
 use crate::pipeline::PipelineError;
 
 /// One file in a collection.
+///
+/// Beyond the raw frontmatter + body, each entry carries the metadata the
+/// JS-side renderer needs to mount it as a component: a stable
+/// `mdx://<collection>/<slug>#<hash>` [`module_specifier`](Self::module_specifier)
+/// the loader can route on, and the [`compiled_jsx_source`](Self::compiled_jsx_source)
+/// SWC compiles into executable JS. Both are populated up-front during
+/// [`walk_collection`] so renderers see a uniform shape for `.md` and
+/// `.mdx` alike — CommonMark is a strict MDX subset, so one emitter
+/// handles both with no per-extension branching.
 #[derive(Debug, Clone)]
 pub struct Entry<T> {
     /// Slug from filename (no extension), e.g. "my-post" from "my-post.md".
@@ -28,6 +37,14 @@ pub struct Entry<T> {
     pub data: T,
     /// Markdown body (frontmatter stripped).
     pub body: String,
+    /// Stable `mdx://<collection>/<slug>#<hash8>` URL the renderer (Sub 3)
+    /// uses to address this entry's compiled module. The hash is derived
+    /// from [`Self::compiled_jsx_source`] so two entries with byte-identical
+    /// bodies share the same specifier modulo the slug suffix.
+    pub module_specifier: String,
+    /// JSX module source for this entry, ready to feed into SWC. Same
+    /// shape for `.md` and `.mdx` — see the type-level docs for why.
+    pub compiled_jsx_source: String,
 }
 
 impl<T> Entry<T> {
@@ -35,10 +52,11 @@ impl<T> Entry<T> {
     /// content hash + `mdx://` specifier).
     ///
     /// Sub 2 surfaces this on `Entry` so downstream code can reach the
-    /// new return value without re-deriving file-path conventions. The
-    /// walker itself does **not** call this — wiring `Content` through
-    /// `getCollection()` is Sub 4's job; for now this is an opt-in
-    /// helper that exists so Sub 4 has a stable seam to attach to.
+    /// new return value without re-deriving file-path conventions.
+    /// [`walk_collection`] uses this seam internally to populate
+    /// [`Self::module_specifier`] and [`Self::compiled_jsx_source`]; it
+    /// remains public so callers that want a fresh recompile (e.g. dev
+    /// servers reacting to a content change) can request one.
     ///
     /// Pass `Some(&cache)` to dedupe identical bodies across calls; pass
     /// `None` for a one-shot compile.
@@ -65,6 +83,8 @@ pub enum CollectionError {
     Frontmatter { path: PathBuf, message: String },
     #[error("schema validation failed in {path}: {report}", path = path.display())]
     Schema { path: PathBuf, report: String },
+    #[error("MDX compile error in {path}: {message}", path = path.display())]
+    Mdx { path: PathBuf, message: String },
     #[error("multiple errors:\n{summary}")]
     Multiple {
         summary: String,
@@ -79,7 +99,35 @@ pub enum CollectionError {
 /// - Skips non-md/mdx files silently.
 /// - Aggregates errors: if any entry fails, returns `Err(CollectionError::Multiple { .. })`
 ///   with all failures (not just the first).
+///
+/// Equivalent to [`walk_collection_with_cache`] called with `cache = None`
+/// — every entry's MDX is compiled fresh. Long-running consumers (a dev
+/// server, a build that touches the same collection multiple times) should
+/// prefer the `_with_cache` variant so identical bodies are emitted once.
 pub fn walk_collection<T>(dir: &Path) -> Result<Vec<Entry<T>>, CollectionError>
+where
+    T: DeserializeOwned + garde::Validate<Context = ()>,
+{
+    walk_collection_with_cache(dir, None)
+}
+
+/// Walk a collection directory like [`walk_collection`], reusing `cache` to
+/// dedupe compiled MDX modules across entries.
+///
+/// `cache: Some(&MdxModuleCache)` short-circuits compilation when an entry's
+/// raw body has been seen before — useful when the same collection is
+/// re-walked after a partial change (only the modified file recompiles).
+/// `cache: None` recompiles every entry, matching the simple
+/// [`walk_collection`] contract.
+///
+/// Both `.md` and `.mdx` files take the same code path: CommonMark is a
+/// strict MDX subset, so one emitter handles both. Each successful entry
+/// gets its [`Entry::module_specifier`] and [`Entry::compiled_jsx_source`]
+/// populated up-front so consumers see a uniform shape.
+pub fn walk_collection_with_cache<T>(
+    dir: &Path,
+    cache: Option<&MdxModuleCache>,
+) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
@@ -94,7 +142,7 @@ where
     let mut errors: Vec<CollectionError> = Vec::new();
 
     for path in files {
-        match parse_entry::<T>(dir, &path) {
+        match parse_entry::<T>(dir, &path, cache) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
         }
@@ -195,7 +243,11 @@ fn is_md_or_mdx(path: &Path) -> bool {
     )
 }
 
-fn parse_entry<T>(root: &Path, path: &Path) -> Result<Entry<T>, CollectionError>
+fn parse_entry<T>(
+    root: &Path,
+    path: &Path,
+    cache: Option<&MdxModuleCache>,
+) -> Result<Entry<T>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
@@ -227,13 +279,61 @@ where
 
     let rel_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
+    // Compile body to JSX (same path for `.md` and `.mdx` — CommonMark is a
+    // strict MDX subset). The cache opt-in means repeat walks of an
+    // unchanged corpus skip the emitter entirely.
+    let compiled =
+        compile_mdx_to_jsx_module_cached(&body, path, cache).map_err(|e| CollectionError::Mdx {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+
+    // Derive the specifier from THIS entry's file path + the JSX hash
+    // rather than reusing `compiled.specifier` directly. The cache from
+    // Sub 2 keys on `sha256(body)` and returns the cached
+    // `CompiledMdx` verbatim — including the specifier baked at first
+    // compile. Two entries with byte-identical bodies but different
+    // filenames must still each get a specifier whose `<slug>` segment
+    // matches their own file. The hash component is invariant (same
+    // body → same JSX → same hash), so it's safe to reuse.
+    let (collection_seg, slug_seg) = collection_and_slug_from_path(path);
+    let module_specifier = format!(
+        "mdx://{collection_seg}/{slug_seg}#{hash}",
+        hash = compiled.content_hash,
+    );
+
     Ok(Entry {
         slug,
         path: path.to_path_buf(),
         rel_path,
         data,
         body,
+        module_specifier,
+        compiled_jsx_source: compiled.jsx_source,
     })
+}
+
+/// Derive the `(collection, slug)` segments of an `mdx://` specifier from
+/// a content-collection file path. Mirrors the convention documented on
+/// `compile_mdx_to_jsx_module_cached`: the immediate parent directory's
+/// name is the collection, the file stem is the slug. Falls back to `"_"`
+/// for either segment when the path lacks a parent or stem so the result
+/// stays a parseable specifier.
+fn collection_and_slug_from_path(file_path: &Path) -> (String, String) {
+    let collection = file_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("_")
+        .to_string();
+    let slug = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("_")
+        .to_string();
+    (collection, slug)
 }
 
 /// Minimal YAML frontmatter splitter: returns `(yaml_block, body)`.
@@ -469,6 +569,7 @@ mod tests {
                         CollectionError::Frontmatter { .. } => "frontmatter",
                         CollectionError::Schema { .. } => "schema",
                         CollectionError::Io { .. } => "io",
+                        CollectionError::Mdx { .. } => "mdx",
                         CollectionError::Multiple { .. } => "multiple",
                     })
                     .collect();
