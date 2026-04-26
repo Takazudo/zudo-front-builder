@@ -222,10 +222,12 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
     s
 }
 
-/// HTML-escape a value for use inside a double-quoted attribute. We escape
-/// the four characters that can break out of an attribute (`&`, `<`, `>`,
-/// `"`) and leave everything else verbatim. JSON in `data-props` contains
-/// double quotes routinely, so this step is load-bearing.
+/// HTML-escape a value for use inside an attribute value. We escape the
+/// five characters that can break out of an attribute or change its
+/// meaning (`&`, `<`, `>`, `"`, `'`) and leave everything else verbatim.
+/// Single-quote escaping is defence-in-depth: today the rewriter only
+/// emits double-quoted attributes, but consumers / downstream rewriters
+/// may not, and `&#39;` is cheap.
 fn escape_attr(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -234,6 +236,7 @@ fn escape_attr(value: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             other => out.push(other),
         }
     }

@@ -44,7 +44,14 @@ pub struct EsbuildSubprocessConfig {
 
     /// Extra CLI args appended to the subprocess invocation, for escape
     /// hatches like `--define:process.env.NODE_ENV='production'`. Passed
-    /// verbatim.
+    /// verbatim — each element becomes a separate `argv` entry, so shell
+    /// quoting is not needed and shell injection is not possible.
+    ///
+    /// **Trust boundary**: callers are expected to assemble these from
+    /// build configuration (zfb.config.ts, env vars under operator
+    /// control), NOT from end-user input. The same caveat applies to
+    /// island `source_path`s — they come from project-local source files
+    /// the scanner has identified, not from user-supplied data.
     pub extra_args: Vec<OsString>,
 
     /// When true, the bundler will return a *fake* JS payload instead of
