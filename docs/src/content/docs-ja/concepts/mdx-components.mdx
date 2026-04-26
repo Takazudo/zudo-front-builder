@@ -1,0 +1,151 @@
+---
+title: MDX Components
+description: How MDX entries reach your pages as renderable React/Preact components, and how to override individual elements via the components prop.
+sidebar_position: 2.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, and where the convention comes from.
+
+</Info>
+
+## The mental model
+
+Every `.mdx` file in a content collection is compiled to a JSX module at build time. The compiled module exports an `MDXContent({ components })` function — a regular component whose only job is to render the post body, with optional per-element overrides supplied through the `components` prop.
+
+This is the same contract Astro's `@astrojs/mdx` exposes via `<Content components={...} />`. zfb adopts it directly so the mental model transfers across the Astro ecosystem.
+
+The shape is:
+
+```tsx
+// Conceptually, your `hello-zfb.mdx` becomes:
+export default function MDXContent({ components }: { components?: Record<string, unknown> }) {
+  // ...renders the post body, looking up <p>, <a>, <Note>, etc. in `components`
+}
+```
+
+When MDX encounters `<p>some text</p>` (which is what a markdown paragraph compiles to), it looks up `p` in the `components` map. If you supply one, your component renders. If you don't, the raw HTML element renders. The same lookup applies to your custom JSX — `<Note>...</Note>` in the post body is resolved against `components.Note` at evaluation time.
+
+## What `getCollection()` already gives you
+
+You don't construct `MDXContent` yourself. The collection layer wraps every entry's compiled module in a `Content` component and attaches it to the entry. That means:
+
+```tsx
+import { getCollection } from "zfb/content";
+
+const posts = await getCollection("blog");
+const post = posts[0];
+
+// `post.Content` is a renderable component:
+<post.Content />;
+```
+
+You get `post.data` (the parsed frontmatter), `post.slug`, and `post.Content` (the renderable body). Same shape for `.md` and `.mdx` — CommonMark is a strict MDX subset, so the same pipeline handles both. Plain markdown entries simply have no JSX nodes to override, but the `components` prop still applies to the HTML elements they emit.
+
+The bridge that connects `post.Content` to the actual compiled JSX module lives at `globalThis.__zfb.content.get(specifier)`, installed by the Rust-side renderer before the page module evaluates. When the bridge isn't present (unit tests, dev sandboxes, the v0 CLI), `Content` falls back to a clearly marked `<pre data-zfb-content-fallback>` block so the absence is obvious.
+
+## Spreading `defaultComponents`
+
+zfb ships a `defaultComponents` map from its root export — a set of element-level overrides (the **htmlOverrides** convention) that wrap the bare HTML tags MDX emits with sensible component implementations. The recipe is to spread it first, then layer your own overrides on top:
+
+```tsx
+import { defaultComponents } from "zfb";
+import Note from "../../components/note";
+
+<post.Content components={{ ...defaultComponents, ...mine, Note }} />;
+```
+
+Spread order matters: keys to the right win. Putting `defaultComponents` first means your individual overrides take precedence on collisions, while everything you don't override still picks up the default behavior.
+
+The current `defaultComponents` set covers:
+
+| Key          | Component           | Wraps                                       |
+| ------------ | ------------------- | ------------------------------------------- |
+| `h2`         | `ContentH2`         | `<h2>`                                      |
+| `h3`         | `ContentH3`         | `<h3>`                                      |
+| `h4`         | `ContentH4`         | `<h4>`                                      |
+| `p`          | `ContentParagraph`  | `<p>`                                       |
+| `a`          | `ContentLink`       | `<a>`                                       |
+| `strong`     | `ContentStrong`     | `<strong>`                                  |
+| `blockquote` | `ContentBlockquote` | `<blockquote>`                              |
+| `ul`         | `ContentUl`         | `<ul>`                                      |
+| `ol`         | `ContentOl`         | `<ol>`                                      |
+| `table`      | `ContentTable`      | `<table>`                                   |
+| `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
+
+Each is also exported individually (`import { ContentLink } from "zfb"`) for cases where you want a single override without dragging in the whole map.
+
+## Authoring `.mdx` with custom components
+
+The basic-blog example demonstrates the end-to-end shape. The MDX post uses a custom `<Note>` admonition:
+
+```mdx
+---
+title: Hello, zfb
+date: 2026-04-20
+description: A short introduction to the basic-blog dogfood example.
+---
+
+Welcome to the **basic-blog** example.
+
+<Note title="MDX in basic-blog">
+
+  This post is `.mdx`, not plain markdown. The `<Note>` admonition you are
+  reading right now is a custom JSX component passed in via the `components`
+  prop on `<post.Content />` — exactly the same delivery contract Astro's
+  `@astrojs/mdx` exposes.
+
+</Note>
+```
+
+The per-post route resolves `<Note>` against the `components` map by passing it in alongside `defaultComponents`:
+
+```tsx
+// pages/blog/[slug].tsx
+import { defaultComponents } from "zfb";
+import Note from "../../components/note";
+
+export default function BlogPostPage({ post }: Props) {
+  return (
+    <article>
+      <h1>{post.data.title}</h1>
+      <post.Content components={{ ...defaultComponents, Note }} />
+    </article>
+  );
+}
+```
+
+The `Note` component itself is an ordinary Preact (or React) component that receives `title` and `children`:
+
+```tsx
+// components/note.tsx
+import type { ComponentChildren } from "preact";
+
+type Props = {
+  title?: string;
+  children: ComponentChildren;
+};
+
+export default function Note({ title, children }: Props) {
+  return (
+    <aside class="admonition admonition--note" role="note">
+      {title ? <strong>{title}</strong> : null}
+      <div>{children}</div>
+    </aside>
+  );
+}
+```
+
+The full source lives under `examples/basic-blog/` — `content/blog/hello-zfb.mdx`, `pages/blog/[slug].tsx`, and `components/note.tsx`.
+
+## Reference
+
+- The `defaultComponents` set is zfb's port of the htmlOverrides convention pioneered by [zudo-doc](https://github.com/zudolab/zudo-doc), where the same map shape solves the same problem for that documentation framework.
+- The upstream pattern from Astro is documented at [Astro: Assigning custom components to HTML elements](https://docs.astro.build/en/guides/integrations-guide/mdx/#assigning-custom-components-to-html-elements). The contract is intentionally identical: a flat record of element-name → component, passed through the `components` prop.
+
+## See also
+
+- [Content Collections](/concepts/content-collections) — how entries are discovered and exposed via `getCollection()`.
+- [Build Pipeline](/concepts/build-pipeline) — where MDX-to-JSX compilation sits in the end-to-end flow.
