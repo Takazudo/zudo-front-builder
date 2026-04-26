@@ -16,15 +16,11 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-<<<<<<< HEAD
 indicatif = "0.17"
 owo-colors = { version = "4", features = ["supports-colors"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-=======
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
->>>>>>> zfb-init-cli/config-parser
