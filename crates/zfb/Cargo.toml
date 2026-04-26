@@ -16,11 +16,12 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+include_dir = "0.7"
 indicatif = "0.17"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
