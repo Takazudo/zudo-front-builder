@@ -1,0 +1,19 @@
+{
+  "name": "@zfb-examples/basic-blog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal real zfb site used as both an example and a dogfood fixture for the workspace.",
+  "scripts": {
+    "dev": "zfb dev",
+    "build": "zfb build",
+    "preview": "zfb preview"
+  },
+  "dependencies": {
+    "preact": "^10.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
