@@ -1,0 +1,11 @@
+[package]
+name = "zfb-graph"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb dependency graph: tracks which pages depend on which sources and computes the minimal set of dirty pages on file change"
+
+[lib]
+
+[dependencies]
+thiserror = { workspace = true }
