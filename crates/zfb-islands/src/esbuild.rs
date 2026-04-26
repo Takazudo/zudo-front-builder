@@ -259,12 +259,6 @@ pub fn hash_8(js: &str) -> String {
     full[..8].to_string()
 }
 
-/// Build the public URL for the islands JS asset.
-///
-/// `base_url` is concatenated with the asset path's filename portion under
-/// an `assets/` segment. `base_url` is normalised to drop any trailing `/`.
-/// Exact mirror of `zfb_css::link_href`.
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -62,8 +62,7 @@ mod tests {
         let bundler = NativeRustBundler::new();
         let err = bundler
             .bundle(&[], &BundleConfig::default())
-            .err()
-            .expect("must return an error");
+            .expect_err("must return an error");
         let msg = format!("{err}");
         assert!(msg.contains("not yet implemented"), "msg = {msg}");
     }
