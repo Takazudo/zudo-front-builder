@@ -65,10 +65,11 @@ const posts = await getCollection("blog");
 The return shape is similar — each entry exposes `slug`, `data`
 (frontmatter), and `body`. See /api/get-collection for the full surface.
 
-Schemas move from inline Zod to declarative config:
+Schemas move from inline Zod to declarative config. The v1 target is a
+record-keyed shape with explicit `type` and per-field validators:
 
 ```ts
-// zfb.config.ts
+// zfb.config.ts — v1 target shape (NOT yet loaded; see ADR-001)
 export default {
   collections: {
     blog: {
@@ -83,8 +84,11 @@ export default {
 };
 ```
 
-There is no Zod yet, only string field types like `"string"`, `"number"`,
-`"date"`, plus a trailing `?` for optional fields.
+There is no Zod — field validators are string tags like `"string"`,
+`"number"`, `"date"`, with a trailing `?` for optional. v0 currently
+loads only the simpler array form via `zfb.config.json` (see
+[`defineConfig`](/api/define-config)); the richer schema lands with the
+runtime decision.
 
 ## Islands
 

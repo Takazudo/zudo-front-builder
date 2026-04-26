@@ -49,13 +49,16 @@ cascade have no direct equivalent in zfb. Instead, you express data in
 two places:
 
 - **Static / shared data** — declare a data collection in
-  `zfb.config.{ts,json}`:
+  `zfb.config.json`. Today the loader accepts the simpler array form
+  (`{ name, path }`); the richer record-keyed form with explicit `type`
+  and per-field schemas is the v1 target — see
+  [`defineConfig`](/api/define-config) for both shapes side by side:
 
-```ts
+```json
 {
-  collections: {
-    site: { type: "data", schema: { name: "string", url: "string" } },
-  },
+  "collections": [
+    { "name": "site", "path": "data/site" }
+  ]
 }
 ```
 

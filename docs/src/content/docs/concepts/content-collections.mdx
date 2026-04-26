@@ -15,27 +15,28 @@ A **content collection** is a directory of Markdown (or MDX) files declared in y
 
 ## Declaring a collection
 
-Collections are configured in `zfb.config.ts` (or `zfb.config.json`) under the `collections` key:
+Collections are configured in `zfb.config.json` under the `collections` key. Today the loader accepts an array of entries with `name` and `path`:
 
 ```json
 {
-  "collections": {
-    "blog": {
-      "type": "content",
-      "directory": "content/blog",
-      "schema": {
-        "title": "string",
-        "date": "date",
-        "description": "string?"
-      }
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog"
     }
-  }
+  ]
 }
 ```
 
-The `type: "content"` tells zfb that each file is a Markdown document with frontmatter and a body. The `schema` is enforced at build time — any entry missing a required field, or with the wrong type, fails the build with a clear error pointing at the offending file.
+The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
 
-A `?` suffix marks a field as optional. Supported field types include `string`, `number`, `boolean`, `date`, and arrays (`string[]`).
+You can additionally supply an optional `schema` field — it is parsed but not yet enforced in v0; the planned future shape (per-field validators with `string`, `number`, `boolean`, `date`, `string[]` and a trailing `?` for optional) is described on the [`defineConfig`](/api/define-config) page so you can plan for it.
+
+<Info title="The richer schema lands with the runtime">
+
+  The forward-looking shape — `collections` keyed by name with `type: "content" | "data"`, `directory`, and an enforced `schema` — is the v1 target. It is documented on the `defineConfig` page for forward compatibility but is not what the loader accepts today. Author against the `[{ name, path }]` form for now; migrating later is a mechanical translation.
+
+</Info>
 
 ## Loading entries from a page
 

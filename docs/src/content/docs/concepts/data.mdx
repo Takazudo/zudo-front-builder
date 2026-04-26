@@ -21,25 +21,20 @@ This is the right choice whenever the body of each entry is meant to be read.
 
 ## 2. Data collections
 
-When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection. The shape is the same as a content collection, but you set `type: "data"` and put JSON, YAML, or TOML files in the directory:
+When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection: a directory of JSON / YAML / TOML files declared in `zfb.config.json`. The same `[{ name, path }]` shape that content collections use today (see [Content Collections](/concepts/content-collections)) accepts data directories without ceremony:
 
 ```json
 {
-  "collections": {
-    "products": {
-      "type": "data",
-      "directory": "data/products",
-      "schema": {
-        "name": "string",
-        "price": "number",
-        "inStock": "boolean"
-      }
+  "collections": [
+    {
+      "name": "products",
+      "path": "data/products"
     }
-  }
+  ]
 }
 ```
 
-Each file becomes one entry, validated against your schema. You load them the same way:
+Each file becomes one entry. Per-entry schema validation is the planned future shape (matches the `defineConfig` v1 schema with explicit `type: "data"` + per-field validators); today the loader walks the directory and surfaces entries through `getCollection()`. You load them the same way:
 
 ```tsx
 import { getCollection } from "zfb/content";
