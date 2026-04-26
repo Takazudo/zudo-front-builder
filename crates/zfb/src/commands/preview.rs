@@ -13,10 +13,14 @@
 //!
 //! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported" error
 //! for `zfb.config.ts`) via [`crate::config::load_from_dir`] from the current
-//! working directory. The config's `outDir` is treated as the *default* — a
-//! CLI `--outdir` value always wins, since the user explicitly typed it. The
-//! same precedence applies to `--port`. Output uses [`crate::output`]
-//! helpers for consistent styling with the other zfb commands.
+//! working directory. Loading the config validates the project; the
+//! command-line `--outdir` and `--port` arguments win **unconditionally** —
+//! `clap` defaults them to concrete values, so we cannot cheaply distinguish
+//! "user passed the flag" from "user accepted the default", and treating CLI
+//! as authoritative keeps the rule predictable across all four commands (see
+//! the matching note in `commands/dev.rs` and `commands/build.rs`). Output
+//! uses [`crate::output`] helpers for consistent styling with the other zfb
+//! commands.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -29,16 +33,6 @@ use crate::cli::PreviewArgs;
 use crate::config;
 use crate::output;
 
-/// Default value used by clap for `--outdir`. Kept in sync with
-/// [`crate::cli::PreviewArgs`] so we can detect when the user did not pass an
-/// explicit override and we should fall back to the config's `outDir`.
-const CLAP_DEFAULT_OUTDIR: &str = "dist";
-
-/// Default value used by clap for `--port`. Same rationale as
-/// [`CLAP_DEFAULT_OUTDIR`] — when the user did not pass `--port`, we let the
-/// config's `port` win.
-const CLAP_DEFAULT_PORT: u16 = 4321;
-
 pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     // Resolve the project root from the current working directory and load
     // the project config (if any). A missing config file is fine — it
@@ -46,7 +40,7 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     // unsupported zfb.config.ts) is surfaced via the output helpers and
     // propagated so `main()` can exit non-zero.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
-    let cfg = match config::load_from_dir(&project_root).await {
+    let _cfg = match config::load_from_dir(&project_root).await {
         Ok(cfg) => cfg,
         Err(err) => {
             output::error(&output::format_error(&err));
@@ -54,24 +48,11 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
         }
     };
 
-    // CLI `--outdir` wins over config `outDir`. We can only tell whether the
-    // CLI value is "explicit" by comparing against clap's default literal, so
-    // both the literal and the type stay in sync with `PreviewArgs::outdir`.
-    let outdir = if args.outdir == PathBuf::from(CLAP_DEFAULT_OUTDIR) {
-        cfg.out_dir.clone()
-    } else {
-        args.outdir.clone()
-    };
-    // Resolve a relative outdir against the project root so the
-    // existence check (and ServeDir) operate on an unambiguous path.
-    let outdir = resolve_under_root(&project_root, &outdir);
-
-    // CLI `--port` wins over config `port`. Same fallback rule as outdir.
-    let port = if args.port == CLAP_DEFAULT_PORT {
-        cfg.port
-    } else {
-        args.port
-    };
+    // Resolve `args.outdir` against the project root so the existence check
+    // (and `ServeDir`) operate on an unambiguous path. CLI wins over config
+    // unconditionally — see the precedence note in the module doc comment.
+    let outdir = resolve_under_root(&project_root, &args.outdir);
+    let port = args.port;
 
     // Verify the output directory exists *before* binding the port so that
     // missing-build errors don't leave a half-started server behind.
@@ -143,21 +124,4 @@ mod tests {
         assert_eq!(resolve_under_root(root, &abs), abs);
     }
 
-    #[test]
-    fn clap_defaults_match_cli_struct() {
-        // Defensive: if `PreviewArgs` ever changes its clap defaults, the
-        // CLI-vs-config precedence logic in `run()` would silently break.
-        // This keeps the literals here honest.
-        use clap::Parser;
-
-        #[derive(Parser)]
-        struct Wrap {
-            #[command(flatten)]
-            args: PreviewArgs,
-        }
-
-        let parsed = Wrap::try_parse_from(["zfb-preview-test"]).expect("defaults parse");
-        assert_eq!(parsed.args.outdir, PathBuf::from(CLAP_DEFAULT_OUTDIR));
-        assert_eq!(parsed.args.port, CLAP_DEFAULT_PORT);
-    }
 }
