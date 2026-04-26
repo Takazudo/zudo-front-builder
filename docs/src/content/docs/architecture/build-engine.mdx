@@ -1,0 +1,65 @@
+---
+title: Build engine
+description: "How zfb's crates fit together, why the rebuild is per-page, and what makes a `dist/` write safe."
+sidebar_position: 1
+---
+
+This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/docs/concepts/build-pipeline); this page explains why the story is shaped this way.
+
+## The crate split
+
+zfb is a Rust workspace. Each crate owns one slice of the build, and the data flowing between them is small and explicit.
+
+- **`zfb-router`** scans `pages/` and turns files into routes. It owns the file-name-to-URL convention and nothing else.
+- **`zfb-graph`** holds the dependency graph. Every page knows which sources it depends on (components, layouts, content, styles); every source knows which pages depend on it. This is the index that makes per-page rebuilds possible.
+- **`zfb-watcher`** wraps the `notify` crate, normalises the noisy native events into one `Change` per logical save, and emits them on a channel.
+- **`zfb-build`** is the orchestrator. It consumes `Change` values, classifies them, asks the graph which pages need rebuilding, and runs the asset pipeline.
+- **`zfb-render`** compiles TSX through SWC, hands the resulting JS to a `RenderHost`, and writes the HTML.
+- **`zfb-css`** processes CSS modules and global styles.
+- **`zfb-islands`** scans for `client:*` directives, bundles the per-island JS, and emits the hydration entry.
+- **`zfb-content`** parses Markdown / MDX content collections and runs the unified plugin chain.
+- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, and the live-reload SSE stream.
+
+The crates depend downward: the orchestrator knows about render, css, islands, content. The renderer does not know about the orchestrator. The server only reads.
+
+## Per-page rebuild, not per-bundle
+
+Bundler-based tools (Vite, esbuild) think in modules and chunks: a change invalidates a module, and the bundler walks the import graph to decide what to re-emit. zfb thinks in **pages**.
+
+When a file changes, `zfb-watcher` emits a `Change`, the orchestrator asks `zfb-graph` which pages depend on this path, and only those pages re-render. A leaf component used by three pages produces three page rebuilds — not a whole-site rebuild, not a bundler walk.
+
+The win is granularity. A 2,000-page site rebuilds the affected pages in milliseconds when a shared header changes. The cost is that the graph must be honest — `zfb-graph` is updated as part of every successful render so the next query has a current picture.
+
+<Info title="v0 status">
+
+  Most pieces of the engine are wired and unit-tested. The full
+  end-to-end render flow — TSX → JS → HTML — is gated on ADR-001's
+  runtime decision; see [JS runtime](/docs/architecture/js-runtime).
+
+</Info>
+
+## Atomic writes
+
+Every file in `dist/` is written through `atomic_write_string` (in `zfb-build`'s `atomic.rs`): write to a sibling temp file in the same directory, then `rename` over the destination. `rename` is atomic on POSIX for same-disk files, and Windows has the same guarantee through `MoveFileExW`'s replace-existing semantics.
+
+Concretely:
+
+- A reader opening `dist/index.html` mid-build sees the old bytes or the new bytes — never half-written, never empty.
+- A crashed build leaves orphan `*.tmp-<pid>-<seq>` files but never corrupts output. The naming is deliberate: `ls dist/` after a crash shows what was in flight.
+- The dev server can serve `dist/` while the orchestrator rewrites it. No coordination needed.
+
+This is the boring kind of correctness: not a feature, an invariant we never violate.
+
+## Watcher debounce and change coalescing
+
+`zfb-watcher` debounces native events with a 50ms default window. Editor saves are messy — vim writes to a swap file then renames; vscode emits multiple metadata events; `git checkout` produces hundreds of events at once. The debounce collapses each burst into one `Change` per path.
+
+The orchestrator does a second pass: when a tick fires, it drains every `Change` already in the channel before invoking the pipeline. A fast save burst still produces one pipeline run per natural pause. The orchestrator does no extra time-based coalescing on top of the watcher — the watcher already did the right thing. Typing fast does not thrash the build.
+
+## Relationship to the dev server
+
+The dev server (`zfb-server`) is a thin reader on top of the orchestrator's outputs. It owns a `PageCache` (URL path to rendered HTML, populated after every render), a `tokio::sync::broadcast` channel of `ReloadEvent` values, and an `axum` router that serves the cache, `dist/assets/`, `public/`, and an SSE endpoint at `/__zfb/reload`.
+
+The wiring point is `outcome_to_events` in `zfb-server`'s `livereload.rs`. Every non-noop `BuildOutcome` is translated into `ReloadEvent`s and broadcast. CSS-only changes emit a `css` event so the browser swaps stylesheets without losing client state; everything else emits a `page` event and triggers `location.reload()`.
+
+The server is dev-only. Production emits static files for an edge CDN. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.

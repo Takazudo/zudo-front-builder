@@ -1,0 +1,78 @@
+---
+title: JS runtime
+description: How zfb hosts JavaScript execution server-side, the candidates considered, and why the runtime is fixed by the binary.
+sidebar_position: 2
+---
+
+zfb renders TSX server-side. TSX compiles to JavaScript, and JavaScript needs an engine to execute it. Rust does not ship one, so zfb embeds a JS runtime. This page is the user-readable companion to ADR-001 — the architectural decision record that locks the runtime choice.
+
+## The need
+
+zfb's renderer compiles a page's TSX through SWC, hands the resulting ESM to a JS host, calls the module's `default` export, and writes the returned HTML to disk. The host must:
+
+- support ESM (`import` / `export`) so pages can import shared components naturally,
+- support top-level `await` so a page can `await fetch(...)` or `await loadCollection(...)` at module scope,
+- surface thrown errors with **source-accurate** locations — the stack-trace line must match the line in the user's TSX file, not an offset into a wrapped script,
+- evaluate the same module repeatedly across a build of hundreds of pages without leaking memory.
+
+## The candidates
+
+The spike crate at `crates/zfb-runtime-spike/` implements the same `RenderHost` trait against three live candidates, gated behind cargo features so the heavy V8 build is opt-in.
+
+- **`deno_core`** — V8 wrapped by Deno's reusable core. Ships an ES module loader, an event loop for top-level await, and source-mapped errors out of the box.
+- **`ssr_rs`** — a thin V8 wrapper specialised for Preact / React SSR. Narrower scope, single-bundle entry-point model.
+- **`rquickjs`** — Rust bindings around QuickJS. Small footprint, fast to compile, single-threaded.
+
+Two more were rejected without a measured spike. `rusty_v8` is the same V8 we would get through `deno_core`, only at a lower level — choosing it means re-implementing the loader and isolate plumbing `deno_core` already gives us. `boa` is a pure-Rust ESM implementation; ECMA conformance and source-map fidelity trail V8 by enough that real-world Preact / React SSR hits unsupported corners.
+
+## The trade-off matrix
+
+The spike's bench harness loads five representative scenarios — static page, dynamic route, content collection, `"use client"`, and top-level await — and measures cold start, warm mean, warm p95, and steady-state RSS. Headline numbers from the v0 measurement run:
+
+| Axis            | `deno_core` | `ssr_rs`  | `rquickjs`         |
+| --------------- | ----------- | --------- | ------------------ |
+| Warm render     | 16us        | 1.37ms    | 106us              |
+| Cold start      | 181us       | 5.88ms    | 572us              |
+| Steady-state RSS| 19MB        | 317MB     | 4.5MB              |
+| ESM             | native      | bundle    | partial            |
+| Top-level await | native      | bundle    | not supported sync |
+| Source maps     | native      | partial   | offsets only       |
+| Build cost      | ~3 minutes  | similar   | ~30 seconds        |
+
+The full table, raw samples, and methodology live in the [ADR](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md). The V8-class engines win on the correctness axes; QuickJS wins on footprint and build cost. `ssr_rs`'s default per-render isolate creation dominates everything else and accumulates memory under load.
+
+## Constraints zfb imposes
+
+Two project-level invariants shape the choice further.
+
+**Single isolate per render thread.** V8's isolate is pinned to one thread; QuickJS keeps a similar invariant. Whichever runtime ships, the renderer treats the host as `!Send` and runs it on a dedicated thread, exchanging work over a channel.
+
+**The runtime is fixed by the binary, not by config.** `zfb.config.ts` cannot pick its own JS runtime. The runtime is whatever the `zfb` binary you installed was compiled with. That keeps the contract between zfb and user code single-valued — every project built with one binary uses the same runtime. The bootstrap rule lives in `crates/zfb/src/config.rs`.
+
+## The boundary
+
+Everything above the host is written against the `RenderHost` trait in `crates/zfb-render/src/render_host.rs`:
+
+```rust
+pub trait RenderHost {
+    fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle>;
+    fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
+    fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
+}
+```
+
+That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. A future ADR can swap the implementation without touching call sites — add a new host, re-run the bench, flip a feature flag, and run the adapter integration tests to confirm byte-identical HTML.
+
+## Status
+
+ADR-001 is in flight. The `RenderHost` trait is real; `DenoCoreHost` is a skeleton whose three trait methods are stubbed pending the ADR's final wiring. When ADR-001 closes, one host implementation lights up end-to-end and `Renderer::render()` becomes functional from TSX source to HTML on disk.
+
+<Warning title="In-flight decision">
+
+  This page reflects the analysis as of v0. The final ADR-001 decision
+  will replace this page's content with the chosen runtime and the
+  rationale that locked it in. Track [issue
+  #4](https://github.com/Takazudo/zudo-front-builder/issues/4) for the
+  closing post.
+
+</Warning>
