@@ -31,9 +31,7 @@ export default function BlogPostPage({ entry }: Props) {
       <article>
         <h1>{entry.frontmatter.title}</h1>
         <p>
-          <time dateTime={entry.frontmatter.date}>
-            {entry.frontmatter.date}
-          </time>
+          <time dateTime={entry.frontmatter.date}>{entry.frontmatter.date}</time>
         </p>
         <div dangerouslySetInnerHTML={{ __html: entry.body }} />
         <p>

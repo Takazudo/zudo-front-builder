@@ -7,10 +7,7 @@ type Props = {
   children: ComponentChildren;
 };
 
-export default function DefaultLayout({
-  title = "zfb site",
-  children,
-}: Props) {
+export default function DefaultLayout({ title = "zfb site", children }: Props) {
   return (
     <html lang="en">
       <head>
