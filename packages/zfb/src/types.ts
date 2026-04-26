@@ -27,3 +27,23 @@ export const DEFAULT_WHEN: When = "load";
 export function isWhen(value: unknown): value is When {
   return typeof value === "string" && (WHEN_VALUES as readonly string[]).includes(value);
 }
+
+/**
+ * Resolve the validated `when` value, warning in development for unknown
+ * inputs. Returns the input unchanged when valid, or [`DEFAULT_WHEN`]
+ * otherwise. Lives here (rather than in `island.ts`) so the runtime
+ * scheduler can import it without transitively pulling in the JSX
+ * wrapper.
+ */
+export function resolveWhen(when: unknown): When {
+  if (when === undefined) return DEFAULT_WHEN;
+  if (isWhen(when)) return when;
+  if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[zfb] <Island when="${String(when)}"> is not a valid value. ` +
+        `Expected "visible" | "idle" | "load". Falling back to "${DEFAULT_WHEN}".`,
+    );
+  }
+  return DEFAULT_WHEN;
+}

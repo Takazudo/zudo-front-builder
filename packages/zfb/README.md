@@ -22,6 +22,14 @@ surface. Today it covers:
   consumed by the hydration runtime (Sub 3).
 - `When`, `WHEN_VALUES`, `DEFAULT_WHEN`, `isWhen`, `resolveWhen` — type
   and runtime utilities pinning the spelling of the three modes.
+- `getCollection(name)`, `parseFrontmatter(raw)` — content collection
+  helpers exported from `zfb/content`. `parseFrontmatter` is part of the
+  public SDK surface so consumers can write custom content loaders that
+  reuse the v0 frontmatter parser without re-implementing it.
+- `paginate(items, opts)`, plus `PaginatedPage<T>` / `PaginateRoute<T>` —
+  exported from `zfb/paginate`.
+- `defineConfig(config)` — exported from `zfb/config` for the eventual
+  `zfb.config.ts` form.
 
 The package is JSX-runtime-agnostic: the `Island` component does not
 import preact or react, so it works under either framework adapter
