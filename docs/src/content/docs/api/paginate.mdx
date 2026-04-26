@@ -1,0 +1,57 @@
+---
+title: paginate
+description: Expand a list of items into paginated route instances.
+sidebar_position: 3
+---
+
+## Signature
+
+```ts
+paginate(items: T[], opts: { pageSize: number; route: string }): PaginationPath[]
+```
+
+Use `paginate` inside a `paths()` export to fan a list of items out across a paginated route. The function chunks `items` by `pageSize` and produces one `PaginationPath` per chunk. Each path knows its URL params and the props the page should receive.
+
+## PaginationPath shape
+
+- `params`: object — the URL params for the route. For paginated lists, this is typically `{ page: number }`.
+- `props`: object — passed to the page's default export. For a list page, this is usually `{ items: T[], page: number, totalPages: number }`.
+
+## Example
+
+Paginate a blog index 10 posts at a time under `/blog/page/[page]`.
+
+```tsx
+import { paginate, getCollection } from "zfb/content";
+
+export async function paths() {
+  const posts = await getCollection("blog");
+  return paginate(posts, {
+    pageSize: 10,
+    route: "/blog/page/[page]",
+  });
+}
+
+export default function BlogPage({ items, page, totalPages }) {
+  return (
+    <section>
+      <h2>Blog — page {page} of {totalPages}</h2>
+      <ul>
+        {items.map((post) => (
+          <li key={post.slug}>
+            <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+The `[page]` segment in `route` matches the `params.page` value emitted by `paginate`. Page numbers start at 1.
+
+<Warning title="v0: paths() evaluation pending">
+
+  `paths()` is part of the routing model today — the router recognises dynamic routes and reserves the `paths` export name. Expanding `paths()` into concrete page instances at build time requires the JS runtime (see [ADR-001](/architecture/js-runtime)). `zfb build` currently warn-skips dynamic routes; you can write your `paginate` calls now and they will be honoured once the runtime lands.
+
+</Warning>

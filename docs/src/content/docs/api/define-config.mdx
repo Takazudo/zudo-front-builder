@@ -1,0 +1,83 @@
+---
+title: defineConfig
+description: Define a zfb project configuration with full type inference.
+sidebar_position: 1
+---
+
+## Signature
+
+```ts
+defineConfig(config: Config): Config
+```
+
+`defineConfig` is re-exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `Config` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
+
+## Config shape
+
+All keys are camelCase and mirror `crates/zfb/src/config.rs`.
+
+- `outDir`: string, default `"dist"`
+- `publicDir`: string, default `"public"`
+- `host`: string, default `"localhost"`
+- `port`: number, default `3000`
+- `framework`: `"preact" | "react"`, default `"preact"`
+- `collections`: `Record<string, CollectionDef>` — each entry has `type` (`"content" | "data"`), `directory`, and optional `schema`. A `schema` is a record mapping field names to `"string" | "number" | "boolean" | "date"`, with a trailing `?` (e.g. `"string?"`) to mark a field optional.
+- `tailwind?`: `{ enabled: boolean }`
+- `plugins?`: array — schema TBD; not yet consumed in v0.
+
+## Examples
+
+```ts
+// zfb.config.ts (eventual canonical form)
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  outDir: "dist",
+  framework: "preact",
+  collections: {
+    blog: {
+      type: "content",
+      directory: "src/content/blog",
+      schema: {
+        title: "string",
+        date: "date",
+        draft: "boolean?",
+      },
+    },
+  },
+  tailwind: { enabled: true },
+});
+```
+
+```json
+{
+  "outDir": "dist",
+  "framework": "preact",
+  "collections": {
+    "blog": {
+      "type": "content",
+      "directory": "src/content/blog",
+      "schema": {
+        "title": "string",
+        "date": "date",
+        "draft": "boolean?"
+      }
+    }
+  },
+  "tailwind": { "enabled": true }
+}
+```
+
+<Warning title="v0: TS config not yet loaded">
+
+  `zfb.config.ts` parsing is pending the JS runtime decision (see [ADR-001](/architecture/js-runtime)). For now, write your configuration as `zfb.config.json` — the loader reads that form today.
+
+</Warning>
+
+## Validation
+
+The loader enforces the following rules and reports errors with the file path plus `line:column` for JSON parse failures:
+
+- Collection names must be unique.
+- `directory` cannot be an absolute path.
+- `directory` cannot contain `..` segments that escape the project root.
