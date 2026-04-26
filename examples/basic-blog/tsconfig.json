@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "allowSyntheticDefaultImports": true,
+    "verbatimModuleSyntax": false,
+    "baseUrl": ".",
+    "paths": {
+      "~/*": ["./*"],
+      "@/components/*": ["./components/*"],
+      "@/layouts/*": ["./layouts/*"]
+    },
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [
+    "pages/**/*",
+    "layouts/**/*",
+    "components/**/*",
+    "content/**/*",
+    "lib/**/*",
+    "zfb.config.future.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

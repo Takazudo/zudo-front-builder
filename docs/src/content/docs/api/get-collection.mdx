@@ -1,0 +1,52 @@
+---
+title: getCollection
+description: Load all entries from a content or data collection.
+sidebar_position: 2
+---
+
+## Signature
+
+```ts
+getCollection(name: string): CollectionEntry[]
+```
+
+Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. Schema validation runs against each entry as it is read, so by the time the array reaches your component, frontmatter is already typed and verified.
+
+## CollectionEntry shape
+
+Each entry, per the current sketch in `zfb-content`, has the following fields:
+
+- `slug`: string — the filename without its extension, normalized to kebab-case.
+- `data`: object — the validated frontmatter (for `content` collections) or the parsed file body (for `data` collections).
+- `body`: string — rendered HTML for markdown entries; the raw value for data entries.
+- `id`: string — the full path relative to the collection's `directory`.
+
+## Example
+
+A typical use case is rendering a list of blog posts on an index page.
+
+```tsx
+import { getCollection } from "zfb/content";
+
+export default async function BlogIndex() {
+  const posts = await getCollection("blog");
+
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.slug}>
+          <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+For dynamic per-entry pages, combine `getCollection` with a `paths()` export — see [paginate](/api/paginate) for the related pattern.
+
+<Warning title="v0 status">
+
+  Discovery and schema validation work today: `zfb` reads each collection directory, validates frontmatter against the declared schema, and surfaces errors with file paths. Wiring the `getCollection` call into the rendered page output requires the JS runtime, which is still pending — see [ADR-001](/architecture/js-runtime). You can declare collections and run the build to validate them; rendering will follow once the runtime ships.
+
+</Warning>

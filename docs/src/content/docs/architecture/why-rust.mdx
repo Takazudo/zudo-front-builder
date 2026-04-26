@@ -1,0 +1,49 @@
+---
+title: Why Rust
+description: The bet behind writing a static-site framework in Rust, what it buys, and what it costs.
+sidebar_position: 4
+---
+
+zfb is a static-site framework whose users write TypeScript and JSX. The framework itself is Rust. This page explains why.
+
+## Performance
+
+The headline is per-page rebuild time measured in milliseconds. Parsing, type checking, content processing, and atomic file writes are all native Rust — not "fast enough", just genuinely fast. A 2,000-page site rebuilds the affected pages in well under a second when a shared header changes, because the work is a tight Rust loop over a known dependency graph.
+
+The dev loop is the same shape. A save produces an FS event; the watcher debounces; the orchestrator queries the graph; affected pages re-render; the dev server broadcasts a reload. End-to-end latency lives in the tens of milliseconds for a typical edit. The browser refresh is the slow part.
+
+This is not magic. It is what you get when the framework does not JIT-warm an interpreter every save and does not keep a multi-gigabyte module graph in memory.
+
+## Memory safety and structured errors
+
+Rust's compiler eliminates use-after-free, data races, and null derefs at compile time. The build does not segfault halfway through writing `dist/`. The watcher does not panic when save bursts overlap. Boring wins, the kind you stop noticing once you have them.
+
+The visible win is error quality. zfb uses `anyhow` end-to-end, so every error reaches the CLI as a chain: the immediate failure, the operation that failed, the file path, the higher-level intent. A TSX compile error shows the file, line, column, and the operation that triggered it — not a generic "build failed".
+
+## Concurrency that fits
+
+The build orchestrator schedules across CPUs; the dev server runs an `axum` listener and an SSE broadcast at the same time. Rayon handles parallel-page rendering; tokio handles the async I/O. They coexist without ceremony — Rust's type system enforces the boundaries, so threads never share state they should not share.
+
+The same code in Node would need worker threads or child processes for equivalent isolation. Workers do not share modules; child processes do not share memory. Either way, you pay coordination overhead on every page that the Rust version does for free.
+
+## Distribution
+
+zfb is a single binary. `cargo install --path crates/zfb` produces an executable; that executable is the framework. No `node_modules` for zfb itself, no transitive tree to audit, no npm-install hop on every bootstrap. Your project still brings its own `pnpm` for the dependencies you import (TypeScript, npm packages, lockfiles), but the framework is not in that tree.
+
+A single binary pins cleanly. CI installs the version it needs; production deploys ship the same binary that ran in dev. The version your team is on is one number, not a constellation of `package.json` ranges.
+
+## Honest counterpoint: build cost
+
+The first `cargo build` of zfb's workspace is slow. If V8 (`deno_core`) ends up as the JS runtime — see [JS runtime](/docs/architecture/js-runtime) — the V8 source bundle compiles for 5 to 15 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts.
+
+The runtime spike's QuickJS feature is much faster (around 30 seconds). We gate the heavy candidates behind opt-in cargo features so a contributor can run unit tests without waiting on V8. End users do not pay this cost — they install the prebuilt binary.
+
+## Compared to JS-based alternatives
+
+Vite, Next, Astro, SvelteKit — all great tools. zfb's bet is different, not better in every direction: **what if the framework was Rust and only the user code was JS / TS?**
+
+That tilts the trade-offs. Build speed gets cheaper because there is no bundler walking a JS module graph at framework cost. Distribution gets simpler — no framework `node_modules`. Memory and concurrency get language-level guarantees. Error quality gets a uniform shape through `anyhow`.
+
+The cost is a smaller plugin ecosystem in the framework's native language and a longer first build for contributors. zfb pays both on purpose, because the design point is users who want their build out of their way.
+
+If you want a JS-native framework with a vast plugin ecosystem and a hot-reload story polished over years, those tools exist. If you want the framework to disappear into a fast binary and the rebuild to feel like nothing happened, that is what zfb is for.

@@ -1,0 +1,22 @@
+{
+  "name": "@zfb/islands-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "zfb client-side hydration runtime walked by [data-zfb-island] elements",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/hydrate.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zfb": "workspace:*"
+  },
+  "devDependencies": {
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
+  }
+}

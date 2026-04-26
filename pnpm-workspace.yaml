@@ -1,0 +1,9 @@
+packages:
+  - "docs"
+  # packages/* — first-party JS/TS packages that ship as part of the zfb
+  # public surface (e.g. the "zfb" SDK with the <Island> wrapper).
+  - "packages/*"
+  # crates/*/npm — for future per-crate npm tooling exports (e.g., a Rust crate that
+  # also publishes a tiny npm package for JS-side helpers). None exist today; the
+  # glob is reserved so adding one later requires no workspace-config change.
+  - "crates/*/npm"

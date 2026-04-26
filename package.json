@@ -1,0 +1,38 @@
+{
+  "name": "zudo-front-builder",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "zudo-front-builder — frontend build orchestrator (private workspace)",
+  "packageManager": "pnpm@10.30.0",
+  "scripts": {
+    "//// === ROOT ===": "",
+    "prepare": "lefthook install --reset-hooks-path",
+    "//// === DOCS ===": "",
+    "docs:install": "pnpm --filter docs install",
+    "docs:dev": "pnpm --filter docs dev",
+    "docs:build": "pnpm --filter docs build",
+    "docs:preview": "pnpm --filter docs preview",
+    "docs:check": "pnpm --filter docs check",
+    "docs:format:check": "pnpm --filter docs format:check",
+    "//// === FORMAT ===": "",
+    "format": "pnpm format:ts && pnpm format:mdx",
+    "format:check": "pnpm format:check:ts && pnpm format:check:mdx",
+    "format:ts": "prettier --write \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
+    "format:check:ts": "prettier --check \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
+    "format:mdx": "pnpm dlx @takazudo/mdx-formatter --write '**/*.{md,mdx}'",
+    "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'"
+  },
+  "devDependencies": {
+    "lefthook": "^2.1.6",
+    "prettier": "^3.8.3",
+    "wrangler": "^4.85.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "lefthook",
+      "wrangler"
+    ]
+  }
+}

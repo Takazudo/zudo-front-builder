@@ -1,0 +1,33 @@
+[package]
+name = "zfb-islands"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb islands runtime: \"use client\" AST scanner, esbuild subprocess bundler, hydration HTML emit"
+
+[lib]
+
+[dependencies]
+# Workspace-shared helpers.
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# SWC parsing only — no transforms or codegen. Subset of zfb-render's flags.
+swc_core = { version = "64", features = [
+    "common",
+    "ecma_ast",
+    "ecma_parser",
+    "ecma_parser_typescript",
+] }
+
+# Hashing for the bundle asset filename suffix. Mirrors zfb-css::pipeline.
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

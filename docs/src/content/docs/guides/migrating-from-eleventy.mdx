@@ -1,0 +1,107 @@
+---
+title: Migrating from Eleventy
+description: Concept-by-concept guidance for moving an 11ty site to zfb — and an honest note on where it does not fit.
+sidebar_position: 2
+---
+
+<Warning title="v0 status">
+
+  zfb's renderer is pending the runtime decision tracked in ADR-001
+  (see /architecture/js-runtime). The migration map below is stable, but
+  hands-on porting is best done once the renderer lands.
+
+</Warning>
+
+Eleventy and zfb agree on the big things: small dependency footprint,
+file-based routing, content driven by Markdown plus front matter. Where
+they differ is the templating story. Read the
+[honest caveat](#honest-caveat) section before committing to a port.
+
+## Layouts and includes
+
+11ty puts layouts in `_includes/` and references them via front matter
+`layout:` keys. zfb reads layouts from `layouts/` and you import them
+directly into your page TSX:
+
+```tsx
+import BlogLayout from "../../layouts/blog-layout.tsx";
+
+export default function Page({ post }) {
+  return <BlogLayout><article>{post.body}</article></BlogLayout>;
+}
+```
+
+There is no front-matter `layout:` lookup — composition is by import.
+
+## Templates
+
+11ty ships Liquid, Nunjucks, Handlebars, and a handful of others. zfb
+ships exactly one template language: TSX. Markdown content still flows
+through the parser, but anything that wraps that content is JSX.
+
+If your codebase leans heavily on Nunjucks macros or Liquid filters, plan
+for real porting work. There is no shim layer.
+
+## Data cascade
+
+11ty's `_data/` directory and the global / directory / template data
+cascade have no direct equivalent in zfb. Instead, you express data in
+two places:
+
+- **Static / shared data** — declare a data collection in
+  `zfb.config.json`. Today the loader accepts the simpler array form
+  (`{ name, path }`); the richer record-keyed form with explicit `type`
+  and per-field schemas is the v1 target — see
+  [`defineConfig`](/api/define-config) for both shapes side by side:
+
+```json
+{
+  "collections": [
+    { "name": "site", "path": "data/site" }
+  ]
+}
+```
+
+- **Per-page data** — return it from a page's `paths()` export, which
+  is the rough equivalent of 11ty's `eleventyComputed`:
+
+```ts
+export async function paths() {
+  const posts = await getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post, year: post.data.pubDate.getFullYear() },
+  }));
+}
+```
+
+## Pagination
+
+11ty's `pagination` front-matter key becomes a `paginate()` helper inside
+`paths()`. See /api/paginate for the full surface, but the shape is:
+
+```ts
+export async function paths() {
+  const posts = await getCollection("blog");
+  return paginate(posts, { pageSize: 10 });
+}
+```
+
+You get one route per page, plus the standard `currentPage`,
+`totalPages`, and `data` props.
+
+## Markdown front matter
+
+This part is largely unchanged. Use `---` as a separator at the top of
+your `.md` files; zfb-content parses the front matter into `entry.data`
+and the body into `entry.body`. The fields available depend on the
+collection schema you declared in `zfb.config`.
+
+## Honest caveat
+
+If you love Liquid or Nunjucks and dislike JSX, zfb is not for you. The
+framework is opinionated about JSX-as-templating, and there is no
+roadmap item to add an alternative. Eleventy will likely remain the
+better fit for that workflow indefinitely. zfb is most worth your time
+if you already write React or Preact components elsewhere and want a
+small, fast SSG that speaks the same language.

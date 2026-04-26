@@ -1,0 +1,50 @@
+[package]
+name = "zfb-render"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orchestrator"
+
+[lib]
+
+[features]
+# `deno_core_host` gates the V8/deno_core-backed RenderHost implementation.
+# It is opt-in for now while ADR-001 is being finalised; the crate skeleton
+# (trait + SWC pipeline + orchestrator) compiles and tests without it.
+default = []
+deno_core_host = ["dep:deno_core", "dep:tokio"]
+# Gates the end-to-end routing+rendering integration test. Off until the
+# orchestrator exposes render_route + RenderInput/Output and zfb-render
+# depends on zfb-router. See tests/integration_routing_rendering.rs for
+# the fixtures and harness already in place.
+integration_routing_rendering = []
+
+[dependencies]
+# SWC pipeline (TSX → JS).
+swc_core = { version = "64", features = [
+    "common",
+    "common_concurrent",
+    "common_sourcemap",
+    "ecma_ast",
+    "ecma_codegen",
+    "ecma_parser",
+    "ecma_parser_typescript",
+    "ecma_transforms",
+    "ecma_transforms_react",
+    "ecma_transforms_typescript",
+    "ecma_visit",
+] }
+
+# JS runtime (gated behind `deno_core_host` while ADR-001 is being finalised).
+deno_core = { version = "0.399", optional = true }
+tokio = { version = "1", features = ["rt", "macros", "sync"], optional = true }
+
+# Shared helpers.
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

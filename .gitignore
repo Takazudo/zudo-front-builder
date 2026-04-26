@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+.pnpm-store/
+
+# Editors
+.DS_Store
+.vscode/
+.idea/
+
+# Worktrees (managed by /x-wt-teams)
+worktrees/
+
+# Bundled third-party binaries (populated by release engineering, never committed)
+crates/zfb/binaries/tailwindcss-v4
+crates/zfb/binaries/esbuild/esbuild
+
+# Ephemeral / temp files (e.g. agent prompts, review diffs)
+__inbox/
