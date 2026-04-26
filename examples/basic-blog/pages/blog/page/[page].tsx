@@ -1,40 +1,35 @@
 import DefaultLayout from "../../../layouts/default";
-
-type BlogEntry = {
-  slug: string;
-  data: {
-    title: string;
-    date: string;
-    description?: string;
-    tags?: string[];
-  };
-  body: string;
-};
-
-type PageData = {
-  data: BlogEntry[];
-  page: number;
-  lastPage: number;
-};
+import type { BlogEntry } from "../../../lib/types";
 
 /**
  * Paginated index of blog posts. With `pageSize: 3` and 5 posts the runtime
- * emits `/blog/page/1` and `/blog/page/2`. The `paginate()` helper is the
- * canonical zfb shape for this; see /api/paginate in the docs.
+ * emits `/blog/page/1` and `/blog/page/2`. The `paginate()` helper from
+ * `zfb/paginate` is the canonical zfb shape for this — see /api/paginate
+ * in the docs.
  */
 export async function paths() {
   const { getCollection } = await import("zfb/content");
   const { paginate } = await import("zfb/paginate");
   const posts = (await getCollection("blog")) as BlogEntry[];
-  posts.sort((a, b) => b.data.date.localeCompare(a.data.date));
-  return paginate(posts, { pageSize: 3, param: "page" });
+  const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
+  return paginate(sorted, { pageSize: 3, param: "page" });
 }
 
+type PaginatedPage<T> = {
+  data: T[];
+  page: number;
+  lastPage: number;
+  pageSize: number;
+  total: number;
+};
+
 type Props = {
-  page: PageData;
+  page: PaginatedPage<BlogEntry>;
 };
 
 export default function BlogIndexPage({ page }: Props) {
+  const hasPrev = page.page > 1;
+  const hasNext = page.page < page.lastPage;
   return (
     <DefaultLayout title={`Posts — page ${page.page}`}>
       <h1>All posts</h1>
@@ -52,17 +47,24 @@ export default function BlogIndexPage({ page }: Props) {
           </li>
         ))}
       </ul>
+      {/*
+        Pagination nav — only render the arrows that lead somewhere. Earlier
+        revisions emitted empty `<span />` placeholders to keep the spacing
+        symmetric, but those add noise to assistive tech. Direction glyphs
+        are decorative and marked `aria-hidden`; the link text carries the
+        actual semantic meaning.
+      */}
       <nav class="pagination" aria-label="pagination">
-        {page.page > 1 ? (
-          <a href={`/blog/page/${page.page - 1}`}>← Newer</a>
-        ) : (
-          <span />
-        )}
-        {page.page < page.lastPage ? (
-          <a href={`/blog/page/${page.page + 1}`}>Older →</a>
-        ) : (
-          <span />
-        )}
+        {hasPrev ? (
+          <a class="pagination-prev" href={`/blog/page/${page.page - 1}`}>
+            <span aria-hidden="true">←</span> Newer
+          </a>
+        ) : null}
+        {hasNext ? (
+          <a class="pagination-next" href={`/blog/page/${page.page + 1}`}>
+            Older <span aria-hidden="true">→</span>
+          </a>
+        ) : null}
       </nav>
     </DefaultLayout>
   );
