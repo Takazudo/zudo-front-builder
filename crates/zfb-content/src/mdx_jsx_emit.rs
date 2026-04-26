@@ -39,7 +39,12 @@
 //! markdown-rs with a `Message` that already carries line/column info.
 //! We surface it as [`PipelineError::Parse`] verbatim — no panics.
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
+use sha2::{Digest, Sha256};
 
 use crate::pipeline::PipelineError;
 
@@ -464,6 +469,271 @@ fn js_string_literal(s: &str) -> String {
 /// HTML tag references that resolve through the `_components` map.
 fn is_component_identifier(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+// -----------------------------------------------------------------------------
+// Module-specifier + cache surface (Sub 2)
+//
+// `compile_mdx_to_jsx_module` wraps `mdx_to_jsx_module` with two extras the
+// renderer (Sub 3+) needs to dedupe compiled modules:
+//
+//   1. A content hash of the JSX source — first 8 hex chars of SHA-256, the
+//      same dialect `zfb-css::pipeline::hash_8` already speaks.
+//   2. A stable `mdx://<collection>/<slug>#<hash8>` specifier the loader can
+//      route on. `<collection>` is the parent directory name of `file_path`,
+//      `<slug>` is the file stem.
+//
+// The cache is opt-in: callers without a cache reference get a fresh
+// compilation every call. This keeps unit tests hermetic and makes the cost
+// of caching a deliberate, visible decision at the call site.
+// -----------------------------------------------------------------------------
+
+/// Output of [`compile_mdx_to_jsx_module`] — JSX source plus the metadata
+/// the renderer needs to address and dedupe the compiled module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledMdx {
+    /// Self-contained JSX module string (same shape as `mdx_to_jsx_module`).
+    pub jsx_source: String,
+    /// First 8 lowercase-hex chars of `sha256(jsx_source)`.
+    pub content_hash: String,
+    /// Stable `mdx://<collection>/<slug>#<hash8>` URL for routing.
+    pub specifier: String,
+}
+
+/// Parsed view of an `mdx://<collection>/<slug>#<hash8>` URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdxModuleSpecifier {
+    pub collection: String,
+    pub slug: String,
+    pub content_hash: String,
+}
+
+impl MdxModuleSpecifier {
+    /// Render back to canonical `mdx://<collection>/<slug>#<hash8>` form.
+    #[must_use]
+    pub fn to_url(&self) -> String {
+        format!(
+            "mdx://{c}/{s}#{h}",
+            c = self.collection,
+            s = self.slug,
+            h = self.content_hash
+        )
+    }
+}
+
+/// Errors that can come out of [`parse_mdx_specifier`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SpecifierError {
+    #[error("expected `mdx://` scheme, got: {0}")]
+    BadScheme(String),
+    #[error("missing `<collection>/<slug>` segment in: {0}")]
+    MissingPath(String),
+    #[error("missing `#<hash8>` fragment in: {0}")]
+    MissingHash(String),
+    #[error("hash fragment must be 8 lowercase hex chars, got: {0}")]
+    BadHash(String),
+}
+
+/// Parse an `mdx://<collection>/<slug>#<hash8>` URL.
+///
+/// `<collection>` and `<slug>` must both be non-empty; `<hash8>` must be
+/// exactly 8 lowercase hex chars (matching what
+/// [`compile_mdx_to_jsx_module`] emits).
+///
+/// # Errors
+/// Returns the corresponding [`SpecifierError`] variant on any structural
+/// problem.
+pub fn parse_mdx_specifier(input: &str) -> Result<MdxModuleSpecifier, SpecifierError> {
+    let rest = input
+        .strip_prefix("mdx://")
+        .ok_or_else(|| SpecifierError::BadScheme(input.to_string()))?;
+
+    // Split on '#' first so a slug containing nothing weird can't swallow
+    // the fragment.
+    let (path, hash) = rest
+        .split_once('#')
+        .ok_or_else(|| SpecifierError::MissingHash(input.to_string()))?;
+
+    let (collection, slug) = path
+        .split_once('/')
+        .ok_or_else(|| SpecifierError::MissingPath(input.to_string()))?;
+
+    if collection.is_empty() || slug.is_empty() {
+        return Err(SpecifierError::MissingPath(input.to_string()));
+    }
+    if hash.len() != 8
+        || !hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err(SpecifierError::BadHash(hash.to_string()));
+    }
+
+    Ok(MdxModuleSpecifier {
+        collection: collection.to_string(),
+        slug: slug.to_string(),
+        content_hash: hash.to_string(),
+    })
+}
+
+/// Hash of the JSX source — first 8 lowercase hex chars of SHA-256.
+///
+/// Matches the dialect of `zfb-css::pipeline::hash_8`: same algorithm,
+/// same width. The fixed width keeps generated specifiers a constant
+/// length and makes them easy to spot in logs / dev tools.
+fn hash_8(jsx_source: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(jsx_source.as_bytes());
+    let digest = hasher.finalize();
+    let full = hex::encode(digest);
+    full[..8].to_string()
+}
+
+/// Derive `(collection, slug)` from a content-collection file path.
+///
+/// Convention: `<root>/<collection>/<slug>.<ext>`. We grab the immediate
+/// parent directory name as the collection, and the file stem as the slug.
+/// Falls back to `"_"` if either is missing — never panics, never returns
+/// an empty segment (parser would reject those).
+fn collection_and_slug(file_path: &Path) -> (String, String) {
+    let collection = file_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("_")
+        .to_string();
+    let slug = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("_")
+        .to_string();
+    (collection, slug)
+}
+
+/// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
+/// raw input source.
+///
+/// **Opt-in.** Callers that don't pass a `&MdxModuleCache` to
+/// [`compile_mdx_to_jsx_module_cached`] get a fresh compilation every
+/// call. This keeps unit tests hermetic — they never share state with
+/// each other or with a long-running renderer process — and makes the
+/// caching cost (memory + a hash lookup) a visible decision at the call
+/// site.
+///
+/// The cache key is `sha256(input)` (full hex), NOT the 8-char content
+/// hash on the output. Two different MDX bodies that happen to produce
+/// JSX with a colliding 8-hex prefix are still distinct entries.
+#[derive(Debug, Default)]
+pub struct MdxModuleCache {
+    inner: Mutex<HashMap<String, CompiledMdx>>,
+}
+
+impl MdxModuleCache {
+    /// Construct an empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of cached entries (mainly useful from tests).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// True when the cache holds no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    /// Drop all cached entries.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
+    /// Lock-or-recover: a poisoned mutex still yields a valid guard via
+    /// `into_inner`, so cache reads do not panic on a prior writer crash.
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, CompiledMdx>> {
+        match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+/// Compile MDX source into a [`CompiledMdx`] in one call.
+///
+/// Equivalent to `compile_mdx_to_jsx_module_cached(input, file_path, None)`
+/// — provided as a thin convenience so callers that don't want a cache
+/// don't have to write the `None` themselves.
+///
+/// # Errors
+/// Forwards [`PipelineError::Parse`] from the underlying emitter.
+pub fn compile_mdx_to_jsx_module(
+    input: &str,
+    file_path: &Path,
+) -> Result<CompiledMdx, PipelineError> {
+    compile_mdx_to_jsx_module_cached(input, file_path, None)
+}
+
+/// Compile MDX with optional in-memory caching keyed by `sha256(input)`.
+///
+/// When `cache` is `Some(_)` and the input has been compiled before, the
+/// cached [`CompiledMdx`] is cloned out and returned without invoking the
+/// emitter. When `cache` is `None`, every call compiles fresh.
+///
+/// The on-miss insert is best-effort: if two threads race on the same
+/// input they may both compile (and the second insert simply overwrites
+/// the first identical value). We don't hold the cache lock across
+/// compilation to avoid serialising CPU work.
+///
+/// # Errors
+/// Forwards [`PipelineError::Parse`] from the underlying emitter. A parse
+/// failure is never cached — the next call will retry.
+pub fn compile_mdx_to_jsx_module_cached(
+    input: &str,
+    file_path: &Path,
+    cache: Option<&MdxModuleCache>,
+) -> Result<CompiledMdx, PipelineError> {
+    // Cache lookup first — `sha256(input)` (full hex) is the key. Using
+    // the full digest here, not the 8-char prefix, so distinct sources
+    // that happen to share an 8-hex prefix on their *output* don't
+    // clobber each other in the cache.
+    let input_key = if cache.is_some() {
+        let mut h = Sha256::new();
+        h.update(input.as_bytes());
+        Some(hex::encode(h.finalize()))
+    } else {
+        None
+    };
+
+    if let (Some(c), Some(key)) = (cache, input_key.as_ref()) {
+        if let Some(hit) = c.lock().get(key) {
+            return Ok(hit.clone());
+        }
+    }
+
+    let (collection, slug) = collection_and_slug(file_path);
+
+    let opts = MdxJsxOptions::default().with_filename(file_path.display().to_string());
+    let jsx_source = mdx_to_jsx_module(input, opts)?;
+    let content_hash = hash_8(&jsx_source);
+    let specifier = format!("mdx://{collection}/{slug}#{content_hash}");
+
+    let compiled = CompiledMdx {
+        jsx_source,
+        content_hash,
+        specifier,
+    };
+
+    if let (Some(c), Some(key)) = (cache, input_key) {
+        c.lock().insert(key, compiled.clone());
+    }
+
+    Ok(compiled)
 }
 
 #[cfg(test)]
