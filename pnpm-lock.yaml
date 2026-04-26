@@ -19,6 +19,10 @@ importers:
         version: 4.85.0
 
   crates/zfb-islands/npm:
+    dependencies:
+      zfb:
+        specifier: workspace:*
+        version: link:../../../packages/zfb
     devDependencies:
       happy-dom:
         specifier: ^15.11.7

@@ -240,6 +240,99 @@ fn escape_attr(value: &str) -> String {
     out
 }
 
+/// Errors the attribute-skeleton bridge ([`rewrite_islands_in_attr_skeleton`])
+/// surfaces when the rendered HTML and the descriptors do not match up.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum IslandSkeletonRewriteError {
+    /// The number of empty `data-zfb-island=""` skeletons in the rendered
+    /// HTML does not equal the number of descriptors. Indicates an
+    /// orchestration bug in the renderer.
+    #[error(
+        "skeleton/descriptor count mismatch: {skeletons} skeletons but {descriptors} descriptors"
+    )]
+    CountMismatch {
+        /// Number of `data-zfb-island=""` skeletons found in the input HTML.
+        skeletons: usize,
+        /// Number of descriptors passed in.
+        descriptors: usize,
+    },
+}
+
+/// Bridge rewriter for HTML emitted by Sub 4's `<Island when="…">` JSX
+/// wrapper, which produces `<div data-zfb-island="" data-when="…">…</div>`
+/// skeletons at server-render time.
+///
+/// Pairs each empty-`data-zfb-island` skeleton with one descriptor in
+/// document order: the Nth skeleton receives the Nth descriptor. The
+/// renderer is responsible for ordering descriptors to match the order in
+/// which `<Island>` instances are encountered when walking the rendered
+/// page (depth-first, left-to-right — the natural JSX traversal order).
+///
+/// Each skeleton's `data-zfb-island=""` is replaced with
+/// `data-zfb-island="ComponentName"`, and `data-props="…json…"` is
+/// inserted alongside. The skeleton's existing `data-when` attribute, set
+/// by the wrapper, is left untouched. If the descriptor's `when` field is
+/// `Some(_)`, it is **not** used here — Sub 4's wrapper is the source of
+/// truth for `data-when` whenever a skeleton is present.
+///
+/// This function is the "bridge B" agreed by topic-hydration-emit (Sub 3)
+/// and topic-island-wrapper (Sub 4): the marker-comment path in
+/// [`rewrite_islands`] stays untouched for renderer code paths that emit
+/// sentinel comments around server output, and this skeleton path handles
+/// the JSX wrapper case directly.
+///
+/// # Errors
+///
+/// - [`IslandSkeletonRewriteError::CountMismatch`] if the skeleton count
+///   in the input HTML does not equal the descriptor count.
+pub fn rewrite_islands_in_attr_skeleton(
+    html: &str,
+    islands: &[IslandDescriptor],
+) -> Result<String, IslandSkeletonRewriteError> {
+    // Find every empty data-zfb-island="" attribute occurrence. Match on
+    // the literal attribute pair (with a leading space so we don't match
+    // a non-data-zfb-island prefix).
+    const NEEDLE: &str = " data-zfb-island=\"\"";
+
+    let mut positions: Vec<usize> = Vec::new();
+    {
+        let mut search_from = 0;
+        while let Some(rel) = html[search_from..].find(NEEDLE) {
+            let abs = search_from + rel;
+            positions.push(abs);
+            search_from = abs + NEEDLE.len();
+        }
+    }
+
+    if positions.len() != islands.len() {
+        return Err(IslandSkeletonRewriteError::CountMismatch {
+            skeletons: positions.len(),
+            descriptors: islands.len(),
+        });
+    }
+
+    // Walk in reverse order so earlier positions remain valid indices into
+    // the buffer as we splice in longer replacement strings.
+    let mut out = String::from(html);
+    for (i, &pos) in positions.iter().enumerate().rev() {
+        let d = &islands[i];
+        let mut replacement = String::with_capacity(NEEDLE.len() + d.props_json.len() + 64);
+        replacement.push_str(" data-zfb-island=\"");
+        replacement.push_str(&escape_attr(&d.component_name));
+        replacement.push_str("\" data-props=\"");
+        replacement.push_str(&escape_attr(&d.props_json));
+        replacement.push('"');
+
+        let end = pos + NEEDLE.len();
+        let mut rebuilt = String::with_capacity(out.len() + replacement.len() - NEEDLE.len());
+        rebuilt.push_str(&out[..pos]);
+        rebuilt.push_str(&replacement);
+        rebuilt.push_str(&out[end..]);
+        out = rebuilt;
+    }
+    Ok(out)
+}
+
 /// Build the `<script type="module" …>` tag the renderer drops into the
 /// page's `<head>` (or end-of-`<body>`) so the hydration runtime can find
 /// the islands bundle.
@@ -413,6 +506,63 @@ mod tests {
     fn no_descriptors_is_a_no_op() {
         let html = page_with("<span>plain</span>");
         let out = rewrite_islands(&html, &[]).unwrap();
+        assert_eq!(out, html);
+    }
+
+    // ---- Bridge: rewrite_islands_in_attr_skeleton (Sub 4 wrapper output) ----
+
+    #[test]
+    fn skeleton_bridge_fills_empty_data_zfb_island() {
+        // Single skeleton emitted by Sub 4's <Island when="visible">.
+        let html = r#"<html><body><div data-zfb-island="" data-when="visible"><button>3</button></div></body></html>"#;
+        let d = IslandDescriptor::new("Counter", r#"{"start":3}"#, "k");
+        let out = rewrite_islands_in_attr_skeleton(html, &[d]).unwrap();
+        assert!(out.contains(r#"data-zfb-island="Counter""#));
+        assert!(out.contains(r#"data-props="{&quot;start&quot;:3}""#));
+        // data-when from the wrapper is preserved.
+        assert!(out.contains(r#"data-when="visible""#));
+        // Inner content is left alone.
+        assert!(out.contains("<button>3</button>"));
+    }
+
+    #[test]
+    fn skeleton_bridge_pairs_in_document_order() {
+        // Two skeletons; descriptors must match positional order.
+        let html = r#"<html><body><div data-zfb-island="" data-when="visible"><i>a</i></div><span>between</span><div data-zfb-island="" data-when="idle"><i>b</i></div></body></html>"#;
+        let descriptors = vec![
+            IslandDescriptor::new("A", "{}", "k1"),
+            IslandDescriptor::new("B", "{}", "k2"),
+        ];
+        let out = rewrite_islands_in_attr_skeleton(html, &descriptors).unwrap();
+        let pos_a = out.find(r#"data-zfb-island="A""#).unwrap();
+        let pos_b = out.find(r#"data-zfb-island="B""#).unwrap();
+        assert!(pos_a < pos_b);
+        // Both data-when values from the wrapper preserved.
+        assert!(out.contains(r#"data-when="visible""#));
+        assert!(out.contains(r#"data-when="idle""#));
+    }
+
+    #[test]
+    fn skeleton_bridge_count_mismatch_is_an_error() {
+        let html = r#"<div data-zfb-island="" data-when="load"><i>x</i></div>"#;
+        let descriptors = vec![
+            IslandDescriptor::new("A", "{}", "k1"),
+            IslandDescriptor::new("B", "{}", "k2"),
+        ];
+        let err = rewrite_islands_in_attr_skeleton(html, &descriptors).unwrap_err();
+        assert_eq!(
+            err,
+            IslandSkeletonRewriteError::CountMismatch {
+                skeletons: 1,
+                descriptors: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn skeleton_bridge_no_skeletons_no_descriptors_is_ok() {
+        let html = "<html><body><span>plain</span></body></html>";
+        let out = rewrite_islands_in_attr_skeleton(html, &[]).unwrap();
         assert_eq!(out, html);
     }
 }

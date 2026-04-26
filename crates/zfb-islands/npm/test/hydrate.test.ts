@@ -264,7 +264,10 @@ describe("hydrateAll — data-when=visible", () => {
       { unobserve, disconnect } as unknown as IntersectionObserver,
     );
 
-    expect(unobserve).toHaveBeenCalledTimes(1);
+    // Implementation detail: scheduleHydrate from "zfb/runtime" calls
+    // disconnect() on the observer (which also stops further callbacks);
+    // it does not call unobserve() separately. The outcome is the same:
+    // hydration runs exactly once for this island.
     expect(disconnect).toHaveBeenCalledTimes(1);
     expect(calls).toHaveLength(1);
   });

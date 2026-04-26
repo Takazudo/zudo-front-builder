@@ -39,7 +39,10 @@ pub use bundler::{
 };
 pub use esbuild::{hash_8, EsbuildSubprocessBundler, EsbuildSubprocessConfig};
 pub use future_rust_native::NativeRustBundler;
-pub use hydration::{hydration_script_tag, rewrite_islands, IslandDescriptor, IslandRewriteError};
+pub use hydration::{
+    hydration_script_tag, rewrite_islands, rewrite_islands_in_attr_skeleton, IslandDescriptor,
+    IslandRewriteError, IslandSkeletonRewriteError,
+};
 pub use scanner::{
     is_bare_specifier, normalize_path_lexical, scan_islands, FsResolver, InMemoryResolver,
     IslandsSet, Resolver, ScanError, ScanResult,

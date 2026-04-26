@@ -16,7 +16,13 @@
 //   <script type="module" src="…runtime.js" data-zfb-bundle="…/islands-{hash}.js"></script>
 // It walks every [data-zfb-island] element, decodes data-props, dispatches on
 // data-when (load|idle|visible), and calls the adapter shim's hydrateIsland.
+//
+// The data-when dispatch is delegated to scheduleHydrate from "zfb/runtime"
+// so the wrapper (Sub 4) and the runtime (Sub 3) share one source of truth
+// for visible|idle|load semantics.
 // =============================================================================
+
+import { scheduleHydrate } from "zfb/runtime";
 
 /** Public surface so the bundle entry can re-export this if needed. */
 export interface HydrateIslandFn {
@@ -111,44 +117,12 @@ function hydrateOne(bundle: IslandsBundle, el: Element): void {
  *   idle    → requestIdleCallback (fallback: setTimeout 0)
  *   visible → IntersectionObserver
  *
- * The actual unit tests for idle and visible live with Sub 4, where the
- * <Island> wrapper sets data-when. We keep the dispatch table here because
- * the runtime owns the values.
+ * The dispatch table lives in scheduleHydrate from "zfb/runtime" so this
+ * runtime and the <Island> wrapper share the same When semantics. We just
+ * adapt the (target, when, fire) signature here.
  */
 function schedule(when: When, el: Element, run: (el: Element) => void): void {
-  if (when === "load") {
-    run(el);
-    return;
-  }
-  if (when === "idle") {
-    const ric = (
-      globalThis as unknown as {
-        requestIdleCallback?: (cb: () => void) => number;
-      }
-    ).requestIdleCallback;
-    if (typeof ric === "function") {
-      ric(() => run(el));
-    } else {
-      setTimeout(() => run(el), 0);
-    }
-    return;
-  }
-  // visible
-  if (typeof IntersectionObserver === "undefined") {
-    // No IO support: hydrate immediately rather than never.
-    run(el);
-    return;
-  }
-  const io = new IntersectionObserver((entries, obs) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        obs.unobserve(entry.target);
-        obs.disconnect();
-        run(entry.target);
-      }
-    }
-  });
-  io.observe(el);
+  scheduleHydrate(el, when, () => run(el));
 }
 
 /**
