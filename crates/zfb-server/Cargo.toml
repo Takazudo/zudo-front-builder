@@ -27,3 +27,5 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
 tempfile = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+futures-util = "0.3"

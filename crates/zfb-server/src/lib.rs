@@ -103,16 +103,34 @@ impl ServeOpts {
 ///
 /// - failure to bind the address (port in use, permission denied, …),
 /// - axum's serve loop returns an error.
+///
+/// This is a thin wrapper around [`serve_with_listener`]: it binds
+/// `opts.addr` itself and hands the resulting [`TcpListener`] off.
+/// Callers that need to know the actual bound port (e.g. integration
+/// tests using ephemeral port 0) should bind their own listener and
+/// call [`serve_with_listener`] directly.
 pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
+    let listener = TcpListener::bind(opts.addr)
+        .await
+        .with_context(|| format!("failed to bind dev server to {}", opts.addr))?;
+    serve_with_listener(opts, listener).await
+}
+
+/// Run the dev server on a pre-bound [`TcpListener`].
+///
+/// Useful when the caller needs to know the actual bound socket address
+/// before the server starts accepting connections — for example
+/// integration tests that bind `127.0.0.1:0` and then read
+/// [`TcpListener::local_addr`] to learn the OS-chosen port.
+///
+/// `opts.addr` is ignored in favour of the listener's actual local
+/// address (which is what gets logged).
+pub async fn serve_with_listener(opts: ServeOpts, listener: TcpListener) -> anyhow::Result<()> {
     let state = AppState {
         pages: opts.pages,
         broadcast: opts.broadcast,
     };
     let router = build_router(state, opts.dist_root.clone(), opts.public_root.clone());
-
-    let listener = TcpListener::bind(opts.addr)
-        .await
-        .with_context(|| format!("failed to bind dev server to {}", opts.addr))?;
 
     let actual = listener.local_addr().unwrap_or(opts.addr);
     info!(
