@@ -1,0 +1,50 @@
+---
+title: Build Pipeline
+description: An end-to-end tour of how zfb turns your project into a built site.
+sidebar_position: 6
+category: Concepts
+---
+
+<Warning title="v0 status">
+
+Steps 1, 2, 3, and 9 work today. Steps 5–8 — render, CSS extraction, island bundling, and the build orchestrator's full per-page work — are sketched but not yet wired end-to-end. The blocker is ADR-001 (the JS runtime decision). See /architecture/build-engine for the deeper why-this-shape discussion and /architecture/js-runtime for the runtime decision itself.
+
+</Warning>
+
+zfb is built as a set of small Rust crates that each own one job. This page is a tour of the whole pipeline at the level of "which crate does what, and in what order" — enough to give you a mental map without diving into any single piece.
+
+## The crates, in order
+
+1. **CLI** — `crates/zfb`. Parses command-line args, loads `zfb.config.{ts,json}`, and dispatches to the `dev`, `build`, or `preview` command.
+2. **Router** — `crates/zfb-router`. Scans `pages/` and produces the route table. See [Routing](/concepts/routing).
+3. **Watcher** — `crates/zfb-watcher`. Dev mode only. Observes `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`, `public/`, and `zfb.config.ts`, and emits a stream of change events.
+4. **Dependency graph** — `crates/zfb-graph`. Tracks page-to-source dependencies. When the watcher reports a change, the graph answers a single question: which pages need to be rebuilt?
+5. **Build orchestrator** — `crates/zfb-build`. Coordinates the per-page work and writes outputs atomically via `atomic_write_string`, so a partial write can never leave `dist/` in a half-broken state.
+6. **Renderer** — `crates/zfb-render`. Compiles TSX to JS with SWC, evaluates the resulting ES module via the JS runtime host, and calls the page's `default()` export to produce an HTML string.
+7. **CSS pipeline** — `crates/zfb-css`. Runs Tailwind v4 and PostCSS as needed. See [Styling](/concepts/styling).
+8. **Islands pipeline** — `crates/zfb-islands`. Bundles each `"use client"` component as a separate ESM module via esbuild. See [Islands](/concepts/islands).
+9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/livereload` for browser reload events.
+
+## Production: `zfb build`
+
+`zfb build` runs the pipeline once and writes a complete site to `outDir`:
+
+CLI → Router → Graph → Build orchestrator → Renderer → CSS pipeline → Islands pipeline.
+
+The watcher and dev server are not involved. Every page is rendered, every CSS bundle is produced, every island is bundled, and the result lands in `dist/` (or wherever `outDir` points). Atomic writes mean an interrupted build leaves the previous `dist/` intact rather than a partially overwritten mess.
+
+## Development: `zfb dev`
+
+`zfb dev` runs the same pipeline as a long-lived loop, plus the watcher and server:
+
+CLI → Router → Watcher → Build orchestrator → Renderer → CSS pipeline → Islands pipeline → Server.
+
+When the watcher reports a change, the dependency graph picks the affected pages, the orchestrator rebuilds only those, and the server broadcasts a reload event over the SSE channel. The browser reconnects automatically and reloads.
+
+## Preview: `zfb preview`
+
+`zfb preview` is the simplest command of the three: it serves the existing `dist/` directory as static files on `:4321`. There is no rendering, no watching, no rebuilding — it exists so you can sanity-check a production build locally before deploying it.
+
+## Why the split
+
+The crate boundaries are not accidental. Routing is a different problem from rendering, which is different from watching, which is different from serving. Splitting them means each crate stays small enough to test in isolation, and means the dev loop can swap in optimisations (incremental rebuilds, page caching, partial CSS extraction) without touching the production path. The deeper reasoning lives in [/architecture/build-engine](/architecture/build-engine).

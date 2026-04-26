@@ -1,0 +1,69 @@
+---
+title: Routing
+description: How file-system routing under pages/ maps to URLs in zfb.
+sidebar_position: 1
+category: Concepts
+---
+
+<Warning title="v0 status">
+
+Today the framework's skeleton is shipping; the JS-runtime decision (ADR-001) lands the actual page rendering. Route discovery works now, but `paths()` evaluation for dynamic and catchall routes is deferred. See /architecture/js-runtime for the deeper discussion.
+
+</Warning>
+
+zfb uses **file-system routing** under the `pages/` directory. The router scans `pages/` at build time (and on every change in dev), turning each `.tsx` file into a route. The conventions match what you might recognise from Next.js or Astro.
+
+## File-to-route mapping
+
+| File | Route |
+| ---- | ----- |
+| `pages/index.tsx` | `/` |
+| `pages/about.tsx` | `/about` |
+| `pages/blog/index.tsx` | `/blog` |
+| `pages/blog/[slug].tsx` | `/blog/:slug` (dynamic) |
+| `pages/docs/[...slug].tsx` | `/docs/:slug*` (catchall) |
+| `pages/[lang]/[slug].tsx` | `/:lang/:slug` |
+
+A few rules worth knowing up front:
+
+- Files starting with `_` (for example `_app.tsx`) are ignored. Use this prefix for shared helpers that live next to your routes but should not be exposed.
+- Anything that is not a `.tsx` file is ignored as well — README files, fixtures, and ad-hoc notes are safe to drop in `pages/`.
+- Two files that resolve to the same template raise `RouterError::AmbiguousRoute` at build time, so the router never silently picks a winner.
+
+The scan is performed by `Router::scan` in the `zfb-router` crate. Results are sorted so that **static routes win over dynamic, and dynamic wins over catchall** — more specific routes are matched first.
+
+## Static, dynamic, and catchall routes
+
+Static routes (`pages/about.tsx`) match a single concrete URL. Dynamic routes use `[param]` brackets in the file name to capture a single path segment, and catchall routes use `[...param]` to capture any number of trailing segments.
+
+```tsx
+// pages/blog/[slug].tsx
+export default function BlogPost({ slug }: { slug: string }) {
+  return <article>Post for {slug}</article>;
+}
+```
+
+```tsx
+// pages/docs/[...slug].tsx
+export default function DocsPage({ slug }: { slug: string[] }) {
+  return <main>{slug.join("/")}</main>;
+}
+```
+
+## The `paths()` export
+
+Dynamic and catchall routes need to know which concrete URLs to render at build time. This is done by exporting a `paths()` function from the same file:
+
+```tsx
+// pages/blog/[slug].tsx
+export async function paths() {
+  const posts = await getCollection("blog");
+  return posts.map((p) => ({ slug: p.slug }));
+}
+
+export default function BlogPost({ slug }: { slug: string }) {
+  return <article>Post {slug}</article>;
+}
+```
+
+Today `paths()` evaluation requires the JS runtime, which is still being wired in (ADR-001). `zfb build` discovers dynamic and catchall routes correctly, but emits a warn-line and skips them until the runtime lands. Static routes go through the rest of the pipeline as expected.
