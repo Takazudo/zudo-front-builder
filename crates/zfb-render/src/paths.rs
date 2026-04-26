@@ -48,6 +48,10 @@ pub struct ResolvedPath {
 }
 
 /// Errors produced while resolving a `paths()` export.
+///
+/// Every variant carries `route` — the route template, which by convention is
+/// the source TSX file's path relative to `pages/` (e.g. `blog/[slug].tsx`).
+/// That string lets editors / build output point at the offending file.
 #[derive(Debug, Error)]
 pub enum PathsError {
     /// A required dynamic/catch-all param was missing from a `paths()`
@@ -62,13 +66,34 @@ pub enum PathsError {
 
     /// A param value had the wrong JSON shape (e.g. number where a string
     /// was expected, empty string, etc.).
-    #[error("invalid param type for `{name}`: {reason}")]
-    InvalidParamType { name: String, reason: String },
+    #[error("invalid param type for `{name}` in route `{route}`: {reason}")]
+    InvalidParamType {
+        name: String,
+        reason: String,
+        route: String,
+    },
 
     /// The `paths()` export itself was malformed (not an array, missing
     /// `params`, etc.).
-    #[error("invalid paths() export: {reason}")]
-    InvalidPathsExport { reason: String },
+    ///
+    /// `route` points at the source file (route template) so the operator
+    /// knows which page module's `paths()` returned the wrong shape; `field`
+    /// names the bad field when known (e.g. `params`, `entry[2].params.slug`)
+    /// so they can find it inside that file. `expected` describes what the
+    /// resolver wanted to see.
+    #[error(
+        "invalid `paths()` export in `{route}`{field_note}: {reason} (expected {expected})",
+        field_note = match field {
+            Some(f) => format!(" at `{f}`"),
+            None => String::new(),
+        },
+    )]
+    InvalidPathsExport {
+        route: String,
+        field: Option<String>,
+        reason: String,
+        expected: String,
+    },
 
     /// Two entries resolved to the same URL within a single `paths()`
     /// invocation. Surfaced so the build can fail loudly rather than
@@ -145,7 +170,10 @@ pub fn resolve_paths(
     let entries = paths_export
         .as_array()
         .ok_or_else(|| PathsError::InvalidPathsExport {
-            reason: "expected an array of { params, props } objects".to_string(),
+            route: route_template.to_string(),
+            field: Some("paths()".to_string()),
+            reason: format!("got {}", value_kind(paths_export)),
+            expected: "an array of `{ params, props }` objects".to_string(),
         })?;
 
     // Required param names + whether they are catch-all.
@@ -165,18 +193,30 @@ pub fn resolve_paths(
         let entry_obj = entry
             .as_object()
             .ok_or_else(|| PathsError::InvalidPathsExport {
-                reason: format!("paths() entry at index {i} must be an object"),
+                route: route_template.to_string(),
+                field: Some(format!("entry[{i}]")),
+                reason: format!("got {}", value_kind(entry)),
+                expected: "an object with `params` (and optional `props`)".to_string(),
             })?;
 
-        let params_obj = entry_obj
-            .get("params")
-            .ok_or_else(|| PathsError::InvalidPathsExport {
-                reason: format!("paths() entry at index {i} missing `params`"),
-            })?
-            .as_object()
-            .ok_or_else(|| PathsError::InvalidPathsExport {
-                reason: format!("paths() entry at index {i} `params` must be an object"),
-            })?;
+        let params_value =
+            entry_obj
+                .get("params")
+                .ok_or_else(|| PathsError::InvalidPathsExport {
+                    route: route_template.to_string(),
+                    field: Some(format!("entry[{i}].params")),
+                    reason: "missing".to_string(),
+                    expected: "an object mapping each route param to a value".to_string(),
+                })?;
+        let params_obj =
+            params_value
+                .as_object()
+                .ok_or_else(|| PathsError::InvalidPathsExport {
+                    route: route_template.to_string(),
+                    field: Some(format!("entry[{i}].params")),
+                    reason: format!("got {}", value_kind(params_value)),
+                    expected: "an object mapping each route param to a value".to_string(),
+                })?;
 
         // Required-param check + value extraction.
         let mut params_map: HashMap<String, String> = HashMap::with_capacity(required.len());
@@ -188,9 +228,9 @@ pub fn resolve_paths(
                     route: route_template.to_string(),
                 })?;
             let resolved = if *is_catchall {
-                catchall_string(raw, name)?
+                catchall_string(raw, name, route_template)?
             } else {
-                dynamic_string(raw, name)?
+                dynamic_string(raw, name, route_template)?
             };
             params_map.insert((*name).to_string(), resolved);
         }
@@ -235,21 +275,24 @@ pub fn resolve_paths(
 
 /// Validate and extract a single-segment dynamic param value (must be a
 /// non-empty string with no `/`).
-fn dynamic_string(val: &Value, name: &str) -> Result<String, PathsError> {
+fn dynamic_string(val: &Value, name: &str, route: &str) -> Result<String, PathsError> {
     let s = val.as_str().ok_or_else(|| PathsError::InvalidParamType {
         name: name.to_string(),
         reason: format!("dynamic param must be a string, got {}", value_kind(val)),
+        route: route.to_string(),
     })?;
     if s.is_empty() {
         return Err(PathsError::InvalidParamType {
             name: name.to_string(),
             reason: "dynamic param must not be empty".to_string(),
+            route: route.to_string(),
         });
     }
     if s.contains('/') {
         return Err(PathsError::InvalidParamType {
             name: name.to_string(),
             reason: "dynamic param must not contain `/` (use a catchall `[...name]` for path-shaped values)".to_string(),
+            route: route.to_string(),
         });
     }
     Ok(s.to_string())
@@ -258,7 +301,7 @@ fn dynamic_string(val: &Value, name: &str) -> Result<String, PathsError> {
 /// Validate and extract a catch-all param value. Accepts either a single
 /// string (`"a/b/c"`) or an array of strings (`["a", "b", "c"]`); both are
 /// normalized to a slash-joined string used as one URL segment-bag.
-fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
+fn catchall_string(val: &Value, name: &str, route: &str) -> Result<String, PathsError> {
     match val {
         Value::String(s) => {
             let trimmed = s.trim_matches('/');
@@ -266,6 +309,7 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
                     reason: "catchall param string must not be empty".to_string(),
+                    route: route.to_string(),
                 });
             }
             // Reject empty inner segments: "a//b".
@@ -273,6 +317,7 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
                     reason: "catchall param string must not contain empty segments".to_string(),
+                    route: route.to_string(),
                 });
             }
             Ok(trimmed.to_string())
@@ -282,6 +327,7 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
                     reason: "catchall param array must not be empty".to_string(),
+                    route: route.to_string(),
                 });
             }
             let mut parts = Vec::with_capacity(arr.len());
@@ -292,11 +338,13 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                         "catchall param array element {i} must be a string, got {}",
                         value_kind(v)
                     ),
+                    route: route.to_string(),
                 })?;
                 if s.is_empty() {
                     return Err(PathsError::InvalidParamType {
                         name: name.to_string(),
                         reason: format!("catchall param array element {i} must not be empty"),
+                        route: route.to_string(),
                     });
                 }
                 if s.contains('/') {
@@ -305,6 +353,7 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                         reason: format!(
                             "catchall param array element {i} must not contain `/` (split into separate elements)"
                         ),
+                        route: route.to_string(),
                     });
                 }
                 parts.push(s.to_string());
@@ -317,6 +366,7 @@ fn catchall_string(val: &Value, name: &str) -> Result<String, PathsError> {
                 "catchall param must be a string or array of strings, got {}",
                 value_kind(val)
             ),
+            route: route.to_string(),
         }),
     }
 }
