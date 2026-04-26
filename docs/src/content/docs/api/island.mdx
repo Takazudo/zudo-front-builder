@@ -1,0 +1,53 @@
+---
+title: "Islands (\"use client\")"
+description: "Mark a component as a client-hydrated island with the \"use client\" directive."
+sidebar_position: 4
+---
+
+## The directive
+
+A component file whose first statement is the literal string `"use client"` is treated as an **island** — a piece of UI that ships JavaScript and hydrates in the browser. Everything else stays server-rendered HTML.
+
+When the islands pipeline (`crates/zfb-islands`, esbuild-backed) sees the directive, the component is:
+
+- Compiled to ESM separately, with its own dependency graph.
+- Embedded into pages via a small bootstrap that hydrates the component when its DOM marker enters the viewport. This is the default lazy strategy.
+
+## Example
+
+The default template's counter shows the canonical shape: a leading `"use client"` line, then a normal Preact component.
+
+```tsx
+"use client";
+
+import { useState } from "preact/hooks";
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+```
+
+Import the island from a server component or page module and render it as you would any other component. The build pipeline rewrites the import to insert the hydration marker and wire up the bootstrap.
+
+## Hydration directives
+
+Three directives are planned for picking when an island hydrates:
+
+- `client:load` — hydrate as soon as the page's JS runs.
+- `client:visible` — hydrate when the component scrolls into view (today's default behaviour).
+- `client:idle` — hydrate during the browser's next idle period.
+
+Only the default lazy/visible strategy is sketched in v0; the directive surface will land alongside the renderer.
+
+<Warning title="v0 status">
+
+  The `"use client"` detector and the esbuild-backed bundler are sketched in `crates/zfb-islands` but are not yet wired through the renderer (see [ADR-001](/architecture/js-runtime)). Components authored with `"use client"` will produce static SSR markup once the renderer lands; client hydration follows after that. You can write islands today using this pattern and they will activate as the pipeline completes.
+
+</Warning>
+
+For the broader story on islands architecture and when to reach for one, see [Islands](/concepts/islands).
