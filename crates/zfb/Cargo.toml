@@ -16,4 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+zfb-build = { path = "../zfb-build" }
+zfb-graph = { path = "../zfb-graph" }
+zfb-server = { path = "../zfb-server" }
+zfb-watcher = { path = "../zfb-watcher" }
