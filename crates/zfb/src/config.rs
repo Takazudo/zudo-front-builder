@@ -235,8 +235,14 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
 }
 
 /// Ensure `path` is relative and stays under `dir` (no `..` escapes, no
-/// absolute paths). The path is checked syntactically — we do not require it
-/// to exist, since collections may be created after the config.
+/// absolute paths). The path is checked **syntactically** — we do not require
+/// it to exist, since collections may be created after the config.
+///
+/// Limitation: symlinks are not resolved here. If the project allows
+/// symlinks in content dirs and that's a concern, callers should
+/// `canonicalize()` the resolved path at use-site before reading. zfb's v1
+/// trust model treats project files as user-owned, so this matches the
+/// surrounding crates.
 fn ensure_path_in_root(path: &Path, dir: &Path) -> Result<()> {
     if path.is_absolute() {
         bail!(
@@ -425,6 +431,24 @@ mod tests {
             .expect_err("should reject .. escape");
         let msg = format!("{err:#}");
         assert!(msg.contains("escapes"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn allows_internal_dotdot_that_does_not_escape() {
+        // `a/../b` resolves to `b` — within the project root, so it should
+        // be accepted. (Same shape as `./content/blog`.)
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [
+                { "name": "blog", "path": "a/../b" },
+                { "name": "docs", "path": "." }
+            ]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("should accept");
+        assert_eq!(cfg.collections.len(), 2);
     }
 
     #[tokio::test]
