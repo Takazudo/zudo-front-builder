@@ -1,0 +1,82 @@
+---
+title: defineConfig
+description: Define a zfb project configuration with full type inference.
+sidebar_position: 1
+---
+
+## Signature
+
+```ts
+defineConfig(config: Config): Config
+```
+
+`defineConfig` is re-exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `Config` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
+
+## Config shape
+
+All keys are camelCase and mirror `crates/zfb/src/config.rs`.
+
+- `outDir`: string, default `"dist"`
+- `publicDir`: string, default `"public"`
+- `host`: string, default `"localhost"`
+- `port`: number, default `3000`
+- `framework`: `"preact" | "react"`, default `"preact"`
+- `collections`: array of `CollectionDef`. Each entry has `name` (the call-site identifier, e.g. `"blog"`), `path` (directory relative to the project root), and optional `schema` (reserved — accepted today but not enforced; see the v0 note below).
+- `tailwind?`: `{ enabled: boolean }`
+- `plugins?`: array — schema TBD; not yet consumed in v0.
+
+## Examples
+
+```json
+// zfb.config.json — the form actually loaded by v0
+{
+  "outDir": "dist",
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog"
+    }
+  ],
+  "tailwind": { "enabled": true }
+}
+```
+
+```ts
+// zfb.config.ts — aspirational form, NOT yet loaded.
+// Documented here for forward compatibility; once the runtime ships
+// (ADR-001) this richer schema lands. Do NOT ship this alongside a
+// zfb.config.json — the v0 loader rejects when both files are present.
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  outDir: "dist",
+  framework: "preact",
+  collections: {
+    blog: {
+      type: "content",
+      directory: "content/blog",
+      schema: {
+        title: "string",
+        date: "date",
+        draft: "boolean?",
+      },
+    },
+  },
+  tailwind: { enabled: true },
+});
+```
+
+<Warning title="v0: schema is intentionally narrow">
+
+  Today the loader accepts only the JSON form above — `collections` is an array of `{ name, path, schema? }`, and `schema` is parsed but not enforced (it lands as opaque JSON, reserved for v1.1). The richer object-keyed shape with `type: "content" | "data"` and per-field validators is the planned future schema and is shown in the TypeScript example purely so you can author against it now and switch over later. `zfb.config.ts` parsing itself is pending the JS runtime decision (see [ADR-001](/architecture/js-runtime)). For now, write your configuration as `zfb.config.json` — the loader reads that form today.
+
+</Warning>
+
+## Validation
+
+The loader enforces the following rules and reports errors with the file path plus `line:column` for JSON parse failures:
+
+- Collection names must be unique.
+- `path` cannot be an absolute path.
+- `path` cannot contain `..` segments that escape the project root.

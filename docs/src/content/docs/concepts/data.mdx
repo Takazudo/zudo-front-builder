@@ -1,0 +1,76 @@
+---
+title: Data
+description: Three options for sourcing structured data in zfb — content collections, data collections, and plain TS modules.
+sidebar_position: 3
+category: Concepts
+---
+
+<Info>
+
+The discovery and parsing halves of data and content collections work today. The bridge into the page renderer is part of the ADR-001 work.
+
+</Info>
+
+zfb gives you three different routes for getting structured data into a page, and the right choice depends on the shape of the data and how much ceremony you want around it.
+
+## 1. Content collections
+
+When the data is **prose** — blog posts, docs articles, recipes — use a content collection. Each entry is a Markdown file with frontmatter, the frontmatter is validated against a schema, and the body is rendered to HTML for you. See [Content Collections](/concepts/content-collections) for the full story.
+
+This is the right choice whenever the body of each entry is meant to be read.
+
+## 2. Data collections
+
+When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection: a directory of JSON / YAML / TOML files declared in `zfb.config.json`. The same `[{ name, path }]` shape that content collections use today (see [Content Collections](/concepts/content-collections)) accepts data directories without ceremony:
+
+```json
+{
+  "collections": [
+    {
+      "name": "products",
+      "path": "data/products"
+    }
+  ]
+}
+```
+
+Each file becomes one entry. Per-entry schema validation is the planned future shape (matches the `defineConfig` v1 schema with explicit `type: "data"` + per-field validators); today the loader walks the directory and surfaces entries through `getCollection()`. You load them the same way:
+
+```tsx
+import { getCollection } from "zfb/content";
+
+const products = await getCollection("products");
+```
+
+A data collection earns its keep when you want **per-entry validation, slug derivation, and the same loading API as your prose content** — without the Markdown-rendering step.
+
+## 3. Plain TS modules under `data/`
+
+For everything else — small lookups, helper functions, derived constants — a regular TypeScript module is the lightest path:
+
+```ts
+// data/site.ts
+export const siteName = "My Site";
+
+export function formatDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+```
+
+Import it from any page or component:
+
+```tsx
+import { siteName, formatDate } from "../data/site";
+```
+
+There is no schema, no slug, and no per-entry overhead. Use this when the "collection" framing would be more ceremony than the data deserves.
+
+## Picking the right tool
+
+A useful rule of thumb:
+
+- The data is **content meant to be read** → content collection.
+- The data is **structured records that share a shape** → data collection.
+- The data is **a handful of constants or a helper** → TS module under `data/`.
+
+You can mix all three in the same project without conflict.

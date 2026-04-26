@@ -1,0 +1,74 @@
+---
+title: Project structure
+description: A tour of every file and directory the default template lays down.
+sidebar_position: 4
+---
+
+When you run `zfb new my-site`, the `default` template lays down a small but complete project. Knowing what each directory is for makes the rest of the docs much easier to skim.
+
+```text
+my-site/
+├── pages/
+│   ├── index.tsx
+│   └── blog/
+│       └── [slug].tsx
+├── layouts/
+│   └── default.tsx
+├── components/
+│   └── counter.tsx
+├── content/
+│   └── blog/
+│       └── welcome.md
+├── styles/
+│   └── global.css
+├── public/
+├── zfb.config.ts
+├── package.json
+├── tsconfig.json
+└── .gitignore
+```
+
+## pages/
+
+File-system routing lives here. Every `.tsx` file under `pages/` becomes a route:
+
+- `pages/index.tsx` → `/`
+- `pages/about.tsx` → `/about`
+- `pages/blog/[slug].tsx` → `/blog/:slug` (dynamic route — one HTML file per resolved slug)
+- `pages/docs/[...slug].tsx` → catchall, matches any depth
+
+The default template ships an index page and one dynamic blog route. Dynamic and catchall routes are recognized by the router today, but per-instance expansion (the `paths()` evaluation that turns `[slug]` into concrete files at build time) lands with the JS runtime — see [JS runtime architecture](/architecture/js-runtime).
+
+## layouts/
+
+Reusable page wrappers. `layouts/default.tsx` is the shell every page imports — header, footer, common metadata, and so on. Layouts are plain TSX components; you compose them however you like.
+
+## components/
+
+Plain components and **islands**. `components/counter.tsx` opens with a `"use client"` directive — that's the marker that turns it into an island, hydrated in the browser. Components without `"use client"` render only on the server. The full mental model is on the [islands page](/concepts/islands).
+
+## content/
+
+Content collections. `content/blog/welcome.md` is the seed entry of a `blog` collection: Markdown (or MDX) files in a directory, queried from your pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.{json,ts}` under `collections`.
+
+## styles/
+
+Global CSS. `styles/global.css` is the entry point — import it from your root layout. The default template wires up Tailwind here when `tailwind.enabled` is set in the config.
+
+## public/
+
+Static assets served as-is from the site root. Put `favicon.ico`, robots.txt, and any image you want to reference by absolute URL here. zfb's dev server and `zfb preview` both serve `public/` directly.
+
+## zfb.config — JSON today, TS later
+
+The config file uses a camelCase schema with these keys: `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`.
+
+<Info title="zfb.config.ts is not loaded yet">
+
+  The template writes a `zfb.config.ts` so your editor gets type hints, but zfb only loads `zfb.config.json` today — TS config support lands with the JS runtime. For now, write your runtime configuration in `zfb.config.json` (same schema) and treat the `.ts` file as a typed reference.
+
+</Info>
+
+## package.json, tsconfig.json, .gitignore
+
+Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control.

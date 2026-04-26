@@ -1,0 +1,14 @@
+{
+  "framework": "preact",
+  "outDir": "dist",
+  "publicDir": "public",
+  "tailwind": {
+    "enabled": true
+  },
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog"
+    }
+  ]
+}

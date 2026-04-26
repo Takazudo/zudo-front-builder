@@ -1,0 +1,74 @@
+---
+title: Framework adapters
+description: How zfb supports both Preact and React behind a single renderer, and the shape of the boundary that makes adding a third framework additive.
+sidebar_position: 3
+---
+
+zfb renders TSX. JSX is a syntax — the *runtime* that turns it into HTML is supplied by a framework. zfb supports two: **Preact** (default) and **React**. This page is the user-readable companion to ADR-002.
+
+## The need
+
+Two goals pull opposite ways. One: a single renderer pipeline that works the same for both frameworks, so we never fork the build. Two: many users want React (existing components, React-only libraries) and many want Preact (footprint, signals). zfb lets them pick:
+
+```ts
+// zfb.config.ts
+export default {
+  framework: "preact", // or "react"
+};
+```
+
+Read once at config-load time and threaded through the build. A one-line change for the user. For the renderer, the choice never appears — it talks to a uniform `Adapter` trait and has no `if framework == "react"` branches past adapter construction.
+
+## The boundary
+
+The contract lives in `crates/zfb-render/src/adapters/mod.rs`. Every adapter implements the same narrow trait:
+
+```rust
+pub trait Adapter {
+    fn name(&self) -> &'static str;
+    fn jsx_import_source(&self) -> &'static str;
+    fn render_to_string_module(&self) -> &'static str;
+    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
+    fn hydrate_shim_specifier(&self) -> &'static str;
+    fn hydrate_shim_source(&self) -> &'static str;
+}
+```
+
+Three groups of responsibility, no more:
+
+1. **Tell the SWC pipeline which JSX import source to inject** (`jsx_import_source`). This drives the `transform-react` pass with `runtime: "automatic"` so user code never writes `import { h } from "preact"` or `import React from "react"` and never spells a `@jsxImportSource` pragma. The framework choice lives in config; SWC threads it everywhere.
+2. **Tell the runtime where the synchronous `renderToString` lives** (`render_to_string_module`) and **install a shim** (`pre_render_setup`) that aliases it as `globalThis.__zfbRenderToString`. The render orchestrator in `render.rs` then calls `__zfbRenderToString(vnode)` once per page, with no branching on framework identity.
+3. **Provide the client-side hydration shim** (`hydrate_shim_specifier` + `hydrate_shim_source`). The islands bundler folds this module into the islands bundle as the framework-specific entry. It exports `hydrateIsland(Component, props, element)`, and the framework-agnostic hydration runtime in `zfb-islands` calls it for every `[data-zfb-island]` element in the DOM.
+
+That is the entire surface. Hook semantics, signal interop, event delegation strategy — none of these are inside the boundary. Each framework keeps its own behaviour; the adapter only controls *which* framework is reached through.
+
+## Why a setup-phase shim
+
+`pre_render_setup` runs once, before the first page render, and installs `__zfbRenderToString` on `globalThis`. Per-page rendering is then one function call from Rust into JS — no module re-resolution, no shim re-installation, no per-call import dance. The cost is paid once per host lifetime; the benefit accrues across thousands of pages.
+
+Two tempting alternatives are ruled out. We are not generating per-page JS modules that import `preact-render-to-string` directly — that pushes module resolution onto the per-render hot path. We are not exposing a `hydrate_call()` API that returns a JS expression for Rust to template into source — that puts JS-expression concatenation in Rust, the wrong language for it. The shim keeps the Rust-to-JS boundary expressed purely as static module strings.
+
+## The Preact adapter
+
+Lives at `crates/zfb-render/src/adapters/preact.rs`. JSX import source `"preact"`; render module `"preact-render-to-string"`; hydration shim wraps `hydrate(vnode, container)`. Preact is the default because its footprint fits zfb's static-output target cleanly — `preact-render-to-string` is purpose-built for synchronous SSR and the runtime image stays small.
+
+## The React adapter
+
+Lives at `crates/zfb-render/src/adapters/react.rs`. Larger than Preact, opt-in for users who need the React ecosystem. JSX import source `"react"`; render module `"react-dom/server"`; hydration shim wraps React 18+'s `hydrateRoot(container, vnode)` — note the swapped argument order versus Preact, which the adapter owns so user code does not have to.
+
+The React adapter uses **synchronous** `renderToString`, not `renderToReadableStream` or `renderToPipeableStream`. zfb produces ahead-of-time static HTML; a sync string is simpler, deterministic, and avoids dragging Node streaming primitives into the build host. The cost is no streaming HTML and no React Server Components in v1.
+
+## Future adapters
+
+Solid, Vue SSR, Svelte SSR — none ship in v0. The `Adapter` trait is small enough that adding one is purely additive: a new adapter file, a new `Framework` enum variant, a new `make_adapter` arm. The render orchestrator does not change.
+
+If a future framework cannot satisfy the trait — for example, it requires an async render entry that does not fit `renderToString → string` — that is a reason to widen the trait deliberately, in a follow-on ADR, not to special-case it.
+
+<Info title="v0 status">
+
+  The `Adapter` trait, the `Framework` enum, and skeleton Preact and
+  React implementations are in place and unit-tested. The full
+  setup-shim wiring lights up when ADR-001 closes and the chosen
+  `RenderHost` implementation becomes functional end-to-end.
+
+</Info>

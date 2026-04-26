@@ -1,0 +1,67 @@
+---
+title: zudo-doc → zfb migration notes
+description: Path from zudo-doc-Astro to a future zudo-doc-zfb
+sidebar_position: 1
+---
+
+<Info>
+
+  Migration is out of scope for v0. This page records the design intent so
+  future contributors do not have to re-derive it.
+
+</Info>
+
+## Where we are today
+
+This documentation site runs on
+[zudo-doc](https://github.com/zudolab/zudo-doc), an Astro-based
+documentation framework. The full stack is Astro plus MDX, Tailwind CSS
+v4, Preact islands for interactivity, Shiki for syntax highlighting, and
+Pagefind for client-side search. Authoring is plain MDX with frontmatter,
+admonitions (`<Note>`, `<Tip>`, `<Info>`, `<Warning>`, `<Danger>`), a
+`sidebar_position` ordering rule, and a parallel Japanese tree at
+`src/content/docs-ja/` that mirrors the English structure.
+
+That whole authoring surface is what doc writers actually touch. The
+goal of the eventual migration is to keep that surface intact and swap
+the engine underneath it.
+
+## Where we want to go
+
+A future v2 of zudo-doc that runs on zfb instead of Astro. The contract
+for doc authors stays the same — the same MDX dialect, the same
+admonition components, the same frontmatter keys, the same i18n folder
+convention — and the build orchestrator becomes the zfb Rust binary
+talking to a JavaScript renderer. Writers should not have to learn a new
+tool to migrate.
+
+## What needs to land in zfb first
+
+The migration only becomes sane once the following gaps in zfb are
+closed.
+
+- **Real per-route SSR.** This is ADR-001 and is non-negotiable. Until
+  the renderer can turn a `pages/[slug].tsx` plus a content collection
+  entry into actual HTML, there is nothing to migrate onto.
+- **MDX in content collections.** Today the collection loader handles
+  Markdown only. MDX needs the JSX-friendly variant of the parser plumbed
+  through, so component imports inside content files resolve correctly.
+- **Pagefind-equivalent search.** Pagefind itself is framework-agnostic
+  — it indexes the built static output — so once SSR ships and the
+  rendered HTML actually reflects page content, the existing Pagefind
+  setup should drop in with no zfb-side changes required.
+- **i18n route patterns.** A `/ja/...` tree mirroring `/...` falls out of
+  zfb's folder-based routing naturally; nothing special is needed beyond
+  cloning `pages/` into `pages/ja/`.
+- **Plugin / integration API for doc-site transforms.** Today
+  `docs/src/plugins/` carries the doc-site-specific MDX transforms
+  (admonitions, code titles, mermaid). zfb does not yet expose a
+  plugin API where this code can be hung. Until it does, those
+  transforms have no host on the zfb side.
+
+## What this page is
+
+A waypoint, not a plan. The actual migration is a separate
+`/big-plan` once the gaps above are closed; this page exists so the
+next contributor who wonders "what would zudo-doc on zfb look like" can
+read the answer without reverse-engineering it from the codebase.

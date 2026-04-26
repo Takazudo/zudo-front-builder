@@ -1,0 +1,73 @@
+---
+title: Islands
+description: "Mark client-interactive components with \"use client\" and let zfb hydrate them in the browser."
+sidebar_position: 5
+category: Concepts
+---
+
+<Warning title="v0 status">
+
+The `"use client"` detection and the island bundler are sketched in `crates/zfb-islands` but are not wired into the build output yet. The blocker is the same as the renderer (ADR-001 — the JS runtime decision). See /architecture/js-runtime for the deeper discussion.
+
+</Warning>
+
+zfb pages render to static HTML by default. **Islands** are the escape hatch — small components that ship JavaScript to the browser and hydrate on the client, while the rest of the page stays as plain HTML.
+
+The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a modal trigger — are islands embedded inside that document, each loaded and hydrated independently.
+
+## Marking a component as an island
+
+Add the `"use client"` directive at the top of a `.tsx` file:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+```
+
+That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
+
+The default template's `components/counter.tsx` is the canonical example to look at when you start.
+
+## Using an island in a page
+
+Import the island and use it like any other component:
+
+```tsx
+import Counter from "../components/counter";
+
+export default function Home() {
+  return (
+    <main>
+      <h1>Welcome</h1>
+      <p>This paragraph is static HTML.</p>
+      <Counter />
+    </main>
+  );
+}
+```
+
+The page renders to HTML at build time. The `<Counter />` portion gets a marker in the output that the client bootstrap uses to find and hydrate the island.
+
+## How it will work end-to-end
+
+When the renderer is live, the pipeline for islands looks like this:
+
+1. **Detection.** During page render, the renderer notes every `"use client"` import as an island reference.
+2. **Bundling.** The build pipeline (`crates/zfb-islands`) compiles each island as a separate ESM bundle via esbuild — one file per island, so a page that uses three islands ships three small bundles instead of one large one.
+3. **Hydration.** The page HTML includes a small inline bootstrap that imports each island bundle and hydrates it when its DOM marker enters view (or immediately, if you opt in with `client:load`).
+
+The result is that each page only ships the JavaScript for the islands it actually uses, and only when those islands are needed. A page with no islands ships zero bytes of JS.
+
+## Today vs. soon
+
+The `"use client"` convention is real and the bundler is sketched out, but the wiring from page render → island detection → bundle output is part of the ADR-001 work. You can author islands now and they will start hydrating once the runtime lands.

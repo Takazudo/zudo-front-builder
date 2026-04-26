@@ -1,0 +1,126 @@
+---
+title: Migrating from Astro
+description: A concept-by-concept map for moving an existing Astro static site to zfb.
+sidebar_position: 1
+---
+
+<Warning title="v0 status">
+
+  zfb's renderer is pending the runtime decision tracked in ADR-001
+  (see /architecture/js-runtime). Plan your migration now, but expect to
+  execute it once the renderer lands. APIs below are stable enough to
+  design against; specific imports may shift before 1.0.
+
+</Warning>
+
+If you already maintain an Astro site, most of zfb will feel familiar. Both
+projects ship file-based routing, content collections, and partial
+hydration. The differences are mostly about scope: zfb is smaller, more
+opinionated, and Rust-backed end to end.
+
+## Directory layout
+
+Astro puts everything under `src/`. zfb does not.
+
+| Astro                | zfb                  |
+| -------------------- | -------------------- |
+| `src/pages/`         | `pages/`             |
+| `src/layouts/`       | `layouts/`           |
+| `src/components/`    | `components/`        |
+| `src/content/`       | `content/`           |
+| `astro.config.mjs`   | `zfb.config.ts`      |
+
+The flatter layout matches the smaller surface area. There is no `src/`
+namespace to remember.
+
+## Components: one model, not two
+
+Astro's headline feature is the `.astro` file — a server-only template
+language with optional islands of framework code. zfb collapses that into
+a single component model: every component is a `.tsx` file. The `framework`
+field in `zfb.config` selects either Preact or React, and the same JSX
+flavor is used for layouts, pages, and components.
+
+```tsx
+export default function MarketingPage() {
+  return <main><h1>Hello</h1></main>;
+}
+```
+
+There is no separate template syntax to learn, but if you relied on
+`.astro` for things like top-level `await` outside components, you will
+need to move that work into a `paths()` export or a data collection.
+
+## Content collections
+
+Astro's `getCollection("blog")` from `astro:content` has a near-direct
+equivalent in zfb:
+
+```ts
+import { getCollection } from "zfb/content";
+
+const posts = await getCollection("blog");
+```
+
+The return shape is similar — each entry exposes `slug`, `data`
+(frontmatter), and `body`. See /api/get-collection for the full surface.
+
+Schemas move from inline Zod to declarative config. The v1 target is a
+record-keyed shape with explicit `type` and per-field validators:
+
+```ts
+// zfb.config.ts — v1 target shape (NOT yet loaded; see ADR-001)
+export default {
+  collections: {
+    blog: {
+      type: "content",
+      schema: {
+        title: "string",
+        pubDate: "date",
+        draft: "boolean?",
+      },
+    },
+  },
+};
+```
+
+There is no Zod — field validators are string tags like `"string"`,
+`"number"`, `"date"`, with a trailing `?` for optional. v0 currently
+loads only the simpler array form via `zfb.config.json` (see
+[`defineConfig`](/api/define-config)); the richer schema lands with the
+runtime decision.
+
+## Islands
+
+Astro uses `client:load`, `client:visible`, and friends as JSX attributes
+on imported framework components. zfb uses a file-level `"use client"`
+directive instead — the same pattern Next.js App Router popularized:
+
+```tsx
+"use client";
+
+export default function Counter() {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(n + 1)}>{n}</button>;
+}
+```
+
+Anything imported from a `"use client"` file becomes an island
+automatically. See /api/island.
+
+## Slots and layouts
+
+Astro's `<slot />` becomes plain JSX `children`:
+
+```tsx
+export default function DocsLayout({ children }) {
+  return <div className="prose">{children}</div>;
+}
+```
+
+## What zfb does not have yet
+
+Be honest with yourself before committing to a port. zfb v0 has no
+integrations API, no view transitions, no Astro DB equivalent, and no
+server endpoints. If your site relies on any of these, stay on Astro for
+now and revisit once zfb 1.0 ships.
