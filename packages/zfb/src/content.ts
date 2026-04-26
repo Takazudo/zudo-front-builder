@@ -25,6 +25,65 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 /**
+ * Props accepted by an entry's [`CollectionEntry.Content`] component.
+ *
+ * `components` mirrors Astro's `<Content components={...}>` contract:
+ * a flat record of element-name → override component (e.g. `{ h1: MyH1 }`).
+ * The default-components convention ships from `zfb`'s root export
+ * (`defaultComponents`, lands in Sub 6) and users compose with their own
+ * via `{ ...defaultComponents, ...mine }`.
+ */
+export interface ContentProps {
+  /** Element-name → override component map. Optional. */
+  components?: Record<string, unknown>;
+}
+
+/**
+ * Public JSX-element shape returned by [`CollectionEntry.Content`].
+ *
+ * Matches the structural shape that both Preact's and React's `jsx-runtime`
+ * accept on either side of the boundary, mirroring the Island wrapper's
+ * approach. Consumers should treat this as opaque — its only contract is
+ * "renderable JSX value".
+ *
+ * Aliased as `JSX.Element` in the field signature: the JS runtime is
+ * type-erased and the actual VNode shape is supplied by the framework
+ * adapter at evaluation time.
+ */
+export type ContentElement = {
+  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
+/**
+ * Bridge contract published by the Rust-side `zfb-render` `Renderer` before
+ * evaluating each page module. Cross-referenced from the Rust side in
+ * `crates/zfb-render/src/loader.rs` so the two halves stay in sync — see
+ * `packages/zfb/CONTRIBUTING.md` for the full contract narrative.
+ *
+ * The renderer installs `globalThis.__zfb.content.get(specifier)` keyed on
+ * the entry's `module_specifier` (Sub 4 convention: `mdx://<collection>/<slug>#<hash>`,
+ * collapsed to `mdx://<collection>/<slug>` from the JS stub side which has
+ * no hash to compute). When `get` returns `undefined` (or the bridge as a
+ * whole is absent — typical of unit tests, dev sandboxes, and any
+ * non-renderer evaluation context), `Content` renders a clearly-marked
+ * `<pre data-zfb-content-fallback>` fallback so the visual distinction is
+ * obvious even in unstyled environments.
+ */
+type ContentBridge = {
+  get(specifier: string): ((props: ContentProps) => unknown) | undefined;
+};
+
+type ZfbBridgeNamespace = {
+  content?: ContentBridge;
+};
+
+type BridgeGlobal = typeof globalThis & {
+  __zfb?: ZfbBridgeNamespace;
+};
+
+/**
  * Generic shape returned for one entry in a content collection. The `data`
  * field carries parsed frontmatter, typed by the caller via the generic
  * parameter.
@@ -36,6 +95,43 @@ export type CollectionEntry<T = Record<string, unknown>> = {
   data: T;
   /** Raw markdown body (frontmatter stripped). */
   body: string;
+  /**
+   * Stable module specifier used as the bridge lookup key. Format:
+   * `mdx://<collection>/<slug>` (no hash component — the JS stub does
+   * not compile MDX, so it has no body hash to attach; the production
+   * Rust-side `zfb-content::collection::Entry::module_specifier` adds a
+   * `#<hash>` suffix and the bridge is responsible for matching either
+   * form against its registered components).
+   *
+   * This field is part of the v0+ JS surface so the bridge has something
+   * deterministic to key on without consulting per-call state.
+   */
+  module_specifier: string;
+  /**
+   * Renderable component for this entry.
+   *
+   * **Bridge contract.** At call time, `Content` consults
+   * `globalThis.__zfb?.content?.get(entry.module_specifier)`. If the
+   * bridge is present and returns a function, that function is invoked
+   * with `props` and its result returned verbatim.
+   *
+   * **Fallback.** Outside the renderer (unit tests, dev sandboxes, or any
+   * environment where `globalThis.__zfb.content.get` is absent or returns
+   * `undefined`), `Content` returns a JSX-shaped element rendering the
+   * raw markdown body inside a `<pre data-zfb-content-fallback>` block,
+   * with a leading `[zfb fallback render]` marker line so the visual
+   * distinction survives unstyled environments. The marker is also a
+   * grep target for "did the production renderer not run?" diagnostics.
+   *
+   * **Typed signature.** Returns `ContentElement` (a structural alias for
+   * `JSX.Element`) so consumers can drop `<entry.Content components={...} />`
+   * into both React and Preact JSX without per-framework type setup.
+   *
+   * @example
+   *   const post = (await getCollection("blog"))[0];
+   *   return <post.Content components={{ ...defaultComponents, h1: MyH1 }} />;
+   */
+  Content: (props: ContentProps) => ContentElement;
 };
 
 /**
@@ -48,6 +144,64 @@ function resolveCollectionDir(name: string): string {
   const root = envRoot ? resolve(envRoot) : resolve(process.cwd(), "content");
   return join(root, name);
 }
+
+/**
+ * Build the v0 stub's bridge specifier for an entry. Mirrors the Rust-side
+ * convention (`mdx://<collection>/<slug>`) minus the body hash — the JS
+ * stub does not compile MDX, so it has no hash to attach. The bridge
+ * resolver on the renderer side is responsible for matching either form.
+ */
+function buildModuleSpecifier(collection: string, slug: string): string {
+  return `mdx://${collection}/${slug}`;
+}
+
+/**
+ * Build the `Content` component for an entry. Captures `module_specifier`
+ * + `body` in the closure so the returned function takes only `props`.
+ *
+ * The bridge lookup is done lazily on every call (not at entry-construction
+ * time) so the renderer can install / swap `globalThis.__zfb.content` at
+ * any point before the first render without ordering hazards.
+ */
+function buildContentComponent(
+  module_specifier: string,
+  body: string,
+): (props: ContentProps) => ContentElement {
+  return function Content(props: ContentProps): ContentElement {
+    const bridge = (globalThis as BridgeGlobal).__zfb?.content;
+    const renderer = bridge?.get(module_specifier);
+    if (typeof renderer === "function") {
+      // Trust the bridge to return a JSX-element-shaped value — we don't
+      // try to validate; both Preact and React JSX runtimes accept any
+      // structural `{ type, props, key }` object on either side of the
+      // boundary, and the renderer is the source of truth here.
+      return renderer(props) as ContentElement;
+    }
+    return renderFallback(body);
+  };
+}
+
+/**
+ * Build the structural JSX element returned when the bridge is absent.
+ *
+ * Shape: `<pre data-zfb-content-fallback>{marker}\n{body}</pre>` — the
+ * leading `[zfb fallback render]` marker line is part of the public
+ * fallback contract (it's both a visual signal and a grep target). Tests
+ * pin both the attribute and the marker line.
+ */
+function renderFallback(body: string): ContentElement {
+  return {
+    type: "pre",
+    props: {
+      "data-zfb-content-fallback": "",
+      children: `${FALLBACK_MARKER}\n${body}`,
+    },
+    key: null,
+  };
+}
+
+/** Leading marker line emitted by [`renderFallback`]. Public contract. */
+const FALLBACK_MARKER = "[zfb fallback render]";
 
 /**
  * Load every `*.md` file in the named collection. Files starting with `.`
@@ -75,7 +229,14 @@ export async function getCollection<T = Record<string, unknown>>(
     const raw = await readFile(fullPath, "utf8");
     const { data, body } = parseFrontmatter(raw);
     const slug = filename.slice(0, -".md".length);
-    return { slug, data: data as T, body };
+    const module_specifier = buildModuleSpecifier(name, slug);
+    return {
+      slug,
+      data: data as T,
+      body,
+      module_specifier,
+      Content: buildContentComponent(module_specifier, body),
+    };
   });
   return entries;
 }
