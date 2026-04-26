@@ -40,13 +40,11 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     // unsupported zfb.config.ts) is surfaced via the output helpers and
     // propagated so `main()` can exit non-zero.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
-    let _cfg = match config::load_from_dir(&project_root).await {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            output::error(&output::format_error(&err));
-            return Err(err);
-        }
-    };
+    // Errors propagate to main() for centralized rendering — see
+    // commands/dev.rs and main.rs for the shared rationale.
+    let _cfg = config::load_from_dir(&project_root)
+        .await
+        .context("failed to load project configuration")?;
 
     // Resolve `args.outdir` against the project root so the existence check
     // (and `ServeDir`) operate on an unambiguous path. CLI wins over config

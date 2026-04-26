@@ -76,19 +76,10 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // the CLI flag wins (clap injects the default "dist" if the user didn't
     // pass `--outdir`). When more config consumers land (e.g. `publicDir`
     // copy, `tailwind.enabled`), they'll read off the loaded `Config`.
-    let _config = match crate::config::load_from_dir(&project_root).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            // Render the multi-line user-friendly error block before
-            // returning. `format_error` already includes a trailing newline,
-            // so trim the right side before handing it to `output::error`
-            // (which uses `eprintln!` and would otherwise add a second
-            // blank line). main() will still print a terse fallback line —
-            // a small redundancy that keeps the contract straightforward.
-            output::error(output::format_error(&e).trim_end());
-            return Err(e);
-        }
-    };
+    // Errors propagate to main() for centralized rendering.
+    let _config = crate::config::load_from_dir(&project_root)
+        .await
+        .context("failed to load project configuration")?;
 
     let outdir = resolve_outdir(&project_root, &args.outdir);
 

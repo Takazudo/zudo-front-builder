@@ -86,17 +86,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
 
-    let cfg = match config::load_from_dir(&project_root).await {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            // Surface the failure with the structured error renderer so
-            // the user sees a readable multi-line block, then propagate
-            // so the process exits non-zero.
-            output::error("failed to load project configuration");
-            eprint!("{}", output::format_error(&err));
-            return Err(err);
-        }
-    };
+    // Errors propagate to main(), which renders them through
+    // output::format_error — see main.rs for the centralization rationale.
+    let cfg = config::load_from_dir(&project_root)
+        .await
+        .context("failed to load project configuration")?;
 
     // 2. Resolve filesystem roots from config (relative paths join onto
     //    the project root; absolute paths used as-is).
