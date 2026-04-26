@@ -2,6 +2,7 @@ use clap::Parser;
 
 use zfb::cli::{Cli, Command};
 use zfb::commands;
+use zfb::output;
 
 #[tokio::main]
 async fn main() {
@@ -13,7 +14,11 @@ async fn main() {
         Command::Preview(args) => commands::preview::run(args).await,
     };
     if let Err(e) = result {
-        eprintln!("error: {e:#}");
+        // Single, centralized error rendering so individual commands can
+        // just `return Err(e)` without pre-printing — avoids the
+        // double-print that would otherwise happen when a command both
+        // formats the error itself and returns it for main to log again.
+        output::error(output::format_error(&e).trim_end());
         std::process::exit(1);
     }
 }

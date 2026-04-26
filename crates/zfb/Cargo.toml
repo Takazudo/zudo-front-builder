@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tower-http = { version = "0.6", features = ["fs"] }
 zfb-build = { path = "../zfb-build" }
 zfb-graph = { path = "../zfb-graph" }
+zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
 zfb-watcher = { path = "../zfb-watcher" }
 

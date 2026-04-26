@@ -12,29 +12,46 @@
 //!    [`zfb_server::outcome_to_events`] and broadcasts them.
 //!
 //! Then it binds the address from `args.host:args.port`, prints the
-//! ready banner, and runs the axum server until Ctrl+C.
+//! ready banner via [`crate::output::ready`], and runs the axum server
+//! until Ctrl+C.
 //!
-//! ## v1 scope-down: noop page renderer
+//! ## Configuration
 //!
-//! Wiring the real `zfb-render` page renderer (which depends on
-//! `deno_core_host` and the SSR bundle) is deliberately deferred — Sub 4
-//! owns only `crates/zfb/src/commands/dev.rs` and the v1 acceptance is
-//! "the dev server boots and serves SOMETHING (even the dev_404 body)
-//! with live-reload working". So we hand the orchestrator a
+//! Project configuration is loaded via [`crate::config::load_from_dir`]
+//! at startup. Today this resolves to a `zfb.config.json` if present, or
+//! sensible defaults otherwise; encountering a `zfb.config.ts` produces a
+//! clear "not yet supported" error (the TS pipeline is blocked on
+//! ADR-001's runtime decision).
+//!
+//! **Precedence rule:** CLI args (`--host`, `--port`) override the
+//! corresponding config values **unconditionally**. `clap` defaults
+//! `args.host` and `args.port` to concrete values, so we cannot cheaply
+//! distinguish "user passed `--port`" from "user accepted the default";
+//! treating CLI as authoritative keeps the rule predictable and avoids
+//! `ArgMatches` plumbing. `out_dir` and `public_dir` come from config
+//! (resolved against the project root via [`resolve_under_root`]) since
+//! there is no CLI override for them on `zfb dev`.
+//!
+//! ## v1 scope-down: noop page renderer (still deferred)
+//!
+//! Wiring the real `zfb-render` page renderer remains deferred — it
+//! depends on `deno_core_host`, which is still a skeleton pending
+//! ADR-001's JS-runtime decision. So we hand the orchestrator a
 //! [`zfb_build::PageRenderer`] that returns an empty render set: the
 //! orchestrator still drives the watcher + dep-graph + reload broadcast
 //! correctly, the [`zfb_server::PageCache`] simply stays empty, and
 //! every request falls through to [`zfb_server::DEV_404_BODY`]. Real
 //! renderer integration (and the cache-population side of the
-//! `on_outcome` callback) is a follow-up after Wave 2 lands.
+//! `on_outcome` callback) will land once `DenoCoreHost` is real.
 //!
-//! Configuration loading (`crate::config::load_from_dir`) is also
-//! deferred per the manager's plan — it's Sub 3's territory and gets
-//! wired in after merge. For now we work directly off
-//! [`std::env::current_dir`] and a fixed list of watch roots.
+//! ## Output
+//!
+//! Status lines (ready banner, orchestrator failures) go through
+//! [`crate::output`] so colour/no-colour and stdout/stderr conventions
+//! are handled centrally.
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -47,6 +64,8 @@ use zfb_graph::{DependencyGraph, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 
 use crate::cli::DevArgs;
+use crate::config;
+use crate::output;
 
 /// Default source directories the watcher follows. Missing entries are
 /// silently skipped by `zfb_watcher::Watcher::start`, so it's fine to
@@ -64,12 +83,19 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
 
 /// Entry point for `zfb dev`.
 pub async fn run(args: &DevArgs) -> Result<()> {
-    // 1. Resolve the project root. TODO(Sub 3 follow-up): replace with
-    //    `crate::config::load_from_dir(&cwd).await` once config wiring
-    //    lands; for v1 we operate on the current dir directly.
+    // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
-    let dist_root = project_root.join("dist");
-    let public_root = project_root.join("public");
+
+    // Errors propagate to main(), which renders them through
+    // output::format_error — see main.rs for the centralization rationale.
+    let cfg = config::load_from_dir(&project_root)
+        .await
+        .context("failed to load project configuration")?;
+
+    // 2. Resolve filesystem roots from config (relative paths join onto
+    //    the project root; absolute paths used as-is).
+    let dist_root = resolve_under_root(&project_root, &cfg.out_dir);
+    let public_root = resolve_under_root(&project_root, &cfg.public_dir);
 
     // ServeDir on a missing directory just 404s, but creating dist/
     // up-front avoids a noisy warning the first time the dev server
@@ -80,25 +106,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .with_context(|| format!("failed to create dist dir {}", dist_root.display()))?;
     }
 
-    // 2. Resolve the bind address. `args.host` may be "localhost",
-    //    "127.0.0.1", "0.0.0.0", etc., so we go through ToSocketAddrs.
+    // 3. Resolve the bind address. CLI args win unconditionally over
+    //    config values — see the precedence note in the module doc.
     let addr = resolve_addr(&args.host, args.port)?;
 
-    // 3. Live-reload broadcast channel. 64 slots is plenty for a dev
+    // 4. Live-reload broadcast channel. 64 slots is plenty for a dev
     //    server: one event per build tick and a handful of subscribers.
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
 
-    // 4. Page cache shared between the orchestrator's render outputs
+    // 5. Page cache shared between the orchestrator's render outputs
     //    and the server's GET handlers.
     let pages = PageCache::new();
 
-    // 5. Build orchestrator setup. Empty dep graph for v1 — the
-    //    resolver/loader that populates it is out of scope for Sub 4.
+    // 6. Build orchestrator setup. Empty dep graph for v1 — the
+    //    resolver/loader that populates it is out of scope for this
+    //    sub-task.
     let graph = Arc::new(Mutex::new(DependencyGraph::new()));
     let pipeline = DevAssetPipeline::new();
     let watch_roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
-    let config = OrchestratorConfig::new(&project_root, watch_roots);
-    let orchestrator = BuildOrchestrator::new(config, graph, pipeline);
+    let orch_config = OrchestratorConfig::new(&project_root, watch_roots);
+    let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     // Noop page renderer — see crate-level scope-down note above.
     let render_pages: PageRenderer = Arc::new(|_pages: &[PageId]| Ok(Vec::new()));
@@ -109,7 +136,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         run_islands: None,
     };
 
-    // 6. Wire on_outcome: translate each non-noop tick to ReloadEvents
+    // 7. Wire on_outcome: translate each non-noop tick to ReloadEvents
     //    and broadcast them. Page cache population is intentionally
     //    skipped here because the noop renderer never emits any
     //    RenderedPage outputs (BuildOutcome only carries page IDs, not
@@ -124,20 +151,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     };
 
-    // 7. Spawn the orchestrator's watcher loop.
+    // 8. Spawn the orchestrator's watcher loop.
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, on_outcome).await {
             // The orchestrator's loop logs its own per-tick errors and
             // keeps going; reaching here means the watcher itself died.
-            // Surface that to stderr so the user sees something rather
-            // than a silent dead dev server.
-            eprintln!("zfb dev: build orchestrator stopped: {err:#}");
+            // Surface that via the structured error helper so the user
+            // sees something rather than a silent dead dev server.
+            output::error(&format!("build orchestrator stopped: {err:#}"));
         }
     });
 
-    // 8. Build the serve options and announce readiness just before
-    //    handing control to axum. Plain println for now — Sub 7 may
-    //    upgrade this to colored output.
+    // 9. Build the serve options and announce readiness just before
+    //    handing control to axum.
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -147,12 +173,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         broadcast: tx,
     };
 
-    println!("→ ready on http://{}:{}", args.host, args.port);
+    output::ready(&format!("http://{}:{}", args.host, args.port));
 
-    // 9. Run the server, racing against Ctrl+C. axum::serve has no
-    //    graceful-shutdown wiring in the zfb-server crate today, so on
-    //    Ctrl+C we abort the orchestrator task and let the runtime
-    //    drop the server when this future returns. Process exits 0.
+    // 10. Run the server, racing against Ctrl+C. axum::serve has no
+    //     graceful-shutdown wiring in the zfb-server crate today, so on
+    //     Ctrl+C we abort the orchestrator task and let the runtime
+    //     drop the server when this future returns. Process exits 0.
     tokio::select! {
         res = serve(opts) => {
             // serve() returned on its own — propagate any error.
@@ -176,4 +202,68 @@ fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .with_context(|| format!("could not resolve bind address {pair}"))?;
     iter.next()
         .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
+}
+
+/// Resolve a config-supplied path against the project root.
+///
+/// - If `p` is absolute, it is returned unchanged so users can point at
+///   directories outside the project (e.g. a shared `dist/` on a CI box).
+/// - Otherwise it is joined onto `project_root`.
+///
+/// This deliberately does **not** canonicalise — the directory may not
+/// exist yet (`dist/` is created lazily right after this call), and we
+/// want to preserve the user's spelling for log output.
+fn resolve_under_root(project_root: &Path, p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        project_root.join(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_under_root_joins_relative_paths() {
+        let root = Path::new("/tmp/proj");
+        let p = Path::new("dist");
+        assert_eq!(resolve_under_root(root, p), PathBuf::from("/tmp/proj/dist"));
+    }
+
+    #[test]
+    fn resolve_under_root_joins_nested_relative_paths() {
+        let root = Path::new("/tmp/proj");
+        let p = Path::new("build/out");
+        assert_eq!(
+            resolve_under_root(root, p),
+            PathBuf::from("/tmp/proj/build/out")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_under_root_keeps_absolute_paths_as_is() {
+        let root = Path::new("/tmp/proj");
+        let p = Path::new("/var/www/dist");
+        assert_eq!(resolve_under_root(root, p), PathBuf::from("/var/www/dist"));
+    }
+
+    #[test]
+    fn resolve_under_root_handles_dot_relative() {
+        // `./public` should still anchor under the project root rather
+        // than be silently rewritten — `Path::join` preserves the `.`,
+        // which is fine because filesystem APIs treat it as a no-op.
+        let root = Path::new("/tmp/proj");
+        let p = Path::new("./public");
+        let resolved = resolve_under_root(root, p);
+        // The resolved path must start with the project root. We don't
+        // require an exact textual match because `join` may or may not
+        // collapse the `.` depending on platform conventions.
+        assert!(
+            resolved.starts_with(root),
+            "expected {resolved:?} to start with {root:?}"
+        );
+    }
 }

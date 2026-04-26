@@ -8,34 +8,68 @@
 //! Directory-style URLs (`/`, `/foo/bar/`) resolve to the matching
 //! `index.html` via [`ServeDir`]'s default `append_index_html_on_directories`
 //! behavior.
+//!
+//! ## Config wiring
+//!
+//! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported" error
+//! for `zfb.config.ts`) via [`crate::config::load_from_dir`] from the current
+//! working directory. Loading the config validates the project; the
+//! command-line `--outdir` and `--port` arguments win **unconditionally** —
+//! `clap` defaults them to concrete values, so we cannot cheaply distinguish
+//! "user passed the flag" from "user accepted the default", and treating CLI
+//! as authoritative keeps the rule predictable across all four commands (see
+//! the matching note in `commands/dev.rs` and `commands/build.rs`). Output
+//! uses [`crate::output`] helpers for consistent styling with the other zfb
+//! commands.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use axum::Router;
 use tower_http::services::ServeDir;
 
 use crate::cli::PreviewArgs;
+use crate::config;
+use crate::output;
 
 pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
+    // Resolve the project root from the current working directory and load
+    // the project config (if any). A missing config file is fine — it
+    // returns `Config::default()`. Any *real* error (e.g. invalid JSON,
+    // unsupported zfb.config.ts) is surfaced via the output helpers and
+    // propagated so `main()` can exit non-zero.
+    let project_root = std::env::current_dir().context("failed to read current working dir")?;
+    // Errors propagate to main() for centralized rendering — see
+    // commands/dev.rs and main.rs for the shared rationale.
+    let _cfg = config::load_from_dir(&project_root)
+        .await
+        .context("failed to load project configuration")?;
+
+    // Resolve `args.outdir` against the project root so the existence check
+    // (and `ServeDir`) operate on an unambiguous path. CLI wins over config
+    // unconditionally — see the precedence note in the module doc comment.
+    let outdir = resolve_under_root(&project_root, &args.outdir);
+    let port = args.port;
+
     // Verify the output directory exists *before* binding the port so that
     // missing-build errors don't leave a half-started server behind.
-    if !args.outdir.exists() {
+    if !outdir.exists() {
         anyhow::bail!(
             "{} does not exist — run zfb build first",
-            args.outdir.display()
+            outdir.display()
         );
     }
 
-    let serve_dir = ServeDir::new(&args.outdir);
+    let serve_dir = ServeDir::new(&outdir);
     let app = Router::new().fallback_service(serve_dir);
 
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind preview server to {addr}"))?;
 
-    println!("→ preview ready on http://localhost:{}", args.port);
+    output::ready(&format!("http://localhost:{}", port));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -47,4 +81,45 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
         .context("preview server failed")?;
 
     Ok(())
+}
+
+/// Resolve `path` against `root` if it is relative; absolute paths are
+/// returned unchanged. Pure path arithmetic — no I/O, no `canonicalize`, so
+/// it works equally for paths that don't yet exist.
+fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_under_root_joins_relative_paths() {
+        let root = Path::new("/tmp/project");
+        assert_eq!(
+            resolve_under_root(root, Path::new("dist")),
+            PathBuf::from("/tmp/project/dist")
+        );
+        assert_eq!(
+            resolve_under_root(root, Path::new("build/out")),
+            PathBuf::from("/tmp/project/build/out")
+        );
+    }
+
+    #[test]
+    fn resolve_under_root_passes_absolute_paths_through() {
+        let root = Path::new("/tmp/project");
+        let abs = if cfg!(windows) {
+            PathBuf::from("C:/elsewhere/dist")
+        } else {
+            PathBuf::from("/elsewhere/dist")
+        };
+        assert_eq!(resolve_under_root(root, &abs), abs);
+    }
+
 }
