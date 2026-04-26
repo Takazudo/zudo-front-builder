@@ -4,7 +4,22 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getCollection, parseFrontmatter } from "../content.js";
+import {
+  ContentBlockquote,
+  ContentCode,
+  ContentH2,
+  ContentH3,
+  ContentH4,
+  ContentLink,
+  ContentOl,
+  ContentParagraph,
+  ContentStrong,
+  ContentTable,
+  ContentUl,
+  defaultComponents,
+  getCollection,
+  parseFrontmatter,
+} from "../content.js";
 
 /**
  * Test-only handle on the `__zfb` bridge namespace. Mirrors the ambient
@@ -261,5 +276,92 @@ describe("CollectionEntry.Content", () => {
     // Second call: bridge present → delegates.
     const after = entry?.Content({});
     expect(after).toBe(sentinel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `defaultComponents` — htmlOverrides convention (Sub 6).
+//
+// Each override is a thin passthrough of the markdown element it replaces.
+// Tests pin (a) the eleven-entry coverage, (b) the deliberate absence of
+// `h1`, (c) the per-component tag + children + extra-prop pass-through
+// semantics, and (d) that each component is reachable both via the map
+// and via its named-const re-export.
+// ---------------------------------------------------------------------------
+
+describe("defaultComponents (htmlOverrides convention)", () => {
+  it("exports exactly the eleven zudo-doc entries (h1 deliberately absent)", () => {
+    expect(Object.keys(defaultComponents).sort()).toEqual(
+      ["a", "blockquote", "code", "h2", "h3", "h4", "ol", "p", "strong", "table", "ul"].sort(),
+    );
+    // h1 is intentionally not in the map — page titles render from frontmatter.
+    expect((defaultComponents as Record<string, unknown>)["h1"]).toBeUndefined();
+  });
+
+  it("each map entry is the same reference as its named-const export", () => {
+    // Pin tree-shake-import equivalence: a consumer who imports a single
+    // override gets exactly the value the map points at.
+    expect(defaultComponents.h2).toBe(ContentH2);
+    expect(defaultComponents.h3).toBe(ContentH3);
+    expect(defaultComponents.h4).toBe(ContentH4);
+    expect(defaultComponents.p).toBe(ContentParagraph);
+    expect(defaultComponents.a).toBe(ContentLink);
+    expect(defaultComponents.strong).toBe(ContentStrong);
+    expect(defaultComponents.blockquote).toBe(ContentBlockquote);
+    expect(defaultComponents.ul).toBe(ContentUl);
+    expect(defaultComponents.ol).toBe(ContentOl);
+    expect(defaultComponents.table).toBe(ContentTable);
+    expect(defaultComponents.code).toBe(ContentCode);
+  });
+
+  it.each([
+    ["h2", ContentH2],
+    ["h3", ContentH3],
+    ["h4", ContentH4],
+    ["p", ContentParagraph],
+    ["a", ContentLink],
+    ["strong", ContentStrong],
+    ["blockquote", ContentBlockquote],
+    ["ul", ContentUl],
+    ["ol", ContentOl],
+    ["table", ContentTable],
+    ["code", ContentCode],
+  ] as const)("renders <%s> with children and extra props passed through", (tag, Component) => {
+    const node = Component({
+      children: "hello",
+      className: "foo",
+      "data-test": "x",
+    });
+    expect(node.type).toBe(tag);
+    expect(node.props.children).toBe("hello");
+    expect(node.props["className"]).toBe("foo");
+    expect(node.props["data-test"]).toBe("x");
+    // The passthrough must not invent props the caller did not supply.
+    expect(Object.keys(node.props).sort()).toEqual(["children", "className", "data-test"].sort());
+    // Stable JSX-element shape (matches Island's contract).
+    expect(node.key).toBeNull();
+  });
+
+  it("every entry is callable with no props and yields the matching tag", () => {
+    // Smoke-test the no-props path so consumers calling `<Tag />` (e.g. an
+    // empty `<hr/>`-style override eventually) still get a well-formed node.
+    for (const [tag, Component] of Object.entries(defaultComponents)) {
+      const node = (
+        Component as (props: Record<string, unknown>) => {
+          type: string;
+          props: Record<string, unknown>;
+          key: unknown;
+        }
+      )({});
+      expect(node.type).toBe(tag);
+      // children is forwarded as-is (undefined when not supplied).
+      expect(node.props["children"]).toBeUndefined();
+    }
+  });
+
+  it("forwards array children verbatim (no reshape)", () => {
+    const children = ["a", { type: "em", props: { children: "b" }, key: null }, "c"];
+    const node = ContentParagraph({ children });
+    expect(node.props.children).toBe(children);
   });
 });
