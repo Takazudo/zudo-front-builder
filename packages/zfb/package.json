@@ -15,6 +15,14 @@
     "./runtime": {
       "types": "./src/runtime.ts",
       "default": "./src/runtime.ts"
+    },
+    "./content": {
+      "types": "./src/content.ts",
+      "default": "./src/content.ts"
+    },
+    "./paginate": {
+      "types": "./src/paginate.ts",
+      "default": "./src/paginate.ts"
     }
   },
   "scripts": {
