@@ -1,0 +1,73 @@
+---
+title: Content Collections
+description: Define typed collections of Markdown content in zfb.config and load them from pages.
+sidebar_position: 2
+category: Concepts
+---
+
+<Warning title="v0 status">
+
+File discovery, frontmatter parsing, and Markdown rendering live in `crates/zfb-content` and are wired up. Full integration with the page renderer is blocked on ADR-001 (the JS runtime decision). See /architecture/js-runtime for the deeper discussion.
+
+</Warning>
+
+A **content collection** is a directory of Markdown (or MDX) files declared in your project config. zfb scans the directory at build time, parses each file's frontmatter against a schema you supply, and exposes the entries through a `getCollection()` helper your pages can call.
+
+## Declaring a collection
+
+Collections are configured in `zfb.config.ts` (or `zfb.config.json`) under the `collections` key:
+
+```json
+{
+  "collections": {
+    "blog": {
+      "type": "content",
+      "directory": "content/blog",
+      "schema": {
+        "title": "string",
+        "date": "date",
+        "description": "string?"
+      }
+    }
+  }
+}
+```
+
+The `type: "content"` tells zfb that each file is a Markdown document with frontmatter and a body. The `schema` is enforced at build time — any entry missing a required field, or with the wrong type, fails the build with a clear error pointing at the offending file.
+
+A `?` suffix marks a field as optional. Supported field types include `string`, `number`, `boolean`, `date`, and arrays (`string[]`).
+
+## Loading entries from a page
+
+Pages use `getCollection()` to enumerate entries:
+
+```tsx
+import { getCollection } from "zfb/content";
+
+export default async function BlogIndex() {
+  const posts = await getCollection("blog");
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.slug}>
+          <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Each entry has three things you can rely on:
+
+- `data` — the parsed, validated frontmatter (typed against your schema).
+- `body` — the rendered HTML for the Markdown body.
+- `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
+
+The function signature lives in [`getCollection`](/api/get-collection).
+
+## How parsing works
+
+Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and renders the Markdown body to HTML using a deterministic pipeline. Anything beyond that — picking up changes in dev, surfacing entries to your page code, or wiring the rendered HTML into the final output — depends on the renderer being live, which is the ADR-001 blocker.
+
+For now, the discovery half works end-to-end and is well worth modelling your content around. Once ADR-001 lands, your collection code will start producing rendered pages without further changes.

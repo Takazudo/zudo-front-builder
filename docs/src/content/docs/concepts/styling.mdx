@@ -1,0 +1,74 @@
+---
+title: Styling
+description: Global CSS, Tailwind v4, and where component-scoped styling fits in zfb.
+sidebar_position: 4
+category: Concepts
+---
+
+<Info>
+
+The CSS pipeline (Tailwind compilation, PostCSS) is wired up in `crates/zfb-css` and runs today. Inlining the critical path into rendered HTML waits on the renderer (ADR-001).
+
+</Info>
+
+Styling in zfb is intentionally small. Today there are two layers — global CSS and Tailwind v4 — and one well-supported pattern for everything else: utility classes on the markup itself. Component-scoped styling is an open design space and is not part of v0.
+
+## Global CSS
+
+The default template ships with `styles/global.css`. This is plain CSS, processed by zfb's CSS pipeline, and made available to every page. Use it for design tokens, resets, base typography, and anything else that should apply site-wide:
+
+```css
+:root {
+  --color-text: #1a1a1a;
+  --color-bg: #ffffff;
+  --font-body: system-ui, sans-serif;
+}
+
+body {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: var(--font-body);
+}
+```
+
+Imports inside CSS work as you would expect — split your styles across files and pull them together from `global.css`.
+
+## Tailwind v4
+
+Tailwind v4 is opt-in via `zfb.config.{ts,json}`:
+
+```json
+{
+  "tailwind": {
+    "enabled": true
+  }
+}
+```
+
+When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself.
+
+Once Tailwind is on, utility classes work in any `.tsx` file:
+
+```tsx
+export default function Hero() {
+  return (
+    <section className="mx-auto max-w-2xl px-6 py-12">
+      <h1 className="text-3xl font-bold">Hello</h1>
+    </section>
+  );
+}
+```
+
+Tailwind v4's CSS-first configuration is supported through `@theme` directives in `global.css` — you customise tokens by editing CSS, not a JS config file.
+
+## Component-scoped styling
+
+This is the part to be honest about. CSS Modules, styled-components, and vanilla-extract are all reasonable choices for scoped component styles, and none of them are integrated into v0 of zfb.
+
+The recommended pattern today is **global CSS for site-wide concerns plus Tailwind utility classes for component-level styling**. This keeps the build fast and the runtime trivial, and it maps cleanly onto Tailwind v4's design-token model.
+
+Component-scoped CSS is on the radar as future work, and the integration point will live in `crates/zfb-css`.
+
+## What lands in `dist/`
+
+Each rendered page in `dist/<route>.html` will eventually inline its critical CSS path so the first paint never waits for an external stylesheet. Today the build emits stub HTML without the CSS extraction step — that part lights up alongside the renderer. The compilation half (Tailwind, PostCSS, your `global.css`) already runs as part of the pipeline; what changes is where the output ends up.
