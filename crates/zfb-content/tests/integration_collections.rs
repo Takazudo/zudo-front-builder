@@ -40,10 +40,7 @@ fn walks_valid_collection_returns_three_entries_sorted() {
         .collect();
     let mut sorted = rels.clone();
     sorted.sort();
-    assert_eq!(
-        rels, sorted,
-        "entries must be sorted by rel_path: {rels:?}"
-    );
+    assert_eq!(rels, sorted, "entries must be sorted by rel_path: {rels:?}");
 
     // Sanity-check the first entry's parsed schema.
     let first = &entries[0];
@@ -104,12 +101,8 @@ fn missing_required_field_returns_multiple_error() {
         let body = std::fs::read_to_string(fixtures_blog_dir().join(name)).unwrap();
         tmp.write(name, &body);
     }
-    tmp.write(
-        "04-no-title.md",
-        "---\ndate: \"2026-04-01\"\n---\nbody\n",
-    );
-    let err = walk_collection::<BlogPost>(tmp.path())
-        .expect_err("missing title must fail");
+    tmp.write("04-no-title.md", "---\ndate: \"2026-04-01\"\n---\nbody\n");
+    let err = walk_collection::<BlogPost>(tmp.path()).expect_err("missing title must fail");
     match err {
         CollectionError::Multiple { errors, .. } => {
             assert_eq!(errors.len(), 1);

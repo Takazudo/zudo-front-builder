@@ -101,10 +101,7 @@ mod tests {
         let HastNode::Element { attrs, .. } = &children[0] else {
             return None;
         };
-        attrs
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
+        attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
     }
 
     #[test]
