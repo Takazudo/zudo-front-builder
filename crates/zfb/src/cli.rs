@@ -45,15 +45,22 @@ pub struct NewArgs {
 }
 
 /// Arguments for `zfb dev`.
+///
+/// `host` and `port` are intentionally `Option<_>` (no clap `default_value`)
+/// so the command body can layer "CLI > config > built-in default" cleanly.
+/// Adding a clap default would erase the distinction between "user passed
+/// --port 8080" and "user accepted the default 3000".
 #[derive(Debug, Args)]
 pub struct DevArgs {
-    /// Port to bind the dev server to.
-    #[arg(long, default_value_t = 3000)]
-    pub port: u16,
+    /// Port to bind the dev server to. Falls back to `port` from
+    /// `zfb.config.json`, then to `3000`.
+    #[arg(long)]
+    pub port: Option<u16>,
 
-    /// Host interface to bind the dev server to.
-    #[arg(long, default_value = "localhost")]
-    pub host: String,
+    /// Host interface to bind the dev server to. Falls back to `host`
+    /// from `zfb.config.json`, then to `localhost`.
+    #[arg(long)]
+    pub host: Option<String>,
 }
 
 /// Arguments for `zfb build`.
@@ -65,11 +72,17 @@ pub struct BuildArgs {
 }
 
 /// Arguments for `zfb preview`.
+///
+/// `port` is `Option<u16>` for the same reason as `DevArgs::port` — see
+/// the doc-comment there. `outdir` keeps a clap default because the
+/// preview command does not consult config for it today (config's
+/// `outDir` is already wired through the build command).
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
-    /// Port to bind the preview server to.
-    #[arg(long, default_value_t = 4321)]
-    pub port: u16,
+    /// Port to bind the preview server to. Falls back to `port` from
+    /// `zfb.config.json`, then to `4321`.
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Directory to serve the previously built artifacts from.
     #[arg(long, default_value = "dist")]
