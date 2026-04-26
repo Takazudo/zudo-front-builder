@@ -23,6 +23,10 @@
     "./paginate": {
       "types": "./src/paginate.ts",
       "default": "./src/paginate.ts"
+    },
+    "./config": {
+      "types": "./src/config.ts",
+      "default": "./src/config.ts"
     }
   },
   "scripts": {
