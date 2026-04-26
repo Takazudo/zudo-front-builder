@@ -41,7 +41,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -73,14 +73,20 @@ pub struct Change {
 /// The watcher handle.
 ///
 /// Holds the underlying `notify` watcher (dropping stops the OS watch)
-/// and the JoinHandle for the debouncer task (also aborted on drop).
+/// and the JoinHandle for the debouncer task. Dropping the handle sends
+/// a graceful shutdown signal to the debouncer so any pending events
+/// flush to the receiver before the task exits, then aborts the task as
+/// a fallback if it does not finish promptly.
 ///
 /// Construct via [`Watcher::start`], which returns this handle plus the
 /// receiver end of the `Change` channel.
 pub struct Watcher {
     // Kept alive: dropping the notify watcher stops the OS-level watch.
     _notify: RecommendedWatcher,
-    // Aborted on drop so the debouncer task does not outlive the handle.
+    // Some(_) until Drop fires the shutdown signal.
+    shutdown: Option<oneshot::Sender<()>>,
+    // Aborted on drop as a fallback so the debouncer task does not
+    // outlive the handle indefinitely.
     debouncer: Option<JoinHandle<()>>,
 }
 
@@ -143,11 +149,13 @@ impl Watcher {
         // absorb a `git checkout` burst that survived debouncing.
         let (out_tx, out_rx) = mpsc::channel::<Change>(256);
 
-        let debouncer = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let debouncer = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
 
         Ok((
             Self {
                 _notify: notify_watcher,
+                shutdown: Some(shutdown_tx),
                 debouncer: Some(debouncer),
             },
             out_rx,
@@ -157,6 +165,14 @@ impl Watcher {
 
 impl Drop for Watcher {
     fn drop(&mut self) {
+        // Best-effort graceful shutdown: signal the debouncer to flush
+        // its pending map and exit. If we are not on a tokio runtime (or
+        // the receiver is gone), the JoinHandle::abort() below ensures
+        // the task is reaped regardless. We deliberately do NOT block
+        // here — Drop must stay non-blocking.
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
         if let Some(h) = self.debouncer.take() {
             h.abort();
         }
@@ -192,6 +208,7 @@ async fn debouncer_task(
     raw_rx: std_mpsc::Receiver<notify::Result<Event>>,
     out_tx: mpsc::Sender<Change>,
     debounce: Duration,
+    mut shutdown: oneshot::Receiver<()>,
 ) {
     // Bridge sync→async. A small bounded buffer is fine: notify will
     // back up briefly under bursts but we drain quickly.
@@ -214,6 +231,13 @@ async fn debouncer_task(
     loop {
         tokio::select! {
             biased;
+
+            // Shutdown signal from Drop: flush whatever we have and exit
+            // before the JoinHandle::abort() in Drop forcibly cancels us.
+            _ = &mut shutdown => {
+                flush_all(&mut pending, &out_tx).await;
+                break;
+            }
 
             maybe_evt = bridge_rx.recv() => {
                 let Some(res) = maybe_evt else {
