@@ -7,8 +7,8 @@ both a shipped example and a fixture the CLI can be smoke-tested against.
 
 ```
 examples/basic-blog/
-├── content/blog/        5 markdown posts with frontmatter (title, date, description, tags)
-├── components/          theme-toggle.tsx — the only client island
+├── content/blog/        5 posts (4 .md, 1 .mdx) with frontmatter (title, date, description, tags)
+├── components/          theme-toggle.tsx — the only client island; note.tsx — admonition used inside hello-zfb.mdx
 ├── layouts/             default.tsx — shared chrome (header, footer, theme toggle)
 ├── pages/
 │   ├── index.tsx               static — homepage listing all posts
@@ -29,7 +29,20 @@ Cross-references into the docs:
 - [/concepts/routing](../../docs/src/content/docs/) — file-based routing rules.
 - [/api/get-collection](../../docs/src/content/docs/) — `getCollection("blog")`.
 - [/api/paginate](../../docs/src/content/docs/) — the pagination helper used in `blog/page/[page].tsx`.
+- [/concepts/mdx-components](../../docs/src/content/docs/) — the `<entry.Content components={...}>` rendering pattern (Sub 8 docs page).
 - [/architecture/js-runtime](../../docs/src/content/docs/) — the JS runtime decision (ADR-001) that gates real SSR.
+
+## Rendering post bodies with `entry.Content`
+
+Each entry returned by `getCollection("blog")` carries a `Content` component
+that renders the post body as JSX. The per-post route (`pages/blog/[slug].tsx`)
+uses `<post.Content components={{ ...defaultComponents, Note }} />` to (a)
+spread in the htmlOverrides convention from `zfb` so HTML tags emitted by
+the markdown body resolve to the package's passthrough components, and (b)
+inject custom JSX components — here, the `<Note>` admonition used inside
+`content/blog/hello-zfb.mdx` — so MDX-only posts can reach for project-level
+components by name. See `/concepts/mdx-components` (Sub 8) for the full
+contract and the design rationale.
 
 ## v0 status — read this first
 
