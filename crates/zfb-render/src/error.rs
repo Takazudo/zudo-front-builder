@@ -18,12 +18,33 @@ pub enum RenderError {
     },
 
     /// Module resolution failure (e.g., relative import not found).
-    #[error("could not resolve `{specifier}` from `{importer}`")]
+    ///
+    /// `importer` points at the file that contains the failing import so the
+    /// error is actionable in editors (file path + optional line/col). `tried`
+    /// lists the on-disk candidates probed so the operator can see whether a
+    /// typo or missing extension is the cause.
+    #[error(
+        "could not resolve `{specifier}` imported from `{importer}`{loc}: no such module (tried: {tried_pretty})\n\
+         help: check the import path or extension; the resolver probes .tsx, .ts, .jsx, .js, and `index.<ext>` for directories",
+        loc = match (line, col) {
+            (Some(l), Some(c)) => format!(":{l}:{c}"),
+            (Some(l), None) => format!(":{l}"),
+            _ => String::new(),
+        },
+        tried_pretty = if tried.is_empty() { "<none>".to_string() } else { tried.join(", ") },
+    )]
     Resolve {
         /// The bare/relative specifier we tried to resolve.
         specifier: String,
-        /// The importer module's display name.
+        /// File-system path of the module that contains the failing import.
         importer: String,
+        /// 1-based line number of the import statement when known.
+        line: Option<u32>,
+        /// 1-based column number of the import statement when known.
+        col: Option<u32>,
+        /// Filesystem candidates probed by the resolver. Helps the operator
+        /// diagnose typos and missing extensions.
+        tried: Vec<String>,
     },
 
     /// JS runtime failure (loading, evaluating, or calling into a module).
@@ -61,11 +82,35 @@ impl RenderError {
         }
     }
 
-    /// Convenience constructor for resolve errors.
+    /// Convenience constructor for resolve errors with no probe list and no
+    /// import-statement source location. Prefer
+    /// [`RenderError::resolve_with`] when those details are available.
     pub fn resolve(specifier: impl Into<String>, importer: impl Into<String>) -> Self {
         Self::Resolve {
             specifier: specifier.into(),
             importer: importer.into(),
+            line: None,
+            col: None,
+            tried: Vec::new(),
+        }
+    }
+
+    /// Convenience constructor for resolve errors that record the candidate
+    /// paths probed by the resolver and (optionally) the line/column of the
+    /// `import` statement in the importer file.
+    pub fn resolve_with(
+        specifier: impl Into<String>,
+        importer: impl Into<String>,
+        line: Option<u32>,
+        col: Option<u32>,
+        tried: Vec<String>,
+    ) -> Self {
+        Self::Resolve {
+            specifier: specifier.into(),
+            importer: importer.into(),
+            line,
+            col,
+            tried,
         }
     }
 }

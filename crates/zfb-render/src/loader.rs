@@ -57,12 +57,62 @@ impl ModuleLoader {
 
     /// Resolve a relative `specifier` against `importer_dir`, probing
     /// extensions and returning the resolved absolute path on success.
+    ///
+    /// On failure the returned [`RenderError::Resolve`] points at
+    /// `importer_dir` (no source line/column). Prefer
+    /// [`Self::resolve_relative_from_file`] when the importer's file path is
+    /// known so the error message points editors at the actual TSX file.
     pub fn resolve_relative(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf> {
+        let (result, tried) = self.try_resolve(importer_dir, specifier);
+        result.ok_or_else(|| {
+            RenderError::resolve_with(
+                specifier,
+                importer_dir.display().to_string(),
+                None,
+                None,
+                tried,
+            )
+        })
+    }
+
+    /// Resolve a relative `specifier` imported from `importer_file`. On
+    /// failure the error includes the importer's file path (and optional
+    /// line/col of the `import` statement) plus every candidate path probed.
+    pub fn resolve_relative_from_file(
+        &self,
+        importer_file: &Path,
+        specifier: &str,
+        import_line: Option<u32>,
+        import_col: Option<u32>,
+    ) -> Result<PathBuf> {
+        let importer_dir = importer_file.parent().unwrap_or(Path::new(""));
+        let (result, tried) = self.try_resolve(importer_dir, specifier);
+        result.ok_or_else(|| {
+            RenderError::resolve_with(
+                specifier,
+                importer_file.display().to_string(),
+                import_line,
+                import_col,
+                tried,
+            )
+        })
+    }
+
+    /// Internal probe loop shared by [`resolve_relative`] and
+    /// [`resolve_relative_from_file`]. Returns the resolved path (if any) and
+    /// the full list of candidates attempted, in probe order.
+    fn try_resolve(
+        &self,
+        importer_dir: &Path,
+        specifier: &str,
+    ) -> (Option<PathBuf>, Vec<String>) {
         let candidate = importer_dir.join(specifier);
+        let mut tried: Vec<String> = Vec::with_capacity(self.probe_exts.len() + 1 + self.probe_exts.len());
 
         // 1) Exact match.
+        tried.push(candidate.display().to_string());
         if candidate.is_file() {
-            return Ok(candidate);
+            return (Some(candidate), tried);
         }
 
         // 2) Probe extensions (`./layout` → `./layout.tsx` etc.).
@@ -74,8 +124,9 @@ impl ModuleLoader {
                 ext
             );
             probe.set_file_name(new_name);
+            tried.push(probe.display().to_string());
             if probe.is_file() {
-                return Ok(probe);
+                return (Some(probe), tried);
             }
         }
 
@@ -83,16 +134,14 @@ impl ModuleLoader {
         if candidate.is_dir() {
             for ext in &self.probe_exts {
                 let probe = candidate.join(format!("index{ext}"));
+                tried.push(probe.display().to_string());
                 if probe.is_file() {
-                    return Ok(probe);
+                    return (Some(probe), tried);
                 }
             }
         }
 
-        Err(RenderError::resolve(
-            specifier,
-            importer_dir.display().to_string(),
-        ))
+        (None, tried)
     }
 
     /// Compile a source string through SWC and cache it under `specifier`.
