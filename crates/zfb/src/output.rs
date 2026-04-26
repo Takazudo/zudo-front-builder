@@ -185,25 +185,65 @@ pub fn format_error(err: &anyhow::Error) -> String {
 /// Walk the error chain searching for the first `path:line` looking token.
 ///
 /// Heuristic: split each chain entry's `Display` form on whitespace and
-/// surrounding punctuation, then accept a token if it contains a `:` whose
-/// right-hand side parses as a positive integer and whose left-hand side is
-/// non-empty (intended to look like a file path).
+/// surrounding punctuation, then accept a token only when:
+///
+/// 1. It contains exactly one trailing `:<digits>` segment.
+/// 2. The left-hand side looks like a file path — i.e. it contains a `/`
+///    or `\` separator, **or** it ends with a file-extension-like component
+///    (a `.` followed by 1–8 ASCII alphanumeric characters with at least
+///    one letter, e.g. `.toml`, `.rs`).
+/// 3. The token does **not** contain `://` (filters out URLs such as
+///    `http://localhost:8080`).
+///
+/// This intentionally rejects host-port pairs (`localhost:8080`),
+/// IP-port pairs (`127.0.0.1:8080`), and IPv6 forms (`[::1]:8080`) so that
+/// run-time error messages mentioning addresses are not mis-rendered as
+/// source locations.
 fn location_hint(err: &anyhow::Error) -> Option<String> {
     for cause in err.chain() {
         let text = cause.to_string();
         for raw in text.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | ';')) {
             let token = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '.'));
-            if let Some((path, line)) = token.rsplit_once(':') {
-                if path.is_empty() {
-                    continue;
-                }
-                if line.parse::<u32>().is_ok() {
-                    return Some(format!("{}:{}", path, line));
-                }
+            if token.contains("://") {
+                continue;
             }
+            let Some((path, line)) = token.rsplit_once(':') else {
+                continue;
+            };
+            if path.is_empty() {
+                continue;
+            }
+            if line.parse::<u32>().is_err() {
+                continue;
+            }
+            if !looks_like_file_path(path) {
+                continue;
+            }
+            return Some(format!("{}:{}", path, line));
         }
     }
     None
+}
+
+/// Decide whether `path` plausibly refers to a file rather than a network
+/// host or numeric address. See [`location_hint`] for the full heuristic.
+fn looks_like_file_path(path: &str) -> bool {
+    if path.contains('/') || path.contains('\\') {
+        return true;
+    }
+    // Last `.`-separated segment must look like a file extension:
+    // 1–8 ASCII alphanumerics with at least one letter.
+    let Some(ext) = path.rsplit('.').next() else {
+        return false;
+    };
+    if ext.is_empty() || ext == path {
+        // No `.` in the token — not a filename-with-extension.
+        return false;
+    }
+    if ext.len() > 8 {
+        return false;
+    }
+    ext.chars().all(|c| c.is_ascii_alphanumeric()) && ext.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +309,41 @@ mod tests {
             rendered.contains("  at config.toml:12\n"),
             "expected location hint in:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn format_error_does_not_treat_urls_as_locations() {
+        let err: anyhow::Error =
+            Err::<(), _>(anyhow!("connection refused: http://localhost:8080"))
+                .context("starting dev server")
+                .unwrap_err();
+
+        let rendered = format_error(&err);
+        assert!(
+            !rendered.contains("  at "),
+            "URL should not be surfaced as a location:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn format_error_does_not_treat_host_port_pairs_as_locations() {
+        // localhost:8080 (no path separator, no extension), 127.0.0.1:8080
+        // (numeric "extension"), and [::1]:8080 (IPv6 + port) must all be
+        // ignored so we do not invent a phantom file location.
+        for snippet in [
+            "bind failed on localhost:8080",
+            "address 127.0.0.1:8080 already in use",
+            "ipv6 [::1]:8080 unreachable",
+        ] {
+            let err: anyhow::Error = Err::<(), _>(anyhow!("{snippet}"))
+                .context("dev server")
+                .unwrap_err();
+            let rendered = format_error(&err);
+            assert!(
+                !rendered.contains("  at "),
+                "snippet {snippet:?} produced a location line:\n{rendered}"
+            );
+        }
     }
 
     #[test]
