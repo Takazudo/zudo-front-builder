@@ -28,6 +28,28 @@
 //! pipeline. Compile errors from `zfb-content` are wrapped as
 //! [`RenderError::Compile`] carrying the original specifier as the file
 //! location so the rest of the renderer's error UX still applies.
+//!
+//! ## JS-side bridge contract — `globalThis.__zfb.content`
+//!
+//! Before evaluating each page module, the renderer must install a
+//! namespaced bridge so the JS-side `zfb/content` `CollectionEntry.Content`
+//! field can resolve compiled entries:
+//!
+//! ```text
+//! globalThis.__zfb.content.get(specifier)
+//!     → ((props: { components?: Record<string, unknown> }) => unknown) | undefined
+//! ```
+//!
+//! The bridge is keyed on `Entry::module_specifier` (see
+//! `zfb_content::collection`). The JS stub may pass either the full
+//! `mdx://<collection>/<slug>#<hash>` form or the hash-less
+//! `mdx://<collection>/<slug>` form (the JS stub has no hash to compute);
+//! the resolver must accept both. When `get` returns `None`, JS falls back
+//! to a marked `<pre data-zfb-content-fallback>` block.
+//!
+//! Cross-referenced from `packages/zfb/src/content.ts` (JSDoc on
+//! `CollectionEntry.Content`) and `packages/zfb/CONTRIBUTING.md`. Keep
+//! the two halves in sync.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
