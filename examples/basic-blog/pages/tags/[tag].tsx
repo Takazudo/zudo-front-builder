@@ -1,15 +1,5 @@
 import DefaultLayout from "../../layouts/default";
-
-type BlogEntry = {
-  slug: string;
-  data: {
-    title: string;
-    date: string;
-    description?: string;
-    tags?: string[];
-  };
-  body: string;
-};
+import type { BlogEntry } from "../../lib/types";
 
 /**
  * One static page per unique tag. The renderer evaluates `paths()` once,
@@ -27,11 +17,12 @@ export async function paths() {
       byTag.set(tag, bucket);
     }
   }
-  return Array.from(byTag.entries()).map(([tag, posts]) => {
-    posts.sort((a, b) => b.data.date.localeCompare(a.data.date));
+  return Array.from(byTag.entries()).map(([tag, group]) => {
+    // Don't mutate the bucket array in place — see also pages/index.tsx.
+    const sorted = [...group].sort((a, b) => b.data.date.localeCompare(a.data.date));
     return {
       params: { tag },
-      props: { tag, posts },
+      props: { tag, posts: sorted },
     };
   });
 }

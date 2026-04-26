@@ -24,11 +24,10 @@
 //! ADR-001's runtime decision).
 //!
 //! **Precedence rule:** CLI args (`--host`, `--port`) override the
-//! corresponding config values **unconditionally**. `clap` defaults
-//! `args.host` and `args.port` to concrete values, so we cannot cheaply
-//! distinguish "user passed `--port`" from "user accepted the default";
-//! treating CLI as authoritative keeps the rule predictable and avoids
-//! `ArgMatches` plumbing. `out_dir` and `public_dir` come from config
+//! corresponding config values when supplied. `DevArgs::host` and
+//! `DevArgs::port` are `Option<_>` (no clap default), so the resolution
+//! order is "CLI flag > `zfb.config.json` value > built-in default
+//! (`localhost` / `3000`)". `out_dir` and `public_dir` come from config
 //! (resolved against the project root via [`resolve_under_root`]) since
 //! there is no CLI override for them on `zfb dev`.
 //!
@@ -70,6 +69,12 @@ use crate::output;
 /// Default source directories the watcher follows. Missing entries are
 /// silently skipped by `zfb_watcher::Watcher::start`, so it's fine to
 /// list paths that don't exist in every project.
+///
+/// We watch BOTH `zfb.config.json` (the v0 source of truth — the loader
+/// `crate::config::load_from_dir` parses JSON; encountering a `.ts`
+/// sibling produces a clear "not yet supported" error) and
+/// `zfb.config.ts` (so the watcher already DTRT on the day the TS loader
+/// lands). Both entries are skipped silently when absent.
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "pages",
     "content",
@@ -78,6 +83,7 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "styles",
     "data",
     "public",
+    "zfb.config.json",
     "zfb.config.ts",
 ];
 
@@ -106,9 +112,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .with_context(|| format!("failed to create dist dir {}", dist_root.display()))?;
     }
 
-    // 3. Resolve the bind address. CLI args win unconditionally over
-    //    config values — see the precedence note in the module doc.
-    let addr = resolve_addr(&args.host, args.port)?;
+    // 3. Resolve the bind address. CLI flag > config > built-in default —
+    //    see the precedence note in the module doc.
+    let host = resolve_host(args.host.as_deref(), cfg.host.as_deref());
+    let port = resolve_port(args.port, cfg.port);
+    let addr = resolve_addr(host.as_str(), port)?;
 
     // 4. Live-reload broadcast channel. 64 slots is plenty for a dev
     //    server: one event per build tick and a handful of subscribers.
@@ -173,7 +181,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         broadcast: tx,
     };
 
-    output::ready(&format!("http://{}:{}", args.host, args.port));
+    output::ready(&format!("http://{host}:{port}"));
 
     // 10. Run the server, racing against Ctrl+C. axum::serve has no
     //     graceful-shutdown wiring in the zfb-server crate today, so on
@@ -190,6 +198,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Built-in default host for `zfb dev` when neither the CLI nor the
+/// project config supplies one.
+const DEFAULT_DEV_HOST: &str = "localhost";
+
+/// Built-in default port for `zfb dev` when neither the CLI nor the
+/// project config supplies one.
+const DEFAULT_DEV_PORT: u16 = 3000;
+
+/// Resolution helper: CLI override > config value > built-in default.
+fn resolve_host(cli: Option<&str>, cfg: Option<&str>) -> String {
+    cli.or(cfg).unwrap_or(DEFAULT_DEV_HOST).to_owned()
+}
+
+/// Resolution helper: CLI override > config value > built-in default.
+fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
+    cli.or(cfg).unwrap_or(DEFAULT_DEV_PORT)
 }
 
 /// Resolve `host:port` into a single [`SocketAddr`] via the OS resolver,
@@ -248,6 +274,46 @@ mod tests {
         let root = Path::new("/tmp/proj");
         let p = Path::new("/var/www/dist");
         assert_eq!(resolve_under_root(root, p), PathBuf::from("/var/www/dist"));
+    }
+
+    #[test]
+    fn resolve_host_prefers_cli_over_config() {
+        assert_eq!(resolve_host(Some("0.0.0.0"), Some("127.0.0.1")), "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_config_when_cli_absent() {
+        assert_eq!(resolve_host(None, Some("127.0.0.1")), "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_builtin_when_neither_supplied() {
+        assert_eq!(resolve_host(None, None), DEFAULT_DEV_HOST);
+    }
+
+    #[test]
+    fn resolve_port_prefers_cli_over_config() {
+        assert_eq!(resolve_port(Some(8080), Some(4000)), 8080);
+    }
+
+    #[test]
+    fn resolve_port_falls_back_to_config_when_cli_absent() {
+        assert_eq!(resolve_port(None, Some(4000)), 4000);
+    }
+
+    #[test]
+    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
+        assert_eq!(resolve_port(None, None), DEFAULT_DEV_PORT);
+    }
+
+    #[test]
+    fn default_watch_roots_includes_zfb_config_json() {
+        // The loader hard-errors on `zfb.config.ts` until ADR-001 lands,
+        // so the watcher MUST cover the JSON form (the v0 source of truth).
+        // We also keep `.ts` so the watcher already DTRT once the TS loader
+        // lands; pin both with this test.
+        assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
+        assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
     }
 
     #[test]

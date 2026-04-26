@@ -1,15 +1,5 @@
 import DefaultLayout from "../layouts/default";
-
-type BlogEntry = {
-  slug: string;
-  data: {
-    title: string;
-    date: string;
-    description?: string;
-    tags?: string[];
-  };
-  body: string;
-};
+import type { BlogEntry } from "../lib/types";
 
 /**
  * The homepage lists every post in the `blog` collection, newest first. We
@@ -19,8 +9,11 @@ type BlogEntry = {
 export async function getStaticProps() {
   const { getCollection } = await import("zfb/content");
   const posts = (await getCollection("blog")) as BlogEntry[];
-  posts.sort((a, b) => b.data.date.localeCompare(a.data.date));
-  return { props: { posts } };
+  // Avoid mutating the array returned by `getCollection`: future
+  // implementations may share the array between routes, and a sort()
+  // call here would silently re-order it for everyone.
+  const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
+  return { props: { posts: sorted } };
 }
 
 type Props = {
@@ -32,8 +25,8 @@ export default function HomePage({ posts }: Props) {
     <DefaultLayout title="basic-blog · zfb example">
       <h1>basic-blog</h1>
       <p>
-        A minimal real zfb site. Every file under this directory maps onto a
-        single concept in the docs.
+        A minimal real zfb site. Every file under this directory maps onto a single concept in the
+        docs.
       </p>
       <h2>Recent posts</h2>
       <ul class="post-list">

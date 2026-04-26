@@ -13,14 +13,12 @@
 //!
 //! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported" error
 //! for `zfb.config.ts`) via [`crate::config::load_from_dir`] from the current
-//! working directory. Loading the config validates the project; the
-//! command-line `--outdir` and `--port` arguments win **unconditionally** —
-//! `clap` defaults them to concrete values, so we cannot cheaply distinguish
-//! "user passed the flag" from "user accepted the default", and treating CLI
-//! as authoritative keeps the rule predictable across all four commands (see
-//! the matching note in `commands/dev.rs` and `commands/build.rs`). Output
-//! uses [`crate::output`] helpers for consistent styling with the other zfb
-//! commands.
+//! working directory. The `--port` flag is `Option<u16>` (no clap default),
+//! so port resolution layers as "CLI flag > `zfb.config.json` value > built-in
+//! default (`4321`)" — the same rule used by `zfb dev`. `--outdir` keeps a
+//! clap default because the preview command does not consult config for it
+//! today. Output uses [`crate::output`] helpers for consistent styling with
+//! the other zfb commands.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -42,7 +40,7 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
     // Errors propagate to main() for centralized rendering — see
     // commands/dev.rs and main.rs for the shared rationale.
-    let _cfg = config::load_from_dir(&project_root)
+    let cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
 
@@ -50,7 +48,9 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     // (and `ServeDir`) operate on an unambiguous path. CLI wins over config
     // unconditionally — see the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
-    let port = args.port;
+    // CLI flag > config > built-in default (`4321`). See the module doc
+    // comment for the precedence rule shared with `zfb dev`.
+    let port = resolve_port(args.port, cfg.port);
 
     // Verify the output directory exists *before* binding the port so that
     // missing-build errors don't leave a half-started server behind.
@@ -69,7 +69,7 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind preview server to {addr}"))?;
 
-    output::ready(&format!("http://localhost:{}", port));
+    output::ready(&format!("http://localhost:{port}"));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -94,6 +94,16 @@ fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Built-in default port for `zfb preview` when neither the CLI nor the
+/// project config supplies one. Intentionally distinct from `zfb dev`'s
+/// default so the two servers can run side-by-side without colliding.
+const DEFAULT_PREVIEW_PORT: u16 = 4321;
+
+/// Resolution helper: CLI override > config value > built-in default.
+fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
+    cli.or(cfg).unwrap_or(DEFAULT_PREVIEW_PORT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +119,22 @@ mod tests {
             resolve_under_root(root, Path::new("build/out")),
             PathBuf::from("/tmp/project/build/out")
         );
+    }
+
+    #[test]
+    fn resolve_port_prefers_cli_over_config() {
+        assert_eq!(resolve_port(Some(9000), Some(4000)), 9000);
+    }
+
+    #[test]
+    fn resolve_port_falls_back_to_config_when_cli_absent() {
+        assert_eq!(resolve_port(None, Some(4000)), 4000);
+    }
+
+    #[test]
+    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
+        assert_eq!(resolve_port(None, None), DEFAULT_PREVIEW_PORT);
+        assert_eq!(DEFAULT_PREVIEW_PORT, 4321);
     }
 
     #[test]

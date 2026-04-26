@@ -25,12 +25,6 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": [
-    "pages/**/*",
-    "layouts/**/*",
-    "components/**/*",
-    "content/**/*",
-    "zfb.config.ts"
-  ],
+  "include": ["pages/**/*", "layouts/**/*", "components/**/*", "content/**/*", "zfb.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -3,6 +3,25 @@ import type { ComponentChildren } from "preact";
 import ThemeToggle from "../components/theme-toggle";
 import "../styles/global.css";
 
+/**
+ * Inline pre-hydration script. Runs synchronously before the page paints,
+ * reads the persisted theme preference (or `prefers-color-scheme`), and
+ * sets `document.documentElement.dataset.theme` so the stylesheet picks
+ * the correct palette on the very first frame. Must stay tiny, SSR-safe,
+ * and self-contained — bundlers may not see this string.
+ */
+const THEME_BOOTSTRAP_SCRIPT = `(() => {
+  try {
+    var saved = localStorage.getItem("basic-blog:theme");
+    var theme = saved === "light" || saved === "dark"
+      ? saved
+      : (matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  } catch (e) {
+    document.documentElement.dataset.theme = "light";
+  }
+})();`;
+
 type Props = {
   title?: string;
   children: ComponentChildren;
@@ -13,16 +32,15 @@ type Props = {
  * boundary is at `components/theme-toggle.tsx`, so this layout itself stays
  * a plain server component — only the toggle ships JS to the browser.
  */
-export default function DefaultLayout({
-  title = "basic-blog · zfb example",
-  children,
-}: Props) {
+export default function DefaultLayout({ title = "basic-blog · zfb example", children }: Props) {
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
+        {/* Apply theme before paint to avoid FOUC. See script doc above. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
       </head>
       <body>
         <header class="site-header">
@@ -36,10 +54,7 @@ export default function DefaultLayout({
         </header>
         <main class="site-main">{children}</main>
         <footer class="site-footer">
-          <p>
-            zfb basic-blog example · the smallest realistic shape of a zfb
-            site.
-          </p>
+          <p>zfb basic-blog example · the smallest realistic shape of a zfb site.</p>
         </footer>
       </body>
     </html>

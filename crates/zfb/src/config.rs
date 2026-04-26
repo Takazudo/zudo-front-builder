@@ -58,13 +58,17 @@ pub struct Config {
     #[serde(default = "default_public_dir")]
     pub public_dir: PathBuf,
 
-    /// Dev server bind host. Default: `localhost`.
-    #[serde(default = "default_host")]
-    pub host: String,
+    /// Optional dev/preview server bind host. When absent, the consuming
+    /// command (`zfb dev`) falls back to its built-in default (`localhost`).
+    /// Made optional so the CLI can layer "flag > config > built-in" cleanly.
+    #[serde(default)]
+    pub host: Option<String>,
 
-    /// Dev server port. Default: `3000`.
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// Optional dev/preview server port. When absent, the consuming command
+    /// falls back to its built-in default (`3000` for `zfb dev`, `4321`
+    /// for `zfb preview`). Optional for the same reason as [`host`].
+    #[serde(default)]
+    pub port: Option<u16>,
 
     /// JSX framework runtime. Default: `Preact`.
     #[serde(default)]
@@ -88,8 +92,8 @@ impl Default for Config {
         Self {
             out_dir: default_out_dir(),
             public_dir: default_public_dir(),
-            host: default_host(),
-            port: default_port(),
+            host: None,
+            port: None,
             framework: Framework::default(),
             collections: Vec::new(),
             tailwind: None,
@@ -151,14 +155,6 @@ fn default_out_dir() -> PathBuf {
 
 fn default_public_dir() -> PathBuf {
     PathBuf::from("public")
-}
-
-fn default_host() -> String {
-    "localhost".to_string()
-}
-
-fn default_port() -> u16 {
-    3000
 }
 
 fn default_true() -> bool {
@@ -294,8 +290,8 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.out_dir, PathBuf::from("dist"));
         assert_eq!(cfg.public_dir, PathBuf::from("public"));
-        assert_eq!(cfg.host, "localhost");
-        assert_eq!(cfg.port, 3000);
+        assert_eq!(cfg.host, None);
+        assert_eq!(cfg.port, None);
         assert_eq!(cfg.framework, Framework::Preact);
         assert!(cfg.collections.is_empty());
         assert!(cfg.tailwind.is_none());
@@ -333,8 +329,8 @@ mod tests {
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg.out_dir, PathBuf::from("build"));
         assert_eq!(cfg.public_dir, PathBuf::from("static"));
-        assert_eq!(cfg.host, "0.0.0.0");
-        assert_eq!(cfg.port, 4000);
+        assert_eq!(cfg.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(cfg.port, Some(4000));
         assert_eq!(cfg.framework, Framework::React);
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "blog");
