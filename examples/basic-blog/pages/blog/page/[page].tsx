@@ -1,3 +1,5 @@
+import type { PaginatedPage } from "zfb/paginate";
+
 import DefaultLayout from "../../../layouts/default";
 import type { BlogEntry } from "../../../lib/types";
 
@@ -14,14 +16,6 @@ export async function paths() {
   const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
   return paginate(sorted, { pageSize: 3, param: "page" });
 }
-
-type PaginatedPage<T> = {
-  data: T[];
-  page: number;
-  lastPage: number;
-  pageSize: number;
-  total: number;
-};
 
 type Props = {
   page: PaginatedPage<BlogEntry>;

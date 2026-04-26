@@ -1,4 +1,5 @@
 import type { ComponentChildren } from "preact";
+import { Island } from "zfb";
 
 import ThemeToggle from "../components/theme-toggle";
 import "../styles/global.css";
@@ -13,9 +14,10 @@ import "../styles/global.css";
 const THEME_BOOTSTRAP_SCRIPT = `(() => {
   try {
     var saved = localStorage.getItem("basic-blog:theme");
+    var hasMM = typeof window !== "undefined" && typeof window.matchMedia === "function";
     var theme = saved === "light" || saved === "dark"
       ? saved
-      : (matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      : (hasMM && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     document.documentElement.dataset.theme = theme;
   } catch (e) {
     document.documentElement.dataset.theme = "light";
@@ -49,7 +51,16 @@ export default function DefaultLayout({ title = "basic-blog · zfb example", chi
           </a>
           <nav class="site-nav">
             <a href="/blog/page/1">Posts</a>
-            <ThemeToggle />
+            {/*
+              The toggle is a `"use client"` island. Wrapping in `<Island>`
+              is what marks it for the zfb hydration pipeline (Sub 3) and
+              picks the scheduling strategy. `"idle"` keeps the toggle
+              passive until the browser has spare cycles — chrome doesn't
+              need to be interactive on the very first frame.
+            */}
+            <Island when="idle">
+              <ThemeToggle />
+            </Island>
           </nav>
         </header>
         <main class="site-main">{children}</main>

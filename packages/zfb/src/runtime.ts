@@ -17,16 +17,23 @@
 // happy-dom or bare Node, and the absence of `IntersectionObserver` /
 // `requestIdleCallback` is handled gracefully.
 
-import { resolveWhen } from "./island.js";
-import type { When } from "./types.js";
+import { resolveWhen, type When } from "./types.js";
 
-/** Window-shaped subset that the helper actually uses. */
-type IdleWindow = typeof globalThis & {
+/**
+ * Subset of the global object that this module touches. Cast once at the
+ * module top so individual scheduler functions don't repeat the inline
+ * widening.
+ */
+type SchedulerGlobal = typeof globalThis & {
   requestIdleCallback?: (
     cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
     options?: { timeout?: number },
   ) => number;
+  cancelIdleCallback?: (handle: number) => void;
+  IntersectionObserver?: typeof IntersectionObserver;
 };
+
+const g = globalThis as SchedulerGlobal;
 
 /**
  * Schedule a hydration `fire` callback for `target` according to `when`.
@@ -61,44 +68,54 @@ function noop(): void {
   // intentionally empty
 }
 
-function scheduleIdle(fire: () => void): () => void {
-  const w = globalThis as IdleWindow;
-  let cancelled = false;
+/**
+ * Build a one-shot gate around `fn`. The returned `run` invokes `fn`
+ * exactly once provided `cancel` has not been called first; `cancel`
+ * marks the gate as cancelled (later `run` invocations become no-ops)
+ * and reports whether the gate had already fired.
+ */
+function oneShot(fn: () => void): {
+  run: () => void;
+  cancel: () => boolean;
+} {
   let fired = false;
-  const wrapped = (): void => {
-    if (cancelled || fired) return;
-    fired = true;
-    fire();
-  };
-
-  if (typeof w.requestIdleCallback === "function") {
-    const handle = w.requestIdleCallback(wrapped);
-    return () => {
-      if (fired) return;
+  let cancelled = false;
+  return {
+    run(): void {
+      if (cancelled || fired) return;
+      fired = true;
+      fn();
+    },
+    cancel(): boolean {
+      if (fired) return true;
       cancelled = true;
-      const cancelIdle = (
-        globalThis as typeof globalThis & {
-          cancelIdleCallback?: (handle: number) => void;
-        }
-      ).cancelIdleCallback;
-      if (typeof cancelIdle === "function") cancelIdle(handle);
+      return false;
+    },
+  };
+}
+
+function scheduleIdle(fire: () => void): () => void {
+  const gate = oneShot(fire);
+
+  if (typeof g.requestIdleCallback === "function") {
+    const handle = g.requestIdleCallback(gate.run);
+    return () => {
+      const alreadyFired = gate.cancel();
+      if (alreadyFired) return;
+      if (typeof g.cancelIdleCallback === "function") g.cancelIdleCallback(handle);
     };
   }
 
-  const handle = setTimeout(wrapped, 0);
+  const handle = setTimeout(gate.run, 0);
   return () => {
-    if (fired) return;
-    cancelled = true;
+    const alreadyFired = gate.cancel();
+    if (alreadyFired) return;
     clearTimeout(handle);
   };
 }
 
 function scheduleVisible(target: Element, fire: () => void): () => void {
-  const Observer = (
-    globalThis as typeof globalThis & {
-      IntersectionObserver?: typeof IntersectionObserver;
-    }
-  ).IntersectionObserver;
+  const Observer = g.IntersectionObserver;
 
   // No IntersectionObserver (e.g. very old browsers, bare Node) — fail
   // open and hydrate immediately so the island is at least functional.
@@ -107,16 +124,13 @@ function scheduleVisible(target: Element, fire: () => void): () => void {
     return noop;
   }
 
-  let fired = false;
-  let cancelled = false;
+  const gate = oneShot(fire);
   const observer = new Observer(
     (entries, obs) => {
-      if (cancelled || fired) return;
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          fired = true;
           obs.disconnect();
-          fire();
+          gate.run();
           return;
         }
       }
@@ -127,8 +141,8 @@ function scheduleVisible(target: Element, fire: () => void): () => void {
   observer.observe(target);
 
   return () => {
-    if (fired) return;
-    cancelled = true;
+    const alreadyFired = gate.cancel();
+    if (alreadyFired) return;
     observer.disconnect();
   };
 }

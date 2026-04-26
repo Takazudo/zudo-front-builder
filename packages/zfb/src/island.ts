@@ -21,7 +21,13 @@
 // back to keep the bundle path small.
 
 import type { ReactNode } from "./jsx-types.js";
-import { DEFAULT_WHEN, isWhen, type When } from "./types.js";
+import { resolveWhen, type When } from "./types.js";
+
+// Re-export `resolveWhen` for back-compat: tests and downstream consumers
+// historically imported it from `./island.js`. The implementation lives in
+// `./types.js` so the runtime scheduler can pull it in without dragging
+// the JSX wrapper along for the ride.
+export { resolveWhen } from "./types.js";
 
 /** Props for `<Island>`. */
 export interface IslandProps {
@@ -32,21 +38,16 @@ export interface IslandProps {
 }
 
 /**
- * Resolve the validated `when` value, warning in development for unknown
- * inputs. Exported so tests can pin the warning behavior.
+ * Public JSX-element shape returned by [`Island`]. Intentionally widened
+ * to a structural type so consumers don't infer through the internal
+ * `{ type, props, key }` VNode shape of either Preact or React. Both
+ * jsx-runtimes accept this object on either side of the boundary.
  */
-export function resolveWhen(when: unknown): When {
-  if (when === undefined) return DEFAULT_WHEN;
-  if (isWhen(when)) return when;
-  if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[zfb] <Island when="${String(when)}"> is not a valid value. ` +
-        `Expected "visible" | "idle" | "load". Falling back to "${DEFAULT_WHEN}".`,
-    );
-  }
-  return DEFAULT_WHEN;
-}
+export type IslandElement = {
+  readonly type: string;
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
 
 /**
  * `<Island>` JSX wrapper.
@@ -56,21 +57,11 @@ export function resolveWhen(when: unknown): When {
  * `data-zfb-island` (always present, value empty until Sub 3 fills in
  * the component name) and `data-when` (the resolved scheduling strategy).
  *
- * This function is intentionally untyped at the JSX-element-shape boundary:
- * Preact and React expose subtly different VNode shapes, but both renderers
- * accept the form `{ type, props, key }` produced by their jsx-runtime
- * transforms when called via `jsx(Island, props)`. Runtime test coverage
- * verifies the rendered DOM is correct for at least one renderer.
+ * The return type is the public [`IslandElement`] shape — the internal
+ * VNode structure is deliberately not leaked so consumers never type-infer
+ * through it.
  */
-export function Island(props: IslandProps): {
-  type: "div";
-  props: {
-    "data-zfb-island": string;
-    "data-when": When;
-    children: ReactNode;
-  };
-  key: null;
-} {
+export function Island(props: IslandProps): IslandElement {
   const when = resolveWhen(props.when);
   return {
     type: "div",

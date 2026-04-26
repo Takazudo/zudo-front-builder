@@ -34,6 +34,27 @@ describe("parseFrontmatter", () => {
     const { data } = parseFrontmatter(raw);
     expect(data["tags"]).toEqual(["intro", "framework"]);
   });
+
+  it("handles empty frontmatter (---\\n---\\nbody)", () => {
+    const raw = "---\n---\nbody text\n";
+    const { data, body } = parseFrontmatter(raw);
+    expect(data).toEqual({});
+    expect(body).toBe("body text\n");
+  });
+
+  it("accepts a closing fence at end-of-string with no trailing newline", () => {
+    const raw = "---\ntitle: Hello\n---";
+    const { data, body } = parseFrontmatter(raw);
+    expect(data).toEqual({ title: "Hello" });
+    expect(body).toBe("");
+  });
+
+  it("handles empty frontmatter terminated at end-of-string (---\\n---)", () => {
+    const raw = "---\n---";
+    const { data, body } = parseFrontmatter(raw);
+    expect(data).toEqual({});
+    expect(body).toBe("");
+  });
 });
 
 describe("getCollection", () => {

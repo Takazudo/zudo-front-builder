@@ -39,6 +39,19 @@ describe("paginate", () => {
     expect(() => paginate([1], { pageSize: -1, param: "page" })).toThrow(RangeError);
   });
 
+  it("rejects fractional / non-integer pageSize", () => {
+    expect(() => paginate([1], { pageSize: 1.5, param: "page" })).toThrow(RangeError);
+    expect(() => paginate([1], { pageSize: 2.0001, param: "page" })).toThrow(RangeError);
+    expect(() => paginate([1], { pageSize: Number.NaN, param: "page" })).toThrow(RangeError);
+    expect(() => paginate([1], { pageSize: Number.POSITIVE_INFINITY, param: "page" })).toThrow(
+      RangeError,
+    );
+  });
+
+  it("rejects empty-string param", () => {
+    expect(() => paginate([1], { pageSize: 1, param: "" })).toThrow(TypeError);
+  });
+
   it("uses the provided param name as the params key", () => {
     const routes = paginate([1, 2, 3], { pageSize: 1, param: "p" });
     expect(routes.map((r) => r.params)).toEqual([{ p: "1" }, { p: "2" }, { p: "3" }]);
