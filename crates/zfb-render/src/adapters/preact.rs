@@ -35,6 +35,21 @@ const PREACT_SETUP_SOURCE: &str = r#"import { renderToString } from "preact-rend
 globalThis.__zfbRenderToString = renderToString;
 "#;
 
+/// Synthetic module specifier under which the islands bundler folds the
+/// per-adapter hydration shim into the islands bundle entry.
+const PREACT_HYDRATE_SHIM_SPECIFIER: &str = "zfb:internal/adapters/preact-hydrate.mjs";
+
+/// Per-adapter hydration shim. Exports the uniform
+/// `hydrateIsland(Component, props, element)` the framework-agnostic
+/// hydration runtime in `zfb-islands` calls to drive Preact. Uses `h` +
+/// `hydrate` from bare `preact` (not `preact/compat`) because zfb's
+/// portable-component contract targets bare Preact — see ADR-002.
+const PREACT_HYDRATE_SHIM_SOURCE: &str = r#"import { h, hydrate } from "preact";
+export function hydrateIsland(Component, props, element) {
+  hydrate(h(Component, props), element);
+}
+"#;
+
 impl Adapter for PreactAdapter {
     fn name(&self) -> &'static str {
         "preact"
@@ -51,9 +66,15 @@ impl Adapter for PreactAdapter {
     fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError> {
         host.execute_module(PREACT_SETUP_SPECIFIER, PREACT_SETUP_SOURCE)
             .map(|_handle| ())
-            .map_err(|e| {
-                RenderError::Adapter(format!("preact pre-render setup failed: {e}"))
-            })
+            .map_err(|e| RenderError::Adapter(format!("preact pre-render setup failed: {e}")))
+    }
+
+    fn hydrate_shim_specifier(&self) -> &'static str {
+        PREACT_HYDRATE_SHIM_SPECIFIER
+    }
+
+    fn hydrate_shim_source(&self) -> &'static str {
+        PREACT_HYDRATE_SHIM_SOURCE
     }
 }
 
@@ -78,8 +99,7 @@ mod tests {
             name: &str,
             source: &str,
         ) -> Result<ModuleHandle, RenderError> {
-            self.calls
-                .push((name.to_owned(), source.to_owned()));
+            self.calls.push((name.to_owned(), source.to_owned()));
             if let Some(msg) = &self.fail_with {
                 return Err(RenderError::Adapter(msg.clone()));
             }
@@ -120,6 +140,21 @@ mod tests {
         assert_eq!(specifier, PREACT_SETUP_SPECIFIER);
         assert!(source.contains("preact-render-to-string"));
         assert!(source.contains("__zfbRenderToString"));
+    }
+
+    #[test]
+    fn hydrate_shim_imports_bare_preact_and_exports_hydrate_island() {
+        let a = PreactAdapter;
+        let src = a.hydrate_shim_source();
+        // Imports `h` and `hydrate` from bare `preact`. Importing from
+        // `preact/compat` would silently pull in React-shim semantics
+        // we explicitly do not want.
+        assert!(src.contains(r#"from "preact""#));
+        assert!(!src.contains("preact/compat"));
+        assert!(src.contains("hydrateIsland"));
+        // Specifier lives under zfb:internal/ so user code cannot collide.
+        assert_eq!(a.hydrate_shim_specifier(), PREACT_HYDRATE_SHIM_SPECIFIER);
+        assert!(a.hydrate_shim_specifier().starts_with("zfb:internal/"));
     }
 
     #[test]
