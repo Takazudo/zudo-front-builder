@@ -12,12 +12,40 @@
 //! `oxc_resolver` will eventually replace the hand-rolled resolver — this
 //! minimal version exists so the orchestrator and tests can wire up without
 //! pulling in the full resolver crate while the team is parallel-working.
+//!
+//! ## MDX specifiers
+//!
+//! Two specifier shapes route a source string through the MDX→JSX emitter
+//! before the SWC TSX pass:
+//!
+//! 1. Filename ends in `.mdx` (typical on-disk content collection entry).
+//! 2. Specifier starts with `mdx://` (the canonical form Sub 4 produces
+//!    for compiled collection entries — see
+//!    `zfb_content::mdx_jsx_emit::compile_mdx_to_jsx_module`).
+//!
+//! In both cases the loader calls `zfb_content::mdx_jsx_emit::mdx_to_jsx_module`
+//! first, then hands the resulting JSX source through the existing SWC
+//! pipeline. Compile errors from `zfb-content` are wrapped as
+//! [`RenderError::Compile`] carrying the original specifier as the file
+//! location so the rest of the renderer's error UX still applies.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use zfb_content::mdx_jsx_emit::{mdx_to_jsx_module, MdxJsxOptions};
+
 use crate::error::{RenderError, Result};
 use crate::swc_pipeline::{CompileOptions, CompiledModule, JsxRuntime, SwcPipeline};
+
+/// True when the loader should treat `specifier` as MDX source.
+///
+/// Recognised shapes:
+/// - ends in `.mdx` (case-sensitive — matches Astro / mdx-js conventions).
+/// - starts with `mdx://` (the URL form produced by
+///   `zfb_content::mdx_jsx_emit::compile_mdx_to_jsx_module`).
+fn is_mdx_specifier(specifier: &str) -> bool {
+    specifier.ends_with(".mdx") || specifier.starts_with("mdx://")
+}
 
 /// Cache key for compiled modules.
 type Specifier = String;
@@ -101,13 +129,10 @@ impl ModuleLoader {
     /// Internal probe loop shared by [`resolve_relative`] and
     /// [`resolve_relative_from_file`]. Returns the resolved path (if any) and
     /// the full list of candidates attempted, in probe order.
-    fn try_resolve(
-        &self,
-        importer_dir: &Path,
-        specifier: &str,
-    ) -> (Option<PathBuf>, Vec<String>) {
+    fn try_resolve(&self, importer_dir: &Path, specifier: &str) -> (Option<PathBuf>, Vec<String>) {
         let candidate = importer_dir.join(specifier);
-        let mut tried: Vec<String> = Vec::with_capacity(self.probe_exts.len() + 1 + self.probe_exts.len());
+        let mut tried: Vec<String> =
+            Vec::with_capacity(self.probe_exts.len() + 1 + self.probe_exts.len());
 
         // 1) Exact match.
         tried.push(candidate.display().to_string());
@@ -146,29 +171,55 @@ impl ModuleLoader {
 
     /// Compile a source string through SWC and cache it under `specifier`.
     /// Returns the cached entry on subsequent calls.
+    ///
+    /// If `specifier` is an MDX specifier (ends in `.mdx` or starts with
+    /// `mdx://`), `source` is first run through
+    /// `zfb_content::mdx_jsx_emit::mdx_to_jsx_module` and the resulting JSX
+    /// text is what gets fed into SWC.
     pub fn load_source(&mut self, specifier: &str, source: &str) -> Result<&CompiledModule> {
         if !self.cache.contains_key(specifier) {
+            let jsx_source = self.maybe_mdx_to_jsx(specifier, source)?;
             let opts = CompileOptions::default()
                 .with_filename(specifier.to_string())
                 .with_jsx_runtime(self.jsx_runtime);
-            let compiled = self.pipeline.compile(source, &opts)?;
+            let compiled = self.pipeline.compile(&jsx_source, &opts)?;
             self.cache.insert(specifier.to_string(), compiled);
         }
         Ok(self.cache.get(specifier).expect("just inserted above"))
     }
 
     /// Read `path` and load+compile it. Caches by absolute-path key.
+    ///
+    /// `.mdx` files are routed through the MDX→JSX emitter before SWC; see
+    /// [`Self::load_source`].
     pub fn load_file(&mut self, path: &Path) -> Result<&CompiledModule> {
         let key = path.to_string_lossy().to_string();
         if !self.cache.contains_key(&key) {
             let source = std::fs::read_to_string(path)?;
+            let jsx_source = self.maybe_mdx_to_jsx(&key, &source)?;
             let opts = CompileOptions::default()
                 .with_filename(key.clone())
                 .with_jsx_runtime(self.jsx_runtime);
-            let compiled = self.pipeline.compile(&source, &opts)?;
+            let compiled = self.pipeline.compile(&jsx_source, &opts)?;
             self.cache.insert(key.clone(), compiled);
         }
         Ok(self.cache.get(&key).expect("just inserted above"))
+    }
+
+    /// If `specifier` looks like MDX, run the source through the MDX→JSX
+    /// emitter; otherwise return `source` unchanged.
+    ///
+    /// Errors from `zfb-content` are wrapped as [`RenderError::Compile`]
+    /// with `specifier` as the file location so the renderer's existing
+    /// error formatting points editors at the original `.mdx` (or `mdx://`)
+    /// source.
+    fn maybe_mdx_to_jsx(&self, specifier: &str, source: &str) -> Result<String> {
+        if !is_mdx_specifier(specifier) {
+            return Ok(source.to_string());
+        }
+        let opts = MdxJsxOptions::default().with_filename(specifier.to_string());
+        mdx_to_jsx_module(source, opts)
+            .map_err(|e| RenderError::compile(specifier.to_string(), e.to_string()))
     }
 
     /// Number of cache entries (handy for assertions).
@@ -189,6 +240,18 @@ mod tests {
         assert!(!ModuleLoader::is_bare("./layout"));
         assert!(!ModuleLoader::is_bare("../layouts/blog"));
         assert!(!ModuleLoader::is_bare("/abs/path"));
+    }
+
+    #[test]
+    fn detects_mdx_specifiers() {
+        assert!(is_mdx_specifier("post.mdx"));
+        assert!(is_mdx_specifier("./posts/hello.mdx"));
+        assert!(is_mdx_specifier("mdx://blog/hello#abc12345"));
+        assert!(!is_mdx_specifier("page.tsx"));
+        assert!(!is_mdx_specifier("./layout"));
+        assert!(!is_mdx_specifier("preact"));
+        // case-sensitive on the extension, by design
+        assert!(!is_mdx_specifier("post.MDX"));
     }
 
     #[test]
