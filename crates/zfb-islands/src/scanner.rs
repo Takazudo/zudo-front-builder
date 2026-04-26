@@ -258,6 +258,13 @@ impl Resolver for FsResolver {
 ///
 /// Resolution probes the same extension list as [`FsResolver`], but
 /// against the in-memory `files` map instead of the file system.
+///
+/// Note on path normalization: where [`FsResolver`] uses
+/// `std::fs::canonicalize` (which also resolves symlinks), this resolver
+/// only collapses `.` / `..` lexically via [`normalize_path_lexical`].
+/// That's enough for the tests' synthetic paths but is intentionally
+/// less powerful than the real-FS path; production code should always
+/// use [`FsResolver`].
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryResolver {
     /// Map of resolved-path → source text.
