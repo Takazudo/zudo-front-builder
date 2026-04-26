@@ -1,0 +1,17 @@
+[package]
+name = "zfb-watcher"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb dev-mode filesystem watcher: wraps `notify` and emits debounced Change events on a tokio channel"
+
+[lib]
+
+[dependencies]
+notify = "8"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
