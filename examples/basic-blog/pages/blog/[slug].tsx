@@ -1,3 +1,6 @@
+import { defaultComponents } from "zfb";
+
+import Note from "../../components/note";
 import DefaultLayout from "../../layouts/default";
 import type { BlogEntry } from "../../lib/types";
 
@@ -29,24 +32,28 @@ export default function BlogPostPage({ post }: Props) {
           <time dateTime={post.data.date}>{post.data.date}</time>
         </p>
         {/*
-          Body rendering — v0 contract.
+          Body rendering — `entry.Content` contract.
 
-          The v0 `getCollection` stub in `zfb/content` returns `body` as the
-          raw markdown source (frontmatter stripped), NOT pre-rendered
-          HTML. The Rust-side markdown pipeline lives in `crates/zfb-content`
-          and is not yet wired through to user code (blocked on the JS
-          runtime decision in ADR-001). Until that lands, render the body
-          as plain text inside a `<pre>` so:
-            (a) we never emit `dangerouslySetInnerHTML` against an
-                un-sanitised HTML string, and
-            (b) the example still demonstrates the round-trip from
-                markdown file → frontmatter → page output.
+          `getCollection("blog")` returns each entry with a `Content`
+          component (see `zfb/content`). We render the body by calling
+          `<post.Content components={...} />` and pass:
 
-          TODO(zfb-content): switch back to a sanitised HTML render once
-          the content engine ships end-to-end (rehype-sanitize at the
-          pipeline level, or an explicit ZFB-INTERNAL safety contract).
+          - `defaultComponents` from `zfb` — the htmlOverrides convention
+            (passthroughs for `<p>`, `<a>`, headings, lists, etc.) ported
+            from zudo-doc. Spread first so individual overrides on the
+            right win on key collisions.
+          - `Note` — a custom JSX component used inside the MDX post
+            (`content/blog/hello-zfb.mdx`). MDX resolves `<Note>` against
+            this map at evaluation time, which is what makes
+            `<Note title="…">…</Note>` in the post body actually render.
+
+          Outside the production renderer (unit tests, dev sandboxes,
+          and the v0 CLI before ADR-001), `Content` falls back to a
+          `<pre data-zfb-content-fallback>` block printing the raw body
+          with a `[zfb fallback render]` marker. That keeps the example
+          self-explanatory even when the bridge is absent.
         */}
-        <pre class="post-body">{post.body}</pre>
+        <post.Content components={{ ...defaultComponents, Note }} />
         {tags.length > 0 ? (
           <ul class="tag-list">
             {tags.map((tag) => (

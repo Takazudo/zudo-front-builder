@@ -20,3 +20,12 @@ the content collection is wired up correctly.
 If you are exploring zfb for the first time, start with `pages/index.tsx`
 and follow the imports outward. Most of the moving parts are visible from
 that one file.
+
+<Note title="MDX in basic-blog">
+
+  This post is `.mdx`, not plain markdown. The `<Note>` admonition you are
+  reading right now is a custom JSX component passed in via the `components`
+  prop on `<post.Content />` — exactly the same delivery contract Astro's
+  `@astrojs/mdx` exposes. See `pages/blog/[slug].tsx` for the wiring.
+
+</Note>
