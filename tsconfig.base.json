@@ -1,0 +1,17 @@
+{
+  "//": "Shared TypeScript compiler options for the workspace. Per-package tsconfig.json files extend this and only override what they actually need (rootDir/outDir, jsx settings, lib add-ons, etc.). Keep this file lean — bake-in only options every TS package agrees on.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  }
+}
