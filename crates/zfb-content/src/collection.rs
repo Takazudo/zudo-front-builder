@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
+use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
+use crate::pipeline::PipelineError;
+
 /// One file in a collection.
 #[derive(Debug, Clone)]
 pub struct Entry<T> {
@@ -25,6 +28,29 @@ pub struct Entry<T> {
     pub data: T,
     /// Markdown body (frontmatter stripped).
     pub body: String,
+}
+
+impl<T> Entry<T> {
+    /// Compile this entry's body into a [`CompiledMdx`] (JSX source +
+    /// content hash + `mdx://` specifier).
+    ///
+    /// Sub 2 surfaces this on `Entry` so downstream code can reach the
+    /// new return value without re-deriving file-path conventions. The
+    /// walker itself does **not** call this — wiring `Content` through
+    /// `getCollection()` is Sub 4's job; for now this is an opt-in
+    /// helper that exists so Sub 4 has a stable seam to attach to.
+    ///
+    /// Pass `Some(&cache)` to dedupe identical bodies across calls; pass
+    /// `None` for a one-shot compile.
+    ///
+    /// # Errors
+    /// Forwards [`PipelineError::Parse`] from the MDX emitter.
+    pub fn compile_mdx(
+        &self,
+        cache: Option<&MdxModuleCache>,
+    ) -> Result<CompiledMdx, PipelineError> {
+        compile_mdx_to_jsx_module_cached(&self.body, &self.path, cache)
+    }
 }
 
 /// Errors produced by the collection walker.
