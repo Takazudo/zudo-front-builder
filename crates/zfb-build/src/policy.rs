@@ -245,6 +245,36 @@ mod tests {
     }
 
     #[test]
+    fn non_html_pages_still_classify_as_page() {
+        // Sub 49 regression: a `.tsx` page that emits non-HTML
+        // (e.g. `pages/sitemap.xml.tsx`) is still a page. The
+        // "pages/" segment match wins over the extension fallback,
+        // so the orchestrator dispatches it to the page renderer
+        // rather than misclassifying it as Data or anything else.
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/pages/sitemap.xml.tsx"),
+                never_global,
+            ),
+            PathClass::Page,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/pages/api.v2.json.tsx"),
+                never_global,
+            ),
+            PathClass::Page,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/pages/llms.txt.tsx"),
+                never_global,
+            ),
+            PathClass::Page,
+        );
+    }
+
+    #[test]
     fn classifies_content() {
         assert_eq!(
             classify_change(Path::new("/proj/content/post.md"), never_global),

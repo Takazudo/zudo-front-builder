@@ -230,6 +230,7 @@ mod tests {
             segments: segs,
             kind: RouteKind::Static,
             specificity: 0,
+            output_extension: None,
         }
     }
 
@@ -239,6 +240,7 @@ mod tests {
             segments: vec![Segment::Dynamic("slug".to_string())],
             kind: RouteKind::Dynamic,
             specificity: 0,
+            output_extension: None,
         }
     }
 
@@ -248,6 +250,7 @@ mod tests {
             segments: vec![Segment::Catchall("rest".to_string())],
             kind: RouteKind::Catchall,
             specificity: 0,
+            output_extension: None,
         }
     }
 

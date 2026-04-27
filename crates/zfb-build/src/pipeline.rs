@@ -52,12 +52,34 @@ use zfb_graph::PageId;
 use crate::atomic::atomic_write_string;
 use crate::plan::{PageSelection, RebuildPlan};
 
-/// One rendered page's HTML output.
+/// One rendered page's output.
 ///
 /// The pipeline writes `html` to `<dist_root>/<output_path>` atomically.
-/// `output_path` should be relative to the dist root and must be a safe
-/// subpath (no `..`). Producers typically derive this from the page's
-/// route template — e.g. `/blog/foo` → `blog/foo/index.html`.
+/// `output_path` is relative to the dist root and must be a safe
+/// subpath (no `..`).
+///
+/// ## Output extension precedence (Sub 49)
+///
+/// `output_path` is the load-bearing carrier of the page's output
+/// extension — the pipeline does not re-derive it. The producer
+/// (typically the renderer in `zfb-render`) is expected to apply the
+/// precedence rule before constructing this struct:
+///
+/// 1. Frontmatter `extension` override (`export const extension = "rss"`),
+/// 2. Filename convention (`pages/sitemap.xml.tsx` → `xml`,
+///    `api.v2.json.tsx` → `json`),
+/// 3. Default `.html`.
+///
+/// See `zfb_router::route::Route::output_filename` and
+/// `zfb_render::meta::derive_output_extension` for the canonical
+/// helpers. ADR-003 (Sub 7) documents the same rule for users.
+///
+/// ## Stale-output cleanup
+///
+/// [`DevAssetPipeline`] tracks the last-known `output_path` per
+/// [`PageId`] and deletes the previous artifact when this field
+/// changes (e.g. a page whose frontmatter flipped `extension` from
+/// `xml` to `rss` won't leave an orphan `dist/sitemap.xml` behind).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedPage {
     /// The page id this output belongs to. Echoed back verbatim from
@@ -65,12 +87,26 @@ pub struct RenderedPage {
     pub page: PageId,
 
     /// Path under the dist root, in URL-style forward-slash form. The
-    /// pipeline joins this onto its `dist_root` and writes the HTML
+    /// pipeline joins this onto its `dist_root` and writes the bytes
     /// atomically.
     pub output_path: PathBuf,
 
-    /// HTML to write.
+    /// Page body (HTML, XML, JSON, plain text — whatever the
+    /// `output_path` extension implies). The renderer is responsible
+    /// for serialising the value into a string before constructing
+    /// this struct.
     pub html: String,
+
+    /// Optional `Content-Type` to associate with this page. The build
+    /// layer treats it as metadata only (static-file hosts derive
+    /// the content type from the file extension); the dev server
+    /// (`zfb-server`) reads it back from the page cache to set the
+    /// HTTP response header.
+    ///
+    /// `None` means "let the consumer derive a default from the
+    /// extension". See `zfb_render::meta::derive_content_type` for
+    /// the canonical extension-to-content-type table.
+    pub content_type: Option<String>,
 }
 
 /// Function that renders a batch of pages to HTML.
@@ -159,6 +195,13 @@ pub struct BuildOutcome {
     /// bytes changed). Useful for the dev preview server's WebSocket
     /// reload path.
     pub pages_written: Vec<PageId>,
+
+    /// Absolute paths that were pruned because the page now writes
+    /// to a different `output_path` than the previous build (e.g. a
+    /// frontmatter `extension` change flipped `dist/sitemap.xml` to
+    /// `dist/sitemap.rss`). Useful for surfacing the cleanup to the
+    /// dev server's reload logic and for tests.
+    pub pages_pruned: Vec<PathBuf>,
 }
 
 /// The contract every asset pipeline implementation must satisfy.
@@ -199,6 +242,18 @@ pub struct DevAssetPipeline {
     // a Mutex so &self.apply() can mutate it; the lock is held for the
     // duration of one tick which is fine for dev.
     last_bytes: Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>,
+
+    // Last-known absolute output path per page id. Used to detect
+    // stale-output transitions: when a page's `output_path` changes
+    // between builds (typically because its frontmatter `extension`
+    // flipped — e.g. `xml` → `rss`), the previous artifact is
+    // deleted so dist/ doesn't accumulate orphaned files. Without
+    // this the dev server would happily serve the stale `sitemap.xml`
+    // alongside the new `sitemap.rss`.
+    //
+    // Stored as the absolute joined path (`<dist_root>/<output_path>`)
+    // so the prune step doesn't need access to the dist root.
+    last_output_path: Mutex<std::collections::HashMap<PageId, PathBuf>>,
 }
 
 impl DevAssetPipeline {
@@ -207,13 +262,17 @@ impl DevAssetPipeline {
         Self::default()
     }
 
-    /// Forget the last-bytes cache. Useful when the dist root is wiped
-    /// from outside the orchestrator and the caller wants the next
-    /// rebuild to re-emit every page.
+    /// Forget the last-bytes and last-output caches. Useful when the
+    /// dist root is wiped from outside the orchestrator and the caller
+    /// wants the next rebuild to re-emit every page.
     pub fn reset_cache(&self) {
         self.last_bytes
             .lock()
             .expect("DevAssetPipeline::last_bytes lock poisoned")
+            .clear();
+        self.last_output_path
+            .lock()
+            .expect("DevAssetPipeline::last_output_path lock poisoned")
             .clear();
     }
 }
@@ -245,6 +304,31 @@ impl AssetPipeline for DevAssetPipeline {
                 let dest = ctx.dist_root.join(&r.output_path);
                 let new_bytes = r.html.into_bytes();
 
+                // Stale-output prune: if this page previously produced a
+                // *different* absolute path (e.g. extension flipped
+                // from xml to rss), delete the old artifact and forget
+                // its byte cache so we never serve a stale file. The
+                // delete is best-effort: if the file was already gone
+                // we silently move on.
+                let pruned = {
+                    let mut last_out = self
+                        .last_output_path
+                        .lock()
+                        .expect("DevAssetPipeline::last_output_path lock poisoned");
+                    match last_out.insert(r.page.clone(), dest.clone()) {
+                        Some(prev) if prev != dest => {
+                            let _ = std::fs::remove_file(&prev);
+                            self.last_bytes
+                                .lock()
+                                .expect("DevAssetPipeline::last_bytes lock poisoned")
+                                .remove(&prev);
+                            outcome.pages_pruned.push(prev);
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+
                 let changed = {
                     let mut cache = self
                         .last_bytes
@@ -258,6 +342,13 @@ impl AssetPipeline for DevAssetPipeline {
                         }
                     }
                 };
+
+                // After a prune the new path is by definition different
+                // from anything we've written before, so we always
+                // (re-)emit. `changed` already flips true via the
+                // cache miss above; this `_pruned` line just documents
+                // the invariant for future readers.
+                let _ = pruned;
 
                 if changed {
                     atomic_write_string(&dest, std::str::from_utf8(&new_bytes).unwrap_or(""))?;
@@ -325,6 +416,7 @@ mod tests {
                 page: pid("/p/a.tsx"),
                 output_path: PathBuf::from("a/index.html"),
                 html: "<h1>A</h1>".into(),
+                content_type: None,
             }],
             calls.clone(),
         );
@@ -357,6 +449,7 @@ mod tests {
             page: pid("/p/a.tsx"),
             output_path: PathBuf::from("a.html"),
             html: "<p>same</p>".into(),
+            content_type: None,
         }];
         let ctx = ctx_with_renderer(dir.path().to_path_buf(), rendered, calls);
 
@@ -405,6 +498,93 @@ mod tests {
         assert!(outcome.css_rerun);
         assert!(outcome.css_changed);
         assert_eq!(css_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stale_output_is_pruned_when_extension_changes() {
+        // Sub 49 acceptance criterion: when a page's output_path
+        // changes between builds (e.g. frontmatter extension flipped
+        // from "xml" to "rss"), the previous artifact must be
+        // deleted so dist/ doesn't accumulate orphaned files.
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+
+        // First build: emit dist/sitemap.xml.
+        let first_render = vec![RenderedPage {
+            page: pid("/p/sitemap.xml.tsx"),
+            output_path: PathBuf::from("sitemap.xml"),
+            html: "<urlset/>".into(),
+            content_type: Some("application/xml".into()),
+        }];
+        let calls_a = Arc::new(AtomicUsize::new(0));
+        let ctx_a = ctx_with_renderer(dir.path().to_path_buf(), first_render, calls_a);
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/sitemap.xml.tsx"));
+        let plan = RebuildPlan {
+            pages: PageSelection::Specific(sel.clone()),
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        let first = pipeline.apply(&plan, &ctx_a).unwrap();
+        assert_eq!(first.pages_written.len(), 1);
+        assert!(first.pages_pruned.is_empty(), "first build has nothing to prune");
+        assert!(dir.path().join("sitemap.xml").exists());
+
+        // Second build: same page, but output_path flipped to
+        // sitemap.rss. The pipeline must delete the stale .xml.
+        let second_render = vec![RenderedPage {
+            page: pid("/p/sitemap.xml.tsx"),
+            output_path: PathBuf::from("sitemap.rss"),
+            html: "<rss/>".into(),
+            content_type: Some("application/rss+xml".into()),
+        }];
+        let calls_b = Arc::new(AtomicUsize::new(0));
+        let ctx_b = ctx_with_renderer(dir.path().to_path_buf(), second_render, calls_b);
+        let second = pipeline.apply(&plan, &ctx_b).unwrap();
+
+        assert_eq!(second.pages_written.len(), 1, "new artifact written");
+        assert_eq!(second.pages_pruned.len(), 1, "old artifact reported as pruned");
+        assert_eq!(second.pages_pruned[0], dir.path().join("sitemap.xml"));
+        assert!(
+            !dir.path().join("sitemap.xml").exists(),
+            "stale sitemap.xml must be removed",
+        );
+        assert!(
+            dir.path().join("sitemap.rss").exists(),
+            "fresh sitemap.rss must exist",
+        );
+    }
+
+    #[test]
+    fn unchanged_output_path_does_not_prune() {
+        // Re-rendering the same page to the same path is the common
+        // case and must not produce any prune entries.
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let render = vec![RenderedPage {
+            page: pid("/p/a.tsx"),
+            output_path: PathBuf::from("a/index.html"),
+            html: "<h1>A</h1>".into(),
+            content_type: None,
+        }];
+        let ctx = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            render.clone(),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/a.tsx"));
+        let plan = RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        let first = pipeline.apply(&plan, &ctx).unwrap();
+        let second = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(first.pages_pruned.is_empty());
+        assert!(second.pages_pruned.is_empty());
     }
 
     #[test]
