@@ -1,0 +1,136 @@
+---
+title: Engine vs Framework
+description: zfb is the engine — frameworks like a future zudo-doc-v2 sit on top of its primitives.
+sidebar_position: 0
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How zfb's surface area is split between **engine primitives** (the six
+things zfb commits to) and **framework concerns** (sidebars, search,
+blog conventions, theming) that live outside the engine. The decision
+itself is fixed in [ADR-003](/architecture/adr-003-engine-vs-framework).
+
+</Info>
+
+zfb is a static site **engine**. It scans `pages/`, walks content
+collections, runs an MDX pipeline, evaluates TSX, threads page meta
+through layouts, and writes files to disk. That's the engine.
+
+A **framework** — like a future zudo-doc-v2, or a blog kit, or
+whatever someone publishes downstream — is what turns a pile of engine
+primitives into a finished site experience. Sidebar generation, search,
+versioning UI, theme controls, blog routing, i18n routing: all
+framework concerns.
+
+This page exists because the line between the two is load-bearing.
+Knowing which side a feature lives on tells you where to look for it,
+where to extend it, and what your project's responsibility is when zfb
+itself doesn't ship the answer.
+
+## The six engine primitives
+
+zfb v1 commits to exactly six primitives. Frameworks build on top of
+them; nothing else in zfb is part of the public surface contract.
+
+1. **[Frontmatter](/concepts/frontmatter)** — unified contract across
+   `.md`, `.mdx`, and `.tsx` sources. One JSON shape downstream.
+2. **[Content collections](/concepts/content-collections)** — typed
+   directories of markdown content, walked at build time.
+3. **Build-time content query bridge** — a deterministic Rust→JS
+   snapshot that powers synchronous `getCollection` / `getEntry` calls
+   from your pages. Contract pinned by
+   [ADR-004](/architecture/adr-004-content-bridge).
+4. **[Dynamic routes](/concepts/dynamic-routes)** — `paths()` enumerates
+   the concrete URLs to build for `[slug].tsx` / `[...slug].tsx` pages.
+5. **[Custom directives](/concepts/custom-directives)** — register
+   container, leaf, and text MDX directives that map to your JSX
+   components without writing any Rust.
+6. **[Non-HTML pages](/concepts/non-html-pages)** —
+   `pages/sitemap.xml.tsx`, `pages/llms.txt.tsx`, `pages/feed.rss.tsx`,
+   etc. First-class outputs with their own extension and
+   `Content-Type`.
+
+That's the engine. Stable, named, documented.
+
+## What zfb does NOT do
+
+These are framework concerns. zfb gives you the substrate; you (or a
+framework you depend on) wire it up.
+
+- Sidebar / navigation tree generation.
+- Search index building (Pagefind, Lunr, etc.).
+- Blog conventions (tag pages, archives, RSS feed wiring, pagination).
+- i18n routing — `/ja/...` mirroring `/...`, locale negotiation.
+- Theme controls (light / dark / dim, design tokens, color palette UI).
+- Versioning UI — multi-version docs, version dropdown.
+- Layout components — header, footer, table of contents, card grids.
+- Site-level chrome — skip links, focus management, scroll-to-top.
+
+The principle: if the answer to *"would two frameworks built on zfb do
+this differently?"* is yes, it belongs in a framework, not in zfb.
+
+## A small example: a layout consumes the engine's `meta`
+
+The engine threads page metadata through `PageMeta` (see
+[ADR-003 → Head / asset-injection contract](/architecture/adr-003-engine-vs-framework)).
+Layouts — which are *your* code, not the engine's — read `meta` and
+project it into the `<head>`. Here's a tiny default layout:
+
+```tsx
+// layouts/default.tsx
+export default function DefaultLayout({ meta, children }) {
+  const og = meta?.openGraph ?? {};
+  return (
+    <html lang={meta?.lang ?? "en"}>
+      <head>
+        <title>{meta?.title ?? "Untitled"}</title>
+        {meta?.description && (
+          <meta name="description" content={meta.description} />
+        )}
+        {og.image && <meta property="og:image" content={og.image} />}
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+The page itself just declares meta:
+
+```tsx
+// pages/about.tsx
+export const meta = {
+  title: "About",
+  description: "Who we are.",
+  openGraph: { image: "/og/about.png" },
+};
+
+export default function AboutPage() {
+  return <h2>About us</h2>;
+}
+```
+
+Notice what the engine does and doesn't do here. The engine parses
+`meta`, resolves the layout, and wraps your page output in it. Whether
+to render `og:image`, what fallback to use, how to format the title —
+all framework-level decisions. zfb stops at "give the layout the
+typed `PageMeta`."
+
+## Where to look next
+
+- The decision itself: [ADR-003: Engine vs framework boundary](/architecture/adr-003-engine-vs-framework).
+- For each engine primitive, the linked concept page above.
+- For the head/meta surface specifically, the **Head / asset-injection
+  contract** section in ADR-003 spells out which fields are
+  first-class and how `extra` carries the rest.
+
+<Note>
+
+ADR-001 lands the JS runtime that backs all six primitives. The
+deno_core wiring is deferred to a follow-up epic; the contracts in
+this page (and the ones it links to) are the stable interface between
+the Rust side and the JS side regardless of when the runtime arrives.
+
+</Note>

@@ -1,0 +1,215 @@
+---
+title: Custom Directives
+description: Register your own MDX directives — container, leaf, and text — that map to JSX components without writing any Rust.
+sidebar_position: 2.7
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How to register MDX directives (container, leaf, text) so authors can
+write `:::callout`, `::youtube{id="…"}`, or `:badge[new]` and have them
+expand to your JSX components. Includes the v1 attribute restriction
+and how the engine reports unknown-directive diagnostics.
+
+</Info>
+
+zfb's MDX pipeline runs a **directive registry** as one of its mdast
+visitors. The registry is the engine primitive — frameworks (or your
+own project) populate it. You register a directive name, point it at
+a JSX component, and the pipeline rewrites matching paragraphs into
+`<YourComponent>` JSX nodes.
+
+The shapes follow the
+[CommonMark Directives proposal](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444):
+container, leaf, and text. zfb's six built-in admonitions
+(`:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`,
+`:::details`) are themselves registered through the same registry
+via `Pipeline::with_defaults()` — the registry is the only mechanism,
+and the defaults aren't privileged.
+
+## The three directive shapes
+
+### Container — `:::name … :::`
+
+Block-level. Body content between the fences becomes the JSX
+element's children. Used for callouts, sections, anything that wraps
+a multi-paragraph body.
+
+```md
+:::callout{tone="info"}
+
+Body content runs through the markdown pipeline normally. **Inline
+markdown** works. So do nested elements.
+
+:::
+```
+
+Compiles to:
+
+```tsx
+<Callout tone="info">
+  <p>Body content runs through the markdown pipeline normally. <strong>Inline
+  markdown</strong> works. So do nested elements.</p>
+</Callout>
+```
+
+### Leaf — `::name[label]{attrs}`
+
+Block-level, single line. No fenced body. Use for self-contained
+embeds where attributes carry the data.
+
+```md
+::youtube[Intro to zfb]{id="abc123" start="42"}
+```
+
+Compiles to:
+
+```tsx
+<Youtube title="Intro to zfb" id="abc123" start="42" />
+```
+
+(Whether `[label]` becomes a `title="…"` attribute or a child element
+is up to the directive's `title_from_label` flag at registration
+time.)
+
+### Text — `:name[label]{attrs}`
+
+Inline within a paragraph. Use for badges, inline icons, anything you
+want to mix into prose.
+
+```md
+The new feature is :badge[new]{tone="green"} now in beta.
+```
+
+Compiles to:
+
+```tsx
+<p>
+  The new feature is <Badge tone="green">new</Badge> now in beta.
+</p>
+```
+
+## Registering a directive (Rust side)
+
+Frameworks register directives in Rust by populating a
+`DirectiveRegistry` and inserting it into the pipeline. Each directive
+is a `(name, kind, component_name)` triple plus a `title_from_label`
+flag.
+
+```rust
+use zfb_content::plugins::directives::{
+    DirectiveDef, DirectiveKind, DirectiveRegistry,
+};
+use zfb_content::pipeline::Pipeline;
+
+let mut registry = DirectiveRegistry::with_defaults();
+
+// Container: :::callout … :::
+registry.register(DirectiveDef::container("callout", "Callout"));
+
+// Leaf: ::youtube[label]{id="…"}
+registry.register(DirectiveDef::leaf("youtube", "Youtube"));
+
+// Text: :badge[new]
+registry.register(DirectiveDef::text("badge", "Badge"));
+
+let mut pipeline = Pipeline::with_defaults();
+pipeline.add_mdast_visitor(registry.into_visitor());
+```
+
+After registration, content authors use the source-side syntax (the
+markdown/MDX block) and the pipeline emits the right JSX element.
+You're responsible for making sure the JSX component identifier
+(`Callout`, `Youtube`, `Badge`) is in scope at the page module — that's
+ordinary MDX-component plumbing.
+
+<Note>
+
+`Pipeline::with_defaults()` is your starting point — it pre-registers
+the six built-in admonitions and wires the standard plugin set
+(syntect highlighting, heading links, etc.). You can also start from
+`DirectiveRegistry::new()` if you want a clean slate, but the
+defaults are designed to be additive, not opinionated.
+
+</Note>
+
+## Attribute escaping (v1)
+
+All directive attributes emit as **JSX string-literal attributes**.
+Authors can write `{tone="green"}` or `{data-foo="bar"}` and the
+emitter renders `tone="green"` / `data-foo="bar"` directly.
+
+<Warning title="No raw-expression attributes in v1">
+
+`{count={5}}` or `{when={isLive}}` syntax is **not supported** in v1.
+Every attribute value goes through as a string literal — whatever the
+JSX component accepts as a string-typed prop is what authors can pass.
+If your component needs a non-string prop, accept the string form and
+parse it yourself, or expose the data through a different mechanism
+(a context, a layout prop, a frontmatter field).
+
+</Warning>
+
+The downstream JSX emitter (`zfb-content::mdx_jsx_emit`) escapes `"`,
+`&`, `<`, `>`, and line terminators in attribute values, so authors
+can't accidentally inject markup through them.
+
+## Unknown directives: diagnostics, not errors
+
+When the registry sees a directive name it doesn't recognise, it emits
+a `DirectiveDiagnostic` instead of failing the build. The original
+paragraph is left intact. The orchestrator drains diagnostics after
+each pipeline run and surfaces them as warnings.
+
+```rust
+pub struct DirectiveDiagnostic {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+```
+
+The pipeline returns a `Vec<DirectiveDiagnostic>` sink alongside the
+compiled module. A typical orchestrator drains and prints them between
+files:
+
+```rust
+let diagnostics = registry.take_diagnostics();
+for d in diagnostics {
+    eprintln!(
+        "warning: {} (at {}:{})",
+        d.message,
+        d.line.unwrap_or(0),
+        d.column.unwrap_or(0),
+    );
+}
+```
+
+The reason for non-fatal-by-default: a typo in a markdown post
+shouldn't break a 1,000-page build. Diagnostics surface the problem
+without blocking output.
+
+## What the engine doesn't do
+
+- **Type-check directive attributes against component prop types.**
+  Out of scope; the engine just hands strings to your component. Use
+  TypeScript on the component side for typing.
+- **Provide a default directive set beyond the six admonitions.** No
+  built-in `:::callout`, `:::card`, `::youtube`, etc. — every framework
+  picks its own.
+- **Auto-import the JSX components.** You're responsible for making
+  the components in scope at the page module (a global components
+  map, an MDX layout, an explicit import). See
+  [MDX Components](/concepts/mdx-components) for the
+  `defaultComponents` recipe.
+
+## See also
+
+- [MDX Components](/concepts/mdx-components) — how compiled MDX
+  modules look up element-level overrides.
+- [Engine vs Framework](/concepts/engine-vs-framework) — why the
+  registry is engine-shaped and the directive set is
+  framework-shaped.
+- `crates/zfb-content/src/plugins/directives.rs` — the registry
+  implementation, including parser fixtures for each shape.

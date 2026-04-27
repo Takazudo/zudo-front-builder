@@ -1,0 +1,190 @@
+---
+title: Frontmatter
+description: One unified frontmatter contract across .md, .mdx, and .tsx — YAML on the markdown side, a static export literal on the TSX side, one JSON shape on the Rust side.
+sidebar_position: 0.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How zfb extracts frontmatter from `.md`, `.mdx`, and `.tsx` sources;
+the literal-only restriction on TSX exports; and the precedence rule
+the engine uses to pick a TSX page's output extension.
+
+</Info>
+
+zfb's first engine primitive is a **unified frontmatter contract**.
+Markdown, MDX, and TSX pages all declare frontmatter. The on-disk
+syntax differs per source kind — YAML for markdown, a JS object
+literal for TSX — but downstream of `zfb-content::extract_frontmatter`
+they collapse to the same `serde_json::Value` shape. Schema validation
+and consumers don't branch on extension.
+
+## YAML for `.md` and `.mdx`
+
+Markdown sources use the standard fenced YAML block at the top of the
+file:
+
+```md
+---
+title: Hello zfb
+description: A short post.
+date: 2026-04-27
+tags: [intro, hello]
+draft: false
+---
+
+The body of the post starts here.
+```
+
+The block is parsed once, converted to JSON, and exposed as the
+entry's `data` field everywhere downstream — `getCollection("blog")[i].data`,
+the page renderer, schema validation, all see the same object.
+
+## TSX: `export const frontmatter`
+
+TSX pages declare frontmatter through a top-level
+`export const frontmatter` literal:
+
+```tsx
+// pages/about.tsx
+export const frontmatter = {
+  title: "About",
+  description: "Who we are.",
+  draft: false,
+  openGraph: { image: "/og/about.png" },
+};
+
+export default function AboutPage() {
+  return <h2>About</h2>;
+}
+```
+
+The TSX extractor is **AST-only**. It parses your file with SWC and
+walks the literal — it never evaluates the module. That keeps
+frontmatter extraction cheap and side-effect-free, but it means the
+literal you write has to be statically resolvable.
+
+### Literal-only contract
+
+Allowed inside the `frontmatter` object literal:
+
+- string, number (with `+` / `-` unary signs), boolean, `null`,
+- nested object literals,
+- array literals (no holes),
+- template strings **without** substitutions
+  (`` `hello world` `` is fine; `` `hi ${x}` `` is not).
+
+Rejected:
+
+- identifiers (`title: SOME_CONST`),
+- function calls (`title: makeTitle()`),
+- member accesses (`title: site.title`),
+- spreads (`...defaults`),
+- computed keys,
+- regular expressions.
+
+Rejections point at the offending source location so the engine can
+show you exactly which line broke the rule.
+
+<Warning title="No imports inside frontmatter">
+
+If you find yourself wanting to share frontmatter values across pages,
+that's a sign the value belongs in a config or in your layout — not
+in the page's frontmatter literal. The literal-only restriction is
+deliberate; computing frontmatter would force the engine to evaluate
+the module before the router knew what to do with it.
+
+</Warning>
+
+## The unified JSON shape
+
+After extraction, both branches produce the same shape on the Rust
+side:
+
+```rust
+pub struct UnifiedFrontmatter {
+    pub value: serde_json::Value,         // the parsed frontmatter
+    pub body: Option<String>,             // markdown body (None for .tsx)
+    pub body_offset: Option<usize>,       // byte offset (None for .tsx)
+    pub extension: Option<String>,        // TSX-only sibling export
+    pub content_type: Option<String>,     // TSX-only sibling export
+}
+```
+
+For the YAML example above, `value` deserializes to:
+
+```json
+{
+  "title": "Hello zfb",
+  "description": "A short post.",
+  "date": "2026-04-27",
+  "tags": ["intro", "hello"],
+  "draft": false
+}
+```
+
+For the TSX example, the resulting `value` is the same shape — your
+literal, converted to `serde_json::Value`, with `extension` and
+`content_type` populated only if you also declared the sibling
+exports.
+
+## Output extension precedence (TSX only)
+
+`.tsx` pages can produce non-HTML output. Two mechanisms decide the
+output extension, with a fixed precedence:
+
+1. `export const extension = "..."` — a sibling literal next to
+   `frontmatter`. **Wins** if present.
+2. The filename convention — the second-to-last `.`-separated segment
+   in the source path. `pages/sitemap.xml.tsx` → `xml`,
+   `pages/feed.rss.tsx` → `rss`, `pages/about.tsx` → no convention
+   hint.
+3. Default — `html`.
+
+```tsx
+// pages/sitemap.xml.tsx
+// Filename hint says "xml". No frontmatter override → output is
+// /sitemap.xml. Content-Type: application/xml.
+export const frontmatter = { title: "Sitemap" };
+
+export default function Sitemap() {
+  return /* the XML body */;
+}
+```
+
+```tsx
+// pages/raw.html.tsx
+// Filename hint says "html", but the frontmatter override wins: the
+// page emits /raw.txt instead.
+export const frontmatter = { title: "Raw text" };
+export const extension = "txt";
+
+export default function Raw() {
+  return "plain text body";
+}
+```
+
+See [Non-HTML Pages](/concepts/non-html-pages) for the full
+filename-convention treatment, including what changes when the
+extension changes between builds.
+
+## Where the contract lives
+
+- `crates/zfb-content/src/frontmatter.rs` — unified extractor entry
+  point.
+- `crates/zfb-content/src/tsx_frontmatter.rs` — the TSX-side static
+  walker (errors point at file + line:column).
+- `crates/zfb-router/src/route.rs` — the filename-convention side of
+  the output-extension precedence.
+- `crates/zfb-render/src/meta.rs` — `derive_output_extension` /
+  `derive_content_type` apply the rule to a final filename.
+
+<Note>
+
+`zfb-content` ships today; the runtime that *evaluates* a TSX page
+(rather than just extracting its frontmatter) lands with the
+ADR-001 follow-up. The frontmatter contract on this page is stable
+regardless — it's a Rust-side static analysis pass.
+
+</Note>

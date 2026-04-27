@@ -1,0 +1,219 @@
+---
+title: Non-HTML Pages
+description: Emit XML, RSS, JSON, and plain-text pages alongside your HTML — same TSX page model, different output extension and Content-Type.
+sidebar_position: 5.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How TSX pages can emit non-HTML output (XML sitemaps, RSS feeds,
+`llms.txt`, JSON manifests). Covers the filename convention, the
+frontmatter override, the precedence rule between them, per-page
+`Content-Type` metadata, and what the engine does about stale outputs
+when the extension changes.
+
+</Info>
+
+zfb's page model isn't HTML-only. The same TSX file format that
+renders pages can also produce `.xml`, `.rss`, `.txt`, `.json`, or
+anything else you can stringify. The engine picks the output
+extension, sets the `Content-Type` for the dev server, and writes the
+file under `dist/` exactly like an HTML page — only the extension
+changes.
+
+This is one of the six engine primitives committed in
+[ADR-003](/architecture/adr-003-engine-vs-framework). Sitemap and feed
+generation, `llms.txt`, JSON API endpoints rendered at build time —
+they all sit on this primitive.
+
+## Two ways to declare the extension
+
+### Filename convention
+
+The simplest path: name your page file with the target extension
+embedded as the second-to-last `.`-separated segment of the filename
+stem.
+
+```text
+pages/sitemap.xml.tsx   → /sitemap.xml
+pages/feed.rss.tsx      → /feed.rss
+pages/llms.txt.tsx      → /llms.txt
+pages/about.tsx         → /about/index.html
+```
+
+The last segment before `.tsx` is the output extension; earlier dots
+are part of the page name. `pages/api.v2.json.tsx` becomes
+`/api.v2.json`. `pages/about.tsx` has no convention hint and
+defaults to `.html`.
+
+### Frontmatter override
+
+Sometimes the filename is fixed and you want a different output. Add
+a sibling `extension` literal next to the page's frontmatter:
+
+```tsx
+// pages/raw.tsx
+export const frontmatter = { title: "Raw" };
+export const extension = "txt";
+
+export default function Raw() {
+  return "plain text body";
+}
+```
+
+Output: `/raw.txt`.
+
+Both `frontmatter` and `extension` are statically extracted by SWC
+without evaluating the module — see
+[Frontmatter](/concepts/frontmatter) for the literal-only contract.
+
+## Precedence
+
+When both mechanisms apply, the rule is:
+
+> **frontmatter `extension` &gt; filename convention &gt; `html` default**
+
+```text
+pages/page.html.tsx                     → .html (filename hint)
+pages/page.html.tsx + extension="txt"   → .txt  (frontmatter override wins)
+pages/about.tsx                         → .html (default)
+pages/about.tsx + extension="json"      → .json (frontmatter override)
+```
+
+The rule is enforced jointly by `zfb-content::tsx_frontmatter`
+(extracts the `extension` literal) and `zfb-router::route::Route`
+(parses the filename convention). A small helper —
+`zfb_render::meta::derive_output_extension(frontmatter, route)` —
+applies the precedence at the call site.
+
+## `Content-Type` metadata
+
+Every output extension carries a default `Content-Type`, threaded
+through to the dev server so it can set the response header
+correctly:
+
+| Extension | Default `Content-Type` |
+| --------- | ---------------------- |
+| `html`, `htm` | `text/html; charset=utf-8` |
+| `xml` | `application/xml` |
+| `rss` | `application/rss+xml` |
+| `atom` | `application/atom+xml` |
+| `json` | `application/json` |
+| `txt` | `text/plain; charset=utf-8` |
+| `css` | `text/css; charset=utf-8` |
+| `js`, `mjs`, `cjs` | `application/javascript; charset=utf-8` |
+| `svg` | `image/svg+xml` |
+| anything else | `text/html; charset=utf-8` (permissive fallback — set `contentType` explicitly) |
+
+Override per page with `export const contentType = "..."`:
+
+```tsx
+// pages/feed.xml.tsx
+export const frontmatter = { title: "Feed" };
+export const contentType = "application/rss+xml";
+
+export default function Feed() {
+  return /* the RSS body */;
+}
+```
+
+The override beats the table; the table beats the unknown-extension
+fallback. Static-file hosts (Cloudflare Pages, Netlify, S3) derive
+the response `Content-Type` from the file extension instead — the
+in-engine `contentType` is purely a dev-server convenience.
+
+## Stale-output cleanup across builds
+
+The output extension can change between builds. Today's
+`pages/raw.tsx` builds `/raw.html`; tomorrow you add
+`export const extension = "txt"` and it builds `/raw.txt`. The
+engine deletes the previous-build output for that route when the
+extension changes, so `dist/` doesn't accumulate stale files
+(`/raw.html` left behind beside the new `/raw.txt`).
+
+The cleanup runs as part of the build orchestrator's atomic write
+phase — see [Build Pipeline](/concepts/build-pipeline) — and is
+keyed on the route's stable identity (the source path), not its
+output filename, so renames don't leak old files either.
+
+## Example: an XML sitemap from a content collection
+
+```tsx
+// pages/sitemap.xml.tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "Sitemap" };
+
+const SITE = "https://example.com";
+
+export default function Sitemap() {
+  const posts = getCollection("blog");
+  const urls = posts.map((p) => `${SITE}/blog/${p.slug}`);
+
+  const body =
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+    urls
+      .map(
+        (loc) =>
+          `<url><loc>${loc}</loc></url>`,
+      )
+      .join("") +
+    `</urlset>`;
+
+  return body;
+}
+```
+
+Filename convention picks `xml`. The engine writes
+`dist/sitemap.xml` and tags it `application/xml` for the dev server.
+No HTML, no layout, no chrome — the page returns a string and the
+engine treats it as the body.
+
+## Example: `llms.txt`
+
+```tsx
+// pages/llms.txt.tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "llms.txt" };
+
+export default function LlmsTxt() {
+  const posts = getCollection("blog");
+  const lines = [
+    "# My Site",
+    "",
+    "## Posts",
+    "",
+    ...posts.map((p) => `- [${p.data.title}](/blog/${p.slug})`),
+  ];
+  return lines.join("\n");
+}
+```
+
+Filename convention picks `txt`. Output:
+`dist/llms.txt`, served with `text/plain; charset=utf-8`.
+
+## What the engine doesn't do
+
+- **String-encode JSX automatically for non-HTML outputs.** Your page
+  returns the body as a string (or a JSX value the renderer
+  serializes). The engine doesn't attempt to "render JSX as XML" —
+  produce the bytes you want and return them.
+- **Generate sitemaps / feeds / `llms.txt` for you.** That's a
+  framework concern. The engine ships the substrate (file output +
+  collections + `paths()`); your framework or your project assembles
+  the convention.
+
+## See also
+
+- [Frontmatter](/concepts/frontmatter) — the literal-only contract
+  for `extension` and `contentType` exports.
+- [Routing](/concepts/routing) — the static-route side, including
+  the filename convention table.
+- [Build Pipeline](/concepts/build-pipeline) — where stale-output
+  cleanup runs in the build sequence.
+- [ADR-003](/architecture/adr-003-engine-vs-framework) — why
+  non-HTML emission is an engine primitive (not a framework
+  add-on).
