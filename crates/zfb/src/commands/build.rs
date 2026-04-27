@@ -29,14 +29,6 @@
 //!   contains `[slug]`, `[...rest]`, etc. are reported via
 //!   [`crate::output::warn`] and skipped. Static routes go through the
 //!   full pipeline.
-//! - **Worker entry wrapping.** The bundler emits a bundle that
-//!   exports `routes` + `hydrateIsland`. The renderer expects a Worker
-//!   bundle exporting `default { fetch }`; emitting that wrapper is
-//!   another T7-sibling sub-task. Until it lands, the renderer's
-//!   miniflare boot surfaces a clear workerd error referencing the
-//!   missing `default` export, which the CLI propagates verbatim with
-//!   the rest of the renderer's diagnostics (sourcemap-projected stack
-//!   frames included where applicable).
 //!
 //! The contract for callers (project-root sanity check, `outdir`
 //! handling, `✓ N pages built in X.XXs` summary) is unchanged.
