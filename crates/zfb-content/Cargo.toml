@@ -23,6 +23,22 @@ garde = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 
+# SWC umbrella crate, used by `tsx_frontmatter` to parse `.tsx` modules
+# and walk their AST without executing them. The umbrella version is
+# pinned in the workspace `Cargo.toml`; this crate only opts into the
+# minimum feature set it needs (parser + AST + visit). Pulling in
+# standalone `swc_ecma_*` crates here would create a parallel SWC graph
+# at a different version line — the AST types from `swc_core::ecma::ast`
+# would not unify with `swc_ecma_ast::*`, breaking interop with
+# `zfb-render`.
+swc_core = { workspace = true, features = [
+    "common",
+    "ecma_ast",
+    "ecma_parser",
+    "ecma_parser_typescript",
+    "ecma_visit",
+] }
+
 [dev-dependencies]
 # Used by tests/mdx_jsx_emit.rs to pipe emitter output through SWC and
 # assert it parses as valid JS. Pure dev-only — keeps zfb-content's
