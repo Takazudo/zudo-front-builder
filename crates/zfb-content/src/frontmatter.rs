@@ -110,6 +110,11 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
                 frontmatter,
                 extension,
                 content_type,
+                // `prerender` is consumed downstream by the build
+                // orchestrator (T6); the unified frontmatter carrier
+                // does not need it (and remains shape-compatible with
+                // markdown / MDX paths that have no such concept).
+                prerender: _,
             } = tsx_frontmatter::extract(source, file_name)?;
             Ok(UnifiedFrontmatter {
                 value: frontmatter,

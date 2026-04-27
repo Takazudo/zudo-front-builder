@@ -58,8 +58,10 @@ use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax
 use thiserror::Error;
 
 /// Output of [`extract`]. A successful extraction always produces a
-/// `frontmatter` (the required export); the two sibling exports are
-/// optional and absent when the source did not declare them.
+/// `frontmatter` (the required export); the two sibling string exports
+/// are optional and absent when the source did not declare them. The
+/// `prerender` flag always carries a value because it has a sensible
+/// default (`true` = SSG).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TsxFrontmatter {
     /// Parsed value of `export const frontmatter = …` as JSON. Always
@@ -74,6 +76,23 @@ pub struct TsxFrontmatter {
     /// Value of the optional `export const contentType = "…"` literal,
     /// if declared. Drives `Content-Type` for non-HTML page outputs.
     pub content_type: Option<String>,
+    /// Value of the optional `export const prerender = …` boolean
+    /// literal.
+    ///
+    /// Default: `true` (the page is rendered at build time / SSG).
+    ///
+    /// Only literal boolean expressions count — `true` or `false` after
+    /// stripping TypeScript wrappers (`as const`, `satisfies`, etc.).
+    /// Anything that requires runtime evaluation (function calls,
+    /// ternaries, identifier references, member access, …) falls back
+    /// to the default `true`; the extractor does **not** error in that
+    /// case, and does **not** silently coerce it to `false`. A missing
+    /// `export const prerender` likewise yields `true`.
+    ///
+    /// The build orchestrator consumes this field to decide which
+    /// pages are emitted at build time (SSG, `prerender == true`) vs
+    /// added to a runtime SSR manifest (`prerender == false`).
+    pub prerender: bool,
 }
 
 /// All ways extraction can fail. Every variant names the offending
@@ -176,6 +195,11 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
     let mut frontmatter: Option<JsonValue> = None;
     let mut extension: Option<String> = None;
     let mut content_type: Option<String> = None;
+    // `prerender` defaults to `true` (SSG). Only a top-level
+    // `export const prerender = <bool literal>` flips it. Computed
+    // values (calls, ternaries, identifiers, …) are treated as "not
+    // specified" and leave the default in place — they do NOT error.
+    let mut prerender = true;
     // Track "have we already seen this export?" separately from the
     // value slot. We can't rely on `frontmatter.is_some()` because a
     // failed extraction (e.g. duplicate after a good one) must still
@@ -224,6 +248,23 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
                 _ => continue,
             };
             let name_str = ident.id.sym.as_ref();
+
+            // `prerender` is handled out-of-band from the strict
+            // `ExportTarget` machinery: it has a default, never errors
+            // on a non-literal initializer, and is therefore not part
+            // of the duplicate-detection / wrong-shape error paths
+            // that the other three exports share.
+            if name_str == "prerender" {
+                if let Some(init) = &declarator.init {
+                    if let Expr::Lit(Lit::Bool(b)) = unwrap_ts_wrappers(init) {
+                        // Last literal-bool declaration wins. Computed
+                        // initializers leave the prior value (or the
+                        // default `true`) untouched.
+                        prerender = b.value;
+                    }
+                }
+                continue;
+            }
 
             // Only the three names we care about. Other top-level
             // `export const` bindings (state, helpers, …) are ignored
@@ -297,6 +338,7 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
         frontmatter,
         extension,
         content_type,
+        prerender,
     })
 }
 
@@ -1123,6 +1165,152 @@ mod tests {
         "#;
         let err = extract(src, "page.tsx").expect_err("must fail");
         assert!(matches!(err, TsxFrontmatterError::ComputedValue { .. }));
+    }
+
+    // ----- prerender export -----
+
+    #[test]
+    fn prerender_defaults_to_true_when_missing() {
+        // No `export const prerender` at all — page is SSG by default.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            out.prerender,
+            "missing prerender export should default to true (SSG)",
+        );
+    }
+
+    #[test]
+    fn prerender_true_literal_extracted() {
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = true;
+        "#;
+        let out = extract_ok(src);
+        assert!(out.prerender, "literal `true` should be extracted as true");
+    }
+
+    #[test]
+    fn prerender_false_literal_extracted() {
+        // The "opt out of SSG, route to SSR manifest" case that T6
+        // depends on. Anything other than this exact literal-`false`
+        // shape MUST NOT produce `prerender == false`.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = false;
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "literal `false` should be extracted as false (SSR opt-out)",
+        );
+    }
+
+    #[test]
+    fn prerender_computed_falls_back_to_default_true() {
+        // A function call is a runtime value. Per spec the extractor
+        // must treat this as "not specified" and leave the default
+        // `true` in place — it must NOT error, and it must NOT
+        // silently coerce the value to `false`.
+        let src = r#"
+            function decide(): boolean { return false; }
+            export const frontmatter = { title: "X" };
+            export const prerender = decide();
+        "#;
+        let out = extract(src, "page.tsx").expect(
+            "computed prerender must not error — it should fall back to the default",
+        );
+        assert!(
+            out.prerender,
+            "computed prerender should fall back to default `true`, not silently flip to `false`",
+        );
+    }
+
+    #[test]
+    fn prerender_with_ts_wrappers_recognized() {
+        // `as const` / `satisfies` shouldn't hide a literal bool from
+        // the extractor; the underlying shape is what matters.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = false as const;
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "`false as const` should be extracted as false",
+        );
+    }
+
+    #[test]
+    fn prerender_parenthesized_literal_recognized() {
+        // Parens are a TS-wrapper-style passthrough — `(false)` is the
+        // same as `false` for this extractor.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = (false);
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "parenthesized `false` should be extracted as false",
+        );
+    }
+
+    #[test]
+    fn prerender_unary_not_falls_back_to_default() {
+        // `!true` is a unary expression, not a boolean literal — it
+        // requires "evaluation" by the extractor's standards. Per the
+        // literal-only contract, this must fall back to the default
+        // `true` rather than be evaluated to `false`.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = !true;
+        "#;
+        let out = extract(src, "page.tsx").expect(
+            "unary-not prerender must not error — it should fall back to the default",
+        );
+        assert!(
+            out.prerender,
+            "`!true` is not a literal — should fall back to default `true`",
+        );
+    }
+
+    #[test]
+    fn prerender_duplicate_last_literal_wins() {
+        // Duplicate `export const prerender` is not flagged (unlike
+        // the strict frontmatter / extension / contentType exports);
+        // the last literal-bool initializer wins. Documented choice
+        // — `prerender` is a hint with a default, so we'd rather be
+        // permissive than break a build over a stale duplicate.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = true;
+            export const prerender = false;
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "duplicate prerender — last literal should win (false)",
+        );
+    }
+
+    #[test]
+    fn prerender_non_boolean_literal_falls_back_to_default() {
+        // A string literal is not a boolean — fall back to default
+        // rather than coerce or error.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = "false";
+        "#;
+        let out = extract(src, "page.tsx").expect(
+            "non-bool literal prerender must not error — it should fall back to the default",
+        );
+        assert!(
+            out.prerender,
+            "string-literal prerender should fall back to default `true`",
+        );
     }
 
     #[test]
