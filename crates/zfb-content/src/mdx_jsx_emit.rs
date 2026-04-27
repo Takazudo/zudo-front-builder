@@ -47,7 +47,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::plugins::heading_links::slugify;
+use crate::plugins::heading_links::{next_slug, slugify};
 
 /// Options controlling the emitted JSX module.
 #[derive(Debug, Clone)]
@@ -235,23 +235,6 @@ fn walk_collect_headings(
             _ => {}
         }
     }
-}
-
-/// Mirror of `HeadingLinksPlugin::next_slug`. Empty `base` short-circuits
-/// to the empty string so heading_links' "skip empty-text headings"
-/// behaviour stays in sync (the dedup counter is left untouched).
-fn next_slug(seen: &mut HashMap<String, usize>, base: &str) -> String {
-    if base.is_empty() {
-        return String::new();
-    }
-    let count = seen.entry(base.to_string()).or_insert(0);
-    let slug = if *count == 0 {
-        base.to_string()
-    } else {
-        format!("{base}-{count}")
-    };
-    *count += 1;
-    slug
 }
 
 /// Plain-text projection of a sequence of inline mdast nodes.
