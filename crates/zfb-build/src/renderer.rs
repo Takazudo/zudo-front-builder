@@ -50,12 +50,13 @@
 //!
 //! - **Wrapping the bundler output into a Worker entry.** The renderer
 //!   takes a `bundle_path` that already exports `default { fetch }`.
-//!   T7 is responsible for emitting the small wrapper module that
-//!   imports the T3 bundle's `routes`/`hydrateIsland` and spins up
-//!   `createPageRouter`. Keeping the wrapping decision (framework
-//!   choice, `ContentSnapshot` shape, render-to-string adapter) at
-//!   the T7 layer means the renderer stays neutral about which
-//!   JSX runtime is in play.
+//!   The bundler emits that wrapper today (synthetic `entry.mjs` —
+//!   see `zfb_build::bundler::write_entry_module`) by importing the
+//!   page modules' `routes`/`hydrateIsland` and constructing a
+//!   `createPageRouter` instance. Keeping the wrapping decision
+//!   (framework choice, `ContentSnapshot` shape, render-to-string
+//!   adapter) in the bundler layer means the renderer stays neutral
+//!   about which JSX runtime is in play.
 //! - **Determining the route universe.** The caller already has the
 //!   router scan + `paths()` expansion. The renderer is given the
 //!   list and trusts it.
