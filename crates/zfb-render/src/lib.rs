@@ -10,6 +10,9 @@
 //! - [`render`] — `Renderer` orchestrator: compile → load → execute → render.
 //! - [`adapters`] — preact / react JSX runtime adapters (Sub 4).
 //! - [`paths`] — `paths()` runtime resolution (Sub 5).
+//! - [`paths_extract`] — static `paths()` literal extractor; the
+//!   build-time fast path that pairs with [`paths::resolve_paths`] when
+//!   the page's `paths()` return value is statically analyzable.
 //! - [`meta`] — `meta` export extraction (Sub 6).
 //! - [`error`] — crate-wide `RenderError`.
 
@@ -18,6 +21,7 @@ pub mod error;
 pub mod loader;
 pub mod meta;
 pub mod paths;
+pub mod paths_extract;
 pub mod render;
 pub mod render_host;
 pub mod swc_pipeline;
