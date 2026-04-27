@@ -1244,6 +1244,59 @@ mod tests {
     }
 
     #[test]
+    fn prerender_parenthesized_literal_recognized() {
+        // Parens are a TS-wrapper-style passthrough — `(false)` is the
+        // same as `false` for this extractor.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = (false);
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "parenthesized `false` should be extracted as false",
+        );
+    }
+
+    #[test]
+    fn prerender_unary_not_falls_back_to_default() {
+        // `!true` is a unary expression, not a boolean literal — it
+        // requires "evaluation" by the extractor's standards. Per the
+        // literal-only contract, this must fall back to the default
+        // `true` rather than be evaluated to `false`.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = !true;
+        "#;
+        let out = extract(src, "page.tsx").expect(
+            "unary-not prerender must not error — it should fall back to the default",
+        );
+        assert!(
+            out.prerender,
+            "`!true` is not a literal — should fall back to default `true`",
+        );
+    }
+
+    #[test]
+    fn prerender_duplicate_last_literal_wins() {
+        // Duplicate `export const prerender` is not flagged (unlike
+        // the strict frontmatter / extension / contentType exports);
+        // the last literal-bool initializer wins. Documented choice
+        // — `prerender` is a hint with a default, so we'd rather be
+        // permissive than break a build over a stale duplicate.
+        let src = r#"
+            export const frontmatter = { title: "X" };
+            export const prerender = true;
+            export const prerender = false;
+        "#;
+        let out = extract_ok(src);
+        assert!(
+            !out.prerender,
+            "duplicate prerender — last literal should win (false)",
+        );
+    }
+
+    #[test]
     fn prerender_non_boolean_literal_falls_back_to_default() {
         // A string literal is not a boolean — fall back to default
         // rather than coerce or error.
