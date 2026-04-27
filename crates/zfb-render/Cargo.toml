@@ -20,8 +20,9 @@ deno_core_host = ["dep:deno_core", "dep:tokio"]
 # resulting JSX text to the SWC pipeline below.
 zfb-content = { path = "../zfb-content" }
 
-# SWC pipeline (TSX → JS).
-swc_core = { version = "64", features = [
+# SWC pipeline (TSX → JS). The umbrella version is pinned in the
+# workspace `Cargo.toml`; this crate only declares its feature opt-ins.
+swc_core = { workspace = true, features = [
     "common",
     "common_concurrent",
     "common_sourcemap",

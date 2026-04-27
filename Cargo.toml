@@ -13,3 +13,12 @@ syntect = "5"
 garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
 walkdir = "2"
+
+# SWC umbrella crate. Pinning the major version here is the project's
+# single source of truth — both `zfb-render` (TSX→JS pipeline) and
+# `zfb-content` (TSX frontmatter static extraction) opt into the
+# specific feature set they need at the crate level. Adding standalone
+# `swc_ecma_*` crates is FORBIDDEN: they would build a parallel SWC
+# graph at a different version line and the AST types would not unify
+# across crates.
+swc_core = { version = "64" }
