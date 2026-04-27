@@ -72,6 +72,14 @@ jobs:
           name: docs-dist
           path: docs/dist/
 
+      - name: Stage deploy root under base path
+        run: |
+          mkdir -p deploy-root/pj/zudo-front-builder
+          if [ -f docs/dist/_redirects ]; then
+            mv docs/dist/_redirects deploy-root/_redirects
+          fi
+          cp -a docs/dist/. deploy-root/pj/zudo-front-builder/
+
       - name: Deploy to Cloudflare Pages (PR preview)
         id: deploy
         env:
@@ -81,7 +89,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt/3..."
-            if DEPLOY_OUTPUT=$(pnpm dlx wrangler@4 pages deploy docs/dist \
+            if DEPLOY_OUTPUT=$(pnpm dlx wrangler@4 pages deploy deploy-root \
               --project-name=zudo-front-builder \
               --branch="pr-${PR_NUMBER}" \
               --commit-dirty=true 2>&1); then
