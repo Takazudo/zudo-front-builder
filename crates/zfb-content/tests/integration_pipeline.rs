@@ -26,19 +26,16 @@ use zfb_content::syntect_highlight::Highlighter;
 
 /// Build the full plugin chain.
 ///
-/// We deliberately omit `ResolveLinksPlugin` here: with an empty source
-/// map it would be a no-op anyway, and `StripMdExtensionPlugin` already
-/// covers the `.md` rewriting we want to assert on. Keeping it out keeps
-/// the snapshots stable.
+/// Sub 4b (#47) replaced the explicit per-plugin wiring here with
+/// [`Pipeline::with_defaults`], plus [`StripMdExtensionPlugin`]
+/// layered on top so the existing 06-links fixture continues to
+/// assert that internal `.md` extensions are stripped from `<a href>`
+/// values. We deliberately omit `ResolveLinksPlugin`: with an empty
+/// source map it would be a no-op anyway, and `StripMdExtensionPlugin`
+/// already covers the `.md` rewriting we want to assert on.
 fn build_full_pipeline() -> Pipeline {
-    let mut p = Pipeline::with_mdx();
-    p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
-    p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
-    p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-    p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
-    p.add_hast_visitor(Box::new(MermaidPlugin::new()));
+    let mut p = Pipeline::with_defaults();
     p.add_hast_visitor(Box::new(StripMdExtensionPlugin::new()));
-    p.add_hast_visitor(Box::new(SyntectPlugin::new(Arc::new(Highlighter::new()))));
     p
 }
 
@@ -229,6 +226,48 @@ fn fixture_03_admonitions_render_as_jsx() {
     assert!(
         snapshot.contains("title=\"Click me\""),
         "expected details title in snapshot:\n{snapshot}",
+    );
+}
+
+/// Sub 4b (#47) acceptance criterion: a fixture MDX with `:::note`
+/// compiles to `<Note>…</Note>` via the default path (no manual
+/// plugin wiring at the call site).
+#[test]
+fn fixture_03_admonitions_compile_via_default_pipeline() {
+    let actual = render_fixture_with("03-admonitions.mdx", Pipeline::with_defaults());
+    assert!(
+        actual.contains("<Note") && actual.contains("</Note>"),
+        "expected <Note>…</Note> via Pipeline::with_defaults(), got:\n{actual}",
+    );
+    for tag in ["<Tip", "<Warning", "<Details"] {
+        assert!(
+            actual.contains(tag),
+            "expected admonition {tag} via default pipeline:\n{actual}",
+        );
+    }
+    assert!(
+        actual.contains("title=\"Click me\""),
+        "expected directive-promoted details title via default pipeline:\n{actual}",
+    );
+}
+
+/// Sub 4b (#47) override criterion: callers must still be able to
+/// opt out of the default plugin chain by constructing a bare
+/// [`Pipeline::with_mdx`] (or [`Pipeline::new`]). When they do, the
+/// directive transform must NOT fire — the `:::note` paragraphs
+/// survive as plain text content.
+#[test]
+fn caller_can_override_with_bare_pipeline() {
+    let actual = render_fixture_with("03-admonitions.mdx", Pipeline::with_mdx());
+    assert!(
+        !actual.contains("<Note"),
+        "bare Pipeline::with_mdx() must NOT synthesize <Note>; got:\n{actual}",
+    );
+    // The literal `:::note` source survives as text content because no
+    // mdast visitor folded it into a JSX element.
+    assert!(
+        actual.contains(":::note"),
+        "bare pipeline must preserve raw directive markers verbatim:\n{actual}",
     );
 }
 
