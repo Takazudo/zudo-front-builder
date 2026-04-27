@@ -380,11 +380,14 @@ fn real_world_fixtures_round_trip_through_emitter() {
     for path in fixture_files() {
         let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
         // Strip frontmatter — the emitter expects body-only input.
-        let parsed =
-            frontmatter::parse(&raw).unwrap_or_else(|e| panic!("frontmatter parse {path:?}: {e}"));
+        let uf = frontmatter::extract(&path, &raw)
+            .unwrap_or_else(|e| panic!("frontmatter parse {path:?}: {e}"));
+        let body = uf
+            .body
+            .unwrap_or_else(|| panic!("md/mdx fixture must have a body: {path:?}"));
         let label = path.file_name().unwrap().to_string_lossy().into_owned();
         let jsx = mdx_to_jsx_module(
-            &parsed.body,
+            &body,
             MdxJsxOptions::default().with_filename(label.clone()),
         )
         .unwrap_or_else(|e| panic!("emit {label}: {e}"));
