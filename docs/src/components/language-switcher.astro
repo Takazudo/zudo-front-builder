@@ -4,6 +4,13 @@ import { defaultLocale, type Locale } from "@/config/i18n";
 
 interface Props {
   lang?: Locale;
+  /**
+   * Optional list of supported locale codes. The component derives its links
+   * from `Astro.url.pathname` and the locale config in settings, so this prop
+   * is currently unused but accepted to keep the call site in `header.astro`
+   * type-safe (it forwards the project-wide `locales` array from `i18n.ts`).
+   */
+  locales?: readonly Locale[];
 }
 
 const { lang = defaultLocale } = Astro.props;

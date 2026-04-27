@@ -1,3 +1,23 @@
+// TODO(parked): This integration test is parked.
+//
+// It depends on the orchestrator API surface (`render_route`,
+// `RenderInput`, `RenderOutput`) and the `zfb-router` workspace crate,
+// none of which exist yet. Until those land, the test cannot compile,
+// and a `cargo clippy --workspace --all-features --all-targets` (or
+// `cargo check --all-features`) run otherwise breaks the workspace
+// build.
+//
+// To work around that, this file is unconditionally excluded from
+// compilation via `#![cfg(any())]` (the canonical "always-false" cfg)
+// and the matching `integration_routing_rendering = []` feature has
+// been removed from `crates/zfb-render/Cargo.toml`. The test source,
+// fixtures, layouts, components, and harness are intentionally kept on
+// disk so they remain version-controlled.
+//
+// When the orchestrator API and `zfb-router` crate land, restore the
+// original `#![cfg(feature = "integration_routing_rendering")]`
+// attribute below and re-add the feature line in `Cargo.toml`.
+
 //! End-to-end integration tests for the Epic 3 routing + rendering
 //! pipeline.
 //!
@@ -44,7 +64,7 @@
 // can be turned on with a single Cargo.toml change once the orchestrator
 // exposes the expected entry points and zfb-render adds zfb-router as
 // a dep. Tracked as the natural follow-up to Epic 3 (Subs 1–7).
-#![cfg(feature = "integration_routing_rendering")]
+#![cfg(any())]
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

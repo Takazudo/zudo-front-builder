@@ -6,6 +6,8 @@ export type {
   LocaleConfig,
   VersionConfig,
   FooterConfig,
+  FrontmatterPreviewConfig,
+  TagPlacement,
 } from "./settings-types";
 import type {
   HeaderNavItem,
@@ -14,6 +16,9 @@ import type {
   LocaleConfig,
   VersionConfig,
   FooterConfig,
+  FrontmatterPreviewConfig,
+  TagPlacement,
+  TagGovernanceMode,
 } from "./settings-types";
 
 export const settings = {
@@ -50,6 +55,27 @@ export const settings = {
   sidebarResizer: true as boolean,
   sidebarToggle: true as boolean,
   htmlPreview: undefined as HtmlPreviewConfig | undefined,
+  /**
+   * Optional URL of the project's GitHub repository. When set, the header
+   * renders a GitHub link icon. Leave undefined to omit the link.
+   */
+  githubUrl: undefined as string | undefined,
+  /**
+   * Frontmatter preview block, rendered above the doc body.
+   * `false` disables the feature entirely. An object enables it and may
+   * customise which keys are hidden via `ignoreKeys` / `extraIgnoreKeys`.
+   */
+  frontmatterPreview: false as false | FrontmatterPreviewConfig,
+  /**
+   * Where the per-page tag list is rendered. Undefined hides it.
+   * - `"after-title"` — directly below the page title.
+   * - `"before-pager"` — directly above the prev/next pager at the foot.
+   */
+  tagPlacement: undefined as TagPlacement | undefined,
+  /** Master on/off switch for consulting `tag-vocabulary.ts` at runtime. */
+  tagVocabulary: false as boolean,
+  /** Tag governance enforcement level. See `TagGovernanceMode` for values. */
+  tagGovernance: "off" as TagGovernanceMode,
   versions: [] as VersionConfig[],
   claudeResources: {
     claudeDir: ".claude",
