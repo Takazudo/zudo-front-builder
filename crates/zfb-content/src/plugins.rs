@@ -9,6 +9,7 @@
 
 pub mod admonitions;
 pub mod code_title;
+pub mod directives;
 pub mod heading_links;
 pub mod image_enlarge;
 pub mod mermaid;
@@ -17,8 +18,9 @@ pub mod strip_md_ext;
 pub mod syntect_plugin;
 pub mod util;
 
-pub use admonitions::AdmonitionsPlugin;
+pub use admonitions::{AdmonitionsPlugin, default_admonition_directives};
 pub use code_title::CodeTitlePlugin;
+pub use directives::{DirectiveDef, DirectiveDiagnostic, DirectiveKind, DirectiveRegistry};
 pub use heading_links::HeadingLinksPlugin;
 pub use image_enlarge::ImageEnlargePlugin;
 pub use mermaid::MermaidPlugin;
