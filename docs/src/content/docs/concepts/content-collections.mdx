@@ -40,13 +40,14 @@ You can additionally supply an optional `schema` field — it is parsed but not 
 
 ## Loading entries from a page
 
-Pages use `getCollection()` to enumerate entries:
+Pages use `getCollection()` to enumerate every entry, or `getEntry()`
+to look up a single one by slug:
 
 ```tsx
-import { getCollection } from "zfb/content";
+import { getCollection, getEntry } from "zfb/content";
 
-export default async function BlogIndex() {
-  const posts = await getCollection("blog");
+export default function BlogIndex() {
+  const posts = getCollection("blog");
   return (
     <ul>
       {posts.map((post) => (
@@ -59,16 +60,34 @@ export default async function BlogIndex() {
 }
 ```
 
+```tsx
+import { getEntry } from "zfb/content";
+
+export default function FeaturedPost() {
+  const featured = getEntry("blog", "hello-zfb");
+  if (!featured) return null;
+  return <featured.Content />;
+}
+```
+
+Both calls are **synchronous**. The entire content snapshot is built
+in Rust before any TSX module runs and embedded on `globalThis.__zfb`,
+so there's no I/O at call time and no `await` to thread through. See
+[ADR-004](/architecture/adr-004-content-bridge) for the Rust↔JS bridge
+contract that backs this surface.
+
 Each entry has three things you can rely on:
 
 - `data` — the parsed, validated frontmatter (typed against your schema).
 - `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](/concepts/mdx-components) for details and `defaultComponents` recipes.
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
-The function signature lives in [`getCollection`](/api/get-collection).
+The function signatures live in [`getCollection`](/api/get-collection)
+and the matching `getEntry`. The Rust↔JS surface they read through is
+specified in [ADR-004](/architecture/adr-004-content-bridge).
 
 ## How parsing works
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The remaining open work — picking up changes in dev for the full per-page loop and a few surrounding pieces — depends on ADR-001 (the JS runtime decision). The compilation and surface contract are stable; see [MDX Components](/concepts/mdx-components) for the rendering side.
+The remaining open work — picking up changes in dev for the full per-page loop and a few surrounding pieces — depends on ADR-001 (the JS runtime decision). The compilation and surface contract are stable; see [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](/architecture/adr-004-content-bridge) for the Rust↔JS bridge.
