@@ -1,6 +1,7 @@
 //! zfb-content: markdown/MDX pipeline, syntect, frontmatter, content collections.
 
 pub mod collection;
+pub mod content_bridge;
 pub mod frontmatter;
 pub mod mdx_jsx_emit;
 pub mod pipeline;
@@ -8,6 +9,8 @@ pub mod plugins;
 pub mod serializer;
 pub mod syntect_highlight;
 pub mod tsx_frontmatter;
+
+pub use content_bridge::{build_snapshot, BridgeError, CollectionConfig, ContentSnapshot, EntrySnapshot};
 
 pub use frontmatter::{
     extract as extract_frontmatter, FrontmatterError, UnifiedFrontmatter,
