@@ -513,10 +513,11 @@ struct MiniflareGuard {
     child: Option<Child>,
     log_buf: Arc<Mutex<String>>,
     log_thread: Option<thread::JoinHandle<()>>,
-    /// Owned RAII handle that removes the bootstrap script when the
-    /// guard drops. Held for its drop side-effect; never read.
+    /// Holds the `NamedTempFile` that backs the bootstrap script.
+    /// Held for its drop side-effect (the file is unlinked on drop);
+    /// never read directly.
     #[allow(dead_code)]
-    bootstrap_cleanup: Option<BootstrapCleanup>,
+    bootstrap_keepalive: Option<tempfile::NamedTempFile>,
 }
 
 impl MiniflareGuard {
@@ -525,7 +526,7 @@ impl MiniflareGuard {
             child: None,
             log_buf: Arc::new(Mutex::new(String::new())),
             log_thread: None,
-            bootstrap_cleanup: None,
+            bootstrap_keepalive: None,
         }
     }
 
@@ -661,26 +662,25 @@ fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), Rende
     // `NODE_PATH` or experimental flags. We can't drop it in a random
     // /tmp dir: Node walks up *the file's* directory tree, not the
     // cwd, looking for `node_modules`, and a /tmp dir has none in its
-    // ancestry. The file is named with a process-unique suffix so
-    // parallel renderer instances don't clobber each other.
-    let bootstrap_dir = cwd.join(".zfb-renderer");
-    fs::create_dir_all(&bootstrap_dir).map_err(|e| RendererError::Io {
-        path: bootstrap_dir.clone(),
+    // ancestry.
+    //
+    // `NamedTempFile` gives us a unique random name + automatic
+    // cleanup on drop, so two parallel renderer instances never
+    // collide and a panicking caller never leaves a stray file in
+    // the user's working tree.
+    let bootstrap_named = tempfile::Builder::new()
+        .prefix("zfb-renderer-bootstrap-")
+        .suffix(".mjs")
+        .tempfile_in(&cwd)
+        .map_err(|e| RendererError::Io {
+            path: cwd.clone(),
+            source: e,
+        })?;
+    fs::write(bootstrap_named.path(), BOOTSTRAP_JS).map_err(|e| RendererError::Io {
+        path: bootstrap_named.path().to_path_buf(),
         source: e,
     })?;
-    let bootstrap_path = bootstrap_dir.join(format!(
-        "miniflare-bootstrap-{}.mjs",
-        std::process::id()
-    ));
-    fs::write(&bootstrap_path, BOOTSTRAP_JS).map_err(|e| RendererError::Io {
-        path: bootstrap_path.clone(),
-        source: e,
-    })?;
-    // Best-effort cleanup is wired through a guard at the end so the
-    // file is removed once the subprocess exits.
-    let bootstrap_cleanup = BootstrapCleanup {
-        path: bootstrap_path.clone(),
-    };
+    let bootstrap_path = bootstrap_named.path().to_path_buf();
 
     let mut cmd = Command::new("node");
     cmd.current_dir(&cwd);
@@ -751,22 +751,9 @@ fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), Rende
         child: Some(child),
         log_buf,
         log_thread,
-        bootstrap_cleanup: Some(bootstrap_cleanup),
+        bootstrap_keepalive: Some(bootstrap_named),
     };
     Ok((ready_url, guard))
-}
-
-/// Removes the bootstrap script when dropped. Best-effort — we don't
-/// surface IO errors because failing to clean up a 4KB file is not
-/// worth aborting the build over.
-struct BootstrapCleanup {
-    path: PathBuf,
-}
-
-impl Drop for BootstrapCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 /// Read the bootstrap's stdout one line at a time, parsing JSON until
