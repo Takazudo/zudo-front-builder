@@ -47,6 +47,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
 use crate::pipeline::{Pipeline, PipelineError};
+use crate::plugins::heading_links::{next_slug, slugify};
 
 /// Options controlling the emitted JSX module.
 #[derive(Debug, Clone)]
@@ -120,8 +121,12 @@ fn mdx_to_jsx_module_inner(
     let mut emitter = JsxEmitter::new();
     let body = emitter.emit_children_block(&children);
 
+    let headings = collect_headings(&children);
+
     let mut out = String::new();
     out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n");
+    out.push_str(&render_headings_export(&headings));
+    out.push('\n');
     out.push_str("function _createMdxContent({components = {}} = {}) {\n");
     out.push_str("  const _components = {\n");
 
@@ -159,6 +164,157 @@ fn mdx_to_jsx_module_inner(
     out.push_str("}\n");
 
     Ok(out)
+}
+
+/// One entry of the emitted `headings` array.
+///
+/// Mirrors the per-heading record a TOC component consumes:
+/// `{ depth, slug, text }`. Construction order matches document order
+/// so callers can iterate without re-sorting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadingEntry {
+    /// `1`–`6`, matching the `<hN>` level the heading would render as.
+    depth: u8,
+    /// URL-safe identifier. For `<h2>`–`<h6>` this matches the `id`
+    /// attribute that [`crate::plugins::heading_links`] emits on the
+    /// rendered tag, including the per-document `-1`, `-2`, … numbering
+    /// applied to repeated slugs. `<h1>` slugs are computed with the
+    /// same algorithm but never participate in the dedup counter
+    /// (heading_links does not touch `<h1>`).
+    slug: String,
+    /// Plain-text projection of the heading's inline children — the
+    /// same projection [`crate::plugins::heading_links`] feeds into the
+    /// slugger, so `slugify(text)` round-trips for the `<h1>` case and
+    /// `slugify(text)` is the *base* slug (pre-dedup) for `<h2>`–`<h6>`.
+    text: String,
+}
+
+/// Walk the parsed mdast and collect every heading in document order.
+///
+/// Slugs match what [`crate::plugins::heading_links`] would emit for
+/// the same document: same `slugify`, same `-1`, `-2`, … numbering for
+/// repeats. Per heading_links semantics, only `<h2>`–`<h6>` participate
+/// in the dedup counter; `<h1>` slugs are emitted raw.
+fn collect_headings(children: &[MdastNode]) -> Vec<HeadingEntry> {
+    let mut out = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    walk_collect_headings(children, &mut out, &mut seen);
+    out
+}
+
+fn walk_collect_headings(
+    nodes: &[MdastNode],
+    out: &mut Vec<HeadingEntry>,
+    seen: &mut HashMap<String, usize>,
+) {
+    for node in nodes {
+        match node {
+            MdastNode::Heading(h) => {
+                let depth = h.depth.clamp(1, 6);
+                let text = mdast_inline_text(&h.children);
+                let base = slugify(&text);
+                // For h2-h6 we must mirror heading_links' next_slug()
+                // exactly so `headings[i].slug` matches the rendered
+                // `<hN id="…">`. h1 is left out of the dedup pool
+                // because heading_links never sees it.
+                let slug = if depth == 1 {
+                    base
+                } else {
+                    next_slug(seen, &base)
+                };
+                out.push(HeadingEntry { depth, slug, text });
+            }
+            // Headings can legally nest inside blockquotes / list items,
+            // so descend into block-level containers. We deliberately do
+            // NOT descend into Paragraph/Heading children themselves —
+            // headings cannot appear there.
+            MdastNode::Root(r) => walk_collect_headings(&r.children, out, seen),
+            MdastNode::Blockquote(b) => walk_collect_headings(&b.children, out, seen),
+            MdastNode::List(l) => walk_collect_headings(&l.children, out, seen),
+            MdastNode::ListItem(li) => walk_collect_headings(&li.children, out, seen),
+            _ => {}
+        }
+    }
+}
+
+/// Plain-text projection of a sequence of inline mdast nodes.
+///
+/// Concatenates every reachable text payload in document order, which
+/// matches what `hast-util-to-string` (and therefore
+/// [`crate::plugins::heading_links`] via [`extract_text`](crate::plugins::util::hast_text::extract_text))
+/// produces after the same heading is rendered to hast. Concretely:
+///
+/// - `Text(value)` → `value`
+/// - `InlineCode(value)` → `value` (rendered as `<code>value</code>`,
+///   which `extract_text` flattens back to `value`)
+/// - `Emphasis` / `Strong` / `Delete` / `Link` → recurse into children
+///   (formatting marks render as element wrappers, not extra text)
+/// - `Image` → contributes its `alt` text (matching `<img alt>` →
+///   `extract_text` would skip it, but `alt` is the closest plain-text
+///   substitute and TOC consumers expect it)
+/// - `Break` → single space (renders as `<br>` then a space-equivalent)
+/// - MDX text expressions / JSX → contribute nothing (opaque to TOCs)
+fn mdast_inline_text(children: &[MdastNode]) -> String {
+    let mut out = String::new();
+    for c in children {
+        push_inline_text(c, &mut out);
+    }
+    out
+}
+
+fn push_inline_text(node: &MdastNode, out: &mut String) {
+    match node {
+        MdastNode::Text(t) => out.push_str(&t.value),
+        MdastNode::InlineCode(c) => out.push_str(&c.value),
+        MdastNode::Emphasis(e) => {
+            for c in &e.children {
+                push_inline_text(c, out);
+            }
+        }
+        MdastNode::Strong(s) => {
+            for c in &s.children {
+                push_inline_text(c, out);
+            }
+        }
+        MdastNode::Delete(d) => {
+            for c in &d.children {
+                push_inline_text(c, out);
+            }
+        }
+        MdastNode::Link(l) => {
+            for c in &l.children {
+                push_inline_text(c, out);
+            }
+        }
+        MdastNode::Image(i) => out.push_str(&i.alt),
+        MdastNode::Break(_) => out.push(' '),
+        // Everything else (MDX expressions, raw HTML literals, JSX
+        // elements, …) contributes no plain text — TOCs cannot do
+        // anything useful with `{count}` or `<Note/>` tokens.
+        _ => {}
+    }
+}
+
+/// Render the `export const headings = [...];` line.
+///
+/// Always emitted — even an empty document produces
+/// `export const headings = [];` so callers can rely on the binding's
+/// existence without optional-chaining at the import site.
+fn render_headings_export(headings: &[HeadingEntry]) -> String {
+    let mut out = String::from("export const headings = [");
+    if !headings.is_empty() {
+        out.push('\n');
+        for h in headings {
+            out.push_str(&format!(
+                "  {{ depth: {}, slug: {}, text: {} }},\n",
+                h.depth,
+                js_string_literal(&h.slug),
+                js_string_literal(&h.text),
+            ));
+        }
+    }
+    out.push_str("];\n");
+    out
 }
 
 /// Walks the mdast tree and accumulates JSX source plus the set of
@@ -818,6 +974,126 @@ mod tests {
         assert!(!is_component_identifier("note"));
         assert!(!is_component_identifier("p"));
         assert!(!is_component_identifier(""));
+    }
+
+    /// Three headings → 3-element `headings` array exported alongside
+    /// `MDXContent`. This is the headline acceptance test for T4.
+    #[test]
+    fn three_headings_export_three_element_array() {
+        let src = "# Intro\n\n## Setup\n\n## Usage\n";
+        let out = emit(src);
+        assert!(
+            out.contains("export const headings = ["),
+            "missing headings export: {out}"
+        );
+        // Each entry is a single-line `{ depth, slug, text }` object.
+        assert!(
+            out.contains("{ depth: 1, slug: \"intro\", text: \"Intro\" }"),
+            "h1 entry missing: {out}"
+        );
+        assert!(
+            out.contains("{ depth: 2, slug: \"setup\", text: \"Setup\" }"),
+            "first h2 entry missing: {out}"
+        );
+        assert!(
+            out.contains("{ depth: 2, slug: \"usage\", text: \"Usage\" }"),
+            "second h2 entry missing: {out}"
+        );
+        // Sanity: exactly three commas at end of entry lines (one per
+        // entry). Counting the per-entry trailing `},\n` lines avoids
+        // accidentally matching `...components,\n`.
+        let entry_terminators = out.matches(" },\n").count();
+        assert_eq!(entry_terminators, 3, "expected 3 heading entries: {out}");
+    }
+
+    /// Empty document still emits an empty `headings = []` so callers
+    /// can `import { headings } from './post.mdx'` unconditionally.
+    #[test]
+    fn empty_document_exports_empty_headings() {
+        let out = emit("");
+        assert!(
+            out.contains("export const headings = [];"),
+            "expected empty headings export: {out}"
+        );
+    }
+
+    /// Slug parity contract with the rehype `heading_links` plugin:
+    /// every emitted slug must equal what `slugify` (the same algorithm
+    /// heading_links uses) produces from the heading's plain text. For
+    /// repeated `<h2>`–`<h6>` titles, the `-1` / `-2` numbering must
+    /// match too.
+    #[test]
+    fn heading_slugs_match_heading_links_algorithm() {
+        use crate::plugins::heading_links::slugify;
+
+        let src = "## Hello, World!\n\n## Hello, World!\n\n## Hello, World!\n";
+        let out = emit(src);
+
+        let base = slugify("Hello, World!");
+        assert_eq!(base, "hello-world");
+        // First occurrence: bare slug. Subsequent occurrences: `-1`,
+        // `-2`. Same numbering scheme `HeadingLinksPlugin::next_slug`
+        // applies to rendered `id` attributes.
+        assert!(
+            out.contains("slug: \"hello-world\","),
+            "first slug missing: {out}"
+        );
+        assert!(
+            out.contains("slug: \"hello-world-1\","),
+            "second slug missing: {out}"
+        );
+        assert!(
+            out.contains("slug: \"hello-world-2\","),
+            "third slug missing: {out}"
+        );
+    }
+
+    /// h1 stays out of the dedup pool because heading_links never sees
+    /// it. So an `# A` followed by `## A` must produce slugs `a` and
+    /// `a` (not `a-1`) — this is the only way the array's slug matches
+    /// the rendered `<h2 id="a">`.
+    #[test]
+    fn h1_does_not_consume_dedup_counter() {
+        let src = "# A\n\n## A\n";
+        let out = emit(src);
+        assert!(
+            out.contains("{ depth: 1, slug: \"a\", text: \"A\" }"),
+            "h1 should slug as 'a': {out}"
+        );
+        assert!(
+            out.contains("{ depth: 2, slug: \"a\", text: \"A\" }"),
+            "h2 must also slug as 'a' (parity with heading_links): {out}"
+        );
+    }
+
+    /// Plain-text projection rule: inline marks (`**`, `_`, `~~`,
+    /// inline code, links) are flattened to their text content. This
+    /// matches the projection `heading_links` would feed into the
+    /// slugger after the heading is rendered to hast.
+    #[test]
+    fn heading_text_uses_plain_text_projection() {
+        let src = "## Hello **world**\n";
+        let out = emit(src);
+        assert!(
+            out.contains("text: \"Hello world\""),
+            "bold marks should flatten: {out}"
+        );
+        assert!(
+            out.contains("slug: \"hello-world\""),
+            "slug derives from flattened text: {out}"
+        );
+    }
+
+    /// Inline code, links, and emphasis all contribute their inner
+    /// text — same rule the rehype `heading_links` plugin applies.
+    #[test]
+    fn heading_text_flattens_inline_code_link_and_emphasis() {
+        let src = "## use `npm` to [install](/x) it\n";
+        let out = emit(src);
+        assert!(
+            out.contains("text: \"use npm to install it\""),
+            "expected flat plain text: {out}"
+        );
     }
 
     /// Exercise the `MdastNode::Html` arm directly. MDX parse options
