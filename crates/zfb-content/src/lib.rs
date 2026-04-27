@@ -9,6 +9,9 @@ pub mod serializer;
 pub mod syntect_highlight;
 pub mod tsx_frontmatter;
 
+pub use frontmatter::{
+    extract as extract_frontmatter, FrontmatterError, UnifiedFrontmatter,
+};
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,
     parse_mdx_specifier, CompiledMdx, MdxJsxOptions, MdxModuleCache, MdxModuleSpecifier,

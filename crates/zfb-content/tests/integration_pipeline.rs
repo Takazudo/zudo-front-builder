@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use zfb_content::frontmatter;
+use zfb_content::frontmatter::{self};
 use zfb_content::pipeline::{HastNode, HastVisitor, Pipeline};
 use zfb_content::plugins::{
     AdmonitionsPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin,
@@ -64,11 +64,14 @@ fn render_fixture_with(name: &str, mut pipeline: Pipeline) -> String {
     let raw =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
     // Strip frontmatter so the pipeline only sees the body. For files
-    // without frontmatter, `parse` returns the whole input as body.
-    let parsed =
-        frontmatter::parse(&raw).unwrap_or_else(|e| panic!("parse frontmatter for {path:?}: {e}"));
+    // without frontmatter, `extract` returns the whole input as body.
+    let uf = frontmatter::extract(&path, &raw)
+        .unwrap_or_else(|e| panic!("parse frontmatter for {path:?}: {e}"));
+    let body = uf
+        .body
+        .unwrap_or_else(|| panic!("md/mdx fixture must have a body: {path:?}"));
     let hast = pipeline
-        .run(&parsed.body)
+        .run(&body)
         .unwrap_or_else(|e| panic!("pipeline failed for {path:?}: {e}"));
     serialize(&hast)
 }
@@ -183,19 +186,20 @@ fn fixture_01_basic_renders() {
 
 #[test]
 fn fixture_02_frontmatter_strips_frontmatter() {
-    let raw = std::fs::read_to_string(fixtures_dir().join("02-frontmatter.md")).unwrap();
-    // Sanity: frontmatter::parse must extract the title and leave body
-    // without any --- markers.
-    let parsed = frontmatter::parse(&raw).expect("frontmatter parses");
+    let path = fixtures_dir().join("02-frontmatter.md");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    // Sanity: frontmatter::extract must extract the title and leave the
+    // body without any --- markers.
+    let uf = frontmatter::extract(&path, &raw).expect("frontmatter parses");
     assert_eq!(
-        parsed.frontmatter["title"].as_str(),
+        uf.value["title"].as_str(),
         Some("Hello Frontmatter"),
         "title must come from YAML",
     );
+    let body = uf.body.expect("md/mdx returns a body");
     assert!(
-        !parsed.body.contains("---"),
-        "body must not still contain frontmatter delimiters: {:?}",
-        parsed.body
+        !body.contains("---"),
+        "body must not still contain frontmatter delimiters: {body:?}",
     );
     check_fixture("02-frontmatter.md", "02-frontmatter.html");
     // Snapshot must NOT contain the frontmatter title or `---`.
