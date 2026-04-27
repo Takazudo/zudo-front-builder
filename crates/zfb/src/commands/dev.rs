@@ -34,14 +34,14 @@
 //! ## v1 scope-down: noop page renderer (still deferred)
 //!
 //! Wiring the real `zfb-render` page renderer remains deferred — it
-//! depends on `deno_core_host`, which is still a skeleton pending
-//! ADR-001's JS-runtime decision. So we hand the orchestrator a
-//! [`zfb_build::PageRenderer`] that returns an empty render set: the
-//! orchestrator still drives the watcher + dep-graph + reload broadcast
-//! correctly, the [`zfb_server::PageCache`] simply stays empty, and
-//! every request falls through to [`zfb_server::DEV_404_BODY`]. Real
-//! renderer integration (and the cache-population side of the
-//! `on_outcome` callback) will land once `DenoCoreHost` is real.
+//! depends on the miniflare subprocess host landing in T6 (per ADR-005).
+//! So we hand the orchestrator a [`zfb_build::PageRenderer`] that
+//! returns an empty render set: the orchestrator still drives the
+//! watcher + dep-graph + reload broadcast correctly, the
+//! [`zfb_server::PageCache`] simply stays empty, and every request
+//! falls through to [`zfb_server::DEV_404_BODY`]. Real renderer
+//! integration (and the cache-population side of the `on_outcome`
+//! callback) will land once T6 is real.
 //!
 //! ## Output
 //!

@@ -2,8 +2,9 @@
 //!
 //! These exercise the SWC pipeline end-to-end and prove the `Renderer`
 //! orchestration plumbs everything correctly. We swap in a `TestHost` for
-//! the JS runtime side because the V8/deno_core host is gated behind the
-//! `deno_core_host` feature while ADR-001 is being finalised.
+//! the JS runtime side because the production host (per ADR-005, a
+//! miniflare subprocess client wired in by the build orchestrator in T6)
+//! is not in-process and would needlessly slow these unit-shape tests.
 //!
 //! The test host inspects the compiled JS that SWC produced, confirms the
 //! transform did its job (TS stripped, JSX desugared into `jsx(...)` calls,
