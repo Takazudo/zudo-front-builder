@@ -46,7 +46,7 @@ use std::sync::{Mutex, MutexGuard};
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
-use crate::pipeline::PipelineError;
+use crate::pipeline::{Pipeline, PipelineError};
 
 /// Options controlling the emitted JSX module.
 #[derive(Debug, Clone)]
@@ -81,11 +81,34 @@ impl MdxJsxOptions {
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
 /// The error message includes the line/column reported by markdown-rs.
 pub fn mdx_to_jsx_module(input: &str, opts: MdxJsxOptions) -> Result<String, PipelineError> {
+    mdx_to_jsx_module_inner(input, opts, None)
+}
+
+/// Internal core for [`mdx_to_jsx_module`] that optionally runs the
+/// supplied [`Pipeline`]'s mdast visitors against the parsed tree before
+/// JSX emission.
+///
+/// When `pipeline` is `None`, this is byte-for-byte identical to the
+/// pre-Sub-46 behaviour: parse → match Root → emit. When `Some`, only
+/// the mdast visitor chain runs against the parsed mdast — hast
+/// visitors are intentionally NOT applied because the JSX emitter does
+/// not construct a hast tree (the JSX path goes mdast → JSX directly).
+/// Hast visitor execution remains the responsibility of the
+/// `serializer` / `Pipeline::run` HTML path.
+fn mdx_to_jsx_module_inner(
+    input: &str,
+    opts: MdxJsxOptions,
+    pipeline: Option<&mut Pipeline>,
+) -> Result<String, PipelineError> {
     let parse_options = markdown::ParseOptions::mdx();
-    let root = markdown::to_mdast(input, &parse_options).map_err(|m| {
+    let mut root = markdown::to_mdast(input, &parse_options).map_err(|m| {
         // markdown-rs's Display already emits "line:col-line:col: reason".
         PipelineError::Parse(format!("{}: {m}", opts.filename))
     })?;
+
+    if let Some(p) = pipeline {
+        p.apply_mdast_visitors(&mut root);
+    }
 
     let children: Vec<MdastNode> = match root {
         MdastNode::Root(r) => r.children,
@@ -666,9 +689,9 @@ impl MdxModuleCache {
 
 /// Compile MDX source into a [`CompiledMdx`] in one call.
 ///
-/// Equivalent to `compile_mdx_to_jsx_module_cached(input, file_path, None)`
+/// Equivalent to `compile_mdx_to_jsx_module_cached(input, file_path, None, None)`
 /// — provided as a thin convenience so callers that don't want a cache
-/// don't have to write the `None` themselves.
+/// or a pipeline don't have to write the `None`s themselves.
 ///
 /// # Errors
 /// Forwards [`PipelineError::Parse`] from the underlying emitter.
@@ -676,10 +699,11 @@ pub fn compile_mdx_to_jsx_module(
     input: &str,
     file_path: &Path,
 ) -> Result<CompiledMdx, PipelineError> {
-    compile_mdx_to_jsx_module_cached(input, file_path, None)
+    compile_mdx_to_jsx_module_cached(input, file_path, None, None)
 }
 
-/// Compile MDX with optional in-memory caching keyed by `sha256(input)`.
+/// Compile MDX with optional in-memory caching keyed by `sha256(input)`,
+/// optionally running a [`Pipeline`]'s mdast visitors before JSX emission.
 ///
 /// When `cache` is `Some(_)` and the input has been compiled before, the
 /// cached [`CompiledMdx`] is cloned out and returned without invoking the
@@ -690,6 +714,15 @@ pub fn compile_mdx_to_jsx_module(
 /// the first identical value). We don't hold the cache lock across
 /// compilation to avoid serialising CPU work.
 ///
+/// `pipeline` was added by Sub 46 (#46) so future callers can thread a
+/// configured pipeline (with directive-registry-driven mdast visitors,
+/// see Sub 4b #47) through the JSX path. Today's call sites all pass
+/// `None`; behaviour is byte-for-byte identical to pre-Sub-46. When a
+/// pipeline IS supplied, the cache is bypassed because the simple
+/// `sha256(input)` key cannot distinguish identical inputs run through
+/// different pipelines — Sub 4b will revisit cache keying alongside
+/// real pipeline usage.
+///
 /// # Errors
 /// Forwards [`PipelineError::Parse`] from the underlying emitter. A parse
 /// failure is never cached — the next call will retry.
@@ -697,12 +730,20 @@ pub fn compile_mdx_to_jsx_module_cached(
     input: &str,
     file_path: &Path,
     cache: Option<&MdxModuleCache>,
+    pipeline: Option<&mut Pipeline>,
 ) -> Result<CompiledMdx, PipelineError> {
+    // Pipeline-driven transforms can change the JSX output for a given
+    // input, but the existing cache keys only on `sha256(input)`. To
+    // avoid aliasing, bypass the cache entirely when a pipeline is
+    // supplied. Sub 4b will revisit this once real pipelines start
+    // firing.
+    let cache_for_lookup = if pipeline.is_some() { None } else { cache };
+
     // Cache lookup first — `sha256(input)` (full hex) is the key. Using
     // the full digest here, not the 8-char prefix, so distinct sources
     // that happen to share an 8-hex prefix on their *output* don't
     // clobber each other in the cache.
-    let input_key = if cache.is_some() {
+    let input_key = if cache_for_lookup.is_some() {
         let mut h = Sha256::new();
         h.update(input.as_bytes());
         Some(hex::encode(h.finalize()))
@@ -710,7 +751,7 @@ pub fn compile_mdx_to_jsx_module_cached(
         None
     };
 
-    if let (Some(c), Some(key)) = (cache, input_key.as_ref()) {
+    if let (Some(c), Some(key)) = (cache_for_lookup, input_key.as_ref()) {
         if let Some(hit) = c.lock().get(key) {
             return Ok(hit.clone());
         }
@@ -719,7 +760,7 @@ pub fn compile_mdx_to_jsx_module_cached(
     let (collection, slug) = collection_and_slug(file_path);
 
     let opts = MdxJsxOptions::default().with_filename(file_path.display().to_string());
-    let jsx_source = mdx_to_jsx_module(input, opts)?;
+    let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline)?;
     let content_hash = hash_8(&jsx_source);
     let specifier = format!("mdx://{collection}/{slug}#{content_hash}");
 
@@ -729,7 +770,7 @@ pub fn compile_mdx_to_jsx_module_cached(
         specifier,
     };
 
-    if let (Some(c), Some(key)) = (cache, input_key) {
+    if let (Some(c), Some(key)) = (cache_for_lookup, input_key) {
         c.lock().insert(key, compiled.clone());
     }
 

@@ -128,15 +128,15 @@ fn cache_opt_in_dedupes_identical_input() {
     let src = "# cached\n\nbody\n";
     let path = fixture_path("cached-post");
 
-    let first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache)).unwrap();
+    let first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
     assert_eq!(cache.len(), 1, "first call populates the cache");
 
-    let second = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache)).unwrap();
+    let second = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
     assert_eq!(cache.len(), 1, "second call must hit (no new entry)");
     assert_eq!(first, second, "cached value must match the original");
 
     // Distinct input → distinct cache entry.
-    let other = compile_mdx_to_jsx_module_cached("# other\n", &path, Some(&cache)).unwrap();
+    let other = compile_mdx_to_jsx_module_cached("# other\n", &path, Some(&cache), None).unwrap();
     assert_eq!(cache.len(), 2);
     assert_ne!(other.content_hash, first.content_hash);
 }
@@ -151,8 +151,8 @@ fn cache_opt_out_recompiles_every_call() {
     let path = fixture_path("p1");
 
     let cache = MdxModuleCache::new();
-    let cached_first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache)).unwrap();
-    let uncached = compile_mdx_to_jsx_module_cached(src, &path, None).unwrap();
+    let cached_first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
+    let uncached = compile_mdx_to_jsx_module_cached(src, &path, None, None).unwrap();
     let convenience = compile_mdx_to_jsx_module(src, &path).unwrap();
 
     assert_eq!(cached_first, uncached);
@@ -162,8 +162,8 @@ fn cache_opt_out_recompiles_every_call() {
 #[test]
 fn cache_clear_drops_all_entries() {
     let cache = MdxModuleCache::new();
-    compile_mdx_to_jsx_module_cached("a\n", &fixture_path("a"), Some(&cache)).unwrap();
-    compile_mdx_to_jsx_module_cached("b\n", &fixture_path("b"), Some(&cache)).unwrap();
+    compile_mdx_to_jsx_module_cached("a\n", &fixture_path("a"), Some(&cache), None).unwrap();
+    compile_mdx_to_jsx_module_cached("b\n", &fixture_path("b"), Some(&cache), None).unwrap();
     assert_eq!(cache.len(), 2);
     cache.clear();
     assert!(cache.is_empty());

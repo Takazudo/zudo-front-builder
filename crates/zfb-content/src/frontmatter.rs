@@ -1,39 +1,140 @@
-//! Frontmatter parser.
+//! Unified frontmatter extraction.
 //!
-//! Parses YAML frontmatter delimited by `---` markers at the very start of a
-//! string. Supports both LF and CRLF line endings.
+//! One entry point — [`extract`] — dispatches by file extension:
+//!
+//! - `.md`, `.mdx` → parse YAML frontmatter delimited by `---` markers,
+//!   convert the result to [`serde_json::Value`].
+//! - `.tsx` → statically extract `export const frontmatter` (plus the
+//!   optional `extension` / `contentType` siblings) via
+//!   [`crate::tsx_frontmatter::extract`].
+//!
+//! The public surface is JSON-only — `serde_yaml::Value` is an
+//! implementation detail of the YAML branch and never leaks across the
+//! crate boundary. Schema validation downstream (e.g. `garde`) operates
+//! on the normalized JSON.
 
+use std::path::Path;
+
+use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-/// Result of a successful frontmatter parse.
+use crate::tsx_frontmatter::{self, TsxFrontmatter, TsxFrontmatterError};
+
+/// Result of the YAML-only [`parse`] helper. Internal — the public
+/// surface is [`UnifiedFrontmatter`].
 #[derive(Debug, Clone)]
-pub struct Parsed {
-    /// Parsed YAML value. `Null` if there is no frontmatter or it is empty.
-    pub frontmatter: serde_yaml::Value,
+pub(crate) struct Parsed {
+    /// Parsed frontmatter as JSON. `Null` if there is no frontmatter or
+    /// it is empty. We deserialize directly into JSON so the public
+    /// surface speaks one value type.
+    pub frontmatter: JsonValue,
     /// The body text following the closing `---` delimiter.
     pub body: String,
     /// Byte offset within the original input where `body` begins.
     pub body_offset: usize,
 }
 
-/// Errors produced by [`parse`].
+/// Unified frontmatter result returned by [`extract`].
+///
+/// The shape is the same regardless of source kind so a content
+/// collection can mix `.md`, `.mdx`, and `.tsx` entries without
+/// branching on extension. Body fields are absent for `.tsx` because a
+/// TSX page module has no separate markdown body.
+#[derive(Debug, Clone)]
+pub struct UnifiedFrontmatter {
+    /// Frontmatter as JSON. `Null` if the source had no frontmatter.
+    pub value: JsonValue,
+    /// Body text after the closing `---` delimiter (markdown / MDX
+    /// only). `None` for `.tsx` sources.
+    pub body: Option<String>,
+    /// Byte offset within the original source where `body` begins.
+    /// `None` whenever `body` is `None`.
+    pub body_offset: Option<usize>,
+    /// `export const extension = "…"` literal value, when present.
+    /// Only populated for `.tsx` sources.
+    pub extension: Option<String>,
+    /// `export const contentType = "…"` literal value, when present.
+    /// Only populated for `.tsx` sources.
+    pub content_type: Option<String>,
+}
+
+/// Errors produced by [`extract`] (and the internal YAML helper).
 #[derive(Debug, Error)]
 pub enum FrontmatterError {
     #[error("frontmatter unterminated: missing closing `---`")]
     Unterminated,
     #[error("invalid YAML in frontmatter: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("TSX frontmatter error: {0}")]
+    Tsx(#[from] TsxFrontmatterError),
+    #[error("unsupported file extension `.{0}` for frontmatter extraction (expected md, mdx, or tsx)")]
+    UnsupportedExtension(String),
+    #[error("missing file extension; cannot dispatch frontmatter extraction")]
+    MissingExtension,
 }
 
-/// Parse a string that may begin with YAML frontmatter.
+/// Extract frontmatter from `source`, dispatching on `path`'s extension.
+///
+/// Returns a [`UnifiedFrontmatter`] whose `value` field is always a
+/// `serde_json::Value`. The two body fields and the two TSX-only string
+/// fields are populated according to source kind:
+///
+/// | extension       | `value`            | `body`         | `extension` / `content_type` |
+/// |-----------------|--------------------|----------------|------------------------------|
+/// | `md`, `mdx`     | YAML→JSON          | `Some(body)`   | always `None`                |
+/// | `tsx`           | TSX literal → JSON | `None`         | from sibling exports         |
+/// | other / missing | error              | error          | error                        |
+pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, FrontmatterError> {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .ok_or(FrontmatterError::MissingExtension)?;
+
+    match ext {
+        "md" | "mdx" => {
+            let parsed = parse(source)?;
+            Ok(UnifiedFrontmatter {
+                value: parsed.frontmatter,
+                body: Some(parsed.body),
+                body_offset: Some(parsed.body_offset),
+                extension: None,
+                content_type: None,
+            })
+        }
+        "tsx" => {
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("<unknown>.tsx");
+            let TsxFrontmatter {
+                frontmatter,
+                extension,
+                content_type,
+            } = tsx_frontmatter::extract(source, file_name)?;
+            Ok(UnifiedFrontmatter {
+                value: frontmatter,
+                body: None,
+                body_offset: None,
+                extension,
+                content_type,
+            })
+        }
+        other => Err(FrontmatterError::UnsupportedExtension(other.to_string())),
+    }
+}
+
+/// YAML-only frontmatter parser. Internal helper — external code
+/// should call [`extract`] instead.
 ///
 /// Recognised forms:
 /// - `---\n<yaml>\n---\n<body>`
 /// - `---\r\n<yaml>\r\n---\r\n<body>`
 ///
-/// If the input does not begin with `---` followed by a line terminator, the
-/// entire input is treated as body and `frontmatter` is set to `Null`.
-pub fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
+/// If the input does not begin with `---` followed by a line terminator,
+/// the entire input is treated as body and `frontmatter` is set to
+/// `Null`. The YAML is deserialized straight into `serde_json::Value`
+/// so the resulting struct is already in the public dialect.
+pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
     // Detect opening delimiter. Must be the very first three bytes followed by
     // either `\n` or `\r\n`. A plain `---` at EOF or followed by other text on
     // the same line is not considered a frontmatter opener.
@@ -43,7 +144,7 @@ pub fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
         rest
     } else {
         return Ok(Parsed {
-            frontmatter: serde_yaml::Value::Null,
+            frontmatter: JsonValue::Null,
             body: input.to_string(),
             body_offset: 0,
         });
@@ -59,9 +160,12 @@ pub fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
     };
 
     let trimmed = yaml_str.trim();
-    let frontmatter = if trimmed.is_empty() {
-        serde_yaml::Value::Null
+    let frontmatter: JsonValue = if trimmed.is_empty() {
+        JsonValue::Null
     } else {
+        // serde_yaml can deserialize directly into serde_json::Value.
+        // YAML scalar/seq/map shapes map cleanly onto JSON; non-string
+        // keys (which JSON cannot represent) surface as a YAML error.
         serde_yaml::from_str(yaml_str).map_err(FrontmatterError::Yaml)?
     };
 
@@ -131,9 +235,12 @@ fn find_closing(after_open: &str, open_len: usize) -> Option<(&str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    // ---------- internal `parse` (YAML-only) ----------
 
     #[test]
-    fn standard_frontmatter_with_body() {
+    fn parse_standard_frontmatter_with_body() {
         let input = "---\ntitle: Hello\ndraft: false\n---\n# Body\n\nSome text.\n";
         let parsed = parse(input).expect("parse ok");
         assert_eq!(
@@ -147,25 +254,25 @@ mod tests {
     }
 
     #[test]
-    fn no_frontmatter() {
+    fn parse_no_frontmatter() {
         let input = "# Just markdown\n\nNo frontmatter here.\n";
         let parsed = parse(input).expect("parse ok");
-        assert!(matches!(parsed.frontmatter, serde_yaml::Value::Null));
+        assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, input);
         assert_eq!(parsed.body_offset, 0);
     }
 
     #[test]
-    fn empty_frontmatter() {
+    fn parse_empty_frontmatter() {
         let input = "---\n---\nbody starts here\n";
         let parsed = parse(input).expect("parse ok");
-        assert!(matches!(parsed.frontmatter, serde_yaml::Value::Null));
+        assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, "body starts here\n");
         assert_eq!(&input[parsed.body_offset..], parsed.body);
     }
 
     #[test]
-    fn crlf_line_endings() {
+    fn parse_crlf_line_endings() {
         let input = "---\r\ntitle: CRLF\r\ncount: 3\r\n---\r\nbody line\r\n";
         let parsed = parse(input).expect("parse ok");
         assert_eq!(parsed.frontmatter["title"].as_str(), Some("CRLF"));
@@ -175,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_yaml_returns_error() {
+    fn parse_malformed_yaml_returns_error() {
         // Unbalanced bracket -> serde_yaml will reject.
         let input = "---\ntitle: [unterminated\n---\nbody\n";
         let err = parse(input).expect_err("should fail");
@@ -186,14 +293,14 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_frontmatter_returns_error() {
+    fn parse_unterminated_frontmatter_returns_error() {
         let input = "---\ntitle: Forever\nbody but no closing\n";
         let err = parse(input).expect_err("should fail");
         assert!(matches!(err, FrontmatterError::Unterminated));
     }
 
     #[test]
-    fn nested_yaml_list_and_map() {
+    fn parse_nested_yaml_list_and_map() {
         let input = "---\n\
             tags:\n  - rust\n  - markdown\n  - frontmatter\n\
             author:\n  name: Alice\n  handle: alice42\n\
@@ -201,8 +308,8 @@ mod tests {
         let parsed = parse(input).expect("parse ok");
 
         let tags = parsed.frontmatter["tags"]
-            .as_sequence()
-            .expect("tags is a sequence");
+            .as_array()
+            .expect("tags is an array");
         let tag_strs: Vec<&str> = tags.iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(tag_strs, vec!["rust", "markdown", "frontmatter"]);
 
@@ -212,5 +319,73 @@ mod tests {
             Some("alice42"),
         );
         assert_eq!(parsed.body, "# Title\n");
+    }
+
+    // ---------- public `extract` dispatcher ----------
+
+    #[test]
+    fn extract_md_returns_yaml_as_json() {
+        let path = PathBuf::from("post.md");
+        let src = "---\ntitle: Hello\ncount: 3\n---\nbody\n";
+        let uf = extract(&path, src).expect("extract ok");
+        assert_eq!(uf.value["title"], JsonValue::String("Hello".to_string()));
+        assert_eq!(uf.value["count"], JsonValue::Number(3.into()));
+        assert_eq!(uf.body.as_deref(), Some("body\n"));
+        assert_eq!(uf.body_offset, Some(src.len() - "body\n".len()));
+        assert!(uf.extension.is_none());
+        assert!(uf.content_type.is_none());
+    }
+
+    #[test]
+    fn extract_mdx_routes_through_yaml_branch() {
+        let path = PathBuf::from("post.mdx");
+        let src = "---\ntitle: MDX\n---\n<MyComp />\n";
+        let uf = extract(&path, src).expect("extract ok");
+        assert_eq!(uf.value["title"].as_str(), Some("MDX"));
+        assert_eq!(uf.body.as_deref(), Some("<MyComp />\n"));
+    }
+
+    #[test]
+    fn extract_tsx_pulls_export_const_frontmatter() {
+        let path = PathBuf::from("page.tsx");
+        let src = "export const frontmatter = { title: 'Tsx', count: 7 };\n\
+                   export const extension = 'html';\n\
+                   export default function Page() { return null; }\n";
+        let uf = extract(&path, src).expect("extract ok");
+        assert_eq!(uf.value["title"].as_str(), Some("Tsx"));
+        assert_eq!(uf.value["count"].as_i64(), Some(7));
+        assert!(uf.body.is_none(), "tsx has no body");
+        assert!(uf.body_offset.is_none());
+        assert_eq!(uf.extension.as_deref(), Some("html"));
+        assert!(uf.content_type.is_none());
+    }
+
+    #[test]
+    fn extract_tsx_propagates_tsx_error() {
+        let path = PathBuf::from("page.tsx");
+        // No frontmatter export → TsxFrontmatterError::MissingFrontmatter.
+        let src = "export default function Page() { return null; }\n";
+        let err = extract(&path, src).expect_err("should fail");
+        assert!(
+            matches!(err, FrontmatterError::Tsx(_)),
+            "expected Tsx error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn extract_unsupported_extension_errors() {
+        let path = PathBuf::from("notes.markdown");
+        let err = extract(&path, "---\ntitle: x\n---\n").expect_err("should fail");
+        match err {
+            FrontmatterError::UnsupportedExtension(ext) => assert_eq!(ext, "markdown"),
+            other => panic!("expected UnsupportedExtension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_missing_extension_errors() {
+        let path = PathBuf::from("README");
+        let err = extract(&path, "anything").expect_err("should fail");
+        assert!(matches!(err, FrontmatterError::MissingExtension));
     }
 }

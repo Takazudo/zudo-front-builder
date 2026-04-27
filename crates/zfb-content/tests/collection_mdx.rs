@@ -42,7 +42,7 @@ fn mixed_md_and_mdx_entries_each_carry_specifier_and_jsx_source() {
     blog_dir.write("alpha.md", &valid_md("Alpha", "alpha body\n"));
     blog_dir.write("beta.mdx", &valid_md("Beta", "beta body\n"));
 
-    let entries: Vec<Entry<PostSchema>> = walk_collection(&blog).unwrap();
+    let entries: Vec<Entry<PostSchema>> = walk_collection(&blog, None).unwrap();
     assert_eq!(entries.len(), 2);
 
     for entry in &entries {
@@ -89,7 +89,7 @@ fn md_and_mdx_with_equivalent_content_differ_only_in_slug() {
     blog_dir.write("same.md", &valid_md("Same", body));
     blog_dir.write("same.mdx", &valid_md("Same", body));
 
-    let entries: Vec<Entry<PostSchema>> = walk_collection(&blog).unwrap();
+    let entries: Vec<Entry<PostSchema>> = walk_collection(&blog, None).unwrap();
     assert_eq!(entries.len(), 2);
 
     let md = entries
@@ -140,7 +140,8 @@ fn cache_opt_in_dedupes_identical_bodies_across_entries() {
     let cache = MdxModuleCache::new();
     assert!(cache.is_empty());
 
-    let entries: Vec<Entry<PostSchema>> = walk_collection_with_cache(&blog, Some(&cache)).unwrap();
+    let entries: Vec<Entry<PostSchema>> =
+        walk_collection_with_cache(&blog, Some(&cache), None).unwrap();
     assert_eq!(entries.len(), 2);
 
     // One unique compiled body → exactly one cache entry.

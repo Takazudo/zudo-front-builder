@@ -71,6 +71,19 @@ pub struct ResolvedMeta {
     /// the default-layout convention). `None` means "no layout, render
     /// the page output directly".
     pub layout_path: Option<PathBuf>,
+    /// Output-file extension override extracted from
+    /// `export const extension = "…"` on the page module (Sub 1's TSX
+    /// frontmatter extractor). Beats the filename convention; both fall
+    /// through to the `html` default. See [`derive_output_extension`]
+    /// for the precedence rule.
+    pub extension: Option<String>,
+    /// `Content-Type` override extracted from
+    /// `export const contentType = "…"`. Build-time metadata only — the
+    /// dev server (`zfb-server`) consults this when setting the
+    /// `Content-Type` response header for the page; static-file hosts
+    /// derive it from the file extension instead. See
+    /// [`derive_content_type`] for the precedence rule.
+    pub content_type: Option<String>,
 }
 
 /// Errors produced while parsing or resolving a page meta export.
@@ -136,6 +149,33 @@ pub fn resolve_meta(
     project_root: &Path,
     default_layout_candidates: &[PathBuf],
 ) -> Result<ResolvedMeta, MetaError> {
+    resolve_meta_with_overrides(
+        meta,
+        page_path,
+        project_root,
+        default_layout_candidates,
+        None,
+        None,
+    )
+}
+
+/// Same as [`resolve_meta`] but also threads through the
+/// `extension` / `contentType` overrides extracted from the page's TSX
+/// frontmatter (see Sub 1's `zfb_content::tsx_frontmatter::extract`).
+///
+/// The orchestrator uses this entry point because the layout
+/// resolution and the output-extension / content-type resolution share
+/// the same "is this page valid?" failure modes — keeping them on one
+/// `ResolvedMeta` lets the call site fail-fast on either error without
+/// constructing two parallel structures.
+pub fn resolve_meta_with_overrides(
+    meta: PageMeta,
+    page_path: &Path,
+    project_root: &Path,
+    default_layout_candidates: &[PathBuf],
+    extension: Option<String>,
+    content_type: Option<String>,
+) -> Result<ResolvedMeta, MetaError> {
     let layout_path = match &meta.layout {
         Some(spec) => {
             let resolved = resolve_layout_spec(spec, page_path, project_root);
@@ -154,7 +194,79 @@ pub fn resolve_meta(
             .find(|c| c.exists())
             .cloned(),
     };
-    Ok(ResolvedMeta { meta, layout_path })
+    Ok(ResolvedMeta {
+        meta,
+        layout_path,
+        extension,
+        content_type,
+    })
+}
+
+/// Default output extension used when neither the frontmatter nor the
+/// filename convention specifies one.
+pub const DEFAULT_OUTPUT_EXTENSION: &str = "html";
+
+/// Default `Content-Type` header used when no extension-specific entry
+/// is known.
+pub const DEFAULT_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+
+/// Apply the documented precedence to derive the final output
+/// extension for a page:
+///
+/// 1. `frontmatter_extension` (the value of `export const extension`),
+/// 2. else the filename-convention `route_extension` (e.g. the `xml`
+///    in `sitemap.xml.tsx`),
+/// 3. else `"html"` ([`DEFAULT_OUTPUT_EXTENSION`]).
+///
+/// This rule is also pinned in `zfb_router::route::Route::output_filename`
+/// (the router crate doesn't depend on this one, so the rule lives in
+/// both places). Keep the two in sync when changing it, and reflect any
+/// change in ADR-003 (Sub 7).
+pub fn derive_output_extension(
+    frontmatter_extension: Option<&str>,
+    route_extension: Option<&str>,
+) -> String {
+    frontmatter_extension
+        .or(route_extension)
+        .unwrap_or(DEFAULT_OUTPUT_EXTENSION)
+        .to_string()
+}
+
+/// Apply the documented precedence to derive the final
+/// `Content-Type` for a page:
+///
+/// 1. `frontmatter_content_type` (the value of `export const contentType`),
+/// 2. else the conventional default for `extension` (e.g. `xml` →
+///    `application/xml`, `rss` → `application/rss+xml`,
+///    `txt` → `text/plain; charset=utf-8`, `html` →
+///    `text/html; charset=utf-8`),
+/// 3. else [`DEFAULT_CONTENT_TYPE`] (`text/html; charset=utf-8`) — a
+///    permissive fallback for unknown extensions; in practice the
+///    page author should set `contentType` explicitly when picking
+///    an exotic extension so the dev server doesn't lie.
+///
+/// The known-extension table is intentionally small and only covers
+/// the cases we care about for static-site builds. Adding entries is
+/// a non-breaking change.
+pub fn derive_content_type(
+    extension: &str,
+    frontmatter_content_type: Option<&str>,
+) -> String {
+    if let Some(ct) = frontmatter_content_type {
+        return ct.to_string();
+    }
+    match extension.to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8".to_string(),
+        "xml" => "application/xml".to_string(),
+        "rss" => "application/rss+xml".to_string(),
+        "atom" => "application/atom+xml".to_string(),
+        "json" => "application/json".to_string(),
+        "txt" => "text/plain; charset=utf-8".to_string(),
+        "css" => "text/css; charset=utf-8".to_string(),
+        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        _ => DEFAULT_CONTENT_TYPE.to_string(),
+    }
 }
 
 fn resolve_layout_spec(spec: &str, page_path: &Path, project_root: &Path) -> PathBuf {
@@ -523,6 +635,91 @@ mod tests {
     }
 
     // ---- end-to-end through parse_meta + resolve_meta ---------------------
+
+    // ---- output extension / content-type precedence (Sub 49) -----------
+
+    #[test]
+    fn derive_extension_frontmatter_beats_route() {
+        // Frontmatter wins over filename convention.
+        assert_eq!(
+            derive_output_extension(Some("rss"), Some("xml")),
+            "rss",
+        );
+    }
+
+    #[test]
+    fn derive_extension_falls_through_to_route() {
+        // No frontmatter override → use the filename convention.
+        assert_eq!(
+            derive_output_extension(None, Some("xml")),
+            "xml",
+        );
+    }
+
+    #[test]
+    fn derive_extension_default_html() {
+        // Neither override nor convention → html default.
+        assert_eq!(
+            derive_output_extension(None, None),
+            "html",
+        );
+    }
+
+    #[test]
+    fn derive_content_type_frontmatter_beats_default() {
+        // Frontmatter override beats the extension default.
+        assert_eq!(
+            derive_content_type("xml", Some("application/rss+xml")),
+            "application/rss+xml",
+        );
+    }
+
+    #[test]
+    fn derive_content_type_extension_defaults() {
+        assert_eq!(derive_content_type("html", None), "text/html; charset=utf-8");
+        assert_eq!(derive_content_type("xml", None), "application/xml");
+        assert_eq!(derive_content_type("rss", None), "application/rss+xml");
+        assert_eq!(derive_content_type("json", None), "application/json");
+        assert_eq!(derive_content_type("txt", None), "text/plain; charset=utf-8");
+    }
+
+    #[test]
+    fn derive_content_type_unknown_extension_falls_back() {
+        // Unknown extensions get the permissive default; the page
+        // author should set contentType explicitly in this case.
+        let ct = derive_content_type("something-weird", None);
+        assert_eq!(ct, DEFAULT_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn resolve_meta_with_overrides_threads_extension_and_content_type() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/about.tsx");
+
+        let resolved = resolve_meta_with_overrides(
+            PageMeta::default(),
+            &page,
+            root,
+            &[],
+            Some("rss".into()),
+            Some("application/rss+xml".into()),
+        )
+        .unwrap();
+        assert_eq!(resolved.extension.as_deref(), Some("rss"));
+        assert_eq!(resolved.content_type.as_deref(), Some("application/rss+xml"));
+    }
+
+    #[test]
+    fn resolve_meta_default_overrides_are_none() {
+        let dir = project_skeleton();
+        let root = dir.path();
+        let page = root.join("pages/about.tsx");
+
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &[]).unwrap();
+        assert!(resolved.extension.is_none());
+        assert!(resolved.content_type.is_none());
+    }
 
     #[test]
     fn parse_then_resolve_with_extra_fields_kept_in_resolved() {

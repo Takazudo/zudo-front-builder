@@ -1,0 +1,169 @@
+---
+title: Dynamic Routes
+description: Use paths() to enumerate the concrete URLs a [slug].tsx or [...slug].tsx page should build, and pass per-URL props to the component.
+sidebar_position: 1.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How `paths()` enumerates the URLs a dynamic or catchall page should
+emit, the `{ params, props }` contract it returns, and how page
+components receive the data. For static-route fundamentals, see
+[Routing](/concepts/routing).
+
+</Info>
+
+A dynamic route — `pages/blog/[slug].tsx` — doesn't map to a single
+URL. The bracketed segment is a parameter, and zfb needs to know
+which concrete values to fill it with at build time. That's the job
+of `paths()`.
+
+Catchall routes — `pages/docs/[...slug].tsx` — work the same way, but
+their `slug` parameter captures one or more trailing segments instead
+of a single one.
+
+## The `paths()` contract
+
+`paths()` is a synchronous export. It returns an array of
+`{ params, props }` objects. The router consumes the array; one entry
+becomes one rendered URL.
+
+```ts
+type PathEntry<P = Record<string, unknown>> = {
+  /** Values for the bracketed segments, keyed by parameter name. */
+  params: Record<string, string | string[]>;
+  /** Optional per-URL data threaded to the page component as `props`. */
+  props?: P;
+};
+
+export function paths(): PathEntry[];
+```
+
+- `params` keys must match the bracketed names in the filename. For
+  `[slug].tsx`, the key is `slug`. For `[lang]/[slug].tsx`, you supply
+  both `lang` and `slug`. For catchall `[...slug].tsx`, `slug` is a
+  `string[]` of the trailing segments.
+- `props` is optional, opaque to the engine, and forwarded verbatim to
+  the page component as the `props` prop. The engine never inspects it.
+
+## A blog post page
+
+The canonical use of `paths()` is enumerating slugs from a content
+collection:
+
+```tsx
+// pages/blog/[slug].tsx
+import { getCollection, getEntry } from "zfb/content";
+
+export const frontmatter = { title: "Blog post" };
+
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { title: post.data.title },
+  }));
+}
+
+export default function BlogPost({ params, props }) {
+  const post = getEntry("blog", params.slug);
+  if (!post) return <p>Not found.</p>;
+  return (
+    <article>
+      <h2>{props.title}</h2>
+      <post.Content />
+    </article>
+  );
+}
+```
+
+A few things worth noting:
+
+- `getCollection` and `getEntry` are synchronous (see
+  [ADR-004](/architecture/adr-004-content-bridge)). `paths()` doesn't
+  need `async`, and neither does the page component.
+- `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
+  becomes `/blog/hello-zfb`.
+- `props.title` is opaque to the engine — it's just data threaded to
+  the component. You can put anything serializable there.
+
+## Catchall: a full-tree docs page
+
+Catchall routes capture any number of trailing segments, useful when
+the same template renders many depths under one prefix. The `slug`
+parameter arrives as `string[]`:
+
+```tsx
+// pages/docs/[...slug].tsx
+import { getCollection, getEntry } from "zfb/content";
+
+export const frontmatter = { title: "Docs" };
+
+export function paths() {
+  const entries = getCollection("docs");
+  return entries.map((entry) => ({
+    // entry.slug looks like "guides/setup" or "concepts/routing"
+    params: { slug: entry.slug.split("/") },
+  }));
+}
+
+export default function DocsPage({ params }) {
+  const slugPath = params.slug.join("/");
+  const entry = getEntry("docs", slugPath);
+  if (!entry) return <p>Not found.</p>;
+  return <entry.Content />;
+}
+```
+
+`/docs/concepts/routing` matches with `params.slug === ["concepts", "routing"]`.
+`/docs/guides/setup` matches with `params.slug === ["guides", "setup"]`.
+The router rebuilds the slash-separated form (`slug.join("/")`) when
+you need to look up an entry by it.
+
+## Static, dynamic, and catchall — how they fit together
+
+| Filename | Kind | Example URL | `params` shape |
+| -------- | ---- | ----------- | -------------- |
+| `pages/about.tsx` | static | `/about` | n/a |
+| `pages/blog/[slug].tsx` | dynamic | `/blog/hello-zfb` | `{ slug: string }` |
+| `pages/docs/[...slug].tsx` | catchall | `/docs/a/b/c` | `{ slug: string[] }` |
+| `pages/[lang]/[slug].tsx` | dynamic × 2 | `/ja/intro` | `{ lang: string, slug: string }` |
+
+When two patterns can match the same URL, the more specific one wins:
+**static beats dynamic; dynamic beats catchall.** The router enforces
+this when it builds the route table — see
+[Routing](/concepts/routing) for the full sort.
+
+## Rules and gotchas
+
+- Every `params` key must have a value. Missing keys raise a build
+  error before any HTML is written.
+- For catchall segments, `params.slug` must be a `string[]` (even with
+  one element). Passing a plain string is a type error.
+- `paths()` is **synchronous**. The whole content snapshot is loaded
+  before any page evaluates, so there's no async boundary to wait
+  on. Keep it pure-data and deterministic — the router calls it
+  during route enumeration, well before render.
+- Two routes that resolve to the same template raise
+  `RouterError::AmbiguousRoute` at build time. The router never
+  silently picks a winner.
+
+<Warning title="v0 status">
+
+Today the framework's skeleton is shipping; the JS-runtime decision
+([ADR-001](/architecture/adr-001-js-runtime)) lands the actual
+`paths()` evaluation. Route discovery works now, but `paths()` for
+dynamic and catchall routes is currently warned and skipped until the
+runtime lands. The contract on this page is what the engine commits to
+once the runtime arrives.
+
+</Warning>
+
+## See also
+
+- [Routing](/concepts/routing) — static-route fundamentals.
+- [Content Collections](/concepts/content-collections) — the data
+  source most `paths()` calls draw from.
+- [ADR-004](/architecture/adr-004-content-bridge) — the synchronous
+  content bridge that backs `getCollection` / `getEntry`.

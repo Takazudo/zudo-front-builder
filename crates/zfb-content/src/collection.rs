@@ -1,30 +1,53 @@
 //! Content collection schema + walker.
 //!
 //! Mirrors Astro / zudo-doc style content collections: a typed directory of
-//! markdown / MDX files with frontmatter that conforms to a schema. Build-time
-//! consumers call [`walk_collection`] to get validated entries. We also emit a
-//! `.zfb/types.d.ts` declaration so the TS rendering layer (Epic 3) gets
-//! strong typing for `getCollection<"blog">()`.
+//! markdown / MDX / TSX files with frontmatter that conforms to a schema.
+//! Build-time consumers call [`walk_collection`] to get validated entries.
+//! We also emit a `.zfb/types.d.ts` declaration so the TS rendering layer
+//! (Epic 3) gets strong typing for `getCollection<"blog">()`.
 
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 
+use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
 use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
-use crate::pipeline::PipelineError;
+use crate::pipeline::{Pipeline, PipelineError};
+
+/// Source kind for an [`Entry`]. Discriminator on the union of file
+/// shapes a collection may contain — used by downstream consumers (e.g.
+/// the renderer) to decide whether to compile the body via the MDX path
+/// or treat the source as a TSX module directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// Authored as `.md` or `.mdx`. Body has been stripped of YAML
+    /// frontmatter and compiled through the MDX→JSX emitter.
+    Markdown,
+    /// Authored as `.tsx`. The source IS the page module —
+    /// [`Entry::compiled_jsx_source`] is the original TSX text and
+    /// [`Entry::body`] is empty (TSX has no separate markdown body).
+    Tsx,
+}
 
 /// One file in a collection.
 ///
-/// Beyond the raw frontmatter + body, each entry carries the metadata the
+/// Beyond the validated frontmatter, each entry carries the metadata the
 /// JS-side renderer needs to mount it as a component: a stable
-/// `mdx://<collection>/<slug>#<hash>` [`module_specifier`](Self::module_specifier)
-/// the loader can route on, and the [`compiled_jsx_source`](Self::compiled_jsx_source)
-/// SWC compiles into executable JS. Both are populated up-front during
-/// [`walk_collection`] so renderers see a uniform shape for `.md` and
-/// `.mdx` alike — CommonMark is a strict MDX subset, so one emitter
-/// handles both with no per-extension branching.
+/// [`module_specifier`](Self::module_specifier) the loader can route on,
+/// and the [`compiled_jsx_source`](Self::compiled_jsx_source) SWC
+/// compiles into executable JS. Both are populated up-front during
+/// [`walk_collection`] so renderers see a uniform shape regardless of
+/// source extension.
+///
+/// For `.md` / `.mdx` entries (`kind == EntryKind::Markdown`), the body
+/// is the markdown text after frontmatter stripping and the JSX source
+/// is the MDX→JSX emitter output. For `.tsx` entries
+/// (`kind == EntryKind::Tsx`), the body is empty (no markdown) and the
+/// JSX source is the raw TSX text — SWC accepts TSX directly so no
+/// pre-compile step is needed.
 #[derive(Debug, Clone)]
 pub struct Entry<T> {
     /// Slug from filename (no extension), e.g. "my-post" from "my-post.md".
@@ -35,39 +58,58 @@ pub struct Entry<T> {
     pub rel_path: PathBuf,
     /// Validated, typed frontmatter.
     pub data: T,
-    /// Markdown body (frontmatter stripped).
+    /// Markdown body (frontmatter stripped). Empty string for TSX
+    /// entries, which have no separate markdown body.
     pub body: String,
-    /// Stable `mdx://<collection>/<slug>#<hash8>` URL the renderer (Sub 3)
-    /// uses to address this entry's compiled module. The hash is derived
-    /// from [`Self::compiled_jsx_source`] so two entries with byte-identical
-    /// bodies share the same specifier modulo the slug suffix.
+    /// Stable specifier used by the renderer to address this entry's
+    /// compiled module. Format depends on [`Self::kind`]:
+    ///
+    /// - `Markdown` → `mdx://<collection>/<slug>#<hash8>`, hash derived
+    ///   from [`Self::compiled_jsx_source`].
+    /// - `Tsx` → `tsx://<collection>/<slug>#<hash8>`, hash derived from
+    ///   [`Self::compiled_jsx_source`] (which IS the raw TSX source).
     pub module_specifier: String,
-    /// JSX module source for this entry, ready to feed into SWC. Same
-    /// shape for `.md` and `.mdx` — see the type-level docs for why.
+    /// JSX module source for this entry, ready to feed into SWC. For
+    /// `.md` / `.mdx` this is the MDX emitter output. For `.tsx` this
+    /// is the raw source — SWC handles TSX without a pre-compile step.
     pub compiled_jsx_source: String,
+    /// Discriminator for the source kind.
+    pub kind: EntryKind,
+    /// `export const extension = "…"` literal, when present. Always
+    /// `None` for `Markdown` entries; populated from the TSX export
+    /// when present for `Tsx` entries.
+    pub extension: Option<String>,
+    /// `export const contentType = "…"` literal, when present. Always
+    /// `None` for `Markdown` entries; populated from the TSX export
+    /// when present for `Tsx` entries.
+    pub content_type: Option<String>,
 }
 
 impl<T> Entry<T> {
     /// Compile this entry's body into a [`CompiledMdx`] (JSX source +
     /// content hash + `mdx://` specifier).
     ///
-    /// Sub 2 surfaces this on `Entry` so downstream code can reach the
-    /// new return value without re-deriving file-path conventions.
-    /// [`walk_collection`] uses this seam internally to populate
-    /// [`Self::module_specifier`] and [`Self::compiled_jsx_source`]; it
-    /// remains public so callers that want a fresh recompile (e.g. dev
-    /// servers reacting to a content change) can request one.
+    /// Only meaningful for `Markdown` entries. For `Tsx` entries, the
+    /// body is empty and recompiling produces a degenerate empty
+    /// module — call sites should branch on [`Self::kind`] before
+    /// invoking this.
     ///
     /// Pass `Some(&cache)` to dedupe identical bodies across calls; pass
     /// `None` for a one-shot compile.
+    ///
+    /// `pipeline` was added by Sub 46 (#46) so callers can thread a
+    /// configured [`Pipeline`] (whose mdast visitors mutate the tree
+    /// before JSX emission) through. Pass `None` to keep today's
+    /// pre-Sub-46 behaviour.
     ///
     /// # Errors
     /// Forwards [`PipelineError::Parse`] from the MDX emitter.
     pub fn compile_mdx(
         &self,
         cache: Option<&MdxModuleCache>,
+        pipeline: Option<&mut Pipeline>,
     ) -> Result<CompiledMdx, PipelineError> {
-        compile_mdx_to_jsx_module_cached(&self.body, &self.path, cache)
+        compile_mdx_to_jsx_module_cached(&self.body, &self.path, cache, pipeline)
     }
 }
 
@@ -92,47 +134,67 @@ pub enum CollectionError {
     },
 }
 
-/// Walk a collection directory, parsing + validating each `.md` / `.mdx` file.
+/// Walk a collection directory, parsing + validating each `.md`, `.mdx`,
+/// or `.tsx` file.
 ///
 /// - `dir`: collection root.
 /// - Returns `Vec<Entry<T>>` sorted by `rel_path` for deterministic ordering.
-/// - Skips non-md/mdx files silently.
+/// - Skips files with other extensions silently.
 /// - Aggregates errors: if any entry fails, returns `Err(CollectionError::Multiple { .. })`
 ///   with all failures (not just the first).
 ///
-/// Equivalent to [`walk_collection_with_cache`] called with `cache = None`
-/// — every entry's MDX is compiled fresh. Long-running consumers (a dev
-/// server, a build that touches the same collection multiple times) should
-/// prefer the `_with_cache` variant so identical bodies are emitted once.
-pub fn walk_collection<T>(dir: &Path) -> Result<Vec<Entry<T>>, CollectionError>
+/// Equivalent to [`walk_collection_with_cache`] called with
+/// `cache = None`, forwarding `pipeline` verbatim — every markdown entry's
+/// MDX is compiled fresh. Long-running consumers (a dev server, a build
+/// that touches the same collection multiple times) should prefer the
+/// `_with_cache` variant so identical bodies are emitted once. The cache
+/// is irrelevant for TSX entries (no MDX compile step).
+///
+/// `pipeline` was added by Sub 46 (#46); pass `None` to keep today's
+/// pre-Sub-46 behaviour. See [`walk_collection_with_cache`] for the full
+/// rationale.
+pub fn walk_collection<T>(
+    dir: &Path,
+    pipeline: Option<&mut Pipeline>,
+) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
-    walk_collection_with_cache(dir, None)
+    walk_collection_with_cache(dir, None, pipeline)
 }
 
-/// Walk a collection directory like [`walk_collection`], reusing `cache` to
-/// dedupe compiled MDX modules across entries.
+/// Walk a collection directory like [`walk_collection`], reusing `cache`
+/// to dedupe compiled MDX modules across markdown entries.
 ///
-/// `cache: Some(&MdxModuleCache)` short-circuits compilation when an entry's
-/// raw body has been seen before — useful when the same collection is
-/// re-walked after a partial change (only the modified file recompiles).
-/// `cache: None` recompiles every entry, matching the simple
-/// [`walk_collection`] contract.
+/// `cache: Some(&MdxModuleCache)` short-circuits compilation when an
+/// entry's raw body has been seen before — useful when the same
+/// collection is re-walked after a partial change (only the modified
+/// file recompiles). `cache: None` recompiles every entry, matching
+/// the simple [`walk_collection`] contract.
 ///
-/// Both `.md` and `.mdx` files take the same code path: CommonMark is a
-/// strict MDX subset, so one emitter handles both. Each successful entry
-/// gets its [`Entry::module_specifier`] and [`Entry::compiled_jsx_source`]
+/// `.md` and `.mdx` files take the same MDX→JSX path (CommonMark is a
+/// strict MDX subset, so one emitter handles both). `.tsx` files skip
+/// the MDX compile step entirely — the source is already JSX-shaped and
+/// the renderer feeds it straight to SWC. Each successful entry gets its
+/// [`Entry::module_specifier`] and [`Entry::compiled_jsx_source`]
 /// populated up-front so consumers see a uniform shape.
+///
+/// `pipeline` was added by Sub 46 (#46) so the JSX emit step can run a
+/// configured [`Pipeline`]'s mdast visitors against each markdown entry's
+/// body. All in-tree call sites pass `None` today, which keeps behaviour
+/// byte-for-byte identical to pre-Sub-46. The pipeline is borrowed
+/// mutably across the whole walk because its visitors take `&mut self`.
+/// TSX entries skip the pipeline entirely (no mdast tree).
 pub fn walk_collection_with_cache<T>(
     dir: &Path,
     cache: Option<&MdxModuleCache>,
+    mut pipeline: Option<&mut Pipeline>,
 ) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_md_files(dir, &mut files).map_err(|e| CollectionError::Io {
+    collect_collection_files(dir, &mut files).map_err(|e| CollectionError::Io {
         path: dir.to_path_buf(),
         source: e,
     })?;
@@ -142,7 +204,9 @@ where
     let mut errors: Vec<CollectionError> = Vec::new();
 
     for path in files {
-        match parse_entry::<T>(dir, &path, cache) {
+        // Re-borrow the pipeline for each entry so the loop can use the
+        // mutable reference across iterations without consuming it.
+        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut()) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
         }
@@ -163,7 +227,18 @@ where
 
 /// Generate a TypeScript `.d.ts` file describing one or more collections.
 ///
-/// Emits a single declaration like:
+/// Emits two `declare module` blocks side-by-side:
+///
+/// 1. `zfb-collections` — original v1 surface, one type per collection
+///    plus a `getCollection` overload. Kept for backward compatibility
+///    with existing build tooling.
+/// 2. `zfb/content` — the bridge module backing the Sub 48 content
+///    contract. Surfaces `getCollection` AND `getEntry`, both keyed by
+///    a `ZfbCollections` interface. Each collection entry includes
+///    `slug`, `data` (frontmatter as `Record<string, unknown>`), and
+///    `body` so TSX page modules can render markdown bodies on demand.
+///
+/// Example output for `["blog", "docs"]`:
 ///
 /// ```ts
 /// declare module "zfb-collections" {
@@ -173,11 +248,26 @@ where
 ///   }
 ///   export function getCollection<K extends keyof Collections>(name: K): Collections[K][];
 /// }
+///
+/// declare module "zfb/content" {
+///   export interface ZfbCollections {
+///     blog: { slug: string; data: Record<string, unknown>; body: string };
+///     docs: { slug: string; data: Record<string, unknown>; body: string };
+///   }
+///   export function getCollection<K extends keyof ZfbCollections>(name: K): ZfbCollections[K][];
+///   export function getEntry<K extends keyof ZfbCollections>(name: K, slug: string): ZfbCollections[K] | undefined;
+/// }
 /// ```
 ///
 /// **Limitation (v1):** the per-collection `data` field is typed as
 /// `Record<string, unknown>`. Full schema reflection (turning the Rust schema
 /// `T` into a precise TypeScript interface) is a follow-up.
+///
+/// A representative TS file using the new surface lives at
+/// `crates/zfb-content/tests/fixtures/sample.ts` — the
+/// `dts_typechecks_against_sample_fixture` test asserts the textual
+/// declarations referenced from there are present in the emitted
+/// `.d.ts`. Running `tsc` against the pair would produce no errors.
 pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), CollectionError> {
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -190,6 +280,9 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
 
     let mut buf = String::new();
     buf.push_str("// Auto-generated by zfb-content. Do not edit by hand.\n");
+
+    // Legacy module — kept so existing zfb-collections consumers don't
+    // break. Sub 48 (#48) added the second module below.
     buf.push_str("declare module \"zfb-collections\" {\n");
     buf.push_str("  export interface Collections {\n");
     for name in collection_names {
@@ -200,6 +293,28 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
     buf.push_str("  }\n");
     buf.push_str(
         "  export function getCollection<K extends keyof Collections>(name: K): Collections[K][];\n",
+    );
+    buf.push_str("}\n");
+
+    // New `zfb/content` module — the bridge surface specified in #48.
+    // Mirrors `globalThis.__zfb.content.get(name)` /
+    // `globalThis.__zfb.content.getOne(name, slug)`. See
+    // `docs/architecture/adr-004-content-bridge.md` for the full
+    // contract.
+    buf.push('\n');
+    buf.push_str("declare module \"zfb/content\" {\n");
+    buf.push_str("  export interface ZfbCollections {\n");
+    for name in collection_names {
+        buf.push_str(&format!(
+            "    {name}: {{ slug: string; data: Record<string, unknown>; body: string }};\n"
+        ));
+    }
+    buf.push_str("  }\n");
+    buf.push_str(
+        "  export function getCollection<K extends keyof ZfbCollections>(name: K): ZfbCollections[K][];\n",
+    );
+    buf.push_str(
+        "  export function getEntry<K extends keyof ZfbCollections>(name: K, slug: string): ZfbCollections[K] | undefined;\n",
     );
     buf.push_str("}\n");
 
@@ -219,7 +334,7 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
 // internals
 // -----------------------------------------------------------------------------
 
-fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_collection_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -228,18 +343,18 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_md_files(&path, out)?;
-        } else if file_type.is_file() && is_md_or_mdx(&path) {
+            collect_collection_files(&path, out)?;
+        } else if file_type.is_file() && is_collection_entry(&path) {
             out.push(path);
         }
     }
     Ok(())
 }
 
-fn is_md_or_mdx(path: &Path) -> bool {
+fn is_collection_entry(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
-        Some("md") | Some("mdx")
+        Some("md") | Some("mdx") | Some("tsx")
     )
 }
 
@@ -247,6 +362,7 @@ fn parse_entry<T>(
     root: &Path,
     path: &Path,
     cache: Option<&MdxModuleCache>,
+    pipeline: Option<&mut Pipeline>,
 ) -> Result<Entry<T>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -256,14 +372,19 @@ where
         source: e,
     })?;
 
-    let (yaml, body) = split_frontmatter(&raw).map_err(|message| CollectionError::Frontmatter {
-        path: path.to_path_buf(),
-        message,
-    })?;
+    // Dispatch to the unified frontmatter API. YAML for .md/.mdx,
+    // `export const frontmatter` for .tsx — both normalised to JSON.
+    let uf = frontmatter::extract(path, &raw).map_err(|e| frontmatter_to_collection_error(path, e))?;
 
-    let data: T = serde_yaml::from_str(yaml).map_err(|e| CollectionError::Frontmatter {
-        path: path.to_path_buf(),
-        message: e.to_string(),
+    // serde_json::from_value clones the JSON into the typed schema. We
+    // route through JSON instead of bypassing it (e.g. via untyped
+    // YAML) so schema validation downstream sees the exact same value
+    // shape regardless of source kind.
+    let data: T = serde_json::from_value(uf.value.clone()).map_err(|e| {
+        CollectionError::Frontmatter {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        }
     })?;
 
     data.validate().map_err(|report| CollectionError::Schema {
@@ -279,28 +400,56 @@ where
 
     let rel_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
-    // Compile body to JSX (same path for `.md` and `.mdx` — CommonMark is a
-    // strict MDX subset). The cache opt-in means repeat walks of an
-    // unchanged corpus skip the emitter entirely.
-    let compiled =
-        compile_mdx_to_jsx_module_cached(&body, path, cache).map_err(|e| CollectionError::Mdx {
-            path: path.to_path_buf(),
-            message: e.to_string(),
-        })?;
+    let UnifiedFrontmatter {
+        body,
+        extension,
+        content_type,
+        ..
+    } = uf;
 
-    // Derive the specifier from THIS entry's file path + the JSX hash
-    // rather than reusing `compiled.specifier` directly. The cache from
-    // Sub 2 keys on `sha256(body)` and returns the cached
-    // `CompiledMdx` verbatim — including the specifier baked at first
-    // compile. Two entries with byte-identical bodies but different
-    // filenames must still each get a specifier whose `<slug>` segment
-    // matches their own file. The hash component is invariant (same
-    // body → same JSX → same hash), so it's safe to reuse.
     let (collection_seg, slug_seg) = collection_and_slug_from_path(path);
-    let module_specifier = format!(
-        "mdx://{collection_seg}/{slug_seg}#{hash}",
-        hash = compiled.content_hash,
-    );
+
+    let kind = entry_kind_from_path(path);
+    let (body, compiled_jsx_source, module_specifier) = match kind {
+        EntryKind::Markdown => {
+            let md_body = body.unwrap_or_default();
+            // Compile body to JSX (same path for `.md` and `.mdx` —
+            // CommonMark is a strict MDX subset). The cache opt-in
+            // means repeat walks of an unchanged corpus skip the
+            // emitter entirely. Sub 46 (#46) plumbs an optional
+            // [`Pipeline`] through; today's callers pass `None`.
+            let compiled = compile_mdx_to_jsx_module_cached(&md_body, path, cache, pipeline)
+                .map_err(|e| {
+                CollectionError::Mdx {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                }
+            })?;
+            // Derive the specifier from THIS entry's file path + the
+            // JSX hash rather than reusing `compiled.specifier`
+            // directly. The cache from Sub 2 keys on `sha256(body)` and
+            // returns the cached `CompiledMdx` verbatim — including
+            // the specifier baked at first compile. Two entries with
+            // byte-identical bodies but different filenames must still
+            // each get a specifier whose `<slug>` segment matches their
+            // own file. The hash component is invariant (same body →
+            // same JSX → same hash), so it's safe to reuse.
+            let specifier = format!(
+                "mdx://{collection_seg}/{slug_seg}#{hash}",
+                hash = compiled.content_hash,
+            );
+            (md_body, compiled.jsx_source, specifier)
+        }
+        EntryKind::Tsx => {
+            // TSX is already JSX-shaped — SWC accepts it as-is. The
+            // body field is empty by convention (no markdown body).
+            // Specifier scheme is `tsx://` so the renderer can dispatch
+            // on prefix without re-reading the source.
+            let hash = hash_8(&raw);
+            let specifier = format!("tsx://{collection_seg}/{slug_seg}#{hash}");
+            (String::new(), raw.clone(), specifier)
+        }
+    };
 
     Ok(Entry {
         slug,
@@ -309,16 +458,50 @@ where
         data,
         body,
         module_specifier,
-        compiled_jsx_source: compiled.jsx_source,
+        compiled_jsx_source,
+        kind,
+        extension,
+        content_type,
     })
 }
 
-/// Derive the `(collection, slug)` segments of an `mdx://` specifier from
+fn entry_kind_from_path(path: &Path) -> EntryKind {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some("tsx") => EntryKind::Tsx,
+        // Markdown is the default — `is_collection_entry` already
+        // gated the walker so other extensions never reach here.
+        _ => EntryKind::Markdown,
+    }
+}
+
+/// Convert a [`FrontmatterError`] into the closest [`CollectionError`]
+/// variant. YAML / TSX / unsupported-extension cases all collapse onto
+/// `Frontmatter` — the walker's caller treats them as a "this file's
+/// frontmatter could not be loaded" failure regardless of cause.
+fn frontmatter_to_collection_error(path: &Path, err: FrontmatterError) -> CollectionError {
+    CollectionError::Frontmatter {
+        path: path.to_path_buf(),
+        message: err.to_string(),
+    }
+}
+
+/// First 8 lowercase-hex chars of `sha256(input)`. Mirrors the dialect
+/// used by [`compile_mdx_to_jsx_module_cached`] so MDX and TSX
+/// specifiers share one hashing convention.
+fn hash_8(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let full = hex::encode(digest);
+    full[..8].to_string()
+}
+
+/// Derive the `(collection, slug)` segments of a module specifier from
 /// a content-collection file path. Mirrors the convention documented on
 /// `compile_mdx_to_jsx_module_cached`: the immediate parent directory's
-/// name is the collection, the file stem is the slug. Falls back to `"_"`
-/// for either segment when the path lacks a parent or stem so the result
-/// stays a parseable specifier.
+/// name is the collection, the file stem is the slug. Falls back to
+/// `"_"` for either segment when the path lacks a parent or stem so
+/// the result stays a parseable specifier.
 fn collection_and_slug_from_path(file_path: &Path) -> (String, String) {
     let collection = file_path
         .parent()
@@ -334,72 +517,6 @@ fn collection_and_slug_from_path(file_path: &Path) -> (String, String) {
         .unwrap_or("_")
         .to_string();
     (collection, slug)
-}
-
-/// Minimal YAML frontmatter splitter: returns `(yaml_block, body)`.
-///
-/// Recognises the standard `---\n<yaml>\n---\n` opening fence. If the file
-/// does not start with a frontmatter fence, returns `("", whole_file)`. If
-/// the opening fence is present but the closing fence is missing, returns
-/// an error.
-///
-/// NOTE: kept private + minimal on purpose — Sub 2 will deliver
-/// `crate::frontmatter::parse`. After Wave 2 merges, a follow-up could swap
-/// to that shared parser.
-fn split_frontmatter(input: &str) -> Result<(&str, String), String> {
-    // Strip optional UTF-8 BOM.
-    let s = input.strip_prefix('\u{feff}').unwrap_or(input);
-
-    // Detect + skip past an opening "---\n" (or "---\r\n") fence. If the file
-    // does not start with a frontmatter fence, treat the entire file as body
-    // and return an empty YAML block.
-    let after_open = if let Some(rest) = s.strip_prefix("---\n") {
-        rest
-    } else if let Some(rest) = s.strip_prefix("---\r\n") {
-        rest
-    } else {
-        return Ok(("", s.to_string()));
-    };
-
-    // Find a closing fence: a line that is exactly "---".
-    // We scan line by line to locate it.
-    let mut yaml_end: Option<usize> = None; // byte offset within after_open where yaml ends
-    let mut body_start: Option<usize> = None; // byte offset within after_open where body starts
-    let bytes = after_open.as_bytes();
-    let mut line_start = 0usize;
-    let mut i = 0usize;
-    while i <= bytes.len() {
-        let at_eol = i == bytes.len() || bytes[i] == b'\n';
-        if at_eol {
-            // Determine the line slice (excluding trailing \r if present).
-            let mut line_end = i;
-            if line_end > line_start && bytes[line_end - 1] == b'\r' {
-                line_end -= 1;
-            }
-            let line = &after_open[line_start..line_end];
-            if line == "---" {
-                yaml_end = Some(line_start);
-                // Body starts after this line's terminating newline (or end of input).
-                body_start = Some(if i < bytes.len() { i + 1 } else { i });
-                break;
-            }
-            line_start = i + 1;
-        }
-        i += 1;
-    }
-
-    let (yaml_end, body_start) = match (yaml_end, body_start) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return Err("missing closing '---' fence for frontmatter".to_string()),
-    };
-
-    let yaml = &after_open[..yaml_end];
-    let body = if body_start <= after_open.len() {
-        after_open[body_start..].to_string()
-    } else {
-        String::new()
-    };
-    Ok((yaml, body))
 }
 
 // -----------------------------------------------------------------------------
@@ -462,10 +579,17 @@ mod tests {
         format!("---\ntitle: \"{title}\"\n---\nbody for {title}\n")
     }
 
+    fn valid_tsx(title: &str) -> String {
+        format!(
+            "export const frontmatter = {{ title: '{title}' }};\n\
+             export default function Page() {{ return null; }}\n"
+        )
+    }
+
     #[test]
     fn walk_empty_directory_returns_empty_vec() {
         let tmp = TmpDir::new("empty");
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert!(out.is_empty());
     }
 
@@ -473,13 +597,17 @@ mod tests {
     fn walk_one_valid_md_file() {
         let tmp = TmpDir::new("one-md");
         tmp.write("hello.md", &valid_md("Hello"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         let e = &out[0];
         assert_eq!(e.slug, "hello");
         assert_eq!(e.data.title, "Hello");
         assert_eq!(e.rel_path, PathBuf::from("hello.md"));
         assert!(e.body.contains("body for Hello"));
+        assert_eq!(e.kind, EntryKind::Markdown);
+        assert!(e.extension.is_none());
+        assert!(e.content_type.is_none());
+        assert!(e.module_specifier.starts_with("mdx://"));
         assert!(e.path.is_absolute() || e.path.exists());
     }
 
@@ -487,10 +615,67 @@ mod tests {
     fn walk_one_mdx_file_same_handling() {
         let tmp = TmpDir::new("one-mdx");
         tmp.write("post.mdx", &valid_md("Post"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, "post");
         assert_eq!(out[0].rel_path, PathBuf::from("post.mdx"));
+        assert_eq!(out[0].kind, EntryKind::Markdown);
+    }
+
+    #[test]
+    fn walk_one_valid_tsx_file() {
+        let tmp = TmpDir::new("one-tsx");
+        tmp.write("page.tsx", &valid_tsx("Tsx Page"));
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 1);
+        let e = &out[0];
+        assert_eq!(e.slug, "page");
+        assert_eq!(e.data.title, "Tsx Page");
+        assert_eq!(e.rel_path, PathBuf::from("page.tsx"));
+        assert_eq!(e.kind, EntryKind::Tsx);
+        assert!(e.body.is_empty(), "tsx entries have no markdown body");
+        assert!(
+            e.compiled_jsx_source.contains("export const frontmatter"),
+            "tsx source should be carried verbatim into compiled_jsx_source",
+        );
+        assert!(e.module_specifier.starts_with("tsx://"));
+    }
+
+    #[test]
+    fn walk_tsx_with_extension_and_content_type_exports() {
+        let tmp = TmpDir::new("tsx-ext-ct");
+        tmp.write(
+            "feed.tsx",
+            "export const frontmatter = { title: 'Feed' };\n\
+             export const extension = 'xml';\n\
+             export const contentType = 'application/rss+xml';\n\
+             export default function Feed() { return null; }\n",
+        );
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 1);
+        let e = &out[0];
+        assert_eq!(e.kind, EntryKind::Tsx);
+        assert_eq!(e.extension.as_deref(), Some("xml"));
+        assert_eq!(e.content_type.as_deref(), Some("application/rss+xml"));
+    }
+
+    #[test]
+    fn walk_mixed_md_mdx_tsx_collection() {
+        let tmp = TmpDir::new("mixed");
+        tmp.write("a-md.md", &valid_md("Alpha"));
+        tmp.write("b-mdx.mdx", &valid_md("Beta"));
+        tmp.write("c-tsx.tsx", &valid_tsx("Gamma"));
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 3, "all three extensions should walk");
+        let titles: Vec<&str> = out.iter().map(|e| e.data.title.as_str()).collect();
+        assert!(titles.contains(&"Alpha"));
+        assert!(titles.contains(&"Beta"));
+        assert!(titles.contains(&"Gamma"));
+        // Schema validation (garde length(min=1)) ran against the
+        // normalized JSON for every kind.
+        for e in &out {
+            assert!(!e.data.title.is_empty());
+        }
     }
 
     #[test]
@@ -499,26 +684,27 @@ mod tests {
         tmp.write("b.md", &valid_md("B"));
         tmp.write("nested/a.md", &valid_md("A"));
         tmp.write("nested/deep/c.mdx", &valid_md("C"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
-        assert_eq!(out.len(), 3);
+        tmp.write("nested/deep/d.tsx", &valid_tsx("D"));
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 4);
         let rels: Vec<_> = out.iter().map(|e| e.rel_path.clone()).collect();
         let mut sorted = rels.clone();
         sorted.sort();
         assert_eq!(rels, sorted, "entries should be sorted by rel_path");
-        // Sanity: the three files are all present.
         assert!(rels.contains(&PathBuf::from("b.md")));
         assert!(rels.contains(&PathBuf::from("nested/a.md")));
         assert!(rels.contains(&PathBuf::from("nested/deep/c.mdx")));
+        assert!(rels.contains(&PathBuf::from("nested/deep/d.tsx")));
     }
 
     #[test]
-    fn walk_skips_non_md_or_mdx_files() {
+    fn walk_skips_unrelated_extensions() {
         let tmp = TmpDir::new("skips");
         tmp.write("post.md", &valid_md("Post"));
         tmp.write("README.txt", "just text");
         tmp.write("image.png", "not really png");
         tmp.write("notes.markdown", "wrong extension");
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, "post");
     }
@@ -528,7 +714,26 @@ mod tests {
         let tmp = TmpDir::new("bad-yaml");
         // Open fence + intentionally broken YAML + close fence.
         tmp.write("bad.md", "---\ntitle: [unclosed\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
+        match err {
+            CollectionError::Multiple { errors, .. } => {
+                assert_eq!(errors.len(), 1);
+                assert!(matches!(errors[0], CollectionError::Frontmatter { .. }));
+            }
+            other => panic!("expected Multiple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_tsx_frontmatter_yields_frontmatter_error() {
+        let tmp = TmpDir::new("bad-tsx");
+        // Missing `export const frontmatter` → TsxFrontmatterError flows
+        // through extract → CollectionError::Frontmatter.
+        tmp.write(
+            "bad.tsx",
+            "export default function Page() { return null; }\n",
+        );
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -543,7 +748,29 @@ mod tests {
         let tmp = TmpDir::new("bad-schema");
         // Empty title violates length(min=1).
         tmp.write("empty.md", "---\ntitle: \"\"\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
+        match err {
+            CollectionError::Multiple { errors, .. } => {
+                assert_eq!(errors.len(), 1);
+                assert!(matches!(errors[0], CollectionError::Schema { .. }));
+            }
+            other => panic!("expected Multiple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_validation_runs_against_tsx_entry() {
+        let tmp = TmpDir::new("tsx-schema");
+        // Empty title (string literal) violates garde length(min=1)
+        // even though it parsed cleanly out of the TSX AST. Confirms
+        // that validation operates on the normalized JSON regardless
+        // of source kind.
+        tmp.write(
+            "empty.tsx",
+            "export const frontmatter = { title: '' };\n\
+             export default function Page() { return null; }\n",
+        );
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -559,7 +786,7 @@ mod tests {
         tmp.write("ok.md", &valid_md("OK"));
         tmp.write("bad-yaml.md", "---\ntitle: [unclosed\n---\n");
         tmp.write("bad-schema.md", "---\ntitle: \"\"\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, summary } => {
                 assert_eq!(errors.len(), 2, "expected 2 aggregated errors");
@@ -587,9 +814,96 @@ mod tests {
         let out = tmp.path().join(".zfb").join("types.d.ts");
         emit_types_dts(&out, &["blog", "docs"]).unwrap();
         let s = fs::read_to_string(&out).unwrap();
+        // Legacy module declarations (preserved for backward compat).
         assert!(s.contains("declare module \"zfb-collections\""));
         assert!(s.contains("blog:"));
         assert!(s.contains("docs:"));
         assert!(s.contains("getCollection"));
+        // New zfb/content surface (Sub 48).
+        assert!(s.contains("declare module \"zfb/content\""));
+        assert!(s.contains("ZfbCollections"));
+        assert!(s.contains("getEntry"));
+        assert!(s.contains("body: string"));
+    }
+
+    /// Golden test: pin the exact textual output of `emit_types_dts` so
+    /// any change to the declaration shape is loud. The string below is
+    /// the canonical contract — when it changes, the bridge consumers
+    /// (and the JS-side spec in adr-004) need to change with it.
+    #[test]
+    fn emit_types_dts_matches_golden() {
+        let tmp = TmpDir::new("dts-golden");
+        let out = tmp.path().join("types.d.ts");
+        emit_types_dts(&out, &["blog", "docs"]).unwrap();
+        let actual = fs::read_to_string(&out).unwrap();
+        let expected = "// Auto-generated by zfb-content. Do not edit by hand.\n\
+declare module \"zfb-collections\" {\n\
+\x20\x20export interface Collections {\n\
+\x20\x20\x20\x20blog: { slug: string; data: Record<string, unknown> };\n\
+\x20\x20\x20\x20docs: { slug: string; data: Record<string, unknown> };\n\
+\x20\x20}\n\
+\x20\x20export function getCollection<K extends keyof Collections>(name: K): Collections[K][];\n\
+}\n\
+\n\
+declare module \"zfb/content\" {\n\
+\x20\x20export interface ZfbCollections {\n\
+\x20\x20\x20\x20blog: { slug: string; data: Record<string, unknown>; body: string };\n\
+\x20\x20\x20\x20docs: { slug: string; data: Record<string, unknown>; body: string };\n\
+\x20\x20}\n\
+\x20\x20export function getCollection<K extends keyof ZfbCollections>(name: K): ZfbCollections[K][];\n\
+\x20\x20export function getEntry<K extends keyof ZfbCollections>(name: K, slug: string): ZfbCollections[K] | undefined;\n\
+}\n";
+        assert_eq!(
+            actual, expected,
+            "emit_types_dts output drifted from the golden contract",
+        );
+    }
+
+    /// The sample.ts fixture exercises the full bridge surface using
+    /// only types declared in the emitted `.d.ts`. We do not invoke
+    /// `tsc` here (no Node toolchain in `cargo test`); instead, we
+    /// assert the symbols the fixture references appear in the
+    /// generated `.d.ts` text. If any of these strings drift, the
+    /// fixture would stop typechecking — keeping this assertion green
+    /// is the easy way to catch that without an external toolchain.
+    #[test]
+    fn dts_typechecks_against_sample_fixture() {
+        let tmp = TmpDir::new("dts-sample");
+        let out = tmp.path().join("types.d.ts");
+        emit_types_dts(&out, &["blog"]).unwrap();
+        let dts = fs::read_to_string(&out).unwrap();
+
+        let sample_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sample.ts");
+        assert!(
+            sample_path.exists(),
+            "fixture not found at {}",
+            sample_path.display(),
+        );
+        let sample = fs::read_to_string(&sample_path).unwrap();
+
+        // Symbols the fixture imports / references must all be declared
+        // in the generated d.ts.
+        for needle in [
+            "declare module \"zfb/content\"",
+            "export function getCollection",
+            "export function getEntry",
+            "blog: { slug: string; data: Record<string, unknown>; body: string };",
+        ] {
+            assert!(
+                dts.contains(needle),
+                "expected {needle:?} in emitted d.ts:\n{dts}",
+            );
+        }
+
+        // And the fixture must actually exercise these symbols.
+        for needle in ["from \"zfb/content\"", "getCollection(", "getEntry("] {
+            assert!(
+                sample.contains(needle),
+                "expected {needle:?} in sample.ts:\n{sample}",
+            );
+        }
     }
 }

@@ -19,7 +19,15 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
+use std::sync::Arc;
+
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
+
+use crate::plugins::{
+    AdmonitionsPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin,
+    SyntectPlugin,
+};
+use crate::syntect_highlight::Highlighter;
 
 /// Lightweight HTML AST node.
 ///
@@ -115,6 +123,84 @@ impl Pipeline {
         }
     }
 
+    /// New pipeline preloaded with the project's default plugin chain.
+    ///
+    /// This is the entry point most orchestrator call sites want: it
+    /// bundles the directive registry (via [`AdmonitionsPlugin`]) plus
+    /// the five custom hast plugins so a `:::note` block compiles to
+    /// `<Note>…</Note>`, headings get permalink anchors, code blocks
+    /// get figure wrappers + syntect highlighting, mermaid blocks are
+    /// flagged for client-side rendering, and width-bearing `<img>`
+    /// tags become `<ImageEnlarge>` markers — all without manual
+    /// plugin wiring at the call site.
+    ///
+    /// Callers that need a different mix should construct a pipeline
+    /// via [`Pipeline::with_mdx`] (or [`Pipeline::new`]) and append
+    /// only the visitors they want.
+    ///
+    /// # Visitor order
+    ///
+    /// The pipeline runs in two distinct phases — mdast (markdown AST,
+    /// pre-HTML) then hast (HTML AST, post-conversion). Each plugin is
+    /// registered in the phase that best matches the rewrite it does:
+    ///
+    /// **mdast phase** (run first, against the parsed markdown tree):
+    ///
+    /// 1. [`AdmonitionsPlugin`] — directive-style transforms run on
+    ///    mdast because [`DirectiveRegistry`] folds runs of paragraphs
+    ///    delimited by `:::name` … `:::` into a single
+    ///    [`MdxJsxFlowElement`]. That collapsing has to happen before
+    ///    the mdast→hast conversion, or each `:::` line would already
+    ///    be its own `<p>` element and the collapse would have to walk
+    ///    arbitrary HTML structure to recover the run.
+    ///
+    /// **hast phase** (run after mdast→hast conversion, in this order):
+    ///
+    /// 2. [`HeadingLinksPlugin`] — adds `id` + permalink anchor to
+    ///    `<h2>`–`<h6>`. Runs first in the hast phase so subsequent
+    ///    plugins that might rewrite headings (none today, but the
+    ///    door is open) see the slugified ids.
+    /// 3. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
+    ///    in `<figure>` + `<figcaption>`. Must run BEFORE
+    ///    [`SyntectPlugin`] because syntect replaces the whole `<pre>`
+    ///    with a [`HastNode::Raw`] HTML fragment; once that happens,
+    ///    the `data-meta` attribute is no longer reachable.
+    /// 4. [`ImageEnlargePlugin`] — replaces `<img>` elements that have
+    ///    an explicit `width` attribute with `<ImageEnlarge>` JSX
+    ///    markers. Order-independent relative to syntect/mermaid (it
+    ///    only touches `<img>`).
+    /// 5. [`MermaidPlugin`] — flags `<pre><code class="language-mermaid">`
+    ///    blocks with `data-mermaid="true"`. Must run BEFORE
+    ///    [`SyntectPlugin`] so the latter can identify and skip
+    ///    mermaid blocks rather than syntect-highlighting them.
+    /// 6. [`SyntectPlugin`] — replaces remaining fenced code blocks
+    ///    with syntect-highlighted HTML. Runs last in the code-block
+    ///    chain so the title-figure wrapper and the mermaid-skip
+    ///    decision are already baked in.
+    ///
+    /// `ResolveLinksPlugin` and `StripMdExtensionPlugin` are NOT in
+    /// the defaults: the former needs a project-specific path-to-URL
+    /// `source_map` so the orchestrator constructs it explicitly, and
+    /// the latter is opt-in for sites whose authors hand-write
+    /// `[link](other.md)` style references.
+    ///
+    /// [`DirectiveRegistry`]: crate::plugins::DirectiveRegistry
+    /// [`MdxJsxFlowElement`]: markdown::mdast::MdxJsxFlowElement
+    #[must_use]
+    pub fn with_defaults() -> Self {
+        let highlighter = Arc::new(Highlighter::new());
+        let mut p = Self::with_mdx();
+        // mdast phase.
+        p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+        // hast phase — ordering rationale lives in the doc comment above.
+        p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+        p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
+        p.add_hast_visitor(Box::new(MermaidPlugin::new()));
+        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+        p
+    }
+
     /// Append an mdast visitor; visitors run in insertion order.
     pub fn add_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) -> &mut Self {
         self.mdast_visitors.push(v);
@@ -125,6 +211,21 @@ impl Pipeline {
     pub fn add_hast_visitor(&mut self, v: Box<dyn HastVisitor>) -> &mut Self {
         self.hast_visitors.push(v);
         self
+    }
+
+    /// Run only the mdast visitor chain against an externally-parsed
+    /// mdast tree.
+    ///
+    /// Sub 46 (#46) added this seam so the JSX emit path
+    /// (`mdx_jsx_emit::compile_mdx_to_jsx_module_cached`) can apply the
+    /// pipeline's mdast visitors without going through full
+    /// [`Pipeline::run`] (which would also build a hast tree the JSX
+    /// emitter does not consume). Hast visitors stay untouched here —
+    /// they are applied by [`Pipeline::run`] only.
+    pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
+        for v in &mut self.mdast_visitors {
+            v.visit(node);
+        }
     }
 
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
@@ -629,6 +730,43 @@ mod tests {
                     self.visit(c);
                 }
             }
+        }
+    }
+
+    // 13. with_defaults wires the directive registry — `:::note`
+    // becomes `<Note>…</Note>` without manual plugin wiring.
+    #[test]
+    fn with_defaults_wires_directive_registry() {
+        let mut p = Pipeline::with_defaults();
+        let h = p
+            .run(":::note\n\nbody\n\n:::\n")
+            .expect("pipeline runs ok");
+        let mut raws = Vec::new();
+        collect_raw(&h, &mut raws);
+        assert!(
+            raws.iter()
+                .any(|r| r.contains("<Note") && r.contains("</Note>")),
+            "expected a <Note>…</Note> Raw block, got raws={raws:?}",
+        );
+    }
+
+    // 14. Pipeline::new() / with_mdx() stay plugin-free so callers can
+    // opt out of the defaults.
+    #[test]
+    fn new_and_with_mdx_have_no_plugins() {
+        // `:::note` should NOT collapse into a <Note> element when the
+        // caller picks the no-plugins constructor — the paragraph runs
+        // through to hast as plain `<p>:::note</p>` etc.
+        for mut p in [Pipeline::new(), Pipeline::with_mdx()] {
+            let h = p
+                .run(":::note\n\nbody\n\n:::\n")
+                .expect("pipeline runs ok");
+            let mut raws = Vec::new();
+            collect_raw(&h, &mut raws);
+            assert!(
+                !raws.iter().any(|r| r.contains("<Note")),
+                "no-plugins pipeline must not synthesize <Note>; got raws={raws:?}",
+            );
         }
     }
 

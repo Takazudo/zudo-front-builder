@@ -100,7 +100,7 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
 fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
     // Build raw segment list. Drop the file extension; treat `index` as the
     // empty segment.
-    let mut raw_segments: Vec<&str> = Vec::new();
+    let mut raw_segments: Vec<String> = Vec::new();
     let components: Vec<&str> = rel
         .components()
         .filter_map(|c| match c {
@@ -109,30 +109,59 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
         })
         .collect();
 
+    // Output extension hint from the filename convention. Filled in
+    // when the last component matches `<stem>.<ext>.tsx` (or `.ts`).
+    // `index.tsx` and `about.tsx` carry no hint; `sitemap.xml.tsx`
+    // carries `Some("xml")`.
+    let mut output_extension: Option<String> = None;
+
     let last_idx = components.len().saturating_sub(1);
     for (i, comp) in components.iter().enumerate() {
         if i == last_idx {
-            // Strip `.tsx` extension.
-            let stem = comp.strip_suffix(".tsx").unwrap_or(comp);
-            if stem == "index" {
-                // Index file contributes no segment.
+            // Strip the source extension (`.tsx` or `.ts`). Everything
+            // that survives is part of the URL segment — including any
+            // intermediate dots like `sitemap.xml`.
+            let stem = strip_source_extension(comp);
+
+            // Filename convention: the LAST `.`-separated segment of
+            // the surviving stem (if any) is the output-file
+            // extension. Multi-dot stems like `api.v2.json` keep the
+            // earlier dots as part of the URL and yield only `json`.
+            //
+            // We exclude `index` (no extension) and stems with a
+            // single token, which look like normal pages.
+            if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
+                if !before_dot.is_empty() && !after_dot.is_empty() {
+                    output_extension = Some(after_dot.to_string());
+                }
+            }
+
+            // Index special-case applies to the "stem-before-extension".
+            // `index.tsx` → no segment. `index.xml.tsx` → URL is the
+            // parent path, file is `index.xml` (handled by the
+            // route's output_filename helper later).
+            let index_marker = match stem.split_once('.') {
+                Some((head, _)) => head == "index",
+                None => stem == "index",
+            };
+            if index_marker {
                 continue;
             }
-            raw_segments.push(stem);
+            raw_segments.push(stem.to_string());
         } else {
-            raw_segments.push(comp);
+            raw_segments.push((*comp).to_string());
         }
     }
 
     let mut segments: Vec<Segment> = Vec::with_capacity(raw_segments.len());
     let total = raw_segments.len();
-    for (i, raw) in raw_segments.into_iter().enumerate() {
+    for (i, raw) in raw_segments.iter().enumerate() {
         let parsed = parse_segment(source, raw)?;
         if let Segment::Catchall(_) = &parsed {
             if i != total - 1 {
                 return Err(RouterError::CatchallNotLast {
                     path: source.to_path_buf(),
-                    segment: raw.to_string(),
+                    segment: raw.clone(),
                 });
             }
         }
@@ -147,7 +176,26 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
         segments,
         kind,
         specificity,
+        output_extension,
     })
+}
+
+/// Strip the source-language extension (`.tsx` or `.ts`) from a filename
+/// component. Returns the input unchanged when the component does not
+/// end with one of those extensions.
+///
+/// The router accepts only `.tsx` files today (the scan loop filters
+/// before calling [`parse_route`]); the `.ts` branch is here so the
+/// filename rule is honoured consistently if a future revision opens
+/// the door to `.ts` page sources.
+fn strip_source_extension(component: &str) -> &str {
+    if let Some(stem) = component.strip_suffix(".tsx") {
+        return stem;
+    }
+    if let Some(stem) = component.strip_suffix(".ts") {
+        return stem;
+    }
+    component
 }
 
 /// Parse a single path component into a [`Segment`].
@@ -321,6 +369,7 @@ mod tests {
         let r = route_from("about.tsx");
         assert_eq!(r.template(), "/about");
         assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
     }
 
     #[test]
@@ -329,6 +378,7 @@ mod tests {
         assert_eq!(r.template(), "/");
         assert!(r.segments.is_empty());
         assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
     }
 
     #[test]
@@ -363,5 +413,61 @@ mod tests {
         let p = PathBuf::from("blog/[].tsx");
         let err = parse_route(&p, &p).unwrap_err();
         assert!(matches!(err, RouterError::InvalidSegment { .. }));
+    }
+
+    // ---- non-HTML page convention (Sub 49) -------------------------------
+
+    #[test]
+    fn extension_convention_xml() {
+        // `pages/sitemap.xml.tsx` → URL `/sitemap.xml`, output extension xml.
+        let r = route_from("sitemap.xml.tsx");
+        assert_eq!(r.template(), "/sitemap.xml");
+        assert_eq!(r.output_extension.as_deref(), Some("xml"));
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(
+            r.output_filename(None),
+            PathBuf::from("sitemap.xml"),
+        );
+    }
+
+    #[test]
+    fn extension_convention_multi_dot() {
+        // Only the LAST dot before `.tsx` counts; earlier dots are
+        // part of the URL.
+        let r = route_from("api.v2.json.tsx");
+        assert_eq!(r.template(), "/api.v2.json");
+        assert_eq!(r.output_extension.as_deref(), Some("json"));
+        assert_eq!(
+            r.output_filename(None),
+            PathBuf::from("api.v2.json"),
+        );
+    }
+
+    #[test]
+    fn frontmatter_extension_override_replaces_filename_extension() {
+        // `pages/sitemap.xml.tsx` with frontmatter `extension: "rss"`
+        // should write to `sitemap.rss`.
+        let r = route_from("sitemap.xml.tsx");
+        assert_eq!(
+            r.output_filename(Some("rss")),
+            PathBuf::from("sitemap.rss"),
+        );
+    }
+
+    #[test]
+    fn html_default_uses_directory_index() {
+        // No filename extension and no frontmatter override → standard
+        // `<path>/index.html` layout.
+        let about = route_from("about.tsx");
+        assert_eq!(about.output_filename(None), PathBuf::from("about/index.html"));
+
+        let root = route_from("index.tsx");
+        assert_eq!(root.output_filename(None), PathBuf::from("index.html"));
+
+        let nested = route_from("blog/index.tsx");
+        assert_eq!(
+            nested.output_filename(None),
+            PathBuf::from("blog/index.html"),
+        );
     }
 }
