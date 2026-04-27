@@ -7,13 +7,6 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 
 [lib]
 
-[features]
-# `deno_core_host` gates the V8/deno_core-backed RenderHost implementation.
-# It is opt-in for now while ADR-001 is being finalised; the crate skeleton
-# (trait + SWC pipeline + orchestrator) compiles and tests without it.
-default = []
-deno_core_host = ["dep:deno_core", "dep:tokio"]
-
 [dependencies]
 # Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
 # `mdx://` specifiers through `mdx_to_jsx_module` before handing the
@@ -35,10 +28,6 @@ swc_core = { workspace = true, features = [
     "ecma_transforms_typescript",
     "ecma_visit",
 ] }
-
-# JS runtime (gated behind `deno_core_host` while ADR-001 is being finalised).
-deno_core = { version = "0.399", optional = true }
-tokio = { version = "1", features = ["rt", "macros", "sync"], optional = true }
 
 # Shared helpers.
 serde = { workspace = true }
