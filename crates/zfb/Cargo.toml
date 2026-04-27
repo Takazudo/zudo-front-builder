@@ -25,7 +25,9 @@ serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }
 zfb-build = { path = "../zfb-build" }
+zfb-content = { path = "../zfb-content" }
 zfb-graph = { path = "../zfb-graph" }
+zfb-render = { path = "../zfb-render" }
 zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
 zfb-watcher = { path = "../zfb-watcher" }

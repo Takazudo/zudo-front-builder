@@ -6,64 +6,65 @@
 //! `args.outdir` is the production output directory (default `dist`).
 //! Resolved relative to the current working directory if not absolute.
 //!
-//! ## v1 scope (post Wave 2 / Sub 5 + Sub 3 + zfb-router wiring)
+//! ## v1 → wave-3 transition
 //!
-//! What this build now does:
+//! Earlier waves emitted a placeholder `<h1>zfb build (v1 stub)</h1>`
+//! page per static route. Wave 3 (T7) replaces that path with the real
+//! SSG-render pipeline, wiring the wave-2 outputs together:
 //!
-//! 1. Validates we're inside something that looks like a project root
-//!    (presence of a `pages/` directory).
-//! 2. Loads `zfb.config.{json,ts}` via `crate::config::load_from_dir`. JSON
-//!    parses; TS surfaces a clear "not yet supported" error. The CLI's
-//!    `--outdir` always wins over the loaded config (matches cmd-dev's
-//!    "CLI overrides config" contract — clap sets the default to "dist", so
-//!    by the time we see the value here it is always present).
-//! 3. Runs `zfb_router::Router::scan` on `pages/` to enumerate routes.
-//! 4. For every static route, writes a per-route stub HTML at the
-//!    conventional output path (`<outdir>/index.html` for `/`,
-//!    `<outdir>/<segments...>/index.html` otherwise) using
-//!    [`zfb_build::atomic_write_string`].
-//! 5. Skips dynamic / catchall routes with a `warn` line — those need a
-//!    runtime `paths()` evaluation that requires the real renderer (blocked
-//!    on T6 — build-time render orchestration via miniflare subprocess,
-//!    per ADR-005).
-//! 6. If the project has zero `pages/*.tsx` files we still emit a stub
-//!    `index.html` so `zfb preview` has something to serve.
-//! 7. Prints the canonical summary line `✓ N pages built in X.XXs` via
-//!    `crate::output::success` (which adds the green checkmark).
+//! 1. [`zfb_router::Router::scan`] enumerates the route table.
+//! 2. [`crate::render_pipeline::build_prerender_map`] reads each TSX
+//!    page's `export const prerender = …` flag (T5) so SSR-only routes
+//!    skip the build-time render.
+//! 3. [`zfb_build::bundle`] (T3) produces the ESM worker bundle for
+//!    every page module and content collection in scope.
+//! 4. [`zfb_build::renderer::render_all`] (T6) spawns one long-lived
+//!    miniflare subprocess, drives a `GET` per concrete URL, and writes
+//!    the response body to `<outdir>/<url>/index.html`.
 //!
-//! What's still deferred:
+//! ### Known gaps surfaced as warnings (not errors)
 //!
-//! - Real per-route SSR rendering. `zfb-render` / `zfb-content` need a
-//!   working `PageRenderer` driven by the miniflare subprocess host
-//!   landing in T6 (per ADR-005). Until then each static route's body is
-//!   a placeholder that names the route template.
-//! - Dynamic and catchall routes. Expanding `[slug].tsx` into concrete
-//!   paths needs `paths()` calls evaluated by the renderer; this is the
-//!   same blocker as above.
+//! - **Dynamic / catchall routes.** `paths()` runtime expansion (the
+//!   sibling sub-task to T7) is not yet wired; routes whose template
+//!   contains `[slug]`, `[...rest]`, etc. are reported via
+//!   [`crate::output::warn`] and skipped. Static routes go through the
+//!   full pipeline.
+//! - **Worker entry wrapping.** The bundler emits a bundle that
+//!   exports `routes` + `hydrateIsland`. The renderer expects a Worker
+//!   bundle exporting `default { fetch }`; emitting that wrapper is
+//!   another T7-sibling sub-task. Until it lands, the renderer's
+//!   miniflare boot surfaces a clear workerd error referencing the
+//!   missing `default` export, which the CLI propagates verbatim with
+//!   the rest of the renderer's diagnostics (sourcemap-projected stack
+//!   frames included where applicable).
 //!
-//! The command's `run` signature, the project-root validation, and the
-//! summary contract should remain stable across that swap.
+//! The contract for callers (project-root sanity check, `outdir`
+//! handling, `✓ N pages built in X.XXs` summary) is unchanged.
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use zfb_build::atomic_write_string;
-use zfb_router::{Route, RouteKind, Router};
+use zfb_build::bundler::{bundle, BundleMode, BundlerInput};
+use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
+use zfb_router::Router;
 
 use crate::cli::BuildArgs;
+use crate::config::Config;
 use crate::output;
+use crate::render_pipeline::{
+    build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
+    PendingDynamicRoute, RouteUniversePlan,
+};
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let started = Instant::now();
 
     let project_root = env::current_dir().context("failed to read current working directory")?;
 
-    // v1 project-root sanity check. The config loader gives us a richer
-    // schema downstream, but the cheapest "is this a zfb project?" signal
-    // is still the presence of a `pages/` directory (matches the watcher's
-    // default roots and the router's scan target).
+    // Project-root sanity check (cheap and matches the watcher's idea
+    // of "is this a zfb project").
     let pages_dir = project_root.join("pages");
     if !pages_dir.is_dir() {
         return Err(anyhow!(
@@ -72,85 +73,183 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    // Load the project config. We do not currently consume any field other
-    // than to surface load errors — `outdir` is taken from `args` because
-    // the CLI flag wins (clap injects the default "dist" if the user didn't
-    // pass `--outdir`). When more config consumers land (e.g. `publicDir`
-    // copy, `tailwind.enabled`), they'll read off the loaded `Config`.
-    // Errors propagate to main() for centralized rendering.
-    let _config = crate::config::load_from_dir(&project_root)
+    let config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
 
     let outdir = resolve_outdir(&project_root, &args.outdir);
 
-    // Enumerate routes. RouterError surfaces ambiguous routes with full
-    // source paths; we wrap with a one-line context so the user can tell
-    // where the failure happened in the build pipeline.
     let router = Router::scan(&pages_dir)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
-
     let routes = router.routes();
-    let mut pages_built: usize = 0;
 
-    if routes.is_empty() {
-        // Empty `pages/` is unusual but legal — the user might be
-        // bootstrapping. Still emit a stub index.html so `zfb preview`
-        // has something to serve.
-        output::warn(format!(
-            "no pages found under {}; emitting placeholder index.html only",
-            pages_dir.display()
-        ));
-        let index_path = outdir.join("index.html");
-        let stub = stub_route_html("/");
-        atomic_write_string(&index_path, &stub)
-            .with_context(|| format!("failed to write {}", index_path.display()))?;
-        pages_built = 1;
-    } else {
-        for route in routes {
-            match route.kind {
-                RouteKind::Static => {
-                    // route_output_path returns Some(_) for static routes
-                    // (see helper docs); destructure with a defensive
-                    // fallback so we never silently lose a static route.
-                    let Some(out_path) = route_output_path(&outdir, route) else {
-                        // Should not happen — keep the path narrow rather
-                        // than panicking.
-                        output::warn(format!(
-                            "static route {} produced no output path; skipping",
-                            route.template()
-                        ));
-                        continue;
-                    };
-                    let body = stub_route_html(&route.template());
-                    atomic_write_string(&out_path, &body)
-                        .with_context(|| format!("failed to write {}", out_path.display()))?;
-                    pages_built += 1;
-                }
-                RouteKind::Dynamic | RouteKind::Catchall => {
-                    output::warn(format!(
-                        "skipping {} — dynamic / catchall routes require runtime paths() \
-                         evaluation, pending real renderer (ADR-001)",
-                        route.template()
-                    ));
-                }
-            }
-        }
-    }
+    let pages_built = run_build(BuildArgsResolved {
+        project_root: &project_root,
+        outdir: &outdir,
+        config: &config,
+        routes,
+        runner: &DefaultRunner,
+    })?;
 
     let elapsed = started.elapsed().as_secs_f64();
-    // `output::success` adds the green ✓ prefix automatically; the canonical
-    // line text "✓ N pages built in X.XXs" is preserved.
     output::success(format!("{pages_built} pages built in {elapsed:.2}s"));
 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Internals — testable orchestration
+// ---------------------------------------------------------------------------
+
+/// Resolved inputs to the orchestration. Kept as a struct so the
+/// orchestration body and the tests share one signature; adding a field
+/// later doesn't ripple into call sites.
+struct BuildArgsResolved<'a, R: BuildRunner> {
+    project_root: &'a Path,
+    outdir: &'a Path,
+    config: &'a Config,
+    routes: &'a [zfb_router::Route],
+    runner: &'a R,
+}
+
+/// Indirection seam over the heavy wave-2 calls (bundler + renderer).
+///
+/// Production wires this to [`DefaultRunner`] which calls the real
+/// [`zfb_build::bundle`] and [`zfb_build::renderer::render_all`]. Unit
+/// tests plug in fakes that record the arguments and return canned
+/// outputs without spawning any subprocesses.
+trait BuildRunner {
+    /// Run the bundler. The renderer needs the resulting `bundle_path`
+    /// + `sourcemap_path`. We return them through
+    ///   [`zfb_build::bundler::BundlerOutput`] so production retains the
+    ///   full manifest for the renderer's diagnostics path.
+    fn bundle(
+        &self,
+        input: BundlerInput,
+    ) -> Result<zfb_build::bundler::BundlerOutput>;
+
+    /// Run the renderer. Errors surface verbatim — the CLI relies on
+    /// the renderer's
+    /// [`zfb_build::renderer::RendererError::RenderFailed`] including
+    /// the source-mapped user location.
+    fn render_all(&self, input: RendererInput) -> Result<RendererOutput>;
+}
+
+/// Production runner — straight pass-throughs to the real wave-2 APIs.
+struct DefaultRunner;
+impl BuildRunner for DefaultRunner {
+    fn bundle(
+        &self,
+        input: BundlerInput,
+    ) -> Result<zfb_build::bundler::BundlerOutput> {
+        bundle(input)
+    }
+    fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
+        render_all(input).map_err(anyhow::Error::from)
+    }
+}
+
+/// Drive the build for a fully-resolved input set. Returns the number
+/// of pages written.
+fn run_build<R: BuildRunner>(args: BuildArgsResolved<'_, R>) -> Result<usize> {
+    let BuildArgsResolved {
+        project_root,
+        outdir,
+        config,
+        routes,
+        runner,
+    } = args;
+
+    // Build the renderer-shaped views of the route table.
+    let RouteUniversePlan {
+        static_routes,
+        deferred_dynamic,
+    } = build_route_universe(routes);
+    let prerender_map = build_prerender_map(routes, project_root);
+
+    // Loud, separate warning per dynamic route — the user should know
+    // why their `[slug].tsx` is silently absent from `dist/`.
+    warn_deferred_dynamic(&deferred_dynamic);
+
+    if static_routes.is_empty() {
+        // Stay user-friendly: an all-dynamic project still produces a
+        // valid build artifact (an empty dist) but the user has clearly
+        // not gotten what they asked for, so we both warn and exit
+        // happy. This matches the previous "no pages found" behaviour
+        // shape so existing CI configs don't regress.
+        output::warn(
+            "no static routes to render; dist will be empty until dynamic-route paths() expansion lands",
+        );
+        return Ok(0);
+    }
+
+    // Fail fast if the runtime npm package isn't on disk — miniflare
+    // will fail later anyway, but we can give the user an actionable
+    // hint right at build start.
+    check_runtime_installed(project_root)?;
+
+    // 1. Bundle.
+    let bundler_input = BundlerInput {
+        project_root: project_root.to_path_buf(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: cfg_framework_to_render(config.framework),
+        define_vars: Default::default(),
+        tsconfig_paths: Default::default(),
+        external: Vec::new(),
+        outdir: outdir.join(".zfb-build"),
+        mode: BundleMode::Production,
+        minify: false,
+        esbuild_binary: None,
+        mock_subprocess_output: None,
+    };
+    let bundler_out = runner
+        .bundle(bundler_input)
+        .context("bundler step failed")?;
+
+    // 2. Render.
+    let renderer_input = RendererInput {
+        bundle_path: bundler_out.bundle_path.clone(),
+        sourcemap_path: bundler_out.sourcemap_path.clone(),
+        manifest: bundler_out.manifest.clone(),
+        dist_dir: outdir.to_path_buf(),
+        route_universe: static_routes,
+        prerender_map,
+        backend: Backend::SpawnMiniflare,
+        request_timeout: None,
+    };
+    let render_out = runner
+        .render_all(renderer_input)
+        .context("renderer step failed")?;
+
+    // Surface miniflare's stderr (workerd/console.warn lines) so the
+    // user sees them even on a green build — they are often informative
+    // about deprecations or routing oddities.
+    if !render_out.miniflare_logs.trim().is_empty() {
+        output::info("miniflare logs:");
+        for line in render_out.miniflare_logs.lines() {
+            output::info(format!("  {line}"));
+        }
+    }
+
+    Ok(render_out.ssg_files_written.len())
+}
+
+fn warn_deferred_dynamic(routes: &[PendingDynamicRoute]) {
+    for r in routes {
+        output::warn(format!(
+            "skipping {} ({}) — dynamic / catchall routes need paths() runtime expansion (sibling T7 sub-task)",
+            r.template,
+            r.source_path.display()
+        ));
+    }
+}
+
 /// Resolve `outdir` against `project_root`. If `outdir` is absolute it is
-/// used as-is; if relative it is joined onto `project_root`. The result is
-/// returned without canonicalising — the directory may not exist yet, and
-/// `atomic_write_string` will create parents on demand.
+/// used as-is; if relative it is joined onto `project_root`.
 fn resolve_outdir(project_root: &Path, outdir: &Path) -> PathBuf {
     if outdir.is_absolute() {
         outdir.to_path_buf()
@@ -159,100 +258,268 @@ fn resolve_outdir(project_root: &Path, outdir: &Path) -> PathBuf {
     }
 }
 
-/// Compute the on-disk output path for a route under `outdir`.
-///
-/// - The index route (`/`) maps to `<outdir>/index.html`.
-/// - A static route with template `/about` maps to `<outdir>/about/index.html`.
-/// - A multi-segment static route like `/blog/intro` maps to
-///   `<outdir>/blog/intro/index.html`.
-/// - Dynamic and catchall routes return `None` — they need runtime
-///   `paths()` expansion which v1 does not have.
-fn route_output_path(outdir: &Path, route: &Route) -> Option<PathBuf> {
-    if route.kind != RouteKind::Static {
-        return None;
-    }
-    if route.segments.is_empty() {
-        return Some(outdir.join("index.html"));
-    }
-    let mut path = outdir.to_path_buf();
-    for seg in &route.segments {
-        // Static-only by virtue of the kind check above; defensive match
-        // keeps the helper honest if `RouteKind::Static` ever grows new
-        // segment shapes.
-        match seg {
-            zfb_router::Segment::Static(s) => path.push(s),
-            _ => return None,
-        }
-    }
-    path.push("index.html");
-    Some(path)
-}
-
-/// Stub HTML emitted for each static route in the v1 build. Includes the
-/// route template in both `<title>` and `<body>` so the user can tell which
-/// file they're looking at while the real renderer is still pending.
-fn stub_route_html(template: &str) -> String {
-    // Minimal HTML escaping for the route template: only `<`, `>`, `&` need
-    // attention here, and segments are constrained by the router to ASCII
-    // identifiers + `:` / `*`. Doing it explicitly keeps the helper safe if
-    // that contract loosens.
-    let escaped = template
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!(
-        "<!doctype html>\n\
-         <html lang=\"en\">\n\
-         <head>\n\
-         <meta charset=\"utf-8\">\n\
-         <title>zfb build — {escaped}</title>\n\
-         </head>\n\
-         <body>\n\
-         <h1>zfb build (v1 stub)</h1>\n\
-         <p>Route: <code>{escaped}</code></p>\n\
-         <p>The production renderer is not yet wired in. This page is a placeholder so <code>zfb preview</code> has something to serve.</p>\n\
-         </body>\n\
-         </html>\n"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zfb_router::Segment;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+    use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
+    use zfb_build::renderer::{RendererOutput, SsrManifest};
+    use zfb_router::{Route, RouteKind, Segment};
 
-    fn static_route(segments: Vec<&str>) -> Route {
-        let segs: Vec<Segment> = segments
-            .into_iter()
-            .map(|s| Segment::Static(s.to_string()))
-            .collect();
+    /// Fake [`BuildRunner`] that records the inputs it received and
+    /// returns canned outputs. `RefCell` so multiple methods can mutate
+    /// shared state through `&self` (tests run single-threaded).
+    struct FakeRunner {
+        bundle_calls: RefCell<Vec<BundlerInput>>,
+        render_calls: RefCell<Vec<RendererInput>>,
+        mock_bundle_path: PathBuf,
+    }
+
+    impl FakeRunner {
+        fn new(mock_bundle_path: PathBuf) -> Self {
+            Self {
+                bundle_calls: RefCell::new(Vec::new()),
+                render_calls: RefCell::new(Vec::new()),
+                mock_bundle_path,
+            }
+        }
+    }
+
+    impl BuildRunner for FakeRunner {
+        fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
+            self.bundle_calls.borrow_mut().push(input.clone());
+            std::fs::create_dir_all(self.mock_bundle_path.parent().unwrap()).ok();
+            std::fs::write(&self.mock_bundle_path, "// mock\n").ok();
+            Ok(BundlerOutput {
+                bundle_path: self.mock_bundle_path.clone(),
+                sourcemap_path: self.mock_bundle_path.with_extension("mjs.map"),
+                manifest: BundleManifest {
+                    framework: "preact".into(),
+                    jsx_import_source: "preact".into(),
+                    hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
+                    bundle_basename: "bundle.mjs".into(),
+                    routes: vec![RouteEntry {
+                        route: "/".into(),
+                        source_path: PathBuf::from("pages/index.tsx"),
+                        entry_key: "/".into(),
+                    }],
+                },
+            })
+        }
+        fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
+            // Honour the input contract: write each ssg route's output
+            // path so callers that inspect `dist/` see real files.
+            for entry in &input.route_universe {
+                let dest = input.dist_dir.join(&entry.output_path);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(
+                    &dest,
+                    format!("<html><body><main>rendered {}</main></body></html>", entry.url_path),
+                )
+                .ok();
+            }
+            let written = input
+                .route_universe
+                .iter()
+                .map(|e| input.dist_dir.join(&e.output_path))
+                .collect::<Vec<_>>();
+            self.render_calls.borrow_mut().push(input);
+            Ok(RendererOutput {
+                ssg_files_written: written,
+                ssr_manifest: SsrManifest::default(),
+                miniflare_logs: String::new(),
+            })
+        }
+    }
+
+    fn static_route(segments: Vec<&str>, source: &str) -> Route {
         Route {
-            source_path: PathBuf::from("pages/dummy.tsx"),
-            segments: segs,
+            source_path: PathBuf::from(source),
+            segments: segments
+                .into_iter()
+                .map(|s| Segment::Static(s.to_string()))
+                .collect(),
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
         }
     }
 
-    fn dynamic_route() -> Route {
+    fn dynamic_route(name: &str, source: &str) -> Route {
         Route {
-            source_path: PathBuf::from("pages/[slug].tsx"),
-            segments: vec![Segment::Dynamic("slug".to_string())],
+            source_path: PathBuf::from(source),
+            segments: vec![Segment::Dynamic(name.into())],
             kind: RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
         }
     }
 
-    fn catchall_route() -> Route {
-        Route {
-            source_path: PathBuf::from("pages/[...rest].tsx"),
-            segments: vec![Segment::Catchall("rest".to_string())],
-            kind: RouteKind::Catchall,
-            specificity: 0,
-            output_extension: None,
+    fn make_runtime(project_root: &Path) {
+        // Make the runtime check happy.
+        std::fs::create_dir_all(
+            project_root
+                .join("node_modules")
+                .join("@takazudo")
+                .join("zfb-runtime"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_build_orchestrates_bundle_and_render_for_static_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            static_route(vec!["about"], "pages/about.tsx"),
+        ];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+
+        let cfg = Config::default();
+        let pages = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+        })
+        .unwrap();
+
+        assert_eq!(pages, 2);
+        assert_eq!(runner.bundle_calls.borrow().len(), 1);
+        assert_eq!(runner.render_calls.borrow().len(), 1);
+        let render_input = runner.render_calls.borrow();
+        let render_input = render_input.first().unwrap();
+        assert_eq!(render_input.route_universe.len(), 2);
+        assert_eq!(render_input.dist_dir, outdir);
+
+        // No v0 stub strings in the emitted files.
+        for entry in &render_input.route_universe {
+            let body = std::fs::read_to_string(outdir.join(&entry.output_path)).unwrap();
+            assert!(
+                !body.contains("<h1>zfb build (v1 stub)</h1>"),
+                "v0 stub leaked into {}",
+                entry.output_path.display()
+            );
+            assert!(body.contains("<main>"), "expected non-empty <main>");
         }
+    }
+
+    #[test]
+    fn run_build_skips_dynamic_routes_with_warning() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            dynamic_route("slug", "pages/[slug].tsx"),
+        ];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let pages = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+        })
+        .unwrap();
+        // Only the static route reaches the renderer.
+        assert_eq!(pages, 1);
+        let render_input = runner.render_calls.borrow();
+        assert_eq!(render_input[0].route_universe.len(), 1);
+        assert_eq!(render_input[0].route_universe[0].url_path, "/");
+    }
+
+    #[test]
+    fn run_build_with_no_static_routes_short_circuits_without_renderer_call() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![dynamic_route("slug", "pages/[slug].tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let pages = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+        })
+        .unwrap();
+        assert_eq!(pages, 0);
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn run_build_propagates_renderer_error() {
+        // A failing fake runner simulates a RenderFailed. The CLI must
+        // not paper over this — it should bubble the anyhow error up
+        // so the centralized error formatter renders it for the user.
+        struct FailingRunner;
+        impl BuildRunner for FailingRunner {
+            fn bundle(&self, _input: BundlerInput) -> Result<BundlerOutput> {
+                Ok(BundlerOutput {
+                    bundle_path: PathBuf::from("/dev/null"),
+                    sourcemap_path: PathBuf::from("/dev/null"),
+                    manifest: BundleManifest {
+                        framework: "preact".into(),
+                        jsx_import_source: "preact".into(),
+                        hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
+                        bundle_basename: "bundle.mjs".into(),
+                        routes: vec![],
+                    },
+                })
+            }
+            fn render_all(&self, _input: RendererInput) -> Result<RendererOutput> {
+                Err(anyhow!("renderer crashed at pages/error.tsx:5:3"))
+            }
+        }
+        let tmp = tempdir().unwrap();
+        make_runtime(tmp.path());
+        let cfg = Config::default();
+        let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
+        let err = run_build(BuildArgsResolved {
+            project_root: tmp.path(),
+            outdir: &tmp.path().join("dist"),
+            config: &cfg,
+            routes: &routes,
+            runner: &FailingRunner,
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("renderer step failed"), "{msg}");
+        assert!(msg.contains("pages/error.tsx:5:3"), "{msg}");
+    }
+
+    #[test]
+    fn run_build_errors_when_runtime_npm_package_missing() {
+        let tmp = tempdir().unwrap();
+        // No node_modules → check_runtime_installed errors.
+        let cfg = Config::default();
+        let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
+        let runner = FakeRunner::new(tmp.path().join("dist/.zfb-build/bundle.mjs"));
+        let err = run_build(BuildArgsResolved {
+            project_root: tmp.path(),
+            outdir: &tmp.path().join("dist"),
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
     }
 
     #[test]
@@ -269,63 +536,25 @@ mod tests {
         assert_eq!(resolve_outdir(root, &rel), PathBuf::from("/proj/dist"));
     }
 
+    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on
+    /// `examples/basic-blog` and asserts the post pages, paginated
+    /// indexes, and tag pages exist with non-empty `<main>`. Heavy:
+    /// shells out to cargo + esbuild + node (miniflare). Gated behind
+    /// `--ignored` so day-to-day `cargo test` stays fast.
+    ///
+    /// Status: the renderer call will fail today because the bundler
+    /// emits a bundle WITHOUT a `default { fetch }` Worker entry — the
+    /// "T7-sibling worker-wrapping sub-task" referenced in the
+    /// build-command module docs. The test stays here so once that
+    /// sibling lands, flipping the gate is a one-line change.
     #[test]
-    fn stub_route_html_contains_template_and_is_well_formed() {
-        let html = stub_route_html("/about");
-        assert!(html.starts_with("<!doctype html>"));
-        assert!(html.contains("/about"));
-        assert!(html.contains("<title>zfb build — /about</title>"));
-        assert!(html.trim_end().ends_with("</html>"));
-    }
-
-    #[test]
-    fn stub_route_html_escapes_template() {
-        // Defensive: even though the router constrains segment shapes, the
-        // helper itself must not let `<`/`>`/`&` flow into HTML unescaped.
-        let html = stub_route_html("/<x>&");
-        assert!(html.contains("&lt;x&gt;&amp;"));
-        assert!(!html.contains("/<x>"));
-    }
-
-    #[test]
-    fn route_output_path_index() {
-        let outdir = Path::new("/out");
-        let route = static_route(vec![]);
-        assert_eq!(
-            route_output_path(outdir, &route),
-            Some(PathBuf::from("/out/index.html"))
-        );
-    }
-
-    #[test]
-    fn route_output_path_single_segment_static() {
-        let outdir = Path::new("/out");
-        let route = static_route(vec!["about"]);
-        assert_eq!(
-            route_output_path(outdir, &route),
-            Some(PathBuf::from("/out/about/index.html"))
-        );
-    }
-
-    #[test]
-    fn route_output_path_multi_segment_static() {
-        let outdir = Path::new("/out");
-        let route = static_route(vec!["blog", "intro"]);
-        assert_eq!(
-            route_output_path(outdir, &route),
-            Some(PathBuf::from("/out/blog/intro/index.html"))
-        );
-    }
-
-    #[test]
-    fn route_output_path_dynamic_returns_none() {
-        let outdir = Path::new("/out");
-        assert_eq!(route_output_path(outdir, &dynamic_route()), None);
-    }
-
-    #[test]
-    fn route_output_path_catchall_returns_none() {
-        let outdir = Path::new("/out");
-        assert_eq!(route_output_path(outdir, &catchall_route()), None);
+    #[ignore = "spawns esbuild + miniflare; run with --include-ignored once worker wrapping lands"]
+    fn end_to_end_basic_blog_build() {
+        // Intentionally minimal — the assertions are described in the
+        // doc-comment above; the test body is sketched so the
+        // follow-up sub-task can wire it without rewriting it from
+        // scratch.
+        let _ = BTreeMap::<String, bool>::new(); // keep the import live
+        eprintln!("[end_to_end_basic_blog_build] gated; see doc-comment.");
     }
 }

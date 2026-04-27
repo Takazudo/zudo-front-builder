@@ -1,6 +1,6 @@
 //! `zfb dev` — boot the dev pipeline + dev HTTP server.
 //!
-//! Wires three crates together per the doc-comment in
+//! Wires four crates together per the doc-comment in
 //! [`zfb_server`]'s lib.rs:
 //!
 //! 1. A [`tokio::sync::broadcast`] channel of [`zfb_server::ReloadEvent`]s
@@ -8,12 +8,25 @@
 //! 2. A [`zfb_server::PageCache`] of rendered HTML keyed by URL path.
 //! 3. A [`zfb_build::BuildOrchestrator`] driving the watcher + dep-graph
 //!    + asset pipeline; its `on_outcome` callback translates every
-//!    non-noop tick into reload events via
-//!    [`zfb_server::outcome_to_events`] and broadcasts them.
+//!      non-noop tick into reload events via
+//!      [`zfb_server::outcome_to_events`] and broadcasts them.
+//! 4. A long-lived [`zfb_build::renderer::RendererState`] (T7) that
+//!    owns the miniflare subprocess. The asset pipeline's
+//!    [`PageRenderer`] callback drives [`zfb_build::renderer::render_one`]
+//!    against this state per affected route, so a single edit triggers
+//!    one HTTP round-trip — not a fresh miniflare boot.
 //!
 //! Then it binds the address from `args.host:args.port`, prints the
 //! ready banner via [`crate::output::ready`], and runs the axum server
 //! until Ctrl+C.
+//!
+//! ## Lifecycle of the renderer state
+//!
+//! `start(...)` is called once at boot. The returned
+//! [`zfb_build::renderer::RendererState`] is wrapped in a [`Drop`]
+//! guard so panics, Ctrl-C, or any other early-exit path tears the
+//! miniflare subprocess down cleanly. Without that guard a panicking
+//! dev loop would orphan workerd.
 //!
 //! ## Configuration
 //!
@@ -24,40 +37,42 @@
 //! ADR-001's runtime decision).
 //!
 //! **Precedence rule:** CLI args (`--host`, `--port`) override the
-//! corresponding config values when supplied. `DevArgs::host` and
-//! `DevArgs::port` are `Option<_>` (no clap default), so the resolution
-//! order is "CLI flag > `zfb.config.json` value > built-in default
-//! (`localhost` / `3000`)". `out_dir` and `public_dir` come from config
-//! (resolved against the project root via [`resolve_under_root`]) since
-//! there is no CLI override for them on `zfb dev`.
+//! corresponding config values when supplied.
 //!
-//! ## v1 scope-down: noop page renderer (still deferred)
+//! ## v1 → wave-3 transition
 //!
-//! Wiring the real `zfb-render` page renderer remains deferred — it
-//! depends on the miniflare subprocess host landing in T6 (per ADR-005).
-//! So we hand the orchestrator a [`zfb_build::PageRenderer`] that
-//! returns an empty render set: the orchestrator still drives the
-//! watcher + dep-graph + reload broadcast correctly, the
-//! [`zfb_server::PageCache`] simply stays empty, and every request
-//! falls through to [`zfb_server::DEV_404_BODY`]. Real renderer
-//! integration (and the cache-population side of the `on_outcome`
-//! callback) will land once T6 is real.
+//! Earlier waves passed a noop [`PageRenderer`] into the orchestrator
+//! that returned an empty `RenderedPage` list — the dev cache stayed
+//! empty and every request fell through to the dev 404 body.
 //!
-//! ## Output
+//! Wave 3 (T7) replaces that noop with a renderer-backed callback. The
+//! callback maps each page id to its [`zfb_build::renderer::RouteUniverseEntry`]
+//! and drives [`zfb_build::renderer::render_one`] against the long-
+//! lived [`zfb_build::renderer::RendererState`]. The result file is
+//! read back into a [`zfb_build::RenderedPage`] so the existing
+//! atomic-write + reload-broadcast plumbing keeps working unchanged.
 //!
-//! Status lines (ready banner, orchestrator failures) go through
-//! [`crate::output`] so colour/no-colour and stdout/stderr conventions
-//! are handled centrally.
+//! ### Same gaps as `zfb build`
+//!
+//! Dynamic / catchall routes (`paths()` runtime expansion) and the
+//! Worker-entry wrapping are still pending. See [`crate::commands::build`]
+//! for the detailed gap analysis. Today the dev renderer reuses the
+//! same plumbing and inherits the same limitations.
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use tokio::sync::broadcast;
+use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
+use zfb_build::renderer::{
+    render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
+};
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, OrchestratorConfig,
-    PageRenderer,
+    PageRenderer, RenderedPage,
 };
 use zfb_graph::{DependencyGraph, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
@@ -65,16 +80,11 @@ use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 use crate::cli::DevArgs;
 use crate::config;
 use crate::output;
+use crate::render_pipeline::{
+    build_route_universe, cfg_framework_to_render, check_runtime_installed,
+};
 
-/// Default source directories the watcher follows. Missing entries are
-/// silently skipped by `zfb_watcher::Watcher::start`, so it's fine to
-/// list paths that don't exist in every project.
-///
-/// We watch BOTH `zfb.config.json` (the v0 source of truth — the loader
-/// `crate::config::load_from_dir` parses JSON; encountering a `.ts`
-/// sibling produces a clear "not yet supported" error) and
-/// `zfb.config.ts` (so the watcher already DTRT on the day the TS loader
-/// lands). Both entries are skipped silently when absent.
+/// Default source directories the watcher follows.
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "pages",
     "content",
@@ -92,51 +102,52 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
 
-    // Errors propagate to main(), which renders them through
-    // output::format_error — see main.rs for the centralization rationale.
     let cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
 
-    // 2. Resolve filesystem roots from config (relative paths join onto
-    //    the project root; absolute paths used as-is).
     let dist_root = resolve_under_root(&project_root, &cfg.out_dir);
     let public_root = resolve_under_root(&project_root, &cfg.public_dir);
 
-    // ServeDir on a missing directory just 404s, but creating dist/
-    // up-front avoids a noisy warning the first time the dev server
-    // boots in a brand-new project. We don't create public/ — the user
-    // owns that.
     if !dist_root.exists() {
         std::fs::create_dir_all(&dist_root)
             .with_context(|| format!("failed to create dist dir {}", dist_root.display()))?;
     }
 
-    // 3. Resolve the bind address. CLI flag > config > built-in default —
-    //    see the precedence note in the module doc.
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref());
     let port = resolve_port(args.port, cfg.port);
     let addr = resolve_addr(host.as_str(), port)?;
 
-    // 4. Live-reload broadcast channel. 64 slots is plenty for a dev
-    //    server: one event per build tick and a handful of subscribers.
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
-
-    // 5. Page cache shared between the orchestrator's render outputs
-    //    and the server's GET handlers.
     let pages = PageCache::new();
 
-    // 6. Build orchestrator setup. Empty dep graph for v1 — the
-    //    resolver/loader that populates it is out of scope for this
-    //    sub-task.
+    // 2. Stand up the long-lived renderer state if the project looks
+    //    runnable. We surface failures as a warning + fall back to the
+    //    noop renderer so the dev server still boots — the user can
+    //    still poke at the dev URL while they fix the underlying
+    //    bundler / runtime issue.
+    let dev_session = match boot_dev_renderer(&project_root, &cfg, &dist_root) {
+        Ok(s) => Some(s),
+        Err(err) => {
+            output::warn(format!(
+                "renderer disabled — falling back to empty page cache: {err:#}",
+            ));
+            None
+        }
+    };
+
+    // 3. Build orchestrator setup.
     let graph = Arc::new(Mutex::new(DependencyGraph::new()));
     let pipeline = DevAssetPipeline::new();
     let watch_roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
-    let orch_config = OrchestratorConfig::new(&project_root, watch_roots);
+    let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
-    // Noop page renderer — see crate-level scope-down note above.
-    let render_pages: PageRenderer = Arc::new(|_pages: &[PageId]| Ok(Vec::new()));
+    let render_pages: PageRenderer = match dev_session.as_ref() {
+        Some(session) => make_render_callback(session.clone(), dist_root.clone()),
+        None => Arc::new(|_pages: &[PageId]| Ok(Vec::new())),
+    };
+
     let ctx = BuildContext {
         dist_root: dist_root.clone(),
         render_pages,
@@ -144,34 +155,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         run_islands: None,
     };
 
-    // 7. Wire on_outcome: translate each non-noop tick to ReloadEvents
-    //    and broadcast them. Page cache population is intentionally
-    //    skipped here because the noop renderer never emits any
-    //    RenderedPage outputs (BuildOutcome only carries page IDs, not
-    //    HTML, so the cache-fill path lives next to the renderer
-    //    itself — that's a follow-up).
+    // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
     let on_outcome = move |outcome: &BuildOutcome| {
         for ev in outcome_to_events(outcome) {
-            // `send` fails only if there are no live subscribers; that's
-            // fine — the next subscriber will pick up the next event.
             let _ = tx_cb.send(ev);
         }
     };
 
-    // 8. Spawn the orchestrator's watcher loop.
+    // 5. Spawn the orchestrator's watcher loop.
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, on_outcome).await {
-            // The orchestrator's loop logs its own per-tick errors and
-            // keeps going; reaching here means the watcher itself died.
-            // Surface that via the structured error helper so the user
-            // sees something rather than a silent dead dev server.
-            output::error(&format!("build orchestrator stopped: {err:#}"));
+            output::error(format!("build orchestrator stopped: {err:#}"));
         }
     });
 
-    // 9. Build the serve options and announce readiness just before
-    //    handing control to axum.
+    // 6. Build the serve options and announce readiness.
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -183,13 +182,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     output::ready(&format!("http://{host}:{port}"));
 
-    // 10. Run the server, racing against Ctrl+C. axum::serve has no
-    //     graceful-shutdown wiring in the zfb-server crate today, so on
-    //     Ctrl+C we abort the orchestrator task and let the runtime
-    //     drop the server when this future returns. Process exits 0.
-    tokio::select! {
+    // 7. Run the server until Ctrl+C. The renderer guard tears down on
+    //    drop here — the explicit `shutdown` call belt-and-braces keeps
+    //    the surface symmetrical (start ↔ shutdown).
+    let result = tokio::select! {
         res = serve(opts) => {
-            // serve() returned on its own — propagate any error.
             orch_handle.abort();
             res
         }
@@ -197,30 +194,215 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             orch_handle.abort();
             Ok(())
         }
+    };
+
+    if let Some(session) = dev_session {
+        session.shutdown_explicit();
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Renderer plumbing
+// ---------------------------------------------------------------------------
+
+/// Long-lived dev-session state that owns the renderer subprocess and
+/// the route table. Cloned by the [`PageRenderer`] callback so each
+/// orchestrator tick can map page ids → URLs.
+#[derive(Clone)]
+struct DevRenderSession {
+    inner: Arc<DevRenderInner>,
+}
+
+struct DevRenderInner {
+    /// Mapped from the page module's project-relative source path
+    /// (which is what the dependency graph keys on) to the renderer
+    /// entry. Built once at boot from the router scan.
+    routes_by_source: HashMap<PathBuf, RouteUniverseEntry>,
+    /// Mutex-wrapped renderer state. The orchestrator's callback runs
+    /// on the watcher's thread; render_one is sync and short, so a
+    /// global lock is fine here.
+    renderer: Mutex<Option<RendererState>>,
+}
+
+impl DevRenderSession {
+    /// Drive a single page id against the renderer. Returns a
+    /// [`RenderedPage`] populated with the bytes the renderer just
+    /// wrote, so the dev pipeline's atomic-write + cache layer can
+    /// fold the result through the existing reload broadcast.
+    fn render_one(&self, page: &PageId, dist_dir: &Path) -> Result<Option<RenderedPage>> {
+        let entry = match self.inner.routes_by_source.get(page.path()) {
+            Some(e) => e.clone(),
+            None => return Ok(None),
+        };
+        let lock = self
+            .inner
+            .renderer
+            .lock()
+            .expect("DevRenderSession::renderer mutex poisoned");
+        let state = lock
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
+        let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
+        let html = std::fs::read_to_string(&written)
+            .with_context(|| format!("failed to read rendered page {}", written.display()))?;
+        Ok(Some(RenderedPage {
+            page: page.clone(),
+            output_path: entry.output_path,
+            html,
+            content_type: None,
+        }))
+    }
+
+    /// Tear down the underlying [`RendererState`] cleanly. Safe to call
+    /// multiple times — subsequent calls are a no-op.
+    fn shutdown_explicit(&self) {
+        let mut lock = self
+            .inner
+            .renderer
+            .lock()
+            .expect("DevRenderSession::renderer mutex poisoned");
+        if let Some(state) = lock.take() {
+            let _ = shutdown(state);
+        }
     }
 }
 
-/// Built-in default host for `zfb dev` when neither the CLI nor the
-/// project config supplies one.
-const DEFAULT_DEV_HOST: &str = "localhost";
+impl Drop for DevRenderInner {
+    fn drop(&mut self) {
+        // Defence-in-depth: even if `shutdown_explicit` was missed
+        // (panicking dev loop, early ?-return), the inner Arc's drop
+        // tears the subprocess down. Errors from shutdown are
+        // swallowed here — the process is already going away.
+        if let Ok(mut g) = self.renderer.lock() {
+            if let Some(state) = g.take() {
+                let _ = shutdown(state);
+            }
+        }
+    }
+}
 
-/// Built-in default port for `zfb dev` when neither the CLI nor the
-/// project config supplies one.
+/// Bring up the renderer and the route map for the dev session.
+///
+/// On any error, returns it unchanged so the caller decides whether to
+/// fall back to a noop renderer or hard-fail. Today the dev command
+/// chooses to fall back so the user still gets a reachable HTTP server
+/// while they fix the underlying issue.
+fn boot_dev_renderer(
+    project_root: &Path,
+    cfg: &config::Config,
+    dist_root: &Path,
+) -> Result<DevRenderSession> {
+    check_runtime_installed(project_root)?;
+
+    let pages_dir = project_root.join("pages");
+    if !pages_dir.is_dir() {
+        return Err(anyhow::anyhow!(
+            "no pages/ directory under {}",
+            project_root.display()
+        ));
+    }
+    let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
+
+    let plan = build_route_universe(router.routes());
+    if plan.static_routes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no static routes to render — dev mode skips renderer boot"
+        ));
+    }
+
+    let bundler_input = BundlerInput {
+        project_root: project_root.to_path_buf(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: cfg_framework_to_render(cfg.framework),
+        define_vars: Default::default(),
+        tsconfig_paths: Default::default(),
+        external: Vec::new(),
+        outdir: dist_root.join(".zfb-build"),
+        mode: BundleMode::Development,
+        minify: false,
+        esbuild_binary: None,
+        mock_subprocess_output: None,
+    };
+    let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
+
+    let state = start(RendererStartInput {
+        bundle_path: bundler_out.bundle_path.clone(),
+        sourcemap_path: bundler_out.sourcemap_path.clone(),
+        backend: Backend::SpawnMiniflare,
+        request_timeout: None,
+    })
+    .map_err(anyhow::Error::from)
+    .context("renderer start failed")?;
+
+    // Build the source-path → entry map once. Router source paths are
+    // project-relative; PageId keys on the same value (the orchestrator
+    // tracks pages by their source path).
+    let mut routes_by_source: HashMap<PathBuf, RouteUniverseEntry> = HashMap::new();
+    for route in router.routes() {
+        if let Some(entry) = plan
+            .static_routes
+            .iter()
+            .find(|e| e.route_key == route.template())
+        {
+            routes_by_source.insert(route.source_path.clone(), entry.clone());
+        }
+    }
+
+    Ok(DevRenderSession {
+        inner: Arc::new(DevRenderInner {
+            routes_by_source,
+            renderer: Mutex::new(Some(state)),
+        }),
+    })
+}
+
+/// Build the [`PageRenderer`] callback that the orchestrator hands to
+/// [`DevAssetPipeline`].
+fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
+    Arc::new(move |pages: &[PageId]| {
+        let mut out = Vec::with_capacity(pages.len());
+        for page in pages {
+            match session.render_one(page, &dist_dir) {
+                Ok(Some(rendered)) => out.push(rendered),
+                Ok(None) => {
+                    // Page not in the renderer's route map (e.g.
+                    // dynamic route deferred to the paths() follow-up,
+                    // or a page that was never in the router scan).
+                    // Intentionally a no-op so the watcher tick still
+                    // succeeds — the orchestrator will report the page
+                    // as not-rendered, the user sees the warning at
+                    // boot, and other pages keep rebuilding.
+                }
+                Err(err) => {
+                    // One page's render failure must not kill the
+                    // watcher. Log and continue.
+                    output::error(format!(
+                        "renderer error for {}: {err:#}",
+                        page.path().display()
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    })
+}
+
+const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
 
-/// Resolution helper: CLI override > config value > built-in default.
 fn resolve_host(cli: Option<&str>, cfg: Option<&str>) -> String {
     cli.or(cfg).unwrap_or(DEFAULT_DEV_HOST).to_owned()
 }
 
-/// Resolution helper: CLI override > config value > built-in default.
 fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
     cli.or(cfg).unwrap_or(DEFAULT_DEV_PORT)
 }
 
-/// Resolve `host:port` into a single [`SocketAddr`] via the OS resolver,
-/// preferring the first hit. Errors carry the raw input so the user can
-/// see what went wrong.
 fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     let pair = format!("{host}:{port}");
     let mut iter = pair
@@ -230,15 +412,6 @@ fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
 }
 
-/// Resolve a config-supplied path against the project root.
-///
-/// - If `p` is absolute, it is returned unchanged so users can point at
-///   directories outside the project (e.g. a shared `dist/` on a CI box).
-/// - Otherwise it is joined onto `project_root`.
-///
-/// This deliberately does **not** canonicalise — the directory may not
-/// exist yet (`dist/` is created lazily right after this call), and we
-/// want to preserve the user's spelling for log output.
 fn resolve_under_root(project_root: &Path, p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
@@ -250,6 +423,7 @@ fn resolve_under_root(project_root: &Path, p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn resolve_under_root_joins_relative_paths() {
@@ -308,28 +482,67 @@ mod tests {
 
     #[test]
     fn default_watch_roots_includes_zfb_config_json() {
-        // The loader hard-errors on `zfb.config.ts` until ADR-001 lands,
-        // so the watcher MUST cover the JSON form (the v0 source of truth).
-        // We also keep `.ts` so the watcher already DTRT once the TS loader
-        // lands; pin both with this test.
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
     }
 
     #[test]
     fn resolve_under_root_handles_dot_relative() {
-        // `./public` should still anchor under the project root rather
-        // than be silently rewritten — `Path::join` preserves the `.`,
-        // which is fine because filesystem APIs treat it as a no-op.
         let root = Path::new("/tmp/proj");
         let p = Path::new("./public");
         let resolved = resolve_under_root(root, p);
-        // The resolved path must start with the project root. We don't
-        // require an exact textual match because `join` may or may not
-        // collapse the `.` depending on platform conventions.
         assert!(
             resolved.starts_with(root),
             "expected {resolved:?} to start with {root:?}"
         );
+    }
+
+    /// The render callback must:
+    /// 1. Be tolerant of unknown page ids (dynamic routes, etc.) —
+    ///    return an empty list, never error.
+    /// 2. Hand back a `RenderedPage` for every page id mapped to a
+    ///    [`RouteUniverseEntry`].
+    ///
+    /// We exercise both via a [`DevRenderSession`] that uses a `None`
+    /// renderer; an unknown page id therefore always lands on the
+    /// `Ok(None)` branch and never reaches the lock.
+    #[test]
+    fn render_callback_drops_unknown_pages_silently() {
+        let session = DevRenderSession {
+            inner: Arc::new(DevRenderInner {
+                routes_by_source: HashMap::new(),
+                renderer: Mutex::new(None),
+            }),
+        };
+        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
+        let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
+        let out = cb(&pages).unwrap();
+        assert!(out.is_empty());
+    }
+
+    /// On a known page id, but a `None` renderer (boot half-failed),
+    /// the callback logs an error and returns an empty list — the
+    /// watcher must keep going.
+    #[test]
+    fn render_callback_keeps_watcher_alive_on_render_error() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/index.tsx"),
+            RouteUniverseEntry {
+                url_path: "/".into(),
+                output_path: PathBuf::from("index.html"),
+                route_key: "/".into(),
+            },
+        );
+        let session = DevRenderSession {
+            inner: Arc::new(DevRenderInner {
+                routes_by_source: routes,
+                renderer: Mutex::new(None),
+            }),
+        };
+        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
+        let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
+        let out = cb(&pages).unwrap();
+        assert!(out.is_empty(), "errors must yield empty list, not panic");
     }
 }
