@@ -170,7 +170,18 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         framework: Framework::Preact,
         define_vars: HashMap::new(),
         tsconfig_paths: paths,
-        external: vec!["preact".into()],
+        // Mark every bare specifier the synthetic entry.mjs imports
+        // as external so this test doesn't need a node_modules tree
+        // adjacent to the (in-tempdir) shadow root. The bundler's
+        // entry.mjs now also imports `createPageRouter` from
+        // `@takazudo/zfb-runtime` and `renderToString` from the
+        // framework's render module — see
+        // `bundler::write_entry_module`.
+        external: vec![
+            "preact".into(),
+            "preact-render-to-string".into(),
+            "@takazudo/zfb-runtime".into(),
+        ],
         outdir: root.join("dist"),
         mode: BundleMode::Production,
         minify: false,
