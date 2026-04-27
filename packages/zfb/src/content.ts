@@ -26,6 +26,77 @@ import { join, resolve } from "node:path";
 
 import type { ReactNode } from "./jsx-types.js";
 
+// ---------------------------------------------------------------------------
+// In-memory ContentSnapshot bridge (consumed by `@takazudo/zfb-runtime`).
+//
+// At build time, the Rust pipeline produces a `ContentSnapshot` (see
+// `crates/zfb-content/src/content_bridge.rs`) and embeds it into the
+// Worker bundle. On Worker boot, `createPageRouter` calls
+// `setContentSnapshot(snapshot)` (below) before serving the first
+// request. From that point on, `getCollection(name)` resolves from the
+// embedded snapshot rather than the Node `fs` API — required because the
+// workerd / Cloudflare Workers runtime has no filesystem.
+//
+// The fs path remains the source of truth in two contexts:
+//   1. unit tests for this module (no snapshot installed → fs path),
+//   2. dev-preview / direct-Node invocations of `getCollection` outside
+//      the Worker bundle (kept as v0 fallback so older callers still work).
+//
+// Keep [`SnapshotEntry`] / [`Snapshot`] aligned with the Rust struct
+// (`EntrySnapshot` / `ContentSnapshot`) and the runtime-package mirror
+// (`@takazudo/zfb-runtime/snapshot`). Field names are snake_case to
+// match the JSON serialization (`module_specifier`, `rel_path`).
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry in an embedded content snapshot. Mirrors
+ * `crates/zfb-content/src/content_bridge.rs::EntrySnapshot`. Re-exported
+ * by `@takazudo/zfb-runtime/snapshot` for the runtime-side bundle. See
+ * that module for field-by-field documentation.
+ */
+export interface SnapshotEntry {
+  readonly slug: string;
+  readonly frontmatter: unknown;
+  readonly body: string;
+  readonly module_specifier: string;
+  readonly rel_path: string;
+}
+
+/**
+ * Point-in-time snapshot of every configured collection. Mirrors
+ * `crates/zfb-content/src/content_bridge.rs::ContentSnapshot`.
+ */
+export interface Snapshot {
+  readonly collections: Readonly<Record<string, readonly SnapshotEntry[]>>;
+}
+
+/**
+ * Module-level snapshot slot. `undefined` means "no snapshot installed";
+ * `getCollection` falls back to the Node `fs` path. The runtime package
+ * sets this once during init and (in dev mode) overwrites it on each
+ * rebuild.
+ */
+let installedSnapshot: Snapshot | undefined;
+
+/**
+ * Register a [`Snapshot`] so [`getCollection`] resolves from memory.
+ *
+ * Pass `undefined` to clear (used by tests that need to restore the v0
+ * filesystem path between runs). Idempotent: the latest call wins.
+ */
+export function setContentSnapshot(snapshot: Snapshot | undefined): void {
+  installedSnapshot = snapshot;
+}
+
+/**
+ * Read the currently-installed [`Snapshot`], or `undefined` if none is
+ * registered. Exposed mostly for tests; production callers should not
+ * need to introspect the bridge state.
+ */
+export function getContentSnapshot(): Snapshot | undefined {
+  return installedSnapshot;
+}
+
 /**
  * Props accepted by an entry's [`CollectionEntry.Content`] component.
  *
@@ -215,6 +286,15 @@ const FALLBACK_MARKER = "[zfb fallback render]";
 export async function getCollection<T = Record<string, unknown>>(
   name: string,
 ): Promise<CollectionEntry<T>[]> {
+  // Snapshot path: installed by `@takazudo/zfb-runtime`'s
+  // `createPageRouter` at Worker boot. Worker runtimes have no `fs`, so
+  // this branch is the production path under miniflare.
+  if (installedSnapshot !== undefined) {
+    const list = installedSnapshot.collections[name] ?? [];
+    return list.map((entry) => entryFromSnapshot<T>(entry));
+  }
+  // Filesystem fallback (v0 path). Used by unit tests and direct Node
+  // invocations outside the Worker bundle.
   const dir = resolveCollectionDir(name);
   let names: string[];
   try {
@@ -241,6 +321,27 @@ export async function getCollection<T = Record<string, unknown>>(
     };
   });
   return entries;
+}
+
+/**
+ * Construct a [`CollectionEntry`] from a [`SnapshotEntry`]. The snapshot
+ * carries `frontmatter` as a possibly-`null` JSON value (matches the
+ * Rust contract for entries with no frontmatter); we normalise `null` /
+ * `undefined` to an empty object so consumers' `.data.title` reads
+ * never have to deal with `null`.
+ */
+function entryFromSnapshot<T>(entry: SnapshotEntry): CollectionEntry<T> {
+  const data =
+    entry.frontmatter === null || entry.frontmatter === undefined
+      ? ({} as T)
+      : (entry.frontmatter as T);
+  return {
+    slug: entry.slug,
+    data,
+    body: entry.body,
+    module_specifier: entry.module_specifier,
+    Content: buildContentComponent(entry.module_specifier, entry.body),
+  };
 }
 
 /** Maximum concurrent file reads while loading a content collection. */

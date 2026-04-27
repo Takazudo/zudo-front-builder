@@ -18,8 +18,11 @@ import {
   ContentUl,
   defaultComponents,
   getCollection,
+  getContentSnapshot,
   parseFrontmatter,
+  setContentSnapshot,
 } from "../content.js";
+import type { Snapshot } from "../content.js";
 
 /**
  * Test-only handle on the `__zfb` bridge namespace. Mirrors the ambient
@@ -363,5 +366,162 @@ describe("defaultComponents (htmlOverrides convention)", () => {
     const children = ["a", { type: "em", props: { children: "b" }, key: null }, "c"];
     const node = ContentParagraph({ children });
     expect(node.props.children).toBe(children);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-memory `ContentSnapshot` bridge — consumed by `@takazudo/zfb-runtime`.
+//
+// When a snapshot is installed via `setContentSnapshot`, `getCollection`
+// resolves from memory rather than touching `fs`. This is the production
+// path under miniflare / Cloudflare Workers, which have no filesystem.
+// The fs path remains the v0 fallback for unit tests and direct Node
+// invocations outside the Worker bundle.
+// ---------------------------------------------------------------------------
+
+describe("setContentSnapshot bridge", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  it("returns undefined from getContentSnapshot when nothing is installed", () => {
+    setContentSnapshot(undefined);
+    expect(getContentSnapshot()).toBeUndefined();
+  });
+
+  it("round-trips an installed snapshot via getContentSnapshot", () => {
+    const snap: Snapshot = {
+      collections: {
+        notes: [
+          {
+            slug: "a",
+            frontmatter: { title: "A" },
+            body: "alpha",
+            module_specifier: "mdx://notes/a",
+            rel_path: "a.md",
+          },
+        ],
+      },
+    };
+    setContentSnapshot(snap);
+    expect(getContentSnapshot()).toBe(snap);
+  });
+
+  it("getCollection resolves from the snapshot when installed (no fs access)", async () => {
+    setContentSnapshot({
+      collections: {
+        blog: [
+          {
+            slug: "in-mem",
+            frontmatter: { title: "From memory", date: "2026-04-21" },
+            body: "memory body",
+            module_specifier: "mdx://blog/in-mem",
+            rel_path: "in-mem.mdx",
+          },
+        ],
+      },
+    });
+    const items = await getCollection<{ title: string; date: string }>("blog");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.slug).toBe("in-mem");
+    expect(items[0]?.data.title).toBe("From memory");
+    expect(items[0]?.body).toBe("memory body");
+    expect(items[0]?.module_specifier).toBe("mdx://blog/in-mem");
+  });
+
+  it("preserves the order of entries within a collection (no implicit re-sort)", async () => {
+    setContentSnapshot({
+      collections: {
+        blog: [
+          {
+            slug: "b",
+            frontmatter: null,
+            body: "",
+            module_specifier: "mdx://blog/b",
+            rel_path: "b.md",
+          },
+          {
+            slug: "a",
+            frontmatter: null,
+            body: "",
+            module_specifier: "mdx://blog/a",
+            rel_path: "a.md",
+          },
+        ],
+      },
+    });
+    const items = await getCollection("blog");
+    expect(items.map((e) => e.slug)).toEqual(["b", "a"]);
+  });
+
+  it("normalises null frontmatter to an empty object", async () => {
+    setContentSnapshot({
+      collections: {
+        notes: [
+          {
+            slug: "raw",
+            frontmatter: null,
+            body: "raw",
+            module_specifier: "mdx://notes/raw",
+            rel_path: "raw.md",
+          },
+        ],
+      },
+    });
+    const items = await getCollection<{ title?: string }>("notes");
+    expect(items[0]?.data).toEqual({});
+  });
+
+  it("returns an empty array for a collection name absent from the snapshot", async () => {
+    setContentSnapshot({ collections: {} });
+    const items = await getCollection("does-not-exist");
+    expect(items).toEqual([]);
+  });
+
+  it("falls back to the fs path after the snapshot is cleared", async () => {
+    // Install then clear; getCollection should now consult fs again,
+    // which (in this test) has no `unknown-collection` directory →
+    // ENOENT → empty array. We're really testing that the bridge slot
+    // is reset rather than that fs returns []; the existing fs tests
+    // cover the happy fs path.
+    setContentSnapshot({
+      collections: {
+        unknown: [
+          {
+            slug: "x",
+            frontmatter: null,
+            body: "",
+            module_specifier: "mdx://unknown/x",
+            rel_path: "x.md",
+          },
+        ],
+      },
+    });
+    expect(await getCollection("unknown")).toHaveLength(1);
+    setContentSnapshot(undefined);
+    expect(await getCollection("unknown")).toEqual([]);
+  });
+
+  it("Content fallback still consults the bridge after snapshot install", async () => {
+    setContentSnapshot({
+      collections: {
+        blog: [
+          {
+            slug: "wired",
+            frontmatter: { title: "Wired" },
+            body: "ignored when bridge active",
+            module_specifier: "mdx://blog/wired",
+            rel_path: "wired.mdx",
+          },
+        ],
+      },
+    });
+    const items = await getCollection("blog");
+    const node = items[0]?.Content({});
+    // No `__zfb.content` bridge installed → fallback `<pre>` block.
+    expect(node?.type).toBe("pre");
+    expect(node?.props["data-zfb-content-fallback"]).toBe("");
+    expect(node?.props.children as string).toContain("[zfb fallback render]");
+    expect(node?.props.children as string).toContain("ignored when bridge active");
   });
 });
