@@ -27,17 +27,20 @@
 //!
 //! ## Wave-3 (T7) gaps
 //!
-//! Two pieces of the SSG-render pipeline are knowingly **not yet
-//! wired** by this module:
-//!
 //! 1. **Dynamic `paths()` expansion.** Routes whose template contains
-//!    `[slug]`, `[page]`, `[...rest]`, etc. require running each page
-//!    module's exported `paths()` function inside the worker bundle to
-//!    enumerate the concrete URLs. The plumbing for that is its own
-//!    sub-task — it needs an extra worker endpoint plus an HTTP query
-//!    loop. Until that lands, [`build_route_universe`] returns the
-//!    dynamic routes via [`PendingDynamicRoute`] so callers can surface
-//!    a clear "skipped" warning instead of silently emitting nothing.
+//!    `[slug]`, `[page]`, `[...rest]`, etc. need each page module's
+//!    `paths()` export evaluated to enumerate the concrete URLs. This
+//!    module wires the **static fast path**: when the page's `paths()`
+//!    return value is a JSON-literal array (the
+//!    [`zfb_render::paths_extract`] contract), [`expand_dynamic_routes`]
+//!    runs it through [`zfb_render::paths::resolve_paths`] and produces
+//!    one [`RouteUniverseEntry`] per resolved URL. Pages whose `paths()`
+//!    is non-literal (helper calls, `await import`, runtime data
+//!    sources, branching, …) are still surfaced via
+//!    [`DeferredDynamicRoute`] with a reason string so callers can warn
+//!    clearly. A future sub-task will add a runtime evaluator that
+//!    consumes those deferred entries by booting a worker; until then
+//!    they are skipped from `dist/`.
 //!
 //! 2. **Worker entry wrapping.** The bundler ([`zfb_build::bundle`])
 //!    emits an ESM bundle that exports `routes` + `hydrateIsland` but
@@ -54,18 +57,53 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use zfb_build::renderer::RouteUniverseEntry;
 use zfb_content::extract_tsx_frontmatter;
+use zfb_render::paths::{
+    resolve_paths, PathsCache, PathsError, Segment as PathsSegment,
+};
+use zfb_render::paths_extract::{extract_paths, PathsExtractError, PathsExtraction};
 use zfb_router::{Route, RouteKind, Segment};
 
-/// A dynamic / catchall route that [`build_route_universe`] could not
-/// yet expand into concrete URLs (the `paths()` follow-up is pending —
-/// see the module docs).
+/// A dynamic / catchall route surfaced by [`build_route_universe`].
+///
+/// Carries enough metadata for [`expand_dynamic_routes`] to:
+///
+/// 1. Read the source file and try static `paths()` extraction.
+/// 2. Convert the parsed segments to
+///    [`zfb_render::paths::Segment`] so [`zfb_render::paths::resolve_paths`]
+///    can reassemble the URLs.
+/// 3. Honour the route's filename-convention `output_extension` when
+///    deriving each resolved entry's output path (e.g. a dynamic
+///    `[slug].xml.tsx` should still produce `<slug>.xml`, not
+///    `<slug>/index.html`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDynamicRoute {
-    /// Source path of the page module, used to point the user at the
-    /// offending file in a warning.
+    /// Source path of the page module, used both for static extraction
+    /// and to point the user at the offending file in a warning.
     pub source_path: PathBuf,
-    /// Route template (e.g. `/blog/:slug`).
+    /// Route template (e.g. `/blog/:slug`). Used as the
+    /// [`RouteUniverseEntry::route_key`] for every resolved URL so the
+    /// prerender map lookup keys consistently.
     pub template: String,
+    /// Parsed segments from the router. Reused for URL reassembly.
+    pub segments: Vec<Segment>,
+    /// Filename-convention extension override from the router (None →
+    /// the renderer-side default of `html`).
+    pub output_extension: Option<String>,
+}
+
+/// A dynamic route whose `paths()` couldn't be statically expanded.
+/// Surfaced by [`expand_dynamic_routes`] so callers can warn loudly
+/// instead of silently dropping the page from `dist/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredDynamicRoute {
+    /// Source path of the page module.
+    pub source_path: PathBuf,
+    /// Route template, e.g. `/blog/:slug`.
+    pub template: String,
+    /// Why static expansion failed: `paths` export missing, return
+    /// value not a literal, etc. Suitable for direct inclusion in a
+    /// build warning.
+    pub reason: String,
 }
 
 /// Output of [`build_route_universe`].
@@ -112,11 +150,199 @@ pub fn build_route_universe(routes: &[Route]) -> RouteUniversePlan {
                 plan.deferred_dynamic.push(PendingDynamicRoute {
                     source_path: route.source_path.clone(),
                     template: route.template(),
+                    segments: route.segments.clone(),
+                    output_extension: route.output_extension.clone(),
                 });
             }
         }
     }
     plan
+}
+
+/// Outcome of [`expand_dynamic_routes`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynamicExpansion {
+    /// One [`RouteUniverseEntry`] per concrete URL produced by a
+    /// successful static `paths()` extraction. Order: input route
+    /// order, then `paths()` array order within each route.
+    pub resolved: Vec<RouteUniverseEntry>,
+    /// Routes whose `paths()` could not be statically expanded —
+    /// non-literal return value, missing `paths` export, source
+    /// unreadable, parse error, or [`PathsError`] from the resolver
+    /// itself (bad shape, missing param, ambiguous URL, …). Each
+    /// carries a short reason suitable for a build warning.
+    pub deferred: Vec<DeferredDynamicRoute>,
+}
+
+/// Walk the deferred dynamic routes from [`build_route_universe`] and
+/// try to statically expand each into concrete URLs.
+///
+/// Pages whose `paths()` is a JSON-literal array (the
+/// [`zfb_render::paths_extract`] contract) are handed to
+/// [`zfb_render::paths::resolve_paths`] and produce one
+/// [`RouteUniverseEntry`] per resolved URL. The `route_key` matches the
+/// route's template so the prerender map join still works; the
+/// `output_path` honours the dynamic route's filename-convention
+/// extension (e.g. `[slug].xml.tsx` resolves to `foo.xml`, not
+/// `foo/index.html`).
+///
+/// Pages whose `paths()` cannot be statically expanded are bundled into
+/// [`DynamicExpansion::deferred`] with a one-line reason. A future
+/// sub-task will pick those up and run them through a real JS runtime;
+/// today they are skipped from `dist/` and surfaced as warnings.
+///
+/// `cache` is threaded through so callers can reuse a single
+/// [`PathsCache`] across multiple invocations (e.g. dev-mode rebuilds);
+/// `cache.miss_count()` and `cache.hit_count()` then reflect the whole
+/// session.
+pub fn expand_dynamic_routes(
+    deferred: &[PendingDynamicRoute],
+    project_root: &Path,
+    cache: &mut PathsCache,
+) -> DynamicExpansion {
+    let mut out = DynamicExpansion::default();
+    for route in deferred {
+        match try_expand_one(route, project_root, cache) {
+            Ok(entries) => out.resolved.extend(entries),
+            Err(reason) => out.deferred.push(DeferredDynamicRoute {
+                source_path: route.source_path.clone(),
+                template: route.template.clone(),
+                reason,
+            }),
+        }
+    }
+    out
+}
+
+/// Try to expand a single dynamic route into concrete entries. Returns
+/// the resolved entries on success, or a one-line reason string on
+/// failure (suitable for direct inclusion in a build warning).
+fn try_expand_one(
+    route: &PendingDynamicRoute,
+    project_root: &Path,
+    cache: &mut PathsCache,
+) -> Result<Vec<RouteUniverseEntry>, String> {
+    let abs = if route.source_path.is_absolute() {
+        route.source_path.clone()
+    } else {
+        project_root.join(&route.source_path)
+    };
+    let file_name = abs
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| route.source_path.display().to_string());
+    let source = std::fs::read_to_string(&abs)
+        .map_err(|e| format!("could not read {} ({e})", abs.display()))?;
+    let extraction = match extract_paths(&source, &file_name) {
+        Ok(x) => x,
+        Err(PathsExtractError::Parse { file, message }) => {
+            return Err(format!("parse error in {file}: {message}"));
+        }
+    };
+    let json = match extraction {
+        PathsExtraction::Literal(v) => v,
+        PathsExtraction::Missing => {
+            return Err(format!(
+                "no top-level `paths` export found in {}; dynamic routes require one",
+                abs.display()
+            ));
+        }
+        PathsExtraction::NonLiteral { reason } => {
+            return Err(format!(
+                "{}: paths() not statically resolvable ({reason}); pending runtime evaluation",
+                abs.display()
+            ));
+        }
+    };
+    let segs: Vec<PathsSegment> = route
+        .segments
+        .iter()
+        .map(router_segment_to_paths_segment)
+        .collect();
+    let resolved = resolve_paths(cache, &route.template, &segs, &json)
+        .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
+    let mut out = Vec::with_capacity(resolved.len());
+    for r in resolved {
+        let output_path = build_output_path_for_resolved_url(
+            &r.url,
+            route.output_extension.as_deref(),
+        );
+        out.push(RouteUniverseEntry {
+            url_path: r.url,
+            output_path,
+            route_key: route.template.clone(),
+        });
+    }
+    Ok(out)
+}
+
+/// Convert a `zfb_router::Segment` (the canonical router segment) into
+/// the local stub used by [`zfb_render::paths::Segment`]. The variants
+/// match exactly today; the conversion exists because `zfb-render` does
+/// not depend on `zfb-router` (per the deliberate cyclical-dep
+/// avoidance in the workspace layout).
+fn router_segment_to_paths_segment(seg: &Segment) -> PathsSegment {
+    match seg {
+        Segment::Static(s) => PathsSegment::Static(s.clone()),
+        Segment::Dynamic(name) => PathsSegment::Dynamic(name.clone()),
+        Segment::Catchall(name) => PathsSegment::Catchall(name.clone()),
+    }
+}
+
+/// Compute the on-disk output path for a resolved dynamic URL, mirroring
+/// the [`zfb_router::Route::output_filename`] contract:
+///
+/// - HTML pages render to `…/index.html` (so `/blog/hello` →
+///   `blog/hello/index.html` and the index `/` → `index.html`).
+/// - Non-HTML pages render to the bare URL path (so `/feed.xml` →
+///   `feed.xml`); the URL itself already carries the extension because
+///   the catchall reassembly preserves it.
+fn build_output_path_for_resolved_url(url: &str, extension: Option<&str>) -> PathBuf {
+    let ext = extension.unwrap_or("html");
+    let trimmed = url.trim_start_matches('/');
+    if ext == "html" {
+        if trimmed.is_empty() {
+            PathBuf::from("index.html")
+        } else {
+            PathBuf::from(trimmed).join("index.html")
+        }
+    } else {
+        // Non-HTML: emit the URL path as-is. If, somehow, the resolved
+        // URL is the bare root, fall back to `index.<ext>` so we never
+        // emit an empty path.
+        if trimmed.is_empty() {
+            PathBuf::from(format!("index.{ext}"))
+        } else {
+            PathBuf::from(trimmed)
+        }
+    }
+}
+
+/// Render a [`PathsError`] without the long `Display` prefixes, since
+/// the caller already prepends the source path and we don't want
+/// `route` strings doubled in the warning.
+fn format_paths_error(e: &PathsError) -> String {
+    match e {
+        PathsError::MissingParam { name, .. } => {
+            format!("paths() entry is missing required param `{name}`")
+        }
+        PathsError::ExtraParam { name, .. } => {
+            format!("paths() entry has extra param `{name}` not in the route template")
+        }
+        PathsError::InvalidParamType { name, reason, .. } => {
+            format!("paths() entry has invalid param `{name}`: {reason}")
+        }
+        PathsError::InvalidPathsExport { field, reason, expected, .. } => {
+            let field_note = match field {
+                Some(f) => format!(" at `{f}`"),
+                None => String::new(),
+            };
+            format!("paths() export is malformed{field_note}: {reason} (expected {expected})")
+        }
+        PathsError::AmbiguousResolution { reason, .. } => {
+            format!("paths() produced ambiguous URLs: {reason}")
+        }
+    }
 }
 
 /// Read every TSX page's frontmatter and fold the
@@ -270,6 +496,33 @@ mod tests {
         }
     }
 
+    /// Build a multi-segment route mixing static + dynamic segments,
+    /// e.g. `route(["blog", ":slug"], "pages/blog/[slug].tsx")` builds
+    /// `/blog/[slug]`.
+    fn route(segments: Vec<&str>, source: &str, kind: RouteKind) -> Route {
+        let segs: Vec<Segment> = segments
+            .into_iter()
+            .map(|s| {
+                if let Some(name) = s.strip_prefix(":") {
+                    if let Some(name) = name.strip_suffix("*") {
+                        Segment::Catchall(name.to_string())
+                    } else {
+                        Segment::Dynamic(name.to_string())
+                    }
+                } else {
+                    Segment::Static(s.to_string())
+                }
+            })
+            .collect();
+        Route {
+            source_path: PathBuf::from(source),
+            segments: segs,
+            kind,
+            specificity: 0,
+            output_extension: None,
+        }
+    }
+
     #[test]
     fn build_route_universe_partitions_static_and_dynamic() {
         let routes = vec![
@@ -378,5 +631,323 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
         assert!(msg.contains("pnpm install"), "{msg}");
+    }
+
+    // ---- expand_dynamic_routes -------------------------------------------
+
+    /// Stage a single dynamic page on disk with the given source so
+    /// [`expand_dynamic_routes`] can read it. Returns the project root
+    /// (caller keeps the [`tempfile::TempDir`] alive) and the
+    /// [`PendingDynamicRoute`] pointing at the staged page.
+    fn stage_dynamic_page(
+        page_relative: &str,
+        segments: Vec<Segment>,
+        template: &str,
+        body: &str,
+    ) -> (tempfile::TempDir, PendingDynamicRoute) {
+        let dir = tempdir().unwrap();
+        let abs = dir.path().join(page_relative);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, body).unwrap();
+        let pending = PendingDynamicRoute {
+            source_path: PathBuf::from(page_relative),
+            template: template.to_string(),
+            segments,
+            output_extension: None,
+        };
+        (dir, pending)
+    }
+
+    #[test]
+    fn expand_dynamic_routes_resolves_literal_paths_into_entries() {
+        let body = r#"
+            export function paths() {
+                return [
+                    { params: { slug: "hello" }, props: { i: 1 } },
+                    { params: { slug: "world" }, props: { i: 2 } },
+                ];
+            }
+            export default function P() { return null; }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/blog/[slug].tsx",
+            vec![
+                Segment::Static("blog".into()),
+                Segment::Dynamic("slug".into()),
+            ],
+            "/blog/:slug",
+            body,
+        );
+
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+
+        assert_eq!(out.deferred.len(), 0, "deferred: {:?}", out.deferred);
+        assert_eq!(out.resolved.len(), 2);
+
+        assert_eq!(out.resolved[0].url_path, "/blog/hello");
+        assert_eq!(
+            out.resolved[0].output_path,
+            PathBuf::from("blog/hello/index.html")
+        );
+        assert_eq!(out.resolved[0].route_key, "/blog/:slug");
+
+        assert_eq!(out.resolved[1].url_path, "/blog/world");
+        assert_eq!(
+            out.resolved[1].output_path,
+            PathBuf::from("blog/world/index.html")
+        );
+        assert_eq!(out.resolved[1].route_key, "/blog/:slug");
+
+        // Cache miss for the first call — the second route in the same
+        // call is a different `slug` value but shares the same JSON
+        // shape (single resolve_paths call), so we still expect exactly
+        // one miss for this page.
+        assert_eq!(cache.miss_count(), 1);
+        assert_eq!(cache.hit_count(), 0);
+    }
+
+    #[test]
+    fn expand_dynamic_routes_respects_output_extension_for_non_html() {
+        // `[slug].xml.tsx` should resolve to `<slug>.xml`, not
+        // `<slug>/index.html`. The router would have set
+        // `output_extension = Some("xml")`; we mirror that here.
+        let body = r#"
+            export function paths() {
+                return [{ params: { slug: "feed-a" } }];
+            }
+        "#;
+        let (dir, mut pending) = stage_dynamic_page(
+            "pages/[slug].xml.tsx",
+            vec![Segment::Dynamic("slug".into())],
+            "/:slug",
+            body,
+        );
+        pending.output_extension = Some("xml".into());
+
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+
+        assert_eq!(out.resolved.len(), 1);
+        assert_eq!(out.resolved[0].url_path, "/feed-a");
+        assert_eq!(out.resolved[0].output_path, PathBuf::from("feed-a"));
+    }
+
+    #[test]
+    fn expand_dynamic_routes_defers_non_literal_paths_with_reason() {
+        // Mirrors the real basic-blog page: `paths()` does an
+        // `await import` + collection query, which is not statically
+        // resolvable. Must defer with a reason that the build can
+        // surface verbatim.
+        let body = r#"
+            export async function paths() {
+                const { getCollection } = await import("zfb/content");
+                const posts = await getCollection("blog");
+                return posts.map((p) => ({ params: { slug: p.slug } }));
+            }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/blog/[slug].tsx",
+            vec![
+                Segment::Static("blog".into()),
+                Segment::Dynamic("slug".into()),
+            ],
+            "/blog/:slug",
+            body,
+        );
+
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+
+        assert_eq!(out.resolved.len(), 0);
+        assert_eq!(out.deferred.len(), 1);
+        assert!(
+            out.deferred[0].reason.contains("not statically resolvable"),
+            "reason: {}",
+            out.deferred[0].reason,
+        );
+        assert!(
+            out.deferred[0].reason.contains("pages/blog/[slug].tsx"),
+            "reason should name the source path, got: {}",
+            out.deferred[0].reason,
+        );
+        assert_eq!(out.deferred[0].template, "/blog/:slug");
+    }
+
+    #[test]
+    fn expand_dynamic_routes_defers_when_paths_export_missing() {
+        let body = r#"
+            export default function P() { return null; }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/[slug].tsx",
+            vec![Segment::Dynamic("slug".into())],
+            "/:slug",
+            body,
+        );
+
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        assert_eq!(out.resolved.len(), 0);
+        assert_eq!(out.deferred.len(), 1);
+        assert!(
+            out.deferred[0]
+                .reason
+                .contains("no top-level `paths` export"),
+            "reason: {}",
+            out.deferred[0].reason,
+        );
+    }
+
+    #[test]
+    fn expand_dynamic_routes_defers_unreadable_source() {
+        // Point at a file that doesn't exist; should defer with an
+        // I/O-flavoured reason rather than panic.
+        let dir = tempdir().unwrap();
+        let pending = PendingDynamicRoute {
+            source_path: PathBuf::from("pages/no-such.tsx"),
+            template: "/no-such".into(),
+            segments: vec![Segment::Dynamic("x".into())],
+            output_extension: None,
+        };
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        assert_eq!(out.resolved.len(), 0);
+        assert_eq!(out.deferred.len(), 1);
+        assert!(
+            out.deferred[0].reason.contains("could not read"),
+            "reason: {}",
+            out.deferred[0].reason,
+        );
+    }
+
+    #[test]
+    fn expand_dynamic_routes_defers_with_resolver_error_when_param_missing() {
+        // Literal extraction succeeds — but the entry's `params` is
+        // missing the required `slug` key. The resolver returns
+        // MissingParam; we surface that as a deferred entry with the
+        // user-facing reason.
+        let body = r#"
+            export function paths() {
+                return [{ params: { wrong: "x" } }];
+            }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/[slug].tsx",
+            vec![Segment::Dynamic("slug".into())],
+            "/:slug",
+            body,
+        );
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        assert_eq!(out.resolved.len(), 0);
+        assert_eq!(out.deferred.len(), 1);
+        assert!(
+            out.deferred[0].reason.contains("missing required param `slug`"),
+            "reason: {}",
+            out.deferred[0].reason,
+        );
+    }
+
+    #[test]
+    fn expand_dynamic_routes_handles_catchall_with_array_value() {
+        let body = r#"
+            export function paths() {
+                return [
+                    { params: { slug: ["a", "b"] } },
+                    { params: { slug: ["x", "y", "z"] } },
+                ];
+            }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/docs/[...slug].tsx",
+            vec![
+                Segment::Static("docs".into()),
+                Segment::Catchall("slug".into()),
+            ],
+            "/docs/:slug*",
+            body,
+        );
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+
+        assert_eq!(out.deferred.len(), 0, "deferred: {:?}", out.deferred);
+        assert_eq!(out.resolved.len(), 2);
+        assert_eq!(out.resolved[0].url_path, "/docs/a/b");
+        assert_eq!(
+            out.resolved[0].output_path,
+            PathBuf::from("docs/a/b/index.html")
+        );
+        assert_eq!(out.resolved[1].url_path, "/docs/x/y/z");
+        assert_eq!(
+            out.resolved[1].output_path,
+            PathBuf::from("docs/x/y/z/index.html")
+        );
+    }
+
+    /// Integration-style fixture: stage a tiny project with both a
+    /// static page and a dynamic page that has a literal `paths()`,
+    /// then walk through `build_route_universe` →
+    /// `expand_dynamic_routes` and assert the combined renderer-shaped
+    /// route list. This is the closest we can get to end-to-end without
+    /// booting miniflare (which is gated by the sibling worker-entry
+    /// topic).
+    #[test]
+    fn build_then_expand_combined_route_universe() {
+        let dir = tempdir().unwrap();
+        // Static page.
+        std::fs::create_dir_all(dir.path().join("pages")).unwrap();
+        std::fs::write(
+            dir.path().join("pages/about.tsx"),
+            "export const frontmatter = { title: \"About\" };\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+        // Dynamic page with a literal paths().
+        std::fs::create_dir_all(dir.path().join("pages/blog")).unwrap();
+        std::fs::write(
+            dir.path().join("pages/blog/[slug].tsx"),
+            "export function paths() {\n\
+                return [\n\
+                    { params: { slug: \"hello\" } },\n\
+                    { params: { slug: \"world\" } }\n\
+                ];\n\
+             }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec!["about"], "pages/about.tsx"),
+            route(
+                vec!["blog", ":slug"],
+                "pages/blog/[slug].tsx",
+                RouteKind::Dynamic,
+            ),
+        ];
+
+        let plan = build_route_universe(&routes);
+        assert_eq!(plan.static_routes.len(), 1);
+        assert_eq!(plan.deferred_dynamic.len(), 1);
+
+        let mut cache = PathsCache::new();
+        let expansion =
+            expand_dynamic_routes(&plan.deferred_dynamic, dir.path(), &mut cache);
+        assert_eq!(expansion.deferred.len(), 0, "{:?}", expansion.deferred);
+        assert_eq!(expansion.resolved.len(), 2);
+
+        // Final renderer-shaped list: statics first, then resolved
+        // dynamics in input order. The build orchestration concatenates
+        // in this same order; assert the combined shape end-to-end.
+        let mut combined = plan.static_routes.clone();
+        combined.extend(expansion.resolved);
+        assert_eq!(combined.len(), 3);
+        assert_eq!(combined[0].url_path, "/about");
+        assert_eq!(combined[1].url_path, "/blog/hello");
+        assert_eq!(combined[2].url_path, "/blog/world");
+        // route_key of resolved entries must be the dynamic template,
+        // not the resolved URL — that's how the prerender map joins.
+        assert_eq!(combined[1].route_key, "/blog/:slug");
+        assert_eq!(combined[2].route_key, "/blog/:slug");
     }
 }
