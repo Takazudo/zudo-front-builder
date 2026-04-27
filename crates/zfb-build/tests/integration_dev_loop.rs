@@ -81,6 +81,7 @@ fn touching_a_md_file_only_rerenders_its_page() {
                         page: p.clone(),
                         output_path: PathBuf::from(format!("{stem}.html")),
                         html: format!("<h1>{stem}</h1>"),
+                        content_type: None,
                     }
                 })
                 .collect())
@@ -234,6 +235,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
                         p.path().file_stem().unwrap().to_string_lossy()
                     )),
                     html: "<p>x</p>".into(),
+                    content_type: None,
                 })
                 .collect())
         }),
@@ -305,6 +307,7 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
                     page: p.clone(),
                     output_path: PathBuf::from("post.html"),
                     html: "<h1>v2</h1>".into(),
+                    content_type: None,
                 })
                 .collect())
         }),
