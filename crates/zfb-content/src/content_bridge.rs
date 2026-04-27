@@ -8,7 +8,7 @@
 //! follow-up epic — this sub delivers ONLY the Rust contract and the
 //! TypeScript surface.
 //!
-//! See `docs/architecture/adr-003-content-bridge.md` for the JS-side
+//! See `docs/architecture/adr-004-content-bridge.md` for the JS-side
 //! contract spec.
 //!
 //! # Determinism

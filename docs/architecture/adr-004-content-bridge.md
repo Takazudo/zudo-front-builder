@@ -1,4 +1,4 @@
-# ADR-003: Content bridge contract (Rust → JS `getCollection` / `getEntry`)
+# ADR-004: Content bridge contract (Rust → JS `getCollection` / `getEntry`)
 
 - **Status:** Accepted (Rust + d.ts side; JS-runtime wiring deferred)
 - **Date:** 2026-04-27

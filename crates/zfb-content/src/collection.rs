@@ -299,7 +299,7 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
     // New `zfb/content` module — the bridge surface specified in #48.
     // Mirrors `globalThis.__zfb.content.get(name)` /
     // `globalThis.__zfb.content.getOne(name, slug)`. See
-    // `docs/architecture/adr-003-content-bridge.md` for the full
+    // `docs/architecture/adr-004-content-bridge.md` for the full
     // contract.
     buf.push('\n');
     buf.push_str("declare module \"zfb/content\" {\n");
@@ -829,7 +829,7 @@ mod tests {
     /// Golden test: pin the exact textual output of `emit_types_dts` so
     /// any change to the declaration shape is loud. The string below is
     /// the canonical contract — when it changes, the bridge consumers
-    /// (and the JS-side spec in adr-003) need to change with it.
+    /// (and the JS-side spec in adr-004) need to change with it.
     #[test]
     fn emit_types_dts_matches_golden() {
         let tmp = TmpDir::new("dts-golden");
