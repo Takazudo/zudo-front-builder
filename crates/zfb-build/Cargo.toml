@@ -10,11 +10,23 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 [dependencies]
 zfb-watcher = { path = "../zfb-watcher" }
 zfb-graph = { path = "../zfb-graph" }
+# Read-only consumption of the MDX → JSX emitter (Wave 1 / T3 bundler).
+# We reuse `compile_mdx_to_jsx_module_cached` rather than re-wrapping MDX
+# compilation so the bundler speaks the same MDX dialect as `zfb-render`.
+zfb-content = { path = "../zfb-content" }
+# Read-only consumption of the framework adapter contract (ADR-002).
+# The bundler only touches `Framework`, `make_adapter`, and the adapter's
+# `hydrate_shim_*` accessors. Default features are kept (no
+# `deno_core_host`) so this stays compile-cheap and does not drag V8 into
+# `zfb-build`'s dependency surface.
+zfb-render = { path = "../zfb-render" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 tracing = "0.1"
 
