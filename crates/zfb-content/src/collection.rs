@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
 use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
-use crate::pipeline::PipelineError;
+use crate::pipeline::{Pipeline, PipelineError};
 
 /// Source kind for an [`Entry`]. Discriminator on the union of file
 /// shapes a collection may contain — used by downstream consumers (e.g.
@@ -97,13 +97,19 @@ impl<T> Entry<T> {
     /// Pass `Some(&cache)` to dedupe identical bodies across calls; pass
     /// `None` for a one-shot compile.
     ///
+    /// `pipeline` was added by Sub 46 (#46) so callers can thread a
+    /// configured [`Pipeline`] (whose mdast visitors mutate the tree
+    /// before JSX emission) through. Pass `None` to keep today's
+    /// pre-Sub-46 behaviour.
+    ///
     /// # Errors
     /// Forwards [`PipelineError::Parse`] from the MDX emitter.
     pub fn compile_mdx(
         &self,
         cache: Option<&MdxModuleCache>,
+        pipeline: Option<&mut Pipeline>,
     ) -> Result<CompiledMdx, PipelineError> {
-        compile_mdx_to_jsx_module_cached(&self.body, &self.path, cache)
+        compile_mdx_to_jsx_module_cached(&self.body, &self.path, cache, pipeline)
     }
 }
 
@@ -137,16 +143,24 @@ pub enum CollectionError {
 /// - Aggregates errors: if any entry fails, returns `Err(CollectionError::Multiple { .. })`
 ///   with all failures (not just the first).
 ///
-/// Equivalent to [`walk_collection_with_cache`] called with `cache = None`
-/// — every markdown entry's MDX is compiled fresh. Long-running consumers
-/// (a dev server, a build that touches the same collection multiple times)
-/// should prefer the `_with_cache` variant so identical bodies are emitted
-/// once. The cache is irrelevant for TSX entries (no MDX compile step).
-pub fn walk_collection<T>(dir: &Path) -> Result<Vec<Entry<T>>, CollectionError>
+/// Equivalent to [`walk_collection_with_cache`] called with
+/// `cache = None`, forwarding `pipeline` verbatim — every markdown entry's
+/// MDX is compiled fresh. Long-running consumers (a dev server, a build
+/// that touches the same collection multiple times) should prefer the
+/// `_with_cache` variant so identical bodies are emitted once. The cache
+/// is irrelevant for TSX entries (no MDX compile step).
+///
+/// `pipeline` was added by Sub 46 (#46); pass `None` to keep today's
+/// pre-Sub-46 behaviour. See [`walk_collection_with_cache`] for the full
+/// rationale.
+pub fn walk_collection<T>(
+    dir: &Path,
+    pipeline: Option<&mut Pipeline>,
+) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
-    walk_collection_with_cache(dir, None)
+    walk_collection_with_cache(dir, None, pipeline)
 }
 
 /// Walk a collection directory like [`walk_collection`], reusing `cache`
@@ -160,11 +174,21 @@ where
 ///
 /// `.md` and `.mdx` files take the same MDX→JSX path (CommonMark is a
 /// strict MDX subset, so one emitter handles both). `.tsx` files skip
-/// the MDX compile step entirely — the source is already JSX-shaped
-/// and the renderer feeds it straight to SWC.
+/// the MDX compile step entirely — the source is already JSX-shaped and
+/// the renderer feeds it straight to SWC. Each successful entry gets its
+/// [`Entry::module_specifier`] and [`Entry::compiled_jsx_source`]
+/// populated up-front so consumers see a uniform shape.
+///
+/// `pipeline` was added by Sub 46 (#46) so the JSX emit step can run a
+/// configured [`Pipeline`]'s mdast visitors against each markdown entry's
+/// body. All in-tree call sites pass `None` today, which keeps behaviour
+/// byte-for-byte identical to pre-Sub-46. The pipeline is borrowed
+/// mutably across the whole walk because its visitors take `&mut self`.
+/// TSX entries skip the pipeline entirely (no mdast tree).
 pub fn walk_collection_with_cache<T>(
     dir: &Path,
     cache: Option<&MdxModuleCache>,
+    mut pipeline: Option<&mut Pipeline>,
 ) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -180,7 +204,9 @@ where
     let mut errors: Vec<CollectionError> = Vec::new();
 
     for path in files {
-        match parse_entry::<T>(dir, &path, cache) {
+        // Re-borrow the pipeline for each entry so the loop can use the
+        // mutable reference across iterations without consuming it.
+        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut()) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
         }
@@ -285,6 +311,7 @@ fn parse_entry<T>(
     root: &Path,
     path: &Path,
     cache: Option<&MdxModuleCache>,
+    pipeline: Option<&mut Pipeline>,
 ) -> Result<Entry<T>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -338,8 +365,10 @@ where
             // Compile body to JSX (same path for `.md` and `.mdx` —
             // CommonMark is a strict MDX subset). The cache opt-in
             // means repeat walks of an unchanged corpus skip the
-            // emitter entirely.
-            let compiled = compile_mdx_to_jsx_module_cached(&md_body, path, cache).map_err(|e| {
+            // emitter entirely. Sub 46 (#46) plumbs an optional
+            // [`Pipeline`] through; today's callers pass `None`.
+            let compiled = compile_mdx_to_jsx_module_cached(&md_body, path, cache, pipeline)
+                .map_err(|e| {
                 CollectionError::Mdx {
                     path: path.to_path_buf(),
                     message: e.to_string(),
@@ -509,7 +538,7 @@ mod tests {
     #[test]
     fn walk_empty_directory_returns_empty_vec() {
         let tmp = TmpDir::new("empty");
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert!(out.is_empty());
     }
 
@@ -517,7 +546,7 @@ mod tests {
     fn walk_one_valid_md_file() {
         let tmp = TmpDir::new("one-md");
         tmp.write("hello.md", &valid_md("Hello"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         let e = &out[0];
         assert_eq!(e.slug, "hello");
@@ -535,7 +564,7 @@ mod tests {
     fn walk_one_mdx_file_same_handling() {
         let tmp = TmpDir::new("one-mdx");
         tmp.write("post.mdx", &valid_md("Post"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, "post");
         assert_eq!(out[0].rel_path, PathBuf::from("post.mdx"));
@@ -546,7 +575,7 @@ mod tests {
     fn walk_one_valid_tsx_file() {
         let tmp = TmpDir::new("one-tsx");
         tmp.write("page.tsx", &valid_tsx("Tsx Page"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         let e = &out[0];
         assert_eq!(e.slug, "page");
@@ -571,7 +600,7 @@ mod tests {
              export const contentType = 'application/rss+xml';\n\
              export default function Feed() { return null; }\n",
         );
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         let e = &out[0];
         assert_eq!(e.kind, EntryKind::Tsx);
@@ -585,7 +614,7 @@ mod tests {
         tmp.write("a-md.md", &valid_md("Alpha"));
         tmp.write("b-mdx.mdx", &valid_md("Beta"));
         tmp.write("c-tsx.tsx", &valid_tsx("Gamma"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 3, "all three extensions should walk");
         let titles: Vec<&str> = out.iter().map(|e| e.data.title.as_str()).collect();
         assert!(titles.contains(&"Alpha"));
@@ -605,7 +634,7 @@ mod tests {
         tmp.write("nested/a.md", &valid_md("A"));
         tmp.write("nested/deep/c.mdx", &valid_md("C"));
         tmp.write("nested/deep/d.tsx", &valid_tsx("D"));
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 4);
         let rels: Vec<_> = out.iter().map(|e| e.rel_path.clone()).collect();
         let mut sorted = rels.clone();
@@ -624,7 +653,7 @@ mod tests {
         tmp.write("README.txt", "just text");
         tmp.write("image.png", "not really png");
         tmp.write("notes.markdown", "wrong extension");
-        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path()).unwrap();
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].slug, "post");
     }
@@ -634,7 +663,7 @@ mod tests {
         let tmp = TmpDir::new("bad-yaml");
         // Open fence + intentionally broken YAML + close fence.
         tmp.write("bad.md", "---\ntitle: [unclosed\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -653,7 +682,7 @@ mod tests {
             "bad.tsx",
             "export default function Page() { return null; }\n",
         );
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -668,7 +697,7 @@ mod tests {
         let tmp = TmpDir::new("bad-schema");
         // Empty title violates length(min=1).
         tmp.write("empty.md", "---\ntitle: \"\"\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -690,7 +719,7 @@ mod tests {
             "export const frontmatter = { title: '' };\n\
              export default function Page() { return null; }\n",
         );
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, .. } => {
                 assert_eq!(errors.len(), 1);
@@ -706,7 +735,7 @@ mod tests {
         tmp.write("ok.md", &valid_md("OK"));
         tmp.write("bad-yaml.md", "---\ntitle: [unclosed\n---\n");
         tmp.write("bad-schema.md", "---\ntitle: \"\"\n---\nbody\n");
-        let err = walk_collection::<TestSchema>(tmp.path()).unwrap_err();
+        let err = walk_collection::<TestSchema>(tmp.path(), None).unwrap_err();
         match err {
             CollectionError::Multiple { errors, summary } => {
                 assert_eq!(errors.len(), 2, "expected 2 aggregated errors");

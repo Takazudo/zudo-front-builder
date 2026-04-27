@@ -29,7 +29,7 @@ fn fixtures_blog_dir() -> PathBuf {
 fn walks_valid_collection_returns_three_entries_sorted() {
     let dir = fixtures_blog_dir();
     let entries: Vec<Entry<BlogPost>> =
-        walk_collection(&dir).expect("valid blog collection should walk cleanly");
+        walk_collection(&dir, None).expect("valid blog collection should walk cleanly");
     assert_eq!(entries.len(), 3, "expected 3 valid posts, got {entries:?}");
 
     // Entries are sorted by rel_path. Filenames are 01-, 02-, 03- so the
@@ -71,7 +71,7 @@ fn invalid_frontmatter_returns_multiple_error() {
         "---\ntitle: \"\"\ndate: \"2026-04-01\"\n---\nbody\n",
     );
 
-    let err = walk_collection::<BlogPost>(tmp.path())
+    let err = walk_collection::<BlogPost>(tmp.path(), None)
         .expect_err("walk must fail when one entry is invalid");
     match err {
         CollectionError::Multiple { errors, summary } => {
@@ -102,7 +102,7 @@ fn missing_required_field_returns_multiple_error() {
         tmp.write(name, &body);
     }
     tmp.write("04-no-title.md", "---\ndate: \"2026-04-01\"\n---\nbody\n");
-    let err = walk_collection::<BlogPost>(tmp.path()).expect_err("missing title must fail");
+    let err = walk_collection::<BlogPost>(tmp.path(), None).expect_err("missing title must fail");
     match err {
         CollectionError::Multiple { errors, .. } => {
             assert_eq!(errors.len(), 1);

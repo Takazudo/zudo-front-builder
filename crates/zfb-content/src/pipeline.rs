@@ -127,6 +127,21 @@ impl Pipeline {
         self
     }
 
+    /// Run only the mdast visitor chain against an externally-parsed
+    /// mdast tree.
+    ///
+    /// Sub 46 (#46) added this seam so the JSX emit path
+    /// (`mdx_jsx_emit::compile_mdx_to_jsx_module_cached`) can apply the
+    /// pipeline's mdast visitors without going through full
+    /// [`Pipeline::run`] (which would also build a hast tree the JSX
+    /// emitter does not consume). Hast visitors stay untouched here —
+    /// they are applied by [`Pipeline::run`] only.
+    pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
+        for v in &mut self.mdast_visitors {
+            v.visit(node);
+        }
+    }
+
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///

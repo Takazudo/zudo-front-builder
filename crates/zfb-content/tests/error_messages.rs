@@ -45,8 +45,8 @@ fn malformed_frontmatter_error_points_at_file_and_yaml_location() {
     )
     .unwrap();
 
-    let err =
-        walk_collection::<PostSchema>(&tmp.path).expect_err("malformed frontmatter should fail");
+    let err = walk_collection::<PostSchema>(&tmp.path, None)
+        .expect_err("malformed frontmatter should fail");
 
     let CollectionError::Multiple { errors, .. } = &err else {
         panic!("expected Multiple aggregate, got {err:?}");
