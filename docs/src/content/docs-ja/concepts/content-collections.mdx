@@ -5,6 +5,12 @@ sidebar_position: 2
 category: Concepts
 ---
 
+<Info title="翻訳予定">
+
+このページは内容更新が予定されています。最新の英語版は [Content Collections](/concepts/content-collections) を参照してください。
+
+</Info>
+
 <Warning title="v0 status">
 
 File discovery, frontmatter parsing, and Markdown/MDX compilation live in `crates/zfb-content` and are wired through the renderer. Each entry now exposes `entry.Content` — a renderable React/Preact component compiled from the source via the mdast → JSX-source pipeline. See [MDX Components](/concepts/mdx-components) for how the `<post.Content components={...} />` contract works, and /architecture/js-runtime for the deeper runtime discussion.
