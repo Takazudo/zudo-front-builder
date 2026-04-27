@@ -123,20 +123,28 @@ pub fn build_route_universe(routes: &[Route]) -> RouteUniversePlan {
 /// `export const prerender = …` flag into a map keyed on the route
 /// template (matching [`RouteUniverseEntry::route_key`]).
 ///
+/// `warn_unreadable` is invoked once per TSX page whose source can't be
+/// read or whose frontmatter extraction fails. The closure exists so
+/// callers can route the message through their own logging surface
+/// (e.g. `crate::output::warn`) instead of forcing this helper to
+/// know about CLI-side I/O.
+///
 /// Behaviour notes:
 ///
-/// - Non-TSX pages (e.g. `.mdx`) are skipped — TSX frontmatter
-///   extraction does not apply to them. The renderer treats a missing
-///   prerender entry as `true` (SSG), which is the documented default
-///   for MDX too.
-/// - TSX pages whose source can't be read or whose frontmatter
-///   extraction fails (parse error, missing required `frontmatter`
-///   export, …) are also skipped. The renderer falls back to the
-///   default `true`, and the build itself surfaces a separate, clearer
-///   error elsewhere — this helper deliberately does NOT abort the
-///   whole build over a frontmatter problem because page-rendering
-///   already has its own error path.
-pub fn build_prerender_map(routes: &[Route], project_root: &Path) -> BTreeMap<String, bool> {
+/// - Non-TSX pages (e.g. `.mdx`) are skipped silently — TSX
+///   frontmatter extraction does not apply to them. The renderer
+///   treats a missing prerender entry as `true` (SSG), which is the
+///   documented default for MDX too.
+/// - TSX pages whose extraction fails are still skipped from the map
+///   (so the renderer's missing-key default of `true` applies), but
+///   the failure is reported through `warn_unreadable` so the user
+///   can fix typos in their `frontmatter` / `prerender` exports
+///   instead of staring at a silent default.
+pub fn build_prerender_map(
+    routes: &[Route],
+    project_root: &Path,
+    mut warn_unreadable: impl FnMut(&str),
+) -> BTreeMap<String, bool> {
     let mut map = BTreeMap::new();
     for route in routes {
         let abs = if route.source_path.is_absolute() {
@@ -152,8 +160,16 @@ pub fn build_prerender_map(routes: &[Route], project_root: &Path) -> BTreeMap<St
         if !matches!(ext, "tsx" | "ts") {
             continue;
         }
-        let Ok(source) = std::fs::read_to_string(&abs) else {
-            continue;
+        let source = match std::fs::read_to_string(&abs) {
+            Ok(s) => s,
+            Err(e) => {
+                warn_unreadable(&format!(
+                    "could not read {} for prerender extraction ({}); defaulting to SSG",
+                    abs.display(),
+                    e
+                ));
+                continue;
+            }
         };
         let file_name = abs
             .file_name()
@@ -163,9 +179,12 @@ pub fn build_prerender_map(routes: &[Route], project_root: &Path) -> BTreeMap<St
             Ok(fm) => {
                 map.insert(route.template(), fm.prerender);
             }
-            Err(_) => {
-                // Default-true is implied by absence; do not insert so
-                // the renderer's fallback path is exercised uniformly.
+            Err(e) => {
+                warn_unreadable(&format!(
+                    "frontmatter extraction failed for {} ({}); defaulting to SSG",
+                    abs.display(),
+                    e
+                ));
             }
         }
     }
@@ -278,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn build_prerender_map_reads_tsx_frontmatter_and_skips_unparseable() {
+    fn build_prerender_map_reads_tsx_frontmatter_and_warns_on_unparseable() {
         let dir = tempdir().unwrap();
         let pages = dir.path().join("pages");
         std::fs::create_dir_all(&pages).unwrap();
@@ -295,7 +314,8 @@ mod tests {
             "export const frontmatter = { title: 'P' };\nexport const prerender = false;\nexport default function() { return null; }\n",
         )
         .unwrap();
-        // No frontmatter — extraction fails → no entry inserted
+        // No frontmatter — extraction fails → no entry inserted, but a
+        // warning IS emitted so the user can find their typo.
         std::fs::write(
             pages.join("broken.tsx"),
             "export default function() { return null; }\n",
@@ -308,12 +328,18 @@ mod tests {
             static_route(vec!["broken"], "pages/broken.tsx"),
         ];
 
-        let map = build_prerender_map(&routes, dir.path());
+        let mut warnings: Vec<String> = Vec::new();
+        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
         assert_eq!(map.get("/about"), Some(&true));
         assert_eq!(map.get("/preview"), Some(&false));
-        // broken.tsx never makes it into the map; renderer's
-        // missing-key default of `true` covers it.
         assert!(!map.contains_key("/broken"));
+        // broken.tsx triggered exactly one warning naming the file.
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert!(
+            warnings[0].contains("broken.tsx"),
+            "expected file name in warning, got: {}",
+            warnings[0]
+        );
     }
 
     #[test]
@@ -324,8 +350,11 @@ mod tests {
         std::fs::write(pages.join("post.mdx"), "# hello\n").unwrap();
 
         let routes = vec![static_route(vec!["post"], "pages/post.mdx")];
-        let map = build_prerender_map(&routes, dir.path());
+        let mut warnings: Vec<String> = Vec::new();
+        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
         assert!(map.is_empty(), "MDX should be left to the default-true path");
+        // Non-TSX files are skipped silently (no warning).
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
     }
 
     #[test]

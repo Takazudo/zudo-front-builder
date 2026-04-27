@@ -166,7 +166,7 @@ fn run_build<R: BuildRunner>(args: BuildArgsResolved<'_, R>) -> Result<usize> {
         static_routes,
         deferred_dynamic,
     } = build_route_universe(routes);
-    let prerender_map = build_prerender_map(routes, project_root);
+    let prerender_map = build_prerender_map(routes, project_root, |msg| output::warn(msg));
 
     // Loud, separate warning per dynamic route — the user should know
     // why their `[slug].tsx` is silently absent from `dist/`.
