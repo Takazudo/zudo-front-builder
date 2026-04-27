@@ -24,7 +24,8 @@
 //!    [`zfb_build::atomic_write_string`].
 //! 5. Skips dynamic / catchall routes with a `warn` line — those need a
 //!    runtime `paths()` evaluation that requires the real renderer (blocked
-//!    on ADR-001: `DenoCoreHost` is still a skeleton).
+//!    on T6 — build-time render orchestration via miniflare subprocess,
+//!    per ADR-005).
 //! 6. If the project has zero `pages/*.tsx` files we still emit a stub
 //!    `index.html` so `zfb preview` has something to serve.
 //! 7. Prints the canonical summary line `✓ N pages built in X.XXs` via
@@ -33,9 +34,9 @@
 //! What's still deferred:
 //!
 //! - Real per-route SSR rendering. `zfb-render` / `zfb-content` need a
-//!   working `PageRenderer`, which depends on a working JS runtime
-//!   (ADR-001 / `DenoCoreHost` skeleton). Until then each static route's
-//!   body is a placeholder that names the route template.
+//!   working `PageRenderer` driven by the miniflare subprocess host
+//!   landing in T6 (per ADR-005). Until then each static route's body is
+//!   a placeholder that names the route template.
 //! - Dynamic and catchall routes. Expanding `[slug].tsx` into concrete
 //!   paths needs `paths()` calls evaluated by the renderer; this is the
 //!   same blocker as above.

@@ -1,10 +1,28 @@
 # ADR-001: JS runtime for zfb's SSR pipeline
 
-- **Status:** Accepted
-- **Date:** 2026-04-26
+- **Status:** Superseded by [ADR-005](./adr-005-ssg-first.md)
+- **Date:** 2026-04-26 (accepted), 2026-04-28 (superseded)
 - **Owners:** Sub 1 (Epic 3 — File-based router + JSX rendering)
 - **Locks:** runtime choice for `zfb-render` and all dependents (Subs 3, 4, 5, 6).
   Future revisions require a follow-on ADR.
+
+## Superseded
+
+This ADR is superseded by [ADR-005: SSG-first via miniflare subprocess +
+Hono-style adapter pattern](./adr-005-ssg-first.md).
+
+The reason is twofold. First, embedding `deno_core` in the zfb CLI binary
+carries a memory and binary-size footprint that is hard to justify for a
+build-time tool — a 40-50 MB binary plus 25-40 MB RSS per isolate, paid by
+every contributor and every CI run, in exchange for keeping the JS host
+in-process. Second, zfb's deployment target is Cloudflare Workers (workerd),
+and running build-time SSG through a different JS runtime than the runtime
+SSR target invites quiet behavioural drift between local builds and
+production. miniflare runs workerd locally as a short-lived npm subprocess,
+gives us byte-for-byte parity with the production JS runtime, and keeps the
+Rust binary small. The `RenderHost` trait survives the change and remains the
+abstraction seam in `zfb-render`; what changes is the concrete host — from a
+deno_core in-process isolate to a miniflare subprocess client.
 
 ## Decision (one sentence)
 
