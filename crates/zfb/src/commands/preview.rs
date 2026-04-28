@@ -1,58 +1,91 @@
-//! `zfb preview` command — static-file server for previously built artifacts.
+//! `zfb preview` command — local preview server for built artifacts.
 //!
-//! Unlike `zfb dev`, this command does no rebuild, no live-reload, and injects
-//! no `/__zfb/*` routes. It is a clean static server: serve files from
-//! `args.outdir/` over HTTP at `args.port`, fall through to a plain 404 for
-//! missing paths, and exit cleanly on Ctrl+C.
+//! This command does no rebuild, no live-reload, and injects no
+//! `/__zfb/*` routes. It is a thin preview shell with two modes that
+//! match what `zfb build` actually emitted:
 //!
-//! Directory-style URLs (`/`, `/foo/bar/`) resolve to the matching
-//! `index.html` via [`ServeDir`]'s default `append_index_html_on_directories`
-//! behavior.
+//! ## Static-only mode (`adapter: "none"` or omitted)
+//!
+//! Serves files from `<project>/dist/` over HTTP at `args.port`.
+//!
+//! Trailing-slash semantics match Cloudflare Pages:
+//!
+//! - `GET /` → serve `dist/index.html`.
+//! - `GET /foo` →
+//!   - if `dist/foo` is a regular file, serve it;
+//!   - else if `dist/foo/index.html` exists, **301 redirect** to `/foo/`;
+//!   - else 404.
+//! - `GET /foo/` →
+//!   - if `dist/foo/index.html` exists, serve it;
+//!   - else 404.
+//!
+//! Naked directories (no `index.html`) always 404 — never a directory
+//! listing. The 404 body is `dist/404.html` if it exists, otherwise a
+//! plain `404 Not Found` text response.
+//!
+//! Cache-Control is `no-store` for v0 — preview is local only and we
+//! never want a stale browser cache to mask a real bug.
+//!
+//! ## Adapter mode (`adapter: "@takazudo/zfb-adapter-cloudflare"`)
+//!
+//! Defers to `pnpm exec wrangler pages dev <outdir> --port <port>` so
+//! the Worker bundle (`dist/_worker.js`) executes locally. Wrangler is
+//! the canonical CF Pages local-dev tool, and matching its semantics
+//! by deferring is more honest than reimplementing them.
 //!
 //! ## Config wiring
 //!
-//! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported" error
-//! for `zfb.config.ts`) via [`crate::config::load_from_dir`] from the current
-//! working directory. The `--port` flag is `Option<u16>` (no clap default),
-//! so port resolution layers as "CLI flag > `zfb.config.json` value > built-in
-//! default (`4321`)" — the same rule used by `zfb dev`. `--outdir` keeps a
-//! clap default because the preview command does not consult config for it
-//! today. Output uses [`crate::output`] helpers for consistent styling with
-//! the other zfb commands.
+//! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported"
+//! error for `zfb.config.ts`) via [`crate::config::load_from_dir`].
+//! Port resolution layers as "CLI flag > config > built-in default
+//! (`4321`)" — same rule used by `zfb dev`. `--outdir` keeps a clap
+//! default because the preview command does not consult config for it
+//! today.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, Result};
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::Router;
-use tower_http::services::ServeDir;
+use zfb_build::AdapterChoice;
 
 use crate::cli::PreviewArgs;
 use crate::config;
 use crate::output;
 
-pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
-    // Resolve the project root from the current working directory and load
-    // the project config (if any). A missing config file is fine — it
-    // returns `Config::default()`. Any *real* error (e.g. invalid JSON,
-    // unsupported zfb.config.ts) is surfaced via the output helpers and
-    // propagated so `main()` can exit non-zero.
+/// Built-in default port for `zfb preview` when neither the CLI nor the
+/// project config supplies one. 4321 keeps `dev` (3000) and `preview`
+/// running side-by-side, and matches what npm-side scaffolds expect.
+const DEFAULT_PREVIEW_PORT: u16 = 4321;
+
+/// Adapter package name handled in adapter mode. Only one adapter
+/// exists today; if a project configures something else, we error out
+/// rather than silently falling through to static-only.
+const CLOUDFLARE_ADAPTER: &str = "@takazudo/zfb-adapter-cloudflare";
+
+pub async fn run(args: &PreviewArgs) -> Result<()> {
+    // 1. Resolve the project root and load configuration. A missing
+    //    config file is fine — `load_from_dir` returns
+    //    `Config::default()`. Any *real* error (invalid JSON, an
+    //    unsupported `.ts` config) is surfaced via `output::error` by
+    //    `main()` after we propagate it.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
-    // Errors propagate to main() for centralized rendering — see
-    // commands/dev.rs and main.rs for the shared rationale.
     let cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
 
-    // Resolve `args.outdir` against the project root so the existence check
-    // (and `ServeDir`) operate on an unambiguous path. CLI wins over config
-    // unconditionally — see the precedence note in the module doc comment.
+    // 2. Resolve `args.outdir` against the project root so the
+    //    existence check (and the static handler) operate on an
+    //    unambiguous path. CLI wins over config unconditionally — see
+    //    the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
-    // CLI flag > config > built-in default (`4321`). See the module doc
-    // comment for the precedence rule shared with `zfb dev`.
     let port = resolve_port(args.port, cfg.port);
 
-    // Verify the output directory exists *before* binding the port so that
+    // Verify the output directory exists *before* binding the port so
     // missing-build errors don't leave a half-started server behind.
     if !outdir.exists() {
         anyhow::bail!(
@@ -61,8 +94,30 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
         );
     }
 
-    let serve_dir = ServeDir::new(&outdir);
-    let app = Router::new().fallback_service(serve_dir);
+    // 3. Branch on adapter. `AdapterChoice::from_config` validates the
+    //    package-name shape, so a typo in `zfb.config.json` surfaces
+    //    here rather than as a confusing wrangler-spawn failure later.
+    let adapter = AdapterChoice::from_config(cfg.adapter.as_deref())
+        .context("invalid adapter in zfb.config.json")?;
+
+    match adapter {
+        AdapterChoice::None => run_static(&outdir, port).await,
+        AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
+            run_via_wrangler(&project_root, &outdir, port).await
+        }
+        AdapterChoice::Package(pkg) => anyhow::bail!(
+            "preview: adapter {pkg:?} is not supported (only {CLOUDFLARE_ADAPTER:?} today)"
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Static-only mode
+// ---------------------------------------------------------------------------
+
+/// Bind the static preview server and run it until Ctrl+C.
+async fn run_static(dist_root: &Path, port: u16) -> Result<()> {
+    let app = build_static_router(dist_root.to_path_buf());
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let listener = tokio::net::TcpListener::bind(addr)
@@ -73,8 +128,9 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            // Ignore the result — we want to fall through to a clean exit
-            // whether ctrl_c succeeded or the signal handler errored.
+            // Ignore the result — we want to fall through to a clean
+            // exit whether ctrl_c succeeded or the signal handler
+            // errored out.
             let _ = tokio::signal::ctrl_c().await;
         })
         .await
@@ -83,9 +139,275 @@ pub async fn run(args: &PreviewArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Shared state passed to the fallback handler. Cheap to clone — only
+/// holds the dist root path.
+#[derive(Clone)]
+struct StaticState {
+    dist_root: PathBuf,
+}
+
+/// Build the router used in static-only mode. Exposed (crate-private)
+/// so unit tests can drive it via `tower::ServiceExt::oneshot` without
+/// binding a port.
+pub(crate) fn build_static_router(dist_root: PathBuf) -> Router {
+    Router::new()
+        .fallback(static_fallback)
+        .with_state(StaticState { dist_root })
+}
+
+/// One handler covering every path. Easier than wiring `/`, `/*path`
+/// separately because we want identical behaviour for both.
+async fn static_fallback(State(state): State<StaticState>, uri: Uri) -> Response {
+    serve_static(&state.dist_root, uri.path()).await
+}
+
+/// Apply the Cloudflare-Pages-style routing rule to a request, then
+/// either serve a file, redirect, or 404.
+async fn serve_static(dist_root: &Path, url_path: &str) -> Response {
+    match resolve_static(dist_root, url_path) {
+        Resolution::File(path) => serve_file(&path, dist_root).await,
+        Resolution::Redirect(target) => redirect_response(&target),
+        Resolution::NotFound => not_found_response(dist_root).await,
+    }
+}
+
+/// Outcome of applying the routing rule to a URL path. Pure value type
+/// so the rule can be unit-tested without touching axum or tokio.
+#[derive(Debug, PartialEq, Eq)]
+enum Resolution {
+    /// Serve this file. Always under `dist_root` thanks to the
+    /// sanitiser.
+    File(PathBuf),
+    /// 301-redirect the client to this URL path. Used when `/foo` is
+    /// actually a directory (`/foo/index.html`).
+    Redirect(String),
+    /// Neither a file nor a directory-with-index matched. Caller
+    /// returns the project's `404.html` when one exists.
+    NotFound,
+}
+
+/// Resolve a URL path against `dist_root` per the rules in the module
+/// doc comment. Pure of side effects beyond `is_file` filesystem
+/// probes — no I/O on the file body itself.
+fn resolve_static(dist_root: &Path, url_path: &str) -> Resolution {
+    if !is_safe_path(url_path) {
+        return Resolution::NotFound;
+    }
+
+    let stripped = url_path.trim_start_matches('/');
+    let has_trailing = url_path.is_empty() || url_path.ends_with('/');
+    let clean = stripped.trim_end_matches('/');
+
+    if clean.is_empty() {
+        // Root: serve dist/index.html or 404.
+        let idx = dist_root.join("index.html");
+        return if idx.is_file() {
+            Resolution::File(idx)
+        } else {
+            Resolution::NotFound
+        };
+    }
+
+    let candidate_file = dist_root.join(clean);
+    let candidate_index = candidate_file.join("index.html");
+
+    if has_trailing {
+        // `/foo/` only matches a directory with an index.
+        if candidate_index.is_file() {
+            return Resolution::File(candidate_index);
+        }
+        return Resolution::NotFound;
+    }
+
+    // `/foo`: try file first, then directory-with-index (redirect),
+    // else 404.
+    if candidate_file.is_file() {
+        return Resolution::File(candidate_file);
+    }
+    if candidate_index.is_file() {
+        return Resolution::Redirect(format!("/{clean}/"));
+    }
+    Resolution::NotFound
+}
+
+/// Reject path traversal and Windows-style absolute components.
+///
+/// Empty / root paths are accepted and routed by the caller. We only
+/// look at semantic [`Component`] kinds — `Component::ParentDir`
+/// (`..`) is the only one that escapes `dist_root`. Backslash-bearing
+/// segments are rejected too: on Windows they would be interpreted as
+/// path separators and could escape; on Unix they're nonsensical.
+fn is_safe_path(url_path: &str) -> bool {
+    let stripped = url_path.trim_start_matches('/');
+    if stripped.is_empty() {
+        return true;
+    }
+    if stripped.contains('\0') {
+        return false;
+    }
+    let p = Path::new(stripped);
+    for comp in p.components() {
+        match comp {
+            Component::Normal(part) => {
+                if let Some(s) = part.to_str() {
+                    if s.contains('\\') {
+                        return false;
+                    }
+                }
+            }
+            Component::CurDir => {}
+            // Any of these means the URL tried to escape the project
+            // root. ParentDir is the obvious one; the rest only ever
+            // arise on Windows-shaped inputs and are equally unwanted.
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => return false,
+        }
+    }
+    true
+}
+
+/// Read `path` from disk and turn it into an `OK` response with a
+/// derived `Content-Type`. On read failure we fall through to the 404
+/// path so a vanished file behaves like a missing one.
+async fn serve_file(path: &Path, dist_root: &Path) -> Response {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(_) => return not_found_response(dist_root).await,
+    };
+    let ct = content_type_for_path(path);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, ct)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Build a 301 response pointing at `target`. The Location header is
+/// validated; if the value is somehow not header-safe (it should be —
+/// we only ever construct it from sanitised paths) we fall back to
+/// `/`.
+fn redirect_response(target: &str) -> Response {
+    let location = HeaderValue::try_from(target).unwrap_or_else(|_| HeaderValue::from_static("/"));
+    Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(header::LOCATION, location)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Serve `dist/404.html` if present, else a plain text 404 body.
+async fn not_found_response(dist_root: &Path) -> Response {
+    let candidate = dist_root.join("404.html");
+    if candidate.is_file() {
+        if let Ok(bytes) = tokio::fs::read(&candidate).await {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    }
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from("404 Not Found"))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Map a file extension to a `Content-Type` value. Mirrors the
+/// short-and-pragmatic mapping in `zfb-server::routes` plus the
+/// extra binary types preview is more likely to need (images, fonts,
+/// wasm). Unknown extensions fall back to `application/octet-stream`
+/// — preview is read-only, so the worst case is a download prompt
+/// rather than a wrong-render bug.
+fn content_type_for_path(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
+        "json" | "map" => "application/json",
+        "xml" => "application/xml",
+        "rss" => "application/rss+xml",
+        "atom" => "application/atom+xml",
+        "txt" => "text/plain; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Adapter mode (Cloudflare via wrangler)
+// ---------------------------------------------------------------------------
+
+/// Spawn `pnpm exec wrangler pages dev …` and wait for it. We do not
+/// pipe output — wrangler prints its own ready banner and we want the
+/// user to see it directly. Returns non-zero when wrangler exits non-
+/// zero so the parent shell sees the failure.
+async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Result<()> {
+    output::info(format!(
+        "preview: adapter mode — handing off to wrangler pages dev (port {port})"
+    ));
+
+    let mut cmd = build_wrangler_command(project_root, outdir, port);
+    let mut child = cmd
+        .spawn()
+        .context("failed to spawn wrangler — make sure it is installed in this project (pnpm add -D wrangler)")?;
+
+    let status = child
+        .wait()
+        .await
+        .context("failed to await wrangler subprocess")?;
+    if !status.success() {
+        anyhow::bail!("wrangler pages dev exited with status {status}");
+    }
+    Ok(())
+}
+
+/// Build the `tokio::process::Command` we'd spawn for wrangler. Pulled
+/// out so unit tests can introspect program name and args without
+/// actually spawning a subprocess.
+fn build_wrangler_command(
+    project_root: &Path,
+    outdir: &Path,
+    port: u16,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("pnpm");
+    cmd.arg("exec")
+        .arg("wrangler")
+        .arg("pages")
+        .arg("dev")
+        .arg(outdir)
+        .arg("--port")
+        .arg(port.to_string())
+        .current_dir(project_root);
+    cmd
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
 /// Resolve `path` against `root` if it is relative; absolute paths are
-/// returned unchanged. Pure path arithmetic — no I/O, no `canonicalize`, so
-/// it works equally for paths that don't yet exist.
+/// returned unchanged. Pure path arithmetic — no I/O, so it works
+/// equally for paths that don't yet exist.
 fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -93,11 +415,6 @@ fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
         root.join(path)
     }
 }
-
-/// Built-in default port for `zfb preview` when neither the CLI nor the
-/// project config supplies one. Intentionally distinct from `zfb dev`'s
-/// default so the two servers can run side-by-side without colliding.
-const DEFAULT_PREVIEW_PORT: u16 = 4321;
 
 /// Resolution helper: CLI override > config value > built-in default.
 fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
@@ -107,6 +424,14 @@ fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use axum::body::to_bytes;
+    use axum::http::{Request, StatusCode};
+    use std::fs;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    // ---- pure helpers --------------------------------------------------
 
     #[test]
     fn resolve_under_root_joins_relative_paths() {
@@ -119,6 +444,17 @@ mod tests {
             resolve_under_root(root, Path::new("build/out")),
             PathBuf::from("/tmp/project/build/out")
         );
+    }
+
+    #[test]
+    fn resolve_under_root_passes_absolute_paths_through() {
+        let root = Path::new("/tmp/project");
+        let abs = if cfg!(windows) {
+            PathBuf::from("C:/elsewhere/dist")
+        } else {
+            PathBuf::from("/elsewhere/dist")
+        };
+        assert_eq!(resolve_under_root(root, &abs), abs);
     }
 
     #[test]
@@ -137,15 +473,454 @@ mod tests {
         assert_eq!(DEFAULT_PREVIEW_PORT, 4321);
     }
 
+    // ---- path safety ---------------------------------------------------
+
     #[test]
-    fn resolve_under_root_passes_absolute_paths_through() {
-        let root = Path::new("/tmp/project");
-        let abs = if cfg!(windows) {
-            PathBuf::from("C:/elsewhere/dist")
-        } else {
-            PathBuf::from("/elsewhere/dist")
-        };
-        assert_eq!(resolve_under_root(root, &abs), abs);
+    fn is_safe_path_accepts_simple_paths() {
+        assert!(is_safe_path("/"));
+        assert!(is_safe_path(""));
+        assert!(is_safe_path("/foo"));
+        assert!(is_safe_path("/foo/"));
+        assert!(is_safe_path("/foo/bar/baz.html"));
+        assert!(is_safe_path("/assets/app.js"));
     }
 
+    #[test]
+    fn is_safe_path_rejects_parent_traversal() {
+        assert!(!is_safe_path("/../etc/passwd"));
+        assert!(!is_safe_path("/foo/../../etc"));
+        assert!(!is_safe_path("/.."));
+    }
+
+    #[test]
+    fn is_safe_path_rejects_nul_and_backslash() {
+        assert!(!is_safe_path("/foo\0bar"));
+        assert!(!is_safe_path("/foo\\bar"));
+    }
+
+    // ---- routing rule (resolve_static) --------------------------------
+
+    /// Build a fixture dist tree:
+    ///
+    /// ```text
+    /// dist/
+    ///   index.html
+    ///   404.html
+    ///   about/
+    ///     index.html
+    ///   blog/
+    ///     post.html
+    ///   assets/
+    ///     app.js
+    /// ```
+    fn fixture_dist() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::write(root.join("index.html"), "<h1>home</h1>").unwrap();
+        fs::write(root.join("404.html"), "<h1>missing</h1>").unwrap();
+        fs::create_dir_all(root.join("about")).unwrap();
+        fs::write(root.join("about").join("index.html"), "<h1>about</h1>").unwrap();
+        fs::create_dir_all(root.join("blog")).unwrap();
+        fs::write(root.join("blog").join("post.html"), "<h1>post</h1>").unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::write(root.join("assets").join("app.js"), "console.log('x');").unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_root_serves_index_html() {
+        let dist = fixture_dist();
+        let res = resolve_static(dist.path(), "/");
+        assert_eq!(res, Resolution::File(dist.path().join("index.html")));
+    }
+
+    #[test]
+    fn resolve_directory_with_index_redirects_when_no_trailing_slash() {
+        let dist = fixture_dist();
+        let res = resolve_static(dist.path(), "/about");
+        assert_eq!(res, Resolution::Redirect("/about/".to_string()));
+    }
+
+    #[test]
+    fn resolve_directory_with_index_serves_index_when_trailing_slash() {
+        let dist = fixture_dist();
+        let res = resolve_static(dist.path(), "/about/");
+        assert_eq!(
+            res,
+            Resolution::File(dist.path().join("about").join("index.html"))
+        );
+    }
+
+    #[test]
+    fn resolve_regular_file_served_directly() {
+        let dist = fixture_dist();
+        let res = resolve_static(dist.path(), "/blog/post.html");
+        assert_eq!(
+            res,
+            Resolution::File(dist.path().join("blog").join("post.html"))
+        );
+    }
+
+    #[test]
+    fn resolve_asset_file_served_directly() {
+        let dist = fixture_dist();
+        let res = resolve_static(dist.path(), "/assets/app.js");
+        assert_eq!(
+            res,
+            Resolution::File(dist.path().join("assets").join("app.js"))
+        );
+    }
+
+    #[test]
+    fn resolve_naked_directory_without_index_404s() {
+        let dist = fixture_dist();
+        // `blog/` has post.html but no index.html — must 404, NOT
+        // produce a directory listing.
+        let res = resolve_static(dist.path(), "/blog/");
+        assert_eq!(res, Resolution::NotFound);
+        let res2 = resolve_static(dist.path(), "/blog");
+        assert_eq!(res2, Resolution::NotFound);
+    }
+
+    #[test]
+    fn resolve_missing_route_404s() {
+        let dist = fixture_dist();
+        assert_eq!(resolve_static(dist.path(), "/nope"), Resolution::NotFound);
+        assert_eq!(resolve_static(dist.path(), "/nope/"), Resolution::NotFound);
+        assert_eq!(
+            resolve_static(dist.path(), "/foo/bar/baz"),
+            Resolution::NotFound
+        );
+    }
+
+    #[test]
+    fn resolve_traversal_attempts_404() {
+        let dist = fixture_dist();
+        assert_eq!(
+            resolve_static(dist.path(), "/../etc/passwd"),
+            Resolution::NotFound
+        );
+        assert_eq!(
+            resolve_static(dist.path(), "/about/../../escape"),
+            Resolution::NotFound
+        );
+    }
+
+    #[test]
+    fn resolve_root_404_when_index_missing() {
+        // Empty dist → root becomes 404. The HTTP-side 404.html
+        // fallback is exercised in the handler test below.
+        let dir = TempDir::new().unwrap();
+        assert_eq!(resolve_static(dir.path(), "/"), Resolution::NotFound);
+    }
+
+    // ---- content type --------------------------------------------------
+
+    #[test]
+    fn content_type_for_known_extensions() {
+        assert_eq!(
+            content_type_for_path(Path::new("foo.html")),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("foo.css")),
+            "text/css; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("foo.js")),
+            "application/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("foo.svg")),
+            "image/svg+xml"
+        );
+        assert_eq!(content_type_for_path(Path::new("foo.png")), "image/png");
+        assert_eq!(
+            content_type_for_path(Path::new("foo.wasm")),
+            "application/wasm"
+        );
+    }
+
+    #[test]
+    fn content_type_for_unknown_extension_falls_back_to_octet_stream() {
+        assert_eq!(
+            content_type_for_path(Path::new("foo.bin")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("noext")),
+            "application/octet-stream"
+        );
+    }
+
+    // ---- end-to-end handler tests via tower::oneshot ------------------
+    //
+    // These do NOT bind a port. We stand the router up in-process and
+    // drive it with `tower::ServiceExt::oneshot`, which calls the
+    // handler directly over a `Service<Request>` boundary — same as
+    // `zfb-server`'s route tests.
+
+    async fn body_string(resp: Response) -> String {
+        let bytes = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    async fn body_bytes(resp: Response) -> Vec<u8> {
+        let bytes = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        bytes.to_vec()
+    }
+
+    #[tokio::test]
+    async fn handler_serves_root_index() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "text/html; charset=utf-8");
+        assert!(body_string(resp).await.contains("home"));
+    }
+
+    #[tokio::test]
+    async fn handler_redirects_directory_without_trailing_slash() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(location, "/about/");
+    }
+
+    #[tokio::test]
+    async fn handler_serves_directory_index_with_trailing_slash() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/about/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains("about"));
+    }
+
+    #[tokio::test]
+    async fn handler_serves_regular_file() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "application/javascript; charset=utf-8");
+        let body = body_string(resp).await;
+        assert!(body.contains("console.log"));
+    }
+
+    #[tokio::test]
+    async fn handler_404_falls_back_to_project_404_html() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "text/html; charset=utf-8");
+        assert!(body_string(resp).await.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn handler_404_uses_plain_text_when_no_404_html() {
+        // A dist tree without the project's own 404.html should fall
+        // back to the plain-text body so users still see a clear
+        // signal in the browser.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("index.html"), "<h1>hi</h1>").unwrap();
+        let router = build_static_router(dir.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "text/plain; charset=utf-8");
+        assert!(body_string(resp).await.contains("404"));
+    }
+
+    #[tokio::test]
+    async fn handler_naked_directory_404s_no_listing() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        // /blog/ has no index.html — must be a 404, NEVER a directory
+        // listing.
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_string(resp).await;
+        // The 404.html fixture body should appear; no list of files.
+        assert!(!body.contains("post.html"));
+    }
+
+    #[tokio::test]
+    async fn handler_traversal_attempts_do_not_serve_real_files() {
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        // axum/hyper normalises some traversal attempts before they
+        // reach the handler; either way the response must not be a
+        // 200 with content from outside dist_root.
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/../etc/passwd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn handler_serves_binary_file_bytes() {
+        // Sanity: we read bytes (not a UTF-8 string) so binary assets
+        // round-trip cleanly. Use a small fake PNG header.
+        let dir = TempDir::new().unwrap();
+        let bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff];
+        fs::write(dir.path().join("pixel.png"), &bytes).unwrap();
+        let router = build_static_router(dir.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/pixel.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "image/png");
+        assert_eq!(body_bytes(resp).await, bytes);
+    }
+
+    // ---- adapter-mode wiring (no actual spawn) -----------------------
+
+    #[test]
+    fn wrangler_command_uses_pnpm_exec_with_outdir_and_port() {
+        let project_root = Path::new("/tmp/proj");
+        let outdir = Path::new("/tmp/proj/dist");
+        let cmd = build_wrangler_command(project_root, outdir, 8788);
+
+        let std_cmd = cmd.as_std();
+        assert_eq!(std_cmd.get_program(), "pnpm");
+
+        let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
+        // Expect: exec wrangler pages dev <outdir> --port <port>
+        assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "wrangler");
+        assert_eq!(args[2], "pages");
+        assert_eq!(args[3], "dev");
+        assert_eq!(args[4], outdir.as_os_str());
+        assert_eq!(args[5], "--port");
+        assert_eq!(args[6], "8788");
+
+        assert_eq!(std_cmd.get_current_dir(), Some(project_root));
+    }
+
+    #[test]
+    fn wrangler_command_threads_user_supplied_port() {
+        // `--port` must reflect whatever resolve_port produced — so
+        // overriding from the CLI propagates all the way through.
+        let cmd = build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), 9000);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let port_idx = args
+            .iter()
+            .position(|a| a == "--port")
+            .expect("--port must be present");
+        assert_eq!(args[port_idx + 1], "9000");
+    }
 }
