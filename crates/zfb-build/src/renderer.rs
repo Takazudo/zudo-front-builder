@@ -515,15 +515,14 @@ fn render_one_inner(
             source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
         }
     })?;
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| RendererError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-    }
-    fs::write(&dest, &body).map_err(|e| RendererError::Io {
+    // Atomic write is consistent with both pipelines (dev and prod) and
+    // prevents a half-written .html file from being observed if the
+    // process is killed mid-write. atomic_write also creates the parent
+    // directory internally, so we don't need a separate
+    // `create_dir_all` call.
+    crate::atomic::atomic_write(&dest, &body).map_err(|e| RendererError::Io {
         path: dest.clone(),
-        source: e,
+        source: std::io::Error::other(format!("{e:#}")),
     })?;
     Ok(dest)
 }

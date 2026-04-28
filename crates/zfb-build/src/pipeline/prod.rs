@@ -297,16 +297,21 @@ impl AssetPipeline for ProductionAssetPipeline {
 
 /// Replace each occurrence of `from` in `haystack` with `to`, but only
 /// when the byte immediately after the match is a URL delimiter
-/// (quote, whitespace, `<`, `>`, `?`, `#`, `\\`) or end-of-string. A
-/// match followed by an alphanumeric, `.`, `_`, or `-` is preserved.
+/// (quote, whitespace, `<`, `>`, `?`, `#`, `\\`, `(`, `)`) or
+/// start/end-of-string. A match adjacent to an alphanumeric, `.`, `_`,
+/// or `-` is preserved.
 ///
-/// This protects sourcemap references and other URLs that contain a
+/// Both leading and trailing bytes are checked. The trailing check
+/// protects sourcemap references and other URLs that contain a
 /// registered stable URL as a prefix: e.g. with `from = "/styles.css"`,
 /// `to = "/styles-abc.css"`, the haystack
 ///   `<link href="/styles.css"> ... <a href="/styles.css.map">`
-/// rewrites only the first occurrence.
+/// rewrites only the first occurrence. The leading check guards against
+/// suffix collisions where `from` is itself a suffix of a longer URL,
+/// e.g. `/foo.css` must NOT rewrite inside `/myfoo.css` — the `o`
+/// preceding `/foo.css` is a non-delimiter byte.
 ///
-/// Pure substring matching against UTF-8: the lookahead byte is read
+/// Pure substring matching against UTF-8: the boundary bytes are read
 /// directly from the byte slice, which is safe because any non-ASCII
 /// continuation byte (0x80-0xBF) is treated as a non-delimiter and
 /// therefore does NOT trigger a rewrite — the worst case is a missed
@@ -328,15 +333,11 @@ fn boundary_replace(haystack: &str, from: &str, to: &str) -> String {
     let mut last_copied = 0usize;
     while i < bytes.len() {
         if i + from_bytes.len() <= bytes.len() && &bytes[i..i + from_bytes.len()] == from_bytes {
+            let before = if i == 0 { None } else { bytes.get(i - 1).copied() };
             let after = bytes.get(i + from_bytes.len()).copied();
-            let is_boundary = match after {
-                None => true, // end-of-string
-                Some(b) => matches!(
-                    b,
-                    b'"' | b'\'' | b'\\' | b'\n' | b'\r' | b'\t' | b' ' | b'<' | b'>' | b'?' | b'#'
-                ),
-            };
-            if is_boundary {
+            let is_leading_boundary = is_url_boundary_byte(before);
+            let is_trailing_boundary = is_url_boundary_byte(after);
+            if is_leading_boundary && is_trailing_boundary {
                 out.push_str(&haystack[last_copied..i]);
                 out.push_str(to);
                 i += from_bytes.len();
@@ -348,6 +349,33 @@ fn boundary_replace(haystack: &str, from: &str, to: &str) -> String {
     }
     out.push_str(&haystack[last_copied..]);
     out
+}
+
+/// A byte is a URL boundary if it's missing (start/end of string) or one
+/// of the typical surrounders for an HTML/CSS URL token: quotes,
+/// whitespace, `<`, `>`, `?`, `#`, `\\`, `(`, `)`. Non-ASCII bytes
+/// (including UTF-8 continuation bytes) are intentionally classified as
+/// non-boundary so a multi-byte character adjacent to `from` is never
+/// mistaken for a delimiter.
+fn is_url_boundary_byte(b: Option<u8>) -> bool {
+    match b {
+        None => true,
+        Some(b) => matches!(
+            b,
+            b'"' | b'\''
+                | b'\\'
+                | b'\n'
+                | b'\r'
+                | b'\t'
+                | b' '
+                | b'<'
+                | b'>'
+                | b'?'
+                | b'#'
+                | b'('
+                | b')'
+        ),
+    }
 }
 
 /// Hash, write, and record the URL for a single emitted asset.
@@ -511,6 +539,33 @@ mod tests {
         let html = "前<link href=\"/styles.css\">後";
         let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
         assert_eq!(out, "前<link href=\"/styles-abc.css\">後");
+    }
+
+    #[test]
+    fn boundary_replace_does_not_rewrite_with_leading_non_delimiter() {
+        // Round 3 regression: `/foo.css` must NOT rewrite inside
+        // `/myfoo.css`. The `o` preceding the match is a non-delimiter,
+        // so the leading boundary check rejects it. (The trailing
+        // check alone is insufficient — `/myfoo.css` ends with a quote
+        // delimiter and would otherwise pass.)
+        let html = r#"<link href="/myfoo.css">"#;
+        let out = boundary_replace(html, "/foo.css", "/foo-abc.css");
+        assert_eq!(out, r#"<link href="/myfoo.css">"#);
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_at_start_of_string() {
+        // No leading byte → boundary. Match should fire.
+        let out = boundary_replace("/styles.css\"", "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "/styles-abc.css\"");
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_inside_url_function() {
+        // CSS `url(/foo.css)` — both `(` and `)` count as delimiters.
+        let css = "background:url(/foo.css);";
+        let out = boundary_replace(css, "/foo.css", "/foo-abc.css");
+        assert_eq!(out, "background:url(/foo-abc.css);");
     }
 
 
