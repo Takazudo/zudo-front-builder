@@ -72,7 +72,7 @@ use zfb_build::renderer::{
 };
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, OrchestratorConfig,
-    PageRenderer, RenderedPage,
+    PageRenderer, RelDistPath, RenderedPage,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageId};
@@ -154,7 +154,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // tagged with the current digest — and the next cold start would
     // happily reuse that empty cache as authoritative. Save only on
     // shutdown (below), once the graph has actually been populated.
-    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
+    //
+    // Formerly `initial_graph.unwrap_or_default()`. Now explicit: on a
+    // cache miss we construct a known-empty graph. Default was removed
+    // from DependencyGraph to prevent silent empty-graph construction
+    // elsewhere.
+    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_else(DependencyGraph::new)));
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
@@ -334,9 +339,15 @@ impl DevRenderSession {
         let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
         let html = std::fs::read_to_string(&written)
             .with_context(|| format!("failed to read rendered page {}", written.display()))?;
+        // RouteUniverseEntry::output_path is a PathBuf validated by the
+        // router/render_pipeline (relative, no escapes). Wrap it in
+        // RelDistPath for the pipeline's type contract. If the path is
+        // somehow invalid, surface an error rather than silently skipping.
+        let output_path = RelDistPath::new(entry.output_path)
+            .with_context(|| format!("renderer returned invalid output_path for {:?}", page))?;
         Ok(Some(RenderedPage {
             page: page.clone(),
-            output_path: entry.output_path,
+            output_path,
             html,
             content_type: None,
         }))

@@ -119,7 +119,7 @@ impl AssetPipeline for DevAssetPipeline {
                 // `..` or absolute roots before we touch the
                 // filesystem. Paths come from the renderer/router but
                 // we still validate at the write boundary.
-                let dest = validate_output_path(&ctx.dist_root, &r.output_path)
+                let dest = validate_output_path(&ctx.dist_root, r.output_path.as_path())
                     .with_context(|| format!("while building page {:?}", r.page))?;
                 let new_bytes = r.html.into_bytes();
 
@@ -239,7 +239,7 @@ impl AssetPipeline for DevAssetPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::RenderedPage;
+    use crate::pipeline::{RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -276,7 +276,7 @@ mod tests {
             dir.path().to_path_buf(),
             vec![RenderedPage {
                 page: pid("/p/a.tsx"),
-                output_path: PathBuf::from("a/index.html"),
+                output_path: RelDistPath::new("a/index.html").unwrap(),
                 html: "<h1>A</h1>".into(),
                 content_type: None,
             }],
@@ -309,7 +309,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let rendered = vec![RenderedPage {
             page: pid("/p/a.tsx"),
-            output_path: PathBuf::from("a.html"),
+            output_path: RelDistPath::new("a.html").unwrap(),
             html: "<p>same</p>".into(),
             content_type: None,
         }];
@@ -375,7 +375,7 @@ mod tests {
         // First build: emit dist/sitemap.xml.
         let first_render = vec![RenderedPage {
             page: pid("/p/sitemap.xml.tsx"),
-            output_path: PathBuf::from("sitemap.xml"),
+            output_path: RelDistPath::new("sitemap.xml").unwrap(),
             html: "<urlset/>".into(),
             content_type: Some("application/xml".into()),
         }];
@@ -398,7 +398,7 @@ mod tests {
         // sitemap.rss. The pipeline must delete the stale .xml.
         let second_render = vec![RenderedPage {
             page: pid("/p/sitemap.xml.tsx"),
-            output_path: PathBuf::from("sitemap.rss"),
+            output_path: RelDistPath::new("sitemap.rss").unwrap(),
             html: "<rss/>".into(),
             content_type: Some("application/rss+xml".into()),
         }];
@@ -427,7 +427,7 @@ mod tests {
         let pipeline = DevAssetPipeline::new();
         let render = vec![RenderedPage {
             page: pid("/p/a.tsx"),
-            output_path: PathBuf::from("a/index.html"),
+            output_path: RelDistPath::new("a/index.html").unwrap(),
             html: "<h1>A</h1>".into(),
             content_type: None,
         }];

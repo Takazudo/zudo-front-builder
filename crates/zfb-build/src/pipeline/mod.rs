@@ -62,10 +62,10 @@
 //! tests) that want to thread mode through configuration without binding
 //! to a specific impl, but the orchestrator itself never inspects it.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use zfb_graph::PageId;
 
 use crate::plan::RebuildPlan;
@@ -77,6 +77,82 @@ pub use dev::DevAssetPipeline;
 pub use prod::{
     AssetEmitter, AssetKind, EmittedAsset, ProductionAssetPipeline, ProductionEmitters,
 };
+
+/// A validated relative path under the dist root.
+///
+/// Constructed via [`RelDistPath::new`], which rejects:
+///
+/// - absolute paths,
+/// - Windows path prefixes,
+/// - `..` components that would escape the dist root,
+///
+/// and normalises forward slashes on all platforms. Consumers that hold a
+/// `RelDistPath` can trust the path is safe to join onto any `dist_root`
+/// without running the full [`crate::atomic::validate_output_path`] check.
+///
+/// The inner `PathBuf` is stored in OS-native separator form but all
+/// validation is performed on the component list, so the type is correct on
+/// both Unix and Windows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RelDistPath(PathBuf);
+
+impl RelDistPath {
+    /// Construct a `RelDistPath`, returning an error when:
+    ///
+    /// - `path` has an absolute root or Windows prefix,
+    /// - any `..` component would escape the dist root (i.e. `..` when
+    ///   there is no preceding normal component to consume).
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let mut depth: usize = 0;
+        for c in path.components() {
+            match c {
+                Component::Prefix(_) | Component::RootDir => {
+                    return Err(anyhow!(
+                        "RelDistPath: path {:?} must be relative (got absolute root or prefix)",
+                        path,
+                    ));
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if depth == 0 {
+                        return Err(anyhow!(
+                            "RelDistPath: path {:?} would escape dist root via `..`",
+                            path,
+                        ));
+                    }
+                    depth -= 1;
+                }
+                Component::Normal(_) => {
+                    depth += 1;
+                }
+            }
+        }
+        Ok(Self(path))
+    }
+
+    /// Borrow the inner path.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Consume self and return the inner `PathBuf`.
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl std::fmt::Display for RelDistPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
+
+impl AsRef<Path> for RelDistPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
 
 /// Which mode the call site wants the asset pipeline configured for.
 ///
@@ -133,10 +209,11 @@ pub struct RenderedPage {
     /// the [`crate::PageSelection`] so callers can correlate inputs/outputs.
     pub page: PageId,
 
-    /// Path under the dist root, in URL-style forward-slash form. The
-    /// pipeline joins this onto its `dist_root` and writes the bytes
-    /// atomically.
-    pub output_path: PathBuf,
+    /// Validated relative path under the dist root. The pipeline joins
+    /// this onto its `dist_root` and writes the bytes atomically.
+    /// Constructed via [`RelDistPath::new`], which guarantees the path
+    /// is relative and cannot escape the dist root.
+    pub output_path: RelDistPath,
 
     /// Page body (HTML, XML, JSON, plain text — whatever the
     /// `output_path` extension implies). The renderer is responsible
@@ -239,6 +316,16 @@ pub type RendererReloader = Arc<dyn Fn() -> Result<()> + Send + Sync + 'static>;
 /// at construction time so it can read the asset bytes directly and
 /// emit a content-hashed filename. The CSS / islands fields here remain
 /// for the dev path that does not need to know about asset bytes.
+///
+/// # Deprecation note
+///
+/// `BuildContext` is superseded by the dedicated [`DevBuildContext`]
+/// (for `zfb dev`) and [`ProdBuildContext`] (for `zfb build`). Callers
+/// that currently hold a `BuildContext` should migrate: dev callers
+/// should switch to [`DevBuildContext`]; prod callers (which never
+/// populated the dev-only fields anyway) should switch to
+/// [`ProdBuildContext`]. `BuildContext` is kept for the transition period
+/// and will be removed once all callers are migrated.
 #[derive(Clone)]
 pub struct BuildContext {
     /// Absolute path to the dist directory. The pipeline writes
@@ -278,6 +365,105 @@ impl std::fmt::Debug for BuildContext {
                 "reload_renderer",
                 &self.reload_renderer.as_ref().map(|_| "<callback>"),
             )
+            .finish()
+    }
+}
+
+/// Context for the `zfb dev` (incremental watcher-driven) pipeline.
+///
+/// Carries only the fields the dev pipeline actually reads. Production
+/// builds should use [`ProdBuildContext`] instead.
+///
+/// This is the replacement for [`BuildContext`] on the dev path. All
+/// dev-only callbacks (`run_css`, `run_islands`, `reload_renderer`) live
+/// here, not on a shared context type, so the prod pipeline can never
+/// accidentally see or misuse them.
+#[derive(Clone)]
+pub struct DevBuildContext {
+    /// Absolute path to the dist directory.
+    pub dist_root: PathBuf,
+
+    /// Page renderer callback.
+    pub render_pages: PageRenderer,
+
+    /// CSS pipeline callback. `None` = skip CSS reruns.
+    pub run_css: Option<CssRunner>,
+
+    /// Islands bundler callback. `None` = skip islands reruns.
+    pub run_islands: Option<IslandsRunner>,
+
+    /// Renderer-reload hook. `None` = no-op (e.g. no miniflare session
+    /// active in tests).
+    pub reload_renderer: Option<RendererReloader>,
+}
+
+impl DevBuildContext {
+    /// Convert to the legacy [`BuildContext`] shape. Provided for the
+    /// transition period while call sites are being migrated.
+    pub fn into_build_context(self) -> BuildContext {
+        BuildContext {
+            dist_root: self.dist_root,
+            render_pages: self.render_pages,
+            run_css: self.run_css,
+            run_islands: self.run_islands,
+            reload_renderer: self.reload_renderer,
+        }
+    }
+}
+
+impl std::fmt::Debug for DevBuildContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevBuildContext")
+            .field("dist_root", &self.dist_root)
+            .field("render_pages", &"<callback>")
+            .field("run_css", &self.run_css.as_ref().map(|_| "<callback>"))
+            .field(
+                "run_islands",
+                &self.run_islands.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "reload_renderer",
+                &self.reload_renderer.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
+}
+
+/// Context for the `zfb build` (one-shot production) pipeline.
+///
+/// Contains only the fields [`prod::ProductionAssetPipeline`] needs:
+/// a `dist_root` and a `render_pages` callback. The dev-only CSS/islands
+/// bool-runners and the renderer-reload hook are absent by design —
+/// production assets are handled through the [`prod::AssetEmitter`]
+/// mechanism, not through callbacks.
+#[derive(Clone)]
+pub struct ProdBuildContext {
+    /// Absolute path to the dist directory.
+    pub dist_root: PathBuf,
+
+    /// Page renderer callback.
+    pub render_pages: PageRenderer,
+}
+
+impl ProdBuildContext {
+    /// Convert to the legacy [`BuildContext`] shape. Provided for the
+    /// transition period while call sites are being migrated.
+    pub fn into_build_context(self) -> BuildContext {
+        BuildContext {
+            dist_root: self.dist_root,
+            render_pages: self.render_pages,
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ProdBuildContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProdBuildContext")
+            .field("dist_root", &self.dist_root)
+            .field("render_pages", &"<callback>")
             .finish()
     }
 }

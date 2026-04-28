@@ -231,12 +231,6 @@ pub struct DependencyGraph {
     assets_css_reverse: HashMap<PathBuf, HashSet<PageId>>,
 }
 
-impl Default for DependencyGraph {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl DependencyGraph {
     /// Build an empty graph. The default global set is empty; the caller
     /// should register their `zfb.config.ts` (and any other always-invalidates
@@ -569,6 +563,43 @@ impl DependencyGraph {
             }
         }
 
+        DirtySet::Specific(out)
+    }
+
+    /// Batch variant of [`Self::dirty_pages`]: given an iterable of changed
+    /// paths, return the deduplicated union of all affected pages in a single
+    /// pass.
+    ///
+    /// - If **any** path in the batch is a global file, returns
+    ///   [`DirtySet::All`] immediately without processing the rest.
+    /// - Otherwise accumulates the specific sets from each individual path and
+    ///   returns a single deduplicated [`DirtySet::Specific`].
+    ///
+    /// Calling this once over a batch is more efficient than calling
+    /// [`Self::dirty_pages`] in a loop and merging the results yourself,
+    /// because the batch variant short-circuits on the first global hit and
+    /// allocates a single output collection.
+    pub fn dirty_pages_batch<I, P>(&self, paths: I) -> DirtySet
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut out: BTreeSet<PageId> = BTreeSet::new();
+        for path in paths {
+            let path = path.as_ref();
+            if self.globals.contains(path) {
+                return DirtySet::All;
+            }
+            let page_id = PageId::new(path.to_path_buf());
+            if self.pages.contains(&page_id) {
+                out.insert(page_id);
+            }
+            if let Some(consumers) = self.reverse.get(path) {
+                for c in consumers {
+                    out.insert(c.clone());
+                }
+            }
+        }
         DirtySet::Specific(out)
     }
 
@@ -977,6 +1008,75 @@ mod tests {
         g.set_assets_for_page(pid("/pages/empty.tsx"), AssetDeps::default());
         let rec = g.assets_for_page(&pid("/pages/empty.tsx")).unwrap();
         assert!(rec.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // dirty_pages_batch tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn batch_empty_input_returns_empty_specific() {
+        let g = DependencyGraph::new();
+        let d = g.dirty_pages_batch(std::iter::empty::<PathBuf>());
+        assert_eq!(d, DirtySet::Specific(BTreeSet::new()));
+    }
+
+    #[test]
+    fn batch_deduplicates_shared_consumers() {
+        let mut g = DependencyGraph::new();
+        // Both /x and /y are deps of page a.
+        g.upsert(PageDeps::new(
+            pid("/pages/a.tsx"),
+            vec![
+                (p("/x.tsx"), DepKind::Module),
+                (p("/y.tsx"), DepKind::Module),
+            ],
+        ));
+        g.upsert(PageDeps::new(
+            pid("/pages/b.tsx"),
+            vec![(p("/x.tsx"), DepKind::Module)],
+        ));
+
+        let d = g.dirty_pages_batch(vec![p("/x.tsx"), p("/y.tsx")]);
+        let pages = d.as_pages().expect("specific");
+        // a appears once even though it is a consumer of both x and y.
+        assert_eq!(pages, vec![pid("/pages/a.tsx"), pid("/pages/b.tsx")]);
+    }
+
+    #[test]
+    fn batch_short_circuits_on_global() {
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(pid("/pages/a.tsx"), vec![]));
+        g.mark_global("/zfb.config.ts");
+
+        // The global file appears second in the batch — the method must
+        // still return All.
+        let d = g.dirty_pages_batch(vec![p("/pages/a.tsx"), p("/zfb.config.ts")]);
+        assert!(d.is_all());
+    }
+
+    #[test]
+    fn batch_matches_per_file_union() {
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(
+            pid("/pages/a.tsx"),
+            vec![(p("/shared.tsx"), DepKind::Module)],
+        ));
+        g.upsert(PageDeps::new(
+            pid("/pages/b.tsx"),
+            vec![(p("/other.tsx"), DepKind::Module)],
+        ));
+
+        let batch = g.dirty_pages_batch(vec![p("/shared.tsx"), p("/other.tsx")]);
+        let batch_pages = batch.as_pages().expect("specific");
+
+        // Cross-check: union of two per-file calls must equal batch.
+        let a = g.dirty_pages(&p("/shared.tsx"));
+        let b = g.dirty_pages(&p("/other.tsx"));
+        let mut union: BTreeSet<PageId> = BTreeSet::new();
+        if let DirtySet::Specific(s) = a { union.extend(s); }
+        if let DirtySet::Specific(s) = b { union.extend(s); }
+        assert_eq!(batch_pages, union.into_iter().collect::<Vec<_>>());
     }
 
     #[test]
