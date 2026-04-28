@@ -165,17 +165,28 @@ impl Watcher {
 
 impl Drop for Watcher {
     fn drop(&mut self) {
-        // Best-effort graceful shutdown: signal the debouncer to flush
-        // its pending map and exit. If we are not on a tokio runtime (or
-        // the receiver is gone), the JoinHandle::abort() below ensures
-        // the task is reaped regardless. We deliberately do NOT block
-        // here — Drop must stay non-blocking.
+        // Best-effort graceful shutdown: signal the debouncer so it can
+        // run its `flush_all` branch. We deliberately do NOT call
+        // `abort()` here — that would race the shutdown signal and
+        // cancel the task before it could flush. Instead, we drop the
+        // JoinHandle which detaches the task; once shutdown fires (or
+        // the bridge channel closes when `_notify` is dropped right
+        // after this in field-drop order), the task will flush and exit
+        // on its own. If the runtime itself is shutting down, the task
+        // will be cancelled by the runtime; that's the unavoidable case
+        // where `flush_all` cannot run.
+        //
+        // TODO(review-loop): Drop cannot await; flush_all is therefore
+        // best-effort. A fully-correct API would expose an async
+        // `shutdown()` method that the caller awaits before dropping —
+        // but adding that is a breaking change tracked separately.
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        if let Some(h) = self.debouncer.take() {
-            h.abort();
-        }
+        // Detach the task by dropping its JoinHandle without aborting.
+        // The task will see the shutdown signal (or the closed bridge
+        // channel) and run `flush_all` before exiting.
+        let _ = self.debouncer.take();
     }
 }
 
