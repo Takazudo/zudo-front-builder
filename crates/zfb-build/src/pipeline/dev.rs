@@ -126,17 +126,22 @@ impl AssetPipeline for DevAssetPipeline {
                 // Compute (but do not yet apply) any stale-output
                 // prune. The actual delete happens AFTER the new
                 // artifact lands on disk, so a reader never observes
-                // a window where neither file exists.
+                // a window where neither file exists. We also defer
+                // updating `last_output_path` until the write succeeds:
+                // otherwise a transient write failure forgets the
+                // previous path and leaves the stale file in dist
+                // forever (it would never be pruned on subsequent
+                // rebuilds).
                 let prune_target = {
-                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                    let last_out = self.last_output_path.lock().unwrap_or_else(|p| {
                         tracing::warn!(
                             site = "DevAssetPipeline.last_output_path",
                             "mutex poisoned, recovering"
                         );
                         p.into_inner()
                     });
-                    match last_out.insert(r.page.clone(), dest.clone()) {
-                        Some(prev) if prev != dest => Some(prev),
+                    match last_out.get(&r.page) {
+                        Some(prev) if prev != &dest => Some(prev.clone()),
                         _ => None,
                     }
                 };
@@ -170,8 +175,23 @@ impl AssetPipeline for DevAssetPipeline {
                     // `from_utf8(...).unwrap_or("")` previously turned
                     // any encoding hiccup into a silent blank file.
                     atomic_write(&dest, &new_bytes)?;
-                    outcome.pages_written.push(r.page);
+                    outcome.pages_written.push(r.page.clone());
                 }
+
+                // Only after a successful write do we record the new
+                // output path. If the write above failed we abort the
+                // tick and the previous mapping is preserved, so the
+                // stale file remains prunable on the next rebuild.
+                self.last_output_path
+                    .lock()
+                    .unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path (commit)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    })
+                    .insert(r.page.clone(), dest.clone());
 
                 // Now that the new artifact is on disk, delete the
                 // stale one. Best-effort: if it was already gone we

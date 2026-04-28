@@ -374,6 +374,15 @@ fn is_url_boundary_byte(b: Option<u8>) -> bool {
                 | b'#'
                 | b'('
                 | b')'
+                // `=` is a legitimate URL boundary in query strings:
+                // `<a href="/download?asset=/assets/styles.css">` should
+                // still rewrite the asset URL, even though `=` is not a
+                // surrounding-quote-style delimiter.
+                | b'='
+                // `,` and `;` show up inside `srcset="...x.png 1x, ..."`
+                // attributes between candidate URLs.
+                | b','
+                | b';'
         ),
     }
 }
@@ -558,6 +567,30 @@ mod tests {
         // No leading byte → boundary. Match should fire.
         let out = boundary_replace("/styles.css\"", "/styles.css", "/styles-abc.css");
         assert_eq!(out, "/styles-abc.css\"");
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_after_query_param_equals() {
+        // `=` is a valid URL boundary in query strings:
+        // `?asset=/assets/styles.css` should rewrite the asset URL.
+        let html = r#"<a href="/download?asset=/assets/styles.css">dl</a>"#;
+        let out = boundary_replace(html, "/assets/styles.css", "/assets/styles-abc.css");
+        assert_eq!(
+            out,
+            r#"<a href="/download?asset=/assets/styles-abc.css">dl</a>"#
+        );
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_inside_srcset() {
+        // `srcset` separates candidates with `,`. Both candidates should rewrite.
+        let html = r#"<img srcset="/img/a.png 1x,/img/b.png 2x">"#;
+        let out_a = boundary_replace(html, "/img/a.png", "/img/a-1.png");
+        let out_b = boundary_replace(&out_a, "/img/b.png", "/img/b-2.png");
+        assert_eq!(
+            out_b,
+            r#"<img srcset="/img/a-1.png 1x,/img/b-2.png 2x">"#
+        );
     }
 
     #[test]
