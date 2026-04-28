@@ -32,6 +32,8 @@
       link.setAttribute("href", base + "?v=" + ts);
     }
   });
+  // Wire contract: component="" means "bundle changed, unknown components;
+  // reload the whole bundle by re-importing bundleUrl". Must NOT short-circuit on empty component.
   src.addEventListener("islands", function (ev) {
     var payload;
     try {
