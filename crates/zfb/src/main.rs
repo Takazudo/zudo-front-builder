@@ -2,7 +2,6 @@ use clap::Parser;
 
 use zfb::cli::{Cli, Command};
 use zfb::commands;
-use zfb::output;
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +18,7 @@ async fn main() {
         // just `return Err(e)` without pre-printing — avoids the
         // double-print that would otherwise happen when a command both
         // formats the error itself and returns it for main to log again.
-        output::error(output::format_error(&e).trim_end());
+        zfb::report_error(&e);
         std::process::exit(1);
     }
 }
