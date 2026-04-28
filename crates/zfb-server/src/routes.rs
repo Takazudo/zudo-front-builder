@@ -183,9 +183,17 @@ pub fn content_type_for_extension(extension: &str) -> &'static str {
         "json" => "application/json",
         "txt" => "text/plain; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "cjs" => "application/javascript; charset=utf-8",
+        "wasm" => "application/wasm",
         "svg" => "image/svg+xml",
-        _ => "text/html; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "pdf" => "application/pdf",
+        // Unknown / missing extension: fall back to a generic
+        // octet-stream so the browser doesn't mistakenly sniff it as
+        // HTML and execute scripts inside it.
+        _ => "application/octet-stream",
     }
 }
 
@@ -206,6 +214,14 @@ pub fn resolve_content_type(entry: &CachedPage, url_path: &str) -> String {
     }
     let basename = url_path.rsplit('/').next().unwrap_or(url_path);
     let ext = basename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    if ext.is_empty() {
+        // Pages served at extensionless URLs (`/about`, `/`) are HTML
+        // by convention. `content_type_for_extension`'s fallback is
+        // `application/octet-stream` (safer for unknown asset types),
+        // so we hard-code the HTML default here instead of leaning on
+        // the helper's fallback.
+        return "text/html; charset=utf-8".to_string();
+    }
     content_type_for_extension(ext).to_string()
 }
 
@@ -326,19 +342,18 @@ fn lookup_keys(path: &str) -> Vec<String> {
     if path.is_empty() {
         return vec!["/".to_string(), "/index.html".to_string()];
     }
-    // Drop a trailing slash for the "exact" candidate so callers that
-    // store `/blog/foo` still match a request to `/blog/foo/`.
+    // Normalise any trailing slash(es) once so `foo`, `foo/`, and
+    // `foo//` all collapse to the same candidates.
     let stripped = path.trim_end_matches('/');
-    let mut out = Vec::with_capacity(3);
-    out.push(format!("/{stripped}"));
-    out.push(format!("/{stripped}/index.html"));
-    if path.ends_with('/') || stripped != path {
-        // request had a trailing slash — also try the slash key
-        out.push(format!("/{path}"));
-    } else {
-        out.push(format!("/{stripped}/"));
+    if stripped.is_empty() {
+        // The whole path was slashes — treat as root.
+        return vec!["/".to_string(), "/index.html".to_string()];
     }
-    out
+    vec![
+        format!("/{stripped}"),
+        format!("/{stripped}/index.html"),
+        format!("/{stripped}/"),
+    ]
 }
 
 /// Build a page response with a custom `Content-Type`, injecting the
@@ -589,11 +604,22 @@ mod tests {
     }
 
     #[test]
-    fn content_type_for_extension_unknown_falls_back_to_html() {
+    fn content_type_for_extension_unknown_falls_back_to_octet_stream() {
+        // Unknown extensions get a generic binary content-type so a
+        // browser doesn't sniff them as HTML and execute scripts.
         assert_eq!(
             content_type_for_extension("weird"),
-            "text/html; charset=utf-8",
+            "application/octet-stream",
         );
+    }
+
+    #[test]
+    fn content_type_for_extension_known_binary_types() {
+        assert_eq!(content_type_for_extension("pdf"), "application/pdf");
+        assert_eq!(content_type_for_extension("png"), "image/png");
+        assert_eq!(content_type_for_extension("jpg"), "image/jpeg");
+        assert_eq!(content_type_for_extension("svg"), "image/svg+xml");
+        assert_eq!(content_type_for_extension("wasm"), "application/wasm");
     }
 
     #[test]

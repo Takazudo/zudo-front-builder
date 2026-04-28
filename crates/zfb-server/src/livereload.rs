@@ -139,11 +139,24 @@ pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     }
     if let Some(info) = outcome.islands_bundle.as_ref() {
         if info.changed {
-            for component in &info.components {
+            if info.components.is_empty() {
+                // Islands bundle changed (e.g. runtime-only diff) but
+                // we don't know which components — emit a single
+                // generic event keyed on the empty string so the
+                // browser still triggers a reload. Without this the
+                // user would see a successful rebuild with no live
+                // update on screen.
                 events.push(ReloadEvent::Islands {
-                    component: component.clone(),
+                    component: String::new(),
                     bundle_url: info.bundle_url.clone(),
                 });
+            } else {
+                for component in &info.components {
+                    events.push(ReloadEvent::Islands {
+                        component: component.clone(),
+                        bundle_url: info.bundle_url.clone(),
+                    });
+                }
             }
         }
     }
@@ -184,7 +197,14 @@ pub fn sse_response(
                 }
                 Some(Ok(sse))
             }
-            Err(_lagged) => None,
+            Err(lagged) => {
+                // The connection couldn't keep up. Log a warning so
+                // we don't silently drop reload events under load.
+                // The next real event will still trigger a reload, so
+                // the browser converges on the latest state.
+                tracing::warn!(error = %lagged, "live-reload SSE stream lagged; dropping event");
+                None
+            }
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
