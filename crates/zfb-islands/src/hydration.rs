@@ -59,9 +59,68 @@ use std::rc::Rc;
 use lol_html::html_content::{ContentType, Element};
 use lol_html::{ElementContentHandlers, RewriteStrSettings, Selector, doc_comments};
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::html_tree::HtmlTree;
+
+// ---------------------------------------------------------------------------
+// WhenHint
+// ---------------------------------------------------------------------------
+
+/// Typed hydration-timing hint for the `data-when` attribute.
+///
+/// Each variant maps to the string value the client-side hydration runtime
+/// recognises:
+///
+/// | Variant | `data-when` value |
+/// |---------|-------------------|
+/// | `Visible` | `"visible"` |
+/// | `Idle` | `"idle"` |
+/// | `Load` | `"load"` |
+/// | `Media(q)` | `"media(<q>)"` |
+///
+/// Using an enum instead of a bare `String` means the rewriter and its
+/// callers cannot accidentally pass an unrecognised hint — unknown values
+/// fail at construction time (or static analysis) rather than silently
+/// round-tripping into the HTML.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WhenHint {
+    /// Hydrate when the island's root element enters the viewport
+    /// (`IntersectionObserver`).
+    Visible,
+    /// Hydrate during the browser's next idle period
+    /// (`requestIdleCallback`).
+    Idle,
+    /// Hydrate immediately on page load (default when no `data-when` is
+    /// emitted). Providing this variant explicitly allows callers to be
+    /// unambiguous about intent without relying on the absent-attribute
+    /// default.
+    Load,
+    /// Hydrate when the given CSS media query matches
+    /// (`window.matchMedia`). The inner string is the raw query, e.g.
+    /// `"(max-width: 768px)"`.
+    Media(String),
+}
+
+impl WhenHint {
+    /// Return the `data-when` attribute string this hint maps to.
+    ///
+    /// ```
+    /// use zfb_islands::hydration::WhenHint;
+    /// assert_eq!(WhenHint::Visible.as_str(), "visible");
+    /// assert_eq!(WhenHint::Media("(min-width:600px)".into()).as_str(), "media((min-width:600px))");
+    /// ```
+    pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            WhenHint::Visible => std::borrow::Cow::Borrowed("visible"),
+            WhenHint::Idle => std::borrow::Cow::Borrowed("idle"),
+            WhenHint::Load => std::borrow::Cow::Borrowed("load"),
+            WhenHint::Media(q) => std::borrow::Cow::Owned(format!("media({q})")),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // IslandDescriptor
@@ -73,52 +132,48 @@ use crate::html_tree::HtmlTree;
 /// - [`component_name`](Self::component_name): stable identifier the runtime
 ///   uses to pick the right component out of the islands bundle. Must match
 ///   the export name produced by Sub 1's scanner.
-/// - [`props_json`](Self::props_json): the serialised props passed to the
-///   component at server-render time. Must already be valid JSON; the
-///   rewriter does not validate it (the renderer is expected to obtain it
-///   via `serde_json::to_string` on the same `JsonValue` it handed to the
-///   component).
+/// - [`props`](Self::props): the props passed to the component at
+///   server-render time as a `serde_json::Value`. The rewriter serialises
+///   this value on demand; there is no pre-serialisation round-trip.
 /// - [`marker_key`](Self::marker_key): the unique key the renderer used in
 ///   the surrounding `<!--zfb-island:KEY-->` / `<!--/zfb-island:KEY-->`
 ///   sentinel pair. Each key is expected to appear at most once per page.
-/// - [`when`](Self::when): optional `data-when` hydration hint. `None`
-///   means no attribute is emitted; the runtime treats the absent case as
-///   `"load"` (immediate hydration).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// - [`when`](Self::when): optional typed hydration hint ([`WhenHint`]).
+///   `None` means no `data-when` attribute is emitted; the runtime treats
+///   the absent case as `"load"` (immediate hydration).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IslandDescriptor {
     /// Component export name as produced by the islands AST scanner.
     pub component_name: String,
-    /// Pre-serialised props JSON. Must be valid JSON; rewriter does not
-    /// validate.
-    pub props_json: String,
+    /// Props for the component as a structured JSON value. The rewriter
+    /// serialises this to a JSON string when emitting `data-props`.
+    pub props: JsonValue,
     /// The unique key used in the renderer's `<!--zfb-island:KEY-->` /
     /// `<!--/zfb-island:KEY-->` sentinel pair around this island's server
     /// output.
     pub marker_key: String,
-    /// Optional `data-when` hint (`"visible"` / `"idle"` / `"load"`).
-    /// Owned by Sub 4's `<Island>` wrapper. `None` ⇒ omit the attribute.
-    pub when: Option<String>,
+    /// Optional typed `data-when` hint. `None` ⇒ omit the attribute.
+    pub when: Option<WhenHint>,
 }
 
 impl IslandDescriptor {
     /// Build a descriptor with no `data-when` hint (immediate hydration).
     pub fn new(
         component_name: impl Into<String>,
-        props_json: impl Into<String>,
+        props: impl Into<JsonValue>,
         marker_key: impl Into<String>,
     ) -> Self {
         Self {
             component_name: component_name.into(),
-            props_json: props_json.into(),
+            props: props.into(),
             marker_key: marker_key.into(),
             when: None,
         }
     }
 
-    /// Set a `data-when` hint. Caller is responsible for using one of the
-    /// runtime-recognised values (`"visible"`, `"idle"`, `"load"`).
-    pub fn with_when(mut self, when: impl Into<String>) -> Self {
-        self.when = Some(when.into());
+    /// Set a typed `data-when` hint.
+    pub fn with_when(mut self, when: WhenHint) -> Self {
+        self.when = Some(when);
         self
     }
 }
@@ -391,8 +446,10 @@ pub fn rewrite_islands_in_attr_skeleton(
                     let d = &descriptors[i];
                     idx_c.set(i + 1);
 
+                    let props_json = serde_json::to_string(&d.props)
+                        .expect("serde_json::Value always serialises to valid JSON");
                     el.set_attribute("data-zfb-island", &escape_attr(&d.component_name))?;
-                    el.set_attribute("data-props", &escape_attr(&d.props_json))?;
+                    el.set_attribute("data-props", &escape_attr(&props_json))?;
 
                     Ok(())
                 }),
@@ -504,16 +561,25 @@ pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) {
 
 /// Build the `<div data-zfb-island="…" …>…</div>` wrapper for a single
 /// island. Internal helper; tests cover the attribute-escaping rules.
+///
+/// The `props` field is serialised to a JSON string here; this is the
+/// single point where the `serde_json::Value` is converted to a string
+/// that ends up in the `data-props` attribute.
 fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
-    let mut s = String::with_capacity(inner.len() + 96);
+    // Serialise props. `serde_json::to_string` on a `Value` is infallible
+    // for any valid `Value` (all variants produce valid JSON).
+    let props_json = serde_json::to_string(&d.props)
+        .expect("serde_json::Value always serialises to valid JSON");
+
+    let mut s = String::with_capacity(inner.len() + props_json.len() + 96);
     s.push_str("<div data-zfb-island=\"");
     s.push_str(&escape_attr(&d.component_name));
     s.push_str("\" data-props=\"");
-    s.push_str(&escape_attr(&d.props_json));
+    s.push_str(&escape_attr(&props_json));
     s.push('"');
     if let Some(when) = &d.when {
         s.push_str(" data-when=\"");
-        s.push_str(&escape_attr(when));
+        s.push_str(&escape_attr(&when.as_str()));
         s.push('"');
     }
     s.push('>');
@@ -589,6 +655,8 @@ pub fn wrap_with_markers(key: &str, inner: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn page_with(inner: &str) -> HtmlTree {
@@ -601,7 +669,7 @@ mod tests {
     fn rewrites_single_island_into_data_attribute_wrapper() {
         let inner = wrap_with_markers("counter#0", "<button>3</button>");
         let mut tree = page_with(&inner);
-        let d = IslandDescriptor::new("Counter", r#"{"start":3}"#, "counter#0");
+        let d = IslandDescriptor::new("Counter", json!({"start": 3}), "counter#0");
         rewrite_islands(&mut tree, &[d]).unwrap();
         let out = tree.serialize();
         assert!(
@@ -619,15 +687,48 @@ mod tests {
     fn emits_data_when_attribute_only_when_present() {
         let inner = wrap_with_markers("k", "<x/>");
         let mut tree = page_with(&inner);
-        let d = IslandDescriptor::new("Foo", "{}", "k").with_when("visible");
+        let d = IslandDescriptor::new("Foo", json!({}), "k").with_when(WhenHint::Visible);
         rewrite_islands(&mut tree, &[d]).unwrap();
         assert!(tree.serialize().contains(r#"data-when="visible""#));
 
         let inner = wrap_with_markers("k", "<x/>");
         let mut tree = page_with(&inner);
-        let d = IslandDescriptor::new("Foo", "{}", "k");
+        let d = IslandDescriptor::new("Foo", json!({}), "k");
         rewrite_islands(&mut tree, &[d]).unwrap();
         assert!(!tree.serialize().contains("data-when="));
+    }
+
+    #[test]
+    fn when_hint_variants_produce_correct_strings() {
+        assert_eq!(WhenHint::Visible.as_str(), "visible");
+        assert_eq!(WhenHint::Idle.as_str(), "idle");
+        assert_eq!(WhenHint::Load.as_str(), "load");
+        assert_eq!(
+            WhenHint::Media("(max-width: 768px)".into()).as_str(),
+            "media((max-width: 768px))"
+        );
+    }
+
+    #[test]
+    fn when_hint_idle_is_emitted_in_html() {
+        let inner = wrap_with_markers("k", "<x/>");
+        let mut tree = page_with(&inner);
+        let d = IslandDescriptor::new("Foo", json!({}), "k").with_when(WhenHint::Idle);
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        assert!(tree.serialize().contains(r#"data-when="idle""#));
+    }
+
+    #[test]
+    fn when_hint_media_is_emitted_in_html() {
+        let inner = wrap_with_markers("k", "<x/>");
+        let mut tree = page_with(&inner);
+        let d = IslandDescriptor::new("Foo", json!({}), "k")
+            .with_when(WhenHint::Media("(min-width: 600px)".into()));
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        assert!(
+            tree.serialize()
+                .contains(r#"data-when="media((min-width: 600px))""#)
+        );
     }
 
     #[test]
@@ -640,8 +741,8 @@ mod tests {
 
         let mut tree = HtmlTree::parse(html);
         let descriptors = vec![
-            IslandDescriptor::new("A", "{}", "a"),
-            IslandDescriptor::new("B", r#"{"x":1}"#, "b"),
+            IslandDescriptor::new("A", json!({}), "a"),
+            IslandDescriptor::new("B", json!({"x": 1}), "b"),
         ];
         rewrite_islands(&mut tree, &descriptors).unwrap();
         let out = tree.serialize();
@@ -655,7 +756,7 @@ mod tests {
     #[test]
     fn errors_when_open_marker_is_missing() {
         let mut tree = page_with("<span>plain</span>");
-        let d = IslandDescriptor::new("Foo", "{}", "missing");
+        let d = IslandDescriptor::new("Foo", json!({}), "missing");
         let err = rewrite_islands(&mut tree, &[d]).unwrap_err();
         assert!(matches!(err, IslandRewriteError::OpenMarkerMissing { .. }));
     }
@@ -664,7 +765,7 @@ mod tests {
     fn errors_when_close_marker_is_missing() {
         let mut tree =
             HtmlTree::parse("<html><body><!--zfb-island:k--><span>x</span></body></html>");
-        let d = IslandDescriptor::new("Foo", "{}", "k");
+        let d = IslandDescriptor::new("Foo", json!({}), "k");
         let err = rewrite_islands(&mut tree, &[d]).unwrap_err();
         assert!(matches!(err, IslandRewriteError::CloseMarkerMissing { .. }));
     }
@@ -673,8 +774,8 @@ mod tests {
     fn errors_on_duplicate_marker_keys() {
         let mut tree = page_with(&wrap_with_markers("k", "<x/>"));
         let descriptors = vec![
-            IslandDescriptor::new("A", "{}", "k"),
-            IslandDescriptor::new("B", "{}", "k"),
+            IslandDescriptor::new("A", json!({}), "k"),
+            IslandDescriptor::new("B", json!({}), "k"),
         ];
         let err = rewrite_islands(&mut tree, &descriptors).unwrap_err();
         assert!(matches!(err, IslandRewriteError::DuplicateKey { .. }));
@@ -684,8 +785,12 @@ mod tests {
     fn escapes_attributes_correctly() {
         let inner = wrap_with_markers("k", "<i>x</i>");
         let mut tree = page_with(&inner);
-        let props = r#"{"text":"<a & \"b\">"}"#;
-        let d = IslandDescriptor::new("My&Comp", props, "k");
+        // The JSON value has a string field containing HTML-special characters.
+        let d = IslandDescriptor::new(
+            "My&Comp",
+            json!({"text": "<a & \"b\">"}),
+            "k",
+        );
         rewrite_islands(&mut tree, &[d]).unwrap();
         let out = tree.serialize();
         assert!(out.contains(r#"data-zfb-island="My&amp;Comp""#));
@@ -771,7 +876,7 @@ mod tests {
     fn skeleton_bridge_fills_empty_data_zfb_island() {
         let html = r#"<html><body><div data-zfb-island="" data-when="visible"><button>3</button></div></body></html>"#;
         let mut tree = HtmlTree::parse(html);
-        let d = IslandDescriptor::new("Counter", r#"{"start":3}"#, "k");
+        let d = IslandDescriptor::new("Counter", json!({"start": 3}), "k");
         rewrite_islands_in_attr_skeleton(&mut tree, &[d]).unwrap();
         let out = tree.serialize();
         assert!(out.contains(r#"data-zfb-island="Counter""#));
@@ -785,8 +890,8 @@ mod tests {
         let html = r#"<html><body><div data-zfb-island="" data-when="visible"><i>a</i></div><span>between</span><div data-zfb-island="" data-when="idle"><i>b</i></div></body></html>"#;
         let mut tree = HtmlTree::parse(html);
         let descriptors = vec![
-            IslandDescriptor::new("A", "{}", "k1"),
-            IslandDescriptor::new("B", "{}", "k2"),
+            IslandDescriptor::new("A", json!({}), "k1"),
+            IslandDescriptor::new("B", json!({}), "k2"),
         ];
         rewrite_islands_in_attr_skeleton(&mut tree, &descriptors).unwrap();
         let out = tree.serialize();
@@ -802,8 +907,8 @@ mod tests {
         let html = r#"<div data-zfb-island="" data-when="load"><i>x</i></div>"#;
         let mut tree = HtmlTree::parse(html);
         let descriptors = vec![
-            IslandDescriptor::new("A", "{}", "k1"),
-            IslandDescriptor::new("B", "{}", "k2"),
+            IslandDescriptor::new("A", json!({}), "k1"),
+            IslandDescriptor::new("B", json!({}), "k2"),
         ];
         let err = rewrite_islands_in_attr_skeleton(&mut tree, &descriptors).unwrap_err();
         assert_eq!(
@@ -835,7 +940,7 @@ mod tests {
 <div data-zfb-island="" data-when="load"><i>real island</i></div>
 </body></html>"#;
         let mut tree = HtmlTree::parse(html);
-        let d = IslandDescriptor::new("Real", "{}", "k");
+        let d = IslandDescriptor::new("Real", json!({}), "k");
         // Should succeed: parser found exactly one skeleton element.
         rewrite_islands_in_attr_skeleton(&mut tree, &[d]).unwrap();
         let out = tree.serialize();
