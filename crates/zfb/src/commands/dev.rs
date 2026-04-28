@@ -79,6 +79,7 @@ use zfb_graph::{DependencyGraph, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 
 use crate::cli::DevArgs;
+use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
@@ -116,7 +117,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref());
-    let port = resolve_port(args.port, cfg.port);
+    let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
     let addr = resolve_addr(host.as_str(), port)?;
 
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
@@ -409,27 +410,16 @@ fn boot_dev_renderer(
         ));
     }
 
-    let bundler_input = BundlerInput {
-        project_root: project_root.to_path_buf(),
-        pages_dir: PathBuf::from("pages"),
-        content_dir: PathBuf::from("content"),
-        components_dir: PathBuf::from("components"),
-        layouts_dir: PathBuf::from("layouts"),
-        framework: cfg_framework_to_render(cfg.framework),
-        define_vars: Default::default(),
-        tsconfig_paths: Default::default(),
-        external: Vec::new(),
-        outdir: dist_root.join(".zfb-build"),
-        mode: BundleMode::Development,
-        minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: None,
-        // Dev mode does not embed a content snapshot — runtime paths()
-        // evaluation is a build-mode feature. When dev mode starts the
-        // worker, `getCollection(...)` will see an empty snapshot.
-        content_snapshot_json: None,
-        node_modules_dir: None,
-    };
+    // Dev mode does not embed a content snapshot — runtime paths()
+    // evaluation is a build-mode feature. When dev mode starts the
+    // worker, `getCollection(...)` will see an empty snapshot.
+    let bundler_input = BundlerInput::for_project(
+        project_root.to_path_buf(),
+        cfg_framework_to_render(cfg.framework),
+        BundleMode::Development,
+        dist_root.join(".zfb-build"),
+        None,
+    );
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {
@@ -501,10 +491,6 @@ fn resolve_host(cli: Option<&str>, cfg: Option<&str>) -> String {
     cli.or(cfg).unwrap_or(DEFAULT_DEV_HOST).to_owned()
 }
 
-fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
-    cli.or(cfg).unwrap_or(DEFAULT_DEV_PORT)
-}
-
 fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     let pair = format!("{host}:{port}");
     let mut iter = pair
@@ -514,43 +500,10 @@ fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
 }
 
-fn resolve_under_root(project_root: &Path, p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_root.join(p)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn resolve_under_root_joins_relative_paths() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("dist");
-        assert_eq!(resolve_under_root(root, p), PathBuf::from("/tmp/proj/dist"));
-    }
-
-    #[test]
-    fn resolve_under_root_joins_nested_relative_paths() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("build/out");
-        assert_eq!(
-            resolve_under_root(root, p),
-            PathBuf::from("/tmp/proj/build/out")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolve_under_root_keeps_absolute_paths_as_is() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("/var/www/dist");
-        assert_eq!(resolve_under_root(root, p), PathBuf::from("/var/www/dist"));
-    }
 
     #[test]
     fn resolve_host_prefers_cli_over_config() {
@@ -568,35 +521,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_port_prefers_cli_over_config() {
-        assert_eq!(resolve_port(Some(8080), Some(4000)), 8080);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_config_when_cli_absent() {
-        assert_eq!(resolve_port(None, Some(4000)), 4000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
-        assert_eq!(resolve_port(None, None), DEFAULT_DEV_PORT);
-    }
-
-    #[test]
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
-    }
-
-    #[test]
-    fn resolve_under_root_handles_dot_relative() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("./public");
-        let resolved = resolve_under_root(root, p);
-        assert!(
-            resolved.starts_with(root),
-            "expected {resolved:?} to start with {root:?}"
-        );
     }
 
     /// The render callback must:
