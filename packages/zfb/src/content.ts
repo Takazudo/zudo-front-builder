@@ -22,9 +22,9 @@
 // once the content engine ships end-to-end.
 
 import { readdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
-import type { ReactNode } from "./jsx-types.js";
+import type { VNode } from "./jsx-types.js";
 
 // ---------------------------------------------------------------------------
 // In-memory ContentSnapshot bridge (consumed by `@takazudo/zfb-runtime`).
@@ -295,10 +295,16 @@ export async function getCollection<T = Record<string, unknown>>(
   }
   // Filesystem fallback (v0 path). Used by unit tests and direct Node
   // invocations outside the Worker bundle.
+  //
+  // BCI-6: traversal is now recursive — subdirectories are walked so a
+  // collection rooted at `content/blog/` can contain nested `*.md` files
+  // (e.g. `content/blog/2024/hello.md`). Slugs are derived from the
+  // relative path so callers get stable, unique identifiers across nesting
+  // levels.
   const dir = resolveCollectionDir(name);
-  let names: string[];
+  let mdPaths: string[];
   try {
-    names = await readdir(dir);
+    mdPaths = await collectMdFiles(dir);
   } catch (err) {
     // Guard the `code` access at runtime — a thrown non-`Error` value
     // (rare, but possible) would otherwise crash here. We only swallow
@@ -313,12 +319,15 @@ export async function getCollection<T = Record<string, unknown>>(
     }
     throw err;
   }
-  const mdFiles = names.filter((n) => n.endsWith(".md") && !n.startsWith("."));
-  const entries = await mapWithConcurrency(mdFiles, READ_CONCURRENCY, async (filename) => {
-    const fullPath = join(dir, filename);
+  const entries = await mapWithConcurrency(mdPaths, READ_CONCURRENCY, async (fullPath) => {
     const raw = await readFile(fullPath, "utf8");
     const { data, body } = parseFrontmatter(raw);
-    const slug = filename.slice(0, -".md".length);
+    // Derive a stable slug from the relative path (relative to collection
+    // root), stripping the `.md` extension. For top-level files this
+    // produces the same value as before; for nested files it produces a
+    // path-based slug (e.g. `2024/hello`).
+    const rel = relative(dir, fullPath);
+    const slug = rel.slice(0, -".md".length);
     const module_specifier = buildModuleSpecifier(name, slug);
     return {
       slug,
@@ -364,6 +373,41 @@ function entryFromSnapshot<T>(entry: SnapshotEntry): CollectionEntry<T> {
 const READ_CONCURRENCY = 8;
 
 /**
+ * Recursively collect every `*.md` file under `dir`.
+ *
+ * BCI-6: replaces the old flat `readdir(dir).filter(n => n.endsWith(".md"))`
+ * approach. Hidden files (names starting with `.`) and hidden directories
+ * are skipped at every nesting level, matching the top-level behaviour of
+ * the previous implementation.
+ *
+ * Returns absolute paths sorted lexicographically so the result order is
+ * deterministic across platforms and Node versions.
+ */
+async function collectMdFiles(dir: string): Promise<string[]> {
+  const result: string[] = [];
+  await walkDir(dir, result);
+  result.sort();
+  return result;
+}
+
+async function walkDir(current: string, out: string[]): Promise<void> {
+  const entries = await readdir(current, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const fullPath = join(current, entry.name);
+    // Skip symlinks to avoid infinite loops caused by cycles (e.g. a symlink
+    // pointing at a parent directory). Content files are expected to be plain
+    // regular files; following symlinks provides no value here.
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      await walkDir(fullPath, out);
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      out.push(fullPath);
+    }
+  }
+}
+
+/**
  * Run `fn` over `items` with at most `limit` invocations in flight at any
  * time. Preserves input order in the returned array. Implemented inline so
  * we don't pull in a `p-limit`-shaped dependency for one call site.
@@ -397,7 +441,7 @@ async function mapWithConcurrency<I, O>(
 
 const FRONTMATTER_DELIM = "---";
 
-type ParsedFrontmatter = {
+export type ParsedFrontmatter = {
   data: Record<string, unknown>;
   body: string;
 };
@@ -568,7 +612,7 @@ export type ContentComponentElement = {
  * to the underlying HTML element.
  */
 export interface ContentComponentProps {
-  children?: ReactNode;
+  children?: VNode;
   [key: string]: unknown;
 }
 
@@ -577,7 +621,7 @@ function buildOverrideElement(tag: string, props: ContentComponentProps): Conten
   const { children, ...rest } = props;
   return {
     type: tag,
-    props: { ...rest, children: children as ReactNode },
+    props: { ...rest, children },
     key: null,
   };
 }

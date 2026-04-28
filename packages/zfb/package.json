@@ -27,6 +27,10 @@
     "./config": {
       "types": "./src/config.ts",
       "default": "./src/config.ts"
+    },
+    "./frontmatter": {
+      "types": "./src/frontmatter.ts",
+      "default": "./src/frontmatter.ts"
     }
   },
   "scripts": {
