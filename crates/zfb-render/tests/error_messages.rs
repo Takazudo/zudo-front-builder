@@ -83,7 +83,7 @@ fn broken_relative_import_points_at_importer_file_and_lists_candidates() {
                 "expected the resolver to record probed candidates, got tried={tried:?}",
             );
         }
-        other => panic!("expected RenderError::Resolve, got {other:?}"),
+        other => unreachable!("expected RenderError::Resolve, got {other:?}"),
     }
 }
 
@@ -128,7 +128,7 @@ fn paths_export_wrong_top_level_shape_names_route_file() {
             );
             assert_eq!(field.as_deref(), Some("paths()"));
         }
-        other => panic!("expected InvalidPathsExport, got {other:?}"),
+        other => unreachable!("expected InvalidPathsExport, got {other:?}"),
     }
 }
 

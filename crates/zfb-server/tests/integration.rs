@@ -334,9 +334,11 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
             let s = std::str::from_utf8(&buf).unwrap_or("");
             for line in s.lines() {
                 if let Some(rest) = line.strip_prefix("event:") {
-                    if rest.trim() == "page" {
-                        panic!("unexpected `event: page` line in stream:\n{s}");
-                    }
+                    assert_ne!(
+                        rest.trim(),
+                        "page",
+                        "unexpected `event: page` line in stream:\n{s}"
+                    );
                 }
             }
         }

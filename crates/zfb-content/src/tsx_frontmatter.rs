@@ -996,7 +996,7 @@ mod tests {
                 col,
                 ..
             } => (file, export, line, col),
-            other => panic!("expected ComputedValue, got {other:?}"),
+            other => unreachable!("expected ComputedValue, got {other:?}"),
         };
         assert_eq!(file, "blog/post.tsx");
         assert_eq!(export, "frontmatter");
@@ -1033,7 +1033,7 @@ mod tests {
                     "reason should mention substitutions, got {reason:?}",
                 );
             }
-            other => panic!("expected ComputedValue, got {other:?}"),
+            other => unreachable!("expected ComputedValue, got {other:?}"),
         }
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
                     "reason should mention spread, got {reason:?}",
                 );
             }
-            other => panic!("expected ComputedValue, got {other:?}"),
+            other => unreachable!("expected ComputedValue, got {other:?}"),
         }
     }
 
@@ -1083,7 +1083,7 @@ mod tests {
         let err = extract(src, "no-fm.tsx").expect_err("must fail");
         match err {
             TsxFrontmatterError::MissingFrontmatter { file } => assert_eq!(file, "no-fm.tsx"),
-            other => panic!("expected MissingFrontmatter, got {other:?}"),
+            other => unreachable!("expected MissingFrontmatter, got {other:?}"),
         }
     }
 
@@ -1099,7 +1099,7 @@ mod tests {
                 assert_eq!(name, "frontmatter");
                 assert!(line >= 2, "second export should be on line >= 2");
             }
-            other => panic!("expected DuplicateExport, got {other:?}"),
+            other => unreachable!("expected DuplicateExport, got {other:?}"),
         }
     }
 
@@ -1126,7 +1126,7 @@ mod tests {
             TsxFrontmatterError::WrongShape { export, .. } => {
                 assert_eq!(export, "frontmatter");
             }
-            other => panic!("expected WrongShape, got {other:?}"),
+            other => unreachable!("expected WrongShape, got {other:?}"),
         }
     }
 
@@ -1141,7 +1141,7 @@ mod tests {
             TsxFrontmatterError::WrongShape { export, .. } => {
                 assert_eq!(export, "extension");
             }
-            other => panic!("expected WrongShape, got {other:?}"),
+            other => unreachable!("expected WrongShape, got {other:?}"),
         }
     }
 

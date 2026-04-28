@@ -185,7 +185,7 @@ mod tests {
                 assert!(s.contains(&pid("/p/a.tsx")));
                 assert!(s.contains(&pid("/p/b.tsx")));
             }
-            _ => panic!(),
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
     }
 }

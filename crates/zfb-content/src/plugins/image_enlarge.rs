@@ -109,10 +109,10 @@ mod tests {
         };
         ImageEnlargePlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root after visit")
         };
         let HastNode::Raw(raw) = &children[0] else {
-            panic!("expected Raw, got {:?}", children[0])
+            unreachable!("expected Raw, got {:?}", children[0])
         };
         assert!(raw.starts_with("<ImageEnlarge"));
         assert!(raw.contains("src=\"pic.png\""));
@@ -142,10 +142,10 @@ mod tests {
         };
         ImageEnlargePlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root after visit")
         };
         let HastNode::Raw(raw) = &children[0] else {
-            panic!()
+            unreachable!("expected Raw, got {:?}", children[0])
         };
         assert!(raw.contains("alt=\"a&amp;b&quot;c\""));
     }

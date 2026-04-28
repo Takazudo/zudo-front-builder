@@ -786,14 +786,14 @@ mod tests {
     fn flow(node: &MdastNode) -> &MdxJsxFlowElement {
         match node {
             MdastNode::MdxJsxFlowElement(j) => j,
-            other => panic!("expected MdxJsxFlowElement, got {other:?}"),
+            other => unreachable!("expected MdxJsxFlowElement, got {other:?}"),
         }
     }
 
     fn text(node: &MdastNode) -> &MdxJsxTextElement {
         match node {
             MdastNode::MdxJsxTextElement(j) => j,
-            other => panic!("expected MdxJsxTextElement, got {other:?}"),
+            other => unreachable!("expected MdxJsxTextElement, got {other:?}"),
         }
     }
 
@@ -917,7 +917,7 @@ mod tests {
         if let MdastNode::Text(t) = &j.children[0] {
             assert_eq!(t.value, "Label");
         } else {
-            panic!("expected Text child, got {:?}", j.children[0]);
+            unreachable!("expected Text child, got {:?}", j.children[0]);
         }
     }
 
@@ -938,14 +938,14 @@ mod tests {
             })],
         );
         let MdastNode::Paragraph(Paragraph { children, .. }) = &out[0] else {
-            panic!("expected paragraph, got {:?}", out[0]);
+            unreachable!("expected paragraph, got {:?}", out[0]);
         };
         // children: [Text("Press "), MdxJsxTextElement(<Kbd>), Text(" to save")]
         assert_eq!(children.len(), 3);
         if let MdastNode::Text(t) = &children[0] {
             assert_eq!(t.value, "Press ");
         } else {
-            panic!("expected leading Text");
+            unreachable!("expected leading Text");
         }
         let j = text(&children[1]);
         assert_eq!(j.name.as_deref(), Some("Kbd"));
@@ -953,7 +953,7 @@ mod tests {
         if let MdastNode::Text(t) = &children[2] {
             assert_eq!(t.value, " to save");
         } else {
-            panic!("expected trailing Text");
+            unreachable!("expected trailing Text");
         }
     }
 
@@ -972,7 +972,7 @@ mod tests {
             })],
         );
         let MdastNode::Paragraph(Paragraph { children, .. }) = &out[0] else {
-            panic!()
+            unreachable!("expected MdastNode::Paragraph")
         };
         let j = text(&children[1]);
         assert_eq!(j.name.as_deref(), Some("Link"));
@@ -1023,7 +1023,7 @@ mod tests {
             })],
         );
         let MdastNode::Paragraph(Paragraph { children, .. }) = &out[0] else {
-            panic!()
+            unreachable!("expected MdastNode::Paragraph")
         };
         // No JSX node — text preserved verbatim. Either as a single
         // unchanged Text node, or split but still semantically the
@@ -1113,7 +1113,7 @@ mod tests {
         });
         let out = run_with_registry(&mut r, vec![bq]);
         let MdastNode::Blockquote(bq) = &out[0] else {
-            panic!("expected blockquote")
+            unreachable!("expected blockquote")
         };
         assert_eq!(bq.children.len(), 1, "admonition collapsed inside bq");
         let j = flow(&bq.children[0]);

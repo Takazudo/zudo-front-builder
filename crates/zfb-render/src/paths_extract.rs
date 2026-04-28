@@ -517,7 +517,7 @@ mod tests {
                     ]),
                 );
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -532,7 +532,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "a" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -545,7 +545,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "x" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -560,7 +560,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "y" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -575,7 +575,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "z" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -588,7 +588,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "x" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -599,7 +599,7 @@ mod tests {
         "#;
         match extract_ok(src) {
             PathsExtraction::Literal(v) => assert_eq!(v, json!([])),
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -630,7 +630,7 @@ mod tests {
                     "non-literal reason should not be empty",
                 );
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -644,7 +644,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("function call"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -658,7 +658,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("identifier"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -675,7 +675,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("must be a function"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -703,7 +703,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("no return"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -716,7 +716,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("returns nothing"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -740,7 +740,7 @@ mod tests {
             PathsExtraction::NonLiteral { reason } => {
                 assert!(reason.contains("substitution"), "{reason}");
             }
-            other => panic!("expected NonLiteral, got {other:?}"),
+            other => unreachable!("expected NonLiteral, got {other:?}"),
         }
     }
 
@@ -760,7 +760,7 @@ mod tests {
                     json!([{ "params": { "slug": ["a", "b", "c"] } }]),
                 );
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 
@@ -778,7 +778,7 @@ mod tests {
             PathsExtraction::Literal(v) => {
                 assert_eq!(v, json!([{ "params": { "slug": "ok" } }]));
             }
-            other => panic!("expected Literal, got {other:?}"),
+            other => unreachable!("expected Literal, got {other:?}"),
         }
     }
 }
