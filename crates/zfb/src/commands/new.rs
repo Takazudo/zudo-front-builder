@@ -2,10 +2,22 @@
 //!
 //! The contents of `crates/zfb/templates/` are baked into the binary at compile
 //! time via [`include_dir`]. At runtime we walk the requested template subtree
-//! (defaulting to `default`) and write each file into the destination directory.
-//! After the files are in place we attempt to run `pnpm install`; if pnpm is
-//! missing we print a friendly notice and continue successfully so the user can
-//! run install themselves later.
+//! (defaulting to `basic-blog`) and write each file into the destination
+//! directory. After the files are in place the scaffolded `package.json` is
+//! patched in two ways:
+//!
+//! 1. The `name` field is rewritten to the user's project name (sanitized so
+//!    the value is npm-valid — see [`sanitize_pkg_name`]).
+//! 2. Any dependency value matching `workspace:*` is rewritten to
+//!    [`WORKSPACE_DEP_PLACEHOLDER`]. The template ships its workspace deps
+//!    using pnpm's `workspace:*` protocol so the rewrite has something to
+//!    bite on; the published-version placeholder is intentionally a TODO
+//!    until E2 sub-task 11 (npm publish + SDK rename) lands and we can
+//!    point at a real version on the registry.
+//!
+//! After patching we attempt to run `pnpm install`; if pnpm is missing we
+//! print a friendly notice and continue successfully so the user can run
+//! install themselves later.
 //!
 //! Status messages go through [`crate::output`] so they look consistent with
 //! the rest of the zfb CLI. `zfb new` deliberately does NOT load
@@ -16,6 +28,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use include_dir::{include_dir, Dir, DirEntry};
+use serde_json::{Map, Value};
 use std::fs;
 use tokio::process::Command;
 
@@ -26,6 +39,28 @@ use crate::output;
 ///
 /// Each top-level subdirectory is a template selectable via `--template`.
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
+
+/// Replacement value applied to any `workspace:*` dependency found in a
+/// scaffolded `package.json`.
+///
+/// TODO(E2-sub11): once `@takazudo/zfb` (and any sibling SDK packages) are
+/// published to npm — see super-epic [zudolab/zudo-doc#473][1] — replace this
+/// constant with the real published semver range (e.g. `^0.1.0`). The
+/// rewrite logic itself is intentionally already wired so this is a one-line
+/// change at publish time.
+///
+/// [1]: https://github.com/zudolab/zudo-doc/issues/473
+const WORKSPACE_DEP_PLACEHOLDER: &str = "^0.0.0-migration.0";
+
+/// Dependency-section keys we walk inside `package.json` when rewriting
+/// `workspace:*` ranges. Kept as a constant so the rewriter and its tests
+/// stay in sync.
+const DEP_SECTIONS: &[&str] = &[
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+];
 
 pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
     let template = TEMPLATES.get_dir(args.template.as_str()).ok_or_else(|| {
@@ -40,6 +75,8 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
             }
         )
     })?;
+
+    validate_project_name(&args.name)?;
 
     let dest = Path::new(&args.name);
     if dest.exists() {
@@ -61,10 +98,17 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
     fs::create_dir_all(dest)?;
 
     // The embedded paths are prefixed with the template name (e.g.
-    // `default/pages/index.tsx`). Strip that prefix so files land directly
+    // `basic-blog/pages/index.tsx`). Strip that prefix so files land directly
     // under the destination directory.
     let prefix = Path::new(&args.template);
     write_dir(template, dest, prefix)?;
+
+    // Patch package.json: project name + workspace dep placeholder. We do
+    // this after writing files so the rewriter operates on the same bytes
+    // the user will see, and so a future template that ships multiple
+    // package.json files (e.g. nested workspaces) can be handled by
+    // expanding the search rather than the embedding.
+    patch_package_json(&dest.join("package.json"), &args.name)?;
 
     match try_pnpm_install(dest).await {
         PnpmOutcome::Ran => {}
@@ -87,6 +131,38 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
         args.name, args.template, args.name
     ));
 
+    Ok(())
+}
+
+/// Reject project names that would escape the current working directory or
+/// otherwise resolve to a non-relative path. The CLI uses the name verbatim
+/// as the destination directory, so without this gate `zfb new ../../etc`
+/// would happily write the template tree outside the user's intended root.
+///
+/// Allowed: non-empty names with no path separators and no `..` segments.
+/// Absolute paths are also rejected.
+fn validate_project_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("project name must not be empty");
+    }
+    if name == "." || name == ".." {
+        anyhow::bail!("project name '{name}' is not a valid directory name");
+    }
+    if name.contains('/') || name.contains('\\') {
+        anyhow::bail!(
+            "project name '{name}' must not contain path separators \u{2014} pass a single directory name"
+        );
+    }
+    let path = Path::new(name);
+    if path.is_absolute() {
+        anyhow::bail!("project name '{name}' must be a relative directory name, not an absolute path");
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("project name '{name}' must not contain '..' segments");
+    }
     Ok(())
 }
 
@@ -130,6 +206,86 @@ fn write_dir(dir: &Dir<'_>, dest: &Path, prefix: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Rewrite the scaffolded `package.json` so it carries the user's project
+/// name and so any `workspace:*` deps point at a published-package
+/// placeholder rather than a workspace protocol the user's pnpm cannot
+/// resolve outside the zfb monorepo.
+///
+/// Missing `package.json` is tolerated (some future template may not ship
+/// one). Malformed JSON or unexpected shapes (e.g. `dependencies` not being
+/// an object) are surfaced as errors so a broken template is caught at
+/// scaffold time instead of at the user's first `pnpm install`.
+fn patch_package_json(path: &Path, project_name: &str) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(path)?;
+    let mut value: Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("template package.json is not valid JSON: {e}"))?;
+
+    let obj = value.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!("template package.json must be a JSON object at the top level")
+    })?;
+
+    let sanitized = sanitize_pkg_name(project_name);
+    obj.insert("name".to_string(), Value::String(sanitized));
+    rewrite_workspace_deps(obj);
+
+    // Preserve a trailing newline so the file matches what
+    // `pnpm install` (and humans) expect to see.
+    let mut serialized = serde_json::to_string_pretty(&value)?;
+    serialized.push('\n');
+    fs::write(path, serialized)?;
+    Ok(())
+}
+
+/// Walk every dependency section we know about and replace any value that
+/// starts with `workspace:` (covering `workspace:*`, `workspace:^`,
+/// `workspace:~`, and pinned forms like `workspace:1.2.3`) with the
+/// published-package placeholder.
+fn rewrite_workspace_deps(pkg: &mut Map<String, Value>) {
+    for section in DEP_SECTIONS {
+        let Some(deps) = pkg.get_mut(*section).and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        for (_dep_name, dep_value) in deps.iter_mut() {
+            if let Some(s) = dep_value.as_str() {
+                if s.starts_with("workspace:") {
+                    *dep_value = Value::String(WORKSPACE_DEP_PLACEHOLDER.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Coerce the user-provided project name into something npm will accept as
+/// a `package.json#name` value: lowercased, ASCII alphanumerics and a small
+/// set of separators, anything else collapsed to `-`. Empty results fall
+/// back to a stable default so we never produce an invalid manifest.
+///
+/// Scoped names (`@scope/pkg`) are intentionally NOT supported here; the
+/// CLI's positional `name` is also used as the destination directory, and
+/// `@scope/pkg` would create awkward paths. A user who needs a scoped
+/// package can edit `package.json` after scaffolding.
+fn sanitize_pkg_name(input: &str) -> String {
+    let lowered: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = lowered.trim_matches(|c: char| c == '-' || c == '.' || c == '_');
+    if trimmed.is_empty() {
+        "zfb-project".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 enum PnpmOutcome {
     Ran,
     Missing,
@@ -150,5 +306,158 @@ async fn try_pnpm_install(dest: &Path) -> PnpmOutcome {
         Ok(status) if status.success() => PnpmOutcome::Ran,
         Ok(status) => PnpmOutcome::Failed(format!("pnpm exited with status {status}")),
         Err(e) => PnpmOutcome::Failed(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    #[test]
+    fn validate_project_name_rejects_path_traversal_and_separators() {
+        // Acceptable shapes.
+        assert!(validate_project_name("my-site").is_ok());
+        assert!(validate_project_name("My_Site.v2").is_ok());
+
+        // Rejected shapes — path traversal, separators, absolute paths.
+        for bad in ["", ".", "..", "../evil", "foo/bar", "foo\\bar", "/etc/passwd"] {
+            assert!(
+                validate_project_name(bad).is_err(),
+                "expected '{bad}' to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_pkg_name_lowercases_and_replaces_invalid_chars() {
+        assert_eq!(sanitize_pkg_name("My Site"), "my-site");
+        assert_eq!(sanitize_pkg_name("My_Site.v2"), "my_site.v2");
+        assert_eq!(sanitize_pkg_name("a/b\\c"), "a-b-c");
+        // Leading/trailing separators are stripped.
+        assert_eq!(sanitize_pkg_name("---weird---"), "weird");
+        // Pure-junk names fall back to a stable default.
+        assert_eq!(sanitize_pkg_name("///"), "zfb-project");
+        assert_eq!(sanitize_pkg_name(""), "zfb-project");
+    }
+
+    #[test]
+    fn rewrite_workspace_deps_replaces_workspace_protocol_only() {
+        let mut pkg = json!({
+            "name": "fixture",
+            "dependencies": {
+                "preact": "^10.22.0",
+                "zfb": "workspace:*",
+            },
+            "devDependencies": {
+                "internal-tool": "workspace:^",
+                "typescript": "^5.6.0",
+            },
+            "peerDependencies": {
+                "react": "workspace:1.2.3",
+            },
+            "optionalDependencies": {
+                "fsevents": "workspace:~",
+            }
+        });
+        let obj = pkg.as_object_mut().unwrap();
+        rewrite_workspace_deps(obj);
+
+        assert_eq!(
+            obj["dependencies"]["preact"].as_str().unwrap(),
+            "^10.22.0",
+            "non-workspace deps must be untouched"
+        );
+        assert_eq!(
+            obj["dependencies"]["zfb"].as_str().unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER
+        );
+        assert_eq!(
+            obj["devDependencies"]["internal-tool"].as_str().unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER
+        );
+        assert_eq!(
+            obj["devDependencies"]["typescript"].as_str().unwrap(),
+            "^5.6.0"
+        );
+        assert_eq!(
+            obj["peerDependencies"]["react"].as_str().unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER
+        );
+        assert_eq!(
+            obj["optionalDependencies"]["fsevents"].as_str().unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER
+        );
+    }
+
+    #[test]
+    fn patch_package_json_writes_name_and_rewrites_workspace_deps() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        fs::write(
+            &path,
+            r#"{
+  "name": "template-default",
+  "dependencies": {
+    "zfb": "workspace:*"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        patch_package_json(&path, "My Site").unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(parsed["name"].as_str().unwrap(), "my-site");
+        assert_eq!(
+            parsed["dependencies"]["zfb"].as_str().unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER
+        );
+        assert!(after.ends_with('\n'), "trailing newline preserved");
+    }
+
+    #[test]
+    fn patch_package_json_is_a_noop_when_file_is_missing() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        // No file written. Should not error.
+        patch_package_json(&path, "anything").unwrap();
+        assert!(!path.exists(), "function must not create the file");
+    }
+
+    #[test]
+    fn template_registry_exposes_basic_blog() {
+        let names = available_templates();
+        assert!(
+            names.iter().any(|n| n == "basic-blog"),
+            "expected 'basic-blog' in templates, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn template_basic_blog_package_json_is_well_formed() {
+        // Sanity check: the shipped template must parse as JSON and
+        // declare a workspace dep so the rewriter has something real
+        // to bite on. If a future template change drops the workspace
+        // dep this test should be updated, not deleted.
+        let dir = TEMPLATES
+            .get_dir("basic-blog")
+            .expect("basic-blog template missing from registry");
+        let pkg_file = dir
+            .get_file("basic-blog/package.json")
+            .expect("basic-blog/package.json missing from template");
+        let parsed: Value = serde_json::from_slice(pkg_file.contents()).unwrap();
+        let deps = parsed["dependencies"].as_object().unwrap();
+        let has_workspace_dep = deps
+            .values()
+            .filter_map(|v| v.as_str())
+            .any(|s| s.starts_with("workspace:"));
+        assert!(
+            has_workspace_dep,
+            "basic-blog template should declare at least one workspace:* dep"
+        );
     }
 }
