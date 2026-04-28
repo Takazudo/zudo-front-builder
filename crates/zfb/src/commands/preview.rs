@@ -54,6 +54,7 @@ use axum::Router;
 use zfb_build::AdapterChoice;
 
 use crate::cli::PreviewArgs;
+use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 
@@ -95,7 +96,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     //    unambiguous path. CLI wins over config unconditionally — see
     //    the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
-    let port = resolve_port(args.port, cfg.port);
+    let port = resolve_port(args.port, cfg.port, DEFAULT_PREVIEW_PORT);
 
     // Verify the output directory exists *before* binding the port so
     // missing-build errors don't leave a half-started server behind.
@@ -328,41 +329,18 @@ async fn not_found_response(dist_root: &Path) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Map a file extension to a `Content-Type` value. Mirrors the
-/// short-and-pragmatic mapping in `zfb-server::routes` plus the
-/// extra binary types preview is more likely to need (images, fonts,
-/// wasm). Unknown extensions fall back to `application/octet-stream`
-/// — preview is read-only, so the worst case is a download prompt
-/// rather than a wrong-render bug.
-fn content_type_for_path(path: &Path) -> &'static str {
+/// Map a file path to a `Content-Type` value by delegating to the canonical
+/// [`zfb_server::content_type_for_extension`] helper. That helper handles the
+/// same pragmatic extension set (HTML, CSS, JS, JSON, SVG, images, fonts,
+/// wasm, …) with `mime_guess` as a catch-all fallback; keeping preview on the
+/// same code path avoids the two tables drifting over time.
+fn content_type_for_path(path: &Path) -> String {
+    // Extract the extension without allocating when there is none.
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
-        "json" | "map" => "application/json",
-        "xml" => "application/xml",
-        "rss" => "application/rss+xml",
-        "atom" => "application/atom+xml",
-        "txt" => "text/plain; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "wasm" => "application/wasm",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        _ => "application/octet-stream",
-    }
+        .unwrap_or("");
+    zfb_server::content_type_for_extension(ext)
 }
 
 // ---------------------------------------------------------------------------
@@ -563,22 +541,6 @@ fn build_wrangler_command(
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve `path` against `root` if it is relative; absolute paths are
-/// returned unchanged. Pure path arithmetic — no I/O, so it works
-/// equally for paths that don't yet exist.
-fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-/// Resolution helper: CLI override > config value > built-in default.
-fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
-    cli.or(cfg).unwrap_or(DEFAULT_PREVIEW_PORT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,48 +550,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use tower::ServiceExt;
-
-    // ---- pure helpers --------------------------------------------------
-
-    #[test]
-    fn resolve_under_root_joins_relative_paths() {
-        let root = Path::new("/tmp/project");
-        assert_eq!(
-            resolve_under_root(root, Path::new("dist")),
-            PathBuf::from("/tmp/project/dist")
-        );
-        assert_eq!(
-            resolve_under_root(root, Path::new("build/out")),
-            PathBuf::from("/tmp/project/build/out")
-        );
-    }
-
-    #[test]
-    fn resolve_under_root_passes_absolute_paths_through() {
-        let root = Path::new("/tmp/project");
-        let abs = if cfg!(windows) {
-            PathBuf::from("C:/elsewhere/dist")
-        } else {
-            PathBuf::from("/elsewhere/dist")
-        };
-        assert_eq!(resolve_under_root(root, &abs), abs);
-    }
-
-    #[test]
-    fn resolve_port_prefers_cli_over_config() {
-        assert_eq!(resolve_port(Some(9000), Some(4000)), 9000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_config_when_cli_absent() {
-        assert_eq!(resolve_port(None, Some(4000)), 4000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
-        assert_eq!(resolve_port(None, None), DEFAULT_PREVIEW_PORT);
-        assert_eq!(DEFAULT_PREVIEW_PORT, 4321);
-    }
 
     // ---- path safety ---------------------------------------------------
 

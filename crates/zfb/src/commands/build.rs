@@ -38,7 +38,7 @@
 //! handling, `✓ N pages built in X.XXs` summary) is unchanged.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -53,6 +53,7 @@ use zfb_router::Router;
 use zfb_render::paths::PathsCache;
 
 use crate::cli::BuildArgs;
+use crate::commands::resolve::resolve_outdir;
 use crate::config::Config;
 use crate::output;
 use crate::render_pipeline::{
@@ -375,24 +376,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //
     // The content snapshot (when present) is embedded in the worker
     // bundle so runtime `paths()` calls can resolve `getCollection(...)`.
-    let bundler_input = BundlerInput {
-        project_root: project_root.to_path_buf(),
-        pages_dir: PathBuf::from("pages"),
-        content_dir: PathBuf::from("content"),
-        components_dir: PathBuf::from("components"),
-        layouts_dir: PathBuf::from("layouts"),
-        framework: cfg_framework_to_render(config.framework),
-        define_vars: Default::default(),
-        tsconfig_paths: Default::default(),
-        external: Vec::new(),
-        outdir: outdir.join(".zfb-build"),
-        mode: BundleMode::Production,
-        minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: None,
+    let bundler_input = BundlerInput::for_project(
+        project_root.to_path_buf(),
+        cfg_framework_to_render(config.framework),
+        BundleMode::Production,
+        outdir.join(".zfb-build"),
         content_snapshot_json,
-        node_modules_dir: None,
-    };
+    );
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
@@ -518,16 +508,6 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
         .collect();
     if let Err(err) = zfb_content::build_snapshot(&collections) {
         output::warn(format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"));
-    }
-}
-
-/// Resolve `outdir` against `project_root`. If `outdir` is absolute it is
-/// used as-is; if relative it is joined onto `project_root`.
-fn resolve_outdir(project_root: &Path, outdir: &Path) -> PathBuf {
-    if outdir.is_absolute() {
-        outdir.to_path_buf()
-    } else {
-        project_root.join(outdir)
     }
 }
 
@@ -1106,20 +1086,6 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("empty string"), "{msg}");
-    }
-
-    #[test]
-    fn resolve_outdir_keeps_absolute_paths() {
-        let root = Path::new("/proj");
-        let abs = PathBuf::from("/tmp/zfb-out");
-        assert_eq!(resolve_outdir(root, &abs), abs);
-    }
-
-    #[test]
-    fn resolve_outdir_joins_relative_paths_onto_root() {
-        let root = Path::new("/proj");
-        let rel = PathBuf::from("dist");
-        assert_eq!(resolve_outdir(root, &rel), PathBuf::from("/proj/dist"));
     }
 
     /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on

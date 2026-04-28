@@ -225,6 +225,48 @@ pub struct BundlerInput {
     pub node_modules_dir: Option<PathBuf>,
 }
 
+impl BundlerInput {
+    /// Construct a `BundlerInput` with the shared project-wide defaults,
+    /// overriding only the fields that differ per command.
+    ///
+    /// Shared defaults:
+    /// - Standard relative directory names (`pages`, `content`, `components`,
+    ///   `layouts`).
+    /// - Empty `define_vars`, `tsconfig_paths`, `external`.
+    /// - `minify: false`, `esbuild_binary: None`, `mock_subprocess_output:
+    ///   None`, `node_modules_dir: None`.
+    ///
+    /// Callers that need to override additional fields (e.g. test escape
+    /// hatches) should use struct-update syntax: `BundlerInput { field:
+    /// new_value, ..BundlerInput::for_project(...) }`.
+    pub fn for_project(
+        project_root: PathBuf,
+        framework: Framework,
+        mode: BundleMode,
+        outdir: PathBuf,
+        content_snapshot_json: Option<String>,
+    ) -> Self {
+        Self {
+            project_root,
+            pages_dir: PathBuf::from("pages"),
+            content_dir: PathBuf::from("content"),
+            components_dir: PathBuf::from("components"),
+            layouts_dir: PathBuf::from("layouts"),
+            framework,
+            define_vars: Default::default(),
+            tsconfig_paths: Default::default(),
+            external: Vec::new(),
+            outdir,
+            mode,
+            minify: false,
+            esbuild_binary: None,
+            mock_subprocess_output: None,
+            content_snapshot_json,
+            node_modules_dir: None,
+        }
+    }
+}
+
 /// Output of [`bundle`].
 #[derive(Debug, Clone)]
 pub struct BundlerOutput {

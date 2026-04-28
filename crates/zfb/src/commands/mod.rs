@@ -8,3 +8,4 @@ pub mod check;
 pub mod dev;
 pub mod new;
 pub mod preview;
+pub mod resolve;
