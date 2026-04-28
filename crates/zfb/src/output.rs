@@ -166,6 +166,18 @@ fn fmt_summary(count: u64, elapsed: Duration) -> String {
 /// first such token as a final `at` line. This mirrors the Epic 6 quality
 /// bar of "tell users where to look" without imposing a specific error type.
 pub fn format_error(err: &anyhow::Error) -> String {
+    // First chance: when the chain has a [`FramedError`] anywhere, emit
+    // the framed snippet block instead of the legacy chain-only shape.
+    // This is what surfaces fully-qualified diagnostics for the four
+    // error classes covered by `crate::diagnostics`.
+    if let Some(framed) = err
+        .chain()
+        .filter_map(|c| c.downcast_ref::<crate::diagnostics::FramedError>())
+        .next()
+    {
+        return crate::diagnostics::render_framed(&framed.0);
+    }
+
     let mut chain = err.chain();
     let head = match chain.next() {
         Some(e) => e,
@@ -344,6 +356,27 @@ mod tests {
                 "snippet {snippet:?} produced a location line:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn format_error_uses_framed_renderer_when_chain_carries_framed_error() {
+        owo_colors::set_override(false);
+        let diag = crate::diagnostics::Diagnostic::with_source(
+            "posts/intro.md",
+            2,
+            8,
+            "kaboom",
+            "line 1\nline 2 has the bug\nline 3\n",
+        );
+        let err: anyhow::Error =
+            anyhow::Error::new(crate::diagnostics::FramedError(diag))
+                .context("rendering page");
+
+        let rendered = format_error(&err);
+        // Framed renderer used → no `caused by:` chain shape.
+        assert!(rendered.starts_with("error: kaboom\n"), "got:\n{rendered}");
+        assert!(rendered.contains(" --> posts/intro.md:2:8\n"), "got:\n{rendered}");
+        assert!(!rendered.contains("caused by:"), "got:\n{rendered}");
     }
 
     #[test]
