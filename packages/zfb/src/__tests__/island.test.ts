@@ -9,6 +9,7 @@ import {
   resolveWhen,
 } from "../island.js";
 import { DEFAULT_WHEN, isWhen, WHEN_VALUES } from "../types.js";
+import type { VNodeObject } from "../jsx-types.js";
 
 /**
  * Build a minimal, JSX-runtime-agnostic VNode.
@@ -17,7 +18,10 @@ import { DEFAULT_WHEN, isWhen, WHEN_VALUES } from "../types.js";
  * mirror the shape both Preact and React produce so the test does not
  * depend on either framework being installed.
  */
-function vnode(type: unknown, props: Record<string, unknown> = {}) {
+function vnode(
+  type: string | ((...args: unknown[]) => unknown),
+  props: Record<string, unknown> = {},
+): VNodeObject {
   return { type, props, key: null };
 }
 
@@ -148,7 +152,7 @@ describe("captureComponentName", () => {
   });
 
   it("falls back to Anonymous for arrow functions with no name and no displayName", () => {
-    const anon = (() => null) as unknown;
+    const anon = (() => null) as (...args: unknown[]) => unknown;
     Object.defineProperty(anon, "name", { value: "" });
     expect(captureComponentName(vnode(anon))).toBe(ANONYMOUS_COMPONENT_NAME);
   });
