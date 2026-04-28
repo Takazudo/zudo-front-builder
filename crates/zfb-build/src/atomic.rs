@@ -402,4 +402,99 @@ mod tests {
         validate_output_path(&dist_root, Path::new("nested/deep/index.html"))
             .expect("missing parent should not error");
     }
+
+    /// Case A: dist_root is passed as the symlink path itself.
+    ///
+    /// The lexical guard at line 164 dual-checks `starts_with(dist_root)` AND
+    /// `starts_with(canon_root)`. When dist_root is a symlink, canon_root is
+    /// the resolved target. Paths under the symlink path lexically satisfy
+    /// `starts_with(dist_root)`, so they pass the guard; when the symlink
+    /// itself is canonicalized during walk-up it resolves to canon_root,
+    /// satisfying the final containment check. This test locks that behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_via_symlink_path() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        // Create a symlink: link_parent/dist-link -> real_root
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // Both output paths should be accepted when dist_root is the symlink path.
+        validate_output_path(&link_path, Path::new("blog/index.html"))
+            .expect("symlinked dist_root via symlink path: blog/index.html should be accepted");
+        validate_output_path(&link_path, Path::new("a/b/c/index.html"))
+            .expect("symlinked dist_root via symlink path: a/b/c/index.html should be accepted");
+    }
+
+    /// Case B: dist_root is passed as the canonical (resolved) path even though
+    /// a symlink alias for it exists. The function must accept writes identically
+    /// to Case A.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_via_canonical_path() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // dist_root is the canonical path — must behave the same as the symlink alias form.
+        validate_output_path(&real_root, Path::new("blog/index.html"))
+            .expect("symlinked dist_root via canonical path: blog/index.html should be accepted");
+        validate_output_path(&real_root, Path::new("a/b/c/index.html"))
+            .expect("symlinked dist_root via canonical path: a/b/c/index.html should be accepted");
+    }
+
+    /// Case C: dist_root is the symlink path, and NONE of the intermediate
+    /// directories in the output path exist on disk. The walk-up must reach
+    /// dist_root itself (the symlink), canonicalize it, and accept the write.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_with_missing_child_components() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // a/, a/b/, a/b/c/ do not exist inside real_root — the walk-up
+        // falls all the way back to the symlink itself and should accept.
+        validate_output_path(&link_path, Path::new("a/b/c/index.html"))
+            .expect("missing child components under symlinked dist_root should be accepted");
+    }
+
+    /// Partial-symlink case: an intermediate component of the output path is
+    /// itself a symlink, but it points BACK inside canon_root. The canonical
+    /// check must accept this (symlink resolves inside dist, not outside).
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_inner_symlink_pointing_inside_dist() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        // dist-link -> real_root
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // Create a real subdir inside dist and an internal symlink pointing at it.
+        let subdir = real_root.join("section");
+        fs::create_dir_all(&subdir).unwrap();
+        // dist/inner-link -> dist/section  (stays inside canon_root)
+        let inner_link = real_root.join("inner-link");
+        symlink(&subdir, &inner_link).unwrap();
+
+        // Writing through inner-link should be accepted: it resolves inside dist.
+        validate_output_path(&link_path, Path::new("inner-link/page.html"))
+            .expect("inner symlink pointing back inside dist should be accepted");
+    }
 }
