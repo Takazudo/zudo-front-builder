@@ -291,9 +291,16 @@ fn resolve_layout_spec(spec: &str, page_path: &Path, project_root: &Path) -> Pat
 
 /// Lexical containment check: is `candidate` equal to or below `root`?
 /// Both paths are normalized first so `..` segments cannot fool the check.
+///
+/// An empty `root` is rejected explicitly: `Path::starts_with(empty)` is
+/// always `true`, which would silently disable the traversal guard for
+/// any caller that happened to pass an empty project root.
 fn is_within(candidate: &Path, root: &Path) -> bool {
     let cand = normalize(candidate);
     let root = normalize(root);
+    if root.as_os_str().is_empty() {
+        return false;
+    }
     cand.starts_with(&root)
 }
 
@@ -743,5 +750,24 @@ mod tests {
             resolved.meta.extra.get("openGraph"),
             Some(&json!({ "image": "/og.png" })),
         );
+    }
+
+    // ---- is_within --------------------------------------------------------
+
+    #[test]
+    fn is_within_rejects_empty_project_root() {
+        // A bare `Path::starts_with(empty)` is always true; we must
+        // refuse to consider an empty `root` as containing anything,
+        // otherwise the traversal guard is silently disabled.
+        let cand = PathBuf::from("/etc/passwd");
+        let root = PathBuf::new();
+        assert!(!is_within(&cand, &root));
+    }
+
+    #[test]
+    fn is_within_basic_containment() {
+        let root = PathBuf::from("/project");
+        assert!(is_within(&PathBuf::from("/project/pages/index.tsx"), &root));
+        assert!(!is_within(&PathBuf::from("/other/file.tsx"), &root));
     }
 }
