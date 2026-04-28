@@ -262,6 +262,7 @@ fn render_summary(schema_count: usize, tsc_failed: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::JsonSchema;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Self-cleaning temp dir; mirrors the helper in zfb-content's
@@ -317,14 +318,17 @@ mod tests {
         let collection = CollectionDef {
             name: "blog".into(),
             path: PathBuf::from("content/blog"),
-            schema: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string" },
-                    "date": { "type": "string" }
-                },
-                "required": ["title", "date"]
-            })),
+            schema: Some(
+                JsonSchema::try_from_value(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "date": { "type": "string" }
+                    },
+                    "required": ["title", "date"]
+                }))
+                .unwrap(),
+            ),
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -346,14 +350,17 @@ mod tests {
         let collection = CollectionDef {
             name: "docs".into(),
             path: PathBuf::from("content/docs"),
-            schema: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string" },
-                    "sidebar_position": { "type": "number" }
-                },
-                "required": ["title"]
-            })),
+            schema: Some(
+                JsonSchema::try_from_value(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "sidebar_position": { "type": "number" }
+                    },
+                    "required": ["title"]
+                }))
+                .unwrap(),
+            ),
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -376,14 +383,17 @@ mod tests {
         let collection = CollectionDef {
             name: "blog".into(),
             path: PathBuf::from("content/blog"),
-            schema: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string" },
-                    "date": { "type": "string" }
-                },
-                "required": ["title", "date"]
-            })),
+            schema: Some(
+                JsonSchema::try_from_value(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "date": { "type": "string" }
+                    },
+                    "required": ["title", "date"]
+                }))
+                .unwrap(),
+            ),
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();

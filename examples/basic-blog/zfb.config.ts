@@ -2,12 +2,8 @@
 // a zfb project's configuration.
 //
 // The zfb config loader (crates/zfb/src/config.rs) accepts both
-// `zfb.config.ts` and `zfb.config.json`. JSON wins when both files are
-// present (back-compat for projects predating the TS loader), so this
-// file is parked under a `.future.ts` name in the example so the
-// sibling `zfb.config.json` stays the source of truth for `cargo run -p
-// zfb -- build` here. Rename to `zfb.config.ts` (and delete the JSON)
-// to flip this example onto the TS path.
+// `zfb.config.ts` and `zfb.config.json`. TS wins when both files are
+// present — the TypeScript form is the canonical path for new projects.
 //
 // TS configs are bundled by the staged esbuild binary
 // (crates/zfb/binaries/esbuild/esbuild, also overridable via
