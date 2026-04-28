@@ -421,8 +421,17 @@ async fn load_ts_via_subprocess(
         );
     }
 
-    let stdout = String::from_utf8(node_out.stdout)
-        .context("config loader: node stdout was not valid UTF-8")?;
+    let stdout = String::from_utf8(node_out.stdout).map_err(|e| {
+        // Echo the lossy form so the operator can see what node actually
+        // emitted — much more useful than a bare "not valid UTF-8".
+        let bytes = e.as_bytes();
+        anyhow!(
+            "config loader: node stdout for {} was not valid UTF-8 ({} bytes): {}",
+            ts_path.display(),
+            bytes.len(),
+            String::from_utf8_lossy(bytes)
+        )
+    })?;
     Ok(stdout)
 }
 
