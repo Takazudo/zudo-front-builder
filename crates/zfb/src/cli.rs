@@ -31,6 +31,9 @@ pub enum Command {
     Build(BuildArgs),
     /// Preview a previously built project.
     Preview(PreviewArgs),
+    /// Typecheck the project and validate content collections against
+    /// their schemas. Equivalent in spirit to Astro's `astro check`.
+    Check(CheckArgs),
 }
 
 /// Arguments for `zfb new`.
@@ -87,4 +90,26 @@ pub struct PreviewArgs {
     /// Directory to serve the previously built artifacts from.
     #[arg(long, default_value = "dist")]
     pub outdir: PathBuf,
+}
+
+/// Arguments for `zfb check`.
+///
+/// Two failure modes:
+///
+/// 1. TypeScript errors — `tsc --noEmit` is invoked as a subprocess on
+///    the project. Anything tsc would flag in normal CI flagsHERE.
+/// 2. Content collection schema violations — every entry's frontmatter
+///    is validated against the JSON Schema declared in
+///    `zfb.config.json`'s `collections[].schema` field (when present).
+///
+/// Either failure mode produces a non-zero exit. `--skip-tsc` is
+/// useful when the project hasn't installed TypeScript yet (or for
+/// schema-only CI lanes).
+#[derive(Debug, Args)]
+pub struct CheckArgs {
+    /// Skip the `tsc --noEmit` subprocess. Schema validation still runs.
+    /// Useful when the project has no TypeScript dependency installed
+    /// yet but still wants schema enforcement in CI.
+    #[arg(long)]
+    pub skip_tsc: bool,
 }

@@ -12,6 +12,7 @@ async fn main() {
         Command::Dev(args) => commands::dev::run(args).await,
         Command::Build(args) => commands::build::run(args).await,
         Command::Preview(args) => commands::preview::run(args).await,
+        Command::Check(args) => commands::check::run(args).await,
     };
     if let Err(e) = result {
         // Single, centralized error rendering so individual commands can
