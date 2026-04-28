@@ -24,6 +24,7 @@ pub mod paths;
 pub mod paths_extract;
 pub mod render;
 pub mod render_host;
+pub mod sourcemap;
 pub mod swc_pipeline;
 
 pub use error::{RenderError, Result};

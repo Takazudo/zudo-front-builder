@@ -10,5 +10,6 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod diagnostics;
 pub mod output;
 pub mod render_pipeline;
