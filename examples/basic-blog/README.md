@@ -16,8 +16,8 @@ examples/basic-blog/
 │   ├── blog/page/[page].tsx    dynamic — paginated index, pageSize 3
 │   └── tags/[tag].tsx          dynamic — one route per unique tag
 ├── styles/global.css    light/dark theme via CSS variables + [data-theme="dark"]
-├── zfb.config.future.ts canonical TS form (aspirational — see below)
-├── zfb.config.json      what the v0 CLI actually loads
+├── zfb.config.future.ts canonical TS form (recommended for new projects — see below)
+├── zfb.config.json      back-compat JSON form, takes precedence in this example
 ├── package.json
 ├── tsconfig.json
 └── .gitignore
@@ -86,15 +86,28 @@ Equivalently, from the workspace root, point the CLI at this directory:
 
 ## Why two `zfb.config.*` files
 
-`zfb.config.future.ts` is the canonical, type-checked shape that zfb will
-load once the TS config loader lands. Today the v0 CLI hard-errors if it
-sees a real `zfb.config.ts` (see `crates/zfb/src/config.rs`), so the file
-is parked under a `.future.ts` name to keep it out of the loader's
-resolution path while still being available for review and type-checking.
-`zfb.config.json` is what the v0 build actually reads. Both files describe
-the same project; keep them in sync until the TS form is wired up — at
-which point you can rename `zfb.config.future.ts` to `zfb.config.ts` and
-delete the JSON sibling.
+`zfb.config.future.ts` is the canonical, type-checked shape — the
+**recommended** way to author a zfb config for new projects. It uses the
+`defineConfig` helper from `zfb/config` so editors surface field-level
+types and typos surface at compile time.
+
+`zfb.config.json` is the back-compat form, kept around so projects that
+predate the TS loader keep working unchanged. The loader picks JSON over
+TS when both files are present, which is why this example still parks
+the TS form under a `.future.ts` name — the JSON sibling stays the
+source of truth for `cargo run -p zfb -- build` against this directory.
+Rename `zfb.config.future.ts` to `zfb.config.ts` and delete the JSON to
+flip this example onto the TS path.
+
+The TS loader bundles `zfb.config.ts` with the staged esbuild binary
+(`crates/zfb/binaries/esbuild/esbuild`, overridable via
+`ZFB_ESBUILD_BIN`), then evaluates it with `node` to pull the default
+export back as JSON. **zfb requires `node` in `PATH`** — true since v0
+because the production renderer spawns miniflare, and the TS loader
+piggybacks on the same toolchain. The user's `import { defineConfig }
+from "zfb/config"` is satisfied by an internal stub at parse time, so
+the project does not need the `zfb` npm package installed locally just
+to be parsed.
 
 ## Stretch goals (not in v0)
 

@@ -1,12 +1,22 @@
-// Forward-looking sketch of the eventual `zfb.config.ts` form.
+// Canonical TS form of the zfb config — the recommended way to author
+// a zfb project's configuration.
 //
-// The current zfb config loader (crates/zfb/src/config.rs) only accepts
-// `zfb.config.json`; TS loading is gated on ADR-001 / the JS runtime
-// decision. Until that ships, `zfb.config.json` is the source of truth
-// and this file is **intentionally not validated** against the JSON
-// sibling (e.g. it may omit `outDir` / `publicDir` and pick up the
-// loader defaults). It exists today purely to type-check the eventual
-// shape via `defineConfig`.
+// The zfb config loader (crates/zfb/src/config.rs) accepts both
+// `zfb.config.ts` and `zfb.config.json`. JSON wins when both files are
+// present (back-compat for projects predating the TS loader), so this
+// file is parked under a `.future.ts` name in the example so the
+// sibling `zfb.config.json` stays the source of truth for `cargo run -p
+// zfb -- build` here. Rename to `zfb.config.ts` (and delete the JSON)
+// to flip this example onto the TS path.
+//
+// TS configs are bundled by the staged esbuild binary
+// (crates/zfb/binaries/esbuild/esbuild, also overridable via
+// `ZFB_ESBUILD_BIN`) and then evaluated by `node` to pull the default
+// export back as JSON — `node` must therefore be in `PATH` (already a
+// hard requirement of zfb because the production renderer spawns
+// miniflare). The user's `import { defineConfig } from "zfb/config"`
+// is satisfied by an internal stub so the project does NOT need the
+// `zfb` npm package installed locally just to be parsed.
 
 import { defineConfig } from "zfb/config";
 

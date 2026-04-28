@@ -42,8 +42,10 @@ surface. Today it covers:
   ```
 - `paginate(items, opts)`, plus `PaginatedPage<T>` / `PaginateRoute<T>` —
   exported from `zfb/paginate`.
-- `defineConfig(config)` — exported from `zfb/config` for the eventual
-  `zfb.config.ts` form.
+- `defineConfig(config)` — exported from `zfb/config` for the
+  `zfb.config.ts` form (the recommended way to author a zfb project's
+  configuration; the back-compat `zfb.config.json` form is still
+  supported).
 
 The package is JSX-runtime-agnostic: the `Island` component does not
 import preact or react, so it works under either framework adapter
