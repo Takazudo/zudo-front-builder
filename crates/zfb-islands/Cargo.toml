@@ -51,6 +51,7 @@ hex = "0.4"
 
 # Structured logging for diagnostics (e.g. mutex-poisoning recovery).
 tracing = "0.1"
+lol_html = "2.8.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
