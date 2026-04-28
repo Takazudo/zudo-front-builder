@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
-import { scheduleHydrate } from "../runtime.js";
+import { __setIslandImporterForTests, mountIslands, scheduleHydrate } from "../runtime.js";
 
 type IntersectionCallback = (
   entries: Array<{ isIntersecting: boolean; target: Element }>,
@@ -178,6 +178,145 @@ describe("scheduleHydrate", () => {
       const fire = vi.fn();
       scheduleHydrate(target, "visible", fire);
       expect(fire).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("mountIslands", () => {
+    type FakeMount = (
+      props: Record<string, unknown>,
+      element: Element,
+      mode: "hydrate" | "render",
+    ) => void;
+    type FakeModule = { mount?: FakeMount; default?: FakeMount };
+    let restoreImporter: (url: string) => Promise<FakeModule>;
+
+    beforeEach(() => {
+      // Default: a fresh load=immediate scheduler with no IO observers.
+      // Individual tests stub the importer below.
+    });
+
+    afterEach(() => {
+      if (typeof restoreImporter === "function") {
+        __setIslandImporterForTests(restoreImporter);
+      }
+    });
+
+    it("hydrates SSR islands with parsed data-props and the right mode", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{"start":3}' data-when="load">
+          <button>3</button>
+        </div>
+      `;
+
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async (_url) => ({
+        mount,
+      }));
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      // Allow microtasks queued by the dynamic import promise.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+      const args = mount.mock.calls[0]!;
+      expect(args[0]).toEqual({ start: 3 });
+      // Element is the data-zfb-island wrapper.
+      expect((args[1] as Element).getAttribute("data-zfb-island")).toBe("Counter");
+      // SSR'd islands hydrate.
+      expect(args[2]).toBe("hydrate");
+    });
+
+    it("renders SSR-skip islands (mode=render) immediately, ignoring data-when", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island-skip-ssr="Modal" data-props='{"open":true}' data-when="visible"></div>
+      `;
+
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
+      mountIslands({ Modal: "/islands/Modal-def.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+      // SSR-skip mounts via render, not hydrate, so React/Preact won't
+      // emit hydration-mismatch warnings against an empty container.
+      expect(mount.mock.calls[0]![2]).toBe("render");
+    });
+
+    it("does not mount the same element twice across repeat calls", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to {} props when data-props is missing or invalid", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-when="load"></div>
+        <div data-zfb-island-skip-ssr="Modal" data-props="not json"></div>
+      `;
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
+      mountIslands({
+        Counter: "/islands/Counter-abc.js",
+        Modal: "/islands/Modal-def.js",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(2);
+      expect(mount.mock.calls[0]![0]).toEqual({});
+      expect(mount.mock.calls[1]![0]).toEqual({});
+    });
+
+    it("warns and skips elements whose component is missing from the manifest", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Mystery" data-props='{}' data-when="load"></div>
+      `;
+      const original = process.env["NODE_ENV"];
+      process.env["NODE_ENV"] = "development";
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      try {
+        mountIslands({ Counter: "/islands/Counter-abc.js" });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(mount).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        warnSpy.mockRestore();
+        if (original === undefined) {
+          delete process.env["NODE_ENV"];
+        } else {
+          process.env["NODE_ENV"] = original;
+        }
+      }
+    });
+
+    it("uses the bundle's default export when mount is not present", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const def = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ default: def }));
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(def).toHaveBeenCalledTimes(1);
     });
   });
 

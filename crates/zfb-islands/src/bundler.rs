@@ -164,6 +164,88 @@ pub trait ClientBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput>;
 }
 
+/// One per-island bundle output, produced by
+/// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
+///
+/// Per-island bundles land at `{outdir}/islands/{component}-{hash}.js` so
+/// the runtime can dynamic-import each island's JS independently. Sharing
+/// is the bundler's concern — at this layer we just record one entry per
+/// island.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandBundle {
+    /// Component export name. Mirrors [`Island::component_name`] of the
+    /// input island so callers can pair entries by name.
+    pub component_name: String,
+    /// Output file path on disk, e.g.
+    /// `dist/islands/Counter-abc12345.js`.
+    pub asset_path: PathBuf,
+    /// Public URL the runtime should `import()` from, e.g.
+    /// `/islands/Counter-abc12345.js`.
+    pub asset_url: String,
+    /// 8-char content hash (lowercase hex) the URL was suffixed with.
+    /// Useful for tests asserting deterministic naming and for callers
+    /// that need to expose the hash separately (e.g. integrity tags).
+    pub hash: String,
+}
+
+/// Result of a successful per-island bundle pass.
+///
+/// In addition to the per-island bundles, the per-island pipeline emits
+/// a small **runtime** bundle — the framework-agnostic shim that walks
+/// `[data-zfb-island]` / `[data-zfb-island-skip-ssr]` elements in the
+/// DOM, dynamic-imports the matching per-island bundle, and dispatches
+/// to `hydrate` / `render`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerIslandBundleOutput {
+    /// One entry per island, in the same order the input slice provided.
+    pub islands: Vec<IslandBundle>,
+    /// Runtime bundle file path, e.g.
+    /// `dist/islands/islands-runtime-abc12345.js`.
+    pub runtime_asset_path: PathBuf,
+    /// Runtime bundle public URL — the `<script type="module" src="…">`
+    /// the page-router HTML pass injects into `<head>`.
+    pub runtime_asset_url: String,
+}
+
+/// Which JS framework the islands pipeline should target.
+///
+/// This is intentionally a small enum local to `zfb-islands` so the
+/// crate stays free of a `zfb-render` dependency (mirroring the
+/// `Adapter` contract from there). The orchestrator wires the two
+/// together at the seam where it constructs the bundler.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameworkKind {
+    /// Preact — bare `preact` + `preact/jsx-runtime`.
+    #[default]
+    Preact,
+    /// React 18+ — `react` + `react-dom/client`.
+    React,
+}
+
+impl FrameworkKind {
+    /// Stable lowercase name. Mirrors `zfb_render::Adapter::name()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameworkKind::Preact => "preact",
+            FrameworkKind::React => "react",
+        }
+    }
+}
+
+/// Build the public URL for a per-island JS asset.
+///
+/// Mirrors [`bundle_link_href`] but lives under `/islands/` instead of
+/// `/assets/` so per-island and shared bundles can share an outdir
+/// without colliding.
+pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
+    let filename = asset_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let trimmed = base_url.trim_end_matches('/');
+    format!("{trimmed}/islands/{filename}")
+}
+
 /// Build the public URL for the islands JS asset.
 ///
 /// Mirrors `zfb_css::link_href` exactly — we don't depend on `zfb-css`,

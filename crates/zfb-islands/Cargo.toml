@@ -5,6 +5,26 @@ edition = "2021"
 license = "MIT"
 description = "zfb islands runtime: \"use client\" AST scanner, esbuild subprocess bundler, hydration HTML emit"
 
+# ---------------------------------------------------------------------------
+# Pinned esbuild CLI version this crate is compiled against.
+#
+# Release engineering populates `crates/zfb/binaries/esbuild/esbuild` with
+# the exact binary matching the version constant `EXPECTED_ESBUILD_VERSION`
+# in `src/esbuild.rs`. At subprocess startup we run `esbuild --version` and
+# refuse to launch if the reported version does not match. A SHA-256 of the
+# binary (`EXPECTED_ESBUILD_SHA256`, possibly empty during development) is
+# also verified when populated.
+#
+# To bump:
+#   1. Edit EXPECTED_ESBUILD_VERSION in src/esbuild.rs.
+#   2. Edit EXPECTED_ESBUILD_SHA256 in src/esbuild.rs (or set it to "" to
+#      keep the slot open until release engineering fills the new hash in).
+#   3. Drop the new binary under crates/zfb/binaries/esbuild/esbuild in the
+#      release tarball.
+#
+#   pinned esbuild = 0.24.0
+# ---------------------------------------------------------------------------
+
 [lib]
 
 [dependencies]

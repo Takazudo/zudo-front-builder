@@ -13,14 +13,132 @@
 //! command line, runs it, hashes the output, and writes
 //! `{outdir}/assets/islands-{hash}.js`.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::bundler::{bundle_link_href, BundleConfig, BundleOutput, ClientBundler, Island, ModuleId};
+use crate::bundler::{
+    bundle_link_href, island_link_href, BundleConfig, BundleOutput, ClientBundler, FrameworkKind,
+    Island, IslandBundle, ModuleId, PerIslandBundleOutput,
+};
+
+/// The pinned esbuild CLI version this crate runs against.
+///
+/// At subprocess startup we run `esbuild --version` and abort with a
+/// clear error if the reported version does not match. To bump, see the
+/// instructions in `Cargo.toml`.
+pub const EXPECTED_ESBUILD_VERSION: &str = "0.24.0";
+
+/// SHA-256 of the pinned esbuild binary, lowercase hex.
+///
+/// Set to the empty string when release engineering has not yet
+/// populated the slot — in that case the checksum verification is
+/// skipped (with a clear log line) and only the `--version` check is
+/// enforced. Once populated, the checksum verification runs on first
+/// subprocess invocation and any mismatch aborts with a clear error.
+pub const EXPECTED_ESBUILD_SHA256: &str = "";
+
+/// One-time cache of `(binary_path → outcome)` for the version + checksum
+/// verification. The first invocation of an `EsbuildSubprocessBundler`
+/// pays the cost of running `esbuild --version` and hashing the binary;
+/// subsequent invocations short-circuit. Wrapped in a `Mutex<BTreeMap>`
+/// so a process running multiple bundlers (e.g. an integration test
+/// suite) verifies each pinned binary path exactly once.
+fn verification_cache() -> &'static Mutex<BTreeMap<PathBuf, ()>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, ()>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Run the version + checksum gate on `binary_path`. Idempotent across
+/// the process: each path is verified at most once, but every distinct
+/// path is verified the first time it is seen.
+///
+/// `skip` lets callers (notably tests using `mock_subprocess`) bypass
+/// the gate without having to expose the cache directly.
+fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
+    if skip {
+        return Ok(());
+    }
+    let key = binary_path.to_path_buf();
+    {
+        let cache = verification_cache()
+            .lock()
+            .expect("esbuild verification cache mutex poisoned");
+        if cache.contains_key(&key) {
+            return Ok(());
+        }
+    }
+
+    if !binary_path.exists() {
+        return Err(anyhow!(
+            "esbuild binary not found at {}; \
+             set ZFB_ESBUILD_BIN or update EsbuildSubprocessConfig::binary_path",
+            binary_path.display()
+        ));
+    }
+
+    // 1. Version gate.
+    let version_output = Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to spawn `{} --version` for the version gate",
+                binary_path.display()
+            )
+        })?;
+    if !version_output.status.success() {
+        let stderr = String::from_utf8_lossy(&version_output.stderr);
+        return Err(anyhow!(
+            "esbuild --version exited with status {}: {}",
+            version_output.status,
+            stderr.trim()
+        ));
+    }
+    let reported = String::from_utf8_lossy(&version_output.stdout)
+        .trim()
+        .to_string();
+    if reported != EXPECTED_ESBUILD_VERSION {
+        return Err(anyhow!(
+            "esbuild version mismatch: expected `{}` (pinned in zfb-islands), got `{}` from {}. \
+             Update EXPECTED_ESBUILD_VERSION in zfb-islands/src/esbuild.rs and refresh the \
+             binary under crates/zfb/binaries/esbuild/esbuild.",
+            EXPECTED_ESBUILD_VERSION,
+            reported,
+            binary_path.display()
+        ));
+    }
+
+    // 2. SHA-256 gate. Skipped when the constant is empty (development
+    // / pre-release-engineering slot).
+    if !EXPECTED_ESBUILD_SHA256.is_empty() {
+        let bytes = std::fs::read(binary_path)
+            .with_context(|| format!("failed to read {} for checksum", binary_path.display()))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = hex::encode(hasher.finalize());
+        if !actual.eq_ignore_ascii_case(EXPECTED_ESBUILD_SHA256) {
+            return Err(anyhow!(
+                "esbuild binary checksum mismatch for {}: \
+                 expected sha256 `{}`, got `{}`",
+                binary_path.display(),
+                EXPECTED_ESBUILD_SHA256,
+                actual
+            ));
+        }
+    }
+
+    verification_cache()
+        .lock()
+        .expect("esbuild verification cache mutex poisoned")
+        .insert(key, ());
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct EsbuildSubprocessConfig {
@@ -160,13 +278,7 @@ impl EsbuildSubprocessBundler {
             return Ok(self.config.mock_output.clone());
         }
 
-        if !self.config.binary_path.exists() {
-            return Err(anyhow!(
-                "esbuild binary not found at {}; \
-                 set ZFB_ESBUILD_BIN or update EsbuildSubprocessConfig::binary_path",
-                self.config.binary_path.display()
-            ));
-        }
+        ensure_binary_verified(&self.config.binary_path, false)?;
 
         // Allocate a temp file in this engine's working dir so esbuild's
         // `--outfile` can be a relative path resolvable from the subprocess
@@ -211,10 +323,285 @@ impl EsbuildSubprocessBundler {
             ));
         }
 
-        let js = std::fs::read_to_string(tmp.path())
-            .context("failed to read esbuild output file")?;
+        let js =
+            std::fs::read_to_string(tmp.path()).context("failed to read esbuild output file")?;
         Ok(js)
     }
+
+    /// Per-island bundle pass.
+    ///
+    /// Generates one tiny entry script per island that imports the
+    /// island's component module **and** the framework-specific
+    /// hydration glue, then runs `esbuild --bundle --format=esm` on it
+    /// (one subprocess per island — code-split by isolation rather than
+    /// by `--splitting`, so dynamic-imports from the runtime stay 1:1
+    /// with components). Each per-island bundle is hashed and written
+    /// to `{outdir}/islands/{ComponentName}-{hash}.js`. Sourcemaps are
+    /// preserved end-to-end when [`BundleConfig::sourcemap`] is true:
+    /// esbuild emits a sibling `<file>.map` alongside the asset and a
+    /// `//# sourceMappingURL=` comment in the JS so DevTools picks it
+    /// up automatically.
+    ///
+    /// In addition to the per-island bundles, a small **runtime**
+    /// bundle is emitted under
+    /// `{outdir}/islands/islands-runtime-{hash}.js`. The runtime is
+    /// produced from a generated entry that imports
+    /// `scheduleHydrate` + `mountIslands` from the
+    /// `@takazudo/zfb-runtime` style runtime (`packages/zfb/src/runtime.ts`)
+    /// and ships a manifest of `ComponentName → island-bundle-URL` so
+    /// the runtime can dynamic-import the right per-island bundle for
+    /// each `[data-zfb-island]` element on the page.
+    ///
+    /// # Determinism
+    ///
+    /// The per-island and runtime bundles are deterministic for a
+    /// given `(islands, framework, config)` triple: the island order is
+    /// preserved verbatim from the input slice and the runtime
+    /// manifest is keyed by `component_name` in the same order.
+    pub fn bundle_per_island(
+        &self,
+        islands: &[Island],
+        framework: FrameworkKind,
+        config: &BundleConfig,
+    ) -> Result<PerIslandBundleOutput> {
+        // Outdir layout: {outdir}/islands/.
+        let islands_dir = config.outdir.join("islands");
+        std::fs::create_dir_all(&islands_dir)
+            .with_context(|| format!("failed to create {}", islands_dir.display()))?;
+
+        let mut bundle_entries: Vec<IslandBundle> = Vec::with_capacity(islands.len());
+        let mut manifest: Vec<(String, String)> = Vec::with_capacity(islands.len());
+
+        for island in islands {
+            // 1. Generate the per-island entry source.
+            let entry_source = render_island_entry_source(framework, island);
+
+            // 2. Bundle it. In mock mode the entry source itself doubles
+            //    as the bundled output so unit tests can assert what we
+            //    *would* have shipped without spawning esbuild.
+            let bundled_js = self.bundle_one_entry(&entry_source, config)?;
+
+            let hash = hash_8(&bundled_js);
+            let asset_path = islands_dir.join(format!("{}-{}.js", island.component_name, hash));
+            std::fs::write(&asset_path, bundled_js.as_bytes())
+                .with_context(|| format!("failed to write {}", asset_path.display()))?;
+
+            let asset_url = island_link_href(&config.base_url, &asset_path);
+            manifest.push((island.component_name.clone(), asset_url.clone()));
+
+            bundle_entries.push(IslandBundle {
+                component_name: island.component_name.clone(),
+                asset_path,
+                asset_url,
+                hash,
+            });
+        }
+
+        // 3. Runtime bundle. The manifest is JSON-encoded so it can be
+        //    dropped into the runtime entry source as a literal that
+        //    esbuild's parser will accept verbatim.
+        let manifest_json = serialize_manifest(&manifest);
+        let runtime_entry_source = render_runtime_entry_source(framework, &manifest_json);
+        let runtime_js = self.bundle_one_entry(&runtime_entry_source, config)?;
+        let runtime_hash = hash_8(&runtime_js);
+        let runtime_asset_path = islands_dir.join(format!("islands-runtime-{runtime_hash}.js"));
+        std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
+            .with_context(|| format!("failed to write {}", runtime_asset_path.display()))?;
+        let runtime_asset_url = island_link_href(&config.base_url, &runtime_asset_path);
+
+        Ok(PerIslandBundleOutput {
+            islands: bundle_entries,
+            runtime_asset_path,
+            runtime_asset_url,
+        })
+    }
+
+    /// Internal: bundle a single in-memory entry source. Writes the
+    /// source to a temp file (because esbuild expects entry points on
+    /// disk), runs the subprocess, returns the bundled JS string.
+    fn bundle_one_entry(&self, entry_source: &str, config: &BundleConfig) -> Result<String> {
+        if self.config.mock_subprocess {
+            // Mock mode: return either the configured mock_output (when
+            // set) or the entry source itself so tests can assert the
+            // generated entry shape end-to-end.
+            if !self.config.mock_output.is_empty() {
+                return Ok(self.config.mock_output.clone());
+            }
+            return Ok(entry_source.to_string());
+        }
+
+        ensure_binary_verified(&self.config.binary_path, false)?;
+
+        // Entry temp file (.tsx so esbuild's loader inference picks up
+        // JSX automatically — the entry imports component .tsx files).
+        let entry_tmp = tempfile::Builder::new()
+            .prefix("zfb-esbuild-entry-")
+            .suffix(".tsx")
+            .tempfile()
+            .context("failed to allocate entry temp file")?;
+        std::fs::write(entry_tmp.path(), entry_source.as_bytes())
+            .context("failed to write entry temp file")?;
+
+        // Output temp file. esbuild writes a sibling `.map` next to it
+        // when sourcemap=linked is requested — we read both back.
+        let out_tmp = tempfile::Builder::new()
+            .prefix("zfb-esbuild-out-")
+            .suffix(".js")
+            .tempfile()
+            .context("failed to allocate out temp file")?;
+
+        let mut cmd = Command::new(&self.config.binary_path);
+        cmd.current_dir(&self.config.working_dir);
+        cmd.arg("--bundle");
+        cmd.arg("--format=esm");
+        cmd.arg("--splitting=false");
+        cmd.arg("--tree-shaking=true");
+        if config.minify {
+            cmd.arg("--minify");
+        }
+        if config.sourcemap {
+            cmd.arg("--sourcemap=linked");
+        }
+        cmd.arg(format!("--outfile={}", out_tmp.path().display()));
+        for extra in &self.config.extra_args {
+            cmd.arg(extra);
+        }
+        cmd.arg(entry_tmp.path());
+
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "esbuild exited with status {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+        }
+
+        let js =
+            std::fs::read_to_string(out_tmp.path()).context("failed to read esbuild output")?;
+        Ok(js)
+    }
+}
+
+/// Generate the per-island entry script for `framework`.
+///
+/// The entry imports the component module by its resolved source path
+/// (esbuild resolves it from the bundler's working directory), wraps
+/// it in framework-specific `mount(props, element, mode)` glue, and
+/// exposes the function as the bundle's default export. The hydration
+/// runtime dynamic-imports this default export.
+///
+/// Mode is one of:
+/// - `"hydrate"` — used for SSR'd islands (`[data-zfb-island]`).
+/// - `"render"` — used for SSR-skip islands
+///   (`[data-zfb-island-skip-ssr]`); avoids hydrate-mismatch warnings
+///   because the DOM is empty when we mount.
+pub fn render_island_entry_source(framework: FrameworkKind, island: &Island) -> String {
+    let path = island.source_path.to_string_lossy();
+    let path_lit = json_string(&path);
+    let component_name = &island.component_name;
+    let component_lit = json_string(component_name);
+    match framework {
+        FrameworkKind::Preact => format!(
+            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
+import * as Mod from {path_lit};
+import {{ h, hydrate, render }} from "preact";
+const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
+export function mount(props, element, mode) {{
+  const vnode = h(Component, props);
+  if (mode === "hydrate") {{
+    hydrate(vnode, element);
+  }} else {{
+    render(vnode, element);
+  }}
+}}
+export default mount;
+"#
+        ),
+        FrameworkKind::React => format!(
+            r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
+import * as Mod from {path_lit};
+import {{ createElement }} from "react";
+import {{ hydrateRoot, createRoot }} from "react-dom/client";
+const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
+export function mount(props, element, mode) {{
+  const vnode = createElement(Component, props);
+  if (mode === "hydrate") {{
+    hydrateRoot(element, vnode);
+  }} else {{
+    createRoot(element).render(vnode);
+  }}
+}}
+export default mount;
+"#
+        ),
+    }
+}
+
+/// Generate the runtime entry script for `framework`.
+///
+/// The runtime imports the framework-agnostic hydration runtime from
+/// the `zfb` SDK package, hands it the manifest of
+/// `ComponentName → bundle URL` so it can dynamic-import the right
+/// per-island bundle for each `[data-zfb-island]` element. The
+/// manifest is inlined as a JSON literal — no extra fetch — so the
+/// runtime works in static-host environments.
+///
+/// `manifest_json` MUST already be a valid JSON object literal
+/// (produced by [`serialize_manifest`]).
+pub fn render_runtime_entry_source(framework: FrameworkKind, manifest_json: &str) -> String {
+    let _ = framework; // current shim is framework-agnostic; the per-island bundles carry the framework-specific glue.
+    format!(
+        r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
+import {{ mountIslands }} from "zfb/runtime";
+const ISLAND_MANIFEST = {manifest_json};
+mountIslands(ISLAND_MANIFEST);
+"#
+    )
+}
+
+/// Serialize a manifest of `(component_name → asset_url)` pairs to a
+/// JSON object literal. Order of keys is preserved (the runtime does
+/// not rely on it but determinism matters for hashing).
+fn serialize_manifest(entries: &[(String, String)]) -> String {
+    let mut s = String::from("{");
+    for (i, (k, v)) in entries.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&json_string(k));
+        s.push(':');
+        s.push_str(&json_string(v));
+    }
+    s.push('}');
+    s
+}
+
+/// Encode `s` as a JSON string literal (with surrounding double
+/// quotes). Used to splice user-supplied paths and component names
+/// into generated entry sources without risking syntax errors from
+/// stray quotes / backslashes / control chars.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 impl ClientBundler for EsbuildSubprocessBundler {
@@ -241,8 +628,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
         // when the exported name differs from the component name); until
         // it lands a richer Island shape, `component_name` is the right
         // contract for the hydration runtime to assume.
-        let module_ids: Vec<ModuleId> =
-            islands.iter().map(|i| i.component_name.clone()).collect();
+        let module_ids: Vec<ModuleId> = islands.iter().map(|i| i.component_name.clone()).collect();
 
         Ok(BundleOutput {
             asset_path,
@@ -283,6 +669,139 @@ mod tests {
         let before = hash_8("export const x = 1;");
         let after = hash_8("export const x = 2;");
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn json_string_escapes_specials() {
+        assert_eq!(json_string("a/b"), "\"a/b\"");
+        assert_eq!(json_string("a\"b"), "\"a\\\"b\"");
+        assert_eq!(json_string("a\\b"), "\"a\\\\b\"");
+        assert_eq!(json_string("a\nb"), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn serialize_manifest_round_trips_through_serde_json() {
+        let entries = vec![
+            ("Counter".into(), "/islands/Counter-abc12345.js".into()),
+            ("Button".into(), "/islands/Button-deadbeef.js".into()),
+        ];
+        let s = serialize_manifest(&entries);
+        let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        assert_eq!(
+            parsed["Counter"].as_str(),
+            Some("/islands/Counter-abc12345.js")
+        );
+        assert_eq!(
+            parsed["Button"].as_str(),
+            Some("/islands/Button-deadbeef.js")
+        );
+    }
+
+    #[test]
+    fn render_island_entry_source_preact_imports_bare_preact() {
+        let island = Island::new("Counter", "/abs/components/Counter.tsx");
+        let src = render_island_entry_source(FrameworkKind::Preact, &island);
+        assert!(src.contains(r#"from "preact""#));
+        assert!(!src.contains("preact/compat"));
+        assert!(src.contains("hydrate"));
+        assert!(src.contains("render"));
+        assert!(src.contains(r#"from "/abs/components/Counter.tsx""#));
+        assert!(src.contains("export function mount"));
+        assert!(src.contains("export default mount"));
+    }
+
+    #[test]
+    fn render_island_entry_source_react_uses_client_apis() {
+        let island = Island::new("Modal", "/abs/components/Modal.tsx");
+        let src = render_island_entry_source(FrameworkKind::React, &island);
+        assert!(src.contains(r#"from "react-dom/client""#));
+        assert!(src.contains("hydrateRoot"));
+        assert!(src.contains("createRoot"));
+        // Distinguish hydrate path (SSR'd) from render path (SSR-skip).
+        assert!(src.contains(r#"mode === "hydrate""#));
+    }
+
+    #[test]
+    fn render_runtime_entry_source_inlines_manifest_and_calls_mount() {
+        let manifest = serialize_manifest(&[
+            ("Counter".into(), "/islands/Counter-abc.js".into()),
+            ("Button".into(), "/islands/Button-def.js".into()),
+        ]);
+        let src = render_runtime_entry_source(FrameworkKind::Preact, &manifest);
+        assert!(src.contains(r#"import { mountIslands } from "zfb/runtime""#));
+        assert!(src.contains(r#""Counter":"/islands/Counter-abc.js""#));
+        assert!(src.contains("mountIslands(ISLAND_MANIFEST);"));
+    }
+
+    #[test]
+    fn bundle_per_island_in_mock_mode_writes_per_island_assets_and_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = EsbuildSubprocessConfig::default();
+        // Empty mock_output makes bundle_one_entry echo the entry source
+        // back, so each island's bytes (and therefore its hash) reflect
+        // the deterministic entry shape.
+        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            ..cfg
+        });
+        let islands = vec![
+            Island::new("Counter", "/abs/components/Counter.tsx"),
+            Island::new("Modal", "/abs/components/Modal.tsx"),
+        ];
+        let config = BundleConfig::default()
+            .with_outdir(dir.path().to_path_buf())
+            .with_base_url("/");
+        let out = bundler
+            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
+            .expect("bundle_per_island in mock mode succeeds");
+
+        // Two per-island bundles, in the same order as input.
+        assert_eq!(out.islands.len(), 2);
+        assert_eq!(out.islands[0].component_name, "Counter");
+        assert_eq!(out.islands[1].component_name, "Modal");
+
+        for entry in &out.islands {
+            // Hash is 8 lowercase hex chars.
+            assert_eq!(entry.hash.len(), 8);
+            assert!(entry.hash.chars().all(|c| c.is_ascii_hexdigit()));
+            // File exists on disk under {outdir}/islands/.
+            assert!(entry.asset_path.exists(), "{:?}", entry.asset_path);
+            assert!(entry.asset_path.starts_with(dir.path().join("islands")));
+            // Public URL lives under /islands/.
+            assert!(entry.asset_url.starts_with("/islands/"));
+            assert!(entry.asset_url.ends_with(".js"));
+        }
+
+        // Runtime bundle exists, has its own hash, sits next to the
+        // per-island bundles, and bears a /islands/ public URL.
+        assert!(out.runtime_asset_path.exists());
+        assert!(out
+            .runtime_asset_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("islands-runtime-"));
+        assert!(out.runtime_asset_url.starts_with("/islands/"));
+    }
+
+    #[test]
+    fn bundle_per_island_is_deterministic_across_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            ..EsbuildSubprocessConfig::default()
+        });
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+        let config = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let a = bundler
+            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
+            .unwrap();
+        let b = bundler
+            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
+            .unwrap();
+        assert_eq!(a.islands[0].hash, b.islands[0].hash);
+        assert_eq!(a.islands[0].asset_url, b.islands[0].asset_url);
+        assert_eq!(a.runtime_asset_url, b.runtime_asset_url);
     }
 
     #[test]

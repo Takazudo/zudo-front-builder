@@ -146,3 +146,185 @@ function scheduleVisible(target: Element, fire: () => void): () => void {
     observer.disconnect();
   };
 }
+
+// ---------------------------------------------------------------------------
+// mountIslands — DOM walk + dynamic-import dispatcher.
+//
+// `mountIslands` is the entry point the generated `islands-runtime-<hash>.js`
+// bundle calls at script load time. It walks the DOM for the two island
+// markers emitted by the server-side hydration step and the `<Island>`
+// JSX wrapper:
+//
+//   1. `[data-zfb-island]` — SSR'd islands. We `hydrate()` (Preact) /
+//      `hydrateRoot()` (React) against the existing server-rendered
+//      DOM, gated by `scheduleHydrate(when)`.
+//
+//   2. `[data-zfb-island-skip-ssr]` — SSR-skip islands. The server
+//      emitted no markup for these, so we `render()` (Preact) /
+//      `createRoot().render()` (React). Skipping hydrate for this case
+//      avoids the hydrate-mismatch warnings React/Preact would emit
+//      against an empty DOM container.
+//
+// The per-island bundles each export a `mount(props, element, mode)`
+// function (see zfb_islands::render_island_entry_source). The
+// framework-specific glue lives inside that bundle, so this runtime is
+// framework-agnostic.
+//
+// ## Module-level singleton
+//
+// Dynamic imports of the same URL are cached by the JS runtime, so
+// "switching pages" (in an SPA shell) reuses the loaded bundle for free.
+// We keep an extra in-memory dedup map keyed by element so an island is
+// never mounted twice (e.g. on hot-reload / repeat-mount scenarios).
+// ---------------------------------------------------------------------------
+
+/** Map of `componentName → bundle URL` baked into the runtime entry. */
+export type IslandManifest = Readonly<Record<string, string>>;
+
+/**
+ * The shape of the default export each per-island bundle ships.
+ *
+ * `mode === "hydrate"` is used for SSR'd islands, `"render"` for
+ * SSR-skip islands.
+ */
+type IslandMount = (
+  props: Record<string, unknown>,
+  element: Element,
+  mode: "hydrate" | "render",
+) => void;
+
+interface IslandModule {
+  mount?: IslandMount;
+  default?: IslandMount;
+}
+
+const mounted = new WeakSet<Element>();
+
+/**
+ * Walk the DOM and mount every `[data-zfb-island]` / `[data-zfb-island-skip-ssr]`
+ * element using `manifest`.
+ *
+ * No-op when `document` is undefined (SSR, edge runtime). Safe to call
+ * multiple times: each element is mounted at most once thanks to the
+ * `mounted` WeakSet guard.
+ */
+export function mountIslands(manifest: IslandManifest): void {
+  if (typeof document === "undefined") return;
+
+  const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
+  for (const el of Array.from(ssrIslands)) {
+    // Skip the empty-skeleton case left behind when the server-side
+    // rewriter has not run yet (data-zfb-island="" with no component
+    // name). The hydration emit step is expected to fill this in
+    // before the page reaches the browser; if it didn't, we cannot
+    // dispatch.
+    const name = el.getAttribute("data-zfb-island");
+    if (!name) continue;
+    scheduleMount(manifest, el, name, "hydrate");
+  }
+
+  const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
+  for (const el of Array.from(skipSsrIslands)) {
+    const name = el.getAttribute("data-zfb-island-skip-ssr");
+    if (!name) continue;
+    scheduleMount(manifest, el, name, "render");
+  }
+}
+
+function scheduleMount(
+  manifest: IslandManifest,
+  element: Element,
+  componentName: string,
+  mode: "hydrate" | "render",
+): void {
+  if (mounted.has(element)) return;
+
+  const url = manifest[componentName];
+  if (!url) {
+    if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[zfb] no island bundle URL for component "${componentName}" — ` +
+          `the runtime manifest is out of sync with the rendered HTML.`,
+      );
+    }
+    return;
+  }
+
+  const props = readProps(element);
+  const when = element.getAttribute("data-when") ?? undefined;
+
+  const fire = (): void => {
+    if (mounted.has(element)) return;
+    mounted.add(element);
+    // Dynamic-import is cached by the JS runtime, so repeat hits for
+    // the same URL share the resolved module — module-level
+    // singletons are fine.
+    void importIsland(url).then((mod) => {
+      const fn = mod.mount ?? mod.default;
+      if (typeof fn !== "function") {
+        if (
+          typeof process !== "undefined" &&
+          process.env &&
+          process.env["NODE_ENV"] !== "production"
+        ) {
+          // eslint-disable-next-line no-console
+          console.warn(`[zfb] island bundle at ${url} did not export mount() or default()`);
+        }
+        return;
+      }
+      fn(props, element, mode);
+    });
+  };
+
+  if (mode === "render") {
+    // SSR-skip islands ignore data-when: there is nothing to defer
+    // hydration of, just an empty container we paint into. Mount
+    // immediately so the user sees output.
+    fire();
+    return;
+  }
+
+  scheduleHydrate(element, when, fire);
+}
+
+function readProps(element: Element): Record<string, unknown> {
+  const raw = element.getAttribute("data-props");
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
+  return {};
+}
+
+/**
+ * Indirection so tests can stub the dynamic import without intercepting
+ * the global `import()`. In production this is a thin wrapper over
+ * native `import(url)`.
+ */
+let importImpl: (url: string) => Promise<IslandModule> = (url) =>
+  // The Function indirection is intentional: bundlers occasionally
+  // rewrite `import(url)` into a static specifier when they can prove
+  // the argument; using `new Function` keeps the dynamic semantics.
+  new Function("u", "return import(u)")(url) as Promise<IslandModule>;
+
+function importIsland(url: string): Promise<IslandModule> {
+  return importImpl(url);
+}
+
+/**
+ * Test-only seam. Replace the module dynamic-import with a fake.
+ * Returns the previous implementation so tests can restore it.
+ */
+export function __setIslandImporterForTests(
+  impl: (url: string) => Promise<IslandModule>,
+): (url: string) => Promise<IslandModule> {
+  const prev = importImpl;
+  importImpl = impl;
+  return prev;
+}

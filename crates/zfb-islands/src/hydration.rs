@@ -336,6 +336,54 @@ pub fn rewrite_islands_in_attr_skeleton(
     Ok(out)
 }
 
+/// Build a single-attribute `<script type="module" src="…"></script>` tag
+/// for the per-island hydration runtime bundle.
+///
+/// Used together with [`inject_runtime_script_into_head`]: the page
+/// router's HTML pass calls this to materialise the tag for the
+/// runtime URL emitted by
+/// [`crate::EsbuildSubprocessBundler::bundle_per_island`], then asks
+/// the helper to splice it into the rendered page's `<head>`.
+///
+/// The `src` is HTML-attribute-escaped.
+pub fn islands_runtime_script_tag(runtime_url: &str) -> String {
+    format!(
+        "<script type=\"module\" src=\"{src}\"></script>",
+        src = escape_attr(runtime_url),
+    )
+}
+
+/// Inject the islands-runtime `<script type="module">` tag into
+/// `html`'s `<head>`.
+///
+/// Returns `Ok(html_with_script_injected)` on success. The tag is
+/// inserted **immediately before** the closing `</head>` so it ships
+/// with the page's other module scripts. If `</head>` cannot be
+/// located (e.g. a fragment renderer that emits headerless HTML), the
+/// tag is prepended to the input and the resulting markup is still
+/// valid as a fragment — but the caller should treat that path as a
+/// renderer bug and probably propagate it.
+///
+/// `runtime_url` is the public URL of the islands runtime bundle, e.g.
+/// `/islands/islands-runtime-abc12345.js`. Multiple calls are
+/// idempotent in the trivial sense — calling twice will inject twice;
+/// the page router is expected to only call this once per render.
+pub fn inject_runtime_script_into_head(html: &str, runtime_url: &str) -> String {
+    let tag = islands_runtime_script_tag(runtime_url);
+    if let Some(close_idx) = html.find("</head>") {
+        let mut out = String::with_capacity(html.len() + tag.len());
+        out.push_str(&html[..close_idx]);
+        out.push_str(&tag);
+        out.push_str(&html[close_idx..]);
+        return out;
+    }
+    // Fragment / headerless markup: prepend.
+    let mut out = String::with_capacity(html.len() + tag.len());
+    out.push_str(&tag);
+    out.push_str(html);
+    out
+}
+
 /// Build the `<script type="module" …>` tag the renderer drops into the
 /// page's `<head>` (or end-of-`<body>`) so the hydration runtime can find
 /// the islands bundle.
@@ -496,6 +544,44 @@ mod tests {
         // Bundle URL `"` must be escaped.
         assert!(tag.contains("&quot;oops"));
         assert!(tag.contains("data-zfb-bundle="));
+    }
+
+    #[test]
+    fn islands_runtime_script_tag_minimal_shape() {
+        let tag = islands_runtime_script_tag("/islands/islands-runtime-abc12345.js");
+        assert_eq!(
+            tag,
+            "<script type=\"module\" src=\"/islands/islands-runtime-abc12345.js\"></script>"
+        );
+    }
+
+    #[test]
+    fn islands_runtime_script_tag_escapes_url() {
+        let tag = islands_runtime_script_tag("/runtime?v=1&t=2");
+        assert!(tag.contains(r#"src="/runtime?v=1&amp;t=2""#));
+    }
+
+    #[test]
+    fn inject_runtime_script_inserts_before_close_head() {
+        let html =
+            "<!doctype html><html><head><title>X</title></head><body><p>hi</p></body></html>";
+        let out = inject_runtime_script_into_head(html, "/islands/islands-runtime-abc.js");
+        let head_close = out.find("</head>").unwrap();
+        let script_at = out
+            .find("<script type=\"module\" src=\"/islands/islands-runtime-abc.js\">")
+            .expect("script tag injected");
+        assert!(script_at < head_close, "script must appear before </head>");
+        // Original head contents preserved.
+        assert!(out.contains("<title>X</title>"));
+        assert!(out.contains("<p>hi</p>"));
+    }
+
+    #[test]
+    fn inject_runtime_script_falls_back_to_prepend_when_head_missing() {
+        let html = "<p>fragment</p>";
+        let out = inject_runtime_script_into_head(html, "/r.js");
+        assert!(out.starts_with("<script type=\"module\" src=\"/r.js\">"));
+        assert!(out.ends_with("<p>fragment</p>"));
     }
 
     #[test]
