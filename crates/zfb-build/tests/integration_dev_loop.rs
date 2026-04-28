@@ -88,6 +88,7 @@ fn touching_a_md_file_only_rerenders_its_page() {
         }),
         run_css: None,
         run_islands: None,
+        reload_renderer: None,
     };
 
     // Tick: the markdown file changed.
@@ -160,8 +161,9 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
         })),
         run_islands: Some(Arc::new(move || {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
-            Ok(false)
+            Ok(None)
         })),
+        reload_renderer: None,
     };
 
     let outcome = orch
@@ -245,8 +247,13 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
         })),
         run_islands: Some(Arc::new(move || {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
-            Ok(true)
+            Ok(Some(zfb_build::IslandsBundleInfo {
+                changed: true,
+                bundle_url: "/assets/islands-test.js".to_string(),
+                components: vec!["Counter".to_string()],
+            }))
         })),
+        reload_renderer: None,
     };
 
     let outcome = orch
@@ -313,6 +320,7 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
         }),
         run_css: None,
         run_islands: None,
+        reload_renderer: None,
     };
 
     // Spawn watcher manually so the test can observe the channel and

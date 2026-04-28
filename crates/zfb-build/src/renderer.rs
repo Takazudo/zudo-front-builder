@@ -422,6 +422,41 @@ pub fn shutdown(state: RendererState) -> Result<(), RendererError> {
     Ok(())
 }
 
+/// Reload the dev-mode renderer against a (possibly new) bundle.
+///
+/// Module-level reload across miniflare's worker boundary is fragile —
+/// workerd loads its bundle once at boot and does not expose an
+/// in-process "swap module" hook. So this implementation goes for the
+/// safe-and-simple path: tear the existing subprocess down (via the
+/// existing [`shutdown`]) and respawn one against the new bundle path.
+/// Callers should invoke this whenever a TSX page edit, a layout edit,
+/// or an exported handler change has rebuilt the worker bundle on disk
+/// — typically driven from the dev pipeline's reload-renderer hook
+/// (see [`crate::pipeline::BuildContext::reload_renderer`]).
+///
+/// The returned [`RendererState`] takes ownership of the new
+/// subprocess. The previous state is consumed by value to make the
+/// "old subprocess is gone" invariant statically obvious.
+///
+/// `request_timeout` defaults to 30s when `None` (same as
+/// [`start`]).
+///
+/// On `Backend::Existing`, this is effectively a no-op restart: it
+/// rebuilds the [`reqwest`] client and re-reads the source map, but
+/// no subprocess is killed/spawned. That keeps the dev pipeline's
+/// "always reload before render" code path correct under both real
+/// miniflare and the in-process fake server tests use.
+pub fn reload(
+    previous: RendererState,
+    input: RendererStartInput,
+) -> Result<RendererState, RendererError> {
+    // Dropping the previous state via `shutdown` happens first so the
+    // old subprocess is fully gone before we spawn the new one. With
+    // `Backend::Existing` the call is a cheap no-op.
+    shutdown(previous)?;
+    start(input)
+}
+
 // ---------------------------------------------------------------------------
 // Internals — request loop
 // ---------------------------------------------------------------------------
@@ -1252,6 +1287,61 @@ mod tests {
             }
             other => panic!("expected RenderFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reload_swaps_renderer_state_against_existing_backend() {
+        // Sub 10: when the SSR bundle changes, callers swap the
+        // `RendererState` for a fresh one. Under `Backend::Existing`
+        // this is effectively "tear down + start" — no subprocess is
+        // killed/spawned, but the new state's HTTP client is wired
+        // up and ready.
+        let handler: Handler = Arc::new(|_| (200, "text/html", b"<p>after</p>".to_vec()));
+        let srv = FakeServer::start(handler);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle_path = tmp.path().join("bundle.mjs");
+        fs::write(&bundle_path, "// dev bundle\n").unwrap();
+        let map_path = tmp.path().join("bundle.mjs.map");
+
+        let state = start(RendererStartInput {
+            bundle_path: bundle_path.clone(),
+            sourcemap_path: map_path.clone(),
+            backend: Backend::Existing {
+                base_url: srv.base_url(),
+            },
+            request_timeout: Some(Duration::from_secs(5)),
+        })
+        .expect("initial start");
+
+        // The reload consumes the previous state and returns a fresh
+        // one. We then drive a single render_one against the new
+        // state to confirm it's wired up to the live fake server.
+        let reloaded = reload(
+            state,
+            RendererStartInput {
+                bundle_path,
+                sourcemap_path: map_path,
+                backend: Backend::Existing {
+                    base_url: srv.base_url(),
+                },
+                request_timeout: Some(Duration::from_secs(5)),
+            },
+        )
+        .expect("reload");
+
+        let dist = tempfile::tempdir().unwrap();
+        let entry = RouteUniverseEntry {
+            url_path: "/".into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: "/".into(),
+        };
+        let written = render_one(&reloaded, &entry, dist.path()).expect("render_one");
+        let body = fs::read_to_string(written).unwrap();
+        assert!(body.contains("after"));
+
+        // Idempotent shutdown still works after reload.
+        shutdown(reloaded).expect("shutdown");
     }
 
     #[test]

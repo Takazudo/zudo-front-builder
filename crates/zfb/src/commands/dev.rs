@@ -153,6 +153,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css: None,
         run_islands: None,
+        // The bundle-rebuild + miniflare-respawn wiring (Sub 10) lands
+        // here once the dev-mode bundler is available on a per-tick
+        // basis; for now leave the hook empty so existing behaviour
+        // is preserved (the renderer state stays bound to the
+        // boot-time bundle).
+        reload_renderer: None,
     };
 
     // 4. on_outcome — translate each tick into reload events.

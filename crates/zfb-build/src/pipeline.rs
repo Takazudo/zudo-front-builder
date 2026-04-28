@@ -127,9 +127,57 @@ pub type PageRenderer =
 /// in HTML will manage that explicitly.
 pub type CssRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
 
-/// Function that runs the islands bundler once and returns whether the
-/// emitted asset is new. Same semantics as [`CssRunner`].
-pub type IslandsRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
+/// Information about a freshly-emitted islands bundle.
+///
+/// Populated by an [`IslandsRunner`] when a re-bundle was attempted and
+/// surfaces the per-component identifiers + the bundle's public URL so
+/// the dev-server SSE layer can fan out one
+/// `ReloadEvent::Islands { component, bundle_url }` per island. The
+/// SSE layer never reaches into `zfb-islands` directly — it consumes
+/// this side-channel through `BuildOutcome::islands_bundle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandsBundleInfo {
+    /// `true` if the re-bundle produced a new asset URL (the input
+    /// islands set or any of their bytes changed). When `false` the
+    /// SSE layer still sees the info but emits no events.
+    pub changed: bool,
+    /// Public URL of the freshly-emitted bundle, e.g.
+    /// `/assets/islands-abc12345.js`. Producers should use
+    /// `zfb_islands::bundle_link_href` (or its production-pipeline
+    /// equivalent) to derive this from the asset path so the URL the
+    /// browser hits matches the URL the renderer embeds in HTML.
+    pub bundle_url: String,
+    /// Per-component identifiers (mirrors
+    /// `zfb_islands::Island::component_name`). Order is the bundler's
+    /// stable order so the dev-mode reload stream is deterministic
+    /// across runs for a given input.
+    pub components: Vec<String>,
+}
+
+/// Function that runs the islands bundler once and returns the
+/// per-bundle metadata, or `None` when the runner ran but produced no
+/// bundle (e.g. there are no `"use client"` components today).
+///
+/// Returning `IslandsBundleInfo { changed: false, .. }` is the right
+/// shape when the bundler ran but the output was byte-identical to the
+/// previous run; the orchestrator records the rerun in
+/// [`BuildOutcome::islands_rerun`] but emits no SSE event.
+pub type IslandsRunner =
+    Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
+
+/// Function the dev pipeline calls before re-rendering pages, when
+/// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
+/// layout edit, or exported-handler change).
+///
+/// Implementations typically rebuild the worker bundle and respawn the
+/// miniflare subprocess via [`crate::renderer::reload`]. Failure
+/// surfaces as a regular tick error — the watcher stays alive and the
+/// dev server keeps the previous state.
+///
+/// The hook is invoked once per tick when [`RebuildPlan::pages`] is
+/// non-empty; the pipeline does not call it for CSS-only or
+/// islands-only ticks (those don't move the SSR bundle).
+pub type RendererReloader = Arc<dyn Fn() -> Result<()> + Send + Sync + 'static>;
 
 /// Per-build-tick context handed to [`AssetPipeline::apply`].
 ///
@@ -152,6 +200,12 @@ pub struct BuildContext {
     /// Islands bundler callback. Optional: if `None`, islands reruns are
     /// silently skipped.
     pub run_islands: Option<IslandsRunner>,
+
+    /// Renderer-reload hook invoked once per tick when pages need
+    /// re-rendering. See [`RendererReloader`] for the contract.
+    /// Optional: tests and one-off callers that don't own a miniflare
+    /// subprocess pass `None`.
+    pub reload_renderer: Option<RendererReloader>,
 }
 
 impl std::fmt::Debug for BuildContext {
@@ -163,6 +217,10 @@ impl std::fmt::Debug for BuildContext {
             .field(
                 "run_islands",
                 &self.run_islands.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "reload_renderer",
+                &self.reload_renderer.as_ref().map(|_| "<callback>"),
             )
             .finish()
     }
@@ -190,6 +248,12 @@ pub struct BuildOutcome {
     /// Whether the islands bundler reported a new asset (only
     /// meaningful when `islands_rerun` is true).
     pub islands_changed: bool,
+
+    /// Per-bundle metadata when the islands bundler produced output
+    /// this tick. Populated by [`IslandsRunner`]; the SSE layer fans
+    /// this out to one `ReloadEvent::Islands` per component when
+    /// `changed` is true.
+    pub islands_bundle: Option<IslandsBundleInfo>,
 
     /// Pages whose HTML was actually written (the file was new or the
     /// bytes changed). Useful for the dev preview server's WebSocket
@@ -297,6 +361,16 @@ impl AssetPipeline for DevAssetPipeline {
         };
 
         if !pages.is_empty() {
+            // The SSR bundle on disk may have moved (a TSX page,
+            // layout, or exported-handler edit was the trigger). Give
+            // the host the chance to rebuild the bundle and respawn
+            // miniflare BEFORE we issue render requests against it,
+            // so the request loop never hits stale module state.
+            // Failures bubble up — the orchestrator surfaces them as
+            // "tick failed; watcher staying alive".
+            if let Some(reload) = &ctx.reload_renderer {
+                reload()?;
+            }
             let rendered = (ctx.render_pages)(&pages)?;
             outcome.pages_rendered = rendered.len();
 
@@ -369,7 +443,14 @@ impl AssetPipeline for DevAssetPipeline {
         if plan.rerun_islands {
             outcome.islands_rerun = true;
             if let Some(run) = &ctx.run_islands {
-                outcome.islands_changed = run()?;
+                if let Some(info) = run()? {
+                    // SSE layer needs the URL + components even when
+                    // changed=false (in case it wants to surface the
+                    // rerun in diagnostics); only `changed=true`
+                    // actually fans out to the browser.
+                    outcome.islands_changed = info.changed;
+                    outcome.islands_bundle = Some(info);
+                }
             }
         }
 
@@ -402,6 +483,7 @@ mod tests {
             }),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         }
     }
 
@@ -472,6 +554,72 @@ mod tests {
     }
 
     #[test]
+    fn islands_runner_populates_bundle_info() {
+        let pipeline = DevAssetPipeline::new();
+        let dir = tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_cb = calls.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: None,
+            run_islands: Some(Arc::new(move || {
+                calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(IslandsBundleInfo {
+                    changed: true,
+                    bundle_url: "/assets/islands-deadbeef.js".to_string(),
+                    components: vec!["Counter".to_string(), "Search".to_string()],
+                }))
+            })),
+            reload_renderer: None,
+        };
+        let plan = RebuildPlan {
+            pages: PageSelection::none(),
+            rerun_css: false,
+            rerun_islands: true,
+            triggers: vec![],
+        };
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(outcome.islands_rerun);
+        assert!(outcome.islands_changed);
+        let info = outcome.islands_bundle.expect("bundle info populated");
+        assert_eq!(info.bundle_url, "/assets/islands-deadbeef.js");
+        assert_eq!(info.components, vec!["Counter", "Search"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn islands_runner_byte_identical_does_not_flag_changed() {
+        let pipeline = DevAssetPipeline::new();
+        let dir = tempdir().unwrap();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: None,
+            run_islands: Some(Arc::new(|| {
+                Ok(Some(IslandsBundleInfo {
+                    changed: false,
+                    bundle_url: "/assets/islands-cafef00d.js".to_string(),
+                    components: vec!["Counter".to_string()],
+                }))
+            })),
+            reload_renderer: None,
+        };
+        let plan = RebuildPlan {
+            pages: PageSelection::none(),
+            rerun_css: false,
+            rerun_islands: true,
+            triggers: vec![],
+        };
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(outcome.islands_rerun);
+        assert!(!outcome.islands_changed);
+        // We still record the URL — the SSE layer ignores the event
+        // when changed=false but downstream diagnostics get the info.
+        assert!(outcome.islands_bundle.is_some());
+    }
+
+    #[test]
     fn css_rerun_invokes_callback() {
         let pipeline = DevAssetPipeline::new();
         let dir = tempdir().unwrap();
@@ -485,6 +633,7 @@ mod tests {
                 Ok(true)
             })),
             run_islands: None,
+            reload_renderer: None,
         };
 
         let plan = RebuildPlan {
@@ -596,6 +745,7 @@ mod tests {
             render_pages: Arc::new(|_| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::All,
@@ -604,5 +754,113 @@ mod tests {
             triggers: vec![],
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
+    }
+
+    #[test]
+    fn reload_renderer_runs_before_render_pages_when_pages_dirty() {
+        // The hook fires for each tick that has a non-empty page set,
+        // so the host can rebuild the SSR bundle and respawn miniflare
+        // before render_pages issues HTTP requests against it.
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let order_reload = order.clone();
+        let order_render = order.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_pages: &[PageId]| {
+                order_render
+                    .lock()
+                    .expect("order lock poisoned")
+                    .push("render");
+                Ok(vec![])
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || {
+                order_reload
+                    .lock()
+                    .expect("order lock poisoned")
+                    .push("reload");
+                Ok(())
+            })),
+        };
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/a.tsx"));
+        let plan = RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        pipeline.apply(&plan, &ctx).unwrap();
+        let observed = order.lock().unwrap().clone();
+        assert_eq!(observed, vec!["reload", "render"]);
+    }
+
+    #[test]
+    fn reload_renderer_skipped_when_no_pages_dirty() {
+        // CSS-only or islands-only ticks do not move the SSR bundle —
+        // the hook must not be invoked.
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let reload_calls = Arc::new(AtomicUsize::new(0));
+        let reload_calls_cb = reload_calls.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: Some(Arc::new(|| Ok(true))),
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || {
+                reload_calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })),
+        };
+        let plan = RebuildPlan {
+            pages: PageSelection::none(),
+            rerun_css: true,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(reload_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reload_renderer_error_aborts_tick() {
+        // A failed bundle rebuild / miniflare respawn must surface as
+        // an error rather than letting render_pages run against stale
+        // module state.
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls_cb = render_calls.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_| {
+                render_calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(|| {
+                Err(anyhow::anyhow!("bundle rebuild failed"))
+            })),
+        };
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/a.tsx"));
+        let plan = RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        let err = pipeline.apply(&plan, &ctx).unwrap_err();
+        assert!(err.to_string().contains("bundle rebuild failed"));
+        assert_eq!(
+            render_calls.load(Ordering::SeqCst),
+            0,
+            "render_pages must not run when the reload hook fails",
+        );
     }
 }

@@ -50,7 +50,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 pub use inject::{inject_livereload, LIVERELOAD_TAG};
-pub use livereload::{outcome_to_events, ReloadEvent, ReloadTx};
+pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
