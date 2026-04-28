@@ -300,7 +300,15 @@ export async function getCollection<T = Record<string, unknown>>(
   try {
     names = await readdir(dir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+    // Guard the `code` access at runtime — a thrown non-`Error` value
+    // (rare, but possible) would otherwise crash here. We only swallow
+    // a true ENOENT; anything else propagates.
+    if (
+      err !== null &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code: unknown }).code === "ENOENT"
+    ) {
       return [];
     }
     throw err;
@@ -329,12 +337,20 @@ export async function getCollection<T = Record<string, unknown>>(
  * Rust contract for entries with no frontmatter); we normalise `null` /
  * `undefined` to an empty object so consumers' `.data.title` reads
  * never have to deal with `null`.
+ *
+ * **Type-safety note:** `T` is the caller-supplied frontmatter shape
+ * but we do **not** validate it at runtime — if the page declares a
+ * shape that the actual frontmatter doesn't match, the cast below
+ * lies. Callers are expected to keep their `getCollection<MySchema>()`
+ * generic in sync with the actual frontmatter; we acknowledge the
+ * unsafety with the explicit `unknown` indirection rather than a
+ * direct (and silently lossy) cast.
  */
 function entryFromSnapshot<T>(entry: SnapshotEntry): CollectionEntry<T> {
   const data =
     entry.frontmatter === null || entry.frontmatter === undefined
       ? ({} as T)
-      : (entry.frontmatter as T);
+      : (entry.frontmatter as unknown as T);
   return {
     slug: entry.slug,
     data,

@@ -22,9 +22,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../index.js";
 // CLI helper is a sibling .mjs — Node 22 resolves the .mjs ESM directly.
 // The path is computed at test time so this file is portable across
-// pnpm-installed and workspace-relative layouts. The `.mjs` has no
-// declaration file, so we narrow the import shape ourselves.
-// @ts-expect-error: declarations live in bin/cli.d.mts; this is an .mjs sibling.
+// pnpm-installed and workspace-relative layouts. The `.mjs` ships
+// without a `.d.mts` companion (it is consumed only via `bin`, not as
+// a TS module), so we narrow the import shape ourselves and silence
+// TS's "no declaration file" complaint.
+// @ts-expect-error: bin/cli.mjs has no declaration file; we narrow below.
 import { WORKER_WRAPPER_SOURCE as MJS_WRAPPER_RAW } from "../../bin/cli.mjs";
 const MJS_WRAPPER: string = MJS_WRAPPER_RAW as string;
 

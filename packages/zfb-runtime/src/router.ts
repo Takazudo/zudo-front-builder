@@ -155,7 +155,9 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   }
 
   // Hono's `app.fetch` returns `Response | Promise<Response>`. The
-  // public router contract is unconditionally async, so we wrap the
-  // sync branch in `Promise.resolve` to normalise the return type.
-  return (request) => Promise.resolve(app.fetch(request));
+  // public router contract is unconditionally async; using an `async`
+  // wrapper (rather than `Promise.resolve(...)`) ensures any
+  // synchronous throw inside `app.fetch` is converted to a rejected
+  // promise instead of escaping the caller's `await`.
+  return async (request) => await app.fetch(request);
 }

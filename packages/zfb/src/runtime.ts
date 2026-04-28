@@ -256,25 +256,51 @@ function scheduleMount(
 
   const fire = (): void => {
     if (mounted.has(element)) return;
-    mounted.add(element);
     // Dynamic-import is cached by the JS runtime, so repeat hits for
     // the same URL share the resolved module — module-level
     // singletons are fine.
-    void importIsland(url).then((mod) => {
-      const fn = mod.mount ?? mod.default;
-      if (typeof fn !== "function") {
-        if (
-          typeof process !== "undefined" &&
-          process.env &&
-          process.env["NODE_ENV"] !== "production"
-        ) {
-          // eslint-disable-next-line no-console
-          console.warn(`[zfb] island bundle at ${url} did not export mount() or default()`);
+    //
+    // We `add(element)` only on the success path so a failed import
+    // (e.g. transient network blip in dev) doesn't permanently block
+    // a retry of the same element.
+    let started: Promise<IslandModule>;
+    try {
+      started = importIsland(url);
+    } catch (err) {
+      // Some implementations of dynamic-import wrappers can throw
+      // synchronously (e.g. URL parsing errors). Treat the same as
+      // an async rejection.
+      // eslint-disable-next-line no-console
+      console.error(`[zfb] failed to start dynamic import for ${url}`, err);
+      return;
+    }
+    started.then(
+      (mod) => {
+        const fn = mod.mount ?? mod.default;
+        if (typeof fn !== "function") {
+          if (
+            typeof process !== "undefined" &&
+            process.env &&
+            process.env["NODE_ENV"] !== "production"
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn(`[zfb] island bundle at ${url} did not export mount() or default()`);
+          }
+          return;
         }
-        return;
-      }
-      fn(props, element, mode);
-    });
+        mounted.add(element);
+        fn(props, element, mode);
+      },
+      (err: unknown) => {
+        // Surface the error in dev so the user notices, then make
+        // sure the element is NOT in the mounted set so a later
+        // retry (e.g. another scheduleHydrate fire) can attempt the
+        // import again.
+        // eslint-disable-next-line no-console
+        console.error(`[zfb] failed to load island bundle ${url}`, err);
+        mounted.delete(element);
+      },
+    );
   };
 
   if (mode === "render") {
@@ -308,10 +334,11 @@ function readProps(element: Element): Record<string, unknown> {
  * native `import(url)`.
  */
 let importImpl: (url: string) => Promise<IslandModule> = (url) =>
-  // The Function indirection is intentional: bundlers occasionally
-  // rewrite `import(url)` into a static specifier when they can prove
-  // the argument; using `new Function` keeps the dynamic semantics.
-  new Function("u", "return import(u)")(url) as Promise<IslandModule>;
+  // Modern bundlers (esbuild, Vite, Rollup, webpack) preserve a plain
+  // `import(<dynamic>)` call when the argument isn't a static literal,
+  // so we no longer need the `new Function(...)` indirection — which
+  // also failed under strict CSPs that disallow `unsafe-eval`.
+  import(/* @vite-ignore */ /* webpackIgnore: true */ url) as Promise<IslandModule>;
 
 function importIsland(url: string): Promise<IslandModule> {
   return importImpl(url);
