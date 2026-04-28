@@ -10,11 +10,11 @@
 // `ZFB_ESBUILD_BIN`) and then evaluated by `node` to pull the default
 // export back as JSON — `node` must therefore be in `PATH` (already a
 // hard requirement of zfb because the production renderer spawns
-// miniflare). The user's `import { defineConfig } from "zfb/config"`
+// miniflare). The user's `import { defineConfig } from "@takazudo/zfb/config"`
 // is satisfied by an internal stub so the project does NOT need the
 // `zfb` npm package installed locally just to be parsed.
 
-import { defineConfig } from "zfb/config";
+import { defineConfig } from "@takazudo/zfb/config";
 
 export default defineConfig({
   framework: "preact",

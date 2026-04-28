@@ -1,4 +1,4 @@
-import { defaultComponents } from "zfb";
+import { defaultComponents } from "@takazudo/zfb";
 
 import Note from "../../components/note";
 import DefaultLayout from "../../layouts/default";
@@ -10,7 +10,7 @@ import type { BlogEntry } from "../../lib/types";
  * the `blog` collection.
  */
 export async function paths() {
-  const { getCollection } = await import("zfb/content");
+  const { getCollection } = await import("@takazudo/zfb/content");
   const posts = (await getCollection("blog")) as BlogEntry[];
   return posts.map((post) => ({
     params: { slug: post.slug },

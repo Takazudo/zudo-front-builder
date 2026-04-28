@@ -375,7 +375,7 @@ mod tests {
         // file line 2 (past the opening `---`).
         let src = "---\ntitle: [unterminated\n---\nbody\n";
         let path = PathBuf::from("posts/intro.md");
-        let err = zfb_content::extract_frontmatter(&path, src).expect_err("should fail");
+        let err = zfb_content::frontmatter::extract(&path, src).expect_err("should fail");
         let diag = from_frontmatter_error(&path, src, &err);
         let out = strip_ansi(&render_framed(&diag));
         // serde_yaml reports the position where it noticed the
@@ -404,7 +404,7 @@ mod tests {
         // number reporting works without serde_yaml details.
         let src = "---\ntitle: x\nbody but no close\n";
         let path = PathBuf::from("posts/oops.md");
-        let err = zfb_content::extract_frontmatter(&path, src).expect_err("should fail");
+        let err = zfb_content::frontmatter::extract(&path, src).expect_err("should fail");
         let diag = from_frontmatter_error(&path, src, &err);
         owo_colors::set_override(false);
         let out = strip_ansi(&render_framed(&diag));

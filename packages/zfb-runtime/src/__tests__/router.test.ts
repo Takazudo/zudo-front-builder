@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { setContentSnapshot } from "zfb/content";
+import { setContentSnapshot } from "@takazudo/zfb/content";
 
 import { createPageRouter } from "../router.js";
 import type { PageDefinition, PageModule } from "../router.js";
@@ -194,7 +194,7 @@ describe("createPageRouter", () => {
     // After init, `getCollection("blog")` should resolve from memory
     // rather than touching `fs`. We import lazily so the import fans
     // through the same module-level state the router writes to.
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection<{ title: string; date: string }>("blog");
     expect(items).toHaveLength(1);
     expect(items[0]?.slug).toBe("hello");
@@ -205,7 +205,7 @@ describe("createPageRouter", () => {
   it("returns an empty array for an unknown collection name (snapshot path)", async () => {
     const { pages, contentSnapshot } = buildFixture();
     createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection("nope");
     expect(items).toEqual([]);
   });
@@ -229,7 +229,7 @@ describe("createPageRouter", () => {
       framework: stubFramework(),
     });
     void router; // not used here; we only care that the snapshot was registered
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection<{ title?: string }>("notes");
     expect(items).toHaveLength(1);
     expect(items[0]?.data).toEqual({});
@@ -398,7 +398,7 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const contentPage: PageModule & { paths: () => Promise<unknown[]> } = {
       default: () => null,
       paths: async () => {
-        const { getCollection } = await import("zfb/content");
+        const { getCollection } = await import("@takazudo/zfb/content");
         const posts = await getCollection<{ title: string }>("blog");
         return posts.map((p) => ({ params: { slug: p.slug } }));
       },

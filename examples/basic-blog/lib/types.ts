@@ -7,7 +7,7 @@
  * `zfb.config.future.ts` for the typed sibling that will replace the
  * JSON form once the TS config loader lands).
  */
-import type { ContentProps } from "zfb/content";
+import type { ContentProps } from "@takazudo/zfb/content";
 
 export type BlogFrontmatter = {
   title: string;

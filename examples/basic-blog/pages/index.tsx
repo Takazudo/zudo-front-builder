@@ -7,7 +7,7 @@ import type { BlogEntry } from "../lib/types";
  * `/blog/page/[page]` so each route demonstrates exactly one concept.
  */
 export async function getStaticProps() {
-  const { getCollection } = await import("zfb/content");
+  const { getCollection } = await import("@takazudo/zfb/content");
   const posts = (await getCollection("blog")) as BlogEntry[];
   // Avoid mutating the array returned by `getCollection`: future
   // implementations may share the array between routes, and a sort()

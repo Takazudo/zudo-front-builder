@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*"
   },
   "devDependencies": {
     "happy-dom": "^15.11.7",
