@@ -163,6 +163,30 @@ impl Watcher {
     }
 }
 
+impl Watcher {
+    /// Shut down the watcher gracefully and wait for the debouncer task
+    /// to finish flushing any pending events.
+    ///
+    /// This is the preferred shutdown path. It sends the shutdown signal
+    /// to the debouncer, waits for the debouncer to flush all pending
+    /// events and exit, then returns. The OS-level `notify` watcher is
+    /// stopped when the `Watcher` value is dropped at the call-site.
+    ///
+    /// Callers that cannot await (e.g. in a `Drop` impl) may simply drop
+    /// the `Watcher` value instead — the `Drop` impl sends the shutdown
+    /// signal as a best-effort fallback, but cannot await the flush.
+    pub async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.debouncer.take() {
+            // Ignore join errors (task already exited or was cancelled).
+            let _ = handle.await;
+        }
+        // `_notify` is dropped here, stopping the OS-level watch.
+    }
+}
+
 impl Drop for Watcher {
     fn drop(&mut self) {
         // Best-effort graceful shutdown: signal the debouncer so it can
@@ -176,11 +200,9 @@ impl Drop for Watcher {
         // will be cancelled by the runtime; that's the unavoidable case
         // where `flush_all` cannot run.
         //
-        // Drop cannot await; flush_all is therefore best-effort here.
-        // The fully-correct API exposes an async `shutdown()` method
-        // the caller awaits before dropping, which is breaking — see
-        // https://github.com/Takazudo/zfb2/issues/68 (server/runtime
-        // graceful shutdown).
+        // Prefer the async [`Watcher::shutdown`] method over relying on
+        // `Drop` — `Drop` cannot await the flush so pending events may
+        // be lost when the Tokio runtime is shutting down.
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }

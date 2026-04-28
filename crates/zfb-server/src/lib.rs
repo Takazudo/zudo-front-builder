@@ -42,6 +42,7 @@ pub mod inject;
 pub mod livereload;
 pub mod routes;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -96,11 +97,15 @@ impl ServeOpts {
     }
 }
 
-/// Run the dev server until the process is shut down.
+/// Run the dev server until `shutdown` resolves or the process exits.
 ///
 /// Binds [`ServeOpts::addr`], builds the axum router via
 /// [`build_router`], and serves it. The future resolves with `Ok(())`
-/// only when the server stops cleanly (axum's signal handling).
+/// once either the `shutdown` future completes (graceful stop) or axum
+/// returns an error.
+///
+/// Pass `std::future::pending()` to run indefinitely until the process
+/// is killed (matches the old behaviour).
 ///
 /// Errors:
 ///
@@ -112,11 +117,14 @@ impl ServeOpts {
 /// Callers that need to know the actual bound port (e.g. integration
 /// tests using ephemeral port 0) should bind their own listener and
 /// call [`serve_with_listener`] directly.
-pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
+pub async fn serve<S>(opts: ServeOpts, shutdown: S) -> anyhow::Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let listener = TcpListener::bind(opts.addr)
         .await
         .with_context(|| format!("failed to bind dev server to {}", opts.addr))?;
-    serve_with_listener(opts, listener).await
+    serve_with_listener(opts, listener, shutdown).await
 }
 
 /// Run the dev server on a pre-bound [`TcpListener`].
@@ -128,7 +136,17 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
 ///
 /// `opts.addr` is ignored in favour of the listener's actual local
 /// address (which is what gets logged).
-pub async fn serve_with_listener(opts: ServeOpts, listener: TcpListener) -> anyhow::Result<()> {
+///
+/// The server runs until `shutdown` resolves. Pass
+/// `std::future::pending()` to run until the process exits.
+pub async fn serve_with_listener<S>(
+    opts: ServeOpts,
+    listener: TcpListener,
+    shutdown: S,
+) -> anyhow::Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let state = AppState {
         pages: opts.pages,
         broadcast: opts.broadcast,
@@ -145,6 +163,7 @@ pub async fn serve_with_listener(opts: ServeOpts, listener: TcpListener) -> anyh
     );
 
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
         .await
         .context("zfb-server: axum::serve returned an error")?;
 
