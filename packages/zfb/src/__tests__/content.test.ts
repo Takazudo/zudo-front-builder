@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  _relPathToSlug,
   ContentBlockquote,
   ContentCode,
   ContentH2,
@@ -195,6 +196,43 @@ describe("getCollection", () => {
     );
     const items = await getCollection("blog");
     expect(items.map((i) => i.slug)).toEqual(["visible"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `_relPathToSlug` — slug derivation portability.
+//
+// Slugs are URL-flavored identifiers, so a nested entry must produce the
+// same `2024/hello` form regardless of host OS. The body of getCollection
+// runs `_relPathToSlug(relative(dir, fullPath))`; these tests pin the
+// helper directly so the Windows behaviour can be verified on a POSIX
+// host without a real Windows runner.
+// ---------------------------------------------------------------------------
+
+describe("_relPathToSlug", () => {
+  it("strips the .md extension for a top-level file", () => {
+    expect(_relPathToSlug("hello.md")).toBe("hello");
+  });
+
+  it("uses forward slashes for a POSIX-flavored nested path", () => {
+    expect(_relPathToSlug("2024/hello.md")).toBe("2024/hello");
+  });
+
+  it("normalises Windows backslashes to forward slashes", () => {
+    // Even when the host's path.sep is "/", a stray backslash from a
+    // misbehaving `path.relative` should not leak into the slug.
+    expect(_relPathToSlug("2024\\hello.md")).toBe("2024/hello");
+  });
+
+  it("handles a deeply-nested Windows-flavored path", () => {
+    expect(_relPathToSlug("a\\b\\c\\d.md")).toBe("a/b/c/d");
+  });
+
+  it("returns the input unchanged when there is no .md extension", () => {
+    // `getCollection` filters to `.md` before reaching this helper, but
+    // the function should still be total — pin the no-extension behaviour
+    // so future refactors don't accidentally swallow the trailing chars.
+    expect(_relPathToSlug("notes")).toBe("notes");
   });
 });
 

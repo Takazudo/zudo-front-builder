@@ -22,7 +22,7 @@
 // once the content engine ships end-to-end.
 
 import { readdir, readFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 import type { VNode } from "./jsx-types.js";
 
@@ -327,7 +327,7 @@ export async function getCollection<T = Record<string, unknown>>(
     // produces the same value as before; for nested files it produces a
     // path-based slug (e.g. `2024/hello`).
     const rel = relative(dir, fullPath);
-    const slug = rel.slice(0, -".md".length);
+    const slug = _relPathToSlug(rel);
     const module_specifier = buildModuleSpecifier(name, slug);
     return {
       slug,
@@ -431,6 +431,31 @@ async function mapWithConcurrency<I, O>(
   for (let w = 0; w < cap; w++) workers.push(worker());
   await Promise.all(workers);
   return out;
+}
+
+/**
+ * @internal
+ *
+ * Convert a `path.relative()` result into a forward-slash-separated
+ * slug with the trailing `.md` extension stripped.
+ *
+ * Slugs are URL-flavored identifiers, not filesystem paths — they
+ * MUST use `/` regardless of the host OS so a nested entry like
+ * `2024/hello.md` produces the slug `2024/hello` on both POSIX and
+ * Windows. Without this normalisation, Windows callers would see
+ * `2024\hello`, which then leaks through to `module_specifier` and
+ * any URL the consumer derives from the slug.
+ *
+ * Exported solely so the unit test suite can pin the Windows
+ * behaviour without needing an actual Windows host. Do not depend on
+ * this from application code — name and signature may change.
+ */
+export function _relPathToSlug(relPath: string): string {
+  const posix = sep === "/" ? relPath : relPath.split(sep).join("/");
+  // Some Node versions normalise `\` even when sep is `/`, so be
+  // defensive: collapse any straggling backslashes too.
+  const normalised = posix.includes("\\") ? posix.split("\\").join("/") : posix;
+  return normalised.endsWith(".md") ? normalised.slice(0, -".md".length) : normalised;
 }
 
 // ---------------------------------------------------------------------------
