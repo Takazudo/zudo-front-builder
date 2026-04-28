@@ -193,7 +193,23 @@ pub struct EsbuildSubprocessConfig {
 
 impl Default for EsbuildSubprocessConfig {
     fn default() -> Self {
-        let env_override = std::env::var_os("ZFB_ESBUILD_BIN");
+        Self::default_with_env_getter(|name| std::env::var_os(name))
+    }
+}
+
+impl EsbuildSubprocessConfig {
+    /// Build a default config, but resolve the `ZFB_ESBUILD_BIN`
+    /// override via the supplied getter rather than touching the real
+    /// process environment. Tests use this to drive the env-override
+    /// path without calling `std::env::set_var`, which is `unsafe`
+    /// under Rust 2024 because it races other threads reading the env
+    /// table. Production callers should keep using
+    /// [`Default::default`].
+    pub fn default_with_env_getter<F>(getter: F) -> Self
+    where
+        F: Fn(&str) -> Option<OsString>,
+    {
+        let env_override = getter("ZFB_ESBUILD_BIN");
         let binary_path = match env_override {
             Some(p) => PathBuf::from(p),
             None => PathBuf::from("crates/zfb/binaries/esbuild/esbuild"),
@@ -832,16 +848,29 @@ mod tests {
 
     #[test]
     fn esbuild_subprocess_config_env_override_is_honoured() {
-        let prev = std::env::var_os("ZFB_ESBUILD_BIN");
-        std::env::set_var("ZFB_ESBUILD_BIN", "/tmp/zfb-esbuild-overridden");
-        let cfg = EsbuildSubprocessConfig::default();
+        // Drive the env-override path through an injected getter rather
+        // than mutating the real process environment. `std::env::set_var`
+        // is `unsafe` under Rust 2024 because it races other threads
+        // reading the env table — and our test suite is multi-threaded.
+        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|name| {
+            if name == "ZFB_ESBUILD_BIN" {
+                Some(OsString::from("/tmp/zfb-esbuild-overridden"))
+            } else {
+                None
+            }
+        });
         assert_eq!(
             cfg.binary_path,
             PathBuf::from("/tmp/zfb-esbuild-overridden")
         );
-        match prev {
-            Some(v) => std::env::set_var("ZFB_ESBUILD_BIN", v),
-            None => std::env::remove_var("ZFB_ESBUILD_BIN"),
-        }
+    }
+
+    #[test]
+    fn esbuild_subprocess_config_falls_back_to_default_slot_without_env() {
+        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|_| None);
+        assert_eq!(
+            cfg.binary_path,
+            PathBuf::from("crates/zfb/binaries/esbuild/esbuild")
+        );
     }
 }

@@ -837,6 +837,22 @@ fn run_esbuild(
 }
 
 fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
+    resolve_esbuild_binary_with_env(explicit, |name| std::env::var_os(name))
+}
+
+/// Same as [`resolve_esbuild_binary`] but the env lookup is delegated to
+/// a getter closure. Tests use this to drive the `ZFB_ESBUILD_BIN`
+/// resolution path without mutating the real process environment —
+/// `std::env::set_var` is `unsafe` under Rust 2024 because it races
+/// other threads reading the env table, and our test suite is
+/// multi-threaded.
+fn resolve_esbuild_binary_with_env<F>(
+    explicit: Option<&Path>,
+    env_getter: F,
+) -> Result<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
     if let Some(p) = explicit {
         if !p.exists() {
             bail!(
@@ -846,7 +862,7 @@ fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
         }
         return Ok(p.to_path_buf());
     }
-    if let Some(env) = std::env::var_os("ZFB_ESBUILD_BIN") {
+    if let Some(env) = env_getter("ZFB_ESBUILD_BIN") {
         let p = PathBuf::from(env);
         if !p.exists() {
             bail!(
@@ -1124,24 +1140,24 @@ mod tests {
         // default slot is present, the bundler must error with a
         // pointer to BOTH escape hatches (`ZFB_ESBUILD_BIN` and the
         // release-tarball slot). This keeps operators unstuck.
-        let prev = std::env::var_os("ZFB_ESBUILD_BIN");
-        std::env::remove_var("ZFB_ESBUILD_BIN");
-
-        // Run from a tempdir so the relative `crates/zfb/binaries/...`
-        // slot path doesn't accidentally exist.
+        //
+        // Drive the env path via an injected getter so the test does
+        // not mutate `std::env` (`unsafe` under Rust 2024 — and races
+        // other tests in the same multi-threaded run).
+        //
+        // Working directory still has to change so the relative slot
+        // path `crates/zfb/binaries/esbuild/esbuild` doesn't
+        // accidentally exist; a chdir is the simplest portable way to
+        // make the slot lookup miss. The chdir is restored before the
+        // assertion so a failure doesn't leak state.
         let tmp = tempfile::tempdir().unwrap();
         let prev_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let err = resolve_esbuild_binary(None).unwrap_err();
+        let err = resolve_esbuild_binary_with_env(None, |_| None).unwrap_err();
         let msg = format!("{err}");
 
-        // Restore environment before asserting so a failure doesn't
-        // leak state into other tests.
         std::env::set_current_dir(prev_cwd).unwrap();
-        if let Some(v) = prev {
-            std::env::set_var("ZFB_ESBUILD_BIN", v);
-        }
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
         assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
