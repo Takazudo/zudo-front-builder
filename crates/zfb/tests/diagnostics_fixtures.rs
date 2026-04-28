@@ -123,7 +123,7 @@ fn paths_missing_param_frames_export_paths_line() {
     ];
     let extracted = match zfb_render::paths_extract::extract_paths(&src, "page.tsx") {
         Ok(zfb_render::paths_extract::PathsExtraction::Literal(v)) => v,
-        other => panic!("expected literal extraction, got {other:?}"),
+        other => unreachable!("expected literal extraction, got {other:?}"),
     };
     let err = zfb_render::paths::resolve_paths(
         &mut cache,
@@ -157,7 +157,7 @@ fn paths_shape_error_frames_export_paths_line() {
     // is what rejects it (must be an array).
     let extracted = match zfb_render::paths_extract::extract_paths(&src, "page.tsx") {
         Ok(zfb_render::paths_extract::PathsExtraction::Literal(v)) => v,
-        other => panic!("expected literal extraction, got {other:?}"),
+        other => unreachable!("expected literal extraction, got {other:?}"),
     };
     let err = zfb_render::paths::resolve_paths(
         &mut cache,

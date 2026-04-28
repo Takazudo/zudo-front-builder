@@ -323,11 +323,27 @@ fn build_output_path_for_resolved_url(url: &str, extension: Option<&str>) -> Pat
 /// `route` strings doubled in the warning.
 fn format_paths_error(e: &PathsError) -> String {
     match e {
-        PathsError::MissingParam { name, .. } => {
-            format!("paths() entry is missing required param `{name}`")
+        PathsError::MissingParam { name, provided, .. } => {
+            let pretty = provided
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "paths() entry is missing required param `{name}`: \
+                 params must include `{name}`, got [{pretty}]"
+            )
         }
-        PathsError::ExtraParam { name, .. } => {
-            format!("paths() entry has extra param `{name}` not in the route template")
+        PathsError::ExtraParam { name, expected, .. } => {
+            let pretty = expected
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "paths() entry has extra param `{name}` not in the route template: \
+                 expected one of [{pretty}], got `{name}`"
+            )
         }
         PathsError::InvalidParamType { name, reason, .. } => {
             format!("paths() entry has invalid param `{name}`: {reason}")

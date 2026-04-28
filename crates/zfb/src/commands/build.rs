@@ -239,6 +239,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // hint right at build start.
     check_runtime_installed(project_root)?;
 
+    // ZFB_DEBUG_SNAPSHOT telemetry probe.
+    //
+    // The bundler still emits a placeholder empty `contentSnapshot`
+    // (wave 2 will fold the real one in), so to give users a way to
+    // monitor V8 RAM pressure today we materialise the snapshot here
+    // when the flag is set and let `build_snapshot` log a one-line
+    // summary to stderr. The result is discarded — this code path is
+    // strictly telemetry. Errors are non-fatal: a probe failure must
+    // not break the build.
+    //
+    // See README.md "Limits" for the user-facing contract.
+    maybe_probe_content_snapshot(project_root, config);
+
     // 1. Bundle.
     let bundler_input = BundlerInput {
         project_root: project_root.to_path_buf(),
@@ -332,6 +345,30 @@ fn warn_deferred_dynamic(routes: &[DeferredDynamicRoute]) {
             r.source_path.display(),
             r.reason,
         ));
+    }
+}
+
+/// When `ZFB_DEBUG_SNAPSHOT` is truthy, build the content snapshot from
+/// the configured collections so [`zfb_content::build_snapshot`] logs
+/// the entry count and serialized byte size to stderr. The snapshot
+/// itself is discarded — wave 2 owns the bundler-side wiring; this
+/// function exists so users can monitor V8 RAM pressure today.
+///
+/// Failure is non-fatal: a malformed collection root will print a
+/// warning but the build proceeds. The flag is opt-in, so the cost of
+/// walking the collections a second time only lands when the user has
+/// asked for the telemetry.
+fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
+    if !zfb_content::debug_snapshot_enabled() {
+        return;
+    }
+    let collections: Vec<zfb_content::CollectionConfig> = config
+        .collections
+        .iter()
+        .map(|c| zfb_content::CollectionConfig::new(c.name.clone(), project_root.join(&c.path)))
+        .collect();
+    if let Err(err) = zfb_content::build_snapshot(&collections) {
+        output::warn(format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"));
     }
 }
 

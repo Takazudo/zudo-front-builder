@@ -57,6 +57,46 @@ The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the 
 - **`CLOUDFLARE_ACCOUNT_ID`** (required) — the Cloudflare account ID that owns the Pages project.
 - **`IFTTT_PROD_NOTIFY`** (optional) — IFTTT webhook key used to push a notification when a production deploy lands. Omit to skip notifications.
 
+## External tool version pins
+
+zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/miniflare/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
+
+The pin lives in two places that **must move together**:
+
+1. The npm-side declaration in [`package.json`](./package.json) (no `^`/`~` for these entries).
+2. The Rust-side constant that the subprocess wrapper checks against at startup.
+
+| Tool        | Rust constant                                                                                       | Where                                          | npm-side pin                          |
+| ----------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------- |
+| esbuild     | `EXPECTED_ESBUILD_VERSION`, `EXPECTED_ESBUILD_SHA256`                                               | `crates/zfb-islands/src/esbuild.rs`            | (binary; populated by release engineering into `crates/zfb/binaries/esbuild/esbuild`) |
+| wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb/src/commands/preview.rs`           | `wrangler` in `package.json`          |
+| miniflare   | `EXPECTED_MINIFLARE_VERSION` (informational; not gated at runtime — wrangler owns the subprocess)   | `crates/zfb/src/commands/preview.rs`           | `miniflare` in `package.json`         |
+| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via miniflare → `pnpm-lock.yaml`)    | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
+
+### Bumping wrangler / miniflare / workerd
+
+1. Pick the new versions you want (typically a coordinated wrangler + miniflare + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
+2. Edit the `wrangler` and `miniflare` entries in `package.json` to the new exact versions.
+3. Edit `EXPECTED_WRANGLER_VERSION`, `EXPECTED_MINIFLARE_VERSION`, and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
+4. Run `pnpm install` to refresh `pnpm-lock.yaml`. Confirm the resolved `workerd` version in the lockfile matches the constant you just set.
+5. Run `cargo test -p zfb` to make sure the version-gate tests still pass.
+6. Commit `package.json`, `pnpm-lock.yaml`, and the constants change in one commit so the pin moves atomically.
+
+If you ever need to bypass the wrangler version gate (e.g. while a bump is mid-flight on a feature branch), set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` for the duration of the `zfb preview` invocation. Do not check this in.
+
+### Bumping esbuild
+
+esbuild is shipped as a Go-built standalone CLI binary that release engineering downloads into `crates/zfb/binaries/esbuild/esbuild` at release-tarball assembly time — the binary is **not** committed to this repo. To bump:
+
+1. Pick the new esbuild version (the latest stable 0.x at release-cut time; see <https://github.com/evanw/esbuild/releases>).
+2. Edit `EXPECTED_ESBUILD_VERSION` in `crates/zfb-islands/src/esbuild.rs`.
+3. Compute the SHA-256 of the platform-specific binary you intend to ship (e.g. `sha256sum esbuild` on Linux, `shasum -a 256 esbuild` on macOS) and edit `EXPECTED_ESBUILD_SHA256` to that lowercase hex digest. Leave the constant as the empty string (`""`) only if you are explicitly handing the SHA-pin step off to the next release-engineering pass — the version gate still runs in that case, but the checksum gate is skipped (with a clear log line).
+4. Update the `## esbuild Version` table in `crates/zfb-islands/README.md`.
+5. Run `cargo test -p zfb-islands` — the unit tests use the mock-subprocess code path and do not require the real binary.
+6. Drop the new binary into `crates/zfb/binaries/esbuild/esbuild` locally to test the end-to-end gate, but do not commit it (`.gitignore` already excludes the path).
+
+The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE).

@@ -140,12 +140,14 @@ mod tests {
     }
 
     fn link_url(node: &MdastNode) -> String {
-        let MdastNode::Root(r) = node else { panic!() };
+        let MdastNode::Root(r) = node else {
+            unreachable!("expected MdastNode::Root")
+        };
         let MdastNode::Paragraph(p) = &r.children[0] else {
-            panic!()
+            unreachable!("expected MdastNode::Paragraph")
         };
         let MdastNode::Link(l) = &p.children[0] else {
-            panic!()
+            unreachable!("expected MdastNode::Link")
         };
         l.url.clone()
     }

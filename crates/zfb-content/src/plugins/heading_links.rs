@@ -195,15 +195,15 @@ mod tests {
         let mut tree = root(vec![h(2, "Hello World")]);
         HeadingLinksPlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         assert_eq!(first_attr(&children[0], "id"), Some("hello-world"));
 
         let HastNode::Element { children: hc, .. } = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         let HastNode::Element { tag, attrs, .. } = &hc[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         assert_eq!(tag, "a");
         assert!(attrs.contains(&("href".to_string(), "#hello-world".to_string())));
@@ -223,7 +223,7 @@ mod tests {
         let mut tree = root(vec![h(2, "A"), h(2, "A"), h(2, "A")]);
         HeadingLinksPlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         assert_eq!(first_attr(&children[0], "id"), Some("a"));
         assert_eq!(first_attr(&children[1], "id"), Some("a-1"));

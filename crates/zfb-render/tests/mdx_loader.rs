@@ -107,7 +107,7 @@ fn malformed_mdx_yields_compile_error_with_specifier_and_message() {
                 "compile error message should be informative, got: {message:?}",
             );
         }
-        other => panic!("expected RenderError::Compile, got {other:?}"),
+        other => unreachable!("expected RenderError::Compile, got {other:?}"),
     }
 }
 

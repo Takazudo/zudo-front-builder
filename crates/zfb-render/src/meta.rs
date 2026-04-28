@@ -419,7 +419,7 @@ mod tests {
         let err = parse_meta(Some(&v)).unwrap_err();
         match err {
             MetaError::InvalidShape(_) => {}
-            other => panic!("expected InvalidShape, got {other:?}"),
+            other => unreachable!("expected InvalidShape, got {other:?}"),
         }
     }
 
@@ -429,7 +429,7 @@ mod tests {
         let err = parse_meta(Some(&v)).unwrap_err();
         match err {
             MetaError::InvalidShape(msg) => assert!(msg.contains("string")),
-            other => panic!("expected InvalidShape, got {other:?}"),
+            other => unreachable!("expected InvalidShape, got {other:?}"),
         }
     }
 
@@ -529,7 +529,7 @@ mod tests {
         let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
         match err {
             MetaError::LayoutOutsideProjectRoot(_) => {}
-            other => panic!("expected LayoutOutsideProjectRoot, got {other:?}"),
+            other => unreachable!("expected LayoutOutsideProjectRoot, got {other:?}"),
         }
     }
 
@@ -545,7 +545,7 @@ mod tests {
         let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
         match err {
             MetaError::LayoutOutsideProjectRoot(_) => {}
-            other => panic!("expected LayoutOutsideProjectRoot, got {other:?}"),
+            other => unreachable!("expected LayoutOutsideProjectRoot, got {other:?}"),
         }
     }
 
@@ -561,7 +561,7 @@ mod tests {
         let err = resolve_meta(meta, &page, root, &[]).unwrap_err();
         match err {
             MetaError::LayoutNotFound(p) => assert!(p.contains("layouts/nope.tsx")),
-            other => panic!("expected LayoutNotFound, got {other:?}"),
+            other => unreachable!("expected LayoutNotFound, got {other:?}"),
         }
     }
 

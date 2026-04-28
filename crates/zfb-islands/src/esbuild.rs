@@ -30,8 +30,9 @@ use crate::bundler::{
 /// The pinned esbuild CLI version this crate runs against.
 ///
 /// At subprocess startup we run `esbuild --version` and abort with a
-/// clear error if the reported version does not match. To bump, see the
-/// instructions in `Cargo.toml`.
+/// clear error if the reported version does not match. To bump, see
+/// the "External tool version pins" section in `CONTRIBUTING.md` at
+/// the workspace root.
 pub const EXPECTED_ESBUILD_VERSION: &str = "0.24.0";
 
 /// SHA-256 of the pinned esbuild binary, lowercase hex.
@@ -40,7 +41,8 @@ pub const EXPECTED_ESBUILD_VERSION: &str = "0.24.0";
 /// populated the slot — in that case the checksum verification is
 /// skipped (with a clear log line) and only the `--version` check is
 /// enforced. Once populated, the checksum verification runs on first
-/// subprocess invocation and any mismatch aborts with a clear error.
+/// subprocess invocation and any mismatch aborts with a clear error
+/// pointing at the bump procedure in `CONTRIBUTING.md`.
 pub const EXPECTED_ESBUILD_SHA256: &str = "";
 
 /// One-time cache of `(binary_path → outcome)` for the version + checksum
@@ -106,8 +108,10 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
     if reported != EXPECTED_ESBUILD_VERSION {
         return Err(anyhow!(
             "esbuild version mismatch: expected `{}` (pinned in zfb-islands), got `{}` from {}. \
-             Update EXPECTED_ESBUILD_VERSION in zfb-islands/src/esbuild.rs and refresh the \
-             binary under crates/zfb/binaries/esbuild/esbuild.",
+             To resolve, follow the \"External tool version pins\" procedure in CONTRIBUTING.md \
+             at the workspace root: bump EXPECTED_ESBUILD_VERSION (and EXPECTED_ESBUILD_SHA256) \
+             in crates/zfb-islands/src/esbuild.rs in lock-step with the binary under \
+             crates/zfb/binaries/esbuild/esbuild.",
             EXPECTED_ESBUILD_VERSION,
             reported,
             binary_path.display()
@@ -125,7 +129,12 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
         if !actual.eq_ignore_ascii_case(EXPECTED_ESBUILD_SHA256) {
             return Err(anyhow!(
                 "esbuild binary checksum mismatch for {}: \
-                 expected sha256 `{}`, got `{}`",
+                 expected sha256 `{}`, got `{}`. \
+                 To resolve, follow the \"External tool version pins\" procedure in \
+                 CONTRIBUTING.md at the workspace root: either replace the binary with \
+                 one matching EXPECTED_ESBUILD_SHA256, or — when bumping intentionally — \
+                 update both the version and SHA256 constants in \
+                 crates/zfb-islands/src/esbuild.rs in lock-step with the new binary.",
                 binary_path.display(),
                 EXPECTED_ESBUILD_SHA256,
                 actual

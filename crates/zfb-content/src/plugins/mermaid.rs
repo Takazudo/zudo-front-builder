@@ -123,13 +123,13 @@ mod tests {
         let mut tree = root(vec![pre_with_lang(Some("language-mermaid"))]);
         MermaidPlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Element { children: pc, .. } = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         let HastNode::Element { children: cc, .. } = &pc[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         assert_eq!(cc, &[HastNode::Text("graph TD;".into())]);
     }
@@ -140,10 +140,10 @@ mod tests {
         MermaidPlugin::new().visit(&mut tree);
         MermaidPlugin::new().visit(&mut tree);
         let HastNode::Root { children } = &tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Element { attrs, .. } = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         let count = attrs.iter().filter(|(k, _)| k == "data-mermaid").count();
         assert_eq!(count, 1);

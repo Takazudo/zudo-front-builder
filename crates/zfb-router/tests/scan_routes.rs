@@ -183,7 +183,7 @@ fn ambiguous_routes_are_rejected() {
         RouterError::AmbiguousRoute { template, .. } => {
             assert_eq!(template, "/blog");
         }
-        other => panic!("expected AmbiguousRoute, got {other:?}"),
+        other => unreachable!("expected AmbiguousRoute, got {other:?}"),
     }
 }
 

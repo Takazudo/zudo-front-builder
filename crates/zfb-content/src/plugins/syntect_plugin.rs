@@ -138,10 +138,10 @@ mod tests {
         };
         plugin.visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Raw(html) = &children[0] else {
-            panic!("expected Raw, got {:?}", children[0])
+            unreachable!("expected Raw, got {:?}", children[0])
         };
         assert!(html.contains("<pre class=\"syntect-"), "got: {html}");
         assert!(html.contains("</code></pre>"));
@@ -180,10 +180,10 @@ mod tests {
         };
         plugin.visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Raw(html) = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Raw")
         };
         assert_eq!(html, "<pre><code>hello</code></pre>");
     }

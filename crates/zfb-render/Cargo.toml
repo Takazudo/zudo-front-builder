@@ -38,3 +38,9 @@ thiserror = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# Used by tests/integration_routing_rendering.rs to scan the routing
+# fixtures into a `Route` table. Lives in dev-deps because zfb-render
+# itself does not need to depend on zfb-router at runtime — the build
+# orchestrator (`zfb-build`) is what wires the two together in
+# production.
+zfb-router = { path = "../zfb-router" }

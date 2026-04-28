@@ -24,8 +24,8 @@
 //!   asset filenames + HTML rewrite so deployed assets can be cached
 //!   forever. No SSE — `dist/` is a static tree the user uploads to a
 //!   CDN.
-//! - **SSR / edge**: skip writing HTML to disk; emit it into a deno-
-//!   shaped runtime bundle.
+//! - **SSR / edge**: skip writing HTML to disk; emit it into a
+//!   workerd-shaped runtime bundle (see ADR-005).
 //!
 //! Locking the orchestrator to a concrete struct now would force a
 //! refactor when production-build lands. Locking to a trait costs a
@@ -36,9 +36,10 @@
 //! The orchestrator deliberately doesn't depend on `zfb-render`,
 //! `zfb-css`, or `zfb-islands` directly:
 //!
-//! - `zfb-render` requires the `deno_core_host` feature (gigabytes of V8
-//!   build artefacts) for a working host. The orchestrator must compile
-//!   without that feature flag flipped on.
+//! - `zfb-render` carries the SWC TSX→JS pipeline and (per ADR-005) the
+//!   miniflare-subprocess render host. Keeping that out of the
+//!   orchestrator's surface lets `zfb-build` compile cheaply for tests
+//!   and for callers that only need orchestration types.
 //! - The CSS / islands crates ship trait-based plug points
 //!   (`CssEngine`, `ClientBundler`) plus subprocess wrappers around
 //!   third-party CLIs (Tailwind, esbuild). Pulling them in transitively

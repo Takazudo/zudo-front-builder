@@ -15,9 +15,10 @@ The dev-loop orchestrator for the zudo-front-builder framework.
 The orchestrator deliberately does **not** depend on those last three
 crates. They're injected as callback functions on a `BuildContext` so:
 
-- the orchestrator's surface stays free of feature-gated dependencies
-  (notably `zfb-render`'s `deno_core_host` feature, which pulls in V8),
-  and
+- the orchestrator's surface stays free of heavyweight transitive
+  dependencies (the SWC pipeline in `zfb-render`, and the
+  miniflare / esbuild npm subprocess wrappers in `zfb-css` /
+  `zfb-islands`), and
 - tests can plug in fakes that count invocations without spawning
   Tailwind / esbuild subprocesses.
 
@@ -99,7 +100,7 @@ builds will need different behaviour:
 | ---------- | --------------------------------------------------------- |
 | Production | Minify, fail-fast, hashed asset URLs in HTML.             |
 | SSR        | Skip writing HTML to disk; emit into a runtime bundle.    |
-| Edge       | Skip dist/ entirely; emit deno-shaped artefacts in RAM.   |
+| Edge       | Skip dist/ entirely; emit workerd-shaped artefacts in RAM. |
 
 Locking the orchestrator to a concrete struct now would force a
 refactor when production-build lands. Locking to a trait costs one

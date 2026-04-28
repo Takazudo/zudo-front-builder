@@ -383,7 +383,7 @@ mod tests {
         let err = extract(&path, "---\ntitle: x\n---\n").expect_err("should fail");
         match err {
             FrontmatterError::UnsupportedExtension(ext) => assert_eq!(ext, "markdown"),
-            other => panic!("expected UnsupportedExtension, got {other:?}"),
+            other => unreachable!("expected UnsupportedExtension, got {other:?}"),
         }
     }
 

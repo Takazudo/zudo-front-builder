@@ -3,10 +3,10 @@
 //! This module defines the serializable shape that flows from the Rust
 //! build into the JS runtime so TSX page modules can call
 //! `getCollection("docs")` and `getEntry("docs", "slug")` synchronously
-//! during SSR. The actual deno_core wiring (embedding the snapshot into
-//! `globalThis.__zfb.content`) is gated by ADR-001 and lands in a
-//! follow-up epic — this sub delivers ONLY the Rust contract and the
-//! TypeScript surface.
+//! during SSR. The actual JS-side wiring (embedding the snapshot into
+//! `globalThis.__zfb.content` via the miniflare runtime per ADR-005)
+//! lands in a follow-up epic — this sub delivers ONLY the Rust contract
+//! and the TypeScript surface.
 //!
 //! See `docs/architecture/adr-004-content-bridge.md` for the JS-side
 //! contract spec.
@@ -179,7 +179,60 @@ pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapsho
         out.insert(cfg.name.clone(), snapshots);
     }
 
-    Ok(ContentSnapshot { collections: out })
+    let snapshot = ContentSnapshot { collections: out };
+    log_snapshot_size_if_requested(&snapshot);
+    Ok(snapshot)
+}
+
+/// If `ZFB_DEBUG_SNAPSHOT` is set to a truthy value (`1` or `true`,
+/// case-insensitive), print a one-line summary of the serialized
+/// snapshot size to stderr. Anything else (unset, empty, `0`, `false`,
+/// or unrecognized) is a no-op.
+///
+/// Used to monitor V8 RAM pressure: zfb embeds the full content
+/// snapshot in the miniflare worker at build time, so the byte size
+/// reported here is roughly what gets held in V8 during render. See
+/// the "Limits" section of the project README.
+///
+/// Failure is silent on purpose — debug telemetry must never panic the
+/// build. If `serde_json::to_string` ever returns `Err` (it cannot for
+/// our shape, which contains no NaN/non-string keys), we just skip the
+/// log line.
+fn log_snapshot_size_if_requested(snap: &ContentSnapshot) {
+    if !debug_snapshot_enabled() {
+        return;
+    }
+    let entries: usize = snap.collections.values().map(|v| v.len()).sum();
+    let bytes = match serde_json::to_string(snap) {
+        Ok(s) => s.len(),
+        Err(_) => return,
+    };
+    // Round up so a 1-byte snapshot still reports as 1 KB rather than 0.
+    let kb = bytes.div_ceil(1024);
+    eprintln!("content snapshot: {entries} entries / {kb} KB");
+}
+
+/// Read `ZFB_DEBUG_SNAPSHOT` and decide whether to emit the debug line.
+/// Truthy values: `1`, `true` (case-insensitive). Everything else —
+/// including unset, empty string, and unrecognized values like `yes` —
+/// is treated as off so a stray export does not change build output.
+///
+/// Public so the CLI can avoid building a snapshot purely for telemetry
+/// when the flag is off.
+pub fn debug_snapshot_enabled() -> bool {
+    std::env::var("ZFB_DEBUG_SNAPSHOT")
+        .ok()
+        .as_deref()
+        .map(parse_debug_truthy)
+        .unwrap_or(false)
+}
+
+/// Pure parser for the `ZFB_DEBUG_SNAPSHOT` value. Split out from
+/// [`debug_snapshot_enabled`] so the truthiness rule is testable
+/// without mutating process-global env state.
+fn parse_debug_truthy(raw: &str) -> bool {
+    let t = raw.trim();
+    t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
 }
 
 // -----------------------------------------------------------------------------
@@ -430,6 +483,19 @@ mod tests {
         let err = build_snapshot(&[cfg]).expect_err("malformed YAML must fail");
         match err {
             BridgeError::Walk { collection, .. } => assert_eq!(collection, "blog"),
+        }
+    }
+
+    #[test]
+    fn debug_truthy_parser_accepts_only_documented_truthy_values() {
+        // Documented truthy: `1`, `true` (case-insensitive, trim whitespace).
+        for raw in ["1", " 1 ", "true", "TRUE", "True", "  true\n"] {
+            assert!(parse_debug_truthy(raw), "{raw:?} should be truthy");
+        }
+        // Everything else is off — guards against accidental enabling
+        // when a script sets `ZFB_DEBUG_SNAPSHOT=yes` or similar.
+        for raw in ["", "0", "false", "no", "yes", "on", "off", "TRUE!"] {
+            assert!(!parse_debug_truthy(raw), "{raw:?} should be falsy");
         }
     }
 

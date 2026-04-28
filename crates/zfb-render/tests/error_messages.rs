@@ -83,7 +83,7 @@ fn broken_relative_import_points_at_importer_file_and_lists_candidates() {
                 "expected the resolver to record probed candidates, got tried={tried:?}",
             );
         }
-        other => panic!("expected RenderError::Resolve, got {other:?}"),
+        other => unreachable!("expected RenderError::Resolve, got {other:?}"),
     }
 }
 
@@ -128,7 +128,7 @@ fn paths_export_wrong_top_level_shape_names_route_file() {
             );
             assert_eq!(field.as_deref(), Some("paths()"));
         }
-        other => panic!("expected InvalidPathsExport, got {other:?}"),
+        other => unreachable!("expected InvalidPathsExport, got {other:?}"),
     }
 }
 
@@ -159,6 +159,92 @@ fn paths_entry_missing_params_names_field_and_route_file() {
         msg.contains("expected"),
         "expected an `expected …` clause in error, got: {msg}",
     );
+}
+
+/// Canonical Sub-6 case: a `paths()` returning `[{ params: { wrongName: "x" } }]`
+/// for `[slug].tsx` must surface BOTH the source file path AND a clear
+/// "expected `slug`, got `wrongName`" param-name diagnostic.
+#[test]
+fn paths_missing_param_surfaces_expected_and_got_with_route_file() {
+    let mut cache = PathsCache::new();
+    let segs = vec![Segment::Dynamic("slug".to_string())];
+    let export = serde_json::json!([{ "params": { "wrongName": "x" } }]);
+
+    let err = resolve_paths(&mut cache, "pages/[slug].tsx", &segs, &export)
+        .expect_err("missing required param should fail");
+    let msg = err.to_string();
+
+    // (a) Source file path is present.
+    assert!(
+        msg.contains("pages/[slug].tsx"),
+        "expected route file path in error, got: {msg}",
+    );
+    // (b) Expected param name is present.
+    assert!(
+        msg.contains("`slug`"),
+        "expected required param name in error, got: {msg}",
+    );
+    // (c) The actually-provided key (the typo) is present so the user can
+    //     spot the mismatch immediately.
+    assert!(
+        msg.contains("`wrongName`"),
+        "expected provided-keys list to mention `wrongName`, got: {msg}",
+    );
+    // (d) The structured form carries both fields so consumers (CLI
+    //     diagnostics) can format the same diagnostic without re-parsing.
+    match err {
+        PathsError::MissingParam {
+            name,
+            route,
+            provided,
+        } => {
+            assert_eq!(name, "slug");
+            assert_eq!(route, "pages/[slug].tsx");
+            assert_eq!(provided, vec!["wrongName".to_string()]);
+        }
+        other => panic!("expected MissingParam, got {other:?}"),
+    }
+}
+
+/// `ExtraParam` should likewise carry the route file path AND a clear
+/// "expected one of […], got `…`" diagnostic listing the route's declared
+/// param names.
+#[test]
+fn paths_extra_param_surfaces_expected_and_got_with_route_file() {
+    let mut cache = PathsCache::new();
+    let segs = vec![Segment::Dynamic("slug".to_string())];
+    let export = serde_json::json!([
+        { "params": { "slug": "ok", "stray": "x" } }
+    ]);
+
+    let err = resolve_paths(&mut cache, "pages/[slug].tsx", &segs, &export)
+        .expect_err("extra param should fail");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("pages/[slug].tsx"),
+        "expected route file path in error, got: {msg}",
+    );
+    assert!(
+        msg.contains("`stray`"),
+        "expected offending param name in error, got: {msg}",
+    );
+    assert!(
+        msg.contains("`slug`"),
+        "expected the declared param name list to mention `slug`, got: {msg}",
+    );
+    match err {
+        PathsError::ExtraParam {
+            name,
+            route,
+            expected,
+        } => {
+            assert_eq!(name, "stray");
+            assert_eq!(route, "pages/[slug].tsx");
+            assert_eq!(expected, vec!["slug".to_string()]);
+        }
+        other => panic!("expected ExtraParam, got {other:?}"),
+    }
 }
 
 /// A `params` value with the wrong type names both the param, the route

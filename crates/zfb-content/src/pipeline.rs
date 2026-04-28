@@ -451,7 +451,7 @@ mod tests {
     fn root_children(node: &HastNode) -> &[HastNode] {
         match node {
             HastNode::Root { children } => children,
-            _ => panic!("expected Root, got {node:?}"),
+            _ => unreachable!("expected Root, got {node:?}"),
         }
     }
 
@@ -473,7 +473,7 @@ mod tests {
                 assert_eq!(tag, expected_tag, "tag mismatch in {node:?}");
                 (attrs.as_slice(), children.as_slice(), *void)
             }
-            _ => panic!("expected Element<{expected_tag}>, got {node:?}"),
+            _ => unreachable!("expected Element<{expected_tag}>, got {node:?}"),
         }
     }
 
@@ -783,7 +783,7 @@ mod tests {
                     "expected class=touched on {c:?}"
                 );
             } else {
-                panic!("expected element, got {c:?}");
+                unreachable!("expected element, got {c:?}");
             }
         }
     }

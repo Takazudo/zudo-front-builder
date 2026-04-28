@@ -49,13 +49,13 @@ fn malformed_frontmatter_error_points_at_file_and_yaml_location() {
         .expect_err("malformed frontmatter should fail");
 
     let CollectionError::Multiple { errors, .. } = &err else {
-        panic!("expected Multiple aggregate, got {err:?}");
+        unreachable!("expected Multiple aggregate, got {err:?}");
     };
     assert_eq!(errors.len(), 1, "expected a single aggregated error");
 
     let inner = &errors[0];
     let CollectionError::Frontmatter { path, message } = inner else {
-        panic!("expected Frontmatter variant, got {inner:?}");
+        unreachable!("expected Frontmatter variant, got {inner:?}");
     };
 
     assert_eq!(path, &bad, "error must carry the offending file path");

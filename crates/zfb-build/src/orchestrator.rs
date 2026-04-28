@@ -357,7 +357,7 @@ mod tests {
                 assert!(s.contains(&pid("/proj/pages/a.tsx")));
                 assert!(!s.contains(&pid("/proj/pages/b.tsx")));
             }
-            _ => panic!(),
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
         assert!(!plan.rerun_css);
         assert!(!plan.rerun_islands);
@@ -373,7 +373,7 @@ mod tests {
                 assert!(s.contains(&pid("/proj/pages/b.tsx")));
                 assert!(!s.contains(&pid("/proj/pages/c.tsx")));
             }
-            _ => panic!(),
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
         // components/ is in default islands roots -> islands rerun.
         assert!(plan.rerun_islands);
@@ -407,7 +407,7 @@ mod tests {
             PageSelection::Specific(s) => {
                 assert_eq!(s, BTreeSet::from([pid("/proj/pages/c.tsx")]));
             }
-            _ => panic!(),
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
         }
     }
 
