@@ -59,7 +59,7 @@ pub const DEFAULT_OUTPUT_EXTENSION: &str = "html";
 
 impl Route {
     /// Render the route as a `/`-separated template, e.g. `/blog/:slug` or
-    /// `/docs/:slug*`. The empty (index) route renders as `/`.
+    /// `/docs/:slug{.+}`. The empty (index) route renders as `/`.
     pub fn template(&self) -> String {
         if self.segments.is_empty() {
             return "/".to_string();
@@ -97,7 +97,7 @@ impl Route {
 
         // Build the URL-style path from segments. Dynamic / catchall
         // segments fall back to their template form (`:name`,
-        // `:name*`); concrete builds wouldn't reach here.
+        // `:name{.+}`); concrete builds wouldn't reach here.
         let mut url_parts: Vec<String> = Vec::with_capacity(self.segments.len());
         for seg in &self.segments {
             url_parts.push(match seg {
