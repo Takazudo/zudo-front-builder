@@ -260,16 +260,18 @@ impl AssetPipeline for ProductionAssetPipeline {
         }
 
         // 3. Write each page, rewriting stable URLs to hashed URLs as
-        //    we go. The rewrite is naive substring replacement — the
-        //    emitters are expected to declare URLs that are unique
-        //    enough not to collide with arbitrary page text (e.g.
-        //    `/assets/styles.css` rather than `styles.css`).
+        //    we go. The rewrite is boundary-anchored substring
+        //    replacement: a match is only rewritten when the byte
+        //    immediately after the match is a URL delimiter (quote,
+        //    whitespace, `<`, `>`, `?`, `#`, end-of-string). That
+        //    prevents a stable URL like `/styles.css` from rewriting
+        //    inside `/styles.css.map` (sourcemap reference) or any
+        //    longer URL that happens to share a prefix.
         //
-        //    Sort rewrites by `from` length descending so that longer
-        //    keys are applied before any shorter prefixes. Without
-        //    this, a stable URL like `/styles.css` would also rewrite
-        //    occurrences inside `/styles.css.map` and corrupt the
-        //    sourcemap reference.
+        //    Sort rewrites by `from` length descending so longer keys
+        //    are applied before any shorter prefixes — defence in
+        //    depth even with the boundary check, since two registered
+        //    stable URLs could still nest.
         rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for r in rendered {
             let dest = validate_output_path(&ctx.dist_root, &r.output_path)
@@ -280,7 +282,7 @@ impl AssetPipeline for ProductionAssetPipeline {
                 let mut buf = r.html;
                 for (from, to) in &rewrites {
                     if buf.contains(from.as_str()) {
-                        buf = buf.replace(from.as_str(), to);
+                        buf = boundary_replace(&buf, from, to);
                     }
                 }
                 buf
@@ -291,6 +293,61 @@ impl AssetPipeline for ProductionAssetPipeline {
 
         Ok(outcome)
     }
+}
+
+/// Replace each occurrence of `from` in `haystack` with `to`, but only
+/// when the byte immediately after the match is a URL delimiter
+/// (quote, whitespace, `<`, `>`, `?`, `#`, `\\`) or end-of-string. A
+/// match followed by an alphanumeric, `.`, `_`, or `-` is preserved.
+///
+/// This protects sourcemap references and other URLs that contain a
+/// registered stable URL as a prefix: e.g. with `from = "/styles.css"`,
+/// `to = "/styles-abc.css"`, the haystack
+///   `<link href="/styles.css"> ... <a href="/styles.css.map">`
+/// rewrites only the first occurrence.
+///
+/// Pure substring matching against UTF-8: the lookahead byte is read
+/// directly from the byte slice, which is safe because any non-ASCII
+/// continuation byte (0x80-0xBF) is treated as a non-delimiter and
+/// therefore does NOT trigger a rewrite — the worst case is a missed
+/// rewrite, never an incorrect one.
+fn boundary_replace(haystack: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return haystack.to_string();
+    }
+    let bytes = haystack.as_bytes();
+    let from_bytes = from.as_bytes();
+    // Walk byte-by-byte looking for `from`, but build the output via
+    // `str` slicing so multi-byte UTF-8 sequences in the surrounding
+    // content are preserved verbatim. Both `last_copied` and `i` are
+    // char boundaries by construction: `last_copied` only advances
+    // past either ASCII bytes (incremented one at a time, so each byte
+    // is its own char) or the full ASCII `from` match.
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0usize;
+    let mut last_copied = 0usize;
+    while i < bytes.len() {
+        if i + from_bytes.len() <= bytes.len() && &bytes[i..i + from_bytes.len()] == from_bytes {
+            let after = bytes.get(i + from_bytes.len()).copied();
+            let is_boundary = match after {
+                None => true, // end-of-string
+                Some(b) => matches!(
+                    b,
+                    b'"' | b'\'' | b'\\' | b'\n' | b'\r' | b'\t' | b' ' | b'<' | b'>' | b'?' | b'#'
+                ),
+            };
+            if is_boundary {
+                out.push_str(&haystack[last_copied..i]);
+                out.push_str(to);
+                i += from_bytes.len();
+                last_copied = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&haystack[last_copied..]);
+    out
 }
 
 /// Hash, write, and record the URL for a single emitted asset.
@@ -410,6 +467,52 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn boundary_replace_rewrites_at_quote_boundaries() {
+        let html = r#"<link href="/styles.css">"#;
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, r#"<link href="/styles-abc.css">"#);
+    }
+
+    #[test]
+    fn boundary_replace_does_not_rewrite_inside_longer_url() {
+        // Round 2 regression: `/styles.css` must NOT rewrite inside
+        // `/styles.css.map`. The `.` after the match is not a
+        // delimiter, so the boundary check rejects it.
+        let html = r#"<a href="/styles.css.map">"#;
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, r#"<a href="/styles.css.map">"#);
+    }
+
+    #[test]
+    fn boundary_replace_mixed_match_and_no_match() {
+        let html = concat!(
+            r#"<link rel="stylesheet" href="/styles.css">"#,
+            r#"<a href="/styles.css.map">map</a>"#,
+        );
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        let expected = concat!(
+            r#"<link rel="stylesheet" href="/styles-abc.css">"#,
+            r#"<a href="/styles.css.map">map</a>"#,
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn boundary_replace_handles_end_of_string() {
+        let out = boundary_replace("/styles.css", "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "/styles-abc.css");
+    }
+
+    #[test]
+    fn boundary_replace_preserves_multibyte_surroundings() {
+        // The output construction must keep multi-byte UTF-8 intact.
+        let html = "前<link href=\"/styles.css\">後";
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "前<link href=\"/styles-abc.css\">後");
+    }
+
 
     fn pid(s: &str) -> PageId {
         PageId::new(PathBuf::from(s))
