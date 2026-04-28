@@ -29,7 +29,7 @@ Cross-references into the docs:
 - [/concepts/routing](../../docs/src/content/docs/) — file-based routing rules.
 - [/api/get-collection](../../docs/src/content/docs/) — `getCollection("blog")`.
 - [/api/paginate](../../docs/src/content/docs/) — the pagination helper used in `blog/page/[page].tsx`.
-- [/concepts/mdx-components](../../docs/src/content/docs/) — the `<entry.Content components={...}>` rendering pattern (Sub 8 docs page).
+- [/concepts/mdx-components](../../docs/src/content/docs/) — the `<entry.Content components={...}>` rendering pattern.
 - [/architecture/js-runtime](../../docs/src/content/docs/) — the JS runtime decision (ADR-001) that gates real SSR.
 
 ## Rendering post bodies with `entry.Content`
@@ -41,7 +41,7 @@ spread in the htmlOverrides convention from `zfb` so HTML tags emitted by
 the markdown body resolve to the package's passthrough components, and (b)
 inject custom JSX components — here, the `<Note>` admonition used inside
 `content/blog/hello-zfb.mdx` — so MDX-only posts can reach for project-level
-components by name. See `/concepts/mdx-components` (Sub 8) for the full
+components by name. See `/concepts/mdx-components` for the full
 contract and the design rationale.
 
 ## v0 status — read this first
