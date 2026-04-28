@@ -11,7 +11,10 @@ pub mod serializer;
 pub mod syntect_highlight;
 pub mod tsx_frontmatter;
 
-pub use content_bridge::{build_snapshot, BridgeError, CollectionConfig, ContentSnapshot, EntrySnapshot};
+pub use content_bridge::{
+    build_snapshot, debug_snapshot_enabled, BridgeError, CollectionConfig, ContentSnapshot,
+    EntrySnapshot,
+};
 
 pub use frontmatter::{
     extract as extract_frontmatter, FrontmatterError, UnifiedFrontmatter,
