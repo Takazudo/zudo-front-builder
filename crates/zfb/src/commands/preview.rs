@@ -481,11 +481,20 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
 /// Extract a semver-shaped version string from `wrangler --version`'s
 /// banner. The current banner is roughly ` ⛅️ wrangler 4.85.0` — we
 /// scan whitespace-separated tokens for one whose leading characters
-/// look like `MAJOR.MINOR.PATCH`. Returns `None` if no token matches,
-/// which the caller turns into a "could not parse" error.
+/// look like `MAJOR.MINOR.PATCH`. A leading `v` (e.g. `v4.85.0`) is
+/// stripped, since other CLIs in the ecosystem emit that prefix even
+/// though wrangler does not today — keeping the parser tolerant
+/// future-proofs against an upstream banner reshuffle. Returns `None`
+/// if no token matches, which the caller turns into a "could not
+/// parse" error.
 fn parse_wrangler_version(stdout: &str) -> Option<String> {
-    for token in stdout.split_whitespace() {
-        let mut parts = token.splitn(3, '.');
+    for raw_token in stdout.split_whitespace() {
+        // Trim leading/trailing punctuation (e.g. parens, commas) before
+        // poking at the body; this matters for the leading-`v` step
+        // below, which only fires when `v` is the very first character.
+        let token = raw_token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let body = token.strip_prefix('v').unwrap_or(token);
+        let mut parts = body.splitn(3, '.');
         let (Some(maj), Some(min), Some(patch)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
@@ -500,7 +509,7 @@ fn parse_wrangler_version(stdout: &str) -> Option<String> {
                 .next()
                 .is_some_and(|c| c.is_ascii_digit())
         {
-            return Some(token.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_string());
+            return Some(body.to_string());
         }
     }
     None
@@ -1077,6 +1086,17 @@ mod tests {
         // Some CI environments / shims may print just the bare version.
         assert_eq!(
             parse_wrangler_version("4.85.0\n").as_deref(),
+            Some("4.85.0"),
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_strips_leading_v_prefix() {
+        // Wrangler doesn't emit a leading `v` today, but other CLIs in
+        // the ecosystem do — strip it so the equality check downstream
+        // continues to match `4.85.0` even if upstream changes its banner.
+        assert_eq!(
+            parse_wrangler_version("⛅ wrangler v4.85.0").as_deref(),
             Some("4.85.0"),
         );
     }
