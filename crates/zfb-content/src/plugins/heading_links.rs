@@ -37,15 +37,33 @@ impl HeadingLinksPlugin {
     }
 
     fn next_slug(&mut self, base: &str) -> String {
-        let count = self.seen.entry(base.to_string()).or_insert(0);
-        let slug = if *count == 0 {
-            base.to_string()
-        } else {
-            format!("{base}-{count}")
-        };
-        *count += 1;
-        slug
+        next_slug(&mut self.seen, base)
     }
+}
+
+/// Allocate the next slug for `base` against a per-document counter map.
+///
+/// Mirrors github-slugger's repeat-numbering: first occurrence returns
+/// `base`, subsequent occurrences return `base-1`, `base-2`, ...
+/// Empty `base` short-circuits to the empty string and leaves the
+/// counter map untouched, matching heading_links' "skip empty-text
+/// headings" behaviour.
+///
+/// Shared with `mdx_jsx_emit::collect_headings` so the JSX-emitted
+/// `headings[i].slug` cannot drift from the rendered `<hN id="...">`.
+#[must_use]
+pub fn next_slug(seen: &mut HashMap<String, usize>, base: &str) -> String {
+    if base.is_empty() {
+        return String::new();
+    }
+    let count = seen.entry(base.to_string()).or_insert(0);
+    let slug = if *count == 0 {
+        base.to_string()
+    } else {
+        format!("{base}-{count}")
+    };
+    *count += 1;
+    slug
 }
 
 impl Default for HeadingLinksPlugin {

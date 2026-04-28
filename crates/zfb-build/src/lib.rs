@@ -47,12 +47,17 @@
 //! [`atomic_write`] for crates that need the same guarantee.
 
 pub mod atomic;
+pub mod bundler;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;
+pub mod renderer;
 
 pub use atomic::{atomic_write, atomic_write_string};
+pub use bundler::{
+    bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, RouteEntry,
+};
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
 pub use pipeline::{
     AssetPipeline, BuildContext, BuildOutcome, CssRunner, DevAssetPipeline, IslandsRunner,
@@ -60,3 +65,8 @@ pub use pipeline::{
 };
 pub use plan::{PageSelection, RebuildPlan};
 pub use policy::{classify_change, GranularityPolicy, PathClass};
+pub use renderer::{
+    render_all, render_one, shutdown, start, Backend, RendererError, RendererInput,
+    RendererOutput, RendererStartInput, RendererState, RouteUniverseEntry, SsrManifest,
+    SsrRouteEntry,
+};

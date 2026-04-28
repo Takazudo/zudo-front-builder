@@ -34,10 +34,11 @@ before any of the Rust crates have been scaffolded:
 node --test crates/zfb-render/runtime/__tests__/zfb-sdk.test.mjs
 ```
 
-Use Node 20+ (the project's engines pin a newer Node toolchain). Once the
-`zfb-render` crate is in place, the same SDK file can additionally be
-exercised from a Rust integration test that loads it via `deno_core`; the
-Node tests stay as the fast feedback loop for SDK-only changes.
+Use Node 20+ (the project's engines pin a newer Node toolchain). Per
+ADR-005 the production execution path runs the SDK through a miniflare
+(workerd) subprocess driven by `@takazudo/zfb-runtime`; the Node tests
+here stay as the fast feedback loop for SDK-only changes and do not
+exercise the subprocess boundary.
 
 ## Coordination notes
 

@@ -10,13 +10,40 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 [dependencies]
 zfb-watcher = { path = "../zfb-watcher" }
 zfb-graph = { path = "../zfb-graph" }
+# Read-only consumption of the MDX → JSX emitter (Wave 1 / T3 bundler).
+# We reuse `compile_mdx_to_jsx_module_cached` rather than re-wrapping MDX
+# compilation so the bundler speaks the same MDX dialect as `zfb-render`.
+zfb-content = { path = "../zfb-content" }
+# Read-only consumption of the framework adapter contract (ADR-002).
+# The bundler only touches `Framework`, `make_adapter`, and the adapter's
+# `hydrate_shim_*` accessors. Default features are kept (no
+# `deno_core_host`) so this stays compile-cheap and does not drag V8 into
+# `zfb-build`'s dependency surface.
+zfb-render = { path = "../zfb-render" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 tracing = "0.1"
+# Build-time render orchestrator (T6). `blocking` keeps the renderer
+# loop synchronous to match the bundler's call style; `rustls-tls`
+# avoids depending on a system OpenSSL for what is in practice a
+# 127.0.0.1 connection. `json` is unused today but lets future error
+# bodies (e.g. miniflare's ready handshake) be consumed cheaply.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+# Source-map parsing for re-projecting miniflare JS stack frames back
+# to the user's TSX/MDX source. The `sourcemap` crate is the canonical
+# Rust port of Mozilla's source-map library and handles `.map` files
+# emitted by esbuild's `--sourcemap=linked`.
+sourcemap = "9"
+# Cross-process file lock for the gated end-to-end miniflare test so
+# parallel worktrees don't race for the same loopback port. Only used
+# in tests; pulled in via the main deps for simplicity.
+fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
