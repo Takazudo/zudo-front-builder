@@ -44,6 +44,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
+use zfb_build::adapter::{
+    ensure_no_ssr_without_adapter, run_adapter_bundle_with, AdapterBundleInput,
+    AdapterBundleOutput, AdapterChoice, AdapterRunner, DefaultAdapterRunner, SsrRouteRef,
+};
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput};
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_router::Router;
@@ -90,6 +94,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         config: &config,
         routes,
         runner: &DefaultRunner,
+        adapter_runner: &DefaultAdapterRunner,
     })?;
 
     let elapsed = started.elapsed().as_secs_f64();
@@ -105,12 +110,15 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 /// Resolved inputs to the orchestration. Kept as a struct so the
 /// orchestration body and the tests share one signature; adding a field
 /// later doesn't ripple into call sites.
-struct BuildArgsResolved<'a, R: BuildRunner> {
+struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     project_root: &'a Path,
     outdir: &'a Path,
     config: &'a Config,
     routes: &'a [zfb_router::Route],
     runner: &'a R,
+    /// Indirection over `pnpm exec <adapter-bin>` so unit tests can
+    /// assert dispatch shape without spawning a real subprocess.
+    adapter_runner: &'a A,
 }
 
 /// Indirection seam over the heavy wave-2 calls (bundler + renderer).
@@ -152,14 +160,25 @@ impl BuildRunner for DefaultRunner {
 
 /// Drive the build for a fully-resolved input set. Returns the number
 /// of pages written.
-fn run_build<R: BuildRunner>(args: BuildArgsResolved<'_, R>) -> Result<usize> {
+fn run_build<R: BuildRunner, A: AdapterRunner>(
+    args: BuildArgsResolved<'_, R, A>,
+) -> Result<usize> {
     let BuildArgsResolved {
         project_root,
         outdir,
         config,
         routes,
         runner,
+        adapter_runner,
     } = args;
+
+    // Resolve the adapter choice up front so we can fail fast if the
+    // user wrote an empty string (typo) into the config. The choice
+    // is consumed twice: once to decide whether SSR routes are even
+    // allowed, and once after the build to wrap the SSR bundle into
+    // the deploy-target shape.
+    let adapter = AdapterChoice::from_config(config.adapter.as_deref())
+        .context("invalid `adapter` value in zfb.config.json")?;
 
     // Build the renderer-shaped views of the route table.
     let RouteUniversePlan {
@@ -192,6 +211,28 @@ fn run_build<R: BuildRunner>(args: BuildArgsResolved<'_, R>) -> Result<usize> {
         return Ok(0);
     }
     let _ = dynamic_resolved_count; // (kept for future build-summary use)
+
+    // Adapter precondition check.
+    //
+    // A route with `prerender = false` cannot be served as a static
+    // file — it needs the runtime SSR adapter to produce a deploy-
+    // shaped wrapper. If the user has SSR routes but no adapter
+    // configured, fail fast HERE (before the expensive bundle +
+    // miniflare spin-up) with a pointer at the offending route.
+    let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
+        .iter()
+        .filter(|entry| {
+            !prerender_map
+                .get(&entry.route_key)
+                .copied()
+                .unwrap_or(true)
+        })
+        .map(|entry| SsrRouteRef {
+            route_key: entry.route_key.as_str(),
+            url_path: entry.url_path.as_str(),
+        })
+        .collect();
+    ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
 
     // Fail fast if the runtime npm package isn't on disk — miniflare
     // will fail later anyway, but we can give the user an actionable
@@ -241,6 +282,42 @@ fn run_build<R: BuildRunner>(args: BuildArgsResolved<'_, R>) -> Result<usize> {
         output::info("miniflare logs:");
         for line in render_out.miniflare_logs.lines() {
             output::info(format!("  {line}"));
+        }
+    }
+
+    // 3. Adapter dispatch.
+    //
+    // When an adapter is configured, hand the same ESM bundle to the
+    // adapter package's CLI so it can wrap it into a deploy-target-
+    // shaped entry (e.g. `dist/_worker.js` for Cloudflare Pages). The
+    // current contract feeds the WHOLE bundle (SSG + SSR routes) to
+    // the adapter — for Cloudflare Pages this is fine because static
+    // assets short-circuit the worker, so SSG routes in the worker
+    // bundle are dead code on the request path. A future optimization
+    // could trim the bundle to SSR-only routes; tracked as a follow-up
+    // (see this module's docs).
+    if !adapter.is_none() {
+        let adapter_in = AdapterBundleInput {
+            project_root: project_root.to_path_buf(),
+            input_bundle: bundler_out.bundle_path.clone(),
+            outdir: outdir.to_path_buf(),
+        };
+        let adapter_out: AdapterBundleOutput =
+            run_adapter_bundle_with(&adapter, adapter_in, adapter_runner)
+                .context("adapter dispatch step failed")?;
+        if !adapter_out.stdout.trim().is_empty() {
+            output::info(format!(
+                "adapter `{}`:",
+                adapter.package_name().unwrap_or("(unknown)"),
+            ));
+            for line in adapter_out.stdout.lines() {
+                output::info(format!("  {line}"));
+            }
+        }
+        if !adapter_out.stderr.trim().is_empty() {
+            for line in adapter_out.stderr.lines() {
+                output::warn(format!("adapter stderr: {line}"));
+            }
         }
     }
 
@@ -381,6 +458,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Fake adapter runner that records dispatch calls so tests can
+    /// assert the post-render adapter dispatch fires (or doesn't) for
+    /// each adapter configuration.
+    struct FakeAdapterRunner {
+        calls: RefCell<Vec<(String, AdapterBundleInput)>>,
+    }
+    impl FakeAdapterRunner {
+        fn new() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+    impl AdapterRunner for FakeAdapterRunner {
+        fn run(
+            &self,
+            package: &str,
+            input: &AdapterBundleInput,
+        ) -> Result<AdapterBundleOutput> {
+            self.calls
+                .borrow_mut()
+                .push((package.to_string(), input.clone()));
+            Ok(AdapterBundleOutput {
+                stdout: format!("fake adapter {package} ok\n"),
+                stderr: String::new(),
+            })
+        }
+    }
+
     #[test]
     fn run_build_orchestrates_bundle_and_render_for_static_routes() {
         let tmp = tempdir().unwrap();
@@ -394,12 +500,14 @@ mod tests {
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
 
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
             runner: &runner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap();
 
@@ -440,12 +548,14 @@ mod tests {
         ];
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
             runner: &runner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap();
         // Only the static route reaches the renderer; the dynamic one
@@ -493,12 +603,14 @@ mod tests {
         ];
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
             runner: &runner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap();
         // 1 static + 2 expanded dynamic.
@@ -524,12 +636,14 @@ mod tests {
         let routes = vec![dynamic_route("slug", "pages/[slug].tsx")];
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
             runner: &runner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap();
         assert_eq!(pages, 0);
@@ -564,6 +678,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         make_runtime(tmp.path());
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
         let err = run_build(BuildArgsResolved {
             project_root: tmp.path(),
@@ -571,6 +686,7 @@ mod tests {
             config: &cfg,
             routes: &routes,
             runner: &FailingRunner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -583,6 +699,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         // No node_modules → check_runtime_installed errors.
         let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
         let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
         let runner = FakeRunner::new(tmp.path().join("dist/.zfb-build/bundle.mjs"));
         let err = run_build(BuildArgsResolved {
@@ -591,10 +708,175 @@ mod tests {
             config: &cfg,
             routes: &routes,
             runner: &runner,
+            adapter_runner: &fake_adapter,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
+    }
+
+    #[test]
+    fn run_build_with_adapter_none_passes_when_every_route_is_ssg() {
+        // Default config has no adapter. As long as every route is SSG
+        // (the prerender map default), the build proceeds. The adapter
+        // runner must NOT be invoked.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+        assert!(
+            fake_adapter.calls.borrow().is_empty(),
+            "adapter dispatch must not fire when adapter is None",
+        );
+    }
+
+    #[test]
+    fn run_build_with_adapter_none_rejects_ssr_routes() {
+        // Stage a page on disk that exports `prerender = false` so the
+        // prerender map flips. With adapter:"none" the build must
+        // refuse, naming the offending route, BEFORE bundling /
+        // rendering happens (so neither runner is invoked).
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/foo.tsx"),
+            "export const frontmatter = { title: \"Foo\" };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![Route {
+            source_path: PathBuf::from("pages/api/foo.tsx"),
+            segments: vec![
+                Segment::Static("api".into()),
+                Segment::Static("foo".into()),
+            ],
+            kind: RouteKind::Static,
+            specificity: 0,
+            output_extension: None,
+        }];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default(); // adapter is None
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("/api/foo"), "{msg}");
+        assert!(msg.contains("requires SSR"), "{msg}");
+        // The check must fail BEFORE bundling — heavy work shouldn't
+        // happen for an unworkable config.
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
+        assert!(fake_adapter.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn run_build_with_adapter_set_invokes_adapter_runner_after_render() {
+        // Same SSR-only fixture but with adapter set. The build must
+        // succeed, bundle + render normally for SSG (none here), then
+        // dispatch the adapter runner with the bundle path the runner
+        // returned.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/foo.tsx"),
+            "export const frontmatter = { title: \"Foo\" };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        // Also stage one SSG page so static_routes is non-empty (the
+        // build short-circuits with 0 pages otherwise, before dispatch).
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            Route {
+                source_path: PathBuf::from("pages/api/foo.tsx"),
+                segments: vec![
+                    Segment::Static("api".into()),
+                    Segment::Static("foo".into()),
+                ],
+                kind: RouteKind::Static,
+                specificity: 0,
+                output_extension: None,
+            },
+        ];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+        let calls = fake_adapter.calls.borrow();
+        assert_eq!(calls.len(), 1, "adapter dispatch must run once");
+        assert_eq!(calls[0].0, "@takazudo/zfb-adapter-cloudflare");
+        // Adapter receives the same bundle the renderer used.
+        assert_eq!(
+            calls[0].1.input_bundle,
+            outdir.join(".zfb-build/bundle.mjs")
+        );
+        assert_eq!(calls[0].1.outdir, outdir);
+    }
+
+    #[test]
+    fn run_build_rejects_invalid_adapter_string() {
+        // Empty adapter string is a typo, not "none". Surface the
+        // problem instead of silently falling back.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("   ".into());
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("empty string"), "{msg}");
     }
 
     #[test]
