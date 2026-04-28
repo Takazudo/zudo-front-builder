@@ -162,82 +162,23 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
     pagesByRoute.set(page.route, page);
   }
 
+  // Sanity check: a user-authored route that happens to start with
+  // `/__paths__` (or a top-level catchall like `/:slug{.+}`) would
+  // shadow the synthetic endpoint registered below if Hono dispatched
+  // by registration order. We register `/__paths__/:routeKey{.+}` first
+  // (see directly below) but still warn on collisions so users do not
+  // ship a page that conflicts with the build pipeline's wire format.
   for (const page of opts.pages) {
-    app.get(page.route, async (c) => {
-      const mod = await page.module();
-      if (typeof mod.default !== "function") {
-        // Surface as a 500 with a well-known message rather than letting
-        // Hono swallow the error into a generic body. T6's miniflare
-        // log-tail / source-map plumbing is what eventually projects
-        // page-side errors back to the user's TSX line; until then the
-        // pinned message is the contract this layer ships.
-        return c.body(
-          `[zfb-runtime] page module for "${page.route}" did not export a default component`,
-          500,
-          { "Content-Type": "text/plain; charset=utf-8" },
-        );
-      }
-
-      // For dynamic routes that export `paths()`, look up the concrete
-      // props for this URL by matching the URL params against the
-      // paths() results. This implements the ADR-002 contract:
-      //   paths() → [{ params, props }]
-      //   render(url) → find matching entry → pass props to default()
-      //
-      // For static routes (no `paths()` export, no URL params), we pass
-      // an empty object — the component signature has no required props.
-      let componentProps: Record<string, unknown> = {};
-      const urlParams = c.req.param() as Record<string, string>;
-      const hasDynamicParams = Object.keys(urlParams).length > 0;
-
-      if (hasDynamicParams && typeof mod.paths === "function") {
-        let pathsResult: unknown;
-        try {
-          pathsResult = await mod.paths();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return c.body(`[zfb-runtime] paths() threw for "${page.route}": ${msg}`, 500, {
-            "Content-Type": "text/plain; charset=utf-8",
-          });
-        }
-
-        if (!Array.isArray(pathsResult)) {
-          return c.body(`[zfb-runtime] paths() for "${page.route}" did not return an array`, 500, {
-            "Content-Type": "text/plain; charset=utf-8",
-          });
-        }
-
-        // Find the entry whose params match the URL params for this request.
-        // For catchall params (e.g. slug for /docs/[...slug]), Hono
-        // returns a slash-joined string (e.g. "guides/install"), so we
-        // compare against the paths() entry's params.slug joined with "/".
-        const match = (
-          pathsResult as Array<{ params: Record<string, unknown>; props?: Record<string, unknown> }>
-        ).find((entry) => {
-          if (!entry || typeof entry.params !== "object" || entry.params === null) {
-            return false;
-          }
-          return Object.entries(urlParams).every(([k, v]) => {
-            const paramVal = entry.params[k];
-            if (Array.isArray(paramVal)) {
-              // catchall: paths() emits slug as string[] but Hono
-              // provides it as a "/"-joined string
-              return paramVal.join("/") === v;
-            }
-            return String(paramVal) === v;
-          });
-        });
-
-        if (match?.props) {
-          componentProps = match.props;
-        }
-      }
-
-      const vnode = mod.default(componentProps);
-      const html = opts.framework.renderToString(vnode);
-      const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
-      return c.body(html, 200, { "Content-Type": contentType });
-    });
+    if (routeShadowsPathsEndpoint(page.route)) {
+      // Use console.warn so the message reaches miniflare's tail logs
+      // without bringing down the worker. The build pipeline's
+      // /__paths__ requests still resolve correctly because the
+      // synthetic handler is registered first.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[zfb-runtime] route "${page.route}" may shadow the synthetic /__paths__ endpoint; rename the page or use a more specific pattern`,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -252,19 +193,17 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // Pattern: `/__paths__/:routeKey{.+}` — the `{.+}` quantifier (Hono's
   // regex-segment syntax) allows slashes inside the route key so
   // `/blog/:slug` decodes correctly from `/__paths__/%2Fblog%2F%3Aslug`.
+  //
+  // IMPORTANT: this handler is registered BEFORE user routes so a
+  // user-authored top-level catchall (e.g. `/:wildcard{.+}`) cannot
+  // shadow it — Hono dispatches in registration order.
   // -------------------------------------------------------------------------
   app.get("/__paths__/:routeKey{.+}", async (c) => {
-    const encoded = c.req.param("routeKey");
-    let routeKey: string;
-    try {
-      routeKey = decodeURIComponent(encoded);
-    } catch {
-      return c.body(
-        `[zfb-runtime] /__paths__: invalid percent-encoding in route key "${encoded}"`,
-        400,
-        { "Content-Type": "text/plain; charset=utf-8" },
-      );
-    }
+    // Hono's `c.req.param("routeKey")` already URL-decodes the captured
+    // segment when it contains a `%`, so a single decode is correct
+    // here — no explicit `decodeURIComponent` (that would be a
+    // double-decode and break literal `%` characters in route keys).
+    const routeKey = c.req.param("routeKey");
 
     const page = pagesByRoute.get(routeKey);
     if (!page) {
@@ -299,10 +238,160 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
     });
   });
 
+  for (const page of opts.pages) {
+    app.get(page.route, async (c) => {
+      const mod = await page.module();
+      if (typeof mod.default !== "function") {
+        // Surface as a 500 with a well-known message rather than letting
+        // Hono swallow the error into a generic body. T6's miniflare
+        // log-tail / source-map plumbing is what eventually projects
+        // page-side errors back to the user's TSX line; until then the
+        // pinned message is the contract this layer ships.
+        return c.body(
+          `[zfb-runtime] page module for "${page.route}" did not export a default component`,
+          500,
+          { "Content-Type": "text/plain; charset=utf-8" },
+        );
+      }
+
+      // For dynamic routes that export `paths()`, look up the concrete
+      // entry for this URL by matching the URL params against the
+      // paths() results. This implements the ADR-002 contract:
+      //   paths() → [{ params, props? }]
+      //   render(url) → find matching entry → pass { params, props } to default()
+      //
+      // For static routes (no `paths()` export, no URL params), we pass
+      // an empty object — the component signature has no required props.
+      // For dynamic routes whose URL params do not match any paths()
+      // entry, we return a 404 rather than rendering with empty props.
+      const rawUrlParams = c.req.param();
+      const urlParams = (rawUrlParams ?? {}) as Record<string, string>;
+      const hasDynamicParams = Object.keys(urlParams).length > 0;
+
+      let componentInput: Record<string, unknown> = {};
+
+      if (hasDynamicParams && typeof mod.paths === "function") {
+        let pathsResult: unknown;
+        try {
+          pathsResult = await mod.paths();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return c.body(`[zfb-runtime] paths() threw for "${page.route}": ${msg}`, 500, {
+            "Content-Type": "text/plain; charset=utf-8",
+          });
+        }
+
+        if (!Array.isArray(pathsResult)) {
+          return c.body(`[zfb-runtime] paths() for "${page.route}" did not return an array`, 500, {
+            "Content-Type": "text/plain; charset=utf-8",
+          });
+        }
+
+        // Validate each entry's shape per-entry rather than using a bare
+        // cast — matches the strictness the Rust pipeline applies on the
+        // same wire format. Any malformed entry surfaces as a 500.
+        for (const entry of pathsResult) {
+          if (!isPathsEntry(entry)) {
+            return c.body(
+              `[zfb-runtime] paths() for "${page.route}" returned an entry without a valid params object`,
+              500,
+              { "Content-Type": "text/plain; charset=utf-8" },
+            );
+          }
+        }
+
+        // Find the entry whose params match the URL params for this
+        // request. For catchall params (e.g. slug for
+        // /docs/[...slug]), Hono returns a slash-joined string (e.g.
+        // "guides/install"), so we compare against the paths() entry's
+        // params.slug joined with "/".
+        const match = (pathsResult as PathsEntry[]).find((entry) => {
+          return Object.entries(urlParams).every(([k, v]) => {
+            const paramVal = entry.params[k];
+            if (Array.isArray(paramVal)) {
+              // catchall: paths() emits slug as string[] but Hono
+              // provides it as a "/"-joined string
+              return paramVal.join("/") === v;
+            }
+            return String(paramVal) === v;
+          });
+        });
+
+        if (!match) {
+          // The URL params do not correspond to any paths() entry —
+          // this is the dev-mode equivalent of a build-time miss.
+          // Hono's `c.notFound()` returns the framework's default 404,
+          // which is cleaner than fabricating an empty-props render.
+          return c.notFound();
+        }
+
+        componentInput = {
+          params: match.params,
+          props: match.props ?? {},
+        };
+      }
+
+      const vnode = mod.default(componentInput);
+      const html = opts.framework.renderToString(vnode);
+      const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
+      return c.body(html, 200, { "Content-Type": contentType });
+    });
+  }
+
   // Hono's `app.fetch` returns `Response | Promise<Response>`. The
   // public router contract is unconditionally async; using an `async`
   // wrapper (rather than `Promise.resolve(...)`) ensures any
   // synchronous throw inside `app.fetch` is converted to a rejected
   // promise instead of escaping the caller's `await`.
   return async (request) => await app.fetch(request);
+}
+
+/**
+ * Shape of one entry produced by a page's `paths()` export. The
+ * `params` object is required (every entry needs to identify the URL
+ * it represents); `props` is optional (the page may render purely from
+ * the URL params).
+ */
+interface PathsEntry {
+  readonly params: Record<string, unknown>;
+  readonly props?: Record<string, unknown>;
+}
+
+/**
+ * Type guard for one `paths()` entry. Mirrors the strictness of the
+ * Rust pipeline's `paths()` resolver — every entry must be a non-null
+ * object whose `params` is itself a non-null object.
+ */
+function isPathsEntry(x: unknown): x is PathsEntry {
+  if (typeof x !== "object" || x === null) return false;
+  const params = (x as { params?: unknown }).params;
+  return typeof params === "object" && params !== null;
+}
+
+/**
+ * Heuristic check for user-authored routes that may shadow the
+ * synthetic `/__paths__/<encoded-route-key>` endpoint.
+ *
+ * Returns true when the route literal contains `/__paths__` (an
+ * obvious collision) or when its first segment is a Hono catchall
+ * (`:name{.+}`) or a file-system catchall (`[...name]`) at the root —
+ * those would match `/__paths__/...` once Hono dispatches to them.
+ */
+function routeShadowsPathsEndpoint(route: string): boolean {
+  if (route.includes("/__paths__")) {
+    return true;
+  }
+  // Strip the leading slash and look at the first segment only —
+  // anything deeper cannot match `/__paths__` because the literal
+  // first segment differs.
+  const firstSeg = route.replace(/^\/+/, "").split("/")[0] ?? "";
+  // Hono regex-quantifier catchall: `:name{.+}`.
+  if (/^:[A-Za-z_][\w]*\{\.[+*]\}$/.test(firstSeg)) {
+    return true;
+  }
+  // File-system catchall (pre-bracket-to-hono): `[...name]`.
+  if (/^\[\.\.\.[A-Za-z_][\w]*\]$/.test(firstSeg)) {
+    return true;
+  }
+  return false;
 }
