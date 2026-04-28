@@ -21,7 +21,7 @@
     "components/**/*",
     "content/**/*",
     "lib/**/*",
-    "zfb.config.future.ts"
+    "zfb.config.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
