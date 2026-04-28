@@ -82,6 +82,15 @@ const mf = new Miniflare({
   // user project needs a newer date the wave-3 wiring (T7) can plumb
   // it through.
   compatibilityDate: "2025-01-01",
+  // Enable Node.js compatibility so `node:*` imports that survive the
+  // esbuild bundle are resolved by workerd's Node.js compat layer.
+  // This is needed for `zfb/content`'s filesystem fallback path which
+  // imports `node:fs/promises` at the top level (the snapshot bridge
+  // path never calls it at runtime, but the import statement itself
+  // must resolve at module load time). The flag is safe for SSG builds:
+  // the Worker is ephemeral and only serves GET requests from the build
+  // pipeline — no untrusted code is run.
+  compatibilityFlags: ["nodejs_compat"],
   log,
 });
 

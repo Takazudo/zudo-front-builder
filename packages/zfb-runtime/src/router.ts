@@ -177,7 +177,63 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
           { "Content-Type": "text/plain; charset=utf-8" },
         );
       }
-      const vnode = mod.default({});
+
+      // For dynamic routes that export `paths()`, look up the concrete
+      // props for this URL by matching the URL params against the
+      // paths() results. This implements the ADR-002 contract:
+      //   paths() → [{ params, props }]
+      //   render(url) → find matching entry → pass props to default()
+      //
+      // For static routes (no `paths()` export, no URL params), we pass
+      // an empty object — the component signature has no required props.
+      let componentProps: Record<string, unknown> = {};
+      const urlParams = c.req.param() as Record<string, string>;
+      const hasDynamicParams = Object.keys(urlParams).length > 0;
+
+      if (hasDynamicParams && typeof mod.paths === "function") {
+        let pathsResult: unknown;
+        try {
+          pathsResult = await mod.paths();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return c.body(`[zfb-runtime] paths() threw for "${page.route}": ${msg}`, 500, {
+            "Content-Type": "text/plain; charset=utf-8",
+          });
+        }
+
+        if (!Array.isArray(pathsResult)) {
+          return c.body(`[zfb-runtime] paths() for "${page.route}" did not return an array`, 500, {
+            "Content-Type": "text/plain; charset=utf-8",
+          });
+        }
+
+        // Find the entry whose params match the URL params for this request.
+        // For catchall params (e.g. slug for /docs/[...slug]), Hono
+        // returns a slash-joined string (e.g. "guides/install"), so we
+        // compare against the paths() entry's params.slug joined with "/".
+        const match = (
+          pathsResult as Array<{ params: Record<string, unknown>; props?: Record<string, unknown> }>
+        ).find((entry) => {
+          if (!entry || typeof entry.params !== "object" || entry.params === null) {
+            return false;
+          }
+          return Object.entries(urlParams).every(([k, v]) => {
+            const paramVal = entry.params[k];
+            if (Array.isArray(paramVal)) {
+              // catchall: paths() emits slug as string[] but Hono
+              // provides it as a "/"-joined string
+              return paramVal.join("/") === v;
+            }
+            return String(paramVal) === v;
+          });
+        });
+
+        if (match?.props) {
+          componentProps = match.props;
+        }
+      }
+
+      const vnode = mod.default(componentProps);
       const html = opts.framework.renderToString(vnode);
       const contentType = mod.content_type ?? DEFAULT_CONTENT_TYPE;
       return c.body(html, 200, { "Content-Type": contentType });

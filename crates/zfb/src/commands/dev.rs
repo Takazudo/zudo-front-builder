@@ -417,6 +417,7 @@ fn boot_dev_renderer(
         // evaluation is a build-mode feature. When dev mode starts the
         // worker, `getCollection(...)` will see an empty snapshot.
         content_snapshot_json: None,
+        node_modules_dir: None,
     };
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 

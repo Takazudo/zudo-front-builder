@@ -391,6 +391,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         esbuild_binary: None,
         mock_subprocess_output: None,
         content_snapshot_json,
+        node_modules_dir: None,
     };
     let bundler_out = runner
         .bundle(bundler_input)
