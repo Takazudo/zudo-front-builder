@@ -38,9 +38,11 @@
 //! [`DependencyGraph::mark_global`].
 
 pub mod error;
+pub mod persist;
 
 pub use error::GraphError;
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -49,7 +51,7 @@ use std::path::{Path, PathBuf};
 ///
 /// We use a newtype rather than a bare `PathBuf` so future migrations (e.g.
 /// switching to a content-hash key) do not ripple through callers.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PageId(PathBuf);
 
 impl PageId {
@@ -90,7 +92,7 @@ impl From<&Path> for PageId {
 ///
 /// Kept deliberately small: the resolver exposes raw paths today, so
 /// classification is the consumer's job. Add variants conservatively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DepKind {
     /// A `.tsx` / `.ts` / `.jsx` / `.js` module imported from the page graph.
     Module,
@@ -172,7 +174,7 @@ impl DirtySet {
 /// `component_name`), CSS modules by source path. Producers of this record
 /// are not required to canonicalise paths, but they must hand in the same
 /// representation they query against.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetDeps {
     /// Stable component identifiers (see `zfb_islands::scanner`'s notion of
     /// component-name identity) of every `"use client"` island the page
@@ -218,6 +220,7 @@ impl AssetDeps {
 ///   `assets_css_reverse[module_path] -> {pages}` — reverse indexes that
 ///   power [`DependencyGraph::pages_using_island`] and
 ///   [`DependencyGraph::pages_using_css_module`] in O(1).
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DependencyGraph {
     forward: HashMap<PageId, Vec<(PathBuf, DepKind)>>,
     reverse: HashMap<PathBuf, HashSet<PageId>>,
