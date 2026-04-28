@@ -199,6 +199,15 @@ interface IslandModule {
 }
 
 const mounted = new WeakSet<Element>();
+// Elements with an in-flight dynamic import that has not yet resolved.
+// Two concurrent `mountIslands` invocations (or two `scheduleMount`
+// calls hitting the same element through different code paths) could
+// otherwise both pass the `mounted` guard and both spawn an
+// `importIsland(url)` -> `fn()` chain, double-mounting the component.
+// Adding the element to `pending` synchronously, before the import is
+// fired, closes that window; the entry is removed in both the success
+// (after `mounted.add`) and failure branches.
+const pending = new WeakSet<Element>();
 
 /**
  * Walk the DOM and mount every `[data-zfb-island]` / `[data-zfb-island-skip-ssr]`
@@ -237,7 +246,10 @@ function scheduleMount(
   componentName: string,
   mode: "hydrate" | "render",
 ): void {
-  if (mounted.has(element)) return;
+  // Skip elements already mounted OR currently importing — the latter
+  // prevents two concurrent `mountIslands` calls from each firing a
+  // separate dynamic import for the same element.
+  if (mounted.has(element) || pending.has(element)) return;
 
   const url = manifest[componentName];
   if (!url) {
@@ -255,14 +267,23 @@ function scheduleMount(
   const when = element.getAttribute("data-when") ?? undefined;
 
   const fire = (): void => {
-    if (mounted.has(element)) return;
+    // Re-check both guards in case `fire` is invoked from a deferred
+    // scheduler (rIC/rAF/visibility) after a sibling caller already
+    // mounted or started importing for this element.
+    if (mounted.has(element) || pending.has(element)) return;
+
+    // Mark as pending BEFORE firing the import so any concurrent
+    // `mountIslands` invocation that arrives during the await window
+    // is short-circuited by `scheduleMount`'s guard.
+    pending.add(element);
+
     // Dynamic-import is cached by the JS runtime, so repeat hits for
     // the same URL share the resolved module — module-level
     // singletons are fine.
     //
-    // We `add(element)` only on the success path so a failed import
-    // (e.g. transient network blip in dev) doesn't permanently block
-    // a retry of the same element.
+    // We move the element from `pending` to `mounted` only on the
+    // success path so a failed import (e.g. transient network blip
+    // in dev) doesn't permanently block a retry of the same element.
     let started: Promise<IslandModule>;
     try {
       started = importIsland(url);
@@ -270,6 +291,7 @@ function scheduleMount(
       // Some implementations of dynamic-import wrappers can throw
       // synchronously (e.g. URL parsing errors). Treat the same as
       // an async rejection.
+      pending.delete(element);
       // eslint-disable-next-line no-console
       console.error(`[zfb] failed to start dynamic import for ${url}`, err);
       return;
@@ -278,6 +300,7 @@ function scheduleMount(
       (mod) => {
         const fn = mod.mount ?? mod.default;
         if (typeof fn !== "function") {
+          pending.delete(element);
           if (
             typeof process !== "undefined" &&
             process.env &&
@@ -289,16 +312,17 @@ function scheduleMount(
           return;
         }
         mounted.add(element);
+        pending.delete(element);
         fn(props, element, mode);
       },
       (err: unknown) => {
-        // Surface the error in dev so the user notices, then make
-        // sure the element is NOT in the mounted set so a later
-        // retry (e.g. another scheduleHydrate fire) can attempt the
-        // import again.
+        // Surface the error in dev so the user notices, then clear
+        // both guards so a later retry (e.g. another scheduleHydrate
+        // fire) can attempt the import again.
+        pending.delete(element);
+        mounted.delete(element);
         // eslint-disable-next-line no-console
         console.error(`[zfb] failed to load island bundle ${url}`, err);
-        mounted.delete(element);
       },
     );
   };

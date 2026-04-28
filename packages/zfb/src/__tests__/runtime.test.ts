@@ -262,6 +262,36 @@ describe("scheduleHydrate", () => {
       expect(mount).toHaveBeenCalledTimes(1);
     });
 
+    it("does not double-mount when concurrent invocations race the dynamic import", async () => {
+      // Round 2 regression: before the `pending` guard, two concurrent
+      // `mountIslands` calls would both pass the `mounted` check
+      // (synchronous) and both spawn `importIsland(url) -> fn(...)`.
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+
+      // A deferred importer: its Promise only resolves once we explicitly
+      // flush. That gives us a window during which BOTH `mountIslands`
+      // calls are simultaneously waiting on the import.
+      let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
+      const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
+        resolveImport = resolve;
+      });
+      restoreImporter = __setIslandImporterForTests(() => importPromise);
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+
+      // Now resolve the import — only ONE `mount(...)` call should fire.
+      resolveImport!({ mount });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+    });
+
     it("falls back to {} props when data-props is missing or invalid", async () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-when="load"></div>
