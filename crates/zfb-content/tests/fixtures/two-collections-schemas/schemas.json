@@ -1,0 +1,19 @@
+{
+  "docs": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string" },
+      "sidebar_position": { "type": "number" }
+    },
+    "required": ["title"]
+  },
+  "blog": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string" },
+      "date": { "type": "string" },
+      "tags": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["title", "date"]
+  }
+}

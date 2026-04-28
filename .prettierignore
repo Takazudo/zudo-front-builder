@@ -5,3 +5,7 @@ dist/
 .pnpm-store/
 pnpm-lock.yaml
 docs/dist/
+# Snapshot fixture for the .d.ts emitter — must match the emitter's
+# byte-exact output, so prettier (which would re-flow the inline
+# interfaces) is not allowed to touch it.
+crates/zfb-content/tests/fixtures/two-collections-schemas/expected.d.ts

@@ -1,0 +1,19 @@
+{
+  "name": "zfb-basic-blog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "zfb dev",
+    "build": "zfb build",
+    "preview": "zfb preview"
+  },
+  "dependencies": {
+    "preact": "^10.22.0",
+    "zfb": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

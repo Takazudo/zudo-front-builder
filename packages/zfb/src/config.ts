@@ -1,11 +1,15 @@
 // `zfb/config` — TypeScript helper for the `zfb.config.ts` form.
 //
-// The v0 loader (`crates/zfb/src/config.rs`) accepts `zfb.config.json` and
-// hard-errors on `zfb.config.ts` until the JS-runtime decision (ADR-001)
-// lands. This module exists so the future, typed `zfb.config.ts` form can
-// be authored today against a real type — the basic-blog example pins one
-// such file (`zfb.config.future.ts`) and uses it as the type-checked
-// sibling to the JSON source of truth.
+// The zfb config loader (`crates/zfb/src/config.rs`) accepts both
+// `zfb.config.ts` and `zfb.config.json`; JSON wins when both files are
+// present, which is the back-compat path for projects predating the TS
+// loader. New projects should prefer the TS form for editor types and
+// `defineConfig` autocomplete.
+//
+// At parse time, zfb bundles the user's `zfb.config.ts` with esbuild and
+// aliases this `zfb/config` import to an internal stub that re-exports
+// `defineConfig` as the identity function — so a user project does not
+// need the `zfb` npm package installed locally just to be parsed.
 //
 // The shape mirrors the Rust `Config` struct one-for-one. Keep them in
 // sync; the `defineConfig` identity helper is the single anchor point.

@@ -6,6 +6,7 @@ pub mod frontmatter;
 pub mod mdx_jsx_emit;
 pub mod pipeline;
 pub mod plugins;
+pub mod schema;
 pub mod serializer;
 pub mod syntect_highlight;
 pub mod tsx_frontmatter;
