@@ -5,6 +5,12 @@ sidebar_position: 1.5
 category: Concepts
 ---
 
+<Warning title="ADR-001 reference superseded by ADR-005">
+
+The "blocked on ADR-001" callout further down in this page predates [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md), which moved the JS runtime out of process and onto a Node-hosted miniflare worker. Treat that paragraph as historical — `paths()` itself is unaffected.
+
+</Warning>
+
 <Info title="What this page covers">
 
 How `paths()` enumerates the URLs a dynamic or catchall page should
@@ -81,7 +87,7 @@ export default function BlogPost({ params, props }) {
 A few things worth noting:
 
 - `getCollection` and `getEntry` are synchronous (see
-  [ADR-004](/architecture/adr-004-content-bridge)). `paths()` doesn't
+  [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md)). `paths()` doesn't
   need `async`, and neither does the page component.
 - `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
   becomes `/blog/hello-zfb`.
@@ -152,7 +158,7 @@ this when it builds the route table — see
 <Warning title="v0 status">
 
 Today the framework's skeleton is shipping; the JS-runtime decision
-([ADR-001](/architecture/adr-001-js-runtime)) lands the actual
+([ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)) lands the actual
 `paths()` evaluation. Route discovery works now, but `paths()` for
 dynamic and catchall routes is currently warned and skipped until the
 runtime lands. The contract on this page is what the engine commits to
@@ -165,5 +171,5 @@ once the runtime arrives.
 - [Routing](/concepts/routing) — static-route fundamentals.
 - [Content Collections](/concepts/content-collections) — the data
   source most `paths()` calls draw from.
-- [ADR-004](/architecture/adr-004-content-bridge) — the synchronous
+- [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) — the synchronous
   content bridge that backs `getCollection` / `getEntry`.

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-04-26
 - **Deciders:** zfb core team
-- **Related:** ADR-001 (JS runtime selection), Epic #4 (file-based router + JSX rendering)
+- **Related:** ADR-001 (JS runtime selection — superseded by ADR-005), Epic #4 (file-based router + JSX rendering)
 
 ## Context
 

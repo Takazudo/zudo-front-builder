@@ -8,7 +8,6 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "format:check": "echo 'no docs format:check yet'",
     "setup:doc-skill": "bash scripts/setup-doc-skill.sh"
   },
   "dependencies": {

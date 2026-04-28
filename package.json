@@ -15,7 +15,6 @@
     "docs:build": "pnpm --filter docs build",
     "docs:preview": "pnpm --filter docs preview",
     "docs:check": "pnpm --filter docs check",
-    "docs:format:check": "pnpm --filter docs format:check",
     "//// === FORMAT ===": "",
     "format": "pnpm format:ts && pnpm format:mdx",
     "format:check": "pnpm format:check:ts && pnpm format:check:mdx",
