@@ -50,17 +50,17 @@ use serde_json::Value;
 
 /// User-authored meta. Everything is optional — pages without a meta
 /// export still work.
+///
+/// Unknown top-level fields are rejected at parse time
+/// (`#[serde(deny_unknown_fields)]`) so that frontmatter typos surface
+/// as errors instead of being silently dropped.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PageMeta {
     pub title: Option<String>,
     pub description: Option<String>,
     /// Path or specifier (e.g. `"@/layouts/blog"` or `"../layouts/blog"`).
     pub layout: Option<String>,
-    /// All other fields preserved as raw JSON for the layout to consume
-    /// freely (e.g. `openGraph`, custom flags).
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, Value>,
 }
 
 /// A [`PageMeta`] paired with its resolved layout file path.
@@ -255,16 +255,44 @@ pub fn derive_content_type(
     if let Some(ct) = frontmatter_content_type {
         return ct.to_string();
     }
+    // Mirror of zfb_server::routes::content_type_for_extension; keep both
+    // in sync (and ADR-003). Differs in the catch-all only: pages emitted
+    // by the SSG renderer default to HTML when the extension is unknown,
+    // because the build pipeline only writes route outputs the user
+    // declared (a missing extension on a known page is HTML).
     match extension.to_ascii_lowercase().as_str() {
+        // Documents
         "html" | "htm" => "text/html; charset=utf-8".to_string(),
         "xml" => "application/xml".to_string(),
         "rss" => "application/rss+xml".to_string(),
         "atom" => "application/atom+xml".to_string(),
-        "json" => "application/json".to_string(),
+        "json" | "map" => "application/json".to_string(),
+        "webmanifest" => "application/manifest+json".to_string(),
         "txt" => "text/plain; charset=utf-8".to_string(),
+        // Code / styles
         "css" => "text/css; charset=utf-8".to_string(),
         "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8".to_string(),
+        "wasm" => "application/wasm".to_string(),
+        // Images
         "svg" => "image/svg+xml".to_string(),
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "webp" => "image/webp".to_string(),
+        "avif" => "image/avif".to_string(),
+        "gif" => "image/gif".to_string(),
+        "ico" => "image/x-icon".to_string(),
+        // Fonts
+        "woff" => "font/woff".to_string(),
+        "woff2" => "font/woff2".to_string(),
+        "ttf" => "font/ttf".to_string(),
+        "otf" => "font/otf".to_string(),
+        "eot" => "application/vnd.ms-fontobject".to_string(),
+        // Media
+        "mp4" => "video/mp4".to_string(),
+        "webm" => "video/webm".to_string(),
+        "mp3" => "audio/mpeg".to_string(),
+        "ogg" => "audio/ogg".to_string(),
+        "pdf" => "application/pdf".to_string(),
         _ => DEFAULT_CONTENT_TYPE.to_string(),
     }
 }
@@ -291,9 +319,27 @@ fn resolve_layout_spec(spec: &str, page_path: &Path, project_root: &Path) -> Pat
 
 /// Lexical containment check: is `candidate` equal to or below `root`?
 /// Both paths are normalized first so `..` segments cannot fool the check.
+///
+/// An empty `root` is rejected explicitly: `Path::starts_with(empty)` is
+/// always `true`, which would silently disable the traversal guard for
+/// any caller that happened to pass an empty project root.
+///
+/// Lexical containment with a relative `root` is fragile (`a/b` is
+/// "within" `a/b` but is also nominally within `c/d` after a chdir).
+/// Production callers always pass an absolute project root, so
+/// `debug_assert!` it to surface accidental misuse during development
+/// without paying the cost in release builds.
 fn is_within(candidate: &Path, root: &Path) -> bool {
+    debug_assert!(
+        root.as_os_str().is_empty() || root.is_absolute(),
+        "is_within: project_root must be absolute (got {})",
+        root.display()
+    );
     let cand = normalize(candidate);
     let root = normalize(root);
+    if root.as_os_str().is_empty() {
+        return false;
+    }
     cand.starts_with(&root)
 }
 
@@ -378,7 +424,6 @@ mod tests {
         let parsed = parse_meta(None).unwrap();
         assert!(parsed.title.is_none());
         assert!(parsed.layout.is_none());
-        assert!(parsed.extra.is_empty());
     }
 
     #[test]
@@ -398,19 +443,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_meta_preserves_extra_fields() {
+    fn parse_meta_unknown_fields_are_rejected() {
+        // deny_unknown_fields: unknown keys must surface as an error
+        // rather than being silently swallowed. This catches frontmatter
+        // typos (e.g. `titel` instead of `title`) that would otherwise
+        // produce a confusingly empty page title.
         let v = json!({
             "title": "Hello",
             "openGraph": { "image": "/og.png" },
             "draft": true,
         });
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(_) => {}
+            other => unreachable!("expected InvalidShape for unknown field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_meta_known_fields_accepted() {
+        // All three known fields can round-trip together.
+        let v = json!({
+            "title": "Hello",
+            "description": "A page",
+            "layout": "@/layouts/blog",
+        });
         let parsed = parse_meta(Some(&v)).unwrap();
         assert_eq!(parsed.title.as_deref(), Some("Hello"));
-        assert_eq!(
-            parsed.extra.get("openGraph"),
-            Some(&json!({ "image": "/og.png" })),
-        );
-        assert_eq!(parsed.extra.get("draft"), Some(&json!(true)));
+        assert_eq!(parsed.description.as_deref(), Some("A page"));
+        assert_eq!(parsed.layout.as_deref(), Some("@/layouts/blog"));
     }
 
     #[test]
@@ -722,7 +783,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_then_resolve_with_extra_fields_kept_in_resolved() {
+    fn parse_then_resolve_known_fields_round_trip() {
+        // With deny_unknown_fields in place, only the three declared fields
+        // are legal. This verifies the parse+resolve path for a valid meta
+        // with all three fields set.
         let dir = project_skeleton();
         let root = dir.path();
         let layout = root.join("layouts/blog.tsx");
@@ -731,7 +795,6 @@ mod tests {
         let v = json!({
             "title": "Post",
             "layout": "@/layouts/blog",
-            "openGraph": { "image": "/og.png" },
         });
         let meta = parse_meta(Some(&v)).unwrap();
         let page = root.join("pages/blog/[slug].tsx");
@@ -739,9 +802,45 @@ mod tests {
 
         assert_eq!(resolved.meta.title.as_deref(), Some("Post"));
         assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
-        assert_eq!(
-            resolved.meta.extra.get("openGraph"),
-            Some(&json!({ "image": "/og.png" })),
-        );
+    }
+
+    #[test]
+    fn parse_then_resolve_unknown_field_rejected() {
+        // deny_unknown_fields: a frontmatter object with an unrecognised key
+        // must fail at parse time so the page author sees an explicit error
+        // rather than a mysteriously empty title / layout.
+        let dir = project_skeleton();
+        let root = dir.path();
+
+        let v = json!({
+            "title": "Post",
+            "layout": "@/layouts/blog",
+            "openGraph": { "image": "/og.png" },
+        });
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(_) => {}
+            other => unreachable!("expected InvalidShape, got {other:?}"),
+        }
+        let _ = root; // keep alive
+    }
+
+    // ---- is_within --------------------------------------------------------
+
+    #[test]
+    fn is_within_rejects_empty_project_root() {
+        // A bare `Path::starts_with(empty)` is always true; we must
+        // refuse to consider an empty `root` as containing anything,
+        // otherwise the traversal guard is silently disabled.
+        let cand = PathBuf::from("/etc/passwd");
+        let root = PathBuf::new();
+        assert!(!is_within(&cand, &root));
+    }
+
+    #[test]
+    fn is_within_basic_containment() {
+        let root = PathBuf::from("/project");
+        assert!(is_within(&PathBuf::from("/project/pages/index.tsx"), &root));
+        assert!(!is_within(&PathBuf::from("/other/file.tsx"), &root));
     }
 }

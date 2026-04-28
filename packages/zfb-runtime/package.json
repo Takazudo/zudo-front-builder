@@ -26,12 +26,12 @@
     "hono": "^4.7.0"
   },
   "peerDependencies": {
-    "zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9",
-    "zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*"
   }
 }

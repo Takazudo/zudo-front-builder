@@ -16,8 +16,7 @@ examples/basic-blog/
 │   ├── blog/page/[page].tsx    dynamic — paginated index, pageSize 3
 │   └── tags/[tag].tsx          dynamic — one route per unique tag
 ├── styles/global.css    light/dark theme via CSS variables + [data-theme="dark"]
-├── zfb.config.future.ts canonical TS form (recommended for new projects — see below)
-├── zfb.config.json      back-compat JSON form, takes precedence in this example
+├── zfb.config.ts        canonical TS form — recommended for all new projects
 ├── package.json
 ├── tsconfig.json
 └── .gitignore
@@ -29,7 +28,7 @@ Cross-references into the docs:
 - [/concepts/routing](../../docs/src/content/docs/) — file-based routing rules.
 - [/api/get-collection](../../docs/src/content/docs/) — `getCollection("blog")`.
 - [/api/paginate](../../docs/src/content/docs/) — the pagination helper used in `blog/page/[page].tsx`.
-- [/concepts/mdx-components](../../docs/src/content/docs/) — the `<entry.Content components={...}>` rendering pattern (Sub 8 docs page).
+- [/concepts/mdx-components](../../docs/src/content/docs/) — the `<entry.Content components={...}>` rendering pattern.
 - [/architecture/js-runtime](../../docs/src/content/docs/) — the JS runtime decision (ADR-001) that gates real SSR.
 
 ## Rendering post bodies with `entry.Content`
@@ -41,7 +40,7 @@ spread in the htmlOverrides convention from `zfb` so HTML tags emitted by
 the markdown body resolve to the package's passthrough components, and (b)
 inject custom JSX components — here, the `<Note>` admonition used inside
 `content/blog/hello-zfb.mdx` — so MDX-only posts can reach for project-level
-components by name. See `/concepts/mdx-components` (Sub 8) for the full
+components by name. See `/concepts/mdx-components` for the full
 contract and the design rationale.
 
 ## v0 status — read this first
@@ -84,20 +83,15 @@ Equivalently, from the workspace root, point the CLI at this directory:
 (cd examples/basic-blog && cargo run -p zfb -- build)
 ```
 
-## Why two `zfb.config.*` files
+## Config file
 
-`zfb.config.future.ts` is the canonical, type-checked shape — the
+`zfb.config.ts` is the canonical, type-checked shape — the
 **recommended** way to author a zfb config for new projects. It uses the
 `defineConfig` helper from `zfb/config` so editors surface field-level
 types and typos surface at compile time.
 
-`zfb.config.json` is the back-compat form, kept around so projects that
-predate the TS loader keep working unchanged. The loader picks JSON over
-TS when both files are present, which is why this example still parks
-the TS form under a `.future.ts` name — the JSON sibling stays the
-source of truth for `cargo run -p zfb -- build` against this directory.
-Rename `zfb.config.future.ts` to `zfb.config.ts` and delete the JSON to
-flip this example onto the TS path.
+`zfb.config.json` is also accepted as a fallback for projects that
+predate the TS loader. **TS wins over JSON** when both files are present.
 
 The TS loader bundles `zfb.config.ts` with the staged esbuild binary
 (`crates/zfb/binaries/esbuild/esbuild`, overridable via

@@ -77,7 +77,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -375,6 +375,17 @@ impl std::fmt::Debug for RendererState {
     }
 }
 
+impl RendererState {
+    /// The base URL of the running miniflare subprocess (e.g.
+    /// `http://127.0.0.1:54321/`). Use this with
+    /// [`Backend::Existing`] to reuse the same subprocess for a
+    /// subsequent [`render_all`] call so you only pay the miniflare
+    /// startup cost once.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
 /// Start the dev-mode renderer.
 pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> {
     let RendererStartInput {
@@ -504,16 +515,25 @@ fn render_one_inner(
             user_location,
         });
     }
-    let dest = dist_dir.join(&entry.output_path);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| RendererError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-    }
-    fs::write(&dest, &body).map_err(|e| RendererError::Io {
+    // Validate `output_path` before joining: the value comes from the
+    // route universe (router + page modules), but a malformed entry
+    // could carry an absolute or `..`-escaping relative path. Reject
+    // those at the write boundary so a hostile or buggy page module
+    // cannot corrupt files outside dist.
+    let dest = crate::atomic::validate_output_path(dist_dir, &entry.output_path).map_err(|e| {
+        RendererError::Io {
+            path: entry.output_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+        }
+    })?;
+    // Atomic write is consistent with both pipelines (dev and prod) and
+    // prevents a half-written .html file from being observed if the
+    // process is killed mid-write. atomic_write also creates the parent
+    // directory internally, so we don't need a separate
+    // `create_dir_all` call.
+    crate::atomic::atomic_write(&dest, &body).map_err(|e| RendererError::Io {
         path: dest.clone(),
-        source: e,
+        source: std::io::Error::other(format!("{e:#}")),
     })?;
     Ok(dest)
 }
@@ -542,9 +562,13 @@ struct ReadyHandshake {
 
 /// RAII guard that owns the subprocess and the stderr-capture thread.
 ///
-/// Dropping the guard sends SIGTERM, joins the log thread (with a
-/// short bound), and SIGKILLs if the process refuses to exit. Panics
-/// in the renderer therefore never leak a child process.
+/// On Unix, the subprocess is launched in its own process group
+/// (`setsid`) so that SIGTERM sent to the **process group** (negative
+/// pgid) reaches workerd's worker children even if node itself is
+/// already dead. On panic the Drop impl calls `terminate`, so the
+/// long-lived miniflare subprocess is never orphaned.
+///
+/// Sequence: SIGTERM → 2 s grace period → SIGKILL.
 struct MiniflareGuard {
     child: Option<Child>,
     log_buf: Arc<Mutex<String>>,
@@ -574,13 +598,21 @@ impl MiniflareGuard {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        // Send SIGTERM via libc on unix; on Windows we can only kill.
+        // On Unix: SIGTERM the entire process group so workerd
+        // child-processes (which miniflare/node spawns) are also
+        // signalled. The group is set up by the `pre_exec` setsid()
+        // call in `spawn_miniflare_once`. Using the negated PID as the
+        // process-group ID works because setsid() makes the node
+        // process the group leader, so pgid == pid.
+        //
+        // On Windows: no process groups; fall back to kill().
         #[cfg(unix)]
         {
-            // SAFETY: child PID is valid until we wait/kill.
+            // SAFETY: child PID is valid until we wait()/kill().
             let pid = child.id() as i32;
             unsafe {
-                libc_kill(pid, SIGTERM);
+                // Negative first arg → kill the entire process group.
+                libc_kill(-pid, SIGTERM);
             }
         }
         #[cfg(not(unix))]
@@ -595,6 +627,16 @@ impl MiniflareGuard {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if Instant::now() >= deadline {
+                        // Grace period expired: SIGKILL the process
+                        // group so workerd sub-processes are also torn
+                        // down before we return from terminate().
+                        #[cfg(unix)]
+                        {
+                            let pid = child.id() as i32;
+                            unsafe {
+                                libc_kill(-pid, SIGKILL);
+                            }
+                        }
                         let _ = child.kill();
                         let _ = child.wait();
                         break;
@@ -623,15 +665,25 @@ impl Drop for MiniflareGuard {
 
 #[cfg(unix)]
 const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
 
 #[cfg(unix)]
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
+    fn setsid() -> i32;
 }
 
 #[cfg(unix)]
 unsafe fn libc_kill(pid: i32, sig: i32) {
     kill(pid, sig);
+}
+
+/// Call setsid() in the child process (via pre_exec) to place it in a
+/// new process group. This makes `-pgid` kills reach all descendants.
+#[cfg(unix)]
+unsafe fn libc_setsid() {
+    setsid();
 }
 
 /// Resolve the directory the miniflare subprocess should run in. We
@@ -672,7 +724,42 @@ fn launch(backend: &Backend, bundle_path: &Path) -> Result<(String, MiniflareGua
     }
 }
 
+/// Number of spawn attempts before giving up.
+const SPAWN_MAX_ATTEMPTS: u32 = 5;
+/// Initial delay between attempts (doubles on each retry).
+const SPAWN_INITIAL_BACKOFF_MS: u64 = 200;
+
+/// Outer retry wrapper for `spawn_miniflare_once`.
+///
+/// Retries up to [`SPAWN_MAX_ATTEMPTS`] times with exponential backoff
+/// starting at [`SPAWN_INITIAL_BACKOFF_MS`] ms. A transient port-bind
+/// collision (zombie port from a previous run, concurrent CI job, etc.)
+/// resolves within a few hundred ms; the retry loop handles that without
+/// operator intervention. The final error message includes the last
+/// failure reason.
 fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut backoff_ms = SPAWN_INITIAL_BACKOFF_MS;
+    for attempt in 1..=SPAWN_MAX_ATTEMPTS {
+        match spawn_miniflare_once(bundle_path) {
+            Ok(result) => return Ok(result),
+            Err(RendererError::MiniflareSpawn(msg)) => {
+                errors.push(format!("attempt {attempt}: {msg}"));
+                if attempt < SPAWN_MAX_ATTEMPTS {
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                    backoff_ms = (backoff_ms * 2).min(3_000);
+                }
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    let summary = errors.join("\n  ");
+    Err(RendererError::MiniflareSpawn(format!(
+        "miniflare failed to start after {SPAWN_MAX_ATTEMPTS} attempts:\n  {summary}"
+    )))
+}
+
+fn spawn_miniflare_once(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
     let bundle_path = if bundle_path.is_absolute() {
         bundle_path.to_path_buf()
     } else {
@@ -726,6 +813,20 @@ fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), Rende
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // On Unix: place node (and all its descendants — workerd, etc.) in a
+    // new process group via setsid(). terminate() then sends SIGTERM/SIGKILL
+    // to `-pgid` (the whole group) so workerd child-processes are killed
+    // reliably even on parent panic. This is the smallest safe change:
+    // setsid() detaches the process from the terminal and creates a fresh
+    // process group where node is the leader (pgid == pid).
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        cmd.pre_exec(|| {
+            libc_setsid();
+            Ok(())
+        });
+    }
 
     let mut child = cmd.spawn().map_err(|e| {
         RendererError::MiniflareSpawn(format!(
@@ -796,41 +897,61 @@ fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), Rende
 /// we see `{"event":"ready", ...}`. Other JSON shapes are ignored;
 /// non-JSON lines are silently dropped (workerd occasionally writes
 /// `[mf:inf]` style lines on stdout depending on the version).
+///
+/// The read happens on a dedicated thread so that a blocking
+/// `lines.next()` call can never outlive the `timeout`. The calling
+/// thread waits on a channel with a deadline; if the channel times out,
+/// `MiniflareSpawn` is returned and the caller kills the subprocess.
+///
+/// Accepts any `Read + Send + 'static` so tests can inject a pipe or
+/// in-memory reader without needing a real subprocess.
 fn read_ready_handshake(
-    stdout: std::process::ChildStdout,
+    stdout: impl std::io::Read + Send + 'static,
     timeout: Duration,
 ) -> Result<String, RendererError> {
-    let deadline = Instant::now() + timeout;
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
-    while Instant::now() < deadline {
-        match lines.next() {
-            Some(Ok(line)) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(parsed) = serde_json::from_str::<ReadyHandshake>(trimmed) {
-                    if parsed.event == "ready" {
-                        return Ok(parsed.url);
+    // Spawn a reader thread that sends parsed URLs or errors over a
+    // channel. This is the only reliable way to impose a wall-clock
+    // deadline on a blocking BufRead::lines() iterator.
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    let trimmed = line.trim().to_string();
+                    if trimmed.is_empty() {
+                        continue;
                     }
+                    if let Ok(parsed) = serde_json::from_str::<ReadyHandshake>(&trimmed) {
+                        if parsed.event == "ready" {
+                            let _ = tx.send(Ok(parsed.url));
+                            return;
+                        }
+                    }
+                    // Non-ready JSON or non-JSON line: keep reading.
                 }
-            }
-            Some(Err(e)) => {
-                return Err(RendererError::MiniflareSpawn(format!(
-                    "stdout read error: {e}"
-                )));
-            }
-            None => {
-                return Err(RendererError::MiniflareSpawn(
-                    "subprocess closed stdout before ready handshake".into(),
-                ));
+                Err(e) => {
+                    let _ = tx.send(Err(format!("stdout read error: {e}")));
+                    return;
+                }
             }
         }
+        // EOF before ready handshake.
+        let _ = tx.send(Err(
+            "subprocess closed stdout before ready handshake".into(),
+        ));
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(url)) => Ok(url),
+        Ok(Err(msg)) => Err(RendererError::MiniflareSpawn(msg)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(RendererError::MiniflareSpawn(format!(
+            "subprocess did not emit ready handshake within {timeout:?}",
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RendererError::MiniflareSpawn(
+            "subprocess stdout reader thread terminated unexpectedly".into(),
+        )),
     }
-    Err(RendererError::MiniflareSpawn(format!(
-        "subprocess did not emit ready handshake within {timeout:?}",
-    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1472,87 @@ mod tests {
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].line, 42);
         assert_eq!(cands[0].col, 7);
+    }
+
+    // -------------------------------------------------------------------------
+    // Handshake timeout tests (issue #57, item 3)
+    //
+    // `read_ready_handshake` now accepts `impl Read + Send + 'static` so
+    // we can inject an in-memory cursor instead of a real subprocess pipe.
+    // -------------------------------------------------------------------------
+
+    /// `read_ready_handshake` returns the URL when the reader contains a
+    /// well-formed ready handshake line.
+    #[test]
+    fn handshake_ok_returns_url() {
+        let data = b"{\"event\":\"ready\",\"url\":\"http://127.0.0.1:9999/\"}\n";
+        let cursor = std::io::Cursor::new(data.as_slice());
+        let result = read_ready_handshake(cursor, Duration::from_secs(5));
+        assert_eq!(result.unwrap(), "http://127.0.0.1:9999/");
+    }
+
+    /// `read_ready_handshake` returns `MiniflareSpawn` when the reader
+    /// reaches EOF before the ready handshake (subprocess crash path).
+    #[test]
+    fn handshake_eof_before_ready_returns_error() {
+        // Empty reader → immediate EOF.
+        let cursor = std::io::Cursor::new(b"".as_slice());
+        let err = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap_err();
+        match err {
+            RendererError::MiniflareSpawn(msg) => {
+                assert!(
+                    msg.contains("closed stdout before ready"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected MiniflareSpawn, got {other:?}"),
+        }
+    }
+
+    /// `read_ready_handshake` returns `MiniflareSpawn` (timeout) when the
+    /// reader blocks indefinitely without producing any data.
+    #[test]
+    fn handshake_timeout_returns_error() {
+        // A reader that blocks until its internal flag is set. We park the
+        // thread for 10 s in each read() call, which is far longer than the
+        // 100 ms timeout used below — simulating a subprocess that hangs
+        // before printing anything.
+        struct BlockingReader;
+        impl std::io::Read for BlockingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                // Sleep long enough that the channel timeout (100 ms
+                // below) fires first, but short enough that the
+                // background thread is done quickly after the test
+                // asserts. The thread cannot be interrupted once
+                // started; keeping the sleep short minimises the gap
+                // between test assertion and thread exit.
+                thread::sleep(Duration::from_millis(500));
+                Ok(0)
+            }
+        }
+
+        let err = read_ready_handshake(BlockingReader, Duration::from_millis(100)).unwrap_err();
+        match err {
+            RendererError::MiniflareSpawn(msg) => {
+                assert!(
+                    msg.contains("did not emit ready handshake"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected MiniflareSpawn, got {other:?}"),
+        }
+    }
+
+    /// `read_ready_handshake` skips non-ready JSON lines and non-JSON
+    /// lines before accepting the ready handshake.
+    #[test]
+    fn handshake_skips_non_ready_lines() {
+        let data = b"[mf:inf] server starting\n\
+                     {\"event\":\"listening\",\"url\":\"x\"}\n\
+                     {\"event\":\"ready\",\"url\":\"http://127.0.0.1:8888/\"}\n";
+        let cursor = std::io::Cursor::new(data.as_slice());
+        let url = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap();
+        assert_eq!(url, "http://127.0.0.1:8888/");
     }
 
     /// Real-miniflare end-to-end test. Heavy: spawns Node, binds an

@@ -1,8 +1,8 @@
-// Public entry point for the "zfb" package.
+// Public entry point for the "@takazudo/zfb" package.
 //
-// User TSX pages reach this module via `import { Island } from "zfb"`.
+// User TSX pages reach this module via `import { Island } from "@takazudo/zfb"`.
 // The hydration runtime (Sub 3) reaches the helper via
-// `import { scheduleHydrate } from "zfb/runtime"` (or by inlining the
+// `import { scheduleHydrate } from "@takazudo/zfb/runtime"` (or by inlining the
 // same logic; coordinated separately).
 
 export {
@@ -18,9 +18,9 @@ export { scheduleHydrate } from "./runtime.js";
 export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 
 // `defaultComponents` (htmlOverrides convention) is re-exported from the
-// root entry point so `import { defaultComponents } from "zfb"` is the
+// root entry point so `import { defaultComponents } from "@takazudo/zfb"` is the
 // canonical access path. Each named override is also re-exported so
-// consumers can tree-shake-import a single one (`import { ContentLink } from "zfb"`)
+// consumers can tree-shake-import a single one (`import { ContentLink } from "@takazudo/zfb"`)
 // without dragging in the whole map.
 export {
   ContentBlockquote,

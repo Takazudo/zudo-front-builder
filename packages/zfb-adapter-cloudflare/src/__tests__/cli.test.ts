@@ -2,10 +2,10 @@
 //
 // Validates two things:
 //
-// 1. The wrapper string emitted by `bin/cli.mjs` matches the canonical
-//    constant in `src/index.ts`. The two copies exist for runtime
-//    independence (the .mjs CLI must not depend on the TS strip-types
-//    loader) but they MUST stay byte-identical.
+// 1. The wrapper string exported by `bin/cli.mjs` (re-exported from
+//    `src/worker-wrapper.mjs`) matches the canonical constant in
+//    `src/build.ts`. Both share a single source of truth — this test
+//    guards against accidental divergence if the import chain breaks.
 //
 // 2. End-to-end: running `emitWorker` against a synthetic input bundle
 //    produces a `_worker.js` whose `default.fetch` correctly threads
@@ -19,12 +19,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../index.js";
+import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../build.js";
 // CLI helper is a sibling .mjs — Node 22 resolves the .mjs ESM directly.
 // The path is computed at test time so this file is portable across
-// pnpm-installed and workspace-relative layouts. The `.mjs` has no
-// declaration file, so we narrow the import shape ourselves.
-// @ts-expect-error: declarations live in bin/cli.d.mts; this is an .mjs sibling.
+// pnpm-installed and workspace-relative layouts. The `.mjs` ships
+// without a `.d.mts` companion (it is consumed only via `bin`, not as
+// a TS module), so we narrow the import shape ourselves and silence
+// TS's "no declaration file" complaint.
+// @ts-expect-error: bin/cli.mjs has no declaration file; we narrow below.
 import { WORKER_WRAPPER_SOURCE as MJS_WRAPPER_RAW } from "../../bin/cli.mjs";
 const MJS_WRAPPER: string = MJS_WRAPPER_RAW as string;
 
@@ -44,10 +46,10 @@ async function scratch(): Promise<string> {
 }
 
 describe("CLI / emitWorker", () => {
-  it("WORKER_WRAPPER_SOURCE in TS module matches the bin/cli.mjs copy", () => {
-    // The two copies exist on purpose (the bin must run without a TS
-    // loader) but they MUST be identical or the test-time wrapper and
-    // the production wrapper would diverge silently.
+  it("WORKER_WRAPPER_SOURCE re-exported by bin/cli.mjs matches the build.ts constant", () => {
+    // Both src/build.ts and bin/cli.mjs import from the canonical
+    // src/worker-wrapper.mjs, so they must be the same string.
+    // This guards against import-chain breakage.
     expect(MJS_WRAPPER).toBe(TS_WRAPPER);
   });
 

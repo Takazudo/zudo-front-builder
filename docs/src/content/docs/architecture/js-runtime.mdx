@@ -4,6 +4,12 @@ description: How zfb hosts JavaScript execution server-side, the candidates cons
 sidebar_position: 2
 ---
 
+<Warning title="Superseded by ADR-005">
+
+ADR-001 picked an in-process embedded JS runtime (`deno_core`). That decision was superseded by [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md), which moves SSG / dev / preview to a Node-hosted miniflare worker. The `deno_core` material below is preserved as historical context for why the in-process path was originally evaluated, but the runtime contract today follows ADR-005.
+
+</Warning>
+
 zfb renders TSX server-side. TSX compiles to JavaScript, and JavaScript needs an engine to execute it. Rust does not ship one, so zfb embeds a JS runtime. This page is the user-readable companion to ADR-001 — the architectural decision record that locks the runtime choice.
 
 ## The need

@@ -4,31 +4,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// A single segment of a route template, parsed from a path component.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Segment {
-    /// Literal text that must match exactly. e.g. `about` in `/about`.
-    Static(String),
-    /// Single-segment dynamic parameter from `[name].tsx`. The string is the
-    /// parameter name (no brackets).
-    Dynamic(String),
-    /// Catchall (rest) parameter from `[...name].tsx`. Matches one or more
-    /// trailing segments. Only allowed as the final segment of a route.
-    Catchall(String),
-}
-
-impl Segment {
-    /// Render this segment using the canonical `:name` / `:name*` template
-    /// syntax (Astro / Express style). Used for ambiguity detection and for
-    /// human-readable diagnostics.
-    pub fn template(&self) -> String {
-        match self {
-            Segment::Static(s) => s.clone(),
-            Segment::Dynamic(name) => format!(":{name}"),
-            Segment::Catchall(name) => format!(":{name}*"),
-        }
-    }
-}
+// Re-export the canonical Segment type from zfb-types so external callers
+// import from zfb_router::Segment as before without a breaking path change.
+pub use zfb_types::Segment;
 
 /// The kind of a route, used for sorting (static beats dynamic beats catchall).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -81,7 +59,7 @@ pub const DEFAULT_OUTPUT_EXTENSION: &str = "html";
 
 impl Route {
     /// Render the route as a `/`-separated template, e.g. `/blog/:slug` or
-    /// `/docs/:slug*`. The empty (index) route renders as `/`.
+    /// `/docs/:slug{.+}`. The empty (index) route renders as `/`.
     pub fn template(&self) -> String {
         if self.segments.is_empty() {
             return "/".to_string();
@@ -119,7 +97,7 @@ impl Route {
 
         // Build the URL-style path from segments. Dynamic / catchall
         // segments fall back to their template form (`:name`,
-        // `:name*`); concrete builds wouldn't reach here.
+        // `:name{.+}`); concrete builds wouldn't reach here.
         let mut url_parts: Vec<String> = Vec::with_capacity(self.segments.len());
         for seg in &self.segments {
             url_parts.push(match seg {
@@ -127,6 +105,12 @@ impl Route {
                 Segment::Dynamic(_) | Segment::Catchall(_) => seg.template(),
             });
         }
+
+        // Was the source file an `index.<...>.tsx`? In that case the
+        // parser dropped the `index` segment from the URL, but the
+        // output file should still live at `<dir>/index.<ext>` (the
+        // directory-index layout) for both HTML and non-HTML routes.
+        let source_is_index = source_filename_is_index(&self.source_path);
 
         if ext == DEFAULT_OUTPUT_EXTENSION {
             // HTML pages: `/about` → `about/index.html`, `/` → `index.html`.
@@ -142,11 +126,25 @@ impl Route {
             // filename rule preserves it as part of the URL segment
             // (e.g. `sitemap.xml.tsx` → segment `sitemap.xml`).
             //
+            // Exception: when the source was an `index.<ext>.tsx`,
+            // the parser stripped the `index` token from the URL, so
+            // we re-attach `index.<ext>` here as a directory index
+            // so the file actually carries its extension.
+            //
             // If the override flipped the extension (e.g.
             // frontmatter says `rss` but the filename was
             // `sitemap.xml.tsx`), we splice the new extension in.
             let mut parts = url_parts;
-            if let Some(last) = parts.last_mut() {
+            if source_is_index {
+                // `pages/blog/index.xml.tsx` → `blog/index.xml`,
+                // top-level `index.xml.tsx` → `index.xml`.
+                let mut p = PathBuf::new();
+                for part in &parts {
+                    p.push(part);
+                }
+                p.push(format!("index.{ext}"));
+                p
+            } else if let Some(last) = parts.last_mut() {
                 let conv = self.output_extension.as_deref();
                 if conv != Some(ext) {
                     // Override — replace the trailing `.<conv>` with
@@ -171,5 +169,22 @@ impl Route {
                 PathBuf::from(format!("index.{ext}"))
             }
         }
+    }
+}
+
+/// Return `true` when the source filename (after stripping `.tsx`/`.ts`)
+/// begins with `index` followed by either nothing or a dot. This is the
+/// signal that the parser dropped an `index` URL segment for this route.
+fn source_filename_is_index(source: &std::path::Path) -> bool {
+    let Some(name) = source.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let stem = name
+        .strip_suffix(".tsx")
+        .or_else(|| name.strip_suffix(".ts"))
+        .unwrap_or(name);
+    match stem.split_once('.') {
+        Some((head, _)) => head == "index",
+        None => stem == "index",
     }
 }

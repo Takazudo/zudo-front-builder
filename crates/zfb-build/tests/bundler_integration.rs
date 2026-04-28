@@ -187,6 +187,8 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         minify: false,
         esbuild_binary: Some(esbuild.clone()),
         mock_subprocess_output: None,
+        content_snapshot_json: None,
+        node_modules_dir: None,
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");

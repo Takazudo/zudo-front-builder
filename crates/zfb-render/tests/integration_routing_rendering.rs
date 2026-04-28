@@ -30,9 +30,9 @@
 //! https://github.com/Takazudo/zudo-front-builder/issues/63 .
 //!
 //! Route template syntax: `zfb-router` renders dynamic and catchall
-//! segments using `:name` / `:name*` (Astro / Express style), not the
-//! `[name]` / `[...name]` filename style. The filename brackets are
-//! the input convention; `:name` is the canonical template form.
+//! segments using `:name` / `:name{.+}` (Hono path-pattern style), not
+//! the `[name]` / `[...name]` filename style. The filename brackets
+//! are the input convention; `:name` is the canonical template form.
 
 use std::path::PathBuf;
 
@@ -60,7 +60,7 @@ fn router_discovers_all_required_routes() {
         "/blog",
         "/blog/:slug",
         "/blog/page/:page",
-        "/docs/:slug*",
+        "/docs/:slug{.+}",
         "/:lang/:slug",
     ] {
         assert!(
@@ -88,6 +88,6 @@ fn router_classifies_route_kinds_correctly() {
     assert_eq!(kind_of("/blog"), RouteKind::Static);
     assert_eq!(kind_of("/blog/:slug"), RouteKind::Dynamic);
     assert_eq!(kind_of("/blog/page/:page"), RouteKind::Dynamic);
-    assert_eq!(kind_of("/docs/:slug*"), RouteKind::Catchall);
+    assert_eq!(kind_of("/docs/:slug{.+}"), RouteKind::Catchall);
     assert_eq!(kind_of("/:lang/:slug"), RouteKind::Dynamic);
 }

@@ -13,6 +13,7 @@ serde = { workspace = true, features = ["derive"] }
 bincode = "1"
 sha2 = "0.10"
 walkdir = { workspace = true }
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

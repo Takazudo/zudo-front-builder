@@ -9,8 +9,10 @@ description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
 
 [dependencies]
 zfb-build = { path = "../zfb-build" }
+zfb-islands = { path = "../zfb-islands" }
 
 axum = "0.8"
+mime_guess = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -20,6 +22,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = "0.1"
+lol_html = "2.8.1"
 
 [dev-dependencies]
 zfb-graph = { path = "../zfb-graph" }

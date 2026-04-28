@@ -1,0 +1,6 @@
+[package]
+name = "zfb-toolchain-pins"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb toolchain-pins: single source of truth for pinned external tool versions (wrangler, miniflare, workerd)"

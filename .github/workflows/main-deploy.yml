@@ -57,7 +57,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt/3..."
-            if pnpm dlx wrangler@4 pages deploy deploy-root \
+            if pnpm dlx wrangler@4.85.0 pages deploy deploy-root \
               --project-name=zudo-front-builder \
               --branch=main \
               --commit-dirty=true \

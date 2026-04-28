@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
-use crate::atomic::atomic_write_string;
+use crate::atomic::{atomic_write, validate_output_path};
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -62,11 +62,23 @@ impl DevAssetPipeline {
     pub fn reset_cache(&self) {
         self.last_bytes
             .lock()
-            .expect("DevAssetPipeline::last_bytes lock poisoned")
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "DevAssetPipeline.last_bytes",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
             .clear();
         self.last_output_path
             .lock()
-            .expect("DevAssetPipeline::last_output_path lock poisoned")
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "DevAssetPipeline.last_output_path",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
             .clear();
     }
 }
@@ -103,39 +115,45 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.pages_rendered = rendered.len();
 
             for r in rendered {
-                let dest = ctx.dist_root.join(&r.output_path);
+                // Reject any output_path that escapes dist_root via
+                // `..` or absolute roots before we touch the
+                // filesystem. Paths come from the renderer/router but
+                // we still validate at the write boundary.
+                let dest = validate_output_path(&ctx.dist_root, r.output_path.as_path())
+                    .with_context(|| format!("while building page {:?}", r.page))?;
                 let new_bytes = r.html.into_bytes();
 
-                // Stale-output prune: if this page previously produced a
-                // *different* absolute path (e.g. extension flipped
-                // from xml to rss), delete the old artifact and forget
-                // its byte cache so we never serve a stale file. The
-                // delete is best-effort: if the file was already gone
-                // we silently move on.
-                let pruned = {
-                    let mut last_out = self
-                        .last_output_path
-                        .lock()
-                        .expect("DevAssetPipeline::last_output_path lock poisoned");
-                    match last_out.insert(r.page.clone(), dest.clone()) {
-                        Some(prev) if prev != dest => {
-                            let _ = std::fs::remove_file(&prev);
-                            self.last_bytes
-                                .lock()
-                                .expect("DevAssetPipeline::last_bytes lock poisoned")
-                                .remove(&prev);
-                            outcome.pages_pruned.push(prev);
-                            true
-                        }
-                        _ => false,
+                // Compute (but do not yet apply) any stale-output
+                // prune. The actual delete happens AFTER the new
+                // artifact lands on disk, so a reader never observes
+                // a window where neither file exists. We also defer
+                // updating `last_output_path` until the write succeeds:
+                // otherwise a transient write failure forgets the
+                // previous path and leaves the stale file in dist
+                // forever (it would never be pruned on subsequent
+                // rebuilds).
+                let prune_target = {
+                    let last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
+                    match last_out.get(&r.page) {
+                        Some(prev) if prev != &dest => Some(prev.clone()),
+                        _ => None,
                     }
                 };
 
                 let changed = {
-                    let mut cache = self
-                        .last_bytes
-                        .lock()
-                        .expect("DevAssetPipeline::last_bytes lock poisoned");
+                    let mut cache = self.last_bytes.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_bytes",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
                     match cache.get(&dest) {
                         Some(prev) if prev == &new_bytes => false,
                         _ => {
@@ -148,13 +166,49 @@ impl AssetPipeline for DevAssetPipeline {
                 // After a prune the new path is by definition different
                 // from anything we've written before, so we always
                 // (re-)emit. `changed` already flips true via the
-                // cache miss above; this `_pruned` line just documents
-                // the invariant for future readers.
-                let _ = pruned;
+                // cache miss above. We still want to write before we
+                // delete the previous artifact below.
 
                 if changed {
-                    atomic_write_string(&dest, std::str::from_utf8(&new_bytes).unwrap_or(""))?;
-                    outcome.pages_written.push(r.page);
+                    // Pass the raw bytes through — `atomic_write` is
+                    // the canonical write helper. Going through
+                    // `from_utf8(...).unwrap_or("")` previously turned
+                    // any encoding hiccup into a silent blank file.
+                    atomic_write(&dest, &new_bytes)?;
+                    outcome.pages_written.push(r.page.clone());
+                }
+
+                // Only after a successful write do we record the new
+                // output path. If the write above failed we abort the
+                // tick and the previous mapping is preserved, so the
+                // stale file remains prunable on the next rebuild.
+                self.last_output_path
+                    .lock()
+                    .unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path (commit)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    })
+                    .insert(r.page.clone(), dest.clone());
+
+                // Now that the new artifact is on disk, delete the
+                // stale one. Best-effort: if it was already gone we
+                // silently move on.
+                if let Some(prev) = prune_target {
+                    let _ = std::fs::remove_file(&prev);
+                    self.last_bytes
+                        .lock()
+                        .unwrap_or_else(|p| {
+                            tracing::warn!(
+                                site = "DevAssetPipeline.last_bytes (prune)",
+                                "mutex poisoned, recovering"
+                            );
+                            p.into_inner()
+                        })
+                        .remove(&prev);
+                    outcome.pages_pruned.push(prev);
                 }
             }
         }
@@ -185,7 +239,7 @@ impl AssetPipeline for DevAssetPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::RenderedPage;
+    use crate::pipeline::{RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -222,7 +276,7 @@ mod tests {
             dir.path().to_path_buf(),
             vec![RenderedPage {
                 page: pid("/p/a.tsx"),
-                output_path: PathBuf::from("a/index.html"),
+                output_path: RelDistPath::new("a/index.html").unwrap(),
                 html: "<h1>A</h1>".into(),
                 content_type: None,
             }],
@@ -255,7 +309,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let rendered = vec![RenderedPage {
             page: pid("/p/a.tsx"),
-            output_path: PathBuf::from("a.html"),
+            output_path: RelDistPath::new("a.html").unwrap(),
             html: "<p>same</p>".into(),
             content_type: None,
         }];
@@ -321,7 +375,7 @@ mod tests {
         // First build: emit dist/sitemap.xml.
         let first_render = vec![RenderedPage {
             page: pid("/p/sitemap.xml.tsx"),
-            output_path: PathBuf::from("sitemap.xml"),
+            output_path: RelDistPath::new("sitemap.xml").unwrap(),
             html: "<urlset/>".into(),
             content_type: Some("application/xml".into()),
         }];
@@ -344,7 +398,7 @@ mod tests {
         // sitemap.rss. The pipeline must delete the stale .xml.
         let second_render = vec![RenderedPage {
             page: pid("/p/sitemap.xml.tsx"),
-            output_path: PathBuf::from("sitemap.rss"),
+            output_path: RelDistPath::new("sitemap.rss").unwrap(),
             html: "<rss/>".into(),
             content_type: Some("application/rss+xml".into()),
         }];
@@ -373,7 +427,7 @@ mod tests {
         let pipeline = DevAssetPipeline::new();
         let render = vec![RenderedPage {
             page: pid("/p/a.tsx"),
-            output_path: PathBuf::from("a/index.html"),
+            output_path: RelDistPath::new("a/index.html").unwrap(),
             html: "<h1>A</h1>".into(),
             content_type: None,
         }];

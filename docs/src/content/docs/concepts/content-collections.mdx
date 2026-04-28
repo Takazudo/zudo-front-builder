@@ -5,6 +5,12 @@ sidebar_position: 2
 category: Concepts
 ---
 
+<Warning title="Superseded by ADR-005">
+
+The "blocked on ADR-001 / `deno_core`" framing later in this page predates [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md). zfb now renders through a Node-hosted miniflare worker rather than an in-process JS runtime, so the in-progress notes below should be read as historical context.
+
+</Warning>
+
 <Warning title="v0 status">
 
 File discovery, frontmatter parsing, and Markdown/MDX compilation live in `crates/zfb-content` and are wired through the renderer. Each entry now exposes `entry.Content` — a renderable React/Preact component compiled from the source via the mdast → JSX-source pipeline. See [MDX Components](/concepts/mdx-components) for how the `<post.Content components={...} />` contract works, and /architecture/js-runtime for the deeper runtime discussion.
@@ -73,7 +79,7 @@ export default function FeaturedPost() {
 Both calls are **synchronous**. The entire content snapshot is built
 in Rust before any TSX module runs and embedded on `globalThis.__zfb`,
 so there's no I/O at call time and no `await` to thread through. See
-[ADR-004](/architecture/adr-004-content-bridge) for the Rust↔JS bridge
+[ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge
 contract that backs this surface.
 
 Each entry has three things you can rely on:
@@ -84,10 +90,10 @@ Each entry has three things you can rely on:
 
 The function signatures live in [`getCollection`](/api/get-collection)
 and the matching `getEntry`. The Rust↔JS surface they read through is
-specified in [ADR-004](/architecture/adr-004-content-bridge).
+specified in [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md).
 
 ## How parsing works
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The remaining open work — picking up changes in dev for the full per-page loop and a few surrounding pieces — depends on ADR-001 (the JS runtime decision). The compilation and surface contract are stable; see [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](/architecture/adr-004-content-bridge) for the Rust↔JS bridge.
+The remaining open work — picking up changes in dev for the full per-page loop and a few surrounding pieces — depends on ADR-001 (the JS runtime decision). The compilation and surface contract are stable; see [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge.

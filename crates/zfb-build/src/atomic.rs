@@ -29,10 +29,10 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -57,6 +57,11 @@ pub fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
     }
 
+    // Rust's `std::fs::rename` is documented to replace an existing
+    // destination on both POSIX and Windows (Windows: implemented via
+    // `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`). We therefore
+    // rely on it directly — no unlink-first fallback is required.
+    // See https://doc.rust-lang.org/std/fs/fn.rename.html.
     if let Err(e) = fs::rename(&temp_path, dest) {
         // Best-effort cleanup so repeated rename failures don't accumulate
         // sibling temp files in the destination directory. Ignore the
@@ -77,6 +82,125 @@ pub fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
 /// Convenience: atomically write a `&str` to `dest`.
 pub fn atomic_write_string(dest: &Path, s: &str) -> Result<()> {
     atomic_write(dest, s.as_bytes())
+}
+
+/// Validate that `dist_root.join(output_path)` lands inside `dist_root`.
+///
+/// Performs two layers of containment:
+///
+/// 1. **Lexical** — components of `output_path` are walked and any
+///    `..` that would escape `dist_root`, any absolute root, and any
+///    Windows prefix is rejected. This is sufficient for paths that
+///    don't yet exist on disk (typical for build outputs).
+/// 2. **Symlink-aware** — if the *parent* directory of the joined path
+///    already exists, its canonical form must still start with the
+///    canonical `dist_root`. This catches the case where a previous
+///    build (or an attacker) planted a symlink inside dist that points
+///    outside (e.g. `dist/foo -> /etc`); a lexical check alone would
+///    accept the write and corrupt files outside dist.
+///
+/// The symlink check tolerates a missing parent directory (the file we
+/// are about to write may live in a subdirectory `atomic_write` is
+/// about to create), in which case only the lexical check applies. As
+/// soon as the parent exists, the canonical comparison kicks in.
+pub fn validate_output_path(dist_root: &Path, output_path: &Path) -> Result<PathBuf> {
+    // Walk the components, building a normalized PathBuf relative to
+    // dist_root. Reject absolute paths, Windows prefixes, and any `..`
+    // that would walk above the root.
+    let mut normalized: Vec<&std::ffi::OsStr> = Vec::new();
+    for c in output_path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(anyhow!(
+                    "output path {} must be relative to dist_root {}",
+                    output_path.display(),
+                    dist_root.display()
+                ));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.pop().is_none() {
+                    return Err(anyhow!(
+                        "output path {} escapes dist_root {} via `..`",
+                        output_path.display(),
+                        dist_root.display()
+                    ));
+                }
+            }
+            Component::Normal(s) => normalized.push(s),
+        }
+    }
+
+    let mut joined = dist_root.to_path_buf();
+    for seg in normalized {
+        joined.push(seg);
+    }
+
+    // Symlink-aware containment: walk up from the joined parent toward
+    // dist_root, looking for the first component that already exists on
+    // disk. Canonicalize THAT component (which resolves through any
+    // symlink in its path) and require the canonical result to live
+    // inside dist_root's canonical form.
+    //
+    // Why we walk: a partial symlink can bypass a naive
+    // `parent.canonicalize()` check. If `dist/escape -> /tmp/outside`
+    // exists but `dist/escape/newdir` does not, then
+    // `dist/escape/newdir.canonicalize()` errors out. Falling through
+    // would let `atomic_write`'s `create_dir_all` materialise the
+    // directory under `/tmp/outside`. Walking up finds the existing
+    // `dist/escape` first, canonicalizes it to `/tmp/outside`, and
+    // rejects.
+    //
+    // If we walk all the way out of `dist_root` without finding any
+    // existing component (the fresh-build case where `dist_root`
+    // itself doesn't exist yet), we fall through to the lexical
+    // result.
+    if let (Some(parent), Ok(canon_root)) = (joined.parent(), dist_root.canonicalize()) {
+        let mut current: Option<&Path> = Some(parent);
+        while let Some(c) = current {
+            // Lexical guard: never walk above dist_root. starts_with
+            // works against either the lexical path or the canonical
+            // form (which differ when dist_root is itself a symlink).
+            if !c.starts_with(dist_root) && !c.starts_with(&canon_root) {
+                return Err(anyhow!(
+                    "output path {} escapes dist_root {} before reaching an existing parent",
+                    output_path.display(),
+                    canon_root.display(),
+                ));
+            }
+
+            match c.symlink_metadata() {
+                Ok(_) => {
+                    // Component exists; canonicalize resolves any
+                    // symlink in its path and gives us the real
+                    // location.
+                    let canonical = c.canonicalize().with_context(|| {
+                        format!(
+                            "failed to canonicalize {} while validating {}",
+                            c.display(),
+                            output_path.display()
+                        )
+                    })?;
+                    if !canonical.starts_with(&canon_root) {
+                        return Err(anyhow!(
+                            "output path {} resolves to {} which is outside dist_root {} \
+                             (likely a symlink pointing outside dist)",
+                            output_path.display(),
+                            canonical.display(),
+                            canon_root.display(),
+                        ));
+                    }
+                    break;
+                }
+                Err(_) => {
+                    // Component doesn't exist yet — keep walking up.
+                    current = c.parent();
+                }
+            }
+        }
+    }
+
+    Ok(joined)
 }
 
 /// Build the sibling temp path. Pub for tests; not part of the stable API.
@@ -130,6 +254,43 @@ mod tests {
     }
 
     #[test]
+    fn validate_output_path_accepts_normal() {
+        let root = Path::new("/dist");
+        assert_eq!(
+            validate_output_path(root, Path::new("blog/index.html")).unwrap(),
+            PathBuf::from("/dist/blog/index.html"),
+        );
+    }
+
+    #[test]
+    fn validate_output_path_rejects_absolute() {
+        let root = Path::new("/dist");
+        assert!(validate_output_path(root, Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn validate_output_path_rejects_traversal() {
+        let root = Path::new("/dist");
+        assert!(
+            validate_output_path(root, Path::new("../etc/passwd")).is_err()
+        );
+        assert!(
+            validate_output_path(root, Path::new("blog/../../etc/passwd")).is_err()
+        );
+    }
+
+    #[test]
+    fn validate_output_path_allows_inner_dotdot() {
+        // `blog/../index.html` resolves to `index.html`, which is still
+        // inside dist_root, so it's allowed.
+        let root = Path::new("/dist");
+        assert_eq!(
+            validate_output_path(root, Path::new("blog/../index.html")).unwrap(),
+            PathBuf::from("/dist/index.html"),
+        );
+    }
+
+    #[test]
     fn no_partial_temp_files_remain_after_success() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("a.txt");
@@ -141,5 +302,199 @@ mod tests {
             .collect();
         // Only the destination file should exist; no leftover .tmp-* sibling.
         assert_eq!(entries, vec!["a.txt".to_string()]);
+    }
+
+    /// Regression guard for Round 2: a second write to the same path must
+    /// succeed and replace the first content. `std::fs::rename` does the
+    /// right thing on POSIX and Windows, but it costs nothing to verify
+    /// here so a future rewrite cannot regress it.
+    #[test]
+    fn second_write_replaces_existing() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("a.txt");
+        atomic_write(&dest, b"first").unwrap();
+        atomic_write(&dest, b"second").unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"second");
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["a.txt".to_string()]);
+    }
+
+    /// Symlink-aware containment: a symlink inside `dist` pointing at a
+    /// location outside `dist` must be rejected, even though the
+    /// lexical check accepts the relative path `escape/foo.txt`.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_rejects_symlink_outside_dist() {
+        use std::os::unix::fs::symlink;
+
+        let dist_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let dist_root = dist_dir.path().canonicalize().unwrap();
+        let outside_root = outside_dir.path().canonicalize().unwrap();
+
+        // Plant `dist/escape -> /tmp/.../outside`
+        symlink(&outside_root, dist_root.join("escape")).unwrap();
+
+        let err = validate_output_path(&dist_root, Path::new("escape/foo.txt"))
+            .expect_err("symlink-traversed write must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("outside dist_root"),
+            "error should mention outside dist_root: {msg}"
+        );
+    }
+
+    /// Round 3 regression: a symlink inside `dist` pointing outside
+    /// must still be rejected when the deeper path under it does not
+    /// yet exist. With the naive `parent.canonicalize()` check, an
+    /// output path of `escape/newdir/file.html` would skip the
+    /// containment check (because `dist/escape/newdir` doesn't exist
+    /// → canonicalize errors → fall through), and `atomic_write`
+    /// would then `create_dir_all` outside dist_root.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_rejects_symlink_outside_dist_partial_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dist_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let dist_root = dist_dir.path().canonicalize().unwrap();
+        let outside_root = outside_dir.path().canonicalize().unwrap();
+
+        // Plant `dist/escape -> /tmp/.../outside` but do NOT create
+        // `dist/escape/newdir` — that's the directory `atomic_write`
+        // would otherwise materialise outside dist_root.
+        symlink(&outside_root, dist_root.join("escape")).unwrap();
+
+        let err = validate_output_path(
+            &dist_root,
+            Path::new("escape/newdir/file.html"),
+        )
+        .expect_err("symlink with partial parent must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("outside dist_root"),
+            "error should mention outside dist_root: {msg}"
+        );
+    }
+
+    /// Symlink-aware containment must not break the common case: a
+    /// non-symlinked subdirectory inside dist is still accepted.
+    #[test]
+    fn validate_output_path_accepts_real_subdir() {
+        let dist_dir = tempdir().unwrap();
+        let dist_root = dist_dir.path().canonicalize().unwrap();
+        fs::create_dir_all(dist_root.join("blog")).unwrap();
+        validate_output_path(&dist_root, Path::new("blog/index.html"))
+            .expect("real subdir should validate");
+    }
+
+    /// If the parent directory does not yet exist (the typical fresh-build
+    /// case), validation falls through to the lexical result.
+    #[test]
+    fn validate_output_path_tolerates_missing_parent() {
+        let dist_dir = tempdir().unwrap();
+        let dist_root = dist_dir.path().canonicalize().unwrap();
+        // No `nested/` directory created.
+        validate_output_path(&dist_root, Path::new("nested/deep/index.html"))
+            .expect("missing parent should not error");
+    }
+
+    /// Case A: dist_root is passed as the symlink path itself.
+    ///
+    /// The lexical guard at line 164 dual-checks `starts_with(dist_root)` AND
+    /// `starts_with(canon_root)`. When dist_root is a symlink, canon_root is
+    /// the resolved target. Paths under the symlink path lexically satisfy
+    /// `starts_with(dist_root)`, so they pass the guard; when the symlink
+    /// itself is canonicalized during walk-up it resolves to canon_root,
+    /// satisfying the final containment check. This test locks that behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_via_symlink_path() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        // Create a symlink: link_parent/dist-link -> real_root
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // Both output paths should be accepted when dist_root is the symlink path.
+        validate_output_path(&link_path, Path::new("blog/index.html"))
+            .expect("symlinked dist_root via symlink path: blog/index.html should be accepted");
+        validate_output_path(&link_path, Path::new("a/b/c/index.html"))
+            .expect("symlinked dist_root via symlink path: a/b/c/index.html should be accepted");
+    }
+
+    /// Case B: dist_root is passed as the canonical (resolved) path even though
+    /// a symlink alias for it exists. The function must accept writes identically
+    /// to Case A.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_via_canonical_path() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // dist_root is the canonical path — must behave the same as the symlink alias form.
+        validate_output_path(&real_root, Path::new("blog/index.html"))
+            .expect("symlinked dist_root via canonical path: blog/index.html should be accepted");
+        validate_output_path(&real_root, Path::new("a/b/c/index.html"))
+            .expect("symlinked dist_root via canonical path: a/b/c/index.html should be accepted");
+    }
+
+    /// Case C: dist_root is the symlink path, and NONE of the intermediate
+    /// directories in the output path exist on disk. The walk-up must reach
+    /// dist_root itself (the symlink), canonicalize it, and accept the write.
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_symlinked_dist_root_with_missing_child_components() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // a/, a/b/, a/b/c/ do not exist inside real_root — the walk-up
+        // falls all the way back to the symlink itself and should accept.
+        validate_output_path(&link_path, Path::new("a/b/c/index.html"))
+            .expect("missing child components under symlinked dist_root should be accepted");
+    }
+
+    /// Partial-symlink case: an intermediate component of the output path is
+    /// itself a symlink, but it points BACK inside canon_root. The canonical
+    /// check must accept this (symlink resolves inside dist, not outside).
+    #[cfg(unix)]
+    #[test]
+    fn validate_output_path_accepts_inner_symlink_pointing_inside_dist() {
+        use std::os::unix::fs::symlink;
+
+        let real_dir = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let real_root = real_dir.path().canonicalize().unwrap();
+        // dist-link -> real_root
+        let link_path = link_parent.path().join("dist-link");
+        symlink(&real_root, &link_path).unwrap();
+
+        // Create a real subdir inside dist and an internal symlink pointing at it.
+        let subdir = real_root.join("section");
+        fs::create_dir_all(&subdir).unwrap();
+        // dist/inner-link -> dist/section  (stays inside canon_root)
+        let inner_link = real_root.join("inner-link");
+        symlink(&subdir, &inner_link).unwrap();
+
+        // Writing through inner-link should be accepted: it resolves inside dist.
+        validate_output_path(&link_path, Path::new("inner-link/page.html"))
+            .expect("inner symlink pointing back inside dist should be accepted");
     }
 }

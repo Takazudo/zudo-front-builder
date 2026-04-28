@@ -68,9 +68,13 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
     }
     let key = binary_path.to_path_buf();
     {
-        let cache = verification_cache()
-            .lock()
-            .expect("esbuild verification cache mutex poisoned");
+        let cache = verification_cache().lock().unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "esbuild::verification_cache",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        });
         if cache.contains_key(&key) {
             return Ok(());
         }
@@ -144,7 +148,13 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
 
     verification_cache()
         .lock()
-        .expect("esbuild verification cache mutex poisoned")
+        .unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "esbuild::verification_cache",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        })
         .insert(key, ());
     Ok(())
 }
@@ -193,7 +203,23 @@ pub struct EsbuildSubprocessConfig {
 
 impl Default for EsbuildSubprocessConfig {
     fn default() -> Self {
-        let env_override = std::env::var_os("ZFB_ESBUILD_BIN");
+        Self::default_with_env_getter(|name| std::env::var_os(name))
+    }
+}
+
+impl EsbuildSubprocessConfig {
+    /// Build a default config, but resolve the `ZFB_ESBUILD_BIN`
+    /// override via the supplied getter rather than touching the real
+    /// process environment. Tests use this to drive the env-override
+    /// path without calling `std::env::set_var`, which is `unsafe`
+    /// under Rust 2024 because it races other threads reading the env
+    /// table. Production callers should keep using
+    /// [`Default::default`].
+    pub fn default_with_env_getter<F>(getter: F) -> Self
+    where
+        F: Fn(&str) -> Option<OsString>,
+    {
+        let env_override = getter("ZFB_ESBUILD_BIN");
         let binary_path = match env_override {
             Some(p) => PathBuf::from(p),
             None => PathBuf::from("crates/zfb/binaries/esbuild/esbuild"),
@@ -313,6 +339,15 @@ impl EsbuildSubprocessBundler {
             cmd.arg("--sourcemap=linked");
         }
         cmd.arg(format!("--outfile={}", tmp.path().display()));
+        // Inline NODE_ENV so the React/Preact build picks the
+        // production flavour. Without this, prod islands ship the dev
+        // builds (extra warnings + larger bytes). esbuild expects the
+        // value to be a JS literal, hence the embedded quotes.
+        if config.minify {
+            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
+        } else {
+            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
+        }
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -406,11 +441,10 @@ impl EsbuildSubprocessBundler {
             });
         }
 
-        // 3. Runtime bundle. The manifest is JSON-encoded so it can be
-        //    dropped into the runtime entry source as a literal that
-        //    esbuild's parser will accept verbatim.
-        let manifest_json = serialize_manifest(&manifest);
-        let runtime_entry_source = render_runtime_entry_source(framework, &manifest_json);
+        // 3. Runtime bundle. The manifest entries are passed directly to
+        //    render_runtime_entry_source, which handles serialisation
+        //    internally.
+        let runtime_entry_source = render_runtime_entry_source(&manifest);
         let runtime_js = self.bundle_one_entry(&runtime_entry_source, config)?;
         let runtime_hash = hash_8(&runtime_js);
         let runtime_asset_path = islands_dir.join(format!("islands-runtime-{runtime_hash}.js"));
@@ -472,6 +506,14 @@ impl EsbuildSubprocessBundler {
             cmd.arg("--sourcemap=linked");
         }
         cmd.arg(format!("--outfile={}", out_tmp.path().display()));
+        // Inline NODE_ENV so React/Preact pick their production build
+        // when minifying. esbuild expects the define value to be a JS
+        // literal, hence the embedded quotes.
+        if config.minify {
+            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
+        } else {
+            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
+        }
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -550,22 +592,27 @@ export default mount;
     }
 }
 
-/// Generate the runtime entry script for `framework`.
+/// Generate the runtime entry script from a manifest of
+/// `(component_name → asset_url)` pairs.
 ///
 /// The runtime imports the framework-agnostic hydration runtime from
-/// the `zfb` SDK package, hands it the manifest of
-/// `ComponentName → bundle URL` so it can dynamic-import the right
-/// per-island bundle for each `[data-zfb-island]` element. The
-/// manifest is inlined as a JSON literal — no extra fetch — so the
-/// runtime works in static-host environments.
+/// the `zfb` SDK package, hands it the manifest so it can
+/// dynamic-import the right per-island bundle for each
+/// `[data-zfb-island]` element. The manifest is inlined as a JSON
+/// literal — no extra fetch — so the runtime works in static-host
+/// environments.
 ///
-/// `manifest_json` MUST already be a valid JSON object literal
-/// (produced by [`serialize_manifest`]).
-pub fn render_runtime_entry_source(framework: FrameworkKind, manifest_json: &str) -> String {
-    let _ = framework; // current shim is framework-agnostic; the per-island bundles carry the framework-specific glue.
+/// The `framework` parameter has been removed; the shim is
+/// framework-agnostic because each island's per-island bundle carries
+/// the framework-specific glue. This function takes the manifest
+/// entries directly rather than a pre-serialised JSON string so
+/// callers do not need to reach into the private [`serialize_manifest`]
+/// helper.
+pub fn render_runtime_entry_source(manifest: &[(String, String)]) -> String {
+    let manifest_json = serialize_manifest(manifest);
     format!(
         r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
-import {{ mountIslands }} from "zfb/runtime";
+import {{ mountIslands }} from "@takazudo/zfb/runtime";
 const ISLAND_MANIFEST = {manifest_json};
 mountIslands(ISLAND_MANIFEST);
 "#
@@ -732,12 +779,12 @@ mod tests {
 
     #[test]
     fn render_runtime_entry_source_inlines_manifest_and_calls_mount() {
-        let manifest = serialize_manifest(&[
+        let manifest = vec![
             ("Counter".into(), "/islands/Counter-abc.js".into()),
             ("Button".into(), "/islands/Button-def.js".into()),
-        ]);
-        let src = render_runtime_entry_source(FrameworkKind::Preact, &manifest);
-        assert!(src.contains(r#"import { mountIslands } from "zfb/runtime""#));
+        ];
+        let src = render_runtime_entry_source(&manifest);
+        assert!(src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
         assert!(src.contains(r#""Counter":"/islands/Counter-abc.js""#));
         assert!(src.contains("mountIslands(ISLAND_MANIFEST);"));
     }
@@ -815,16 +862,29 @@ mod tests {
 
     #[test]
     fn esbuild_subprocess_config_env_override_is_honoured() {
-        let prev = std::env::var_os("ZFB_ESBUILD_BIN");
-        std::env::set_var("ZFB_ESBUILD_BIN", "/tmp/zfb-esbuild-overridden");
-        let cfg = EsbuildSubprocessConfig::default();
+        // Drive the env-override path through an injected getter rather
+        // than mutating the real process environment. `std::env::set_var`
+        // is `unsafe` under Rust 2024 because it races other threads
+        // reading the env table — and our test suite is multi-threaded.
+        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|name| {
+            if name == "ZFB_ESBUILD_BIN" {
+                Some(OsString::from("/tmp/zfb-esbuild-overridden"))
+            } else {
+                None
+            }
+        });
         assert_eq!(
             cfg.binary_path,
             PathBuf::from("/tmp/zfb-esbuild-overridden")
         );
-        match prev {
-            Some(v) => std::env::set_var("ZFB_ESBUILD_BIN", v),
-            None => std::env::remove_var("ZFB_ESBUILD_BIN"),
-        }
+    }
+
+    #[test]
+    fn esbuild_subprocess_config_falls_back_to_default_slot_without_env() {
+        let cfg = EsbuildSubprocessConfig::default_with_env_getter(|_| None);
+        assert_eq!(
+            cfg.binary_path,
+            PathBuf::from("crates/zfb/binaries/esbuild/esbuild")
+        );
     }
 }

@@ -1,6 +1,6 @@
 # zfb / zudo-front-builder
 
-Workspace for the `zfb` Rust workspace + `@takazudo/zfb-runtime` and `@takazudo/zfb` npm packages. The repo is one of the 4 zfb-side Phase A epics under super-epic [zudolab/zudo-doc#473](https://github.com/zudolab/zudo-doc/issues/473) — the Astro→zfb migration.
+Workspace for the `zfb` Rust workspace + `@takazudo/zfb-runtime` and `zfb` npm packages. The repo is one of the 4 zfb-side Phase A epics under super-epic [zudolab/zudo-doc#473](https://github.com/zudolab/zudo-doc/issues/473) — the Astro→zfb migration.
 
 ## /x-wt-teams epic workflow rule
 

@@ -1,7 +1,8 @@
-// Paginated page at "/blog/page/[page]". Uses `paginate()` from
-// the SDK module exposed as "zfb" (Sub 7's deliverable).
+// Paginated page at "/blog/page/[page]". Uses an inline paginate helper
+// (the "zfb" SDK paginate helper was planned for Sub 7 but has a
+// different calling convention; inline avoids the "zfb" package import
+// from the bundle's perspective and keeps the fixture self-contained).
 
-import { paginate } from "zfb";
 import { posts, type Post } from "../../../content/posts";
 
 export const meta = {
@@ -9,8 +10,30 @@ export const meta = {
   layout: "blog",
 };
 
+type PaginateEntry<T> = {
+  params: { page: string };
+  props: { current: number; total: number; items: T[] };
+};
+
+function paginateLocal<T>(items: T[], pageSize: number): PaginateEntry<T>[] {
+  const lastPage = Math.max(1, Math.ceil(items.length / pageSize));
+  const out: PaginateEntry<T>[] = [];
+  for (let page = 1; page <= lastPage; page++) {
+    const start = (page - 1) * pageSize;
+    out.push({
+      params: { page: String(page) },
+      props: {
+        current: page,
+        total: lastPage,
+        items: items.slice(start, start + pageSize),
+      },
+    });
+  }
+  return out;
+}
+
 export function paths() {
-  return paginate({ items: posts, pageSize: 2 });
+  return paginateLocal(posts, 2);
 }
 
 type PageProps = {

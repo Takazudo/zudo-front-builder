@@ -31,6 +31,7 @@
 pub mod bundler;
 pub mod esbuild;
 pub mod future_rust_native;
+pub mod html_tree;
 pub mod hydration;
 pub mod manifest;
 pub mod scanner;
@@ -44,10 +45,11 @@ pub use esbuild::{
     EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
+pub use html_tree::HtmlTree;
 pub use hydration::{
     hydration_script_tag, inject_runtime_script_into_head, islands_runtime_script_tag,
     rewrite_islands, rewrite_islands_in_attr_skeleton, IslandDescriptor, IslandRewriteError,
-    IslandSkeletonRewriteError,
+    IslandSkeletonRewriteError, WhenHint,
 };
 pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{

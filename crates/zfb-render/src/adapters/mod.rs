@@ -48,6 +48,8 @@
 //! event delegation strategy — is intentionally out of scope. ADR-002
 //! documents why.
 
+use async_trait::async_trait;
+
 use crate::{RenderError, RenderHost};
 
 pub mod preact;
@@ -78,6 +80,10 @@ pub enum Framework {
 /// `hydrate_shim_source`) or side-effecting only on the host
 /// (`pre_render_setup`). Adapters MUST NOT carry per-render state — a
 /// single adapter instance is reused across every page render.
+///
+/// `pre_render_setup` is `async` so it can drive the now-async
+/// [`RenderHost::execute_module`] without blocking.
+#[async_trait(?Send)]
 pub trait Adapter {
     /// Human-readable adapter name. Stable, lowercase, no whitespace.
     /// Used in error messages and in build logs.
@@ -97,7 +103,7 @@ pub trait Adapter {
     /// runtime. Installs `globalThis.__zfbRenderToString = ...` so the
     /// orchestrator in `render.rs` can call into the framework
     /// uniformly.
-    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
+    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
 
     /// Synthetic module specifier the islands bundler uses to write the
     /// hydration shim into the bundle. Conventionally lives under the

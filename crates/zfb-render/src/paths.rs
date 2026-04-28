@@ -17,21 +17,9 @@ use std::hash::{Hash, Hasher};
 use serde_json::Value;
 use thiserror::Error;
 
-/// A single parsed segment of a route template.
-///
-/// **NOTE — temporary local stub.** Sub 2 (`zfb-router`) owns the canonical
-/// `Segment` type and the route-template parser. We mirror only the variants
-/// needed by `paths()` resolution here so this file compiles in isolation.
-/// At merge time this enum is replaced by a re-export from `zfb-router`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Segment {
-    /// A literal segment, e.g. `blog` in `blog/[slug]`.
-    Static(String),
-    /// A single-segment dynamic param, e.g. `[slug]` → `Dynamic("slug")`.
-    Dynamic(String),
-    /// A catch-all dynamic param, e.g. `[...slug]` → `Catchall("slug")`.
-    Catchall(String),
-}
+// Re-export the canonical Segment type from zfb-types. The previous local
+// stub (marked "temporary") is now replaced by the shared definition.
+pub use zfb_types::Segment;
 
 /// A concrete resolved URL for a dynamic route, plus the params and props
 /// that produced it.

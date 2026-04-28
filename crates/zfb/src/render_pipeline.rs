@@ -1,5 +1,6 @@
-//! Shared helpers that wire the wave-2 outputs (`zfb_build::bundler` +
-//! `zfb_build::renderer`) into the `zfb build` and `zfb dev` commands.
+//! Shared helpers that wire the bundler and renderer
+//! (`zfb_build::bundler` + `zfb_build::renderer`) into the `zfb build`
+//! and `zfb dev` commands.
 //!
 //! This module deliberately does **not** spawn miniflare or call
 //! [`zfb_build::renderer::render_all`] directly. It owns the pure /
@@ -53,6 +54,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use zfb_build::renderer::RouteUniverseEntry;
@@ -68,9 +70,9 @@ use zfb_router::{Route, RouteKind, Segment};
 /// Carries enough metadata for [`expand_dynamic_routes`] to:
 ///
 /// 1. Read the source file and try static `paths()` extraction.
-/// 2. Convert the parsed segments to
-///    [`zfb_render::paths::Segment`] so [`zfb_render::paths::resolve_paths`]
-///    can reassemble the URLs.
+/// 2. Pass the segments (now shared [`zfb_types::Segment`], re-exported
+///    by both `zfb_router` and `zfb_render`) to
+///    [`zfb_render::paths::resolve_paths`] for URL reassembly.
 /// 3. Honour the route's filename-convention `output_extension` when
 ///    deriving each resolved entry's output path (e.g. a dynamic
 ///    `[slug].xml.tsx` should still produce `<slug>.xml`, not
@@ -100,6 +102,14 @@ pub struct DeferredDynamicRoute {
     pub source_path: PathBuf,
     /// Route template, e.g. `/blog/:slug`.
     pub template: String,
+    /// Parsed segments from the router. Required by
+    /// [`eval_deferred_paths_via_worker`] to reassemble concrete URLs
+    /// from the `paths()` return value.
+    pub segments: Vec<Segment>,
+    /// Filename-convention extension override from the router (None →
+    /// the renderer-side default of `html`). Carried through so the
+    /// runtime evaluator can produce the correct output path.
+    pub output_extension: Option<String>,
     /// Why static expansion failed: `paths` export missing, return
     /// value not a literal, etc. Suitable for direct inclusion in a
     /// build warning.
@@ -207,6 +217,8 @@ pub fn expand_dynamic_routes(
             Err(reason) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
+                segments: route.segments.clone(),
+                output_extension: route.output_extension.clone(),
                 reason,
             }),
         }
@@ -257,7 +269,7 @@ fn try_expand_one(
     let segs: Vec<PathsSegment> = route
         .segments
         .iter()
-        .map(router_segment_to_paths_segment)
+        .cloned()
         .collect();
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
@@ -274,19 +286,6 @@ fn try_expand_one(
         });
     }
     Ok(out)
-}
-
-/// Convert a `zfb_router::Segment` (the canonical router segment) into
-/// the local stub used by [`zfb_render::paths::Segment`]. The variants
-/// match exactly today; the conversion exists because `zfb-render` does
-/// not depend on `zfb-router` (per the deliberate cyclical-dep
-/// avoidance in the workspace layout).
-fn router_segment_to_paths_segment(seg: &Segment) -> PathsSegment {
-    match seg {
-        Segment::Static(s) => PathsSegment::Static(s.clone()),
-        Segment::Dynamic(name) => PathsSegment::Dynamic(name.clone()),
-        Segment::Catchall(name) => PathsSegment::Catchall(name.clone()),
-    }
 }
 
 /// Compute the on-disk output path for a resolved dynamic URL, mirroring
@@ -358,6 +357,167 @@ fn format_paths_error(e: &PathsError) -> String {
         PathsError::AmbiguousResolution { reason, .. } => {
             format!("paths() produced ambiguous URLs: {reason}")
         }
+    }
+}
+
+/// Evaluate non-literal `paths()` exports by querying the running worker's
+/// synthetic `/__paths__/<encoded-route-key>` endpoint.
+///
+/// The endpoint is provided by `@takazudo/zfb-runtime`'s `createPageRouter`
+/// when the bundle is loaded under miniflare. For each
+/// [`DeferredDynamicRoute`] in `deferred`, this function:
+///
+/// 1. Percent-encodes the route key so it is safe as a URL path segment.
+/// 2. Sends a `GET /__paths__/<encoded-route-key>` to the running worker.
+/// 3. Parses the JSON response array and feeds it through
+///    [`resolve_paths`] with the route's segment list.
+/// 4. Folds the resolved [`RouteUniverseEntry`]s into
+///    [`DynamicExpansion::resolved`]; failures go into
+///    [`DynamicExpansion::deferred`].
+///
+/// `base_url` is the URL printed by the miniflare bootstrap (e.g.
+/// `http://127.0.0.1:54321/`). Call [`zfb_build::renderer::start`] with
+/// [`zfb_build::renderer::Backend::SpawnMiniflare`] before this function
+/// and pass `state.base_url()`.
+///
+/// The timeout applies per-request. A generous default (30 s) is used
+/// because `paths()` may run a content-collection query.
+pub fn eval_deferred_paths_via_worker(
+    deferred: &[DeferredDynamicRoute],
+    base_url: &str,
+    cache: &mut PathsCache,
+    timeout: Option<Duration>,
+) -> DynamicExpansion {
+    if deferred.is_empty() {
+        return DynamicExpansion::default();
+    }
+
+    let per_request_timeout = timeout.unwrap_or(Duration::from_secs(30));
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(per_request_timeout)
+        .no_proxy()
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // Extremely unlikely — only happens if TLS init fails.
+            let reason = format!("could not build HTTP client for paths evaluation: {e}");
+            let deferred_out: Vec<DeferredDynamicRoute> = deferred
+                .iter()
+                .map(|r| DeferredDynamicRoute {
+                    source_path: r.source_path.clone(),
+                    template: r.template.clone(),
+                    segments: r.segments.clone(),
+                    output_extension: r.output_extension.clone(),
+                    reason: reason.clone(),
+                })
+                .collect();
+            return DynamicExpansion {
+                resolved: Vec::new(),
+                deferred: deferred_out,
+            };
+        }
+    };
+
+    let base = base_url.trim_end_matches('/');
+    let mut out = DynamicExpansion::default();
+
+    for route in deferred {
+        match eval_one_deferred_path(&client, base, route, cache) {
+            Ok(entries) => out.resolved.extend(entries),
+            Err(reason) => out.deferred.push(DeferredDynamicRoute {
+                source_path: route.source_path.clone(),
+                template: route.template.clone(),
+                segments: route.segments.clone(),
+                output_extension: route.output_extension.clone(),
+                reason,
+            }),
+        }
+    }
+
+    out
+}
+
+/// Query one route's `paths()` via the running worker and resolve it into
+/// [`RouteUniverseEntry`]s. Returns a one-line reason string on any failure.
+fn eval_one_deferred_path(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    route: &DeferredDynamicRoute,
+    cache: &mut PathsCache,
+) -> Result<Vec<RouteUniverseEntry>, String> {
+    // Percent-encode the route key. The worker's `/__paths__/:routeKey{.+}`
+    // pattern captures the rest of the path (including encoded slashes),
+    // and the TS side does `decodeURIComponent` on it. We must encode `/`
+    // and `:` so they are not misinterpreted as path separators / Hono
+    // parameter delimiters.
+    let encoded = encode_route_key(&route.template);
+    let url = format!("{base}/__paths__/{encoded}");
+
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("HTTP request to {} failed: {}", url, e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(format!(
+            "worker returned {} for /__paths__/{}: {}",
+            status.as_u16(),
+            route.template,
+            body.trim()
+        ));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("could not parse JSON from /__paths__/{}: {}", route.template, e))?;
+
+    let segs: Vec<PathsSegment> = route
+        .segments
+        .iter()
+        .cloned()
+        .collect();
+
+    let resolved = resolve_paths(cache, &route.template, &segs, &json)
+        .map_err(|e| format!("{}: {}", route.template, format_paths_error(&e)))?;
+
+    let mut entries = Vec::with_capacity(resolved.len());
+    for r in resolved {
+        let output_path = build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
+        entries.push(RouteUniverseEntry {
+            url_path: r.url,
+            output_path,
+            route_key: route.template.clone(),
+        });
+    }
+    Ok(entries)
+}
+
+/// Percent-encode a route key so it is safe as a URL path segment.
+///
+/// We encode every byte that is not an ASCII alphanumeric or one of
+/// `- _ . ~` (the RFC 3986 unreserved set). In particular `/` and `:`
+/// are encoded so they don't confuse the worker's path router.
+fn encode_route_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() * 3);
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(hex_nibble(byte >> 4));
+            out.push(hex_nibble(byte & 0xF));
+        }
+    }
+    out
+}
+
+fn hex_nibble(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        _ => (b'A' + n - 10) as char,
     }
 }
 
@@ -474,12 +634,6 @@ pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapt
         crate::config::Framework::React => zfb_render::adapters::Framework::React,
     }
 }
-
-/// Suppress unused-import warning when the renderer module is consumed
-/// without `Segment` (kept here so future expansion of dynamic routes
-/// has a single import surface to grow).
-#[allow(dead_code)]
-fn _segment_marker(_: &Segment) {}
 
 #[cfg(test)]
 mod tests {
@@ -881,7 +1035,7 @@ mod tests {
                 Segment::Static("docs".into()),
                 Segment::Catchall("slug".into()),
             ],
-            "/docs/:slug*",
+            "/docs/:slug{.+}",
             body,
         );
         let mut cache = PathsCache::new();

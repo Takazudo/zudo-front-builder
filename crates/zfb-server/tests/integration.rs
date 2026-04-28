@@ -69,7 +69,9 @@ impl Harness {
             broadcast: tx.clone(),
         };
 
-        let server = tokio::spawn(async move { serve_with_listener(opts, listener).await });
+        let server = tokio::spawn(async move {
+            serve_with_listener(opts, listener, std::future::pending::<()>()).await
+        });
 
         // Tiny readiness wait: serve_with_listener has the listener
         // already bound, so the OS will queue connections immediately.

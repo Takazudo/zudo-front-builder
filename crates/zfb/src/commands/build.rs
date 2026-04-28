@@ -6,17 +6,15 @@
 //! `args.outdir` is the production output directory (default `dist`).
 //! Resolved relative to the current working directory if not absolute.
 //!
-//! ## v1 → wave-3 transition
+//! ## Pipeline overview
 //!
-//! Earlier waves emitted a placeholder `<h1>zfb build (v1 stub)</h1>`
-//! page per static route. Wave 3 (T7) replaces that path with the real
-//! SSG-render pipeline, wiring the wave-2 outputs together:
+//! The build wires the underlying crates in this order:
 //!
 //! 1. [`zfb_router::Router::scan`] enumerates the route table.
 //! 2. [`crate::render_pipeline::build_prerender_map`] reads each TSX
-//!    page's `export const prerender = …` flag (T5) so SSR-only routes
+//!    page's `export const prerender = …` flag so SSR-only routes
 //!    skip the build-time render.
-//! 3. [`zfb_build::bundle`] (T3) produces the ESM worker bundle for
+//! 3. [`zfb_build::bundle`] produces the ESM worker bundle for
 //!    every page module and content collection in scope.
 //! 4. [`zfb_build::renderer::render_all`] (T6) spawns one long-lived
 //!    miniflare subprocess, drives a `GET` per concrete URL, and writes
@@ -40,7 +38,7 @@
 //! handling, `✓ N pages built in X.XXs` summary) is unchanged.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -48,18 +46,20 @@ use zfb_build::adapter::{
     ensure_no_ssr_without_adapter, run_adapter_bundle_with, AdapterBundleInput,
     AdapterBundleOutput, AdapterChoice, AdapterRunner, DefaultAdapterRunner, SsrRouteRef,
 };
-use zfb_build::bundler::{bundle, BundleMode, BundlerInput};
+use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_router::Router;
 
 use zfb_render::paths::PathsCache;
 
 use crate::cli::BuildArgs;
+use crate::commands::resolve::resolve_outdir;
 use crate::config::Config;
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    expand_dynamic_routes, DeferredDynamicRoute, RouteUniversePlan,
+    eval_deferred_paths_via_worker, expand_dynamic_routes, DeferredDynamicRoute,
+    RouteUniversePlan,
 };
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
@@ -121,7 +121,7 @@ struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     adapter_runner: &'a A,
 }
 
-/// Indirection seam over the heavy wave-2 calls (bundler + renderer).
+/// Indirection seam over the heavy bundler + renderer calls.
 ///
 /// Production wires this to [`DefaultRunner`] which calls the real
 /// [`zfb_build::bundle`] and [`zfb_build::renderer::render_all`]. Unit
@@ -135,7 +135,30 @@ trait BuildRunner {
     fn bundle(
         &self,
         input: BundlerInput,
-    ) -> Result<zfb_build::bundler::BundlerOutput>;
+    ) -> Result<BundlerOutput>;
+
+    /// Evaluate deferred dynamic routes whose `paths()` couldn't be
+    /// statically extracted. The production runner starts miniflare
+    /// against the bundle, queries `/__paths__/<route>` for each
+    /// deferred route, and returns:
+    ///
+    /// - the expanded route entries (resolved) + still-deferred entries,
+    /// - the [`Backend`] to pass to the subsequent `render_all` call
+    ///   (either `SpawnMiniflare` when miniflare was not started here, or
+    ///   `Existing { base_url }` to reuse the already-running process),
+    /// - an opaque cleanup handle — **the caller MUST drop it after
+    ///   calling `render_all`**. Dropping it kills the miniflare process.
+    ///   When no subprocess was started (fake runner, or no deferred
+    ///   routes), the handle is a no-op.
+    ///
+    /// Fake runners return an empty expansion and `SpawnMiniflare` (the
+    /// fake `render_all` ignores the backend).
+    fn eval_deferred_paths(
+        &self,
+        deferred: &[DeferredDynamicRoute],
+        bundle_out: &BundlerOutput,
+        cache: &mut PathsCache,
+    ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)>;
 
     /// Run the renderer. Errors surface verbatim — the CLI relies on
     /// the renderer's
@@ -144,15 +167,66 @@ trait BuildRunner {
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput>;
 }
 
-/// Production runner — straight pass-throughs to the real wave-2 APIs.
+/// Opaque handle that keeps a background miniflare subprocess alive.
+///
+/// Dropping this handle terminates the process (via
+/// [`zfb_build::renderer::shutdown`]). When no subprocess is running,
+/// the inner `Option` is `None` and the drop is a no-op.
+struct WorkerHandle(Option<zfb_build::renderer::RendererState>);
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        if let Some(state) = self.0.take() {
+            // Best-effort: ignore shutdown errors (we're already done
+            // rendering; only cleanup remains).
+            let _ = zfb_build::renderer::shutdown(state);
+        }
+    }
+}
+
+/// Production runner — straight pass-throughs to the real bundler /
+/// renderer APIs.
 struct DefaultRunner;
 impl BuildRunner for DefaultRunner {
     fn bundle(
         &self,
         input: BundlerInput,
-    ) -> Result<zfb_build::bundler::BundlerOutput> {
+    ) -> Result<BundlerOutput> {
         bundle(input)
     }
+
+    fn eval_deferred_paths(
+        &self,
+        deferred: &[DeferredDynamicRoute],
+        bundle_out: &BundlerOutput,
+        cache: &mut PathsCache,
+    ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+        if deferred.is_empty() {
+            return Ok((
+                crate::render_pipeline::DynamicExpansion::default(),
+                Backend::SpawnMiniflare,
+                WorkerHandle(None),
+            ));
+        }
+        // Start miniflare against the bundle to evaluate runtime paths().
+        let state = zfb_build::renderer::start(zfb_build::renderer::RendererStartInput {
+            bundle_path: bundle_out.bundle_path.clone(),
+            sourcemap_path: bundle_out.sourcemap_path.clone(),
+            backend: Backend::SpawnMiniflare,
+            request_timeout: None,
+        })
+        .context("could not start miniflare for runtime paths() evaluation")?;
+        let base_url = state.base_url().to_string();
+        let expansion = eval_deferred_paths_via_worker(deferred, &base_url, cache, None);
+        // Return the `RendererState` wrapped in a `WorkerHandle` so the
+        // miniflare process stays alive through `render_all`, then is
+        // killed when the caller drops the handle.
+        Ok((
+            expansion,
+            Backend::Existing { base_url },
+            WorkerHandle(Some(state)),
+        ))
+    }
+
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
         render_all(input).map_err(anyhow::Error::from)
     }
@@ -187,18 +261,65 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } = build_route_universe(routes);
     let prerender_map = build_prerender_map(routes, project_root, |msg| output::warn(msg));
 
-    // Try static `paths()` expansion for every dynamic route. Resolved
-    // entries fold into the same `route_universe` as the static routes;
-    // entries that couldn't be statically expanded are surfaced as
-    // warnings (per-page reason) and skipped — a follow-up adds runtime
-    // evaluation for those.
+    // Phase 1 — static paths() expansion.
+    //
+    // Try static `paths()` extraction for every dynamic route. Resolved
+    // entries fold into the same `route_universe` as the static routes.
+    // Entries whose `paths()` is non-literal (e.g. they `await import`
+    // or query a content collection) are collected into
+    // `still_deferred` for Phase 2.
     let mut paths_cache = PathsCache::new();
     let expansion = expand_dynamic_routes(&deferred_dynamic, project_root, &mut paths_cache);
-    let dynamic_resolved_count = expansion.resolved.len();
     static_routes.extend(expansion.resolved);
-    warn_deferred_dynamic(&expansion.deferred);
+    let still_deferred = expansion.deferred;
 
-    if static_routes.is_empty() {
+    // Phase 2 — embed content snapshot in the bundle so runtime
+    // `paths()` can call `getCollection(...)`.
+    //
+    // Build the content snapshot from the configured collections and
+    // embed it in the worker bundle. This lets pages whose `paths()`
+    // calls `getCollection(...)` resolve real content entries when
+    // queried via the `/__paths__` endpoint below.
+    //
+    // Errors building the snapshot are non-fatal: if the collection
+    // root is missing or a file is malformed, we warn and fall back to
+    // an empty snapshot. The build will proceed; pages that depend on
+    // the collection data will return empty `paths()` results at render
+    // time, which surfaces as zero dynamic pages — visible in the build
+    // summary.
+    let content_snapshot_json = if !still_deferred.is_empty() {
+        let collections: Vec<zfb_content::CollectionConfig> = config
+            .collections
+            .iter()
+            .map(|c| {
+                zfb_content::CollectionConfig::new(
+                    c.name.clone(),
+                    project_root.join(&c.path),
+                )
+            })
+            .collect();
+        match zfb_content::build_snapshot(&collections) {
+            Ok(snap) => match serde_json::to_string(&snap) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    output::warn(format!(
+                        "content snapshot serialization failed ({e}); dynamic paths() will see empty collections"
+                    ));
+                    None
+                }
+            },
+            Err(e) => {
+                output::warn(format!(
+                    "content snapshot build failed ({e}); dynamic paths() will see empty collections"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if static_routes.is_empty() && still_deferred.is_empty() {
         // Stay user-friendly: an all-dynamic project where every page
         // also failed static expansion still produces a valid build
         // artifact (an empty dist), but the user has clearly not gotten
@@ -210,7 +331,6 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         );
         return Ok(0);
     }
-    let _ = dynamic_resolved_count; // (kept for future build-summary use)
 
     // Adapter precondition check.
     //
@@ -241,39 +361,58 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 
     // ZFB_DEBUG_SNAPSHOT telemetry probe.
     //
-    // The bundler still emits a placeholder empty `contentSnapshot`
-    // (wave 2 will fold the real one in), so to give users a way to
-    // monitor V8 RAM pressure today we materialise the snapshot here
-    // when the flag is set and let `build_snapshot` log a one-line
-    // summary to stderr. The result is discarded — this code path is
-    // strictly telemetry. Errors are non-fatal: a probe failure must
-    // not break the build.
+    // The bundler currently emits a placeholder empty
+    // `contentSnapshot`, so to give users a way to monitor V8 RAM
+    // pressure today we materialise the snapshot here when the flag
+    // is set and let `build_snapshot` log a one-line summary to
+    // stderr. The result is discarded — this code path is strictly
+    // telemetry. Errors are non-fatal: a probe failure must not
+    // break the build.
     //
     // See README.md "Limits" for the user-facing contract.
     maybe_probe_content_snapshot(project_root, config);
 
     // 1. Bundle.
-    let bundler_input = BundlerInput {
-        project_root: project_root.to_path_buf(),
-        pages_dir: PathBuf::from("pages"),
-        content_dir: PathBuf::from("content"),
-        components_dir: PathBuf::from("components"),
-        layouts_dir: PathBuf::from("layouts"),
-        framework: cfg_framework_to_render(config.framework),
-        define_vars: Default::default(),
-        tsconfig_paths: Default::default(),
-        external: Vec::new(),
-        outdir: outdir.join(".zfb-build"),
-        mode: BundleMode::Production,
-        minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: None,
-    };
+    //
+    // The content snapshot (when present) is embedded in the worker
+    // bundle so runtime `paths()` calls can resolve `getCollection(...)`.
+    let bundler_input = BundlerInput::for_project(
+        project_root.to_path_buf(),
+        cfg_framework_to_render(config.framework),
+        BundleMode::Production,
+        outdir.join(".zfb-build"),
+        content_snapshot_json,
+    );
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
 
-    // 2. Render.
+    // 2. Phase 3 — runtime paths() evaluation.
+    //
+    // For any dynamic routes whose `paths()` couldn't be statically
+    // extracted (Phase 1), start miniflare against the freshly-bundled
+    // worker and query the `/__paths__/<route>` endpoint for each. The
+    // running worker is reused for SSG rendering in step 3 (via
+    // `Backend::Existing`) so we only pay the miniflare startup cost once.
+    // `_worker_handle` deliberately keeps miniflare alive through the
+    // subsequent `render_all` call: dropping it earlier would kill the
+    // subprocess before rendering completes. The `_` prefix suppresses
+    // the unused-variable warning without triggering immediate drop
+    // (only `_` alone drops immediately; `_name` lives to end of scope).
+    let (runtime_expansion, backend, _worker_handle) = runner
+        .eval_deferred_paths(&still_deferred, &bundler_out, &mut paths_cache)
+        .context("runtime paths() evaluation step failed")?;
+    static_routes.extend(runtime_expansion.resolved);
+    warn_deferred_dynamic(&runtime_expansion.deferred);
+
+    if static_routes.is_empty() {
+        output::warn(
+            "no routes to render after runtime paths() evaluation; dist will be empty",
+        );
+        return Ok(0);
+    }
+
+    // 3. Render.
     let renderer_input = RendererInput {
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
@@ -281,7 +420,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         dist_dir: outdir.to_path_buf(),
         route_universe: static_routes,
         prerender_map,
-        backend: Backend::SpawnMiniflare,
+        backend,
         request_timeout: None,
     };
     let render_out = runner
@@ -372,16 +511,6 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
     }
 }
 
-/// Resolve `outdir` against `project_root`. If `outdir` is absolute it is
-/// used as-is; if relative it is joined onto `project_root`.
-fn resolve_outdir(project_root: &Path, outdir: &Path) -> PathBuf {
-    if outdir.is_absolute() {
-        outdir.to_path_buf()
-    } else {
-        project_root.join(outdir)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +561,24 @@ mod tests {
                     }],
                 },
             })
+        }
+        fn eval_deferred_paths(
+            &self,
+            deferred: &[DeferredDynamicRoute],
+            _bundle_out: &BundlerOutput,
+            _cache: &mut PathsCache,
+        ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+            // The fake runner doesn't spawn miniflare; return all deferred
+            // routes unchanged (still deferred), and SpawnMiniflare (the
+            // fake render_all ignores the backend).
+            Ok((
+                crate::render_pipeline::DynamicExpansion {
+                    resolved: Vec::new(),
+                    deferred: deferred.to_vec(),
+                },
+                Backend::SpawnMiniflare,
+                WorkerHandle(None),
+            ))
         }
         fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
             // Honour the input contract: write each ssg route's output
@@ -665,11 +812,19 @@ mod tests {
     }
 
     #[test]
-    fn run_build_with_no_static_routes_short_circuits_without_renderer_call() {
+    fn run_build_with_no_static_routes_and_unresolvable_dynamic_routes_returns_zero() {
+        // When all dynamic routes fail both static AND runtime path
+        // expansion, the build returns 0 pages. With the runtime paths
+        // evaluation path enabled, the bundler IS invoked (the bundle is
+        // needed to host the /__paths__ endpoint), but the renderer is
+        // NOT called (no routes to render after all attempts).
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         let outdir = project_root.join("dist");
         make_runtime(project_root);
+        // pages/[slug].tsx doesn't exist on disk; static expansion
+        // defers it, and the FakeRunner's eval_deferred_paths returns
+        // empty (no runtime miniflare in unit tests).
         let routes = vec![dynamic_route("slug", "pages/[slug].tsx")];
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
@@ -684,7 +839,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(pages, 0);
-        assert!(runner.bundle_calls.borrow().is_empty());
+        // The bundler is called (needed for runtime paths() evaluation).
+        assert_eq!(runner.bundle_calls.borrow().len(), 1);
+        // The renderer is NOT called (zero routes resolved).
         assert!(runner.render_calls.borrow().is_empty());
     }
 
@@ -707,6 +864,21 @@ mod tests {
                         routes: vec![],
                     },
                 })
+            }
+            fn eval_deferred_paths(
+                &self,
+                deferred: &[DeferredDynamicRoute],
+                _bundle_out: &BundlerOutput,
+                _cache: &mut PathsCache,
+            ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+                Ok((
+                    crate::render_pipeline::DynamicExpansion {
+                        resolved: Vec::new(),
+                        deferred: deferred.to_vec(),
+                    },
+                    Backend::SpawnMiniflare,
+                    WorkerHandle(None),
+                ))
             }
             fn render_all(&self, _input: RendererInput) -> Result<RendererOutput> {
                 Err(anyhow!("renderer crashed at pages/error.tsx:5:3"))
@@ -914,20 +1086,6 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("empty string"), "{msg}");
-    }
-
-    #[test]
-    fn resolve_outdir_keeps_absolute_paths() {
-        let root = Path::new("/proj");
-        let abs = PathBuf::from("/tmp/zfb-out");
-        assert_eq!(resolve_outdir(root, &abs), abs);
-    }
-
-    #[test]
-    fn resolve_outdir_joins_relative_paths_onto_root() {
-        let root = Path::new("/proj");
-        let rel = PathBuf::from("dist");
-        assert_eq!(resolve_outdir(root, &rel), PathBuf::from("/proj/dist"));
     }
 
     /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on

@@ -4,6 +4,12 @@ description: The bet behind writing a static-site framework in Rust, what it buy
 sidebar_position: 4
 ---
 
+<Warning title="V8 / deno_core paragraph superseded by ADR-005">
+
+The "first build of V8 takes 5–15 minutes" note further down in this page assumed an in-process `deno_core` runtime. That decision was superseded by [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md), which renders through a Node-hosted miniflare worker — no V8 source bundle in the workspace's `cargo build`.
+
+</Warning>
+
 zfb is a static-site framework whose users write TypeScript and JSX. The framework itself is Rust. This page explains why.
 
 ## Performance

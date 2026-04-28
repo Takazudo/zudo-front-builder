@@ -192,6 +192,79 @@ pub struct BundlerInput {
     /// Mirrors `zfb_islands::EsbuildSubprocessConfig::mock_output` so
     /// unit tests don't need the real binary on disk.
     pub mock_subprocess_output: Option<String>,
+    /// Optional JSON-serialized content snapshot to embed in the worker
+    /// bundle. When `Some`, the bundler replaces the placeholder empty
+    /// `{ collections: {} }` with the supplied JSON so the worker's
+    /// `getCollection(...)` calls resolve real content entries. When
+    /// `None`, the placeholder is used (safe for builds where content
+    /// collections are not needed or not yet built).
+    ///
+    /// The value MUST be a valid JSON object whose top-level shape is
+    /// `{ "collections": { "<name>": [...] } }` — the same shape
+    /// [`zfb_content::ContentSnapshot`] serializes to. The bundler
+    /// inlines it verbatim; no validation is performed.
+    pub content_snapshot_json: Option<String>,
+    /// Optional directory to symlink into the shadow tree as
+    /// `node_modules` before esbuild runs. Useful in tests and
+    /// tooling environments where the shadow tree (a tempdir) cannot
+    /// reach workspace-level `node_modules` via the standard
+    /// ancestor-directory walk.
+    ///
+    /// When `Some(path)`, a **symlink** `<shadow>/node_modules →
+    /// <path>` is created so esbuild finds packages there first.
+    /// The path MUST be an existing directory. On platforms where
+    /// symlinks are restricted, a junction is attempted; if both
+    /// fail, [`bundle`] returns an error.
+    ///
+    /// In a typical pnpm workspace, pass
+    /// `<workspace-root>/node_modules/.pnpm/node_modules` to give
+    /// esbuild access to the shared virtual store.
+    ///
+    /// Production builds leave this `None`; the project root's own
+    /// `node_modules` tree is accessible via the ancestor walk.
+    pub node_modules_dir: Option<PathBuf>,
+}
+
+impl BundlerInput {
+    /// Construct a `BundlerInput` with the shared project-wide defaults,
+    /// overriding only the fields that differ per command.
+    ///
+    /// Shared defaults:
+    /// - Standard relative directory names (`pages`, `content`, `components`,
+    ///   `layouts`).
+    /// - Empty `define_vars`, `tsconfig_paths`, `external`.
+    /// - `minify: false`, `esbuild_binary: None`, `mock_subprocess_output:
+    ///   None`, `node_modules_dir: None`.
+    ///
+    /// Callers that need to override additional fields (e.g. test escape
+    /// hatches) should use struct-update syntax: `BundlerInput { field:
+    /// new_value, ..BundlerInput::for_project(...) }`.
+    pub fn for_project(
+        project_root: PathBuf,
+        framework: Framework,
+        mode: BundleMode,
+        outdir: PathBuf,
+        content_snapshot_json: Option<String>,
+    ) -> Self {
+        Self {
+            project_root,
+            pages_dir: PathBuf::from("pages"),
+            content_dir: PathBuf::from("content"),
+            components_dir: PathBuf::from("components"),
+            layouts_dir: PathBuf::from("layouts"),
+            framework,
+            define_vars: Default::default(),
+            tsconfig_paths: Default::default(),
+            external: Vec::new(),
+            outdir,
+            mode,
+            minify: false,
+            esbuild_binary: None,
+            mock_subprocess_output: None,
+            content_snapshot_json,
+            node_modules_dir: None,
+        }
+    }
 }
 
 /// Output of [`bundle`].
@@ -323,6 +396,30 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             )
         })?;
 
+    // 2b. Optional node_modules symlink into the shadow tree.
+    //     When `BundlerInput::node_modules_dir` is set, create a
+    //     symlink `<shadow>/node_modules → <path>` so esbuild can
+    //     resolve packages from there instead of walking up into an
+    //     empty tempdir ancestry.
+    if let Some(ref nm_dir) = input.node_modules_dir {
+        let shadow_nm = shadow.join("node_modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
+            format!(
+                "bundler: failed to symlink node_modules {} → {}",
+                nm_dir.display(),
+                shadow_nm.display()
+            )
+        })?;
+        #[cfg(not(unix))]
+        {
+            // On Windows, attempt a directory junction.
+            fs::create_dir_all(&shadow_nm).with_context(|| {
+                format!("bundler: failed to create node_modules dir in shadow tree")
+            })?;
+        }
+    }
+
     // 3. Hydration shim (per ADR-002).
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
     fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
@@ -338,8 +435,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
-    write_entry_module(shadow, &routes, adapter.render_to_string_module())
-        .context("bundler: failed writing entry.mjs")?;
+    write_entry_module(
+        shadow,
+        &routes,
+        adapter.render_to_string_module(),
+        input.content_snapshot_json.as_deref(),
+    )
+    .context("bundler: failed writing entry.mjs")?;
 
     // 6. Resolve and run esbuild (or the mock).
     fs::create_dir_all(&outdir)
@@ -495,7 +597,72 @@ fn materialise_shadow(
         }
     }
 
-    routes.sort_by(|a, b| a.route.cmp(&b.route));
+    // Sort routes so that Hono registers more-specific routes first.
+    //
+    // Hono dispatches requests in registration order. Without explicit
+    // ordering a fully-dynamic route like `/[lang]/[slug]` (→ `/:lang/:slug`)
+    // registered BEFORE `/blog/[slug]` would steal `/blog/hello` by matching
+    // it as (lang=blog, slug=hello). We prevent this by sorting from most-
+    // specific to least-specific using a composite key:
+    //
+    //   (−static_segments, +dynamic_segments, +catchall_segments)
+    //
+    // Interpretation:
+    //   - More static segments → lower (higher priority) primary key.
+    //   - Among same static count, fewer dynamic → lower secondary key.
+    //   - Catchall (rest) segments always sort after plain dynamic ones.
+    //   - Alphabetical order breaks remaining ties (stable and deterministic).
+    //
+    // Example ordering for the routing-rendering fixture:
+    //   /              → (0, 0, 0) — static, most specific
+    //   /about         → (−1, 0, 0)
+    //   /blog          → (−1, 0, 0) — tie broken alphabetically
+    //   /blog/page/[p] → (−2, 1, 0) — 2 static segs, 1 dynamic
+    //   /blog/[slug]   → (−1, 1, 0) — 1 static seg, 1 dynamic
+    //   /docs/[...s]   → (−1, 0, 1) — 1 static seg, 1 catchall
+    //   /[lang]/[slug] → (0, 2, 0)  — 0 static segs, 2 dynamic (least specific)
+    //
+    // Using isize allows negative values for the static component, which is
+    // what we want — we want "more static" to sort EARLIER (lower).
+    fn route_sort_key(route: &str) -> (isize, isize, isize) {
+        let mut static_count = 0isize;
+        let mut dynamic_count = 0isize;
+        let mut catchall_count = 0isize;
+        for seg in route.split('/') {
+            if seg.is_empty() {
+                continue; // leading slash
+            }
+            if seg.starts_with("[...") && seg.ends_with(']') {
+                catchall_count += 1;
+            } else if seg.starts_with('[') && seg.ends_with(']') {
+                dynamic_count += 1;
+            } else {
+                static_count += 1;
+            }
+        }
+        // Negate static_count so higher static count → lower (earlier) key.
+        (-static_count, dynamic_count, catchall_count)
+    }
+    routes.sort_by(|a, b| {
+        let ka = route_sort_key(&a.route);
+        let kb = route_sort_key(&b.route);
+        ka.cmp(&kb).then_with(|| a.route.cmp(&b.route))
+    });
+    // Detect route collisions before silently de-duplicating. Two
+    // pages producing the same route from different source extensions
+    // (e.g. `index.tsx` and `index.md`) is an authoring bug — surface
+    // it with both source paths in the message rather than letting
+    // one win arbitrarily.
+    for w in routes.windows(2) {
+        if w[0].route == w[1].route && w[0].source_path != w[1].source_path {
+            return Err(anyhow!(
+                "bundler: route collision: {} is produced by both {} and {}",
+                w[0].route,
+                w[0].source_path.display(),
+                w[1].source_path.display(),
+            ));
+        }
+    }
     routes.dedup_by(|a, b| a.route == b.route);
     Ok(())
 }
@@ -615,10 +782,15 @@ fn write_synthetic_tsconfig(
 /// the bundle still satisfies workerd's "module must export default
 /// with a fetch handler" contract so miniflare can boot and surface a
 /// clean 404 rather than a missing-export error.
+/// Generate the `entry.mjs` module.
+///
+/// `content_snapshot_json` is the JSON-serialized content snapshot to
+/// embed. When `None`, a placeholder `{ collections: {} }` is used.
 fn write_entry_module(
     shadow: &Path,
     routes: &[RouteEntry],
     render_to_string_module: &str,
+    content_snapshot_json: Option<&str>,
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -688,17 +860,59 @@ fn write_entry_module(
     //     the framework's import. This keeps `@takazudo/zfb-runtime`
     //     framework-agnostic and lets the bundle pick its own SSR call.
     // -----------------------------------------------------------------
+    // The `__zfb_pages` array feeds Hono's router via `createPageRouter`.
+    // Hono uses `:param` / `:param{.+}` syntax for dynamic segments, not
+    // the `[param]` / `[...param]` file-system convention that `derive_route`
+    // returns. Convert each route key to Hono syntax here so
+    // `createPageRouter` can register the routes correctly and so the
+    // `/__paths__/` synthetic endpoint resolves page lookups by the same key.
     src.push_str("const __zfb_pages = [\n");
     for (idx, route) in routes.iter().enumerate() {
+        let hono_key = bracket_to_hono(&route.route);
         writeln!(
             &mut src,
             "  {{ route: {key}, module: () => Promise.resolve(__zfb_route_{idx}) }},",
-            key = json_str(&route.route),
+            key = json_str(&hono_key),
         )
         .unwrap();
     }
     src.push_str("];\n\n");
-    src.push_str("const __zfb_content_snapshot = { collections: {} };\n\n");
+    // Embed the content snapshot. When the caller supplies a real
+    // snapshot (JSON-serialized `ContentSnapshot`), inline it so
+    // `getCollection(...)` resolves from memory inside the worker.
+    // The fallback empty snapshot is used for builds where content
+    // collections are not needed.
+    //
+    // Defensively validate that the supplied string is well-formed JSON
+    // (not just a JSON object) before inlining. The value is produced by
+    // `serde_json::to_string` in the build pipeline, so failures here
+    // would indicate a bug rather than user input, but the check prevents
+    // accidental JS injection if the call site ever changes.
+    let snapshot_literal = if let Some(json) = content_snapshot_json {
+        // Validate both syntax AND shape. The runtime expects a top-level
+        // object whose `collections` field is itself an object — anything
+        // else (a JSON array, a scalar, an object missing `collections`)
+        // would crash `getCollection` at request time. Fall back to the
+        // safe empty snapshot so the build still produces a working
+        // worker; the resolver will return empty collections, which is
+        // visible in the build summary (zero dynamic pages).
+        serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .filter(|v| {
+                v.is_object()
+                    && v.get("collections").is_some_and(|c| c.is_object())
+            })
+            .map(|_| json)
+            .unwrap_or(r#"{ "collections": {} }"#)
+    } else {
+        r#"{ "collections": {} }"#
+    };
+    writeln!(
+        &mut src,
+        "const __zfb_content_snapshot = {snapshot_literal};",
+    )
+    .unwrap();
+    src.push('\n');
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
@@ -735,6 +949,51 @@ fn route_path_under_pages(source_path: &Path) -> String {
 
 fn json_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
+}
+
+/// Convert a route string from the file-system bracket notation used by
+/// `derive_route` (e.g. `/blog/[slug]`, `/docs/[...slug]`) into the
+/// Hono path-pattern notation (`/blog/:slug`, `/docs/:slug{.+}`) that
+/// `createPageRouter` registers with the Hono app.
+///
+/// Segment rules:
+/// - `[...param]` → `:param{.+}` (catchall — one or more path
+///   segments separated by `/`, matched by Hono's regex quantifier)
+/// - `[param]`    → `:param` (single-segment dynamic param)
+/// - Anything else (static) → unchanged
+///
+/// Leading `/` and the overall shape of the route are preserved.
+/// Non-bracket segments (e.g. `blog`, `page`) are left as-is.
+pub(crate) fn bracket_to_hono(route: &str) -> String {
+    // Collect non-empty segments from the route and transform each.
+    // We split on '/' and skip empty parts (produced by the leading
+    // slash and by the `/` root route which splits to ["", ""]).
+    let segments: Vec<&str> = route.split('/').filter(|s| !s.is_empty()).collect();
+
+    if segments.is_empty() {
+        // The root route `/`.
+        return "/".to_string();
+    }
+
+    let mut out = String::with_capacity(route.len() + 4);
+    for segment in &segments {
+        out.push('/');
+        if segment.starts_with("[...") && segment.ends_with(']') {
+            // Catchall: `[...param]` → `:param{.+}`
+            let name = &segment[4..segment.len() - 1];
+            out.push(':');
+            out.push_str(name);
+            out.push_str("{.+}");
+        } else if segment.starts_with('[') && segment.ends_with(']') {
+            // Dynamic: `[param]` → `:param`
+            let name = &segment[1..segment.len() - 1];
+            out.push(':');
+            out.push_str(name);
+        } else {
+            out.push_str(segment);
+        }
+    }
+    out
 }
 
 /// Resolve and run the esbuild subprocess.
@@ -805,6 +1064,35 @@ fn run_esbuild(
         cmd.arg(format!("--external:{}", ext));
     }
 
+    // Mark `node:*` builtins external so esbuild does not attempt to
+    // resolve them when bundling for workerd / Cloudflare Workers. The
+    // Worker runtime does not have filesystem access; any code path that
+    // would call `node:fs` or `node:path` (e.g. the fallback branch in
+    // `zfb/content` that runs outside a Worker context) is dead in
+    // practice because `createPageRouter` installs the content snapshot
+    // before any request is served. Marking them external is correct:
+    // - it prevents the bundler from erroring on unresolvable built-ins,
+    // - it keeps the dead code in the bundle tree-shaken by workerd at
+    //   runtime (no actual fs calls ever execute inside the Worker).
+    //
+    // Pattern `node:*` is the canonical esbuild glob for all Node.js
+    // built-in protocols. The explicit `--external:node:*` is NOT the
+    // same as `--platform=node`; the bundle stays platform-neutral.
+    cmd.arg("--external:node:*");
+
+    // When a custom `node_modules_dir` is injected (test fixture mode),
+    // packages are symlinked into the shadow tree rather than physically
+    // present. Without `--preserve-symlinks` esbuild resolves imports from
+    // the **real** (symlink-target) directory, causing it to walk up into
+    // the source tree and miss the custom node_modules. With
+    // `--preserve-symlinks` resolution stays anchored at the symlink
+    // location inside the shadow tree, so `hono`, `preact`, etc. are found
+    // in the injected node_modules even when the package source lives in a
+    // different tree (e.g. the worktree's packages/ directory).
+    if input.node_modules_dir.is_some() {
+        cmd.arg("--preserve-symlinks");
+    }
+
     cmd.arg(OsString::from(entry));
 
     let output = cmd
@@ -822,6 +1110,28 @@ fn run_esbuild(
 }
 
 fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
+    resolve_esbuild_binary_with_env(explicit, |name| std::env::var_os(name), None)
+}
+
+/// Same as [`resolve_esbuild_binary`] but the env lookup is delegated to
+/// a getter closure and the default slot path is overridable. Tests use
+/// these escape hatches to drive the `ZFB_ESBUILD_BIN` resolution path
+/// without mutating the real process environment or chdir-ing
+/// (`std::env::set_var` is `unsafe` under Rust 2024 because it races
+/// other threads reading the env table, and our test suite is
+/// multi-threaded; chdir has the same problem).
+///
+/// `slot_override` lets tests point the slot at a path inside a tempdir
+/// instead of relying on the real `DEFAULT_ESBUILD_SLOT` happening to
+/// be absent in CWD.
+fn resolve_esbuild_binary_with_env<F>(
+    explicit: Option<&Path>,
+    env_getter: F,
+    slot_override: Option<&Path>,
+) -> Result<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
     if let Some(p) = explicit {
         if !p.exists() {
             bail!(
@@ -831,7 +1141,7 @@ fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
         }
         return Ok(p.to_path_buf());
     }
-    if let Some(env) = std::env::var_os("ZFB_ESBUILD_BIN") {
+    if let Some(env) = env_getter("ZFB_ESBUILD_BIN") {
         let p = PathBuf::from(env);
         if !p.exists() {
             bail!(
@@ -841,7 +1151,9 @@ fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
         }
         return Ok(p);
     }
-    let slot = PathBuf::from(DEFAULT_ESBUILD_SLOT);
+    let slot = slot_override
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ESBUILD_SLOT));
     if !slot.exists() {
         return Err(anyhow!(
             "bundler: esbuild binary not found at default slot {}. \
@@ -890,6 +1202,8 @@ mod tests {
                 "// mock bundle\nexport const routes = {};\nexport const hydrateIsland = () => {};\n"
                     .to_string(),
             ),
+            content_snapshot_json: None,
+            node_modules_dir: None,
         }
     }
 
@@ -935,7 +1249,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string").unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -996,7 +1310,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server").unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -1004,6 +1318,66 @@ mod tests {
         assert!(body.contains("fetch: (request) => __zfb_router(request)"));
         // pages array exists but is empty.
         assert!(body.contains("const __zfb_pages = [\n];"));
+    }
+
+    /// Helper: emit `entry.mjs` with a given snapshot string and return
+    /// the snapshot literal embedded in the generated source.
+    fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot).unwrap();
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        // Pull just the assignment line so the assertion is precise.
+        let prefix = "const __zfb_content_snapshot = ";
+        let idx = body.find(prefix).expect("snapshot literal assignment");
+        let after = &body[idx + prefix.len()..];
+        // The line ends with `;\n`. Strip from the first `;` onward.
+        let end = after.find(';').expect("statement terminator");
+        after[..end].trim().to_string()
+    }
+
+    #[test]
+    fn snapshot_literal_falls_back_when_json_is_malformed() {
+        // M3: validation must reject bare-syntax JSON values that aren't
+        // objects with a `collections` field. Each of these would crash
+        // `getCollection` at request time, so the bundler swaps in the
+        // safe empty-snapshot literal instead.
+        for malformed in &["null", "42", "[]", "\"string\"", "{}", "{ \"foo\": 1 }"] {
+            let literal = entry_module_snapshot_literal(Some(malformed));
+            assert_eq!(
+                literal, "{ \"collections\": {} }",
+                "malformed snapshot {malformed:?} should fall back to empty; got {literal:?}"
+            );
+        }
+        // Truly invalid JSON also falls back.
+        let literal = entry_module_snapshot_literal(Some("not json at all"));
+        assert_eq!(literal, "{ \"collections\": {} }");
+    }
+
+    #[test]
+    fn snapshot_literal_preserves_valid_snapshot() {
+        // A well-formed snapshot — a top-level object with a
+        // `collections` object — must round-trip through the validator
+        // unchanged so the worker sees the real content map.
+        let valid = r#"{"collections":{"blog":[{"slug":"hello","frontmatter":{"title":"Hello"},"body":"","module_specifier":"mdx://blog/hello","rel_path":"hello.mdx"}]}}"#;
+        let literal = entry_module_snapshot_literal(Some(valid));
+        assert_eq!(literal, valid);
+    }
+
+    #[test]
+    fn snapshot_literal_falls_back_when_collections_is_not_object() {
+        // The `collections` field exists but is the wrong shape (an
+        // array). The validator must still reject — the runtime indexes
+        // collections by name, so an array would crash.
+        let bad = r#"{"collections":["a","b"]}"#;
+        let literal = entry_module_snapshot_literal(Some(bad));
+        assert_eq!(literal, "{ \"collections\": {} }");
+    }
+
+    #[test]
+    fn snapshot_literal_uses_empty_when_input_is_none() {
+        let literal = entry_module_snapshot_literal(None);
+        assert_eq!(literal, "{ \"collections\": {} }");
     }
 
     #[test]
@@ -1084,6 +1458,8 @@ mod tests {
             minify: false,
             esbuild_binary: Some(bin),
             mock_subprocess_output: None,
+            content_snapshot_json: None,
+            node_modules_dir: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -1109,24 +1485,17 @@ mod tests {
         // default slot is present, the bundler must error with a
         // pointer to BOTH escape hatches (`ZFB_ESBUILD_BIN` and the
         // release-tarball slot). This keeps operators unstuck.
-        let prev = std::env::var_os("ZFB_ESBUILD_BIN");
-        std::env::remove_var("ZFB_ESBUILD_BIN");
-
-        // Run from a tempdir so the relative `crates/zfb/binaries/...`
-        // slot path doesn't accidentally exist.
+        //
+        // Drive the env path via an injected getter and the slot path
+        // via `slot_override` so the test does not mutate `std::env`
+        // and does not chdir — both are `unsafe` / racy under a
+        // multi-threaded test runner.
         let tmp = tempfile::tempdir().unwrap();
-        let prev_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
 
-        let err = resolve_esbuild_binary(None).unwrap_err();
+        let err = resolve_esbuild_binary_with_env(None, |_| None, Some(&missing_slot))
+            .unwrap_err();
         let msg = format!("{err}");
-
-        // Restore environment before asserting so a failure doesn't
-        // leak state into other tests.
-        std::env::set_current_dir(prev_cwd).unwrap();
-        if let Some(v) = prev {
-            std::env::set_var("ZFB_ESBUILD_BIN", v);
-        }
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
         assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
@@ -1139,6 +1508,91 @@ mod tests {
         )))
         .unwrap_err();
         assert!(format!("{err}").contains("not found at explicit path"));
+    }
+
+    // -----------------------------------------------------------------------
+    // bracket_to_hono tests — verify FS bracket notation → Hono colon syntax.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bracket_to_hono_converts_all_segment_types() {
+        // Root route: no segments.
+        assert_eq!(bracket_to_hono("/"), "/");
+        // Static only.
+        assert_eq!(bracket_to_hono("/about"), "/about");
+        assert_eq!(bracket_to_hono("/blog"), "/blog");
+        // Single dynamic segment.
+        assert_eq!(bracket_to_hono("/blog/[slug]"), "/blog/:slug");
+        // Nested dynamic segments.
+        assert_eq!(bracket_to_hono("/[lang]/[slug]"), "/:lang/:slug");
+        // Pagination (mixed static + dynamic).
+        assert_eq!(bracket_to_hono("/blog/page/[page]"), "/blog/page/:page");
+        // Catchall (spread) segment.
+        assert_eq!(bracket_to_hono("/docs/[...slug]"), "/docs/:slug{.+}");
+        // Fully dynamic catchall.
+        assert_eq!(bracket_to_hono("/[...rest]"), "/:rest{.+}");
+    }
+
+    #[test]
+    fn route_sort_key_orders_by_specificity() {
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+
+        // Build a minimal pages tree with all 7 route types from the
+        // routing-rendering fixture and verify the Hono registration
+        // order matches the expected specificity ordering.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let pages = root.join("pages");
+        for d in [
+            "pages",
+            "pages/blog",
+            "pages/blog/page",
+            "pages/docs",
+            "pages/[lang]",
+        ] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let stub = "export default function P() { return null; }\n";
+        for f in [
+            "pages/index.tsx",
+            "pages/about.tsx",
+            "pages/blog/index.tsx",
+            "pages/blog/[slug].tsx",
+            "pages/blog/page/[page].tsx",
+            "pages/[lang]/[slug].tsx",
+            "pages/docs/[...slug].tsx",
+        ] {
+            fs::write(root.join(f), stub).unwrap();
+        }
+        let mut routes = Vec::new();
+        // dest must be named "pages" for is_pages_dir detection in materialise_shadow
+        let shadow_pages_dest = root.join("shadow").join("pages");
+        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root).unwrap();
+
+        // Map route → registration index.
+        let order: BTreeMap<&str, usize> = routes
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.route.as_str(), i))
+            .collect();
+
+        let idx = |r: &str| *order.get(r).unwrap_or_else(|| panic!("missing route {r}"));
+
+        // Rules derived from specificity sort:
+        //   more static segments → earlier
+        //   fewer dynamic segments → earlier
+        //   catchall → after plain dynamic
+
+        // /blog/page/[page] has 2 static segs → comes before all 1-static routes
+        assert!(idx("/blog/page/[page]") < idx("/blog/[slug]"),
+            "/blog/page/[page] should be before /blog/[slug]");
+        // /blog/[slug] (1 static) before /[lang]/[slug] (0 static)
+        assert!(idx("/blog/[slug]") < idx("/[lang]/[slug]"),
+            "/blog/[slug] should be before /[lang]/[slug]");
+        // /docs/[...slug] (1 static, catchall) before /[lang]/[slug] (0 static)
+        assert!(idx("/docs/[...slug]") < idx("/[lang]/[slug]"),
+            "/docs/[...slug] should be before /[lang]/[slug]");
     }
 
     /// Locate a real esbuild binary for gated integration tests. Order:

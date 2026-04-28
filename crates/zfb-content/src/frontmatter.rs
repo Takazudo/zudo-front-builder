@@ -140,26 +140,40 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
 /// `Null`. The YAML is deserialized straight into `serde_json::Value`
 /// so the resulting struct is already in the public dialect.
 pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
+    // Strip a leading UTF-8 BOM (U+FEFF, encoded as `\xEF\xBB\xBF`) if
+    // present. Editors on Windows still occasionally write a BOM into
+    // .md files, and without this strip the `---\n` prefix check
+    // would miss and the whole file would be classified as body.
+    // `body_offset` is documented as a byte offset into the ORIGINAL
+    // input, so we track the BOM length and add it back to all offsets
+    // before returning.
+    let bom_len = if input.starts_with('\u{FEFF}') {
+        '\u{FEFF}'.len_utf8()
+    } else {
+        0
+    };
+    let stripped = &input[bom_len..];
+
     // Detect opening delimiter. Must be the very first three bytes followed by
     // either `\n` or `\r\n`. A plain `---` at EOF or followed by other text on
     // the same line is not considered a frontmatter opener.
-    let after_open = if let Some(rest) = input.strip_prefix("---\n") {
+    let after_open = if let Some(rest) = stripped.strip_prefix("---\n") {
         rest
-    } else if let Some(rest) = input.strip_prefix("---\r\n") {
+    } else if let Some(rest) = stripped.strip_prefix("---\r\n") {
         rest
     } else {
         return Ok(Parsed {
             frontmatter: JsonValue::Null,
-            body: input.to_string(),
-            body_offset: 0,
+            body: stripped.to_string(),
+            body_offset: bom_len,
         });
     };
 
-    let open_len = input.len() - after_open.len();
+    let open_len = stripped.len() - after_open.len();
 
     // Find the closing delimiter. It must be a line consisting solely of `---`
     // followed by a line terminator OR end-of-input.
-    let (yaml_str, body_offset) = match find_closing(after_open, open_len) {
+    let (yaml_str, body_offset_in_stripped) = match find_closing(after_open, open_len) {
         Some(found) => found,
         None => return Err(FrontmatterError::Unterminated),
     };
@@ -174,12 +188,12 @@ pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
         serde_yaml::from_str(yaml_str).map_err(FrontmatterError::Yaml)?
     };
 
-    let body = input[body_offset..].to_string();
+    let body = stripped[body_offset_in_stripped..].to_string();
 
     Ok(Parsed {
         frontmatter,
         body,
-        body_offset,
+        body_offset: body_offset_in_stripped + bom_len,
     })
 }
 
@@ -273,6 +287,30 @@ mod tests {
         let parsed = parse(input).expect("parse ok");
         assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, "body starts here\n");
+        assert_eq!(&input[parsed.body_offset..], parsed.body);
+    }
+
+    #[test]
+    fn parse_strips_leading_utf8_bom() {
+        // Some Windows editors prepend a UTF-8 BOM (\xEF\xBB\xBF) to
+        // .md files. Without the strip the `---\n` prefix check
+        // would miss and classify the entire file as body.
+        let input = "\u{FEFF}---\ntitle: BOM\n---\nbody\n";
+        let parsed = parse(input).expect("parse ok");
+        assert_eq!(parsed.frontmatter["title"].as_str(), Some("BOM"));
+        assert_eq!(parsed.body, "body\n");
+        // body_offset is documented as a byte offset into the ORIGINAL input
+        // (including the BOM), so callers can splice the source.
+        assert_eq!(&input[parsed.body_offset..], parsed.body);
+    }
+
+    #[test]
+    fn parse_bom_with_no_frontmatter_opener() {
+        let input = "\u{FEFF}plain body without frontmatter\n";
+        let parsed = parse(input).expect("parse ok");
+        assert!(parsed.frontmatter.is_null());
+        assert_eq!(parsed.body, "plain body without frontmatter\n");
+        // body_offset must skip the BOM so &input[body_offset..] == body.
         assert_eq!(&input[parsed.body_offset..], parsed.body);
     }
 

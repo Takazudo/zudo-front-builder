@@ -17,12 +17,13 @@
 //!
 //! [`load_from_dir`] picks exactly one source per call:
 //!
-//! 1. `dir/zfb.config.json` — read + parse via `serde_json`. Wins over
-//!    `zfb.config.ts` when both are present (back-compat: existing users on
-//!    the JSON form keep working unchanged when the TS loader lands).
-//! 2. `dir/zfb.config.ts` — bundled to ESM by the pinned `esbuild` binary
+//! 1. `dir/zfb.config.ts` — bundled to ESM by the pinned `esbuild` binary
 //!    (the same one zfb-islands uses), then evaluated by `node` to pull the
 //!    default export back as JSON, which is fed into `serde_json::from_str`.
+//!    **TS wins over JSON when both files are present** — the TS form is the
+//!    canonical, recommended way to author a zfb config.
+//! 2. `dir/zfb.config.json` — read + parse via `serde_json`. Used only when
+//!    no `zfb.config.ts` is found.
 //! 3. Neither present — return [`Config::default`].
 //!
 //! TS support requires `node` in `PATH` and the staged esbuild binary at
@@ -39,8 +40,150 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use tokio::process::Command;
+
+// --- JsonSchema newtype --------------------------------------------------------
+
+/// A validated JSON Schema document for a content collection.
+///
+/// Wraps a [`serde_json::Value`] that has been checked at config-load time
+/// to be a well-formed schema object. The check is intentionally minimal —
+/// it mirrors the dialect accepted by [`zfb_content::schema`]:
+///
+/// - The root value must be a JSON object.
+/// - If a `"type"` key is present its value must be a recognised type name
+///   string (`"string"`, `"number"`, `"integer"`, `"boolean"`, `"array"`,
+///   `"object"`, `"null"`) or an array of such names.
+/// - If `"type"` is `"object"` and a `"properties"` key is present, it must
+///   be a JSON object (not an array, null, etc.).
+///
+/// Unknown keywords are accepted silently — the validator is permissive so
+/// that schemas using standard JSON Schema keywords not yet understood by
+/// zfb still produce a sane build rather than a hard error at config-load.
+///
+/// Consumers can reach the inner value via [`Deref`](std::ops::Deref) or
+/// `.as_value()`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JsonSchema(serde_json::Value);
+
+impl JsonSchema {
+    /// Validate and wrap a [`serde_json::Value`] as a [`JsonSchema`].
+    ///
+    /// Returns `Err` with a human-readable message if the value is not a
+    /// valid schema according to the rules described on [`JsonSchema`].
+    pub fn try_from_value(v: serde_json::Value) -> Result<Self, String> {
+        validate_schema_doc(&v)?;
+        Ok(Self(v))
+    }
+
+    /// Borrow the inner JSON value.
+    pub fn as_value(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for JsonSchema {
+    type Target = serde_json::Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for JsonSchema {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        JsonSchema::try_from_value(v).map_err(de::Error::custom)
+    }
+}
+
+/// The accepted primitive type names in a JSON Schema `"type"` field.
+const KNOWN_TYPES: &[&str] = &[
+    "string", "number", "integer", "boolean", "array", "object", "null",
+];
+
+/// Validate a schema document value against the minimal dialect.
+fn validate_schema_doc(v: &serde_json::Value) -> Result<(), String> {
+    let obj = match v {
+        serde_json::Value::Object(m) => m,
+        other => {
+            return Err(format!(
+                "schema must be a JSON object, got {}",
+                json_type_name(other)
+            ));
+        }
+    };
+
+    // Validate `"type"` when present.
+    if let Some(type_val) = obj.get("type") {
+        match type_val {
+            serde_json::Value::String(s) => {
+                if !KNOWN_TYPES.contains(&s.as_str()) {
+                    return Err(format!(
+                        "schema \"type\" value {:?} is not recognised; \
+                         valid values are: {}",
+                        s,
+                        KNOWN_TYPES.join(", ")
+                    ));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    match item {
+                        serde_json::Value::String(s) => {
+                            if !KNOWN_TYPES.contains(&s.as_str()) {
+                                return Err(format!(
+                                    "schema \"type\" array contains unknown type {:?}; \
+                                     valid values are: {}",
+                                    s,
+                                    KNOWN_TYPES.join(", ")
+                                ));
+                            }
+                        }
+                        other => {
+                            return Err(format!(
+                                "schema \"type\" array must contain strings, found {}",
+                                json_type_name(other)
+                            ));
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "schema \"type\" must be a string or array of strings, got {}",
+                    json_type_name(other)
+                ));
+            }
+        }
+    }
+
+    // Validate `"properties"` when present.
+    if let Some(props_val) = obj.get("properties") {
+        if !props_val.is_object() {
+            return Err(format!(
+                "schema \"properties\" must be a JSON object, got {}",
+                json_type_name(props_val)
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+// --- Config types -------------------------------------------------------------
 
 /// Top-level `zfb.config.{ts,json}` schema.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -133,9 +276,13 @@ pub struct CollectionDef {
     pub name: String,
     /// Directory (relative to the project root) holding the entries.
     pub path: PathBuf,
-    /// Optional schema. Reserved for v1.1 — accepted today but not enforced.
+    /// Optional JSON Schema describing the frontmatter shape for entries in
+    /// this collection. Validated at config-load time; malformed schemas
+    /// (unknown `"type"` values, non-object `"properties"`, etc.) are
+    /// rejected before the build runs. See [`JsonSchema`] for the accepted
+    /// dialect.
     #[serde(default)]
-    pub schema: Option<serde_json::Value>,
+    pub schema: Option<JsonSchema>,
 }
 
 /// Tailwind options. Empty by default (Tailwind enabled); users can flip
@@ -228,7 +375,16 @@ pub async fn load_from_dir_with_options(
     let ts_path = dir.join("zfb.config.ts");
     let json_path = dir.join("zfb.config.json");
 
-    // JSON wins over TS for back-compat (see module docs).
+    // TS wins over JSON — the TypeScript form is the canonical, recommended
+    // path for new projects. See module docs for the full resolution order.
+    if ts_path.exists() {
+        let cfg = load_from_ts_file(&ts_path, dir, opts)
+            .await
+            .with_context(|| format!("loading {}", ts_path.display()))?;
+        validate(&cfg, dir).with_context(|| format!("validating {}", ts_path.display()))?;
+        return Ok(cfg);
+    }
+
     if json_path.exists() {
         let text = tokio::fs::read_to_string(&json_path)
             .await
@@ -246,19 +402,14 @@ pub async fn load_from_dir_with_options(
         return Ok(cfg);
     }
 
-    if ts_path.exists() {
-        let cfg = load_from_ts_file(&ts_path, dir, opts)
-            .await
-            .with_context(|| format!("loading {}", ts_path.display()))?;
-        validate(&cfg, dir).with_context(|| format!("validating {}", ts_path.display()))?;
-        return Ok(cfg);
-    }
-
     // No file present → defaults.
     let cfg = Config::default();
     // Defaults are always valid, but we still run the check so future
-    // additions can't accidentally break this invariant.
-    validate(&cfg, dir).expect("Config::default() must validate cleanly");
+    // additions can't accidentally break this invariant. Propagate as
+    // an error rather than panicking — every config-less project goes
+    // through this path and a panic here would tear the dev server
+    // down on what is a benign discovery step.
+    validate(&cfg, dir).context("Config::default() must validate cleanly")?;
     Ok(cfg)
 }
 
@@ -507,6 +658,205 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // --- JsonSchema newtype tests ---------------------------------------------
+
+    #[test]
+    fn json_schema_accepts_valid_object_schema() {
+        let v = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "count": { "type": "number" }
+            },
+            "required": ["title"]
+        });
+        assert!(JsonSchema::try_from_value(v).is_ok());
+    }
+
+    #[test]
+    fn json_schema_accepts_known_scalar_types() {
+        for ty in &["string", "number", "integer", "boolean", "array", "null"] {
+            let v = serde_json::json!({ "type": *ty });
+            assert!(
+                JsonSchema::try_from_value(v).is_ok(),
+                "type {:?} should be accepted",
+                ty
+            );
+        }
+    }
+
+    #[test]
+    fn json_schema_accepts_type_union_array() {
+        let v = serde_json::json!({ "type": ["string", "null"] });
+        assert!(JsonSchema::try_from_value(v).is_ok());
+    }
+
+    #[test]
+    fn json_schema_accepts_empty_object() {
+        // An empty schema {} is valid — it accepts anything.
+        let v = serde_json::json!({});
+        assert!(JsonSchema::try_from_value(v).is_ok());
+    }
+
+    #[test]
+    fn json_schema_rejects_non_object_root() {
+        for bad in &[
+            serde_json::json!("string"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!([1, 2]),
+        ] {
+            let err = JsonSchema::try_from_value(bad.clone())
+                .expect_err("non-object root should be rejected");
+            assert!(
+                err.contains("must be a JSON object"),
+                "unexpected error for {:?}: {err}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn json_schema_rejects_unknown_type_string() {
+        let v = serde_json::json!({ "type": "timestamp" });
+        let err = JsonSchema::try_from_value(v)
+            .expect_err("unknown type should be rejected");
+        assert!(err.contains("\"timestamp\""), "err: {err}");
+        assert!(err.contains("not recognised"), "err: {err}");
+    }
+
+    #[test]
+    fn json_schema_rejects_unknown_type_in_array() {
+        let v = serde_json::json!({ "type": ["string", "date"] });
+        let err = JsonSchema::try_from_value(v)
+            .expect_err("unknown type in array should be rejected");
+        assert!(err.contains("\"date\""), "err: {err}");
+    }
+
+    #[test]
+    fn json_schema_rejects_non_string_in_type_array() {
+        let v = serde_json::json!({ "type": ["string", 42] });
+        let err = JsonSchema::try_from_value(v)
+            .expect_err("non-string in type array should be rejected");
+        assert!(err.contains("must contain strings"), "err: {err}");
+    }
+
+    #[test]
+    fn json_schema_rejects_non_object_type_field() {
+        let v = serde_json::json!({ "type": true });
+        let err = JsonSchema::try_from_value(v)
+            .expect_err("boolean type field should be rejected");
+        assert!(err.contains("must be a string or array"), "err: {err}");
+    }
+
+    #[test]
+    fn json_schema_rejects_non_object_properties() {
+        let v = serde_json::json!({ "type": "object", "properties": ["a", "b"] });
+        let err = JsonSchema::try_from_value(v)
+            .expect_err("array properties should be rejected");
+        assert!(err.contains("\"properties\""), "err: {err}");
+        assert!(err.contains("must be a JSON object"), "err: {err}");
+    }
+
+    #[test]
+    fn json_schema_deref_yields_inner_value() {
+        let inner = serde_json::json!({ "type": "string" });
+        let js = JsonSchema::try_from_value(inner.clone()).unwrap();
+        assert_eq!(*js, inner);
+        assert_eq!(js.as_value(), &inner);
+    }
+
+    #[test]
+    fn json_schema_round_trips_via_serde() {
+        // Deserializing a JSON string into JsonSchema should validate and
+        // serialize back to the same JSON.
+        let raw = r#"{"type":"object","properties":{"title":{"type":"string"}}}"#;
+        let js: JsonSchema = serde_json::from_str(raw).unwrap();
+        let back = serde_json::to_string(&js).unwrap();
+        // The round-trip may reorder keys (BTreeMap) — compare as Values.
+        let orig: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let roundtripped: serde_json::Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(orig, roundtripped);
+    }
+
+    #[test]
+    fn json_schema_deserialization_rejects_unknown_type() {
+        // Serde deserialization path should also reject bad schemas.
+        let raw = r#"{"type":"bad-type"}"#;
+        let err = serde_json::from_str::<JsonSchema>(raw)
+            .expect_err("serde should propagate schema validation error");
+        assert!(err.to_string().contains("not recognised"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn config_json_with_valid_schema_loads_ok() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [{
+                "name": "blog",
+                "path": "content/blog",
+                "schema": {
+                    "type": "object",
+                    "properties": { "title": { "type": "string" } }
+                }
+            }]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.collections[0].schema.is_some());
+    }
+
+    #[tokio::test]
+    async fn config_json_with_invalid_schema_type_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [{
+                "name": "blog",
+                "path": "content/blog",
+                "schema": { "type": "nosuchtype" }
+            }]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("invalid schema type should be caught at load time");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("nosuchtype") || msg.contains("not recognised"),
+            "msg: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_json_with_non_object_schema_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [{
+                "name": "blog",
+                "path": "content/blog",
+                "schema": "not-an-object"
+            }]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("non-object schema should be caught at load time");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("must be a JSON object") || msg.contains("invalid type"),
+            "msg: {msg}"
+        );
+    }
+
+    // --- end JsonSchema newtype tests -----------------------------------------
+
     #[test]
     fn default_config_has_sensible_values() {
         let cfg = Config::default();
@@ -726,10 +1076,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_wins_over_ts_for_back_compat() {
-        // Both files present → JSON wins. The TS loader is not invoked,
-        // so the test override (which would fail validation if used) is
-        // not consulted.
+    async fn ts_wins_over_json_when_both_present() {
+        // Both files present → TS wins. The JSON file is ignored and the
+        // test override is used to inject the canned TS export JSON.
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(
             tmp.path().join("zfb.config.json"),
@@ -739,19 +1088,34 @@ mod tests {
         .unwrap();
         tokio::fs::write(
             tmp.path().join("zfb.config.ts"),
-            "export default { port: 9999 };\n",
+            "import { defineConfig } from \"zfb/config\";\n\
+             export default defineConfig({ port: 9999 });\n",
         )
         .await
         .unwrap();
         let opts = LoadOptions {
-            // Deliberately bogus: if the TS path WERE taken we would
-            // fail JSON parsing here.
-            test_default_export_json: Some("not-json".into()),
+            // Canned JSON for the TS default export — port 9999 from TS,
+            // not 5500 from JSON.
+            test_default_export_json: Some(r#"{"port": 9999}"#.into()),
             ..LoadOptions::default()
         };
         let cfg = load_from_dir_with_options(tmp.path(), &opts)
             .await
-            .expect("json wins, ts override is ignored");
+            .expect("ts wins, json is ignored");
+        assert_eq!(cfg.port, Some(9999));
+    }
+
+    #[tokio::test]
+    async fn json_used_when_no_ts_present() {
+        // Only a JSON file → JSON is loaded (TS is not required).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{"port": 5500}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("json load ok");
         assert_eq!(cfg.port, Some(5500));
     }
 
@@ -819,7 +1183,7 @@ mod tests {
     }
 
     /// Real subprocess flow: esbuild + node against the canonical
-    /// `examples/basic-blog/zfb.config.future.ts` example. Gated behind
+    /// `examples/basic-blog/zfb.config.ts` example. Gated behind
     /// `--include-ignored` because the staged esbuild slot is empty in
     /// CI today (see crates/zfb/binaries/esbuild/README.md) and the
     /// test will fail to find the binary. Run locally with
@@ -827,14 +1191,14 @@ mod tests {
     /// --include-ignored -p zfb`.
     #[tokio::test]
     #[ignore = "requires real esbuild + node; opt in via --include-ignored"]
-    async fn ts_real_subprocess_loads_basic_blog_future_ts() {
+    async fn ts_real_subprocess_loads_basic_blog_ts() {
         // Locate the example file via CARGO_MANIFEST_DIR to be cwd-
         // independent.
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let example_ts = manifest_dir
-            .join("../../examples/basic-blog/zfb.config.future.ts")
+            .join("../../examples/basic-blog/zfb.config.ts")
             .canonicalize()
-            .expect("example future.ts must exist");
+            .expect("example zfb.config.ts must exist");
 
         // Copy the file into a fresh tmp project root so the loader
         // takes the TS branch (no sibling JSON).

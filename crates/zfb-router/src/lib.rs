@@ -5,7 +5,7 @@
 //!
 //! - `pages/about.tsx` → `/about`
 //! - `pages/blog/[slug].tsx` → `/blog/:slug`
-//! - `pages/docs/[...slug].tsx` → `/docs/:slug*`
+//! - `pages/docs/[...slug].tsx` → `/docs/:slug{.+}`
 //! - `pages/[lang]/[slug].tsx` → `/:lang/:slug`
 //! - `pages/index.tsx` → `/`
 //! - `pages/blog/index.tsx` → `/blog`

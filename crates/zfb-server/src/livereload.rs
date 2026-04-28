@@ -129,6 +129,11 @@ pub use zfb_build::IslandsBundleInfo;
 /// should observe.
 ///
 /// See module docs for the rules.
+///
+/// Wire contract: `component: ""` means "the bundle changed but we don't
+/// know which components — reload the whole bundle by re-importing
+/// `bundle_url`". The JS consumer must NOT short-circuit on empty
+/// `component`; it reads only `bundleUrl` to construct the swap URL.
 pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     let mut events = Vec::new();
     if !outcome.pages_written.is_empty() {
@@ -139,11 +144,24 @@ pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     }
     if let Some(info) = outcome.islands_bundle.as_ref() {
         if info.changed {
-            for component in &info.components {
+            if info.components.is_empty() {
+                // Islands bundle changed (e.g. runtime-only diff) but
+                // we don't know which components — emit a single
+                // generic event keyed on the empty string so the
+                // browser still triggers a reload. Without this the
+                // user would see a successful rebuild with no live
+                // update on screen.
                 events.push(ReloadEvent::Islands {
-                    component: component.clone(),
+                    component: String::new(),
                     bundle_url: info.bundle_url.clone(),
                 });
+            } else {
+                for component in &info.components {
+                    events.push(ReloadEvent::Islands {
+                        component: component.clone(),
+                        bundle_url: info.bundle_url.clone(),
+                    });
+                }
             }
         }
     }
@@ -184,7 +202,15 @@ pub fn sse_response(
                 }
                 Some(Ok(sse))
             }
-            Err(_lagged) => None,
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+                // The connection couldn't keep up. Log a warning with
+                // the skipped count so we don't silently drop reload
+                // events under load. The next real event will still
+                // trigger a reload, so the browser converges on the
+                // latest state.
+                tracing::warn!(skipped, "live-reload SSE stream lagged; dropping events");
+                None
+            }
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -327,6 +353,36 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], ReloadEvent::Page);
         assert!(matches!(events[1], ReloadEvent::Islands { .. }));
+    }
+
+    #[test]
+    fn islands_bundle_changed_empty_components_emits_single_generic_event() {
+        // Contract: when the islands bundle changes but the component list is
+        // empty (runtime-only diff), outcome_to_events must emit exactly one
+        // ReloadEvent::Islands { component: "", bundle_url: <expected> }.
+        // The browser consumer keys the reload on bundleUrl, not on component,
+        // so the empty-string component must NOT suppress the event — removing
+        // the empty-component branch in outcome_to_events must break this test.
+        let outcome = BuildOutcome {
+            islands_rerun: true,
+            islands_changed: true,
+            islands_bundle: Some(IslandsBundleInfo {
+                changed: true,
+                bundle_url: "/assets/islands-abc12345.js".to_string(),
+                components: vec![],
+            }),
+            ..Default::default()
+        };
+        let events = outcome_to_events(&outcome);
+        assert_eq!(events.len(), 1, "expected exactly one event for empty components");
+        assert_eq!(
+            events[0],
+            ReloadEvent::Islands {
+                component: String::new(),
+                bundle_url: "/assets/islands-abc12345.js".to_string(),
+            },
+            "empty-component event must carry the bundle_url so the consumer can re-import it"
+        );
     }
 
     #[test]

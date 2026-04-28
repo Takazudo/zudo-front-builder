@@ -56,3 +56,6 @@ hex = "0.4"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+# Route scanning for the e2e integration test: discovers pages and their
+# dynamic-route templates without re-authoring the zfb-router walk.
+zfb-router = { path = "../zfb-router" }

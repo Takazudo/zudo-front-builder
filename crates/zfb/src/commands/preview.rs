@@ -54,8 +54,15 @@ use axum::Router;
 use zfb_build::AdapterChoice;
 
 use crate::cli::PreviewArgs;
+use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
+
+// Re-export from the canonical source so callers that already reference
+// `zfb::commands::preview::EXPECTED_WRANGLER_VERSION` keep compiling.
+pub use zfb_toolchain_pins::{
+    EXPECTED_MINIFLARE_VERSION, EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION,
+};
 
 /// Built-in default port for `zfb preview` when neither the CLI nor the
 /// project config supplies one. 4321 keeps `dev` (3000) and `preview`
@@ -66,35 +73,6 @@ const DEFAULT_PREVIEW_PORT: u16 = 4321;
 /// exists today; if a project configures something else, we error out
 /// rather than silently falling through to static-only.
 const CLOUDFLARE_ADAPTER: &str = "@takazudo/zfb-adapter-cloudflare";
-
-/// Pinned `wrangler` CLI version. `zfb preview` runs
-/// `pnpm exec wrangler --version` before handing off to
-/// `wrangler pages dev` and aborts with a clear error if the reported
-/// version does not match this constant.
-///
-/// Kept in lock-step with the exact-pinned `wrangler` entry in the root
-/// `package.json` (and with `EXPECTED_MINIFLARE_VERSION` /
-/// `EXPECTED_WORKERD_VERSION` below) so the SSR/preview pipeline is
-/// reproducible. To bump, see `CONTRIBUTING.md "External tool version pins"`.
-pub const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
-
-/// Pinned `miniflare` package version. zfb does not spawn miniflare
-/// directly today (it goes through `pnpm exec wrangler pages dev`),
-/// but the version is exact-pinned in `package.json` so the SSR
-/// pipeline's behavior is reproducible. Kept here as the canonical
-/// source of truth — `pnpm-lock.yaml` snapshots the resolution. To
-/// bump, see `CONTRIBUTING.md "External tool version pins"`.
-#[allow(dead_code)]
-pub const EXPECTED_MINIFLARE_VERSION: &str = "4.20260424.0";
-
-/// Pinned `workerd` package version that miniflare drives. Not
-/// directly listed in `package.json` (it comes in transitively via
-/// `miniflare`'s peer dependency); the lockfile snapshots the exact
-/// resolved version. Kept here so a single `grep EXPECTED_WORKERD_VERSION`
-/// surfaces the workerd pin alongside the rest of the external-tool
-/// pins. To bump, see `CONTRIBUTING.md "External tool version pins"`.
-#[allow(dead_code)]
-pub const EXPECTED_WORKERD_VERSION: &str = "1.20260424.1";
 
 /// Set this env var to `1` to skip the pre-flight wrangler version
 /// gate. Intended as an emergency escape hatch (e.g. while a
@@ -118,7 +96,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     //    unambiguous path. CLI wins over config unconditionally — see
     //    the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
-    let port = resolve_port(args.port, cfg.port);
+    let port = resolve_port(args.port, cfg.port, DEFAULT_PREVIEW_PORT);
 
     // Verify the output directory exists *before* binding the port so
     // missing-build errors don't leave a half-started server behind.
@@ -351,41 +329,18 @@ async fn not_found_response(dist_root: &Path) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Map a file extension to a `Content-Type` value. Mirrors the
-/// short-and-pragmatic mapping in `zfb-server::routes` plus the
-/// extra binary types preview is more likely to need (images, fonts,
-/// wasm). Unknown extensions fall back to `application/octet-stream`
-/// — preview is read-only, so the worst case is a download prompt
-/// rather than a wrong-render bug.
-fn content_type_for_path(path: &Path) -> &'static str {
+/// Map a file path to a `Content-Type` value by delegating to the canonical
+/// [`zfb_server::content_type_for_extension`] helper. That helper handles the
+/// same pragmatic extension set (HTML, CSS, JS, JSON, SVG, images, fonts,
+/// wasm, …) with `mime_guess` as a catch-all fallback; keeping preview on the
+/// same code path avoids the two tables drifting over time.
+fn content_type_for_path(path: &Path) -> String {
+    // Extract the extension without allocating when there is none.
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
-        "json" | "map" => "application/json",
-        "xml" => "application/xml",
-        "rss" => "application/rss+xml",
-        "atom" => "application/atom+xml",
-        "txt" => "text/plain; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "wasm" => "application/wasm",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        _ => "application/octet-stream",
-    }
+        .unwrap_or("");
+    zfb_server::content_type_for_extension(ext)
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +383,9 @@ async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Resu
 /// version does not match [`EXPECTED_WRANGLER_VERSION`]. Skipped when
 /// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] is set to a truthy value.
 async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
-    if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV) {
+    if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV, |name| {
+        std::env::var(name).ok()
+    }) {
         return Ok(());
     }
 
@@ -460,7 +417,7 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
             "wrangler version mismatch: expected `{expected}` (pinned in zfb), \
              got `{reported}`. \
              Update both the `wrangler` entry in package.json and \
-             EXPECTED_WRANGLER_VERSION in crates/zfb/src/commands/preview.rs in \
+             EXPECTED_WRANGLER_VERSION in crates/zfb-toolchain-pins/src/lib.rs in \
              lock-step (see the External tool version pins section in CONTRIBUTING.md), then run \
              `pnpm install`. To bypass this gate temporarily, set \
              {env}=1 (not recommended for steady-state use).",
@@ -547,12 +504,16 @@ fn version_shape(raw_token: &str) -> Option<String> {
 }
 
 /// Treat `1`, `true`, `yes` (case-insensitive) as truthy. Anything else
-/// — including unset — is falsy. Used by the wrangler version-gate
-/// escape hatch.
-fn env_truthy(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
-        Err(_) => false,
+/// — including unset / missing — is falsy. The lookup is delegated to
+/// `getter` so tests can drive the function without touching process
+/// environment (which is `unsafe` under Rust 2024).
+fn env_truthy<F>(name: &str, getter: F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match getter(name) {
+        Some(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        None => false,
     }
 }
 
@@ -580,22 +541,6 @@ fn build_wrangler_command(
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve `path` against `root` if it is relative; absolute paths are
-/// returned unchanged. Pure path arithmetic — no I/O, so it works
-/// equally for paths that don't yet exist.
-fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-/// Resolution helper: CLI override > config value > built-in default.
-fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
-    cli.or(cfg).unwrap_or(DEFAULT_PREVIEW_PORT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,48 +550,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use tower::ServiceExt;
-
-    // ---- pure helpers --------------------------------------------------
-
-    #[test]
-    fn resolve_under_root_joins_relative_paths() {
-        let root = Path::new("/tmp/project");
-        assert_eq!(
-            resolve_under_root(root, Path::new("dist")),
-            PathBuf::from("/tmp/project/dist")
-        );
-        assert_eq!(
-            resolve_under_root(root, Path::new("build/out")),
-            PathBuf::from("/tmp/project/build/out")
-        );
-    }
-
-    #[test]
-    fn resolve_under_root_passes_absolute_paths_through() {
-        let root = Path::new("/tmp/project");
-        let abs = if cfg!(windows) {
-            PathBuf::from("C:/elsewhere/dist")
-        } else {
-            PathBuf::from("/elsewhere/dist")
-        };
-        assert_eq!(resolve_under_root(root, &abs), abs);
-    }
-
-    #[test]
-    fn resolve_port_prefers_cli_over_config() {
-        assert_eq!(resolve_port(Some(9000), Some(4000)), 9000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_config_when_cli_absent() {
-        assert_eq!(resolve_port(None, Some(4000)), 4000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
-        assert_eq!(resolve_port(None, None), DEFAULT_PREVIEW_PORT);
-        assert_eq!(DEFAULT_PREVIEW_PORT, 4321);
-    }
 
     // ---- path safety ---------------------------------------------------
 
@@ -1190,10 +1093,21 @@ mod tests {
             ("", false),
             ("nope", false),
         ] {
-            std::env::set_var(key, value);
-            assert_eq!(env_truthy(key), expected, "value = {value:?}");
+            // Drive `env_truthy` via an injected getter rather than
+            // mutating the real process environment. `set_var` is
+            // `unsafe` under Rust 2024 because it races other threads
+            // reading the env table.
+            let v = value.to_string();
+            assert_eq!(
+                env_truthy(key, |_| Some(v.clone())),
+                expected,
+                "value = {value:?}",
+            );
         }
-        std::env::remove_var(key);
-        assert!(!env_truthy(key), "unset env var must be falsy");
+        // Unset = no value returned by the getter.
+        assert!(
+            !env_truthy(key, |_| None),
+            "unset env var must be falsy",
+        );
     }
 }

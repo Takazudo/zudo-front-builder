@@ -63,7 +63,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use zfb_graph::PageId;
 
-use crate::atomic::atomic_write;
+use crate::atomic::{atomic_write, validate_output_path};
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -115,12 +115,12 @@ pub struct EmittedAsset {
     /// (e.g. `/assets/styles.css`). The pipeline replaces every match
     /// of this string in HTML bodies with the hashed equivalent.
     ///
-    /// Empty `stable_url` is allowed and means "skip HTML rewriting"
-    /// (the asset still gets a hashed filename, but no rendered HTML
-    /// references it). Useful for assets that are loaded by other
-    /// assets rather than by the rendered HTML — the rewrites for
-    /// those happen elsewhere.
-    pub stable_url: String,
+    /// `None` means "skip HTML rewriting": the asset still gets a
+    /// hashed filename, but no rendered HTML references it by this
+    /// stable URL. Useful for assets that are loaded by other assets
+    /// rather than by the rendered HTML — the rewrites for those
+    /// happen elsewhere.
+    pub stable_url: Option<String>,
 }
 
 /// Pluggable producer of an [`EmittedAsset`].
@@ -238,8 +238,8 @@ impl AssetPipeline for ProductionAssetPipeline {
             if let Some(em) = self.emitters.css.as_ref() {
                 if let Some(asset) = em.emit().context("production CSS emitter failed")? {
                     let hashed_url = ship_asset(ctx, &asset, AssetKind::Css, &mut outcome)?;
-                    if !asset.stable_url.is_empty() {
-                        rewrites.push((asset.stable_url, hashed_url));
+                    if let Some(stable) = asset.stable_url {
+                        rewrites.push((stable, hashed_url));
                     }
                     outcome.css_changed = true;
                 }
@@ -251,8 +251,8 @@ impl AssetPipeline for ProductionAssetPipeline {
             if let Some(em) = self.emitters.islands.as_ref() {
                 if let Some(asset) = em.emit().context("production islands emitter failed")? {
                     let hashed_url = ship_asset(ctx, &asset, AssetKind::Islands, &mut outcome)?;
-                    if !asset.stable_url.is_empty() {
-                        rewrites.push((asset.stable_url, hashed_url));
+                    if let Some(stable) = asset.stable_url {
+                        rewrites.push((stable, hashed_url));
                     }
                     outcome.islands_changed = true;
                 }
@@ -260,19 +260,29 @@ impl AssetPipeline for ProductionAssetPipeline {
         }
 
         // 3. Write each page, rewriting stable URLs to hashed URLs as
-        //    we go. The rewrite is naive substring replacement — the
-        //    emitters are expected to declare URLs that are unique
-        //    enough not to collide with arbitrary page text (e.g.
-        //    `/assets/styles.css` rather than `styles.css`).
+        //    we go. The rewrite is boundary-anchored substring
+        //    replacement: a match is only rewritten when the byte
+        //    immediately after the match is a URL delimiter (quote,
+        //    whitespace, `<`, `>`, `?`, `#`, end-of-string). That
+        //    prevents a stable URL like `/styles.css` from rewriting
+        //    inside `/styles.css.map` (sourcemap reference) or any
+        //    longer URL that happens to share a prefix.
+        //
+        //    Sort rewrites by `from` length descending so longer keys
+        //    are applied before any shorter prefixes — defence in
+        //    depth even with the boundary check, since two registered
+        //    stable URLs could still nest.
+        rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for r in rendered {
-            let dest = ctx.dist_root.join(&r.output_path);
+            let dest = validate_output_path(&ctx.dist_root, r.output_path.as_path())
+                .with_context(|| format!("while building page {:?}", r.page))?;
             let body = if rewrites.is_empty() {
                 r.html
             } else {
                 let mut buf = r.html;
                 for (from, to) in &rewrites {
                     if buf.contains(from.as_str()) {
-                        buf = buf.replace(from.as_str(), to);
+                        buf = boundary_replace(&buf, from, to);
                     }
                 }
                 buf
@@ -282,6 +292,98 @@ impl AssetPipeline for ProductionAssetPipeline {
         }
 
         Ok(outcome)
+    }
+}
+
+/// Replace each occurrence of `from` in `haystack` with `to`, but only
+/// when the byte immediately after the match is a URL delimiter
+/// (quote, whitespace, `<`, `>`, `?`, `#`, `\\`, `(`, `)`) or
+/// start/end-of-string. A match adjacent to an alphanumeric, `.`, `_`,
+/// or `-` is preserved.
+///
+/// Both leading and trailing bytes are checked. The trailing check
+/// protects sourcemap references and other URLs that contain a
+/// registered stable URL as a prefix: e.g. with `from = "/styles.css"`,
+/// `to = "/styles-abc.css"`, the haystack
+///   `<link href="/styles.css"> ... <a href="/styles.css.map">`
+/// rewrites only the first occurrence. The leading check guards against
+/// suffix collisions where `from` is itself a suffix of a longer URL,
+/// e.g. `/foo.css` must NOT rewrite inside `/myfoo.css` — the `o`
+/// preceding `/foo.css` is a non-delimiter byte.
+///
+/// Pure substring matching against UTF-8: the boundary bytes are read
+/// directly from the byte slice, which is safe because any non-ASCII
+/// continuation byte (0x80-0xBF) is treated as a non-delimiter and
+/// therefore does NOT trigger a rewrite — the worst case is a missed
+/// rewrite, never an incorrect one.
+fn boundary_replace(haystack: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return haystack.to_string();
+    }
+    let bytes = haystack.as_bytes();
+    let from_bytes = from.as_bytes();
+    // Walk byte-by-byte looking for `from`, but build the output via
+    // `str` slicing so multi-byte UTF-8 sequences in the surrounding
+    // content are preserved verbatim. Both `last_copied` and `i` are
+    // char boundaries by construction: `last_copied` only advances
+    // past either ASCII bytes (incremented one at a time, so each byte
+    // is its own char) or the full ASCII `from` match.
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0usize;
+    let mut last_copied = 0usize;
+    while i < bytes.len() {
+        if i + from_bytes.len() <= bytes.len() && &bytes[i..i + from_bytes.len()] == from_bytes {
+            let before = if i == 0 { None } else { bytes.get(i - 1).copied() };
+            let after = bytes.get(i + from_bytes.len()).copied();
+            let is_leading_boundary = is_url_boundary_byte(before);
+            let is_trailing_boundary = is_url_boundary_byte(after);
+            if is_leading_boundary && is_trailing_boundary {
+                out.push_str(&haystack[last_copied..i]);
+                out.push_str(to);
+                i += from_bytes.len();
+                last_copied = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&haystack[last_copied..]);
+    out
+}
+
+/// A byte is a URL boundary if it's missing (start/end of string) or one
+/// of the typical surrounders for an HTML/CSS URL token: quotes,
+/// whitespace, `<`, `>`, `?`, `#`, `\\`, `(`, `)`. Non-ASCII bytes
+/// (including UTF-8 continuation bytes) are intentionally classified as
+/// non-boundary so a multi-byte character adjacent to `from` is never
+/// mistaken for a delimiter.
+fn is_url_boundary_byte(b: Option<u8>) -> bool {
+    match b {
+        None => true,
+        Some(b) => matches!(
+            b,
+            b'"' | b'\''
+                | b'\\'
+                | b'\n'
+                | b'\r'
+                | b'\t'
+                | b' '
+                | b'<'
+                | b'>'
+                | b'?'
+                | b'#'
+                | b'('
+                | b')'
+                // `=` is a legitimate URL boundary in query strings:
+                // `<a href="/download?asset=/assets/styles.css">` should
+                // still rewrite the asset URL, even though `=` is not a
+                // surrounding-quote-style delimiter.
+                | b'='
+                // `,` and `;` show up inside `srcset="...x.png 1x, ..."`
+                // attributes between candidate URLs.
+                | b','
+                | b';'
+        ),
     }
 }
 
@@ -296,7 +398,15 @@ fn ship_asset(
 ) -> Result<String> {
     let hash = sha256_8(&asset.bytes);
     let hashed_relative = insert_hash_before_extension(&asset.relative_path, &hash);
-    let dest = ctx.dist_root.join(&hashed_relative);
+    // The relative path comes from the asset emitter — validate before
+    // joining so a malformed (e.g. absolute, traversal-laden, or
+    // symlink-escaping) `relative_path` cannot land outside dist_root.
+    let dest = validate_output_path(&ctx.dist_root, &hashed_relative).with_context(|| {
+        format!(
+            "production: refused to write hashed asset relative path {}",
+            hashed_relative.display()
+        )
+    })?;
 
     atomic_write(&dest, &asset.bytes).with_context(|| {
         format!(
@@ -305,14 +415,14 @@ fn ship_asset(
         )
     })?;
 
-    let hashed_url = if asset.stable_url.is_empty() {
+    let hashed_url = if let Some(ref stable) = asset.stable_url {
+        rewrite_url(stable, &asset.relative_path, &hashed_relative)
+    } else {
         // No stable URL declared — synthesise one from the relative
         // path so callers logging `hashed_asset_urls` still see something
         // actionable. Leading `/` for parity with the typical declared
         // form `/assets/styles.css`.
         format!("/{}", path_to_url(&hashed_relative))
-    } else {
-        rewrite_url(&asset.stable_url, &asset.relative_path, &hashed_relative)
     };
 
     outcome.hashed_asset_urls.push((kind, hashed_url.clone()));
@@ -389,11 +499,108 @@ fn path_to_url(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::{BuildContext, RenderedPage};
+    use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn boundary_replace_rewrites_at_quote_boundaries() {
+        let html = r#"<link href="/styles.css">"#;
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, r#"<link href="/styles-abc.css">"#);
+    }
+
+    #[test]
+    fn boundary_replace_does_not_rewrite_inside_longer_url() {
+        // Round 2 regression: `/styles.css` must NOT rewrite inside
+        // `/styles.css.map`. The `.` after the match is not a
+        // delimiter, so the boundary check rejects it.
+        let html = r#"<a href="/styles.css.map">"#;
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, r#"<a href="/styles.css.map">"#);
+    }
+
+    #[test]
+    fn boundary_replace_mixed_match_and_no_match() {
+        let html = concat!(
+            r#"<link rel="stylesheet" href="/styles.css">"#,
+            r#"<a href="/styles.css.map">map</a>"#,
+        );
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        let expected = concat!(
+            r#"<link rel="stylesheet" href="/styles-abc.css">"#,
+            r#"<a href="/styles.css.map">map</a>"#,
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn boundary_replace_handles_end_of_string() {
+        let out = boundary_replace("/styles.css", "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "/styles-abc.css");
+    }
+
+    #[test]
+    fn boundary_replace_preserves_multibyte_surroundings() {
+        // The output construction must keep multi-byte UTF-8 intact.
+        let html = "前<link href=\"/styles.css\">後";
+        let out = boundary_replace(html, "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "前<link href=\"/styles-abc.css\">後");
+    }
+
+    #[test]
+    fn boundary_replace_does_not_rewrite_with_leading_non_delimiter() {
+        // Round 3 regression: `/foo.css` must NOT rewrite inside
+        // `/myfoo.css`. The `o` preceding the match is a non-delimiter,
+        // so the leading boundary check rejects it. (The trailing
+        // check alone is insufficient — `/myfoo.css` ends with a quote
+        // delimiter and would otherwise pass.)
+        let html = r#"<link href="/myfoo.css">"#;
+        let out = boundary_replace(html, "/foo.css", "/foo-abc.css");
+        assert_eq!(out, r#"<link href="/myfoo.css">"#);
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_at_start_of_string() {
+        // No leading byte → boundary. Match should fire.
+        let out = boundary_replace("/styles.css\"", "/styles.css", "/styles-abc.css");
+        assert_eq!(out, "/styles-abc.css\"");
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_after_query_param_equals() {
+        // `=` is a valid URL boundary in query strings:
+        // `?asset=/assets/styles.css` should rewrite the asset URL.
+        let html = r#"<a href="/download?asset=/assets/styles.css">dl</a>"#;
+        let out = boundary_replace(html, "/assets/styles.css", "/assets/styles-abc.css");
+        assert_eq!(
+            out,
+            r#"<a href="/download?asset=/assets/styles-abc.css">dl</a>"#
+        );
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_inside_srcset() {
+        // `srcset` separates candidates with `,`. Both candidates should rewrite.
+        let html = r#"<img srcset="/img/a.png 1x,/img/b.png 2x">"#;
+        let out_a = boundary_replace(html, "/img/a.png", "/img/a-1.png");
+        let out_b = boundary_replace(&out_a, "/img/b.png", "/img/b-2.png");
+        assert_eq!(
+            out_b,
+            r#"<img srcset="/img/a-1.png 1x,/img/b-2.png 2x">"#
+        );
+    }
+
+    #[test]
+    fn boundary_replace_rewrites_inside_url_function() {
+        // CSS `url(/foo.css)` — both `(` and `)` count as delimiters.
+        let css = "background:url(/foo.css);";
+        let out = boundary_replace(css, "/foo.css", "/foo-abc.css");
+        assert_eq!(out, "background:url(/foo-abc.css);");
+    }
+
 
     fn pid(s: &str) -> PageId {
         PageId::new(PathBuf::from(s))
@@ -402,7 +609,7 @@ mod tests {
     fn render_one(html: impl Into<String>, output: &str) -> RenderedPage {
         RenderedPage {
             page: pid(&format!("/p{output}")),
-            output_path: PathBuf::from(output.trim_start_matches('/')),
+            output_path: RelDistPath::new(output.trim_start_matches('/')).unwrap(),
             html: html.into(),
             content_type: None,
         }
@@ -444,7 +651,7 @@ mod tests {
             Ok(Some(EmittedAsset {
                 bytes: css_bytes.clone(),
                 relative_path: PathBuf::from("assets/styles.css"),
-                stable_url: "/assets/styles.css".into(),
+                stable_url: Some("/assets/styles.css".into()),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
@@ -502,7 +709,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -521,7 +728,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -541,7 +748,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_b.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -563,14 +770,14 @@ mod tests {
             Ok(Some(EmittedAsset {
                 bytes: b"/* css */".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
-                stable_url: "/assets/styles.css".into(),
+                stable_url: Some("/assets/styles.css".into()),
             }))
         };
         let islands_emitter = || {
             Ok(Some(EmittedAsset {
                 bytes: b"// islands".to_vec(),
                 relative_path: PathBuf::from("assets/islands.js"),
-                stable_url: "/assets/islands.js".into(),
+                stable_url: Some("/assets/islands.js".into()),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {

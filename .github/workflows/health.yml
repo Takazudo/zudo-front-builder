@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Default to least privilege; jobs that need more must opt in.
+permissions:
+  contents: read
+
 concurrency:
   group: health-${{ github.ref }}
   cancel-in-progress: true
@@ -33,4 +37,4 @@ jobs:
       - run: cargo build --workspace --all-targets
 
       - name: actionlint
-        uses: docker://rhysd/actionlint:latest
+        uses: docker://rhysd/actionlint:1.7.12

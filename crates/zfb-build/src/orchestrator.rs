@@ -144,12 +144,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         P2: Into<PathBuf>,
     {
         let mut plan = RebuildPlan::empty();
-        let graph = self
-            .graph
-            .lock()
-            .expect("BuildOrchestrator::graph mutex poisoned");
+        // Recover from poisoning rather than crashing the long-running
+        // dev loop: a panicked previous holder leaves the mutex
+        // poisoned, but the graph data itself is still consistent for
+        // our purposes. Surface the recovery via warn so the operator
+        // notices the upstream panic instead of silently absorbing it.
+        let graph = self.graph.lock().unwrap_or_else(|p| {
+            warn!(site = "plan_for_changes", "graph mutex poisoned, recovering");
+            p.into_inner()
+        });
 
-        for change in changes {
+        let mut changes_iter = changes.into_iter();
+        loop {
+            let Some(change) = changes_iter.next() else {
+                break;
+            };
             let path: PathBuf = change.into();
             plan.record_trigger(path.clone());
 
@@ -158,9 +167,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             match class {
                 PathClass::Global => {
                     // Nuke and pave: every page, every sub-pipeline.
+                    // Drain the rest of the iterator into `triggers`
+                    // first so we don't lose the paths from later
+                    // changes in the same tick — the caller still
+                    // wants to know about them for logging.
+                    //
+                    // `path` is already in `plan.triggers` (recorded by
+                    // `plan.record_trigger(path.clone())` above), so the
+                    // `mem::take` covers it. Pushing `path` again here
+                    // would duplicate it — leave it to the take.
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
-                    full.triggers.push(path);
+                    let _ = path;
+                    for remaining in changes_iter {
+                        full.triggers.push(remaining.into());
+                    }
                     return full;
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
@@ -206,10 +227,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// pipeline.
     fn resolve_all(&self, plan: &mut RebuildPlan) {
         if plan.pages.is_all() {
-            let graph = self
-                .graph
-                .lock()
-                .expect("BuildOrchestrator::graph mutex poisoned");
+            let graph = self.graph.lock().unwrap_or_else(|p| {
+                warn!(site = "resolve_all", "graph mutex poisoned, recovering");
+                p.into_inner()
+            });
             let pages: std::collections::BTreeSet<_> = graph.pages().into_iter().collect();
             plan.pages = PageSelection::Specific(pages);
         }
@@ -397,6 +418,19 @@ mod tests {
         assert!(plan.pages.is_all());
         assert!(plan.rerun_css);
         assert!(plan.rerun_islands);
+    }
+
+    /// Round 2 regression guard: when a Global change fires, each
+    /// trigger path must appear exactly once in `plan.triggers`. The
+    /// previous code recorded the change once via `record_trigger` and
+    /// then re-pushed the same path into `full.triggers`, doubling it.
+    #[test]
+    fn global_change_does_not_duplicate_trigger_paths() {
+        let orch = make_orch(CountingPipeline::default());
+        let cfg = PathBuf::from("/proj/zfb.config.ts");
+        let other = PathBuf::from("/proj/pages/a.tsx");
+        let plan = orch.plan_for_changes(vec![cfg.clone(), other.clone()]);
+        assert_eq!(plan.triggers, vec![cfg, other]);
     }
 
     #[test]

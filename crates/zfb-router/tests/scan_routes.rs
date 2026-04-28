@@ -28,7 +28,7 @@ fn scans_canonical_pages_dir() {
         "/blog",
         "/blog/:slug",
         "/blog/page/:page",
-        "/docs/:slug*",
+        "/docs/:slug{.+}",
         "/:lang/:slug",
     ] {
         assert!(
@@ -87,7 +87,7 @@ fn classifies_static_dynamic_catchall() {
     assert_eq!(by_template["/blog/:slug"], RouteKind::Dynamic);
     assert_eq!(by_template["/blog/page/:page"], RouteKind::Dynamic);
     assert_eq!(by_template["/:lang/:slug"], RouteKind::Dynamic);
-    assert_eq!(by_template["/docs/:slug*"], RouteKind::Catchall);
+    assert_eq!(by_template["/docs/:slug{.+}"], RouteKind::Catchall);
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn dynamic_param_name_preserved() {
     let docs = router
         .routes()
         .iter()
-        .find(|r| r.template() == "/docs/:slug*")
-        .expect("/docs/:slug*");
+        .find(|r| r.template() == "/docs/:slug{.+}")
+        .expect("/docs/:slug{.+}");
     assert_eq!(
         docs.segments,
         vec![Segment::Static("docs".into()), Segment::Catchall("slug".into())],
@@ -161,11 +161,11 @@ fn longer_paths_sort_before_shorter_within_kind() {
     assert!(pos_about < pos_root, "/about should sort before /");
     assert!(pos_blog < pos_root, "/blog should sort before /");
 
-    // Catchall /docs/:slug* must come last (after everything dynamic).
+    // Catchall /docs/:slug{.+} must come last (after everything dynamic).
     let pos_docs = templates
         .iter()
-        .position(|t| t == "/docs/:slug*")
-        .expect("/docs/:slug*");
+        .position(|t| t == "/docs/:slug{.+}")
+        .expect("/docs/:slug{.+}");
     let pos_blog_slug = templates
         .iter()
         .position(|t| t == "/blog/:slug")

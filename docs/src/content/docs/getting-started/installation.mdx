@@ -13,7 +13,7 @@ You will need:
 - **Rust toolchain** — install via [rustup](https://rustup.rs/). A recent stable toolchain (1.75 or newer) is fine.
 - **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
 
-You do not need Node.js separately for the CLI itself. The runtime that executes your project's TypeScript is bundled with zfb (see the [JS runtime architecture page](/architecture/js-runtime)).
+You **do** need Node.js for `zfb dev` and `zfb preview`. The dev / preview path renders pages through a Node-hosted miniflare worker (see [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)). Production-built static output (`dist/`) does not require Node at deploy time — only the build/dev tooling does.
 
 ## Build and install the CLI
 

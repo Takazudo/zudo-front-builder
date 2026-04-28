@@ -4,6 +4,12 @@ description: Scaffold, run, and build a zfb project in about five minutes.
 sidebar_position: 3
 ---
 
+<Warning title="Superseded by ADR-005">
+
+The `dev_404` / `DenoCoreHost` status note below predates [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md). The current architecture renders pages through a Node-hosted miniflare worker rather than an in-process `deno_core` runtime, so the "blocked on ADR-001" framing no longer reflects how zfb dev works today.
+
+</Warning>
+
 This walkthrough takes you from an empty directory to a running dev server and a built site. It assumes you already [installed the zfb CLI](/getting-started/installation).
 
 ## Scaffold a new project

@@ -1,23 +1,10 @@
-//! Framed user-facing diagnostics.
+//! Framed user-facing diagnostics — converter functions for `zfb`-specific
+//! error types.
 //!
-//! Replaces the `Debug`-printed `anyhow::Error` blobs that used to surface
-//! out of the CLI when a user's project hit a structured error. The shape
-//! every framed diagnostic shares:
-//!
-//! ```text
-//! error: <short human message>
-//!  --> <project-relative path>:<line>:<col>
-//!    |
-//!  N | <line-2 from source>
-//!  N | <offending line>
-//!    |     ^
-//!  N | <line+1 from source>
-//!    |
-//! ```
-//!
-//! The format intentionally mirrors what rustc / clippy / esbuild ship:
-//! file:line:col with a short snippet centred on the offending line and a
-//! caret pointing at the column. Editors and humans both pick this up.
+//! The core types ([`Diagnostic`], [`FramedError`], [`render_framed`]) live in
+//! the standalone `zfb-diagnostics` crate. This module re-exports them for
+//! backwards compatibility and adds converters for the `zfb`-specific error
+//! types that depend on `zfb-content` and `zfb-render`.
 //!
 //! Four error classes funnel through this module:
 //!
@@ -42,211 +29,19 @@
 //!    decoded file.
 //!
 //! All four reuse [`Diagnostic`] and [`render_framed`] so the on-screen
-//! shape stays bit-identical across error classes — much of the value of
-//! this module is one consistent reading experience for every kind of
-//! failure the user can hit.
+//! shape stays bit-identical across error classes.
 
-use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use owo_colors::{OwoColorize, Stream};
-
-/// Anyhow-compatible carrier for a [`Diagnostic`].
-///
-/// Wrap a built diagnostic in `FramedError(diag)` and convert it via
-/// `anyhow::Error::from(...)` (or `?` from a `Result<_, FramedError>`)
-/// to preserve the structured frame all the way up to
-/// [`crate::output::format_error`], which detects the wrapper and emits
-/// the framed snippet block instead of the legacy chain-only shape.
-///
-/// `Display` produces a single-line summary so the wrapper still looks
-/// reasonable when something else logs it before the formatter sees it.
-#[derive(Debug)]
-pub struct FramedError(pub Diagnostic);
-
-impl fmt::Display for FramedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}:{}: {}",
-            self.0.file, self.0.line, self.0.col, self.0.message
-        )
-    }
-}
-
-impl std::error::Error for FramedError {}
-
-impl FramedError {
-    /// Convenience: wrap a [`Diagnostic`] for return as
-    /// `Result<_, anyhow::Error>`.
-    pub fn into_anyhow(self) -> anyhow::Error {
-        anyhow::Error::new(self)
-    }
-}
-
-/// One framed diagnostic.
-///
-/// `file` is rendered as-is; callers should pass a project-relative path
-/// when one is available (it shows up directly in the `-->` line).
-///
-/// `line` and `col` are 1-based — matches editor conventions.
-///
-/// `source` is the **full** source text of the offending file. The
-/// renderer slices a 3-line window centred on `line`. When `source` is
-/// `None` (rare, only used as a fallback when the file can't be read at
-/// format-time), the frame is rendered without a snippet block.
-#[derive(Debug, Clone)]
-pub struct Diagnostic {
-    /// Display path of the offending file (project-relative when known).
-    pub file: String,
-    /// 1-based line of the offending position.
-    pub line: usize,
-    /// 1-based column of the offending position.
-    pub col: usize,
-    /// Short human-readable message — single line, no trailing newline.
-    pub message: String,
-    /// Full source text of `file`, used to render the snippet window.
-    pub source: Option<String>,
-}
-
-impl Diagnostic {
-    /// Construct a diagnostic without source text (snippet block omitted
-    /// at render time).
-    pub fn new(
-        file: impl Into<String>,
-        line: usize,
-        col: usize,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            file: file.into(),
-            line: line.max(1),
-            col: col.max(1),
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Construct a diagnostic and attach the full source text. Calling
-    /// this enables the framed snippet block at render time.
-    pub fn with_source(
-        file: impl Into<String>,
-        line: usize,
-        col: usize,
-        message: impl Into<String>,
-        source: impl Into<String>,
-    ) -> Self {
-        Self {
-            file: file.into(),
-            line: line.max(1),
-            col: col.max(1),
-            message: message.into(),
-            source: Some(source.into()),
-        }
-    }
-
-    /// Best-effort: read `path` from disk to populate `source`. Silent on
-    /// failure — a diagnostic without a snippet still renders, just
-    /// without the framed window. Returns `self` for chaining.
-    #[must_use]
-    pub fn try_attach_source_from_disk(mut self, path: &Path) -> Self {
-        if self.source.is_some() {
-            return self;
-        }
-        if let Ok(text) = std::fs::read_to_string(path) {
-            self.source = Some(text);
-        }
-        self
-    }
-}
-
-/// Render a [`Diagnostic`] as the framed multi-line block documented at
-/// the module level.
-pub fn render_framed(diag: &Diagnostic) -> String {
-    let mut out = String::with_capacity(256);
-
-    let label_error = "error".if_supports_color(Stream::Stderr, |t| t.red().bold().to_string());
-    out.push_str(&format!("{label_error}: {}\n", diag.message));
-
-    let arrow = "-->".if_supports_color(Stream::Stderr, |t| t.cyan().to_string());
-    out.push_str(&format!(" {arrow} {}:{}:{}\n", diag.file, diag.line, diag.col));
-
-    if let Some(src) = &diag.source {
-        let lines: Vec<&str> = src.split('\n').collect();
-        if lines.is_empty() {
-            return out;
-        }
-
-        // 1-based line index. Window is [line-1, line+1] clamped.
-        let zero_based = diag.line.saturating_sub(1);
-        let start = zero_based.saturating_sub(1);
-        let end = (zero_based + 1).min(lines.len().saturating_sub(1));
-
-        // Width of the largest line number in the window (pad the gutter
-        // so all `N | ` prefixes line up).
-        let max_line_no = end + 1;
-        let gutter_width = max_line_no.to_string().len();
-
-        let bar = "|".if_supports_color(Stream::Stderr, |t| t.cyan().to_string());
-
-        // Top spacer: `   |`
-        out.push_str(&format!("{:>w$} {bar}\n", "", w = gutter_width));
-
-        for idx in start..=end {
-            let Some(text) = lines.get(idx) else {
-                continue;
-            };
-            let n = idx + 1;
-            // Strip a single trailing CR for nicer Windows output.
-            let trimmed = text.strip_suffix('\r').unwrap_or(text);
-            let n_text = format!("{:>w$}", n, w = gutter_width);
-            let n_styled = n_text.if_supports_color(Stream::Stderr, |t| t.cyan().to_string());
-            out.push_str(&format!("{n_styled} {bar} {trimmed}\n"));
-            if idx == zero_based {
-                // Caret line. Render a single `^` under `col` (1-based).
-                let caret_offset = diag.col.saturating_sub(1);
-                let pad = " ".repeat(caret_offset);
-                let caret =
-                    "^".if_supports_color(Stream::Stderr, |t| t.red().bold().to_string());
-                out.push_str(&format!(
-                    "{:>w$} {bar} {pad}{caret}\n",
-                    "",
-                    w = gutter_width
-                ));
-            }
-        }
-
-        // Bottom spacer.
-        out.push_str(&format!("{:>w$} {bar}\n", "", w = gutter_width));
-    }
-
-    out
-}
+// Re-export the core types so callers can keep using `zfb::diagnostics::*`.
+pub use zfb_diagnostics::{
+    locate_export_ident, project_relative, render_framed, DecodedPosition, Diagnostic,
+    FramedError,
+};
 
 // ---------------------------------------------------------------------------
 // Converters from each first-class error type
 // ---------------------------------------------------------------------------
-
-/// Render `path` relative to `project_root` if it is a child; otherwise
-/// fall back to the absolute display form. Always emits `/`-separated
-/// segments so output is stable across platforms (matches the convention
-/// used by `zfb_content::content_bridge`).
-pub fn project_relative(path: &Path, project_root: Option<&Path>) -> String {
-    let candidate = match project_root {
-        Some(root) => path.strip_prefix(root).unwrap_or(path),
-        None => path,
-    };
-    candidate
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str(),
-            std::path::Component::RootDir => Some("/"),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-        .replace("//", "/")
-}
 
 /// Build a [`Diagnostic`] for a [`zfb_content::FrontmatterError`].
 ///
@@ -474,93 +269,34 @@ pub fn from_js_runtime_error(
     sourcemap_json: Option<&str>,
     project_root: Option<&Path>,
 ) -> Diagnostic {
-    if let Some(map) = sourcemap_json {
-        if let Some(decoded) = zfb_render::sourcemap::decode_position(map, bundled_line, bundled_col) {
-            // Resolve the source file relative to the project root if
-            // possible. The sourcemap stores file paths relative to the
-            // bundle directory, but for display we want project-relative.
-            let raw = PathBuf::from(&decoded.file);
-            let abs = match project_root {
-                Some(root) if raw.is_relative() => {
-                    let bundle_dir = bundle_path.parent().unwrap_or(Path::new(""));
-                    let candidate = bundle_dir.join(&raw);
-                    candidate.canonicalize().unwrap_or(candidate)
-                        .strip_prefix(root)
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|_| raw.clone())
-                }
-                _ => raw.clone(),
-            };
-            let display_path = project_relative(&abs, None);
-            // Best-effort: attach original source. The decoder hands us
-            // the source content when the map embeds `sourcesContent`;
-            // otherwise try the disk.
-            let mut diag = Diagnostic::new(display_path, decoded.line, decoded.col, message);
-            if let Some(content) = decoded.source_content {
-                diag.source = Some(content);
-            } else {
-                let candidate = match project_root {
-                    Some(root) => root.join(&raw),
-                    None => raw.clone(),
-                };
-                if let Ok(text) = std::fs::read_to_string(&candidate) {
-                    diag.source = Some(text);
-                }
-            }
-            return diag;
+    struct RenderDecoded(zfb_render::sourcemap::DecodedFrame);
+    impl DecodedPosition for RenderDecoded {
+        fn file(&self) -> &str {
+            &self.0.file
+        }
+        fn line(&self) -> usize {
+            self.0.line
+        }
+        fn col(&self) -> usize {
+            self.0.col
+        }
+        fn source_content(&self) -> Option<String> {
+            self.0.source_content.clone()
         }
     }
-    Diagnostic::with_source(
-        project_relative(bundle_path, None),
+
+    zfb_diagnostics::from_js_runtime_error_with_decoder(
+        bundle_path,
+        bundle_source,
         bundled_line,
         bundled_col,
-        format!("JS runtime error (sourcemap unavailable): {message}"),
-        bundle_source,
+        message,
+        sourcemap_json,
+        project_root,
+        |map, line, col| {
+            zfb_render::sourcemap::decode_position(map, line, col).map(RenderDecoded)
+        },
     )
-}
-
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
-/// Locate the first `export ... <ident>` occurrence in `source` and
-/// return a 1-based `(line, col)` of the `ident`. We only consider
-/// identifiers that appear inside the **declaration** keywords — i.e.
-/// on a line that starts with `export ` and whose `<ident>` is preceded
-/// by `const `, `let `, `var `, `function `, `async function `, or
-/// `class ` — so that strings such as `"Bad paths"` inside other
-/// declarations don't accidentally win the search.
-fn locate_export_ident(source: &str, ident: &str) -> Option<(usize, usize)> {
-    let prefixes = [
-        "export const ",
-        "export let ",
-        "export var ",
-        "export function ",
-        "export async function ",
-        "export class ",
-        "export default function ",
-        "export default async function ",
-        "export default class ",
-    ];
-    for (line_idx, line) in source.lines().enumerate() {
-        let trimmed_start = line.trim_start();
-        let leading_ws = line.len() - trimmed_start.len();
-        for prefix in prefixes {
-            if let Some(rest) = trimmed_start.strip_prefix(prefix) {
-                // The next token (up to whitespace, `(`, `=`, or `<`) is the
-                // declared identifier.
-                let end = rest
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .unwrap_or(rest.len());
-                let declared = &rest[..end];
-                if declared == ident {
-                    let col = leading_ws + prefix.len() + 1; // 1-based to ident start
-                    return Some((line_idx + 1, col));
-                }
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +305,8 @@ fn locate_export_ident(source: &str, ident: &str) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     /// Strip ANSI escape sequences so assertions are colour-agnostic.
@@ -637,7 +375,7 @@ mod tests {
         // file line 2 (past the opening `---`).
         let src = "---\ntitle: [unterminated\n---\nbody\n";
         let path = PathBuf::from("posts/intro.md");
-        let err = zfb_content::extract_frontmatter(&path, src).expect_err("should fail");
+        let err = zfb_content::frontmatter::extract(&path, src).expect_err("should fail");
         let diag = from_frontmatter_error(&path, src, &err);
         let out = strip_ansi(&render_framed(&diag));
         // serde_yaml reports the position where it noticed the
@@ -666,7 +404,7 @@ mod tests {
         // number reporting works without serde_yaml details.
         let src = "---\ntitle: x\nbody but no close\n";
         let path = PathBuf::from("posts/oops.md");
-        let err = zfb_content::extract_frontmatter(&path, src).expect_err("should fail");
+        let err = zfb_content::frontmatter::extract(&path, src).expect_err("should fail");
         let diag = from_frontmatter_error(&path, src, &err);
         owo_colors::set_override(false);
         let out = strip_ansi(&render_framed(&diag));

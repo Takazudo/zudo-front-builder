@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  _relPathToSlug,
   ContentBlockquote,
   ContentCode,
   ContentH2,
@@ -148,6 +149,90 @@ describe("getCollection", () => {
     await writeFile(join(dir, "blog", "alpha.md"), "---\ntitle: Alpha\n---\nalpha body\n", "utf8");
     const items = await getCollection("blog");
     expect(items[0]?.module_specifier).toBe("mdx://blog/alpha");
+  });
+
+  // BCI-6: recursive traversal
+  it("finds .md files in subdirectories (recursive traversal)", async () => {
+    await mkdir(join(dir, "blog", "2024"), { recursive: true });
+    await writeFile(join(dir, "blog", "top.md"), "---\ntitle: Top\n---\ntop body\n", "utf8");
+    await writeFile(
+      join(dir, "blog", "2024", "nested.md"),
+      "---\ntitle: Nested\n---\nnested body\n",
+      "utf8",
+    );
+
+    type Frontmatter = { title: string };
+    const items = await getCollection<Frontmatter>("blog");
+    const bySlug = new Map(items.map((e) => [e.slug, e]));
+
+    expect(items).toHaveLength(2);
+    expect(bySlug.get("top")?.data.title).toBe("Top");
+    expect(bySlug.get("2024/nested")?.data.title).toBe("Nested");
+  });
+
+  it("derives path-based slug and module_specifier for nested entries", async () => {
+    await mkdir(join(dir, "blog", "2024"), { recursive: true });
+    await writeFile(
+      join(dir, "blog", "2024", "hello.md"),
+      "---\ntitle: Hello\n---\nhello body\n",
+      "utf8",
+    );
+    const items = await getCollection("blog");
+    expect(items[0]?.slug).toBe("2024/hello");
+    expect(items[0]?.module_specifier).toBe("mdx://blog/2024/hello");
+  });
+
+  it("skips hidden directories during recursive traversal", async () => {
+    await mkdir(join(dir, "blog", ".hidden"), { recursive: true });
+    await writeFile(
+      join(dir, "blog", ".hidden", "secret.md"),
+      "---\ntitle: Secret\n---\nhidden\n",
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "blog", "visible.md"),
+      "---\ntitle: Visible\n---\nvisible body\n",
+      "utf8",
+    );
+    const items = await getCollection("blog");
+    expect(items.map((i) => i.slug)).toEqual(["visible"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `_relPathToSlug` — slug derivation portability.
+//
+// Slugs are URL-flavored identifiers, so a nested entry must produce the
+// same `2024/hello` form regardless of host OS. The body of getCollection
+// runs `_relPathToSlug(relative(dir, fullPath))`; these tests pin the
+// helper directly so the Windows behaviour can be verified on a POSIX
+// host without a real Windows runner.
+// ---------------------------------------------------------------------------
+
+describe("_relPathToSlug", () => {
+  it("strips the .md extension for a top-level file", () => {
+    expect(_relPathToSlug("hello.md")).toBe("hello");
+  });
+
+  it("uses forward slashes for a POSIX-flavored nested path", () => {
+    expect(_relPathToSlug("2024/hello.md")).toBe("2024/hello");
+  });
+
+  it("normalises Windows backslashes to forward slashes", () => {
+    // Even when the host's path.sep is "/", a stray backslash from a
+    // misbehaving `path.relative` should not leak into the slug.
+    expect(_relPathToSlug("2024\\hello.md")).toBe("2024/hello");
+  });
+
+  it("handles a deeply-nested Windows-flavored path", () => {
+    expect(_relPathToSlug("a\\b\\c\\d.md")).toBe("a/b/c/d");
+  });
+
+  it("returns the input unchanged when there is no .md extension", () => {
+    // `getCollection` filters to `.md` before reaching this helper, but
+    // the function should still be total — pin the no-extension behaviour
+    // so future refactors don't accidentally swallow the trailing chars.
+    expect(_relPathToSlug("notes")).toBe("notes");
   });
 });
 

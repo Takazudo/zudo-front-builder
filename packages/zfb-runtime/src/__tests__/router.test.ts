@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { setContentSnapshot } from "zfb/content";
+import { setContentSnapshot } from "@takazudo/zfb/content";
 
 import { createPageRouter } from "../router.js";
 import type { PageDefinition, PageModule } from "../router.js";
@@ -168,14 +168,14 @@ describe("createPageRouter", () => {
     expect(res.status).toBe(404);
   });
 
-  it("respects a page module's content_type override", async () => {
+  it("respects a page module's contentType override", async () => {
     const xmlPage: PageModule = {
       default: () => ({
         type: "rss",
         props: { children: { type: "channel", props: { children: "..." }, key: null } },
         key: null,
       }),
-      content_type: "application/xml; charset=utf-8",
+      contentType: "application/xml; charset=utf-8",
     };
     const router = createPageRouter({
       pages: [{ route: "/feed.xml", module: () => Promise.resolve(xmlPage) }],
@@ -194,7 +194,7 @@ describe("createPageRouter", () => {
     // After init, `getCollection("blog")` should resolve from memory
     // rather than touching `fs`. We import lazily so the import fans
     // through the same module-level state the router writes to.
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection<{ title: string; date: string }>("blog");
     expect(items).toHaveLength(1);
     expect(items[0]?.slug).toBe("hello");
@@ -205,7 +205,7 @@ describe("createPageRouter", () => {
   it("returns an empty array for an unknown collection name (snapshot path)", async () => {
     const { pages, contentSnapshot } = buildFixture();
     createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection("nope");
     expect(items).toEqual([]);
   });
@@ -229,10 +229,94 @@ describe("createPageRouter", () => {
       framework: stubFramework(),
     });
     void router; // not used here; we only care that the snapshot was registered
-    const { getCollection } = await import("zfb/content");
+    const { getCollection } = await import("@takazudo/zfb/content");
     const items = await getCollection<{ title?: string }>("notes");
     expect(items).toHaveLength(1);
     expect(items[0]?.data).toEqual({});
+  });
+
+  it("passes { params, props } to the default component when paths() finds a match", async () => {
+    // Capture whatever the router invokes default() with so the
+    // assertion can verify the input shape matches the
+    // ADR-002 / Astro paths() contract.
+    let received: unknown = null;
+    const dynamicPage: PageModule & { paths: () => unknown[] } = {
+      default: (input) => {
+        received = input;
+        return null;
+      },
+      paths: () => [
+        { params: { slug: "hello" }, props: { title: "Hello" } },
+        { params: { slug: "world" }, props: { title: "World" } },
+      ],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const res = await router(new Request("http://test.local/blog/hello"));
+    expect(res.status).toBe(200);
+    expect(received).toEqual({
+      params: { slug: "hello" },
+      props: { title: "Hello" },
+    });
+  });
+
+  it("passes an empty props object when paths() finds a match without props", async () => {
+    let received: unknown = null;
+    const dynamicPage: PageModule & { paths: () => unknown[] } = {
+      default: (input) => {
+        received = input;
+        return null;
+      },
+      paths: () => [{ params: { slug: "hello" } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const res = await router(new Request("http://test.local/blog/hello"));
+    expect(res.status).toBe(200);
+    expect(received).toEqual({
+      params: { slug: "hello" },
+      props: {},
+    });
+  });
+
+  it("returns 404 when paths() exists but the URL does not match any entry", async () => {
+    const dynamicPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { slug: "hello" } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(dynamicPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const res = await router(new Request("http://test.local/blog/missing"));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 500 when paths() returns an entry whose params is not an object", async () => {
+    const brokenPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: "not-an-object" } as unknown],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(brokenPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const res = await router(new Request("http://test.local/blog/hello"));
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    expect(body).toContain("valid params object");
   });
 
   it("returns 500 with a diagnostic body when a page module lacks a default export", async () => {
@@ -293,5 +377,199 @@ describe("createPageRouter — determinism", () => {
     const c = await router(new Request("http://test.local/blog/hello")).then((r) => r.text());
     expect(a).toBe(b);
     expect(b).toBe(c);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Synthetic __paths__ endpoint
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — __paths__ endpoint", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  it("returns the paths() array as JSON for a registered route", async () => {
+    const slugPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { slug: "hello" } }, { params: { slug: "world" } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(slugPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/blog/:slug");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("application/json");
+    const body = await res.json();
+    expect(body).toEqual([{ params: { slug: "hello" } }, { params: { slug: "world" } }]);
+  });
+
+  it("returns the result of an async paths() export", async () => {
+    const asyncPage: PageModule & { paths: () => Promise<unknown[]> } = {
+      default: () => null,
+      paths: async () => [{ params: { tag: "rust" } }, { params: { tag: "js" } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/tags/:tag", module: () => Promise.resolve(asyncPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/tags/:tag");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual([{ params: { tag: "rust" } }, { params: { tag: "js" } }]);
+  });
+
+  it("returns 404 when the route key is not registered", async () => {
+    const router = createPageRouter({
+      pages: [],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/no-such/:slug");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toContain("/no-such/:slug");
+  });
+
+  it("returns 404 when the page module has no paths() export", async () => {
+    const staticPage: PageModule = { default: () => null };
+    const router = createPageRouter({
+      pages: [{ route: "/about", module: () => Promise.resolve(staticPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/about");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toContain("no paths() export");
+  });
+
+  it("returns 500 when paths() throws", async () => {
+    const brokenPage: PageModule & { paths: () => Promise<unknown[]> } = {
+      default: () => null,
+      paths: async () => {
+        throw new Error("collection unavailable");
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/broken/:slug", module: () => Promise.resolve(brokenPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/broken/:slug");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    expect(body).toContain("collection unavailable");
+  });
+
+  it("registers /__paths__ before user routes so a top-level catchall does not shadow it", async () => {
+    // A user page authored as `pages/[...rest].tsx` would, after
+    // `bracket_to_hono`, register as `/:rest{.+}`. If that route
+    // were dispatched first, Hono would match `/__paths__/<key>`
+    // against it and we'd never reach the synthetic handler. The
+    // router registers `/__paths__/...` first to defeat this.
+    const slugPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { slug: "hello" } }],
+    };
+    const wildcardPage: PageModule = {
+      default: () => null,
+    };
+    const router = createPageRouter({
+      pages: [
+        // Register the catchall first to confirm even reverse insertion
+        // order does not let it eat the synthetic endpoint.
+        { route: "/:rest{.+}", module: () => Promise.resolve(wildcardPage) },
+        { route: "/blog/:slug", module: () => Promise.resolve(slugPage) },
+      ],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/blog/:slug");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual([{ params: { slug: "hello" } }]);
+  });
+
+  it("does not double-decode the route key (literal % in key)", async () => {
+    // Hono auto-decodes path params containing %. The router relies
+    // on that single decode and does not call decodeURIComponent
+    // again, so a literal % in the route key would survive the
+    // round-trip if the build pipeline ever produced one. We use a
+    // simple ASCII key here to confirm no extra decode happens.
+    const page: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { x: "1" } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/r/:x", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/r/:x");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual([{ params: { x: "1" } }]);
+  });
+
+  it("can read content via getCollection() inside paths()", async () => {
+    // Simulate a page whose paths() calls getCollection — the canonical
+    // basic-blog pattern. The snapshot must be registered before paths()
+    // runs; createPageRouter registers it on construction.
+    const contentPage: PageModule & { paths: () => Promise<unknown[]> } = {
+      default: () => null,
+      paths: async () => {
+        const { getCollection } = await import("@takazudo/zfb/content");
+        const posts = await getCollection<{ title: string }>("blog");
+        return posts.map((p) => ({ params: { slug: p.slug } }));
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(contentPage) }],
+      contentSnapshot: {
+        collections: {
+          blog: [
+            {
+              slug: "hello",
+              frontmatter: { title: "Hello" },
+              body: "",
+              module_specifier: "mdx://blog/hello",
+              rel_path: "hello.mdx",
+            },
+            {
+              slug: "world",
+              frontmatter: { title: "World" },
+              body: "",
+              module_specifier: "mdx://blog/world",
+              rel_path: "world.mdx",
+            },
+          ],
+        },
+      },
+      framework: { renderToString: () => "" },
+    });
+
+    const encoded = encodeURIComponent("/blog/:slug");
+    const res = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual([{ params: { slug: "hello" } }, { params: { slug: "world" } }]);
   });
 });

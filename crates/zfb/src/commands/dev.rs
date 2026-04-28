@@ -72,13 +72,14 @@ use zfb_build::renderer::{
 };
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, OrchestratorConfig,
-    PageRenderer, RenderedPage,
+    PageRenderer, RelDistPath, RenderedPage,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 
 use crate::cli::DevArgs;
+use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
@@ -116,7 +117,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref());
-    let port = resolve_port(args.port, cfg.port);
+    let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
     let addr = resolve_addr(host.as_str(), port)?;
 
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
@@ -154,7 +155,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // tagged with the current digest — and the next cold start would
     // happily reuse that empty cache as authoritative. Save only on
     // shutdown (below), once the graph has actually been populated.
-    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
+    //
+    // Formerly `initial_graph.unwrap_or_default()`. Now explicit: on a
+    // cache miss we construct a known-empty graph. Default was removed
+    // from DependencyGraph to prevent silent empty-graph construction
+    // elsewhere.
+    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_else(DependencyGraph::new)));
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
@@ -205,17 +211,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     output::ready(&format!("http://{host}:{port}"));
 
-    // 7. Run the server until Ctrl+C. The renderer guard tears down on
-    //    drop here — the explicit `shutdown` call belt-and-braces keeps
-    //    the surface symmetrical (start ↔ shutdown).
+    // 7. Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
+    //    signal so axum drains in-flight connections before exiting. The
+    //    renderer guard tears down on drop here — the explicit `shutdown`
+    //    call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
     let result = tokio::select! {
-        res = serve(opts) => {
+        res = serve(opts, ctrl_c) => {
             orch_handle.abort();
             res
-        }
-        _ = tokio::signal::ctrl_c() => {
-            orch_handle.abort();
-            Ok(())
         }
     };
 
@@ -324,20 +330,25 @@ impl DevRenderSession {
             Some(e) => e.clone(),
             None => return Ok(None),
         };
-        let lock = self
-            .inner
-            .renderer
-            .lock()
-            .expect("DevRenderSession::renderer mutex poisoned");
+        let lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+            tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
+            p.into_inner()
+        });
         let state = lock
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
         let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
         let html = std::fs::read_to_string(&written)
             .with_context(|| format!("failed to read rendered page {}", written.display()))?;
+        // RouteUniverseEntry::output_path is a PathBuf validated by the
+        // router/render_pipeline (relative, no escapes). Wrap it in
+        // RelDistPath for the pipeline's type contract. If the path is
+        // somehow invalid, surface an error rather than silently skipping.
+        let output_path = RelDistPath::new(entry.output_path)
+            .with_context(|| format!("renderer returned invalid output_path for {:?}", page))?;
         Ok(Some(RenderedPage {
             page: page.clone(),
-            output_path: entry.output_path,
+            output_path,
             html,
             content_type: None,
         }))
@@ -346,11 +357,10 @@ impl DevRenderSession {
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
     /// multiple times — subsequent calls are a no-op.
     fn shutdown_explicit(&self) {
-        let mut lock = self
-            .inner
-            .renderer
-            .lock()
-            .expect("DevRenderSession::renderer mutex poisoned");
+        let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+            tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
+            p.into_inner()
+        });
         if let Some(state) = lock.take() {
             let _ = shutdown(state);
         }
@@ -400,22 +410,16 @@ fn boot_dev_renderer(
         ));
     }
 
-    let bundler_input = BundlerInput {
-        project_root: project_root.to_path_buf(),
-        pages_dir: PathBuf::from("pages"),
-        content_dir: PathBuf::from("content"),
-        components_dir: PathBuf::from("components"),
-        layouts_dir: PathBuf::from("layouts"),
-        framework: cfg_framework_to_render(cfg.framework),
-        define_vars: Default::default(),
-        tsconfig_paths: Default::default(),
-        external: Vec::new(),
-        outdir: dist_root.join(".zfb-build"),
-        mode: BundleMode::Development,
-        minify: false,
-        esbuild_binary: None,
-        mock_subprocess_output: None,
-    };
+    // Dev mode does not embed a content snapshot — runtime paths()
+    // evaluation is a build-mode feature. When dev mode starts the
+    // worker, `getCollection(...)` will see an empty snapshot.
+    let bundler_input = BundlerInput::for_project(
+        project_root.to_path_buf(),
+        cfg_framework_to_render(cfg.framework),
+        BundleMode::Development,
+        dist_root.join(".zfb-build"),
+        None,
+    );
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {
@@ -487,10 +491,6 @@ fn resolve_host(cli: Option<&str>, cfg: Option<&str>) -> String {
     cli.or(cfg).unwrap_or(DEFAULT_DEV_HOST).to_owned()
 }
 
-fn resolve_port(cli: Option<u16>, cfg: Option<u16>) -> u16 {
-    cli.or(cfg).unwrap_or(DEFAULT_DEV_PORT)
-}
-
 fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     let pair = format!("{host}:{port}");
     let mut iter = pair
@@ -500,43 +500,10 @@ fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
 }
 
-fn resolve_under_root(project_root: &Path, p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_root.join(p)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn resolve_under_root_joins_relative_paths() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("dist");
-        assert_eq!(resolve_under_root(root, p), PathBuf::from("/tmp/proj/dist"));
-    }
-
-    #[test]
-    fn resolve_under_root_joins_nested_relative_paths() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("build/out");
-        assert_eq!(
-            resolve_under_root(root, p),
-            PathBuf::from("/tmp/proj/build/out")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolve_under_root_keeps_absolute_paths_as_is() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("/var/www/dist");
-        assert_eq!(resolve_under_root(root, p), PathBuf::from("/var/www/dist"));
-    }
 
     #[test]
     fn resolve_host_prefers_cli_over_config() {
@@ -554,35 +521,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_port_prefers_cli_over_config() {
-        assert_eq!(resolve_port(Some(8080), Some(4000)), 8080);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_config_when_cli_absent() {
-        assert_eq!(resolve_port(None, Some(4000)), 4000);
-    }
-
-    #[test]
-    fn resolve_port_falls_back_to_builtin_when_neither_supplied() {
-        assert_eq!(resolve_port(None, None), DEFAULT_DEV_PORT);
-    }
-
-    #[test]
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
-    }
-
-    #[test]
-    fn resolve_under_root_handles_dot_relative() {
-        let root = Path::new("/tmp/proj");
-        let p = Path::new("./public");
-        let resolved = resolve_under_root(root, p);
-        assert!(
-            resolved.starts_with(root),
-            "expected {resolved:?} to start with {root:?}"
-        );
     }
 
     /// The render callback must:

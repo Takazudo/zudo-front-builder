@@ -18,7 +18,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 use zfb_build::{
     AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, OrchestratorConfig,
-    PageSelection, RebuildPlan, RenderedPage,
+    PageSelection, RebuildPlan, RelDistPath, RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_watcher::Watcher;
@@ -79,7 +79,8 @@ fn touching_a_md_file_only_rerenders_its_page() {
                         .unwrap_or("idx");
                     RenderedPage {
                         page: p.clone(),
-                        output_path: PathBuf::from(format!("{stem}.html")),
+                        output_path: RelDistPath::new(format!("{stem}.html"))
+                            .expect("test stem is a relative html path"),
                         html: format!("<h1>{stem}</h1>"),
                         content_type: None,
                     }
@@ -232,10 +233,11 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
                 .iter()
                 .map(|p| RenderedPage {
                     page: p.clone(),
-                    output_path: PathBuf::from(format!(
+                    output_path: RelDistPath::new(format!(
                         "{}.html",
                         p.path().file_stem().unwrap().to_string_lossy()
-                    )),
+                    ))
+                    .expect("test stem is a relative html path"),
                     html: "<p>x</p>".into(),
                     content_type: None,
                 })
@@ -312,7 +314,8 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
                 .iter()
                 .map(|p| RenderedPage {
                     page: p.clone(),
-                    output_path: PathBuf::from("post.html"),
+                    output_path: RelDistPath::new("post.html")
+                        .expect("post.html is a relative html path"),
                     html: "<h1>v2</h1>".into(),
                     content_type: None,
                 })

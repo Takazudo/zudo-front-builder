@@ -40,7 +40,7 @@
 // values and fall back to the default. In production we silently fall
 // back to keep the bundle path small.
 
-import type { ReactNode } from "./jsx-types.js";
+import type { VNode } from "./jsx-types.js";
 import { resolveWhen, type When } from "./types.js";
 
 // Re-export `resolveWhen` for back-compat: tests and downstream consumers
@@ -79,9 +79,15 @@ export interface IslandProps {
    * evaluated server-side, and `ssrFallback` is rendered in their place.
    * On hydration the client runtime swaps in the real component.
    */
-  ssrFallback?: ReactNode;
-  /** Server-rendered children, hydrated client-side once `when` fires. */
-  children?: ReactNode;
+  ssrFallback?: VNode;
+  /**
+   * Server-rendered children, hydrated client-side once `when` fires.
+   *
+   * Typed as `VNode` (structural union) rather than `ReactNode` so
+   * non-React frameworks can implement `IslandProps` without a React
+   * type dependency (BCI-4).
+   */
+  children?: VNode;
 }
 
 /**
@@ -127,7 +133,7 @@ export function Island(props: IslandProps): IslandElement {
       props: {
         [SKIP_SSR_MARKER_ATTR]: componentName,
         "data-when": when,
-        children: (props.ssrFallback ?? null) as ReactNode,
+        children: props.ssrFallback ?? null,
       },
       key: null,
     };
@@ -138,7 +144,7 @@ export function Island(props: IslandProps): IslandElement {
     props: {
       [HYDRATE_MARKER_ATTR]: componentName,
       "data-when": when,
-      children: props.children as ReactNode,
+      children: props.children,
     },
     key: null,
   };

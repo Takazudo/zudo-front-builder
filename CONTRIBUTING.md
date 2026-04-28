@@ -1,11 +1,11 @@
 # Contributing
 
-Thanks for your interest in `zudo-front-builder`. The project is in early scaffolding, so the workflow is intentionally minimal for now.
+Thanks for your interest in `zudo-front-builder`. The project is past initial scaffolding; the toolchain and pre-commit pipeline below are wired up and active.
 
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: pnpm will be pinned via [Corepack](https://nodejs.org/api/corepack.html) once Sub 2 lands. Until then, no Node-side tooling is required.
+- **Node / pnpm**: pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically.
 
 ## Workspace layout
 
@@ -22,12 +22,12 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook`, `rustfmt`, `clippy`, and JS/CSS formatters will be wired up in Subs 3–5. Until then, please run `cargo fmt` and `cargo clippy` manually before opening a PR.
-- Open a PR against `main` (or the relevant epic base branch). CI will be enabled later in the foundation work.
+- `lefthook` runs the pre-commit pipeline (rustfmt, clippy, JS/CSS formatters). For ad-hoc checks before opening a PR, `cargo fmt` and `cargo clippy --workspace` are still useful.
+- Open a PR against `main` (or the relevant epic base branch). CI runs the same checks as the pre-commit pipeline.
 
 ## Formatting
 
-JavaScript, TypeScript, JSON, and YAML are formatted with **Prettier**. Markdown and MDX use a separate formatter wired up in Sub 5.
+JavaScript, TypeScript, JSON, and YAML are formatted with **Prettier**. Markdown and MDX use the dedicated `@takazudo/mdx-formatter` step.
 
 Run formatters across the repo:
 
@@ -39,7 +39,7 @@ pnpm format:check   # check formatting (CI-friendly, exits non-zero on diffs)
 Targeted variants:
 
 - `pnpm format:ts` / `pnpm format:check:ts` — Prettier over JS/TS/JSON/YAML
-- `pnpm format:mdx` / `pnpm format:check:mdx` — Markdown/MDX (see Sub 5)
+- `pnpm format:mdx` / `pnpm format:check:mdx` — Markdown/MDX
 
 The pre-commit hook (lefthook) runs Prettier on staged matching files and re-stages the fixes.
 
