@@ -81,6 +81,17 @@ impl AdapterChoice {
                 if trimmed == "none" {
                     return Ok(AdapterChoice::None);
                 }
+                // Reject anything that doesn't look like a valid npm
+                // package name. Important because the value flows into
+                // a `pnpm exec <name>` invocation; while we use
+                // `Command` (no shell) so classic shell-injection is
+                // not possible, a value starting with `-` would be
+                // mis-parsed as an option by pnpm itself, and stray
+                // whitespace / control chars can produce confusing
+                // errors. The check below is the npm package-name
+                // grammar plus an explicit reject for leading `-`.
+                validate_package_name(trimmed)
+                    .with_context(|| format!("adapter: invalid package name {trimmed:?}"))?;
                 Ok(AdapterChoice::Package(trimmed.to_string()))
             }
         }
@@ -289,6 +300,65 @@ pub fn run_adapter_bundle_with<R: AdapterRunner>(
     runner.run(package, &input)
 }
 
+/// Reject adapter strings that aren't valid-looking npm package names.
+///
+/// Tightened beyond strict npm grammar in two places:
+/// - Leading `-` is rejected so a config typo can't be parsed as a CLI
+///   option by `pnpm exec`.
+/// - Whitespace, quotes, semicolons, backticks, and shell metacharacters
+///   are rejected. We use [`std::process::Command`] (no shell) so
+///   metacharacters can't actually inject commands today, but reject
+///   them anyway so the error surfaces at config-load time rather than
+///   becoming a confusing pnpm error later.
+///
+/// Accepted shape: scoped (`@scope/name`) or unscoped (`name`), where
+/// each segment matches `[a-z0-9._-]+` and the first char is
+/// alphanumeric. Mirrors npm's package-name validator (the practical
+/// subset — we don't need historical-compatibility uppercase).
+fn validate_package_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("must not be empty");
+    }
+    if name.starts_with('-') {
+        bail!("must not start with '-' (would be parsed as a CLI option)");
+    }
+    let mut segments: Vec<&str> = Vec::new();
+    if let Some(stripped) = name.strip_prefix('@') {
+        let slash = stripped
+            .find('/')
+            .ok_or_else(|| anyhow!("scoped package must contain a '/'"))?;
+        let scope = &stripped[..slash];
+        let rest = &stripped[slash + 1..];
+        if scope.is_empty() {
+            bail!("scope (between '@' and '/') must not be empty");
+        }
+        if rest.is_empty() {
+            bail!("package name (after '/') must not be empty");
+        }
+        segments.push(scope);
+        segments.push(rest);
+    } else {
+        segments.push(name);
+    }
+    for seg in segments {
+        if !seg
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphanumeric())
+            .unwrap_or(false)
+        {
+            bail!("segment {seg:?} must start with a letter or digit");
+        }
+        for c in seg.chars() {
+            let ok = c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
+            if !ok {
+                bail!("segment {seg:?} contains disallowed character {c:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Derive the bin name to invoke for a given adapter package.
 ///
 /// Scoped packages (`@scope/foo`) → `foo`. Non-scoped → the name
@@ -394,7 +464,63 @@ mod tests {
             "zfb-adapter-cloudflare"
         );
         assert_eq!(bin_name_for_package("zfb-adapter-foo"), "zfb-adapter-foo");
-        assert_eq!(bin_name_for_package("@scope/with/slashes"), "with/slashes");
+    }
+
+    #[test]
+    fn from_config_rejects_leading_dash_to_block_pnpm_option_confusion() {
+        // A config typo like "-rm" must be rejected at parse time so
+        // it can't reach `pnpm exec` where it would be interpreted as
+        // a CLI option.
+        let err = AdapterChoice::from_config(Some("-rm")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("invalid package name"), "{msg}");
+        assert!(msg.contains("CLI option") || msg.contains("'-'"), "{msg}");
+    }
+
+    #[test]
+    fn from_config_rejects_shell_metacharacters() {
+        // Even though the dispatcher uses Command (no shell), reject
+        // metachars so a config typo surfaces a clean parse-time
+        // error rather than a confusing pnpm error later.
+        for bad in [
+            "foo;rm -rf /",
+            "foo bar",
+            "foo&bar",
+            "foo$bar",
+            "foo`bar`",
+            "foo\\bar",
+            "foo\nbar",
+        ] {
+            let err = AdapterChoice::from_config(Some(bad)).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("invalid package name"),
+                "expected invalid-package-name error for {bad:?}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_config_rejects_malformed_scoped_names() {
+        for bad in ["@scope", "@/foo", "@scope/", "@", "@scope/with/slashes"] {
+            let err = AdapterChoice::from_config(Some(bad)).unwrap_err();
+            assert!(format!("{err:#}").contains("invalid package name"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn from_config_accepts_canonical_names() {
+        for ok in [
+            "@takazudo/zfb-adapter-cloudflare",
+            "zfb-adapter-cloudflare",
+            "foo.bar",
+            "@a/b",
+        ] {
+            assert!(
+                AdapterChoice::from_config(Some(ok)).is_ok(),
+                "expected {ok} to validate"
+            );
+        }
     }
 
     /// Fake runner that records dispatch arguments so the callers's
