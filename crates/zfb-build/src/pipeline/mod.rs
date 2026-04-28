@@ -175,9 +175,57 @@ pub type PageRenderer =
 /// of this opaque-bool runner.
 pub type CssRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
 
-/// Function that runs the islands bundler once and returns whether the
-/// emitted asset is new. Same semantics as [`CssRunner`].
-pub type IslandsRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
+/// Information about a freshly-emitted islands bundle.
+///
+/// Populated by an [`IslandsRunner`] when a re-bundle was attempted and
+/// surfaces the per-component identifiers + the bundle's public URL so
+/// the dev-server SSE layer can fan out one
+/// `ReloadEvent::Islands { component, bundle_url }` per island. The
+/// SSE layer never reaches into `zfb-islands` directly — it consumes
+/// this side-channel through `BuildOutcome::islands_bundle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandsBundleInfo {
+    /// `true` if the re-bundle produced a new asset URL (the input
+    /// islands set or any of their bytes changed). When `false` the
+    /// SSE layer still sees the info but emits no events.
+    pub changed: bool,
+    /// Public URL of the freshly-emitted bundle, e.g.
+    /// `/assets/islands-abc12345.js`. Producers should use
+    /// `zfb_islands::bundle_link_href` (or its production-pipeline
+    /// equivalent) to derive this from the asset path so the URL the
+    /// browser hits matches the URL the renderer embeds in HTML.
+    pub bundle_url: String,
+    /// Per-component identifiers (mirrors
+    /// `zfb_islands::Island::component_name`). Order is the bundler's
+    /// stable order so the dev-mode reload stream is deterministic
+    /// across runs for a given input.
+    pub components: Vec<String>,
+}
+
+/// Function that runs the islands bundler once and returns the
+/// per-bundle metadata, or `None` when the runner ran but produced no
+/// bundle (e.g. there are no `"use client"` components today).
+///
+/// Returning `IslandsBundleInfo { changed: false, .. }` is the right
+/// shape when the bundler ran but the output was byte-identical to the
+/// previous run; the orchestrator records the rerun in
+/// [`BuildOutcome::islands_rerun`] but emits no SSE event.
+pub type IslandsRunner =
+    Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
+
+/// Function the dev pipeline calls before re-rendering pages, when
+/// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
+/// layout edit, or exported-handler change).
+///
+/// Implementations typically rebuild the worker bundle and respawn the
+/// miniflare subprocess via [`crate::renderer::reload`]. Failure
+/// surfaces as a regular tick error — the watcher stays alive and the
+/// dev server keeps the previous state.
+///
+/// The hook is invoked once per tick when [`crate::RebuildPlan::pages`]
+/// is non-empty; the pipeline does not call it for CSS-only or
+/// islands-only ticks (those don't move the SSR bundle).
+pub type RendererReloader = Arc<dyn Fn() -> Result<()> + Send + Sync + 'static>;
 
 /// Per-build-tick context handed to [`AssetPipeline::apply`].
 ///
@@ -207,6 +255,12 @@ pub struct BuildContext {
     /// Islands bundler callback. Optional: if `None`, islands reruns are
     /// silently skipped. Consumed by [`DevAssetPipeline`] only.
     pub run_islands: Option<IslandsRunner>,
+
+    /// Renderer-reload hook invoked once per tick when pages need
+    /// re-rendering. See [`RendererReloader`] for the contract.
+    /// Optional: tests and one-off callers that don't own a miniflare
+    /// subprocess pass `None`. Consumed by [`DevAssetPipeline`] only.
+    pub reload_renderer: Option<RendererReloader>,
 }
 
 impl std::fmt::Debug for BuildContext {
@@ -218,6 +272,10 @@ impl std::fmt::Debug for BuildContext {
             .field(
                 "run_islands",
                 &self.run_islands.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "reload_renderer",
+                &self.reload_renderer.as_ref().map(|_| "<callback>"),
             )
             .finish()
     }
@@ -245,6 +303,12 @@ pub struct BuildOutcome {
     /// Whether the islands bundler reported a new asset (only
     /// meaningful when `islands_rerun` is true).
     pub islands_changed: bool,
+
+    /// Per-bundle metadata when the islands bundler produced output
+    /// this tick. Populated by [`IslandsRunner`]; the SSE layer fans
+    /// this out to one `ReloadEvent::Islands` per component when
+    /// `changed` is true.
+    pub islands_bundle: Option<IslandsBundleInfo>,
 
     /// Pages whose HTML was actually written (the file was new or the
     /// bytes changed). Useful for the dev preview server's WebSocket

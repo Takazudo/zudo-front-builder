@@ -91,6 +91,14 @@ impl AssetPipeline for DevAssetPipeline {
         };
 
         if !pages.is_empty() {
+            // Reload the SSR renderer (miniflare worker) before rendering
+            // pages whenever the dirty set is non-empty. Errors abort the
+            // tick — the watcher stays alive and the previous renderer
+            // state is preserved by the orchestrator.
+            if let Some(reload) = &ctx.reload_renderer {
+                reload()?;
+            }
+
             let rendered = (ctx.render_pages)(&pages)?;
             outcome.pages_rendered = rendered.len();
 
@@ -163,7 +171,10 @@ impl AssetPipeline for DevAssetPipeline {
         if plan.rerun_islands {
             outcome.islands_rerun = true;
             if let Some(run) = &ctx.run_islands {
-                outcome.islands_changed = run()?;
+                if let Some(info) = run()? {
+                    outcome.islands_changed = info.changed;
+                    outcome.islands_bundle = Some(info);
+                }
             }
         }
 
@@ -198,6 +209,7 @@ mod tests {
             }),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         }
     }
 
@@ -281,6 +293,7 @@ mod tests {
                 Ok(true)
             })),
             run_islands: None,
+            reload_renderer: None,
         };
 
         let plan = RebuildPlan {
@@ -392,6 +405,7 @@ mod tests {
             render_pages: Arc::new(|_| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::All,
@@ -414,7 +428,14 @@ mod tests {
             dist_root: dir.path().to_path_buf(),
             render_pages: Arc::new(|_| Ok(vec![])),
             run_css: Some(Arc::new(|| Ok(true))),
-            run_islands: Some(Arc::new(|| Ok(true))),
+            run_islands: Some(Arc::new(|| {
+                Ok(Some(crate::pipeline::IslandsBundleInfo {
+                    changed: true,
+                    bundle_url: "/assets/islands-test.js".into(),
+                    components: vec![],
+                }))
+            })),
+            reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::none(),

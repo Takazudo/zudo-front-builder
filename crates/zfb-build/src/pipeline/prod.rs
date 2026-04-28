@@ -414,6 +414,7 @@ mod tests {
             render_pages: Arc::new(move |_pages: &[PageId]| Ok(pages.clone())),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         }
     }
 
@@ -634,6 +635,7 @@ mod tests {
                 Ok(true)
             })),
             run_islands: None,
+            reload_renderer: None,
         };
         let pipeline = ProductionAssetPipeline::empty();
         let plan = plan_full(vec![]);
@@ -673,6 +675,7 @@ mod tests {
             render_pages: Arc::new(|_| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::All,
