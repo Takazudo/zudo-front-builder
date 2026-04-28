@@ -257,8 +257,11 @@ pub async fn load_from_dir_with_options(
     // No file present → defaults.
     let cfg = Config::default();
     // Defaults are always valid, but we still run the check so future
-    // additions can't accidentally break this invariant.
-    validate(&cfg, dir).expect("Config::default() must validate cleanly");
+    // additions can't accidentally break this invariant. Propagate as
+    // an error rather than panicking — every config-less project goes
+    // through this path and a panic here would tear the dev server
+    // down on what is a benign discovery step.
+    validate(&cfg, dir).context("Config::default() must validate cleanly")?;
     Ok(cfg)
 }
 

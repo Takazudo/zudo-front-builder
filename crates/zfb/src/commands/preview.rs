@@ -428,7 +428,9 @@ async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Resu
 /// version does not match [`EXPECTED_WRANGLER_VERSION`]. Skipped when
 /// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] is set to a truthy value.
 async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
-    if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV) {
+    if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV, |name| {
+        std::env::var(name).ok()
+    }) {
         return Ok(());
     }
 
@@ -547,12 +549,16 @@ fn version_shape(raw_token: &str) -> Option<String> {
 }
 
 /// Treat `1`, `true`, `yes` (case-insensitive) as truthy. Anything else
-/// — including unset — is falsy. Used by the wrangler version-gate
-/// escape hatch.
-fn env_truthy(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
-        Err(_) => false,
+/// — including unset / missing — is falsy. The lookup is delegated to
+/// `getter` so tests can drive the function without touching process
+/// environment (which is `unsafe` under Rust 2024).
+fn env_truthy<F>(name: &str, getter: F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match getter(name) {
+        Some(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        None => false,
     }
 }
 
@@ -1190,10 +1196,21 @@ mod tests {
             ("", false),
             ("nope", false),
         ] {
-            std::env::set_var(key, value);
-            assert_eq!(env_truthy(key), expected, "value = {value:?}");
+            // Drive `env_truthy` via an injected getter rather than
+            // mutating the real process environment. `set_var` is
+            // `unsafe` under Rust 2024 because it races other threads
+            // reading the env table.
+            let v = value.to_string();
+            assert_eq!(
+                env_truthy(key, |_| Some(v.clone())),
+                expected,
+                "value = {value:?}",
+            );
         }
-        std::env::remove_var(key);
-        assert!(!env_truthy(key), "unset env var must be falsy");
+        // Unset = no value returned by the getter.
+        assert!(
+            !env_truthy(key, |_| None),
+            "unset env var must be falsy",
+        );
     }
 }
