@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 
 import ThemeToggle from "../components/theme-toggle";
 import "../styles/global.css";

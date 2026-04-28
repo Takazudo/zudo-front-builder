@@ -23,7 +23,7 @@
 // ## Synthetic `__paths__` endpoint
 //
 // The Rust build pipeline needs to evaluate non-literal `paths()` exports
-// (e.g. those that `await import("zfb/content")` and call `getCollection`)
+// (e.g. those that `await import("@takazudo/zfb/content")` and call `getCollection`)
 // at runtime against the running worker. To avoid a second miniflare
 // subprocess, the router exposes a synthetic internal endpoint:
 //
@@ -37,7 +37,7 @@
 // `/__paths__/` (the build pipeline rejects any route that conflicts).
 
 import { Hono } from "hono";
-import { setContentSnapshot } from "zfb/content";
+import { setContentSnapshot } from "@takazudo/zfb/content";
 
 import type { FrameworkAdapter } from "./framework.js";
 import type { ContentSnapshot } from "./snapshot.js";

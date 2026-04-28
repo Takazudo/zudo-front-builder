@@ -23,7 +23,7 @@ importers:
 
   crates/zfb-islands/npm:
     dependencies:
-      zfb:
+      '@takazudo/zfb':
         specifier: workspace:*
         version: link:../../../packages/zfb
     devDependencies:
@@ -146,6 +146,9 @@ importers:
         specifier: ^4.7.0
         version: 4.12.15
     devDependencies:
+      '@takazudo/zfb':
+        specifier: workspace:*
+        version: link:../zfb
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
@@ -155,9 +158,6 @@ importers:
       vitest:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
-      zfb:
-        specifier: workspace:*
-        version: link:../zfb
 
 packages:
 

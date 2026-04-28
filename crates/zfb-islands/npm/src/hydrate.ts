@@ -17,12 +17,12 @@
 // It walks every [data-zfb-island] element, decodes data-props, dispatches on
 // data-when (load|idle|visible), and calls the adapter shim's hydrateIsland.
 //
-// The data-when dispatch is delegated to scheduleHydrate from "zfb/runtime"
+// The data-when dispatch is delegated to scheduleHydrate from "@takazudo/zfb/runtime"
 // so the wrapper (Sub 4) and the runtime (Sub 3) share one source of truth
 // for visible|idle|load semantics.
 // =============================================================================
 
-import { scheduleHydrate } from "zfb/runtime";
+import { scheduleHydrate } from "@takazudo/zfb/runtime";
 
 /** Public surface so the bundle entry can re-export this if needed. */
 export interface HydrateIslandFn {
