@@ -1,5 +1,6 @@
-//! Shared helpers that wire the wave-2 outputs (`zfb_build::bundler` +
-//! `zfb_build::renderer`) into the `zfb build` and `zfb dev` commands.
+//! Shared helpers that wire the bundler and renderer
+//! (`zfb_build::bundler` + `zfb_build::renderer`) into the `zfb build`
+//! and `zfb dev` commands.
 //!
 //! This module deliberately does **not** spawn miniflare or call
 //! [`zfb_build::renderer::render_all`] directly. It owns the pure /
@@ -474,12 +475,6 @@ pub fn cfg_framework_to_render(f: crate::config::Framework) -> zfb_render::adapt
         crate::config::Framework::React => zfb_render::adapters::Framework::React,
     }
 }
-
-/// Suppress unused-import warning when the renderer module is consumed
-/// without `Segment` (kept here so future expansion of dynamic routes
-/// has a single import surface to grow).
-#[allow(dead_code)]
-fn _segment_marker(_: &Segment) {}
 
 #[cfg(test)]
 mod tests {

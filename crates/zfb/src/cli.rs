@@ -3,9 +3,9 @@
 //! The top-level [`Cli`] type holds the parsed clap state. Each subcommand
 //! variant in [`Command`] wraps a dedicated `*Args` struct so that command
 //! modules in `crate::commands` can take a single `&FooArgs` parameter rather
-//! than a long parameter list. Wave 2 agents must keep these struct shapes
-//! stable — adding fields is fine, but renaming or removing fields breaks the
-//! contract documented in each `commands/<name>.rs` stub.
+//! than a long parameter list. Keep these struct shapes stable — adding
+//! fields is fine, but renaming or removing fields is a contract break for
+//! each `commands/<name>.rs` handler.
 
 use std::path::PathBuf;
 

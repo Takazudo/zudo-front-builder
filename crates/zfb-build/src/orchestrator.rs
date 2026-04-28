@@ -150,7 +150,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // our purposes.
         let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
 
-        for change in changes {
+        let mut changes_iter = changes.into_iter();
+        loop {
+            let Some(change) = changes_iter.next() else {
+                break;
+            };
             let path: PathBuf = change.into();
             plan.record_trigger(path.clone());
 
@@ -159,9 +163,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             match class {
                 PathClass::Global => {
                     // Nuke and pave: every page, every sub-pipeline.
+                    // Drain the rest of the iterator into `triggers`
+                    // first so we don't lose the paths from later
+                    // changes in the same tick — the caller still
+                    // wants to know about them for logging.
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
                     full.triggers.push(path);
+                    for remaining in changes_iter {
+                        full.triggers.push(remaining.into());
+                    }
                     return full;
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {

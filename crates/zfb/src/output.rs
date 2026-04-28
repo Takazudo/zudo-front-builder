@@ -175,7 +175,43 @@ pub fn format_error(err: &anyhow::Error) -> String {
         .filter_map(|c| c.downcast_ref::<crate::diagnostics::FramedError>())
         .next()
     {
-        return crate::diagnostics::render_framed(&framed.0);
+        // Render the framed snippet, but also include any anyhow
+        // `.context(...)` messages from the rest of the chain so the
+        // caller's "while doing X" breadcrumbs aren't dropped. Dedupe
+        // by exact string equality so we don't repeat the framed
+        // header / its contained line.
+        let framed_text = crate::diagnostics::render_framed(&framed.0);
+        let mut seen = std::collections::HashSet::new();
+        for line in framed_text.lines() {
+            seen.insert(line.to_string());
+        }
+        let mut out = framed_text;
+        let mut extra: Vec<String> = Vec::new();
+        for cause in err.chain() {
+            // Skip the FramedError itself — its content is already
+            // rendered above.
+            if cause
+                .downcast_ref::<crate::diagnostics::FramedError>()
+                .is_some()
+            {
+                continue;
+            }
+            let msg = format!("{cause}");
+            if seen.insert(msg.clone()) {
+                extra.push(msg);
+            }
+        }
+        if !extra.is_empty() {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            for msg in extra {
+                out.push_str("  caused by: ");
+                out.push_str(&msg);
+                out.push('\n');
+            }
+        }
+        return out;
     }
 
     let mut chain = err.chain();
@@ -373,10 +409,17 @@ mod tests {
                 .context("rendering page");
 
         let rendered = format_error(&err);
-        // Framed renderer used → no `caused by:` chain shape.
+        // Framed renderer used → starts with the framed header.
         assert!(rendered.starts_with("error: kaboom\n"), "got:\n{rendered}");
         assert!(rendered.contains(" --> posts/intro.md:2:8\n"), "got:\n{rendered}");
-        assert!(!rendered.contains("caused by:"), "got:\n{rendered}");
+        // anyhow `.context(...)` messages are also surfaced — they
+        // were silently dropped before. The framed body does not
+        // already contain "rendering page", so it must show up under
+        // the standard `caused by:` shape.
+        assert!(
+            rendered.contains("caused by: rendering page"),
+            "expected context line preserved, got:\n{rendered}",
+        );
     }
 
     #[test]

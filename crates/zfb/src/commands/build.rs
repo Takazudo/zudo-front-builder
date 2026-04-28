@@ -6,17 +6,15 @@
 //! `args.outdir` is the production output directory (default `dist`).
 //! Resolved relative to the current working directory if not absolute.
 //!
-//! ## v1 → wave-3 transition
+//! ## Pipeline overview
 //!
-//! Earlier waves emitted a placeholder `<h1>zfb build (v1 stub)</h1>`
-//! page per static route. Wave 3 (T7) replaces that path with the real
-//! SSG-render pipeline, wiring the wave-2 outputs together:
+//! The build wires the underlying crates in this order:
 //!
 //! 1. [`zfb_router::Router::scan`] enumerates the route table.
 //! 2. [`crate::render_pipeline::build_prerender_map`] reads each TSX
-//!    page's `export const prerender = …` flag (T5) so SSR-only routes
+//!    page's `export const prerender = …` flag so SSR-only routes
 //!    skip the build-time render.
-//! 3. [`zfb_build::bundle`] (T3) produces the ESM worker bundle for
+//! 3. [`zfb_build::bundle`] produces the ESM worker bundle for
 //!    every page module and content collection in scope.
 //! 4. [`zfb_build::renderer::render_all`] (T6) spawns one long-lived
 //!    miniflare subprocess, drives a `GET` per concrete URL, and writes
@@ -121,7 +119,7 @@ struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     adapter_runner: &'a A,
 }
 
-/// Indirection seam over the heavy wave-2 calls (bundler + renderer).
+/// Indirection seam over the heavy bundler + renderer calls.
 ///
 /// Production wires this to [`DefaultRunner`] which calls the real
 /// [`zfb_build::bundle`] and [`zfb_build::renderer::render_all`]. Unit
@@ -144,7 +142,8 @@ trait BuildRunner {
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput>;
 }
 
-/// Production runner — straight pass-throughs to the real wave-2 APIs.
+/// Production runner — straight pass-throughs to the real bundler /
+/// renderer APIs.
 struct DefaultRunner;
 impl BuildRunner for DefaultRunner {
     fn bundle(
@@ -241,13 +240,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 
     // ZFB_DEBUG_SNAPSHOT telemetry probe.
     //
-    // The bundler still emits a placeholder empty `contentSnapshot`
-    // (wave 2 will fold the real one in), so to give users a way to
-    // monitor V8 RAM pressure today we materialise the snapshot here
-    // when the flag is set and let `build_snapshot` log a one-line
-    // summary to stderr. The result is discarded — this code path is
-    // strictly telemetry. Errors are non-fatal: a probe failure must
-    // not break the build.
+    // The bundler currently emits a placeholder empty
+    // `contentSnapshot`, so to give users a way to monitor V8 RAM
+    // pressure today we materialise the snapshot here when the flag
+    // is set and let `build_snapshot` log a one-line summary to
+    // stderr. The result is discarded — this code path is strictly
+    // telemetry. Errors are non-fatal: a probe failure must not
+    // break the build.
     //
     // See README.md "Limits" for the user-facing contract.
     maybe_probe_content_snapshot(project_root, config);

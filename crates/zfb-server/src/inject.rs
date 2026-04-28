@@ -31,17 +31,41 @@ pub const LIVERELOAD_TAG: &str = "<script src=\"/__zfb/livereload.js\"></script>
 /// extra script tag at the end, which is harmless in dev mode.
 pub fn inject_livereload(html: &str) -> String {
     // Find the byte offset of the LAST </body> match, case-insensitive.
-    // Walk the lowercase form to keep the match position aligned with
-    // the original bytes (ASCII tag, so byte positions match 1:1).
-    let needle = "</body>";
-    let lower = html.to_ascii_lowercase();
+    // We scan the bytes directly rather than allocating a full
+    // lowercase copy of the page — the previous implementation cost
+    // one full copy per page render in the dev server.
+    //
+    // The needle (`</body>`) is pure ASCII so byte-wise comparison is
+    // safe even when the surrounding HTML contains UTF-8: we never
+    // start a match in the middle of a multi-byte sequence (none of
+    // the bytes `<`, `/`, ASCII letters, `>` appear as continuation
+    // bytes in valid UTF-8).
+    let needle: &[u8] = b"</body>";
+    let bytes = html.as_bytes();
 
     let mut last: Option<usize> = None;
-    let mut search_from = 0usize;
-    while let Some(rel) = lower[search_from..].find(needle) {
-        let abs = search_from + rel;
-        last = Some(abs);
-        search_from = abs + needle.len();
+    if bytes.len() >= needle.len() {
+        let upper_bound = bytes.len() - needle.len();
+        let mut i = 0;
+        while i <= upper_bound {
+            if bytes[i] == b'<' {
+                let mut matches = true;
+                for (j, nb) in needle.iter().enumerate() {
+                    let hb = bytes[i + j];
+                    let hb_lc = if hb.is_ascii_uppercase() { hb + 32 } else { hb };
+                    if hb_lc != *nb {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    last = Some(i);
+                    i += needle.len();
+                    continue;
+                }
+            }
+            i += 1;
+        }
     }
 
     match last {
