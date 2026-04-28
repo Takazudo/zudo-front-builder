@@ -312,6 +312,25 @@ describe("scheduleHydrate", () => {
       expect(mount.mock.calls[1]![0]).toEqual({});
     });
 
+    it("falls back to {} props when data-props is a JSON array (not a record)", async () => {
+      // `typeof [] === "object"` so the old guard let arrays through.
+      // Arrays are not a valid props bag — we must reject them and
+      // hand the component an empty record instead.
+      const arrayProps = JSON.stringify([1, 2, 3]);
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='${arrayProps}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+      expect(mount.mock.calls[0]![0]).toEqual({});
+    });
+
     it("warns and skips elements whose component is missing from the manifest", async () => {
       document.body.innerHTML = `
         <div data-zfb-island="Mystery" data-props='{}' data-when="load"></div>
