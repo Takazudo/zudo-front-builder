@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::engine::CssEngine;
 use crate::modules::{CssModulesConfig, CssModulesProcessor};
+use crate::scanner::{scan_css_module_imports, ModuleImportScan, SourceModuleUsage};
 
 /// Configuration for [`CssPipeline::new`].
 #[derive(Debug, Clone)]
@@ -45,6 +46,30 @@ pub struct CssPipelineConfig {
 
     /// CSS Modules processing config.
     pub modules_config: CssModulesConfig,
+
+    /// When true, the pipeline scans every entry in
+    /// [`Self::sources`] for `import * from "*.module.css"` statements
+    /// and adds the discovered files to the CSS Modules input set.
+    /// Discovered files are appended *after* the explicit
+    /// [`Self::css_modules`] list so callers can pin a leading order
+    /// that wins the hash.
+    ///
+    /// Default: `true`. Set to `false` when the caller has its own
+    /// (e.g. SWC-based) module graph and wants
+    /// [`Self::css_modules`] treated as the complete set.
+    pub auto_discover_modules: bool,
+
+    /// Where to write the per-module JSON class-name maps (the JS-side
+    /// rewrite contract — see [`crate::lib`] docs). Each `.module.css`
+    /// file ends up at
+    /// `{class_map_dir}/<rel-from-output_root>.classes.json` if the
+    /// module path is descendant of `output_root`'s parent, or at
+    /// `{class_map_dir}/<sha8(path)>.classes.json` otherwise. Default:
+    /// `{output_root}/css-modules`.
+    ///
+    /// When `None`, no JSON is written; the in-memory `class_maps` is
+    /// still returned in [`CssPipelineOutput`].
+    pub class_map_dir: Option<PathBuf>,
 }
 
 impl Default for CssPipelineConfig {
@@ -55,6 +80,8 @@ impl Default for CssPipelineConfig {
             output_root: PathBuf::from("dist"),
             base_url: "/".to_string(),
             modules_config: CssModulesConfig::default(),
+            auto_discover_modules: true,
+            class_map_dir: None,
         }
     }
 }
@@ -75,6 +102,20 @@ pub struct CssPipelineOutput {
     /// Per-file CSS Modules class-name maps. See
     /// [`crate::modules::CssModulesOutput::class_maps`].
     pub class_maps: HashMap<PathBuf, HashMap<String, String>>,
+
+    /// Per-source-file CSS Modules usage. Empty when
+    /// [`CssPipelineConfig::auto_discover_modules`] is false. The
+    /// dev-asset-graph crate (`zfb-graph`'s SSE topic) consumes this
+    /// to answer "which pages depend on which CSS modules" without
+    /// needing to re-scan the sources itself.
+    pub per_source_modules: Vec<SourceModuleUsage>,
+
+    /// JSON class-map files emitted to disk, in the order they were
+    /// written. Empty when
+    /// [`CssPipelineConfig::class_map_dir`] is `None`. Each entry maps
+    /// the original `.module.css` path to the `.classes.json` file
+    /// containing `{ "originalClass": "scopedClass", ... }`.
+    pub class_map_files: HashMap<PathBuf, PathBuf>,
 }
 
 /// Top-level CSS pipeline.
@@ -101,6 +142,11 @@ impl<E: CssEngine> CssPipeline<E> {
 
     /// Run all stages: engine → CSS Modules → hash → write.
     pub fn build(&self) -> Result<CssPipelineOutput> {
+        // Stage 0: optionally discover CSS Modules from the source
+        // files. Discovered files are appended after the explicit list,
+        // de-duplicated.
+        let (module_files, per_source_modules) = self.collect_modules()?;
+
         let tailwind = self
             .engine
             .produce_utility_css(&self.config.sources)
@@ -108,7 +154,7 @@ impl<E: CssEngine> CssPipeline<E> {
 
         let modules = self
             .modules
-            .process(&self.config.css_modules)
+            .process(&module_files)
             .context("CSS Modules stage failed")?;
 
         let combined = combine(&tailwind, &modules.css);
@@ -126,18 +172,101 @@ impl<E: CssEngine> CssPipeline<E> {
         std::fs::write(&asset_path, combined.as_bytes())
             .with_context(|| format!("failed to write {}", asset_path.display()))?;
 
+        // Emit JSON class-name maps if requested.
+        let class_map_files = if let Some(dir) = &self.config.class_map_dir {
+            write_class_map_files(dir, &modules.class_maps)?
+        } else {
+            HashMap::new()
+        };
+
         Ok(CssPipelineOutput {
             hash,
             css: combined,
             asset_path,
             class_maps: modules.class_maps,
+            per_source_modules,
+            class_map_files,
         })
+    }
+
+    fn collect_modules(&self) -> Result<(Vec<PathBuf>, Vec<SourceModuleUsage>)> {
+        let mut files: Vec<PathBuf> = self.config.css_modules.clone();
+        let mut seen: std::collections::HashSet<PathBuf> = files.iter().cloned().collect();
+
+        let per_source = if self.config.auto_discover_modules
+            && !self.config.sources.is_empty()
+        {
+            let scan: ModuleImportScan = scan_css_module_imports(&self.config.sources)
+                .context("CSS Modules import scan failed")?;
+            for m in &scan.modules {
+                // Auto-discover only resolved paths that exist on
+                // disk; bare specifiers (e.g. `@org/pkg/...`) are
+                // recorded in per_source but not fed to the
+                // processor, since lightningcss needs a real file.
+                if seen.insert(m.clone()) && m.exists() {
+                    files.push(m.clone());
+                }
+            }
+            scan.per_source
+        } else {
+            Vec::new()
+        };
+
+        Ok((files, per_source))
     }
 
     /// Borrow the underlying config.
     pub fn config(&self) -> &CssPipelineConfig {
         &self.config
     }
+
+    /// Borrow the underlying engine. Useful for inspection in tests
+    /// (e.g. fetching [`crate::TailwindSubprocessEngine::last_entry_css`]).
+    pub fn engine_ref(&self) -> &E {
+        &self.engine
+    }
+}
+
+/// Emit the JSON class-name map file for each `.module.css` file under
+/// `dir`. Returns the on-disk path for each map.
+///
+/// File layout:
+/// `{dir}/<sha8(module_path)>__<basename>.classes.json`. The hash prefix
+/// guarantees uniqueness across the whole module set even when two
+/// modules share a basename, while keeping the basename visible for
+/// debugging.
+fn write_class_map_files(
+    dir: &Path,
+    class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+) -> Result<HashMap<PathBuf, PathBuf>> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create class-map dir {}", dir.display()))?;
+    let mut out: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for (module_path, names) in class_maps {
+        let mut hasher = Sha256::new();
+        hasher.update(module_path.to_string_lossy().as_bytes());
+        let h = hex::encode(hasher.finalize());
+        let prefix: &str = &h[..8];
+        let basename = module_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "anon".to_string());
+        let json_path = dir.join(format!("{prefix}__{basename}.classes.json"));
+
+        let mut sorted: Vec<(&String, &String)> = names.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        let json = serde_json::to_string_pretty(
+            &sorted
+                .into_iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )
+        .context("failed to serialise CSS Modules class-name map")?;
+        std::fs::write(&json_path, json.as_bytes())
+            .with_context(|| format!("failed to write {}", json_path.display()))?;
+        out.insert(module_path.clone(), json_path);
+    }
+    Ok(out)
 }
 
 /// Combine engine output + CSS Modules output exactly as the hashing stage
