@@ -19,6 +19,22 @@
 // `zfb/content`'s module-level snapshot bridge so any page module
 // importing `getCollection("...")` resolves from memory rather than
 // touching the Node `fs` API (the Worker runtime has no `fs`).
+//
+// ## Synthetic `__paths__` endpoint
+//
+// The Rust build pipeline needs to evaluate non-literal `paths()` exports
+// (e.g. those that `await import("zfb/content")` and call `getCollection`)
+// at runtime against the running worker. To avoid a second miniflare
+// subprocess, the router exposes a synthetic internal endpoint:
+//
+//   GET /__paths__/<percent-encoded-route-key>
+//
+// When a page registered at `route` has a `paths` export, the handler calls
+// it and returns the JSON-serialized array as `application/json`. If the
+// `paths` export is missing or throws, the response is a descriptive 500.
+// This endpoint is only meant for the build pipeline — it is safe to leave
+// registered in production because no user-authored route should start with
+// `/__paths__/` (the build pipeline rejects any route that conflicts).
 
 import { Hono } from "hono";
 import { setContentSnapshot } from "zfb/content";
@@ -55,12 +71,18 @@ export interface PageHeading {
  *   `application/xml` for `rss.xml.tsx`). Default is
  *   `text/html; charset=utf-8`. Cross-ref shipped #49.
  * - `headings`: optional list emitted by MDX (T4).
+ * - `paths`: optional dynamic-route enumerator. Called at build time by
+ *   the `__paths__` synthetic endpoint to produce the concrete URL list
+ *   for this route template. May be async. Returns an array of
+ *   `{ params, props? }` objects identical in shape to the Astro/zfb
+ *   `paths()` contract.
  */
 export interface PageModule {
   readonly default: (props: Record<string, unknown>) => unknown;
   readonly prerender?: boolean;
   readonly content_type?: string;
   readonly headings?: readonly PageHeading[];
+  readonly paths?: () => unknown[] | Promise<unknown[]>;
 }
 
 /**
@@ -132,6 +154,14 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
 
   const app = new Hono();
 
+  // Build a lookup map: Hono route pattern → PageDefinition, for the
+  // `__paths__` synthetic endpoint below. The map is keyed on the `route`
+  // string exactly as the caller supplied it (e.g. "/blog/:slug").
+  const pagesByRoute = new Map<string, PageDefinition>();
+  for (const page of opts.pages) {
+    pagesByRoute.set(page.route, page);
+  }
+
   for (const page of opts.pages) {
     app.get(page.route, async (c) => {
       const mod = await page.module();
@@ -153,6 +183,65 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       return c.body(html, 200, { "Content-Type": contentType });
     });
   }
+
+  // -------------------------------------------------------------------------
+  // Synthetic `/__paths__/<encoded-route-key>` endpoint.
+  //
+  // Called by the Rust build pipeline (crates/zfb/src/render_pipeline.rs)
+  // to evaluate non-literal `paths()` exports at runtime. The route key is
+  // the Hono pattern for the page (e.g. `/blog/:slug`) percent-encoded so
+  // it survives in the URL path segment. The response is a JSON array of
+  // `{ params, props? }` objects identical to the `paths()` contract.
+  //
+  // Pattern: `/__paths__/:routeKey{.+}` — the `{.+}` quantifier (Hono's
+  // regex-segment syntax) allows slashes inside the route key so
+  // `/blog/:slug` decodes correctly from `/__paths__/%2Fblog%2F%3Aslug`.
+  // -------------------------------------------------------------------------
+  app.get("/__paths__/:routeKey{.+}", async (c) => {
+    const encoded = c.req.param("routeKey");
+    let routeKey: string;
+    try {
+      routeKey = decodeURIComponent(encoded);
+    } catch {
+      return c.body(
+        `[zfb-runtime] /__paths__: invalid percent-encoding in route key "${encoded}"`,
+        400,
+        { "Content-Type": "text/plain; charset=utf-8" },
+      );
+    }
+
+    const page = pagesByRoute.get(routeKey);
+    if (!page) {
+      return c.body(
+        `[zfb-runtime] /__paths__: no page registered for route key "${routeKey}"`,
+        404,
+        { "Content-Type": "text/plain; charset=utf-8" },
+      );
+    }
+
+    const mod = await page.module();
+    if (typeof mod.paths !== "function") {
+      return c.body(
+        `[zfb-runtime] /__paths__: page module for "${routeKey}" has no paths() export`,
+        404,
+        { "Content-Type": "text/plain; charset=utf-8" },
+      );
+    }
+
+    let result: unknown;
+    try {
+      result = await mod.paths();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.body(`[zfb-runtime] /__paths__: paths() threw for "${routeKey}": ${msg}`, 500, {
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+    }
+
+    return c.body(JSON.stringify(result), 200, {
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  });
 
   // Hono's `app.fetch` returns `Response | Promise<Response>`. The
   // public router contract is unconditionally async; using an `async`

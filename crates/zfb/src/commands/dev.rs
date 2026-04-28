@@ -413,6 +413,10 @@ fn boot_dev_renderer(
         minify: false,
         esbuild_binary: None,
         mock_subprocess_output: None,
+        // Dev mode does not embed a content snapshot — runtime paths()
+        // evaluation is a build-mode feature. When dev mode starts the
+        // worker, `getCollection(...)` will see an empty snapshot.
+        content_snapshot_json: None,
     };
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
