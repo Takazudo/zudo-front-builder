@@ -68,8 +68,9 @@ pub use bundler::{
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
 pub use pipeline::{
     AssetEmitter, AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner,
-    DevAssetPipeline, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
-    ProductionAssetPipeline, ProductionEmitters, RenderedPage, RendererReloader,
+    DevAssetPipeline, DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
+    ProductionAssetPipeline, ProductionEmitters, ProdBuildContext, RelDistPath, RenderedPage,
+    RendererReloader,
 };
 pub use plan::{PageSelection, RebuildPlan};
 pub use policy::{classify_change, GranularityPolicy, PathClass};

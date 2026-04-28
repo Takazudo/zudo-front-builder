@@ -115,12 +115,12 @@ pub struct EmittedAsset {
     /// (e.g. `/assets/styles.css`). The pipeline replaces every match
     /// of this string in HTML bodies with the hashed equivalent.
     ///
-    /// Empty `stable_url` is allowed and means "skip HTML rewriting"
-    /// (the asset still gets a hashed filename, but no rendered HTML
-    /// references it). Useful for assets that are loaded by other
-    /// assets rather than by the rendered HTML — the rewrites for
-    /// those happen elsewhere.
-    pub stable_url: String,
+    /// `None` means "skip HTML rewriting": the asset still gets a
+    /// hashed filename, but no rendered HTML references it by this
+    /// stable URL. Useful for assets that are loaded by other assets
+    /// rather than by the rendered HTML — the rewrites for those
+    /// happen elsewhere.
+    pub stable_url: Option<String>,
 }
 
 /// Pluggable producer of an [`EmittedAsset`].
@@ -238,8 +238,8 @@ impl AssetPipeline for ProductionAssetPipeline {
             if let Some(em) = self.emitters.css.as_ref() {
                 if let Some(asset) = em.emit().context("production CSS emitter failed")? {
                     let hashed_url = ship_asset(ctx, &asset, AssetKind::Css, &mut outcome)?;
-                    if !asset.stable_url.is_empty() {
-                        rewrites.push((asset.stable_url, hashed_url));
+                    if let Some(stable) = asset.stable_url {
+                        rewrites.push((stable, hashed_url));
                     }
                     outcome.css_changed = true;
                 }
@@ -251,8 +251,8 @@ impl AssetPipeline for ProductionAssetPipeline {
             if let Some(em) = self.emitters.islands.as_ref() {
                 if let Some(asset) = em.emit().context("production islands emitter failed")? {
                     let hashed_url = ship_asset(ctx, &asset, AssetKind::Islands, &mut outcome)?;
-                    if !asset.stable_url.is_empty() {
-                        rewrites.push((asset.stable_url, hashed_url));
+                    if let Some(stable) = asset.stable_url {
+                        rewrites.push((stable, hashed_url));
                     }
                     outcome.islands_changed = true;
                 }
@@ -274,7 +274,7 @@ impl AssetPipeline for ProductionAssetPipeline {
         //    stable URLs could still nest.
         rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for r in rendered {
-            let dest = validate_output_path(&ctx.dist_root, &r.output_path)
+            let dest = validate_output_path(&ctx.dist_root, r.output_path.as_path())
                 .with_context(|| format!("while building page {:?}", r.page))?;
             let body = if rewrites.is_empty() {
                 r.html
@@ -415,14 +415,14 @@ fn ship_asset(
         )
     })?;
 
-    let hashed_url = if asset.stable_url.is_empty() {
+    let hashed_url = if let Some(ref stable) = asset.stable_url {
+        rewrite_url(stable, &asset.relative_path, &hashed_relative)
+    } else {
         // No stable URL declared — synthesise one from the relative
         // path so callers logging `hashed_asset_urls` still see something
         // actionable. Leading `/` for parity with the typical declared
         // form `/assets/styles.css`.
         format!("/{}", path_to_url(&hashed_relative))
-    } else {
-        rewrite_url(&asset.stable_url, &asset.relative_path, &hashed_relative)
     };
 
     outcome.hashed_asset_urls.push((kind, hashed_url.clone()));
@@ -499,7 +499,7 @@ fn path_to_url(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::{BuildContext, RenderedPage};
+    use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -609,7 +609,7 @@ mod tests {
     fn render_one(html: impl Into<String>, output: &str) -> RenderedPage {
         RenderedPage {
             page: pid(&format!("/p{output}")),
-            output_path: PathBuf::from(output.trim_start_matches('/')),
+            output_path: RelDistPath::new(output.trim_start_matches('/')).unwrap(),
             html: html.into(),
             content_type: None,
         }
@@ -651,7 +651,7 @@ mod tests {
             Ok(Some(EmittedAsset {
                 bytes: css_bytes.clone(),
                 relative_path: PathBuf::from("assets/styles.css"),
-                stable_url: "/assets/styles.css".into(),
+                stable_url: Some("/assets/styles.css".into()),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
@@ -709,7 +709,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -728,7 +728,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -748,7 +748,7 @@ mod tests {
                     Ok(Some(EmittedAsset {
                         bytes: css_b.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
-                        stable_url: "/assets/styles.css".into(),
+                        stable_url: Some("/assets/styles.css".into()),
                     }))
                 })),
                 islands: None,
@@ -770,14 +770,14 @@ mod tests {
             Ok(Some(EmittedAsset {
                 bytes: b"/* css */".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
-                stable_url: "/assets/styles.css".into(),
+                stable_url: Some("/assets/styles.css".into()),
             }))
         };
         let islands_emitter = || {
             Ok(Some(EmittedAsset {
                 bytes: b"// islands".to_vec(),
                 relative_path: PathBuf::from("assets/islands.js"),
-                stable_url: "/assets/islands.js".into(),
+                stable_url: Some("/assets/islands.js".into()),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
