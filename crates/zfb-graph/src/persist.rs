@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,8 +103,10 @@ impl ManifestDigest {
     ///
     /// `config_files` is the list of config-like files whose full
     /// byte content matters (e.g. `zfb.config.json`,
-    /// `zfb.config.ts`). Missing files are silently skipped — they
-    /// contribute no bytes. Paths may be absolute or relative to
+    /// `zfb.config.ts`). Missing files are folded in as
+    /// "cfg-missing:<rel_path>" so a presence/absence transition
+    /// flips the digest even if a sibling file with identical
+    /// content is present. Paths may be absolute or relative to
     /// `project_root`.
     pub fn compute(
         project_root: &Path,
@@ -122,15 +124,28 @@ impl ManifestDigest {
         cfg_paths.sort();
         cfg_paths.dedup();
         for p in &cfg_paths {
-            if let Ok(bytes) = fs::read(p) {
-                hasher.update(b"cfg:");
-                let rel = relativise(project_root, p);
-                hasher.update(rel.as_bytes());
-                hasher.update(b":");
-                hasher.update(&(bytes.len() as u64).to_le_bytes());
-                hasher.update(b":");
-                hasher.update(&bytes);
-                hasher.update(b"\n");
+            let rel = relativise(project_root, p);
+            match fs::read(p) {
+                Ok(bytes) => {
+                    hasher.update(b"cfg:");
+                    hasher.update(rel.as_bytes());
+                    hasher.update(b":");
+                    hasher.update(&(bytes.len() as u64).to_le_bytes());
+                    hasher.update(b":");
+                    hasher.update(&bytes);
+                    hasher.update(b"\n");
+                }
+                // File absent (or unreadable): still fingerprint the
+                // path so a presence/absence transition flips the
+                // digest. Without this, deleting `zfb.config.json`
+                // while keeping `zfb.config.ts` could produce the
+                // same digest as the inverse if the surviving file's
+                // content happens to match.
+                Err(_) => {
+                    hasher.update(b"cfg-missing:");
+                    hasher.update(rel.as_bytes());
+                    hasher.update(b"\n");
+                }
             }
         }
 
@@ -237,15 +252,29 @@ pub fn save_to_disk(
     buf.extend_from_slice(digest.as_bytes());
     buf.extend_from_slice(&body);
 
-    // Atomic-ish write: write to `path.tmp`, then rename. On the
-    // same filesystem rename is atomic on POSIX/Windows.
-    let tmp = path.with_extension("bin.tmp");
+    // Atomic-ish write: write to a per-process unique temp, then
+    // rename. On the same filesystem rename is atomic on
+    // POSIX/Windows. The PID + nanos suffix prevents two concurrent
+    // `zfb dev` processes from clobbering each other's temp file
+    // (e.g. user runs two dev sessions in the same project, or a
+    // future `zfb build` invocation runs alongside).
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("bin.tmp.{}.{}", std::process::id(), nanos));
     {
         let mut f = File::create(&tmp)?;
         f.write_all(&buf)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path)?;
+    if let Err(err) = fs::rename(&tmp, path) {
+        // Best-effort cleanup of the temp on rename failure so we
+        // don't leak a stray `.tmp.{pid}.{nanos}` if the destination
+        // FS rejected the rename.
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
     Ok(())
 }
 
@@ -425,6 +454,42 @@ mod tests {
         let d1 = ManifestDigest::compute(root, &watch, &cfgs).unwrap();
         let d2 = ManifestDigest::compute(root, &watch, &cfgs).unwrap();
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn missing_cfg_file_is_fingerprinted_not_silently_skipped() {
+        // Regression: deleting one config file while keeping a sibling
+        // with identical content must produce a different digest from
+        // the inverse arrangement. Without the "cfg-missing:<rel>"
+        // fold-in, both arrangements hash the same content twice and
+        // collide.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let json = root.join("zfb.config.json");
+        let ts = root.join("zfb.config.ts");
+        let watch: Vec<PathBuf> = vec![];
+        let cfgs = vec![
+            PathBuf::from("zfb.config.json"),
+            PathBuf::from("zfb.config.ts"),
+        ];
+
+        // Both files present, identical content.
+        std::fs::write(&json, b"same content").unwrap();
+        std::fs::write(&ts, b"same content").unwrap();
+        let both = ManifestDigest::compute(root, &watch, &cfgs).unwrap();
+
+        // Only JSON present.
+        std::fs::remove_file(&ts).unwrap();
+        let only_json = ManifestDigest::compute(root, &watch, &cfgs).unwrap();
+
+        // Only TS present (re-create TS, remove JSON).
+        std::fs::write(&ts, b"same content").unwrap();
+        std::fs::remove_file(&json).unwrap();
+        let only_ts = ManifestDigest::compute(root, &watch, &cfgs).unwrap();
+
+        assert_ne!(both, only_json, "both vs only-json must differ");
+        assert_ne!(both, only_ts, "both vs only-ts must differ");
+        assert_ne!(only_json, only_ts, "only-json vs only-ts must differ");
     }
 
     #[test]

@@ -26,8 +26,8 @@
 //!
 //! Tracked follow-up: the full harness (TSX compile + JS execution +
 //! layout wrapping + dual-framework byte-equality + snapshotting)
-//! belongs at the `zfb-build` orchestrator layer and is filed as a
-//! follow-up issue on the zfb repo.
+//! belongs at the `zfb-build` orchestrator layer. Tracked at
+//! https://github.com/Takazudo/zudo-front-builder/issues/63 .
 //!
 //! Route template syntax: `zfb-router` renders dynamic and catchall
 //! segments using `:name` / `:name*` (Astro / Express style), not the

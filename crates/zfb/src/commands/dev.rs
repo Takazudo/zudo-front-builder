@@ -148,23 +148,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_cache_path = project_root.join(".zfb").join("graph.bin");
     let manifest_digest = compute_manifest_digest(&project_root, &watch_roots);
     let initial_graph = load_persisted_graph(&graph_cache_path, manifest_digest.as_ref());
-    if initial_graph.is_none() {
-        // Best-effort: write the (currently empty) fresh graph so a
-        // crash before population still gives the next start a valid
-        // — if stale — header to invalidate against. Errors are
-        // logged and ignored: persistence is an optimisation, never
-        // a correctness gate.
-        if let Some(d) = manifest_digest.as_ref() {
-            if let Err(err) =
-                save_to_disk(&DependencyGraph::new(), d, &graph_cache_path)
-            {
-                output::warn(format!(
-                    "graph persistence: write to {} failed (ignored): {err:#}",
-                    graph_cache_path.display()
-                ));
-            }
-        }
-    }
+    // Note: we deliberately do NOT write a fresh empty graph here on
+    // a cache miss. If we did, a `zfb dev` killed before the
+    // orchestrator's first watcher tick would persist an empty graph
+    // tagged with the current digest — and the next cold start would
+    // happily reuse that empty cache as authoritative. Save only on
+    // shutdown (below), once the graph has actually been populated.
     let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();

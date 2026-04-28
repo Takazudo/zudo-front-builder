@@ -480,39 +480,70 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
 
 /// Extract a semver-shaped version string from `wrangler --version`'s
 /// banner. The current banner is roughly ` ⛅️ wrangler 4.85.0` — we
-/// scan whitespace-separated tokens for one whose leading characters
-/// look like `MAJOR.MINOR.PATCH`. A leading `v` (e.g. `v4.85.0`) is
-/// stripped, since other CLIs in the ecosystem emit that prefix even
-/// though wrangler does not today — keeping the parser tolerant
+/// look for a version-shaped token *immediately following* a literal
+/// `wrangler` token, then fall back to the first version-shaped token
+/// in the output. The "wrangler-prefix" preference is what makes the
+/// parser robust against banners that mention other version-shaped
+/// strings (e.g. a copyright date or "[pre-release of 4.x.y]" remark)
+/// before the real wrangler version. A leading `v` (e.g. `v4.85.0`)
+/// is stripped, since other CLIs in the ecosystem emit that prefix
+/// even though wrangler does not today — keeping the parser tolerant
 /// future-proofs against an upstream banner reshuffle. Returns `None`
 /// if no token matches, which the caller turns into a "could not
 /// parse" error.
 fn parse_wrangler_version(stdout: &str) -> Option<String> {
-    for raw_token in stdout.split_whitespace() {
-        // Trim leading/trailing punctuation (e.g. parens, commas) before
-        // poking at the body; this matters for the leading-`v` step
-        // below, which only fires when `v` is the very first character.
-        let token = raw_token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-        let body = token.strip_prefix('v').unwrap_or(token);
-        let mut parts = body.splitn(3, '.');
-        let (Some(maj), Some(min), Some(patch)) = (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        if maj.chars().all(|c| c.is_ascii_digit())
-            && min.chars().all(|c| c.is_ascii_digit())
-            && !maj.is_empty()
-            && !min.is_empty()
-            && !patch.is_empty()
-            && patch
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-        {
-            return Some(body.to_string());
+    let tokens: Vec<&str> = stdout.split_whitespace().collect();
+
+    // First pass: prefer a version-shaped token that immediately
+    // follows a literal `wrangler` token. This anchors the match to
+    // the banner's actual wrangler-version field.
+    for window in tokens.windows(2) {
+        if let [prev, candidate] = window {
+            if prev
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .eq_ignore_ascii_case("wrangler")
+            {
+                if let Some(v) = version_shape(candidate) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+
+    // Fallback: any version-shaped token. Tolerated for safety on
+    // unforeseen banner reshuffles.
+    for raw_token in &tokens {
+        if let Some(v) = version_shape(raw_token) {
+            return Some(v);
         }
     }
     None
+}
+
+/// Return `Some(version_string)` if `raw_token`'s body matches
+/// `MAJOR.MINOR.PATCH...`. Strips a leading `v` and surrounding
+/// non-alphanumerics. Returns the body without the `v` prefix.
+fn version_shape(raw_token: &str) -> Option<String> {
+    let token = raw_token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let body = token.strip_prefix('v').unwrap_or(token);
+    let mut parts = body.splitn(3, '.');
+    let (Some(maj), Some(min), Some(patch)) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    if maj.chars().all(|c| c.is_ascii_digit())
+        && min.chars().all(|c| c.is_ascii_digit())
+        && !maj.is_empty()
+        && !min.is_empty()
+        && !patch.is_empty()
+        && patch
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+    {
+        Some(body.to_string())
+    } else {
+        None
+    }
 }
 
 /// Treat `1`, `true`, `yes` (case-insensitive) as truthy. Anything else
@@ -1120,6 +1151,30 @@ mod tests {
         // Two-segment "version" (e.g. `4.85`) is not a valid semver
         // shape — we require all three of MAJOR.MINOR.PATCH.
         assert_eq!(parse_wrangler_version("wrangler 4.85"), None);
+    }
+
+    #[test]
+    fn parse_wrangler_version_prefers_token_after_wrangler_literal() {
+        // Defensive: if a banner mentions a version-shaped string
+        // before `wrangler 4.85.0` (a copyright date, a prerelease
+        // remark, etc.), the version after the literal `wrangler`
+        // token must win — not the first version-shaped token.
+        let stdout = "Copyright 2024.10.0 Cloudflare. ⛅️ wrangler 4.85.0";
+        assert_eq!(
+            parse_wrangler_version(stdout).as_deref(),
+            Some("4.85.0"),
+            "must anchor on the token immediately after `wrangler`",
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_falls_back_when_no_wrangler_literal() {
+        // No `wrangler` token in the banner — fall back to the first
+        // version-shaped token. Keeps bare-version shims working.
+        assert_eq!(
+            parse_wrangler_version("4.85.0\n").as_deref(),
+            Some("4.85.0"),
+        );
     }
 
     #[test]
