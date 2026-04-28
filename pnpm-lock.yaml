@@ -17,9 +17,6 @@ importers:
       prettier:
         specifier: ^3.8.3
         version: 3.8.3
-      workerd:
-        specifier: 1.20260424.1
-        version: 1.20260424.1
       wrangler:
         specifier: 4.85.0
         version: 4.85.0
