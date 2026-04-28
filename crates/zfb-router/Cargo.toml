@@ -8,6 +8,7 @@ description = "zfb router: scans pages directories and builds a sorted file-base
 [lib]
 
 [dependencies]
+zfb-types = { path = "../zfb-types" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
