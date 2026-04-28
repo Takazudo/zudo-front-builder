@@ -8,6 +8,9 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 [lib]
 
 [dependencies]
+# Canonical shared types (Segment, etc.).
+zfb-types = { path = "../zfb-types" }
+
 # Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
 # `mdx://` specifiers through `mdx_to_jsx_module` before handing the
 # resulting JSX text to the SWC pipeline below.

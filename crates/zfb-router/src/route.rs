@@ -4,31 +4,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// A single segment of a route template, parsed from a path component.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Segment {
-    /// Literal text that must match exactly. e.g. `about` in `/about`.
-    Static(String),
-    /// Single-segment dynamic parameter from `[name].tsx`. The string is the
-    /// parameter name (no brackets).
-    Dynamic(String),
-    /// Catchall (rest) parameter from `[...name].tsx`. Matches one or more
-    /// trailing segments. Only allowed as the final segment of a route.
-    Catchall(String),
-}
-
-impl Segment {
-    /// Render this segment using the canonical `:name` / `:name*` template
-    /// syntax (Astro / Express style). Used for ambiguity detection and for
-    /// human-readable diagnostics.
-    pub fn template(&self) -> String {
-        match self {
-            Segment::Static(s) => s.clone(),
-            Segment::Dynamic(name) => format!(":{name}"),
-            Segment::Catchall(name) => format!(":{name}*"),
-        }
-    }
-}
+// Re-export the canonical Segment type from zfb-types so external callers
+// import from zfb_router::Segment as before without a breaking path change.
+pub use zfb_types::Segment;
 
 /// The kind of a route, used for sorting (static beats dynamic beats catchall).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

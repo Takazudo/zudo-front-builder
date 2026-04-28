@@ -1,0 +1,10 @@
+[package]
+name = "zfb-diagnostics"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb-diagnostics: structured framed error display for the zfb framework"
+
+[dependencies]
+anyhow = { workspace = true }
+owo-colors = { version = "4", features = ["supports-colors"] }
