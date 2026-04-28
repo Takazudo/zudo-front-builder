@@ -35,3 +35,4 @@ zfb-watcher = { path = "../zfb-watcher" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
