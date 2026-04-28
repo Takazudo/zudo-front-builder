@@ -13,7 +13,7 @@
 //!    sync with config-shape evolutions.
 //! 2. **Walks every collection** declared in
 //!    `config.collections[]`. For each entry it parses the frontmatter
-//!    via [`zfb_content::extract_frontmatter`] and validates the
+//!    via [`zfb_content::frontmatter::extract`] and validates the
 //!    resulting JSON value against the per-collection JSON Schema
 //!    (`collections[].schema`) using [`zfb_content::schema::validate`].
 //! 3. **Invokes `tsc --noEmit`** as a subprocess. Resolution order:

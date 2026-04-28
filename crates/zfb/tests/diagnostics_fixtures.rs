@@ -60,7 +60,7 @@ fn no_color() {
 fn frontmatter_yaml_error_frames_offending_line() {
     no_color();
     let (path, src) = fixture("frontmatter-bad-yaml.md");
-    let err = zfb_content::extract_frontmatter(&path, &src).expect_err("must fail");
+    let err = zfb_content::frontmatter::extract(&path, &src).expect_err("must fail");
     let diag = from_frontmatter_error(&path, &src, &err);
     let out = strip_ansi(&render_framed(&diag));
 
