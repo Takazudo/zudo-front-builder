@@ -70,9 +70,9 @@ use zfb_router::{Route, RouteKind, Segment};
 /// Carries enough metadata for [`expand_dynamic_routes`] to:
 ///
 /// 1. Read the source file and try static `paths()` extraction.
-/// 2. Convert the parsed segments to
-///    [`zfb_render::paths::Segment`] so [`zfb_render::paths::resolve_paths`]
-///    can reassemble the URLs.
+/// 2. Pass the segments (now shared [`zfb_types::Segment`], re-exported
+///    by both `zfb_router` and `zfb_render`) to
+///    [`zfb_render::paths::resolve_paths`] for URL reassembly.
 /// 3. Honour the route's filename-convention `output_extension` when
 ///    deriving each resolved entry's output path (e.g. a dynamic
 ///    `[slug].xml.tsx` should still produce `<slug>.xml`, not
@@ -269,7 +269,7 @@ fn try_expand_one(
     let segs: Vec<PathsSegment> = route
         .segments
         .iter()
-        .map(router_segment_to_paths_segment)
+        .cloned()
         .collect();
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
@@ -286,19 +286,6 @@ fn try_expand_one(
         });
     }
     Ok(out)
-}
-
-/// Convert a `zfb_router::Segment` (the canonical router segment) into
-/// the local stub used by [`zfb_render::paths::Segment`]. The variants
-/// match exactly today; the conversion exists because `zfb-render` does
-/// not depend on `zfb-router` (per the deliberate cyclical-dep
-/// avoidance in the workspace layout).
-fn router_segment_to_paths_segment(seg: &Segment) -> PathsSegment {
-    match seg {
-        Segment::Static(s) => PathsSegment::Static(s.clone()),
-        Segment::Dynamic(name) => PathsSegment::Dynamic(name.clone()),
-        Segment::Catchall(name) => PathsSegment::Catchall(name.clone()),
-    }
 }
 
 /// Compute the on-disk output path for a resolved dynamic URL, mirroring
@@ -490,7 +477,7 @@ fn eval_one_deferred_path(
     let segs: Vec<PathsSegment> = route
         .segments
         .iter()
-        .map(router_segment_to_paths_segment)
+        .cloned()
         .collect();
 
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
