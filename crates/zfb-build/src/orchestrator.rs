@@ -144,10 +144,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         P2: Into<PathBuf>,
     {
         let mut plan = RebuildPlan::empty();
-        let graph = self
-            .graph
-            .lock()
-            .expect("BuildOrchestrator::graph mutex poisoned");
+        // Recover from poisoning rather than crashing the long-running
+        // dev loop: a panicked previous holder leaves the mutex
+        // poisoned, but the graph data itself is still consistent for
+        // our purposes.
+        let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
 
         for change in changes {
             let path: PathBuf = change.into();
@@ -206,10 +207,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// pipeline.
     fn resolve_all(&self, plan: &mut RebuildPlan) {
         if plan.pages.is_all() {
-            let graph = self
-                .graph
-                .lock()
-                .expect("BuildOrchestrator::graph mutex poisoned");
+            let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
             let pages: std::collections::BTreeSet<_> = graph.pages().into_iter().collect();
             plan.pages = PageSelection::Specific(pages);
         }
