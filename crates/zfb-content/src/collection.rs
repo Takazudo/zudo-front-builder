@@ -11,11 +11,13 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
 use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
 use crate::pipeline::{Pipeline, PipelineError};
+use crate::schema::json_schema_to_ts;
 
 /// Source kind for an [`Entry`]. Discriminator on the union of file
 /// shapes a collection may contain — used by downstream consumers (e.g.
@@ -269,6 +271,60 @@ where
 /// declarations referenced from there are present in the emitted
 /// `.d.ts`. Running `tsc` against the pair would produce no errors.
 pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), CollectionError> {
+    let collections: Vec<CollectionTypeInfo<'_>> = collection_names
+        .iter()
+        .map(|name| CollectionTypeInfo {
+            name,
+            schema: None,
+        })
+        .collect();
+    emit_types_dts_with_schemas(out_path, &collections)
+}
+
+/// Per-collection input to [`emit_types_dts_with_schemas`].
+///
+/// `schema` is an optional JSON Schema describing the frontmatter shape
+/// for this collection. When `None`, the emitter falls back to the v1
+/// `data: Record<string, unknown>` shape — backward compatible with
+/// projects that haven't declared a schema. When `Some`, the schema is
+/// converted (via [`crate::schema::json_schema_to_ts`]) into a precise
+/// inline TypeScript type.
+///
+/// Recognised JSON Schema dialect: `type` (string / number / integer /
+/// boolean / array / object / null, or an array of these), `items`,
+/// `properties`, `required`, `enum`. See
+/// [`crate::schema`] for the full conversion rules.
+#[derive(Debug, Clone)]
+pub struct CollectionTypeInfo<'a> {
+    pub name: &'a str,
+    pub schema: Option<&'a JsonValue>,
+}
+
+/// Generate a TypeScript `.d.ts` file with PRECISE per-collection types.
+///
+/// Same overall shape as [`emit_types_dts`] (two `declare module`
+/// blocks: `zfb-collections` and `zfb/content`), but the `data` field
+/// for each collection is rendered from the supplied JSON Schema instead
+/// of the catch-all `Record<string, unknown>`. Collections whose schema
+/// is `None` keep the v1 `Record<string, unknown>` shape so the call
+/// sites that have no schema yet stay green.
+///
+/// Example output (one schema-typed, one untyped):
+///
+/// ```ts
+/// declare module "zfb/content" {
+///   export interface ZfbCollections {
+///     docs: { slug: string; data: { title: string; sidebar_position?: number }; body: string };
+///     blog: { slug: string; data: Record<string, unknown>; body: string };
+///   }
+///   export function getCollection<K extends keyof ZfbCollections>(name: K): ZfbCollections[K][];
+///   export function getEntry<K extends keyof ZfbCollections>(name: K, slug: string): ZfbCollections[K] | undefined;
+/// }
+/// ```
+pub fn emit_types_dts_with_schemas(
+    out_path: &Path,
+    collections: &[CollectionTypeInfo<'_>],
+) -> Result<(), CollectionError> {
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|e| CollectionError::Io {
@@ -285,9 +341,11 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
     // break. Sub 48 (#48) added the second module below.
     buf.push_str("declare module \"zfb-collections\" {\n");
     buf.push_str("  export interface Collections {\n");
-    for name in collection_names {
+    for info in collections {
+        let data_ts = data_type_for(info.schema, 4);
         buf.push_str(&format!(
-            "    {name}: {{ slug: string; data: Record<string, unknown> }};\n"
+            "    {name}: {{ slug: string; data: {data_ts} }};\n",
+            name = info.name,
         ));
     }
     buf.push_str("  }\n");
@@ -297,16 +355,14 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
     buf.push_str("}\n");
 
     // New `zfb/content` module — the bridge surface specified in #48.
-    // Mirrors `globalThis.__zfb.content.get(name)` /
-    // `globalThis.__zfb.content.getOne(name, slug)`. See
-    // `docs/architecture/adr-004-content-bridge.md` for the full
-    // contract.
     buf.push('\n');
     buf.push_str("declare module \"zfb/content\" {\n");
     buf.push_str("  export interface ZfbCollections {\n");
-    for name in collection_names {
+    for info in collections {
+        let data_ts = data_type_for(info.schema, 4);
         buf.push_str(&format!(
-            "    {name}: {{ slug: string; data: Record<string, unknown>; body: string }};\n"
+            "    {name}: {{ slug: string; data: {data_ts}; body: string }};\n",
+            name = info.name,
         ));
     }
     buf.push_str("  }\n");
@@ -328,6 +384,13 @@ pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), 
             source: e,
         })?;
     Ok(())
+}
+
+fn data_type_for(schema: Option<&JsonValue>, indent: usize) -> String {
+    match schema {
+        Some(s) => json_schema_to_ts(s, indent),
+        None => "Record<string, unknown>".to_string(),
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -905,5 +968,114 @@ declare module \"zfb/content\" {\n\
                 "expected {needle:?} in sample.ts:\n{sample}",
             );
         }
+    }
+
+    /// `emit_types_dts_with_schemas` emits per-collection precise
+    /// interfaces when a JSON Schema is supplied, and falls back to
+    /// `Record<string, unknown>` when it isn't.
+    #[test]
+    fn emit_types_dts_with_schemas_produces_precise_data_field() {
+        let tmp = TmpDir::new("dts-precise");
+        let out = tmp.path().join("types.d.ts");
+
+        let docs_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "sidebar_position": { "type": "number" },
+                "draft": { "type": "boolean" },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["title"]
+        });
+        let collections = vec![
+            CollectionTypeInfo {
+                name: "docs",
+                schema: Some(&docs_schema),
+            },
+            CollectionTypeInfo {
+                name: "blog",
+                schema: None,
+            },
+        ];
+        emit_types_dts_with_schemas(&out, &collections).unwrap();
+        let s = fs::read_to_string(&out).unwrap();
+
+        // docs: precise — title required, sidebar_position optional number.
+        assert!(s.contains("title: string;"), "docs schema: {s}");
+        assert!(
+            s.contains("sidebar_position?: number;"),
+            "docs schema (optional number): {s}",
+        );
+        assert!(s.contains("draft?: boolean;"), "docs schema (optional boolean): {s}");
+        assert!(s.contains("tags?: string[];"), "docs schema (array): {s}");
+
+        // blog: no schema → falls back to Record<string, unknown>.
+        assert!(
+            s.contains("blog: { slug: string; data: Record<string, unknown>; body: string };"),
+            "blog should keep v1 shape: {s}",
+        );
+
+        // Both module surfaces still present.
+        assert!(s.contains("declare module \"zfb-collections\""));
+        assert!(s.contains("declare module \"zfb/content\""));
+    }
+
+    /// Snapshot test: pin the precise emitted `.d.ts` for the two-collection
+    /// fixture used in the brief (`docs` + `blog`). This is the textual
+    /// contract zudo-doc's port consumes.
+    #[test]
+    fn emit_types_dts_with_schemas_matches_golden() {
+        let tmp = TmpDir::new("dts-precise-golden");
+        let out = tmp.path().join("types.d.ts");
+
+        let docs_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "sidebar_position": { "type": "number" }
+            },
+            "required": ["title"]
+        });
+        let blog_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "date": { "type": "string" },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["title", "date"]
+        });
+        let collections = vec![
+            CollectionTypeInfo {
+                name: "docs",
+                schema: Some(&docs_schema),
+            },
+            CollectionTypeInfo {
+                name: "blog",
+                schema: Some(&blog_schema),
+            },
+        ];
+        emit_types_dts_with_schemas(&out, &collections).unwrap();
+        let actual = fs::read_to_string(&out).unwrap();
+
+        // The interface line per collection is the contract; pin both.
+        // serde_json's default `Map` is a `BTreeMap`, so property
+        // iteration is alphabetical — that's deterministic across runs
+        // and good enough for the golden contract. (If we ever want
+        // document-order keys, flip on serde_json's `preserve_order`
+        // feature; the data-shape contract here doesn't depend on it.)
+        assert!(
+            actual.contains(
+                "docs: { slug: string; data: {\n      sidebar_position?: number;\n      title: string;\n    }; body: string };"
+            ),
+            "docs interface drifted:\n{actual}",
+        );
+        assert!(
+            actual.contains(
+                "blog: { slug: string; data: {\n      date: string;\n      tags?: string[];\n      title: string;\n    }; body: string };"
+            ),
+            "blog interface drifted:\n{actual}",
+        );
     }
 }
