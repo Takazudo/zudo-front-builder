@@ -50,17 +50,17 @@ use serde_json::Value;
 
 /// User-authored meta. Everything is optional — pages without a meta
 /// export still work.
+///
+/// Unknown top-level fields are rejected at parse time
+/// (`#[serde(deny_unknown_fields)]`) so that frontmatter typos surface
+/// as errors instead of being silently dropped.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PageMeta {
     pub title: Option<String>,
     pub description: Option<String>,
     /// Path or specifier (e.g. `"@/layouts/blog"` or `"../layouts/blog"`).
     pub layout: Option<String>,
-    /// All other fields preserved as raw JSON for the layout to consume
-    /// freely (e.g. `openGraph`, custom flags).
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, Value>,
 }
 
 /// A [`PageMeta`] paired with its resolved layout file path.
@@ -424,7 +424,6 @@ mod tests {
         let parsed = parse_meta(None).unwrap();
         assert!(parsed.title.is_none());
         assert!(parsed.layout.is_none());
-        assert!(parsed.extra.is_empty());
     }
 
     #[test]
@@ -444,19 +443,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_meta_preserves_extra_fields() {
+    fn parse_meta_unknown_fields_are_rejected() {
+        // deny_unknown_fields: unknown keys must surface as an error
+        // rather than being silently swallowed. This catches frontmatter
+        // typos (e.g. `titel` instead of `title`) that would otherwise
+        // produce a confusingly empty page title.
         let v = json!({
             "title": "Hello",
             "openGraph": { "image": "/og.png" },
             "draft": true,
         });
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(_) => {}
+            other => unreachable!("expected InvalidShape for unknown field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_meta_known_fields_accepted() {
+        // All three known fields can round-trip together.
+        let v = json!({
+            "title": "Hello",
+            "description": "A page",
+            "layout": "@/layouts/blog",
+        });
         let parsed = parse_meta(Some(&v)).unwrap();
         assert_eq!(parsed.title.as_deref(), Some("Hello"));
-        assert_eq!(
-            parsed.extra.get("openGraph"),
-            Some(&json!({ "image": "/og.png" })),
-        );
-        assert_eq!(parsed.extra.get("draft"), Some(&json!(true)));
+        assert_eq!(parsed.description.as_deref(), Some("A page"));
+        assert_eq!(parsed.layout.as_deref(), Some("@/layouts/blog"));
     }
 
     #[test]
@@ -768,7 +783,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_then_resolve_with_extra_fields_kept_in_resolved() {
+    fn parse_then_resolve_known_fields_round_trip() {
+        // With deny_unknown_fields in place, only the three declared fields
+        // are legal. This verifies the parse+resolve path for a valid meta
+        // with all three fields set.
         let dir = project_skeleton();
         let root = dir.path();
         let layout = root.join("layouts/blog.tsx");
@@ -777,7 +795,6 @@ mod tests {
         let v = json!({
             "title": "Post",
             "layout": "@/layouts/blog",
-            "openGraph": { "image": "/og.png" },
         });
         let meta = parse_meta(Some(&v)).unwrap();
         let page = root.join("pages/blog/[slug].tsx");
@@ -785,10 +802,27 @@ mod tests {
 
         assert_eq!(resolved.meta.title.as_deref(), Some("Post"));
         assert_eq!(resolved.layout_path.as_deref(), Some(layout.as_path()));
-        assert_eq!(
-            resolved.meta.extra.get("openGraph"),
-            Some(&json!({ "image": "/og.png" })),
-        );
+    }
+
+    #[test]
+    fn parse_then_resolve_unknown_field_rejected() {
+        // deny_unknown_fields: a frontmatter object with an unrecognised key
+        // must fail at parse time so the page author sees an explicit error
+        // rather than a mysteriously empty title / layout.
+        let dir = project_skeleton();
+        let root = dir.path();
+
+        let v = json!({
+            "title": "Post",
+            "layout": "@/layouts/blog",
+            "openGraph": { "image": "/og.png" },
+        });
+        let err = parse_meta(Some(&v)).unwrap_err();
+        match err {
+            MetaError::InvalidShape(_) => {}
+            other => unreachable!("expected InvalidShape, got {other:?}"),
+        }
+        let _ = root; // keep alive
     }
 
     // ---- is_within --------------------------------------------------------

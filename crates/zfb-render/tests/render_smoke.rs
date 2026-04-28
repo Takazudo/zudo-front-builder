@@ -11,6 +11,7 @@
 //! synthetic `<source>/jsx-runtime` import injected), and emits the expected
 //! HTML the way a real adapter eventually will.
 
+use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use zfb_render::{JsxRuntime, ModuleHandle, RenderHost, RenderRequest, Renderer, Result};
 
@@ -27,15 +28,16 @@ impl TestHost {
     }
 }
 
+#[async_trait(?Send)]
 impl RenderHost for TestHost {
-    fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle> {
+    async fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle> {
         let handle =
             ModuleHandle::new(self.last_module.as_ref().map_or(0, |(h, _)| h.id + 1), name);
         self.last_module = Some((handle.clone(), source.to_string()));
         Ok(handle)
     }
 
-    fn call_default(&mut self, _handle: &ModuleHandle, _props: JsonValue) -> Result<String> {
+    async fn call_default(&mut self, _handle: &ModuleHandle, _props: JsonValue) -> Result<String> {
         let (_h, src) = self
             .last_module
             .as_ref()
@@ -53,13 +55,13 @@ impl RenderHost for TestHost {
         Ok("<div>hello smoke</div>".to_string())
     }
 
-    fn get_export(&mut self, _handle: &ModuleHandle, _name: &str) -> Result<JsonValue> {
+    async fn get_export(&mut self, _handle: &ModuleHandle, _name: &str) -> Result<JsonValue> {
         Ok(JsonValue::Null)
     }
 }
 
-#[test]
-fn renders_tiny_tsx_page_to_html() {
+#[tokio::test]
+async fn renders_tiny_tsx_page_to_html() {
     let host = TestHost::new();
     let mut renderer = Renderer::new(host, JsxRuntime::Preact);
 
@@ -68,7 +70,7 @@ fn renders_tiny_tsx_page_to_html() {
         "export default function Page(): string {\n  return <div>hello smoke</div>;\n}\n",
     );
 
-    let html = renderer.render(&req).expect("render ok");
+    let html = renderer.render(&req).await.expect("render ok");
     assert!(
         html.contains("<div>"),
         "expected output to contain <div>, got: {html}"
@@ -79,8 +81,8 @@ fn renders_tiny_tsx_page_to_html() {
     );
 }
 
-#[test]
-fn cache_is_populated_after_render() {
+#[tokio::test]
+async fn cache_is_populated_after_render() {
     let host = TestHost::new();
     let mut renderer = Renderer::new(host, JsxRuntime::Preact);
 
@@ -89,6 +91,6 @@ fn cache_is_populated_after_render() {
         "export default function Page() { return <span/>; }\n",
     );
 
-    let _ = renderer.render(&req).expect("render ok");
+    let _ = renderer.render(&req).await.expect("render ok");
     assert_eq!(renderer.loader().cache_len(), 1);
 }

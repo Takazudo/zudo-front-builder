@@ -57,6 +57,90 @@ use std::path::{Path, PathBuf};
 use zfb_content::mdx_jsx_emit::{mdx_to_jsx_module, MdxJsxOptions};
 
 use crate::error::{RenderError, Result};
+
+// ---------------------------------------------------------------------------
+// ResolverError — typed error for file-read operations
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur when the loader tries to read a source file from
+/// disk, distinct from compile-time or runtime failures.
+///
+/// Callers that match on [`RenderError::Io`] lose the distinction between
+/// "the file simply wasn't there" (`NotFound`) and "the file existed but
+/// couldn't be decoded" (`BadEncoding`). `ResolverError` preserves that
+/// distinction so consumers can give actionable diagnostics.
+///
+/// `ResolverError` is automatically converted to [`RenderError`] by
+/// [`ModuleLoader::load_file`]; direct callers only need this type when
+/// they want to distinguish the variants before the error bubbles up.
+#[derive(Debug, thiserror::Error)]
+pub enum ResolverError {
+    /// The requested path does not exist on disk.
+    #[error("file not found: {path}")]
+    NotFound {
+        /// The path that was not found.
+        path: PathBuf,
+    },
+    /// An I/O error other than ENOENT occurred while reading the file.
+    #[error("i/o error reading {path}: {source}")]
+    Io {
+        /// The path being read when the error occurred.
+        path: PathBuf,
+        /// The underlying OS error.
+        source: std::io::Error,
+    },
+    /// The file content is not valid UTF-8.
+    #[error("bad encoding in {path}: file is not valid UTF-8")]
+    BadEncoding {
+        /// The path of the file with the encoding problem.
+        path: PathBuf,
+    },
+}
+
+impl From<ResolverError> for RenderError {
+    fn from(e: ResolverError) -> Self {
+        match e {
+            ResolverError::NotFound { path } => {
+                RenderError::Resolve {
+                    specifier: path.to_string_lossy().into_owned(),
+                    importer: String::new(),
+                    line: None,
+                    col: None,
+                    tried: vec![path.to_string_lossy().into_owned()],
+                }
+            }
+            ResolverError::Io { path, source } => RenderError::Other(format!(
+                "i/o error reading {}: {source}",
+                path.display()
+            )),
+            ResolverError::BadEncoding { path } => RenderError::Other(format!(
+                "file is not valid UTF-8: {}",
+                path.display()
+            )),
+        }
+    }
+}
+
+/// Read `path` to a `String`, returning a typed [`ResolverError`] that
+/// distinguishes `NotFound`, generic I/O failures, and encoding problems.
+///
+/// This is the single place all file reads go through so the rest of the
+/// loader can pattern-match on the error kind when it matters.
+pub fn read_to_string(path: &Path) -> std::result::Result<String, ResolverError> {
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| ResolverError::BadEncoding {
+            path: path.to_owned(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ResolverError::NotFound { path: path.to_owned() })
+        }
+        Err(e) => Err(ResolverError::Io {
+            path: path.to_owned(),
+            source: e,
+        }),
+    }
+}
+
 use crate::swc_pipeline::{CompileOptions, CompiledModule, JsxRuntime, SwcPipeline};
 
 /// True when the loader should treat `specifier` as MDX source.
@@ -212,12 +296,15 @@ impl ModuleLoader {
 
     /// Read `path` and load+compile it. Caches by absolute-path key.
     ///
+    /// Returns a typed [`ResolverError`] (converted to [`RenderError`]) that
+    /// distinguishes `NotFound`, generic I/O failures, and encoding problems.
+    ///
     /// `.mdx` files are routed through the MDX→JSX emitter before SWC; see
     /// [`Self::load_source`].
     pub fn load_file(&mut self, path: &Path) -> Result<&CompiledModule> {
         let key = path.to_string_lossy().to_string();
         if !self.cache.contains_key(&key) {
-            let source = std::fs::read_to_string(path)?;
+            let source = read_to_string(path).map_err(RenderError::from)?;
             let jsx_source = self.maybe_mdx_to_jsx(&key, &source)?;
             let opts = CompileOptions::default()
                 .with_filename(key.clone())

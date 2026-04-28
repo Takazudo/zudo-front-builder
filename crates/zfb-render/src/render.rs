@@ -56,20 +56,21 @@ impl<H: RenderHost> Renderer<H> {
     }
 
     /// Render `req` to an HTML string.
-    pub fn render(&mut self, req: &RenderRequest) -> Result<String> {
-        let handle = self.compile_and_load(req)?;
-        self.host.call_default(&handle, req.props.clone())
+    pub async fn render(&mut self, req: &RenderRequest) -> Result<String> {
+        let handle = self.compile_and_load(req).await?;
+        self.host.call_default(&handle, req.props.clone()).await
     }
 
     /// Compile the request's source and hand it to the host. Exposed so
     /// `paths()` / `meta` can reuse the same module handle.
-    pub fn compile_and_load(&mut self, req: &RenderRequest) -> Result<ModuleHandle> {
+    pub async fn compile_and_load(&mut self, req: &RenderRequest) -> Result<ModuleHandle> {
         let compiled = self
             .loader
             .load_source(&req.specifier, &req.source)?
             .clone();
         self.host
             .execute_module(&compiled.specifier, &compiled.code)
+            .await
     }
 
     /// Borrow the underlying loader (mostly for tests / introspection).
