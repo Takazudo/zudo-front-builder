@@ -15,7 +15,8 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 # binary (`EXPECTED_ESBUILD_SHA256`, possibly empty during development) is
 # also verified when populated.
 #
-# To bump:
+# To bump, follow the "External tool version pins" procedure in
+# CONTRIBUTING.md at the workspace root. Quick-reference:
 #   1. Edit EXPECTED_ESBUILD_VERSION in src/esbuild.rs.
 #   2. Edit EXPECTED_ESBUILD_SHA256 in src/esbuild.rs (or set it to "" to
 #      keep the slot open until release engineering fills the new hash in).

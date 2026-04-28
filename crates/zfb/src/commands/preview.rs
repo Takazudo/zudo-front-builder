@@ -67,6 +67,41 @@ const DEFAULT_PREVIEW_PORT: u16 = 4321;
 /// rather than silently falling through to static-only.
 const CLOUDFLARE_ADAPTER: &str = "@takazudo/zfb-adapter-cloudflare";
 
+/// Pinned `wrangler` CLI version. `zfb preview` runs
+/// `pnpm exec wrangler --version` before handing off to
+/// `wrangler pages dev` and aborts with a clear error if the reported
+/// version does not match this constant.
+///
+/// Kept in lock-step with the exact-pinned `wrangler` entry in the root
+/// `package.json` (and with `EXPECTED_MINIFLARE_VERSION` /
+/// `EXPECTED_WORKERD_VERSION` below) so the SSR/preview pipeline is
+/// reproducible. To bump, see `CONTRIBUTING.md "External tool version pins"`.
+pub const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
+
+/// Pinned `miniflare` package version. zfb does not spawn miniflare
+/// directly today (it goes through `pnpm exec wrangler pages dev`),
+/// but the version is exact-pinned in `package.json` so the SSR
+/// pipeline's behavior is reproducible. Kept here as the canonical
+/// source of truth — `pnpm-lock.yaml` snapshots the resolution. To
+/// bump, see `CONTRIBUTING.md "External tool version pins"`.
+#[allow(dead_code)]
+pub const EXPECTED_MINIFLARE_VERSION: &str = "4.20260424.0";
+
+/// Pinned `workerd` package version that miniflare drives. Not
+/// directly listed in `package.json` (it comes in transitively via
+/// `miniflare`'s peer dependency); the lockfile snapshots the exact
+/// resolved version. Kept here so a single `grep EXPECTED_WORKERD_VERSION`
+/// surfaces the workerd pin alongside the rest of the external-tool
+/// pins. To bump, see `CONTRIBUTING.md "External tool version pins"`.
+#[allow(dead_code)]
+pub const EXPECTED_WORKERD_VERSION: &str = "1.20260424.1";
+
+/// Set this env var to `1` to skip the pre-flight wrangler version
+/// gate. Intended as an emergency escape hatch (e.g. while a
+/// release-engineering bump is mid-flight); not meant for steady-state
+/// use.
+const SKIP_WRANGLER_VERSION_CHECK_ENV: &str = "ZFB_SKIP_WRANGLER_VERSION_CHECK";
+
 pub async fn run(args: &PreviewArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration. A missing
     //    config file is fine — `load_from_dir` returns
@@ -361,7 +396,15 @@ fn content_type_for_path(path: &Path) -> &'static str {
 /// pipe output — wrangler prints its own ready banner and we want the
 /// user to see it directly. Returns non-zero when wrangler exits non-
 /// zero so the parent shell sees the failure.
+///
+/// Before handing off, runs a pre-flight `pnpm exec wrangler --version`
+/// gate against [`EXPECTED_WRANGLER_VERSION`]. A mismatch aborts with
+/// an actionable error pointing at the version-pin procedure. The gate
+/// can be bypassed by setting the
+/// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env var to `1`.
 async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Result<()> {
+    ensure_wrangler_version(project_root).await?;
+
     output::info(format!(
         "preview: adapter mode — handing off to wrangler pages dev (port {port})"
     ));
@@ -379,6 +422,98 @@ async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Resu
         anyhow::bail!("wrangler pages dev exited with status {status}");
     }
     Ok(())
+}
+
+/// Run `pnpm exec wrangler --version` and abort if the reported
+/// version does not match [`EXPECTED_WRANGLER_VERSION`]. Skipped when
+/// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] is set to a truthy value.
+async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
+    if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV) {
+        return Ok(());
+    }
+
+    let output = tokio::process::Command::new("pnpm")
+        .arg("exec")
+        .arg("wrangler")
+        .arg("--version")
+        .current_dir(project_root)
+        .output()
+        .await
+        .context(
+            "failed to spawn `pnpm exec wrangler --version` for the wrangler version gate \
+             — make sure pnpm and wrangler are installed in this project",
+        )?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`pnpm exec wrangler --version` exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    match parse_wrangler_version(&stdout) {
+        Some(reported) if reported == EXPECTED_WRANGLER_VERSION => Ok(()),
+        Some(reported) => Err(anyhow::anyhow!(
+            "wrangler version mismatch: expected `{expected}` (pinned in zfb), \
+             got `{reported}`. \
+             Update both the `wrangler` entry in package.json and \
+             EXPECTED_WRANGLER_VERSION in crates/zfb/src/commands/preview.rs in \
+             lock-step (see the External tool version pins section in CONTRIBUTING.md), then run \
+             `pnpm install`. To bypass this gate temporarily, set \
+             {env}=1 (not recommended for steady-state use).",
+            expected = EXPECTED_WRANGLER_VERSION,
+            env = SKIP_WRANGLER_VERSION_CHECK_ENV,
+        )),
+        None => Err(anyhow::anyhow!(
+            "could not parse a wrangler version from `pnpm exec wrangler --version` \
+             output: {raw:?}. Expected something containing `{expected}`. \
+             Set {env}=1 to bypass this gate if the output format has changed.",
+            raw = stdout.trim(),
+            expected = EXPECTED_WRANGLER_VERSION,
+            env = SKIP_WRANGLER_VERSION_CHECK_ENV,
+        )),
+    }
+}
+
+/// Extract a semver-shaped version string from `wrangler --version`'s
+/// banner. The current banner is roughly ` ⛅️ wrangler 4.85.0` — we
+/// scan whitespace-separated tokens for one whose leading characters
+/// look like `MAJOR.MINOR.PATCH`. Returns `None` if no token matches,
+/// which the caller turns into a "could not parse" error.
+fn parse_wrangler_version(stdout: &str) -> Option<String> {
+    for token in stdout.split_whitespace() {
+        let mut parts = token.splitn(3, '.');
+        let (Some(maj), Some(min), Some(patch)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if maj.chars().all(|c| c.is_ascii_digit())
+            && min.chars().all(|c| c.is_ascii_digit())
+            && !maj.is_empty()
+            && !min.is_empty()
+            && !patch.is_empty()
+            && patch
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        {
+            return Some(token.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_string());
+        }
+    }
+    None
+}
+
+/// Treat `1`, `true`, `yes` (case-insensitive) as truthy. Anything else
+/// — including unset — is falsy. Used by the wrangler version-gate
+/// escape hatch.
+fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => false,
+    }
 }
 
 /// Build the `tokio::process::Command` we'd spawn for wrangler. Pulled
@@ -922,5 +1057,68 @@ mod tests {
             .position(|a| a == "--port")
             .expect("--port must be present");
         assert_eq!(args[port_idx + 1], "9000");
+    }
+
+    // ---- wrangler version-gate parser --------------------------------
+
+    #[test]
+    fn parse_wrangler_version_extracts_pinned_format() {
+        // The exact banner shape `wrangler --version` prints today.
+        let stdout = " ⛅️ wrangler 4.85.0\n";
+        assert_eq!(
+            parse_wrangler_version(stdout).as_deref(),
+            Some("4.85.0"),
+            "must extract `4.85.0` from the canonical banner",
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_handles_bare_version_line() {
+        // Some CI environments / shims may print just the bare version.
+        assert_eq!(
+            parse_wrangler_version("4.85.0\n").as_deref(),
+            Some("4.85.0"),
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_handles_prerelease_suffix() {
+        // We accept any token whose head matches `MAJOR.MINOR.PATCH…`,
+        // which lets prereleases round-trip through the parser. The
+        // version-equality check downstream is what enforces strict
+        // pinning — the parser's job is only extraction.
+        assert_eq!(
+            parse_wrangler_version("⛅ wrangler 5.0.0-rc.1").as_deref(),
+            Some("5.0.0-rc.1"),
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_returns_none_on_unrecognised_output() {
+        assert_eq!(parse_wrangler_version("hello world\n"), None);
+        assert_eq!(parse_wrangler_version(""), None);
+        // Two-segment "version" (e.g. `4.85`) is not a valid semver
+        // shape — we require all three of MAJOR.MINOR.PATCH.
+        assert_eq!(parse_wrangler_version("wrangler 4.85"), None);
+    }
+
+    #[test]
+    fn env_truthy_recognises_common_truthy_values() {
+        let key = "ZFB_TEST_ENV_TRUTHY_KEY";
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("", false),
+            ("nope", false),
+        ] {
+            std::env::set_var(key, value);
+            assert_eq!(env_truthy(key), expected, "value = {value:?}");
+        }
+        std::env::remove_var(key);
+        assert!(!env_truthy(key), "unset env var must be falsy");
     }
 }
