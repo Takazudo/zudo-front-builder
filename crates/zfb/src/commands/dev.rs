@@ -413,13 +413,22 @@ fn boot_dev_renderer(
     // Dev mode does not embed a content snapshot — runtime paths()
     // evaluation is a build-mode feature. When dev mode starts the
     // worker, `getCollection(...)` will see an empty snapshot.
-    let bundler_input = BundlerInput::for_project(
+    let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
         cfg_framework_to_render(cfg.framework),
         BundleMode::Development,
         dist_root.join(".zfb-build"),
         None,
     );
+    // Mirror the production build CLI: surface project-side
+    // `node_modules/` and `tsconfig.json#compilerOptions.paths` to the
+    // bundler so esbuild can resolve user-installed packages and TS
+    // path aliases. Helpers live in `commands/build.rs`; they are
+    // intentionally re-used so dev and prod stay in lockstep.
+    if let Some(nm) = crate::commands::build::detect_project_node_modules(project_root) {
+        bundler_input.node_modules_dir = Some(nm);
+    }
+    bundler_input.tsconfig_paths = crate::commands::build::read_tsconfig_paths(project_root);
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {

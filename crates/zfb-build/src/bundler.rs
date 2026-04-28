@@ -223,6 +223,23 @@ pub struct BundlerInput {
     /// Production builds leave this `None`; the project root's own
     /// `node_modules` tree is accessible via the ancestor walk.
     pub node_modules_dir: Option<PathBuf>,
+
+    /// When `true`, esbuild is invoked with `--preserve-symlinks` so
+    /// it stays at the symlink location during package resolution. Set
+    /// by tests that point [`Self::node_modules_dir`] at a synthetic
+    /// fixture tree where the package source physically lives outside
+    /// the project root.
+    ///
+    /// Production builds leave this `false`. pnpm-style projects
+    /// store package contents under
+    /// `node_modules/.pnpm/<spec>/node_modules/<pkg>/...`; following
+    /// the symlink lets esbuild walk up from the *real* path and
+    /// discover the per-package nested `node_modules` (where pnpm
+    /// hoists transitive deps like `hono`). Preserving symlinks would
+    /// keep esbuild anchored at `node_modules/<pkg>` in the project
+    /// root, where transitive deps are NOT hoisted, and resolution
+    /// fails.
+    pub node_modules_preserve_symlinks: bool,
 }
 
 impl BundlerInput {
@@ -263,6 +280,7 @@ impl BundlerInput {
             mock_subprocess_output: None,
             content_snapshot_json,
             node_modules_dir: None,
+            node_modules_preserve_symlinks: false,
         }
     }
 }
@@ -1042,6 +1060,17 @@ fn run_esbuild(
         cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
     }
 
+    // User code consults the public SDK via the bare `zfb` namespace
+    // (`zfb/content`, `zfb/config`, `zfb/paginate`, …) — these are the
+    // documented import paths surfaced by `@takazudo/zfb`'s `exports`
+    // map. The npm package itself is published as `@takazudo/zfb`, so
+    // teach esbuild to treat the bare `zfb` prefix as an alias for
+    // `@takazudo/zfb`. esbuild's `--alias:<from>=<to>` works for both
+    // exact specifiers and subpath suffixes, so `zfb/content` →
+    // `@takazudo/zfb/content` resolves through the package's exports
+    // map without any per-subpath wiring.
+    cmd.arg("--alias:zfb=@takazudo/zfb");
+
     // import.meta.env.{PROD,DEV} — always emitted, driven by mode.
     let prod = input.mode.is_prod();
     cmd.arg(format!("--define:import.meta.env.PROD={}", prod));
@@ -1089,7 +1118,7 @@ fn run_esbuild(
     // location inside the shadow tree, so `hono`, `preact`, etc. are found
     // in the injected node_modules even when the package source lives in a
     // different tree (e.g. the worktree's packages/ directory).
-    if input.node_modules_dir.is_some() {
+    if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
         cmd.arg("--preserve-symlinks");
     }
 
@@ -1204,6 +1233,7 @@ mod tests {
             ),
             content_snapshot_json: None,
             node_modules_dir: None,
+            node_modules_preserve_symlinks: false,
         }
     }
 
@@ -1460,6 +1490,7 @@ mod tests {
             mock_subprocess_output: None,
             content_snapshot_json: None,
             node_modules_dir: None,
+            node_modules_preserve_symlinks: false,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

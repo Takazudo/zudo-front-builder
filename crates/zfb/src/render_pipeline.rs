@@ -393,11 +393,22 @@ pub fn eval_deferred_paths_via_worker(
     }
 
     let per_request_timeout = timeout.unwrap_or(Duration::from_secs(30));
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(per_request_timeout)
-        .no_proxy()
-        .build()
-    {
+    // Construct on a fresh OS thread so reqwest's internal tokio
+    // runtime drops cleanly — see the matching note in
+    // `zfb_build::renderer::build_client`. Without this, the build
+    // CLI's outer `tokio::main` poisons the drop and we panic with
+    // `Cannot drop a runtime in a context where blocking is not
+    // allowed`.
+    let client = match std::thread::scope(|s| {
+        s.spawn(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(per_request_timeout)
+                .no_proxy()
+                .build()
+        })
+        .join()
+        .expect("client-builder thread panicked")
+    }) {
         Ok(c) => c,
         Err(e) => {
             // Extremely unlikely — only happens if TLS init fails.

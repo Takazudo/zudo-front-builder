@@ -130,9 +130,23 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
             //
             // We exclude `index` (no extension) and stems with a
             // single token, which look like normal pages.
-            if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
-                if !before_dot.is_empty() && !after_dot.is_empty() {
-                    output_extension = Some(after_dot.to_string());
+            //
+            // Dynamic / catchall segments (`[name]`, `[...name]`) are
+            // **not** subject to extension parsing. Their dots are
+            // syntactic — `[...slug]` is the catchall sigil, not the
+            // multi-dot stem `[..` + extension `slug]`. Without this
+            // guard `[...slug].tsx` was mis-parsed as
+            // `output_extension = Some("slug]")`, which switched the
+            // route into the non-HTML write path and produced bare
+            // files at every catchall URL (no `index.html`),
+            // collapsing the directory layout downstream renderers
+            // expect.
+            let stem_is_param = stem.starts_with('[');
+            if !stem_is_param {
+                if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
+                    if !before_dot.is_empty() && !after_dot.is_empty() {
+                        output_extension = Some(after_dot.to_string());
+                    }
                 }
             }
 

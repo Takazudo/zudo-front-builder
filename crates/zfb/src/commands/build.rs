@@ -88,13 +88,23 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
     let routes = router.routes();
 
-    let pages_built = run_build(BuildArgsResolved {
-        project_root: &project_root,
-        outdir: &outdir,
-        config: &config,
-        routes,
-        runner: &DefaultRunner,
-        adapter_runner: &DefaultAdapterRunner,
+    // The build pipeline (bundler subprocess, miniflare boot, all
+    // SSG `reqwest::blocking` calls) is fundamentally synchronous,
+    // but `#[tokio::main]` keeps a multi-thread runtime live in the
+    // background. Without `block_in_place` the inner blocking
+    // subroutines panic on drop with `Cannot drop a runtime in a
+    // context where blocking is not allowed`. Telling the outer
+    // runtime up-front that the next stretch of work is blocking is
+    // the supported escape hatch.
+    let pages_built = tokio::task::block_in_place(|| {
+        run_build(BuildArgsResolved {
+            project_root: &project_root,
+            outdir: &outdir,
+            config: &config,
+            routes,
+            runner: &DefaultRunner,
+            adapter_runner: &DefaultAdapterRunner,
+        })
     })?;
 
     let elapsed = started.elapsed().as_secs_f64();
@@ -376,13 +386,22 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //
     // The content snapshot (when present) is embedded in the worker
     // bundle so runtime `paths()` calls can resolve `getCollection(...)`.
-    let bundler_input = BundlerInput::for_project(
+    let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
         cfg_framework_to_render(config.framework),
         BundleMode::Production,
         outdir.join(".zfb-build"),
         content_snapshot_json,
     );
+    // Inject project-side resolution context so esbuild can find
+    // user dependencies + path aliases. Without these the shadow
+    // tempdir has no `node_modules` to walk into and no tsconfig
+    // `paths` to honour, so anything beyond a self-contained page
+    // module fails to resolve.
+    if let Some(nm) = detect_project_node_modules(project_root) {
+        bundler_input.node_modules_dir = Some(nm);
+    }
+    bundler_input.tsconfig_paths = read_tsconfig_paths(project_root);
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
@@ -485,6 +504,177 @@ fn warn_deferred_dynamic(routes: &[DeferredDynamicRoute]) {
             r.reason,
         ));
     }
+}
+
+/// Locate the project's `node_modules` directory so the bundler can
+/// symlink it into the shadow tree (esbuild then walks into it for
+/// package resolution). Returns `None` when no `node_modules` exists
+/// — the build proceeds and esbuild will surface a clear "Could not
+/// resolve" error if the user's pages import any third-party packages.
+///
+/// Today only the `<project_root>/node_modules` slot is checked. pnpm
+/// monorepos with hoisted root-level `node_modules/` are typically
+/// flat enough that this single-level lookup suffices; users with
+/// deeper layouts can pre-stage a `node_modules` symlink at the root.
+pub(crate) fn detect_project_node_modules(project_root: &Path) -> Option<std::path::PathBuf> {
+    let candidate = project_root.join("node_modules");
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Read `<project_root>/tsconfig.json` and return its
+/// `compilerOptions.paths` map verbatim, suitable for forwarding into
+/// [`BundlerInput::tsconfig_paths`]. Used so user-facing alias maps
+/// like `"@/*": ["src/*"]` resolve at bundle time without each project
+/// having to repeat them in `zfb.config.ts`.
+///
+/// Resilient by design: missing file, malformed JSON, or absent
+/// `paths` field all return an empty map. tsconfig `extends` is NOT
+/// followed today — only direct `compilerOptions.paths` are read.
+/// Projects with their alias map living in a base tsconfig need to
+/// either inline the relevant paths into the project tsconfig or open
+/// a follow-up to extend this loader.
+pub(crate) fn read_tsconfig_paths(
+    project_root: &Path,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let tsconfig_path = project_root.join("tsconfig.json");
+    let raw = match std::fs::read_to_string(&tsconfig_path) {
+        Ok(s) => s,
+        Err(_) => return Default::default(),
+    };
+    // Strip JSON-with-comments artefacts (tsconfig.json conventionally
+    // allows `//` comments and trailing commas — esbuild's tsconfig
+    // parser does, and so does TypeScript itself). serde_json does not,
+    // so a hand-rolled minimal stripper keeps simple tsconfigs working
+    // without pulling in a JSONC parser.
+    let cleaned = strip_jsonc(&raw);
+    let value: serde_json::Value = match serde_json::from_str(&cleaned) {
+        Ok(v) => v,
+        Err(_) => return Default::default(),
+    };
+    let paths = value
+        .get("compilerOptions")
+        .and_then(|co| co.get("paths"))
+        .and_then(|p| p.as_object());
+    let Some(paths) = paths else {
+        return Default::default();
+    };
+    let mut out = std::collections::BTreeMap::new();
+    for (key, val) in paths {
+        if let Some(arr) = val.as_array() {
+            // Resolve each target to an absolute path against the
+            // project root. The synthetic tsconfig that the bundler
+            // writes uses the *shadow tempdir* as `baseUrl`, and the
+            // shadow only mirrors `pages/`, `content/`, `components/`,
+            // `layouts/` — anything the user aliases at (e.g.
+            // `@/* → src/*`) lives outside the shadow tree. Absolute
+            // paths bypass `baseUrl` entirely so esbuild resolves
+            // them straight against the real project.
+            let entries: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| resolve_tsconfig_path_target(project_root, s))
+                .collect();
+            if !entries.is_empty() {
+                out.insert(key.clone(), entries);
+            }
+        }
+    }
+    out
+}
+
+/// Resolve one tsconfig `paths` target string to an absolute path
+/// against the project root, preserving any trailing `/*` glob
+/// suffix that esbuild reads as a wildcard.
+fn resolve_tsconfig_path_target(project_root: &Path, target: &str) -> String {
+    // tsconfig paths can carry a trailing `/*` (e.g. `"src/*"`); split
+    // it off so the prefix can be path-joined and the wildcard
+    // re-appended verbatim.
+    let (prefix, suffix) = match target.rsplit_once("/*") {
+        Some((p, "")) => (p, "/*"),
+        _ => (target, ""),
+    };
+    let abs = project_root.join(prefix);
+    let mut out = abs.to_string_lossy().into_owned();
+    out.push_str(suffix);
+    out
+}
+
+/// Strip `//` line comments and trailing commas from a JSONC source so
+/// it parses with the strict `serde_json` reader. Block comments
+/// (`/* … */`) and string-literal awareness are intentionally minimal
+/// — sufficient for the conventional shape of `tsconfig.json` files.
+fn strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_string {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // Line comment.
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
+            while i < bytes.len() && bytes[i] as char != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment.
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+            i += 2;
+            while i + 1 < bytes.len()
+                && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/')
+            {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    // Strip trailing commas — minimal pass: `,` immediately preceding
+    // `}` or `]` (whitespace allowed in between).
+    let mut stripped = String::with_capacity(out.len());
+    let chars: Vec<char> = out.chars().collect();
+    let mut j = 0;
+    while j < chars.len() {
+        let c = chars[j];
+        if c == ',' {
+            let mut k = j + 1;
+            while k < chars.len() && chars[k].is_whitespace() {
+                k += 1;
+            }
+            if k < chars.len() && (chars[k] == '}' || chars[k] == ']') {
+                j += 1;
+                continue;
+            }
+        }
+        stripped.push(c);
+        j += 1;
+    }
+    stripped
 }
 
 /// When `ZFB_DEBUG_SNAPSHOT` is truthy, build the content snapshot from

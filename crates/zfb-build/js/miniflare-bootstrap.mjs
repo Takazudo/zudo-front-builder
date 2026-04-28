@@ -90,7 +90,15 @@ const mf = new Miniflare({
   // must resolve at module load time). The flag is safe for SSG builds:
   // the Worker is ephemeral and only serves GET requests from the build
   // pipeline — no untrusted code is run.
-  compatibilityFlags: ["nodejs_compat"],
+  //
+  // `enable_nodejs_fs_module` opts in to workerd's `node:fs` /
+  // `node:fs/promises` polyfill (still gated behind a separate flag in
+  // workerd 1.20260424 — `nodejs_compat` alone errors with `No such
+  // module "node:fs"`). User-side utilities like Astro-era
+  // `loadCategoryMeta` carry top-level `node:fs` imports that never
+  // execute under SSG (the call sites are all paths()-time / build-time)
+  // but the import statement still has to resolve at module load.
+  compatibilityFlags: ["nodejs_compat", "enable_nodejs_fs_module"],
   log,
 });
 

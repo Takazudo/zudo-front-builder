@@ -473,16 +473,31 @@ pub fn reload(
 // ---------------------------------------------------------------------------
 
 fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client, RendererError> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        // We hit 127.0.0.1; no system proxy can reach loopback usefully
-        // and would only ever break the build.
-        .no_proxy()
-        .build()
-        .map_err(|e| RendererError::Http {
-            url: "<client-builder>".into(),
-            source: e,
+    // `reqwest::blocking::Client::builder().build()` spins up its own
+    // dedicated tokio runtime under the hood and synchronously waits
+    // on it. When the surrounding code is itself running inside an
+    // async runtime (zfb's CLI uses `tokio::main` to drive
+    // `commands::build::run`), the inner runtime's drop path panics
+    // with `Cannot drop a runtime in a context where blocking is not
+    // allowed`. Constructing the client on a fresh OS thread gives
+    // reqwest a clean, runtime-free environment.
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                // We hit 127.0.0.1; no system proxy can reach
+                // loopback usefully and would only ever break the
+                // build.
+                .no_proxy()
+                .build()
         })
+        .join()
+        .expect("client-builder thread panicked")
+    })
+    .map_err(|e| RendererError::Http {
+        url: "<client-builder>".into(),
+        source: e,
+    })
 }
 
 fn render_one_inner(

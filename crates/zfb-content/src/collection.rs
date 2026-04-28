@@ -471,13 +471,36 @@ where
         report: report.to_string(),
     })?;
 
-    let slug = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-
     let rel_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+
+    // Slug derivation: the path of the entry **relative to the
+    // collection root**, with the file extension stripped and path
+    // separators normalised to `/`. This gives a stable, unique
+    // identifier even when sibling categories all have an
+    // `index.{md,mdx,tsx}`. The previous `path.file_stem()` slug
+    // collapsed every nested `index.mdx` to the literal string
+    // `"index"`, producing duplicate snapshot entries and
+    // ambiguous-URL collisions in user `paths()` expansions.
+    let slug = {
+        let lossy = rel_path.to_string_lossy();
+        let posix = if std::path::MAIN_SEPARATOR == '/' {
+            lossy.into_owned()
+        } else {
+            lossy.replace(std::path::MAIN_SEPARATOR, "/")
+        };
+        // Strip any single recognised content-file extension. We match
+        // the trailing `.<ext>` against the small fixed allowlist of
+        // extensions the collection walker accepts (md, mdx, tsx) so
+        // arbitrary `.foo.bar.mdx` filenames keep their leading dots.
+        let stripped = ["md", "mdx", "tsx"]
+            .iter()
+            .find_map(|ext| {
+                let needle = format!(".{ext}");
+                posix.strip_suffix(&needle).map(str::to_owned)
+            })
+            .unwrap_or(posix);
+        stripped
+    };
 
     let UnifiedFrontmatter {
         body,

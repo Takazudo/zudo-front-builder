@@ -332,7 +332,13 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       }
 
       const vnode = mod.default(componentInput);
-      const html = opts.framework.renderToString(vnode);
+      // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
+      // return their body as a pre-serialised `string` instead of a
+      // VNode. Routing those through `framework.renderToString` would
+      // HTML-escape the angle brackets and ampersands, producing
+      // garbage XML. Pass strings through verbatim; only wrap actual
+      // VNodes.
+      const html = typeof vnode === "string" ? vnode : opts.framework.renderToString(vnode);
       const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
       return c.body(html, 200, { "Content-Type": contentType });
     });

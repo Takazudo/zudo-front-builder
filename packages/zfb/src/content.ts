@@ -21,7 +21,7 @@
 // TODO(zfb-content): swap this stub for the runtime-provided implementation
 // once the content engine ships end-to-end.
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 import { parseFrontmatter } from "./frontmatter.js";
@@ -290,12 +290,20 @@ const FALLBACK_MARKER = "[zfb fallback render]";
  * Load every `*.md` file in the named collection. Files starting with `.`
  * or that lack a `.md` extension are ignored.
  *
+ * **ADR-004 contract: this function is synchronous.** TSX page modules
+ * call it from anywhere — top-level, inside a render body, inside a
+ * `useMemo` — and SSR completes in a single pass without yielding. The
+ * snapshot path returns from memory; the filesystem fallback uses sync
+ * `node:fs` APIs so the surface stays unified. (The legacy async
+ * implementation was an oversight — the ADR predates it; SSG paths
+ * always saw a Promise where ADR-004 says they should see an array,
+ * which is why migrations from Astro tripped on `getCollection().filter
+ * is not a function`.)
+ *
  * @example
- *   const posts = await getCollection<{ title: string; date: string }>("blog");
+ *   const posts = getCollection<{ title: string; date: string }>("blog");
  */
-export async function getCollection<T = Record<string, unknown>>(
-  name: string,
-): Promise<CollectionEntry<T>[]> {
+export function getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[] {
   // Snapshot path: installed by `@takazudo/zfb-runtime`'s
   // `createPageRouter` at Worker boot. Worker runtimes have no `fs`, so
   // this branch is the production path under miniflare.
@@ -314,7 +322,7 @@ export async function getCollection<T = Record<string, unknown>>(
   const dir = resolveCollectionDir(name);
   let mdPaths: string[];
   try {
-    mdPaths = await collectMdFiles(dir);
+    mdPaths = collectMdFilesSync(dir);
   } catch (err) {
     // Guard the `code` access at runtime — a thrown non-`Error` value
     // (rare, but possible) would otherwise crash here. We only swallow
@@ -329,8 +337,8 @@ export async function getCollection<T = Record<string, unknown>>(
     }
     throw err;
   }
-  const entries = await mapWithConcurrency(mdPaths, READ_CONCURRENCY, async (fullPath) => {
-    const raw = await readFile(fullPath, "utf8");
+  return mdPaths.map((fullPath) => {
+    const raw = readFileSync(fullPath, "utf8");
     const { data, body } = parseFrontmatter(raw);
     // Derive a stable slug from the relative path (relative to collection
     // root), stripping the `.md` extension. For top-level files this
@@ -347,7 +355,6 @@ export async function getCollection<T = Record<string, unknown>>(
       Content: buildContentComponent(module_specifier, body),
     };
   });
-  return entries;
 }
 
 /**
@@ -379,11 +386,8 @@ function entryFromSnapshot<T>(entry: SnapshotEntry): CollectionEntry<T> {
   };
 }
 
-/** Maximum concurrent file reads while loading a content collection. */
-const READ_CONCURRENCY = 8;
-
 /**
- * Recursively collect every `*.md` file under `dir`.
+ * Recursively collect every `*.md` file under `dir` (synchronous).
  *
  * BCI-6: replaces the old flat `readdir(dir).filter(n => n.endsWith(".md"))`
  * approach. Hidden files (names starting with `.`) and hidden directories
@@ -392,16 +396,18 @@ const READ_CONCURRENCY = 8;
  *
  * Returns absolute paths sorted lexicographically so the result order is
  * deterministic across platforms and Node versions.
+ *
+ * Synchronous to honour ADR-004 — see [`getCollection`].
  */
-async function collectMdFiles(dir: string): Promise<string[]> {
+function collectMdFilesSync(dir: string): string[] {
   const result: string[] = [];
-  await walkDir(dir, result);
+  walkDirSync(dir, result);
   result.sort();
   return result;
 }
 
-async function walkDir(current: string, out: string[]): Promise<void> {
-  const entries = await readdir(current, { withFileTypes: true });
+function walkDirSync(current: string, out: string[]): void {
+  const entries = readdirSync(current, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
     const fullPath = join(current, entry.name);
@@ -410,37 +416,11 @@ async function walkDir(current: string, out: string[]): Promise<void> {
     // regular files; following symlinks provides no value here.
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      await walkDir(fullPath, out);
+      walkDirSync(fullPath, out);
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       out.push(fullPath);
     }
   }
-}
-
-/**
- * Run `fn` over `items` with at most `limit` invocations in flight at any
- * time. Preserves input order in the returned array. Implemented inline so
- * we don't pull in a `p-limit`-shaped dependency for one call site.
- */
-async function mapWithConcurrency<I, O>(
-  items: readonly I[],
-  limit: number,
-  fn: (item: I, index: number) => Promise<O>,
-): Promise<O[]> {
-  const cap = Math.max(1, Math.min(limit, items.length));
-  const out = new Array<O>(items.length);
-  let cursor = 0;
-  async function worker(): Promise<void> {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      out[i] = await fn(items[i] as I, i);
-    }
-  }
-  const workers: Promise<void>[] = [];
-  for (let w = 0; w < cap; w++) workers.push(worker());
-  await Promise.all(workers);
-  return out;
 }
 
 /**
