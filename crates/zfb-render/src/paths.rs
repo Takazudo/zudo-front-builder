@@ -56,13 +56,38 @@ pub struct ResolvedPath {
 pub enum PathsError {
     /// A required dynamic/catch-all param was missing from a `paths()`
     /// entry's `params` object.
-    #[error("missing param `{name}` in paths() entry for route `{route}`")]
-    MissingParam { name: String, route: String },
+    ///
+    /// `provided` is the list of keys the entry's `params` object actually
+    /// carried (sorted), so a typo like `wrongName` instead of `slug` shows
+    /// up directly in the error: "params must include `slug`, got
+    /// [`wrongName`]".
+    #[error(
+        "missing param `{name}` in paths() entry for route `{route}`: \
+         params must include `{name}`, got [{provided_pretty}]",
+        provided_pretty = pretty_keys(provided),
+    )]
+    MissingParam {
+        name: String,
+        route: String,
+        provided: Vec<String>,
+    },
 
     /// A `paths()` entry's `params` object contained a key that is not
     /// declared in the route template.
-    #[error("extra param `{name}` not declared in route `{route}`")]
-    ExtraParam { name: String, route: String },
+    ///
+    /// `expected` is the list of param names declared in the route template
+    /// (sorted). Surfacing it next to the offending name produces a clear
+    /// "expected one of […], got `wrongName`" diagnostic.
+    #[error(
+        "extra param `{name}` not declared in route `{route}`: \
+         expected one of [{expected_pretty}], got `{name}`",
+        expected_pretty = pretty_keys(expected),
+    )]
+    ExtraParam {
+        name: String,
+        route: String,
+        expected: Vec<String>,
+    },
 
     /// A param value had the wrong JSON shape (e.g. number where a string
     /// was expected, empty string, etc.).
@@ -226,6 +251,7 @@ pub fn resolve_paths(
                 .ok_or_else(|| PathsError::MissingParam {
                     name: (*name).to_string(),
                     route: route_template.to_string(),
+                    provided: sorted_keys(params_obj.keys()),
                 })?;
             let resolved = if *is_catchall {
                 catchall_string(raw, name, route_template)?
@@ -241,6 +267,7 @@ pub fn resolve_paths(
                 return Err(PathsError::ExtraParam {
                     name: k.clone(),
                     route: route_template.to_string(),
+                    expected: required.iter().map(|(n, _)| (*n).to_string()).collect(),
                 });
             }
         }
@@ -388,6 +415,28 @@ fn build_url(route_segments: &[Segment], params: &HashMap<String, String>) -> St
     url.push('/');
     url.push_str(&parts.join("/"));
     url
+}
+
+/// Collect an iterator of `&String` keys into a sorted owned `Vec<String>`,
+/// for stable error output.
+fn sorted_keys<'a, I>(iter: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut v: Vec<String> = iter.into_iter().cloned().collect();
+    v.sort();
+    v
+}
+
+/// Render a list of param names as `` `a`, `b`, `c` `` for embedding in error
+/// messages. An empty list renders as the empty string so the surrounding
+/// `[...]` shows up as `[]`.
+fn pretty_keys(keys: &[String]) -> String {
+    let mut parts = Vec::with_capacity(keys.len());
+    for k in keys {
+        parts.push(format!("`{k}`"));
+    }
+    parts.join(", ")
 }
 
 fn value_kind(val: &Value) -> &'static str {
@@ -568,14 +617,50 @@ mod tests {
         let mut cache = PathsCache::new();
         let segs = route_blog_slug();
         let export = json!([
-            { "params": { "wrong": "x" } }
+            { "params": { "wrongName": "x" } }
         ]);
 
         let err = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap_err();
+        let msg = err.to_string();
+        // The message must point at the source file path.
+        assert!(
+            msg.contains("blog/[slug].tsx"),
+            "expected route file path in error, got: {msg}",
+        );
+        // The message must say what was expected and what was provided.
+        assert!(
+            msg.contains("`slug`") && msg.contains("`wrongName`"),
+            "expected `expected/got` param diagnostic in error, got: {msg}",
+        );
         match err {
-            PathsError::MissingParam { name, route } => {
+            PathsError::MissingParam {
+                name,
+                route,
+                provided,
+            } => {
                 assert_eq!(name, "slug");
                 assert_eq!(route, "blog/[slug].tsx");
+                assert_eq!(provided, vec!["wrongName".to_string()]);
+            }
+            other => panic!("expected MissingParam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_param_with_empty_params_lists_no_provided_keys() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([
+            { "params": {} }
+        ]);
+
+        let err = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("blog/[slug].tsx"), "got: {msg}");
+        assert!(msg.contains("got []"), "got: {msg}");
+        match err {
+            PathsError::MissingParam { provided, .. } => {
+                assert!(provided.is_empty(), "expected empty provided, got {provided:?}");
             }
             other => unreachable!("expected MissingParam, got {other:?}"),
         }
@@ -590,10 +675,21 @@ mod tests {
         ]);
 
         let err = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("blog/[slug].tsx"), "got: {msg}");
+        assert!(
+            msg.contains("`slug`") && msg.contains("`unexpected`"),
+            "expected `expected one of … got …` diagnostic, got: {msg}",
+        );
         match err {
-            PathsError::ExtraParam { name, route } => {
+            PathsError::ExtraParam {
+                name,
+                route,
+                expected,
+            } => {
                 assert_eq!(name, "unexpected");
                 assert_eq!(route, "blog/[slug].tsx");
+                assert_eq!(expected, vec!["slug".to_string()]);
             }
             other => unreachable!("expected ExtraParam, got {other:?}"),
         }

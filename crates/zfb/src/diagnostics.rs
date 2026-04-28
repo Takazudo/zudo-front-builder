@@ -394,11 +394,35 @@ pub fn from_paths_error(
     let (line, col) = locate_export_ident(source, "paths").unwrap_or((1, 1));
     let file = project_relative(path, None);
     let message = match err {
-        PathsError::MissingParam { name, route } => format!(
-            "paths() entry is missing required param `{name}` for route `{route}`"
-        ),
-        PathsError::ExtraParam { name, route } => {
-            format!("paths() entry has extra param `{name}` not declared in route `{route}`")
+        PathsError::MissingParam {
+            name,
+            route,
+            provided,
+        } => {
+            let pretty = provided
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "paths() entry is missing required param `{name}` for route `{route}`: \
+                 params must include `{name}`, got [{pretty}]"
+            )
+        }
+        PathsError::ExtraParam {
+            name,
+            route,
+            expected,
+        } => {
+            let pretty = expected
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "paths() entry has extra param `{name}` not declared in route `{route}`: \
+                 expected one of [{pretty}], got `{name}`"
+            )
         }
         PathsError::InvalidParamType { name, reason, route } => format!(
             "paths() entry has invalid param `{name}` for route `{route}`: {reason}"
@@ -711,12 +735,17 @@ mod tests {
         let err = zfb_render::paths::PathsError::MissingParam {
             name: "slug".to_string(),
             route: "blog/[slug].tsx".to_string(),
+            provided: vec!["wrong".to_string()],
         };
         let d = from_paths_error(&path, src, &err);
         let out = strip_ansi(&render_framed(&d));
         // Should land on line 3 where `export function paths` lives.
         assert!(out.contains(" --> pages/blog/[slug].tsx:3:"), "got:\n{out}");
         assert!(out.contains("missing required param `slug`"), "got:\n{out}");
+        assert!(
+            out.contains("`wrong`"),
+            "expected provided-keys `got [...]` clause to mention `wrong`, got:\n{out}",
+        );
         assert!(out.contains("export function paths"), "got:\n{out}");
     }
 
