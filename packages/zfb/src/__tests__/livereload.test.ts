@@ -64,7 +64,7 @@ describe("livereload.js SSE consumer — islands wire contract", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete (window as Record<string, unknown>)["__zfbIslandsReload"];
+    delete (window as unknown as Record<string, unknown>)["__zfbIslandsReload"];
   });
 
   it("empty component triggers bundle re-import keyed by bundleUrl (core contract)", () => {
@@ -73,7 +73,7 @@ describe("livereload.js SSE consumer — islands wire contract", () => {
     // consumer must still fire __zfbIslandsReload / dynamic-import using bundleUrl.
     // If a future refactor short-circuits on component=="" this test must FAIL.
     const hook = vi.fn();
-    (window as Record<string, unknown>)["__zfbIslandsReload"] = hook;
+    (window as unknown as Record<string, unknown>)["__zfbIslandsReload"] = hook;
 
     src.dispatch("islands", JSON.stringify({ bundleUrl: "/assets/islands-abc.js", component: "" }));
 
@@ -87,7 +87,7 @@ describe("livereload.js SSE consumer — islands wire contract", () => {
 
   it("named component also triggers the hook (normal hot-swap path)", () => {
     const hook = vi.fn();
-    (window as Record<string, unknown>)["__zfbIslandsReload"] = hook;
+    (window as unknown as Record<string, unknown>)["__zfbIslandsReload"] = hook;
 
     src.dispatch(
       "islands",
@@ -102,7 +102,7 @@ describe("livereload.js SSE consumer — islands wire contract", () => {
 
   it("missing bundleUrl is silently ignored (no crash, no hook call)", () => {
     const hook = vi.fn();
-    (window as Record<string, unknown>)["__zfbIslandsReload"] = hook;
+    (window as unknown as Record<string, unknown>)["__zfbIslandsReload"] = hook;
 
     // Only component, no bundleUrl — the handler bails early
     src.dispatch("islands", JSON.stringify({ component: "Counter" }));
@@ -113,7 +113,7 @@ describe("livereload.js SSE consumer — islands wire contract", () => {
   it("malformed JSON payload is silently ignored (no crash)", () => {
     const hook = vi.fn();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    (window as Record<string, unknown>)["__zfbIslandsReload"] = hook;
+    (window as unknown as Record<string, unknown>)["__zfbIslandsReload"] = hook;
 
     expect(() => src.dispatch("islands", "not-json{{{")).not.toThrow();
     expect(hook).not.toHaveBeenCalled();
