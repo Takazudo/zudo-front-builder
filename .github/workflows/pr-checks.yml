@@ -89,7 +89,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt/3..."
-            if DEPLOY_OUTPUT=$(pnpm exec wrangler pages deploy deploy-root \
+            if DEPLOY_OUTPUT=$(pnpm dlx wrangler@4.85.0 pages deploy deploy-root \
               --project-name=zudo-front-builder \
               --branch="pr-${PR_NUMBER}" \
               --commit-dirty=true 2>&1); then
