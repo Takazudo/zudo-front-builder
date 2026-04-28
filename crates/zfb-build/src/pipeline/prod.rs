@@ -1,0 +1,730 @@
+//! [`ProductionAssetPipeline`] — the one-shot full-build pipeline `zfb
+//! build` runs.
+//!
+//! Differences from [`super::dev::DevAssetPipeline`]:
+//!
+//! - **Content-hashed asset filenames.** Every CSS / islands asset emitted
+//!   this tick is content-addressed: the SHA-256 of the bytes (truncated
+//!   to 8 hex chars) is folded into the filename — e.g. `styles.css`
+//!   → `styles-<hash>.css`. Two builds with identical bytes produce
+//!   identical filenames; any byte change cascades into a new URL. The
+//!   8-char width matches the existing convention used by
+//!   [`zfb_css::link_href`] and `zfb_islands::bundle_link_href` so all
+//!   three crates produce comparable filenames for the same byte
+//!   stream.
+//!
+//! - **HTML rewrite for content-addressed URLs.** Every `RenderedPage`
+//!   has its body scanned for the *stable URL* declared on the
+//!   matching [`AssetEmitter`] (e.g. `/assets/styles.css`); each match
+//!   is rewritten to the **hashed** URL (`/assets/styles-<hash>.css`)
+//!   before the page is atomically written to dist. Pages can therefore
+//!   be authored against a stable URL contract and still get
+//!   forever-cacheable hashed URLs at deploy time.
+//!
+//! - **No SSE / no reload signaling.** Production builds emit a static
+//!   `dist/` tree only; the pipeline never produces reload events. The
+//!   `BuildOutcome::pages_written` field is still populated for tooling
+//!   that wants a per-tick summary, but no consumer is expected to act
+//!   on it as a reload trigger.
+//!
+//! - **No incremental byte cache.** Each `apply` writes every emitted
+//!   asset and every rendered page from scratch. Production runs once,
+//!   then exits — caching is the bin crate's responsibility (e.g.
+//!   wiping `dist/` before invoking).
+//!
+//! - **Minification is the emitter's responsibility.** The bin crate is
+//!   expected to construct each [`AssetEmitter`] with `minify=true`
+//!   (CSS via `lightningcss`'s minifier, JS via esbuild's
+//!   `--minify`). The pipeline is opaque to the *content* of the bytes
+//!   — it only hashes and ships them. Tests that simulate the
+//!   minification toggle do so by feeding the emitter pre-minified
+//!   bytes.
+//!
+//! ## Why not consume `BuildContext::run_css` / `run_islands`?
+//!
+//! Those callbacks are typed `Result<bool>` — a black-box "did the
+//! asset change?" signal. The production pipeline needs the bytes
+//! themselves so it can hash them and emit a content-addressed URL. So
+//! production swaps to a richer [`AssetEmitter`] contract and ignores
+//! the dev-style runners entirely. The fields stay on `BuildContext`
+//! to keep the dev path's wiring untouched.
+//!
+//! ## Selection
+//!
+//! Selection is by trait dispatch at the bin crate. `zfb dev`
+//! constructs [`super::dev::DevAssetPipeline`]; `zfb build` constructs
+//! [`ProductionAssetPipeline`]. The orchestrator is generic over the
+//! [`super::AssetPipeline`] trait so neither command sprouts an
+//! `if mode == Production` conditional.
+
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+use zfb_graph::PageId;
+
+use crate::atomic::atomic_write;
+use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
+use crate::plan::{PageSelection, RebuildPlan};
+
+/// Asset categories the production pipeline knows how to ship.
+///
+/// Used as the key in [`BuildOutcome::hashed_asset_urls`]. Adding a new
+/// variant is the right way to wire a new asset (e.g. a manifest.json
+/// or a sitemap-derived RSS feed) into the production pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssetKind {
+    /// The global stylesheet emitted by the CSS pipeline (Tailwind +
+    /// CSS Modules). Mirrors `zfb_css::CssPipelineOutput`.
+    Css,
+    /// The islands client bundle emitted by the islands pipeline.
+    /// Mirrors `zfb_islands::BundleOutput`.
+    Islands,
+}
+
+/// One asset the production pipeline is asked to ship.
+///
+/// The pipeline:
+///
+/// 1. Computes `sha256(bytes)[..8]`.
+/// 2. Writes the bytes to
+///    `<dist_root>/<filename_with_hash>` (where `filename_with_hash`
+///    inserts the hash before the extension — `styles.css` →
+///    `styles-<hash>.css`).
+/// 3. Records the hashed URL in [`BuildOutcome::hashed_asset_urls`].
+/// 4. Rewrites every occurrence of `stable_url` in the rendered HTML
+///    to the new hashed URL.
+///
+/// `stable_url` and `relative_path` are kept as separate fields so a
+/// caller can mount assets at a CDN URL while still emitting them under
+/// `dist/assets/...` on disk.
+#[derive(Debug, Clone)]
+pub struct EmittedAsset {
+    /// Asset bytes — the emitter is expected to have already minified
+    /// them in production mode (CSS via `lightningcss::PrinterOptions
+    /// { minify: true, .. }`, JS via esbuild `--minify`). The pipeline
+    /// is opaque to the bytes.
+    pub bytes: Vec<u8>,
+
+    /// Output filename relative to `dist_root`. Must include the file
+    /// extension. The hash is inserted before the extension. Example:
+    /// `assets/styles.css` → `<dist_root>/assets/styles-<hash>.css`.
+    pub relative_path: PathBuf,
+
+    /// The unhashed public URL the rendered HTML uses by default
+    /// (e.g. `/assets/styles.css`). The pipeline replaces every match
+    /// of this string in HTML bodies with the hashed equivalent.
+    ///
+    /// Empty `stable_url` is allowed and means "skip HTML rewriting"
+    /// (the asset still gets a hashed filename, but no rendered HTML
+    /// references it). Useful for assets that are loaded by other
+    /// assets rather than by the rendered HTML — the rewrites for
+    /// those happen elsewhere.
+    pub stable_url: String,
+}
+
+/// Pluggable producer of an [`EmittedAsset`].
+///
+/// One-shot: called at most once per [`ProductionAssetPipeline::apply`]
+/// invocation, when the corresponding `plan.rerun_*` flag is set. A
+/// returned `None` is interpreted as "no asset to emit this tick"
+/// (e.g. the project has no CSS), and the pipeline silently skips the
+/// hashing + write + HTML rewrite for this asset slot.
+pub trait AssetEmitter: Send + Sync {
+    /// Produce the asset for this build cycle.
+    fn emit(&self) -> Result<Option<EmittedAsset>>;
+}
+
+impl<F> AssetEmitter for F
+where
+    F: Fn() -> Result<Option<EmittedAsset>> + Send + Sync + 'static,
+{
+    fn emit(&self) -> Result<Option<EmittedAsset>> {
+        (self)()
+    }
+}
+
+/// Bundle of emitters [`ProductionAssetPipeline`] consults each tick.
+///
+/// Both emitters are optional: a project with no CSS or no islands
+/// simply leaves the corresponding slot `None` and the pipeline skips
+/// it.
+#[derive(Default)]
+pub struct ProductionEmitters {
+    /// Emitter for the global CSS asset. Called when
+    /// `plan.rerun_css == true`.
+    pub css: Option<Box<dyn AssetEmitter>>,
+    /// Emitter for the islands client bundle. Called when
+    /// `plan.rerun_islands == true`.
+    pub islands: Option<Box<dyn AssetEmitter>>,
+}
+
+impl std::fmt::Debug for ProductionEmitters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProductionEmitters")
+            .field("css", &self.css.as_ref().map(|_| "<emitter>"))
+            .field("islands", &self.islands.as_ref().map(|_| "<emitter>"))
+            .finish()
+    }
+}
+
+/// One-shot, content-addressed asset pipeline used by `zfb build`.
+///
+/// See the module-level docs for the full contract and the dev-vs-prod
+/// trade-offs.
+pub struct ProductionAssetPipeline {
+    emitters: ProductionEmitters,
+}
+
+impl ProductionAssetPipeline {
+    /// Construct a production pipeline with the given emitters.
+    pub fn new(emitters: ProductionEmitters) -> Self {
+        Self { emitters }
+    }
+
+    /// Construct a production pipeline with no asset emitters (useful
+    /// for tests that only exercise the page-render path).
+    pub fn empty() -> Self {
+        Self::new(ProductionEmitters::default())
+    }
+
+    /// Borrow the emitter bundle.
+    pub fn emitters(&self) -> &ProductionEmitters {
+        &self.emitters
+    }
+}
+
+impl std::fmt::Debug for ProductionAssetPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProductionAssetPipeline")
+            .field("emitters", &self.emitters)
+            .finish()
+    }
+}
+
+impl AssetPipeline for ProductionAssetPipeline {
+    fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
+        let mut outcome = BuildOutcome::default();
+
+        // 0. Resolve the page list. Production never sees `All` after
+        //    the orchestrator's resolution step, but mirror the dev
+        //    pipeline's defensive check so a bypass surfaces clearly.
+        let pages: Vec<PageId> = match &plan.pages {
+            PageSelection::All => {
+                return Err(anyhow::anyhow!(
+                    "ProductionAssetPipeline: PageSelection::All must be resolved to a concrete \
+                     page list by the orchestrator before reaching the pipeline"
+                ));
+            }
+            PageSelection::Specific(s) => s.iter().cloned().collect(),
+        };
+
+        // 1. Render pages — but defer writing until after assets are
+        //    emitted, so we can rewrite stable URLs to hashed URLs in
+        //    one pass over each page body.
+        let rendered = if pages.is_empty() {
+            Vec::new()
+        } else {
+            (ctx.render_pages)(&pages)?
+        };
+        outcome.pages_rendered = rendered.len();
+
+        // 2. Run the asset emitters and collect (stable_url → hashed_url)
+        //    rewrites.
+        let mut rewrites: Vec<(String, String)> = Vec::new();
+
+        if plan.rerun_css {
+            outcome.css_rerun = true;
+            if let Some(em) = self.emitters.css.as_ref() {
+                if let Some(asset) = em.emit().context("production CSS emitter failed")? {
+                    let hashed_url = ship_asset(ctx, &asset, AssetKind::Css, &mut outcome)?;
+                    if !asset.stable_url.is_empty() {
+                        rewrites.push((asset.stable_url, hashed_url));
+                    }
+                    outcome.css_changed = true;
+                }
+            }
+        }
+
+        if plan.rerun_islands {
+            outcome.islands_rerun = true;
+            if let Some(em) = self.emitters.islands.as_ref() {
+                if let Some(asset) = em.emit().context("production islands emitter failed")? {
+                    let hashed_url = ship_asset(ctx, &asset, AssetKind::Islands, &mut outcome)?;
+                    if !asset.stable_url.is_empty() {
+                        rewrites.push((asset.stable_url, hashed_url));
+                    }
+                    outcome.islands_changed = true;
+                }
+            }
+        }
+
+        // 3. Write each page, rewriting stable URLs to hashed URLs as
+        //    we go. The rewrite is naive substring replacement — the
+        //    emitters are expected to declare URLs that are unique
+        //    enough not to collide with arbitrary page text (e.g.
+        //    `/assets/styles.css` rather than `styles.css`).
+        for r in rendered {
+            let dest = ctx.dist_root.join(&r.output_path);
+            let body = if rewrites.is_empty() {
+                r.html
+            } else {
+                let mut buf = r.html;
+                for (from, to) in &rewrites {
+                    if buf.contains(from.as_str()) {
+                        buf = buf.replace(from.as_str(), to);
+                    }
+                }
+                buf
+            };
+            atomic_write(&dest, body.as_bytes())?;
+            outcome.pages_written.push(r.page);
+        }
+
+        Ok(outcome)
+    }
+}
+
+/// Hash, write, and record the URL for a single emitted asset.
+///
+/// Returns the hashed public URL the pipeline will rewrite into HTML.
+fn ship_asset(
+    ctx: &BuildContext,
+    asset: &EmittedAsset,
+    kind: AssetKind,
+    outcome: &mut BuildOutcome,
+) -> Result<String> {
+    let hash = sha256_8(&asset.bytes);
+    let hashed_relative = insert_hash_before_extension(&asset.relative_path, &hash);
+    let dest = ctx.dist_root.join(&hashed_relative);
+
+    atomic_write(&dest, &asset.bytes).with_context(|| {
+        format!(
+            "production: failed to write hashed asset {}",
+            dest.display()
+        )
+    })?;
+
+    let hashed_url = if asset.stable_url.is_empty() {
+        // No stable URL declared — synthesise one from the relative
+        // path so callers logging `hashed_asset_urls` still see something
+        // actionable. Leading `/` for parity with the typical declared
+        // form `/assets/styles.css`.
+        format!("/{}", path_to_url(&hashed_relative))
+    } else {
+        rewrite_url(&asset.stable_url, &asset.relative_path, &hashed_relative)
+    };
+
+    outcome.hashed_asset_urls.push((kind, hashed_url.clone()));
+    Ok(hashed_url)
+}
+
+/// Insert `hash` before the extension of `path`. `assets/styles.css`
+/// + `deadbeef` → `assets/styles-deadbeef.css`. Paths without an
+///   extension get `-<hash>` appended to the file stem.
+fn insert_hash_before_extension(path: &std::path::Path, hash: &str) -> PathBuf {
+    let mut out = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
+    let filename = match ext {
+        Some(e) if !e.is_empty() => format!("{stem}-{hash}.{e}"),
+        _ => format!("{stem}-{hash}"),
+    };
+    out.push(filename);
+    out
+}
+
+/// Derive the hashed URL by replacing the unhashed filename portion of
+/// `stable_url` with the hashed filename.
+///
+/// We do not assume `stable_url` matches `relative_path` exactly — the
+/// caller may serve assets under a different URL prefix than the on-disk
+/// layout (e.g. `/cdn/` mounted onto `dist/assets/`). The unhashed
+/// filename is always present in `stable_url` by definition (the emitter
+/// declared it), so we replace just that suffix.
+fn rewrite_url(stable_url: &str, relative: &std::path::Path, hashed_relative: &std::path::Path) -> String {
+    let unhashed_filename = relative
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let hashed_filename = hashed_relative
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if unhashed_filename.is_empty() || !stable_url.ends_with(&unhashed_filename) {
+        // Defensive: stable_url didn't end with the declared filename.
+        // Leave the URL untouched rather than guessing — the emitter
+        // is wrong and HTML rewriting won't fire.
+        return stable_url.to_string();
+    }
+    let prefix = &stable_url[..stable_url.len() - unhashed_filename.len()];
+    format!("{prefix}{hashed_filename}")
+}
+
+/// SHA-256 of `bytes`, truncated to 8 hex characters. Mirrors the
+/// `zfb_css::hash_8` / `zfb_islands::hash_8` convention.
+fn sha256_8(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let full = hex::encode(digest);
+    full[..8].to_string()
+}
+
+/// Convert a relative path to a forward-slash URL fragment, suitable
+/// for the synthesised hashed URL when no `stable_url` was declared.
+fn path_to_url(path: &std::path::Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::{BuildContext, RenderedPage};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    fn pid(s: &str) -> PageId {
+        PageId::new(PathBuf::from(s))
+    }
+
+    fn render_one(html: impl Into<String>, output: &str) -> RenderedPage {
+        RenderedPage {
+            page: pid(&format!("/p{output}")),
+            output_path: PathBuf::from(output.trim_start_matches('/')),
+            html: html.into(),
+            content_type: None,
+        }
+    }
+
+    fn ctx_with_pages(dist_root: PathBuf, pages: Vec<RenderedPage>) -> BuildContext {
+        BuildContext {
+            dist_root,
+            render_pages: Arc::new(move |_pages: &[PageId]| Ok(pages.clone())),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        }
+    }
+
+    fn plan_full(pages: Vec<&str>) -> RebuildPlan {
+        let mut sel = BTreeSet::new();
+        for p in pages {
+            sel.insert(pid(p));
+        }
+        RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: true,
+            rerun_islands: true,
+            triggers: vec![],
+        }
+    }
+
+    /// Production builds emit hashed asset filenames, write the bytes
+    /// to disk, and rewrite the stable URL in rendered HTML to the
+    /// hashed URL. This is the core acceptance criterion for sub-task
+    /// 8 — every asset reference in the rendered HTML must use the
+    /// hashed filename.
+    #[test]
+    fn prod_pipeline_hashes_css_and_rewrites_html() {
+        let dir = tempdir().unwrap();
+        let css_bytes = b".btn{color:red}".to_vec();
+        let css_emitter = move || {
+            Ok(Some(EmittedAsset {
+                bytes: css_bytes.clone(),
+                relative_path: PathBuf::from("assets/styles.css"),
+                stable_url: "/assets/styles.css".into(),
+            }))
+        };
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: Some(Box::new(css_emitter)),
+            islands: None,
+        });
+        let pages = vec![render_one(
+            "<html><head><link rel=\"stylesheet\" href=\"/assets/styles.css\"></head><body/></html>",
+            "/index.html",
+        )];
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), pages);
+        let plan = plan_full(vec!["//index.html"]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        // Exactly one CSS asset url was emitted, with hash baked in.
+        assert_eq!(outcome.hashed_asset_urls.len(), 1);
+        let (kind, url) = &outcome.hashed_asset_urls[0];
+        assert_eq!(*kind, AssetKind::Css);
+        assert!(
+            url.starts_with("/assets/styles-") && url.ends_with(".css") && url.len() == "/assets/styles-12345678.css".len(),
+            "expected /assets/styles-<8hex>.css; got {url}",
+        );
+
+        // The hashed CSS file is on disk; the stable filename is not.
+        let entries: Vec<String> = std::fs::read_dir(dir.path().join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries.len(), 1, "expected exactly one css asset on disk");
+        assert!(
+            entries[0].starts_with("styles-") && entries[0].ends_with(".css"),
+            "got {entries:?}",
+        );
+
+        // HTML body had its `/assets/styles.css` reference rewritten.
+        let html = std::fs::read_to_string(dir.path().join("index.html")).unwrap();
+        assert!(
+            !html.contains("/assets/styles.css\""),
+            "stable URL leaked into HTML: {html}",
+        );
+        assert!(html.contains(url), "hashed URL not present in HTML: {html}");
+    }
+
+    /// Identical input bytes produce the same hash so the URL is
+    /// stable across builds. A byte change cascades into a new URL.
+    #[test]
+    fn prod_pipeline_hash_is_byte_stable_and_change_sensitive() {
+        let dir = tempdir().unwrap();
+
+        let bytes_a = b".x{color:red}".to_vec();
+        let url_a = {
+            let css_a = bytes_a.clone();
+            let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+                css: Some(Box::new(move || {
+                    Ok(Some(EmittedAsset {
+                        bytes: css_a.clone(),
+                        relative_path: PathBuf::from("assets/styles.css"),
+                        stable_url: "/assets/styles.css".into(),
+                    }))
+                })),
+                islands: None,
+            });
+            let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+            let plan = plan_full(vec![]);
+            let outcome = pipeline.apply(&plan, &ctx).unwrap();
+            outcome.hashed_asset_urls[0].1.clone()
+        };
+
+        // Identical bytes → identical hashed URL.
+        let url_a2 = {
+            let css_a = bytes_a.clone();
+            let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+                css: Some(Box::new(move || {
+                    Ok(Some(EmittedAsset {
+                        bytes: css_a.clone(),
+                        relative_path: PathBuf::from("assets/styles.css"),
+                        stable_url: "/assets/styles.css".into(),
+                    }))
+                })),
+                islands: None,
+            });
+            let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+            let plan = plan_full(vec![]);
+            let outcome = pipeline.apply(&plan, &ctx).unwrap();
+            outcome.hashed_asset_urls[0].1.clone()
+        };
+        assert_eq!(url_a, url_a2, "byte-identical assets must produce the same URL");
+
+        // Differing bytes → differing URL.
+        let url_b = {
+            let css_b = b".x{color:blue}".to_vec();
+            let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+                css: Some(Box::new(move || {
+                    Ok(Some(EmittedAsset {
+                        bytes: css_b.clone(),
+                        relative_path: PathBuf::from("assets/styles.css"),
+                        stable_url: "/assets/styles.css".into(),
+                    }))
+                })),
+                islands: None,
+            });
+            let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+            let plan = plan_full(vec![]);
+            let outcome = pipeline.apply(&plan, &ctx).unwrap();
+            outcome.hashed_asset_urls[0].1.clone()
+        };
+        assert_ne!(url_a, url_b, "differing bytes must produce a differing URL");
+    }
+
+    /// A second emitter (islands) is shipped through the same path —
+    /// hashed filename, separate URL entry, separate HTML rewrite.
+    #[test]
+    fn prod_pipeline_hashes_both_css_and_islands() {
+        let dir = tempdir().unwrap();
+        let css_emitter = || {
+            Ok(Some(EmittedAsset {
+                bytes: b"/* css */".to_vec(),
+                relative_path: PathBuf::from("assets/styles.css"),
+                stable_url: "/assets/styles.css".into(),
+            }))
+        };
+        let islands_emitter = || {
+            Ok(Some(EmittedAsset {
+                bytes: b"// islands".to_vec(),
+                relative_path: PathBuf::from("assets/islands.js"),
+                stable_url: "/assets/islands.js".into(),
+            }))
+        };
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: Some(Box::new(css_emitter)),
+            islands: Some(Box::new(islands_emitter)),
+        });
+
+        let html = "\
+            <html><head>\
+            <link rel=\"stylesheet\" href=\"/assets/styles.css\">\
+            <script type=\"module\" src=\"/assets/islands.js\"></script>\
+            </head><body/></html>";
+        let pages = vec![render_one(html, "/index.html")];
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), pages);
+        let plan = plan_full(vec!["//index.html"]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        assert_eq!(outcome.hashed_asset_urls.len(), 2);
+        let kinds: Vec<AssetKind> = outcome
+            .hashed_asset_urls
+            .iter()
+            .map(|(k, _)| *k)
+            .collect();
+        assert!(kinds.contains(&AssetKind::Css));
+        assert!(kinds.contains(&AssetKind::Islands));
+
+        let dist_html = std::fs::read_to_string(dir.path().join("index.html")).unwrap();
+        assert!(
+            !dist_html.contains("/assets/styles.css\"") && !dist_html.contains("/assets/islands.js\""),
+            "stable URLs leaked: {dist_html}",
+        );
+        for (_, url) in &outcome.hashed_asset_urls {
+            assert!(dist_html.contains(url), "hashed url {url} missing from HTML: {dist_html}");
+        }
+
+        // Both hashed files exist on disk with no stable copies left
+        // behind.
+        let assets: Vec<String> = std::fs::read_dir(dir.path().join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(assets.len(), 2);
+        assert!(assets.iter().any(|n| n.starts_with("styles-") && n.ends_with(".css")));
+        assert!(assets.iter().any(|n| n.starts_with("islands-") && n.ends_with(".js")));
+    }
+
+    /// Production never relies on the dev-style bool runners. Even
+    /// when `plan.rerun_css` is set and `BuildContext::run_css` is
+    /// `Some`, the runner must NOT be invoked — production reads bytes
+    /// through its own [`AssetEmitter`] instead.
+    #[test]
+    fn prod_pipeline_ignores_dev_bool_runners() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempdir().unwrap();
+        let bool_runner_calls = Arc::new(AtomicUsize::new(0));
+        let calls_cb = bool_runner_calls.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: Some(Arc::new(move || {
+                calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })),
+            run_islands: None,
+            reload_renderer: None,
+        };
+        let pipeline = ProductionAssetPipeline::empty();
+        let plan = plan_full(vec![]);
+        let _ = pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(
+            bool_runner_calls.load(Ordering::SeqCst),
+            0,
+            "ProductionAssetPipeline must not call dev-style run_css runner"
+        );
+    }
+
+    /// `plan.rerun_css` without a CSS emitter is a quiet no-op: the
+    /// outcome reports `css_rerun = true` (the plan asked for it) but
+    /// `css_changed = false` (no asset was emitted).
+    #[test]
+    fn prod_pipeline_skips_emit_when_no_emitter_registered() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::empty();
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+        let plan = plan_full(vec![]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(outcome.css_rerun);
+        assert!(!outcome.css_changed);
+        assert!(outcome.islands_rerun);
+        assert!(!outcome.islands_changed);
+        assert!(outcome.hashed_asset_urls.is_empty());
+    }
+
+    /// Production refuses `PageSelection::All` — same defensive
+    /// contract as [`super::dev::DevAssetPipeline`].
+    #[test]
+    fn prod_pipeline_rejects_unresolved_all() {
+        let dir = tempdir().unwrap();
+        let pipeline = ProductionAssetPipeline::empty();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        };
+        let plan = RebuildPlan {
+            pages: PageSelection::All,
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        assert!(pipeline.apply(&plan, &ctx).is_err());
+    }
+
+    #[test]
+    fn insert_hash_before_extension_handles_common_cases() {
+        assert_eq!(
+            insert_hash_before_extension(std::path::Path::new("assets/styles.css"), "deadbeef"),
+            PathBuf::from("assets/styles-deadbeef.css"),
+        );
+        assert_eq!(
+            insert_hash_before_extension(std::path::Path::new("islands.js"), "abcdef12"),
+            PathBuf::from("islands-abcdef12.js"),
+        );
+        // No extension: append `-<hash>` to the stem.
+        assert_eq!(
+            insert_hash_before_extension(std::path::Path::new("assets/manifest"), "01020304"),
+            PathBuf::from("assets/manifest-01020304"),
+        );
+    }
+
+    #[test]
+    fn rewrite_url_swaps_only_the_filename_portion() {
+        // Stable URL co-located with the on-disk layout.
+        let from = "/assets/styles.css";
+        let rel = std::path::Path::new("assets/styles.css");
+        let hashed = std::path::Path::new("assets/styles-deadbeef.css");
+        assert_eq!(rewrite_url(from, rel, hashed), "/assets/styles-deadbeef.css");
+
+        // Stable URL on a CDN prefix decoupled from the on-disk path.
+        let cdn = "https://cdn.example.test/v1/styles.css";
+        assert_eq!(
+            rewrite_url(cdn, rel, hashed),
+            "https://cdn.example.test/v1/styles-deadbeef.css"
+        );
+    }
+
+    #[test]
+    fn sha256_8_is_byte_stable() {
+        let a = sha256_8(b"hello");
+        let b = sha256_8(b"hello");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 8);
+        assert_ne!(a, sha256_8(b"hellp"));
+    }
+}

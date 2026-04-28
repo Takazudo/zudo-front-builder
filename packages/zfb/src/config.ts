@@ -48,6 +48,18 @@ export type ZfbConfig = {
   tailwind?: TailwindConfig;
   /** User-supplied plugins. */
   plugins?: PluginConfig[];
+  /**
+   * Deploy-target adapter package name. Omit (or `"none"`) for a pure
+   * static build — any route exporting `prerender = false` is then a
+   * hard build error. A package name like
+   * `"@takazudo/zfb-adapter-cloudflare"` selects the matching adapter,
+   * and `zfb build` invokes that package's bin to wrap the SSR bundle
+   * into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare
+   * Pages).
+   *
+   * Mirrors `Config::adapter` in crates/zfb/src/config.rs.
+   */
+  adapter?: string;
 };
 
 /**

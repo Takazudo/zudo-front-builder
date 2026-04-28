@@ -20,6 +20,11 @@
 //! - [`DirtySet`] — return shape of [`DependencyGraph::dirty_pages`]; either a
 //!   specific set of pages or the [`DirtySet::All`] sentinel meaning "rebuild
 //!   every page" (used for global files like `zfb.config.ts`).
+//! - [`AssetDeps`] — per-page asset-dependency record: the islands components
+//!   the page hydrates and the CSS modules it pulls in. Tracked alongside the
+//!   page-source graph so dev rebuilds can scope asset-bundle invalidation
+//!   precisely (re-bundle islands only when a page that uses them changed,
+//!   re-emit CSS modules only when a page that imports them changed).
 //!
 //! ## Coarse-rebuild policy
 //!
@@ -153,6 +158,50 @@ impl DirtySet {
     }
 }
 
+/// Per-page asset-dependency record.
+///
+/// Sits alongside the source-level [`DependencyGraph`] edges. The source graph
+/// answers "which pages must re-render?" — the asset layer answers "which
+/// asset bundles must re-emit?". A `"use client"` component edit dirties the
+/// islands bundles owned by every page that hydrates it, but does not by
+/// itself dirty the page's HTML. Likewise, a CSS-modules file edit dirties
+/// the CSS asset for every consumer page.
+///
+/// Fields are deliberately small and structurally typed: islands are keyed by
+/// stable component identifier (typically the scanner's
+/// `component_name`), CSS modules by source path. Producers of this record
+/// are not required to canonicalise paths, but they must hand in the same
+/// representation they query against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AssetDeps {
+    /// Stable component identifiers (see `zfb_islands::scanner`'s notion of
+    /// component-name identity) of every `"use client"` island the page
+    /// hydrates.
+    pub islands: BTreeSet<String>,
+    /// CSS-Modules source paths the page pulls in. Plain stylesheets that
+    /// land in the global Tailwind asset are not tracked here — those
+    /// dirty every page through the regular `DepKind::Style` edge.
+    pub css_modules: BTreeSet<PathBuf>,
+}
+
+impl AssetDeps {
+    /// Convenience: construct from islands and css-modules iterables.
+    pub fn new(
+        islands: impl IntoIterator<Item = String>,
+        css_modules: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        Self {
+            islands: islands.into_iter().collect(),
+            css_modules: css_modules.into_iter().collect(),
+        }
+    }
+
+    /// `true` iff there are no recorded asset dependencies at all.
+    pub fn is_empty(&self) -> bool {
+        self.islands.is_empty() && self.css_modules.is_empty()
+    }
+}
+
 /// Page dependency graph.
 ///
 /// Internally maintains:
@@ -163,11 +212,20 @@ impl DirtySet {
 ///   used by [`DependencyGraph::dirty_pages`]).
 /// - `pages` — the canonical set of known pages.
 /// - `globals` — paths whose change forces [`DirtySet::All`].
+/// - `assets[page] -> AssetDeps` — per-page islands + css-modules sets
+///   maintained alongside the source graph.
+/// - `assets_islands_reverse[component] -> {pages}` and
+///   `assets_css_reverse[module_path] -> {pages}` — reverse indexes that
+///   power [`DependencyGraph::pages_using_island`] and
+///   [`DependencyGraph::pages_using_css_module`] in O(1).
 pub struct DependencyGraph {
     forward: HashMap<PageId, Vec<(PathBuf, DepKind)>>,
     reverse: HashMap<PathBuf, HashSet<PageId>>,
     pages: HashSet<PageId>,
     globals: HashSet<PathBuf>,
+    assets: HashMap<PageId, AssetDeps>,
+    assets_islands_reverse: HashMap<String, HashSet<PageId>>,
+    assets_css_reverse: HashMap<PathBuf, HashSet<PageId>>,
 }
 
 impl Default for DependencyGraph {
@@ -186,6 +244,9 @@ impl DependencyGraph {
             reverse: HashMap::new(),
             pages: HashSet::new(),
             globals: HashSet::new(),
+            assets: HashMap::new(),
+            assets_islands_reverse: HashMap::new(),
+            assets_css_reverse: HashMap::new(),
         }
     }
 
@@ -327,6 +388,10 @@ impl DependencyGraph {
                     }
                 }
             }
+            // Tear down the asset-layer record too — leaving stale reverse
+            // entries would surface this dropped page as an island/css
+            // consumer on subsequent queries.
+            self.clear_assets_for_page(&page_id);
             affected.insert(page_id);
             return affected;
         }
@@ -343,6 +408,133 @@ impl DependencyGraph {
 
         affected
     }
+
+    // -------------------------------------------------------------------------
+    // Asset-dependency layer
+    // -------------------------------------------------------------------------
+
+    /// Replace the asset-dependency record for `page`.
+    ///
+    /// Cleans up the reverse indexes from the previous record so callers can
+    /// hand in fresh resolver/scanner output without bookkeeping. Pages are
+    /// not implicitly added to [`Self::pages`]: the asset layer is observable
+    /// even on pages whose source-level edges have not been registered (e.g.,
+    /// a freshly-scanned page whose module dep set is still being resolved).
+    /// Producers that want a registered page should call [`Self::upsert`] in
+    /// addition.
+    pub fn set_assets_for_page(&mut self, page: PageId, deps: AssetDeps) {
+        // Drop prior reverse entries for this page so we never leave stale
+        // pointers behind.
+        if let Some(prior) = self.assets.remove(&page) {
+            for c in prior.islands {
+                if let Some(consumers) = self.assets_islands_reverse.get_mut(&c) {
+                    consumers.remove(&page);
+                    if consumers.is_empty() {
+                        self.assets_islands_reverse.remove(&c);
+                    }
+                }
+            }
+            for m in prior.css_modules {
+                if let Some(consumers) = self.assets_css_reverse.get_mut(&m) {
+                    consumers.remove(&page);
+                    if consumers.is_empty() {
+                        self.assets_css_reverse.remove(&m);
+                    }
+                }
+            }
+        }
+
+        // Install fresh reverse entries.
+        for c in &deps.islands {
+            self.assets_islands_reverse
+                .entry(c.clone())
+                .or_default()
+                .insert(page.clone());
+        }
+        for m in &deps.css_modules {
+            self.assets_css_reverse
+                .entry(m.clone())
+                .or_default()
+                .insert(page.clone());
+        }
+
+        self.assets.insert(page, deps);
+    }
+
+    /// Forget the asset-layer record for `page` (no-op if not present).
+    /// Used by [`Self::remove_node`] when a page itself is removed.
+    pub fn clear_assets_for_page(&mut self, page: &PageId) {
+        if let Some(prior) = self.assets.remove(page) {
+            for c in prior.islands {
+                if let Some(consumers) = self.assets_islands_reverse.get_mut(&c) {
+                    consumers.remove(page);
+                    if consumers.is_empty() {
+                        self.assets_islands_reverse.remove(&c);
+                    }
+                }
+            }
+            for m in prior.css_modules {
+                if let Some(consumers) = self.assets_css_reverse.get_mut(&m) {
+                    consumers.remove(page);
+                    if consumers.is_empty() {
+                        self.assets_css_reverse.remove(&m);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Borrow the asset-dependency record for `page`. Returns `None` if no
+    /// record has been registered (versus `Some(empty)` for a page that has
+    /// been registered with no islands or CSS modules).
+    pub fn assets_for_page(&self, page: &PageId) -> Option<&AssetDeps> {
+        self.assets.get(page)
+    }
+
+    /// Pages that hydrate the island whose stable component identifier is
+    /// `component`. Sorted for deterministic iteration. Empty when no page
+    /// has registered the component.
+    pub fn pages_using_island(&self, component: &str) -> Vec<PageId> {
+        let mut v: Vec<PageId> = self
+            .assets_islands_reverse
+            .get(component)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// Pages that pull in the given CSS-Modules source path. Sorted.
+    pub fn pages_using_css_module(&self, module_path: &Path) -> Vec<PageId> {
+        let mut v: Vec<PageId> = self
+            .assets_css_reverse
+            .get(module_path)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// All distinct islands currently registered across every page, sorted.
+    /// Useful for the dev-mode islands bundler which wants the union as its
+    /// scan input.
+    pub fn all_islands(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.assets_islands_reverse.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// All distinct CSS-Modules paths currently registered across every page.
+    /// Sorted.
+    pub fn all_css_modules(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self.assets_css_reverse.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    // -------------------------------------------------------------------------
+    // Dirty-set queries
+    // -------------------------------------------------------------------------
 
     /// The minimal set of pages whose output is affected by changing `path`.
     ///
@@ -650,6 +842,138 @@ mod tests {
 
         g.add_node("/known-but-unused.tsx");
         assert_eq!(g.consumers_of(&p("/known-but-unused.tsx")), Some(vec![]));
+    }
+
+    // -------------------------------------------------------------------------
+    // asset-dependency layer
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn asset_layer_records_islands_per_page() {
+        let mut g = DependencyGraph::new();
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["Counter".to_string()], []),
+        );
+        g.set_assets_for_page(
+            pid("/pages/b.tsx"),
+            AssetDeps::new(["Counter".to_string(), "Search".to_string()], []),
+        );
+        g.set_assets_for_page(
+            pid("/pages/c.tsx"),
+            AssetDeps::new(["Search".to_string()], []),
+        );
+
+        let a_assets = g.assets_for_page(&pid("/pages/a.tsx")).unwrap();
+        assert!(a_assets.islands.contains("Counter"));
+        assert!(!a_assets.islands.contains("Search"));
+
+        // Reverse lookup: editing the Counter component dirties exactly
+        // the pages that hydrate it.
+        assert_eq!(
+            g.pages_using_island("Counter"),
+            vec![pid("/pages/a.tsx"), pid("/pages/b.tsx")],
+        );
+        assert_eq!(
+            g.pages_using_island("Search"),
+            vec![pid("/pages/b.tsx"), pid("/pages/c.tsx")],
+        );
+        assert!(g.pages_using_island("DoesNotExist").is_empty());
+    }
+
+    #[test]
+    fn asset_layer_records_css_modules_per_page() {
+        let mut g = DependencyGraph::new();
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new([], [p("/styles/header.module.css")]),
+        );
+        g.set_assets_for_page(
+            pid("/pages/b.tsx"),
+            AssetDeps::new(
+                [],
+                [p("/styles/header.module.css"), p("/styles/footer.module.css")],
+            ),
+        );
+        assert_eq!(
+            g.pages_using_css_module(&p("/styles/header.module.css")),
+            vec![pid("/pages/a.tsx"), pid("/pages/b.tsx")],
+        );
+        assert_eq!(
+            g.pages_using_css_module(&p("/styles/footer.module.css")),
+            vec![pid("/pages/b.tsx")],
+        );
+        assert!(g.pages_using_css_module(&p("/nope.css")).is_empty());
+    }
+
+    #[test]
+    fn set_assets_replaces_prior_record_cleanly() {
+        let mut g = DependencyGraph::new();
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["Old".to_string()], [p("/styles/old.module.css")]),
+        );
+        // Replace: Old should disappear from reverse indexes.
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["New".to_string()], [p("/styles/new.module.css")]),
+        );
+        assert!(g.pages_using_island("Old").is_empty());
+        assert_eq!(
+            g.pages_using_island("New"),
+            vec![pid("/pages/a.tsx")],
+        );
+        assert!(g
+            .pages_using_css_module(&p("/styles/old.module.css"))
+            .is_empty());
+        assert_eq!(
+            g.pages_using_css_module(&p("/styles/new.module.css")),
+            vec![pid("/pages/a.tsx")],
+        );
+    }
+
+    #[test]
+    fn remove_node_clears_asset_layer_for_page() {
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(pid("/pages/a.tsx"), vec![]));
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["Counter".to_string()], [p("/m.module.css")]),
+        );
+        // Removing the page also forgets its asset record so reverse
+        // queries don't surface a dangling page.
+        let removed = g.remove_node(&p("/pages/a.tsx"));
+        assert!(removed.contains(&pid("/pages/a.tsx")));
+        assert!(g.pages_using_island("Counter").is_empty());
+        assert!(g.pages_using_css_module(&p("/m.module.css")).is_empty());
+        assert!(g.assets_for_page(&pid("/pages/a.tsx")).is_none());
+    }
+
+    #[test]
+    fn all_islands_and_all_css_modules_are_sorted_unions() {
+        let mut g = DependencyGraph::new();
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["Z".to_string(), "A".to_string()], [p("/y.css"), p("/x.css")]),
+        );
+        g.set_assets_for_page(
+            pid("/pages/b.tsx"),
+            AssetDeps::new(["M".to_string(), "A".to_string()], [p("/x.css")]),
+        );
+        assert_eq!(
+            g.all_islands(),
+            vec!["A".to_string(), "M".to_string(), "Z".to_string()],
+        );
+        assert_eq!(g.all_css_modules(), vec![p("/x.css"), p("/y.css")]);
+    }
+
+    #[test]
+    fn assets_for_page_distinguishes_unregistered_from_empty() {
+        let mut g = DependencyGraph::new();
+        assert!(g.assets_for_page(&pid("/pages/none.tsx")).is_none());
+        g.set_assets_for_page(pid("/pages/empty.tsx"), AssetDeps::default());
+        let rec = g.assets_for_page(&pid("/pages/empty.tsx")).unwrap();
+        assert!(rec.is_empty());
     }
 
     #[test]

@@ -32,17 +32,24 @@ pub mod bundler;
 pub mod esbuild;
 pub mod future_rust_native;
 pub mod hydration;
+pub mod manifest;
 pub mod scanner;
 
 pub use bundler::{
-    bundle_link_href, BundleConfig, BundleOutput, ClientBundler, Island, ModuleId,
+    bundle_link_href, island_link_href, BundleConfig, BundleOutput, ClientBundler, FrameworkKind,
+    Island, IslandBundle, ModuleId, PerIslandBundleOutput,
 };
-pub use esbuild::{hash_8, EsbuildSubprocessBundler, EsbuildSubprocessConfig};
+pub use esbuild::{
+    hash_8, render_island_entry_source, render_runtime_entry_source, EsbuildSubprocessBundler,
+    EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+};
 pub use future_rust_native::NativeRustBundler;
 pub use hydration::{
-    hydration_script_tag, rewrite_islands, rewrite_islands_in_attr_skeleton, IslandDescriptor,
-    IslandRewriteError, IslandSkeletonRewriteError,
+    hydration_script_tag, inject_runtime_script_into_head, islands_runtime_script_tag,
+    rewrite_islands, rewrite_islands_in_attr_skeleton, IslandDescriptor, IslandRewriteError,
+    IslandSkeletonRewriteError,
 };
+pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
     is_bare_specifier, normalize_path_lexical, scan_islands, FsResolver, InMemoryResolver,
     IslandsSet, Resolver, ScanError, ScanResult,

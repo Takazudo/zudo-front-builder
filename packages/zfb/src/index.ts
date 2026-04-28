@@ -5,7 +5,15 @@
 // `import { scheduleHydrate } from "zfb/runtime"` (or by inlining the
 // same logic; coordinated separately).
 
-export { Island, resolveWhen, type IslandProps } from "./island.js";
+export {
+  ANONYMOUS_COMPONENT_NAME,
+  HYDRATE_MARKER_ATTR,
+  Island,
+  SKIP_SSR_MARKER_ATTR,
+  resolveWhen,
+  type IslandElement,
+  type IslandProps,
+} from "./island.js";
 export { scheduleHydrate } from "./runtime.js";
 export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 

@@ -36,25 +36,36 @@
 //!
 //! - `outcome.pages_written.len() > 0`  ⇒  emit one [`ReloadEvent::Page`].
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
-//! - When only CSS changed we deliberately do **not** emit `Page`; the
-//!   browser swaps the `<link>` href in place without reloading the
-//!   document, so reloading would defeat the hot-swap.
-//! - When both pages and CSS changed we emit both events. The browser
-//!   handles `page` first (full reload) which renders the CSS swap moot
-//!   for that tab, but other tabs subscribed to the same stream may
-//!   still benefit from the CSS event.
+//! - `outcome.islands_bundle.is_some()` ⇒  emit one
+//!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
+//!   bundle's public URL so the browser-side runtime can swap-import the
+//!   new module without a full page reload.
+//! - When only CSS or only islands changed we deliberately do **not**
+//!   emit `Page`; the browser swaps in place without reloading the
+//!   document so reloading would defeat the hot-swap.
+//! - When both pages and CSS/islands changed we emit all events. The
+//!   browser handles `page` first (full reload) which renders the swaps
+//!   moot for that tab, but other tabs subscribed to the same stream
+//!   still benefit from the in-place updates.
 
 use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use zfb_build::BuildOutcome;
 
 /// A single live-reload event delivered over the SSE channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The enum carries owned data because the `Islands` variant references
+/// per-component identifiers and a bundle URL the browser must dispatch
+/// on. `Copy` is therefore deliberately not implemented — clones are
+/// cheap (one short string per field) and the broadcast channel is
+/// sized small.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReloadEvent {
     /// One or more pages were re-rendered. The browser should fully
     /// reload the document (`location.reload()`).
@@ -62,6 +73,19 @@ pub enum ReloadEvent {
     /// CSS asset changed. The browser should hot-swap every
     /// `<link rel="stylesheet">` by bumping its query string.
     Css,
+    /// The islands bundle changed. The browser should swap-import the
+    /// new bundle URL and re-run hydration for the named component.
+    Islands {
+        /// Stable identifier of the `"use client"` component whose
+        /// island bundle changed. Mirrors the
+        /// `zfb_islands::Island::component_name` value.
+        component: String,
+        /// Public URL of the freshly-emitted bundle, e.g.
+        /// `/assets/islands-abc12345.js`. The browser performs
+        /// `import(bundle_url)` on receipt, so the URL must already
+        /// reflect the new content hash.
+        bundle_url: String,
+    },
 }
 
 impl ReloadEvent {
@@ -71,21 +95,57 @@ impl ReloadEvent {
         match self {
             ReloadEvent::Page => "page",
             ReloadEvent::Css => "css",
+            ReloadEvent::Islands { .. } => "islands",
+        }
+    }
+
+    /// SSE `data:` payload. `Page` and `Css` carry no data (the browser
+    /// reacts on the event name alone); `Islands` serialises the
+    /// `{component, bundle_url}` pair as a one-line JSON object.
+    pub fn data(&self) -> String {
+        match self {
+            ReloadEvent::Page | ReloadEvent::Css => String::new(),
+            ReloadEvent::Islands {
+                component,
+                bundle_url,
+            } => serde_json::json!({
+                "component": component,
+                "bundleUrl": bundle_url,
+            })
+            .to_string(),
         }
     }
 }
+
+/// Per-bundle metadata carried out of [`outcome_to_events`].
+///
+/// The `BuildOutcome` only surfaces flags today — when an islands
+/// re-bundle happens the bin crate populates this side-channel via
+/// [`BuildOutcome::islands_bundle`] so the SSE layer knows which
+/// components and which URL to broadcast.
+pub use zfb_build::IslandsBundleInfo;
 
 /// Translate a [`BuildOutcome`] into the live-reload events the browser
 /// should observe.
 ///
 /// See module docs for the rules.
 pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
-    let mut events = Vec::with_capacity(2);
+    let mut events = Vec::new();
     if !outcome.pages_written.is_empty() {
         events.push(ReloadEvent::Page);
     }
     if outcome.css_changed {
         events.push(ReloadEvent::Css);
+    }
+    if let Some(info) = outcome.islands_bundle.as_ref() {
+        if info.changed {
+            for component in &info.components {
+                events.push(ReloadEvent::Islands {
+                    component: component.clone(),
+                    bundle_url: info.bundle_url.clone(),
+                });
+            }
+        }
     }
     events
 }
@@ -116,7 +176,14 @@ pub fn sse_response(
     let rx = tx.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|res| async move {
         match res {
-            Ok(ev) => Some(Ok(Event::default().event(ev.name()))),
+            Ok(ev) => {
+                let mut sse = Event::default().event(ev.name());
+                let payload = ev.data();
+                if !payload.is_empty() {
+                    sse = sse.data(payload);
+                }
+                Some(Ok(sse))
+            }
             Err(_lagged) => None,
         }
     });
@@ -185,15 +252,81 @@ mod tests {
     }
 
     #[test]
-    fn islands_changes_dont_emit() {
-        // We don't currently model islands hot-swap. A pages_written
-        // entry for the affected page is what triggers reload.
+    fn islands_rerun_without_bundle_info_emits_nothing() {
+        // The flags say a rerun ran but the runner populated no
+        // bundle info — nothing to broadcast (and no URL to dispatch
+        // on anyway).
         let outcome = BuildOutcome {
             islands_rerun: true,
             islands_changed: true,
+            islands_bundle: None,
             ..Default::default()
         };
         assert!(outcome_to_events(&outcome).is_empty());
+    }
+
+    #[test]
+    fn islands_bundle_info_unchanged_emits_nothing() {
+        // A rerun produced a byte-identical bundle: the URL didn't
+        // move, so the browser has nothing to swap.
+        let outcome = BuildOutcome {
+            islands_rerun: true,
+            islands_changed: false,
+            islands_bundle: Some(IslandsBundleInfo {
+                changed: false,
+                bundle_url: "/assets/islands-deadbeef.js".to_string(),
+                components: vec!["Counter".to_string()],
+            }),
+            ..Default::default()
+        };
+        assert!(outcome_to_events(&outcome).is_empty());
+    }
+
+    #[test]
+    fn islands_bundle_info_changed_emits_one_event_per_component() {
+        let outcome = BuildOutcome {
+            islands_rerun: true,
+            islands_changed: true,
+            islands_bundle: Some(IslandsBundleInfo {
+                changed: true,
+                bundle_url: "/assets/islands-cafef00d.js".to_string(),
+                components: vec!["Counter".to_string(), "Search".to_string()],
+            }),
+            ..Default::default()
+        };
+        let events = outcome_to_events(&outcome);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            ReloadEvent::Islands { component, bundle_url }
+                if component == "Counter"
+                    && bundle_url == "/assets/islands-cafef00d.js"
+        ));
+        assert!(matches!(
+            &events[1],
+            ReloadEvent::Islands { component, bundle_url }
+                if component == "Search"
+                    && bundle_url == "/assets/islands-cafef00d.js"
+        ));
+    }
+
+    #[test]
+    fn pages_and_islands_emits_both() {
+        let outcome = BuildOutcome {
+            pages_written: vec![pid("/a")],
+            islands_rerun: true,
+            islands_changed: true,
+            islands_bundle: Some(IslandsBundleInfo {
+                changed: true,
+                bundle_url: "/assets/islands-feed1234.js".to_string(),
+                components: vec!["Counter".to_string()],
+            }),
+            ..Default::default()
+        };
+        let events = outcome_to_events(&outcome);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], ReloadEvent::Page);
+        assert!(matches!(events[1], ReloadEvent::Islands { .. }));
     }
 
     #[test]
@@ -202,5 +335,29 @@ mod tests {
         // src/livereload.js.
         assert_eq!(ReloadEvent::Page.name(), "page");
         assert_eq!(ReloadEvent::Css.name(), "css");
+        assert_eq!(
+            ReloadEvent::Islands {
+                component: "Counter".into(),
+                bundle_url: "/assets/x.js".into(),
+            }
+            .name(),
+            "islands"
+        );
+    }
+
+    #[test]
+    fn islands_event_carries_json_payload() {
+        let ev = ReloadEvent::Islands {
+            component: "Counter".into(),
+            bundle_url: "/assets/islands-deadbeef.js".into(),
+        };
+        let payload = ev.data();
+        // JSON parses cleanly and carries both keys.
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["component"], "Counter");
+        assert_eq!(parsed["bundleUrl"], "/assets/islands-deadbeef.js");
+        // Page / Css events stay payload-less.
+        assert!(ReloadEvent::Page.data().is_empty());
+        assert!(ReloadEvent::Css.data().is_empty());
     }
 }

@@ -44,6 +44,13 @@ sourcemap = "9"
 # parallel worktrees don't race for the same loopback port. Only used
 # in tests; pulled in via the main deps for simplicity.
 fs2 = "0.4"
+# Content-addressed asset hashing for the production asset pipeline
+# (see `pipeline::prod::ProductionAssetPipeline`). SHA-256 truncated to
+# 8 hex chars matches the existing convention used by `zfb-css` and
+# `zfb-islands` so all three crates produce comparable hashes for the
+# same byte stream.
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
