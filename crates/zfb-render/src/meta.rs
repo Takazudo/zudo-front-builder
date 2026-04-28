@@ -255,16 +255,44 @@ pub fn derive_content_type(
     if let Some(ct) = frontmatter_content_type {
         return ct.to_string();
     }
+    // Mirror of zfb_server::routes::content_type_for_extension; keep both
+    // in sync (and ADR-003). Differs in the catch-all only: pages emitted
+    // by the SSG renderer default to HTML when the extension is unknown,
+    // because the build pipeline only writes route outputs the user
+    // declared (a missing extension on a known page is HTML).
     match extension.to_ascii_lowercase().as_str() {
+        // Documents
         "html" | "htm" => "text/html; charset=utf-8".to_string(),
         "xml" => "application/xml".to_string(),
         "rss" => "application/rss+xml".to_string(),
         "atom" => "application/atom+xml".to_string(),
-        "json" => "application/json".to_string(),
+        "json" | "map" => "application/json".to_string(),
+        "webmanifest" => "application/manifest+json".to_string(),
         "txt" => "text/plain; charset=utf-8".to_string(),
+        // Code / styles
         "css" => "text/css; charset=utf-8".to_string(),
         "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8".to_string(),
+        "wasm" => "application/wasm".to_string(),
+        // Images
         "svg" => "image/svg+xml".to_string(),
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "webp" => "image/webp".to_string(),
+        "avif" => "image/avif".to_string(),
+        "gif" => "image/gif".to_string(),
+        "ico" => "image/x-icon".to_string(),
+        // Fonts
+        "woff" => "font/woff".to_string(),
+        "woff2" => "font/woff2".to_string(),
+        "ttf" => "font/ttf".to_string(),
+        "otf" => "font/otf".to_string(),
+        "eot" => "application/vnd.ms-fontobject".to_string(),
+        // Media
+        "mp4" => "video/mp4".to_string(),
+        "webm" => "video/webm".to_string(),
+        "mp3" => "audio/mpeg".to_string(),
+        "ogg" => "audio/ogg".to_string(),
+        "pdf" => "application/pdf".to_string(),
         _ => DEFAULT_CONTENT_TYPE.to_string(),
     }
 }
@@ -295,7 +323,18 @@ fn resolve_layout_spec(spec: &str, page_path: &Path, project_root: &Path) -> Pat
 /// An empty `root` is rejected explicitly: `Path::starts_with(empty)` is
 /// always `true`, which would silently disable the traversal guard for
 /// any caller that happened to pass an empty project root.
+///
+/// Lexical containment with a relative `root` is fragile (`a/b` is
+/// "within" `a/b` but is also nominally within `c/d` after a chdir).
+/// Production callers always pass an absolute project root, so
+/// `debug_assert!` it to surface accidental misuse during development
+/// without paying the cost in release builds.
 fn is_within(candidate: &Path, root: &Path) -> bool {
+    debug_assert!(
+        root.as_os_str().is_empty() || root.is_absolute(),
+        "is_within: project_root must be absolute (got {})",
+        root.display()
+    );
     let cand = normalize(candidate);
     let root = normalize(root);
     if root.as_os_str().is_empty() {

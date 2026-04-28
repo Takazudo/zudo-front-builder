@@ -164,31 +164,48 @@ impl PageCache {
 /// `Content-Type`.
 ///
 /// The returned string is the value to plug into the response's
-/// `Content-Type` header. The mapping is intentionally short and only
-/// covers the extensions a static-site page is likely to emit; the
-/// catch-all is `text/html; charset=utf-8` because the dev server's
-/// page cache is HTML-by-default. Pages that need an exotic
-/// extension should set `export const contentType = "…"` in their
-/// frontmatter and rely on the [`CachedPage::content_type`] override
-/// path instead.
+/// `Content-Type` header. The catch-all is `application/octet-stream`
+/// so the browser doesn't sniff an unknown body as HTML and execute
+/// scripts inside it. Pages that need an exotic extension should set
+/// `export const contentType = "…"` in their frontmatter and rely on
+/// the [`CachedPage::content_type`] override path instead.
 ///
 /// Mirrors [`zfb_render::meta::derive_content_type`]; keep both in
 /// sync (and ADR-003).
 pub fn content_type_for_extension(extension: &str) -> &'static str {
     match extension.to_ascii_lowercase().as_str() {
+        // Documents
         "html" | "htm" => "text/html; charset=utf-8",
         "xml" => "application/xml",
         "rss" => "application/rss+xml",
         "atom" => "application/atom+xml",
-        "json" => "application/json",
+        "json" | "map" => "application/json",
+        "webmanifest" => "application/manifest+json",
         "txt" => "text/plain; charset=utf-8",
+        // Code / styles
         "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "application/javascript; charset=utf-8",
-        "cjs" => "application/javascript; charset=utf-8",
+        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
         "wasm" => "application/wasm",
+        // Images
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        // Fonts
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "eot" => "application/vnd.ms-fontobject",
+        // Media
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        // Misc
         "pdf" => "application/pdf",
         // Unknown / missing extension: fall back to a generic
         // octet-stream so the browser doesn't mistakenly sniff it as
@@ -203,7 +220,8 @@ pub fn content_type_for_extension(extension: &str) -> &'static str {
 /// 1. The entry's `content_type` override, if `Some`,
 /// 2. else [`content_type_for_extension`] applied to `url_path`'s
 ///    trailing extension,
-/// 3. else `text/html; charset=utf-8`.
+/// 3. else `application/octet-stream` (the catch-all of
+///    [`content_type_for_extension`]).
 ///
 /// `url_path` is the URL the page was served at (with or without a
 /// leading slash); only its trailing component matters for the
