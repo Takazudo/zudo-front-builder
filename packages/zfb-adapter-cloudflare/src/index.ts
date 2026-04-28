@@ -1,23 +1,24 @@
 // `@takazudo/zfb-adapter-cloudflare` — Cloudflare Pages adapter for the
 // zfb framework.
 //
-// This module ships two surfaces:
+// This entry (`./`) is the **Workers-runtime** surface. It is safe to
+// bundle into a Cloudflare Worker and does not depend on any Node-only
+// built-ins beyond `node:async_hooks` (which workerd polyfills).
 //
-//   1. A **runtime** API user code calls from inside a `prerender = false`
-//      route to read the request-scoped Cloudflare bindings:
+// Usage in a `prerender = false` route:
 //
-//        import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+//   import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
 //
-//        export const prerender = false;
-//        export default async function ApiRoute() {
-//          const { env, ctx } = getCloudflareContext<{ ANTHROPIC_API_KEY: string }>();
-//          // env.ANTHROPIC_API_KEY, ctx.waitUntil(...), etc.
-//        }
+//   export const prerender = false;
+//   export default async function ApiRoute() {
+//     const { env, ctx } = getCloudflareContext<{ ANTHROPIC_API_KEY: string }>();
+//     // env.ANTHROPIC_API_KEY, ctx.waitUntil(...), etc.
+//   }
 //
-//   2. A **build-time** helper [`emitWorker`] that produces the
-//      `dist/_worker.js` Cloudflare Pages advanced mode expects. The CLI
-//      wrapper at `bin/cli.mjs` exposes this through
-//      `zfb-adapter-cloudflare bundle <input> --outdir <dir>`.
+// For Node-only build helpers (e.g. `emitWorker`), import the `./build`
+// sub-entry instead:
+//
+//   import { emitWorker } from "@takazudo/zfb-adapter-cloudflare/build";
 //
 // ## Why AsyncLocalStorage on a globalThis registry
 //
@@ -117,119 +118,3 @@ export function getCloudflareContext<Env = unknown>(): CloudflareContext<Env> {
   }
   return c as CloudflareContext<Env>;
 }
-
-// ---------------------------------------------------------------------------
-// Build-time CLI helper
-// ---------------------------------------------------------------------------
-
-/**
- * Inputs to [`emitWorker`].
- */
-export interface EmitWorkerInput {
-  /**
-   * Absolute path to the input ESM bundle produced by `zfb-build`. The
-   * bundle must export a Workers-shaped `default { fetch: (request) =>
-   * Promise<Response> }` (this is the contract `zfb_build::bundler`
-   * pins). The file is copied verbatim next to the emitted wrapper so
-   * relative imports inside it keep resolving.
-   */
-  readonly inputBundlePath: string;
-  /**
-   * Absolute path to the output directory. The emitter creates it if
-   * missing and writes `_worker.js` plus `_zfb_inner.mjs` (the copied
-   * input bundle) into it.
-   */
-  readonly outdir: string;
-}
-
-/**
- * Output paths the emitter produced. Returned for callers that want to
- * log them (the Rust orchestrator surfaces them in build output).
- */
-export interface EmitWorkerOutput {
-  readonly workerPath: string;
-  readonly innerBundlePath: string;
-}
-
-/**
- * Emit a Cloudflare Pages `_worker.js` that wraps the zfb input bundle.
- *
- * Output shape (two files in `outdir`):
- *
- *   _worker.js       — entry imported by Cloudflare Pages advanced mode
- *   _zfb_inner.mjs   — the input bundle, copied verbatim
- *
- * The wrapper imports the inner bundle via the relative path
- * `./_zfb_inner.mjs`. Workerd's Module loader resolves relative ESM
- * imports inside an advanced-mode `_worker.js` directory, so this layout
- * works without re-bundling.
- *
- * Why two files instead of one: re-bundling here would require a second
- * esbuild pass and would force the adapter to ship its own esbuild
- * binary slot. The two-file layout keeps the adapter dependency-free at
- * runtime — it is just `node:fs` glue.
- */
-export async function emitWorker(input: EmitWorkerInput): Promise<EmitWorkerOutput> {
-  const { mkdir, copyFile, writeFile } = await import("node:fs/promises");
-  const { resolve, join } = await import("node:path");
-
-  const outdir = resolve(input.outdir);
-  const inputBundle = resolve(input.inputBundlePath);
-
-  await mkdir(outdir, { recursive: true });
-  const innerBundlePath = join(outdir, "_zfb_inner.mjs");
-  await copyFile(inputBundle, innerBundlePath);
-
-  const workerPath = join(outdir, "_worker.js");
-  await writeFile(workerPath, WORKER_WRAPPER_SOURCE, "utf8");
-
-  return { workerPath, innerBundlePath };
-}
-
-/**
- * The wrapper source written to `_worker.js`. Inlined as a string so the
- * emitter has no template-runtime dependency.
- *
- * The wrapper is intentionally framework-agnostic: it does not know about
- * Hono, the page router, or the page list. It only knows that the inner
- * bundle exports a `default { fetch }` and that the wrapper must thread
- * env/ctx through AsyncLocalStorage so user code reading
- * `getCloudflareContext()` sees the right values.
- *
- * The AsyncLocalStorage is acquired through the same globalThis registry
- * pattern this module uses. Even if the wrapper's module instance and
- * the user bundle's module instance are different (they are — they live
- * in different ESM graphs), the registry guarantees they share the same
- * AsyncLocalStorage and therefore the same per-request store.
- */
-export const WORKER_WRAPPER_SOURCE = `// AUTO-GENERATED by @takazudo/zfb-adapter-cloudflare. Do not edit.
-//
-// Cloudflare Pages advanced mode entry. Forwards (request, env, ctx) to
-// the inner zfb worker bundle, exposing env/ctx to user code via
-// AsyncLocalStorage under a stable globalThis key.
-//
-// The same key is read by @takazudo/zfb-adapter-cloudflare's
-// getCloudflareContext() inside the user bundle, so the two ends share
-// state even though they live in separate ESM module instances.
-import { AsyncLocalStorage } from "node:async_hooks";
-import inner from "./_zfb_inner.mjs";
-
-const STORAGE_KEY = "__zfb_cf_adapter_als__";
-
-function getStorage() {
-  const g = globalThis;
-  let als = g[STORAGE_KEY];
-  if (!als) {
-    als = new AsyncLocalStorage();
-    g[STORAGE_KEY] = als;
-  }
-  return als;
-}
-
-export default {
-  fetch(request, env, ctx) {
-    const store = { env, ctx, request };
-    return getStorage().run(store, () => inner.fetch(request));
-  },
-};
-`;
