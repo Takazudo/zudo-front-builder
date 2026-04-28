@@ -128,6 +128,12 @@ impl Route {
             });
         }
 
+        // Was the source file an `index.<...>.tsx`? In that case the
+        // parser dropped the `index` segment from the URL, but the
+        // output file should still live at `<dir>/index.<ext>` (the
+        // directory-index layout) for both HTML and non-HTML routes.
+        let source_is_index = source_filename_is_index(&self.source_path);
+
         if ext == DEFAULT_OUTPUT_EXTENSION {
             // HTML pages: `/about` → `about/index.html`, `/` → `index.html`.
             let mut p = PathBuf::new();
@@ -142,11 +148,25 @@ impl Route {
             // filename rule preserves it as part of the URL segment
             // (e.g. `sitemap.xml.tsx` → segment `sitemap.xml`).
             //
+            // Exception: when the source was an `index.<ext>.tsx`,
+            // the parser stripped the `index` token from the URL, so
+            // we re-attach `index.<ext>` here as a directory index
+            // so the file actually carries its extension.
+            //
             // If the override flipped the extension (e.g.
             // frontmatter says `rss` but the filename was
             // `sitemap.xml.tsx`), we splice the new extension in.
             let mut parts = url_parts;
-            if let Some(last) = parts.last_mut() {
+            if source_is_index {
+                // `pages/blog/index.xml.tsx` → `blog/index.xml`,
+                // top-level `index.xml.tsx` → `index.xml`.
+                let mut p = PathBuf::new();
+                for part in &parts {
+                    p.push(part);
+                }
+                p.push(format!("index.{ext}"));
+                p
+            } else if let Some(last) = parts.last_mut() {
                 let conv = self.output_extension.as_deref();
                 if conv != Some(ext) {
                     // Override — replace the trailing `.<conv>` with
@@ -171,5 +191,22 @@ impl Route {
                 PathBuf::from(format!("index.{ext}"))
             }
         }
+    }
+}
+
+/// Return `true` when the source filename (after stripping `.tsx`/`.ts`)
+/// begins with `index` followed by either nothing or a dot. This is the
+/// signal that the parser dropped an `index` URL segment for this route.
+fn source_filename_is_index(source: &std::path::Path) -> bool {
+    let Some(name) = source.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let stem = name
+        .strip_suffix(".tsx")
+        .or_else(|| name.strip_suffix(".ts"))
+        .unwrap_or(name);
+    match stem.split_once('.') {
+        Some((head, _)) => head == "index",
+        None => stem == "index",
     }
 }

@@ -470,4 +470,47 @@ mod tests {
             PathBuf::from("blog/index.html"),
         );
     }
+
+    // ---- output_filename: extension preservation -------------------------
+
+    #[test]
+    fn output_filename_index_tsx_emits_index_html() {
+        let r = route_from("index.tsx");
+        assert_eq!(r.output_filename(None), PathBuf::from("index.html"));
+    }
+
+    #[test]
+    fn output_filename_index_xml_tsx_top_level() {
+        // Top-level `index.xml.tsx` → `index.xml` (the parser drops
+        // the `index` segment, so `output_filename` re-attaches it).
+        let r = route_from("index.xml.tsx");
+        assert_eq!(r.output_extension.as_deref(), Some("xml"));
+        assert_eq!(r.output_filename(None), PathBuf::from("index.xml"));
+    }
+
+    #[test]
+    fn output_filename_feed_xml_tsx() {
+        let r = route_from("feed.xml.tsx");
+        assert_eq!(r.output_extension.as_deref(), Some("xml"));
+        assert_eq!(r.output_filename(None), PathBuf::from("feed.xml"));
+    }
+
+    #[test]
+    fn output_filename_sitemap_xml_tsx() {
+        let r = route_from("sitemap.xml.tsx");
+        assert_eq!(r.output_extension.as_deref(), Some("xml"));
+        assert_eq!(r.output_filename(None), PathBuf::from("sitemap.xml"));
+    }
+
+    #[test]
+    fn output_filename_nested_index_xml_preserves_extension() {
+        // Regression: `blog/index.xml.tsx` previously wrote to a file
+        // literally named `blog`. It should write to `blog/index.xml`.
+        let r = route_from("blog/index.xml.tsx");
+        assert_eq!(r.output_extension.as_deref(), Some("xml"));
+        assert_eq!(
+            r.output_filename(None),
+            PathBuf::from("blog/index.xml"),
+        );
+    }
 }
