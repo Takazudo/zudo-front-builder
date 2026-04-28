@@ -266,7 +266,7 @@ mod tests {
         let err = h.set_default_theme("nonexistent").unwrap_err();
         match err {
             HighlightError::UnknownTheme(name) => assert_eq!(name, "nonexistent"),
-            other => panic!("expected UnknownTheme, got {other:?}"),
+            other => unreachable!("expected UnknownTheme, got {other:?}"),
         }
     }
 

@@ -1180,7 +1180,7 @@ mod tests {
                 assert_eq!(status, 500);
                 assert!(body.contains("Error: boom"));
             }
-            other => panic!("expected RenderFailed, got {other:?}"),
+            other => unreachable!("expected RenderFailed, got {other:?}"),
         }
     }
 
@@ -1285,7 +1285,7 @@ mod tests {
                     "expected pages/error.tsx:5:* got {loc}; body={body}"
                 );
             }
-            other => panic!("expected RenderFailed, got {other:?}"),
+            other => unreachable!("expected RenderFailed, got {other:?}"),
         }
     }
 

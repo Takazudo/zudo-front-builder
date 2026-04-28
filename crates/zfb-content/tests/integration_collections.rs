@@ -87,7 +87,7 @@ fn invalid_frontmatter_returns_multiple_error() {
             );
             assert!(!summary.is_empty(), "summary must be non-empty");
         }
-        other => panic!("expected Multiple error, got {other:?}"),
+        other => unreachable!("expected Multiple error, got {other:?}"),
     }
 }
 
@@ -112,7 +112,7 @@ fn missing_required_field_returns_multiple_error() {
                 errors[0],
             );
         }
-        other => panic!("expected Multiple, got {other:?}"),
+        other => unreachable!("expected Multiple, got {other:?}"),
     }
 }
 

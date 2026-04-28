@@ -641,7 +641,7 @@ mod tests {
                 assert_eq!(set.len(), 1);
                 assert!(set.contains(&pid("/pages/index.tsx")));
             }
-            DirtySet::All => panic!("expected specific set, got All"),
+            DirtySet::All => unreachable!("expected specific set, got All"),
         }
     }
 

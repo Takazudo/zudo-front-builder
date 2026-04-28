@@ -182,7 +182,7 @@ mod tests {
         let mut tree = root(vec![pre_with_meta(Some("title=\"main.rs\""))]);
         CodeTitlePlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Element {
             tag,
@@ -191,7 +191,7 @@ mod tests {
             ..
         } = &children[0]
         else {
-            panic!()
+            unreachable!("unreachable in test")
         };
         assert_eq!(tag, "figure");
         assert!(attrs.contains(&("class".to_string(), "code-figure".to_string())));
@@ -201,12 +201,12 @@ mod tests {
             ..
         } = &children[0]
         else {
-            panic!()
+            unreachable!("unreachable in test")
         };
         assert_eq!(cap_tag, "figcaption");
         assert_eq!(cap_children, &[HastNode::Text("main.rs".into())]);
         let HastNode::Element { tag: pre_tag, .. } = &children[1] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         assert_eq!(pre_tag, "pre");
     }
@@ -232,10 +232,10 @@ mod tests {
         let mut tree = root(vec![pre_with_meta(Some("foo=1 title=\"a.rs\" bar=2"))]);
         CodeTitlePlugin::new().visit(&mut tree);
         let HastNode::Root { children } = tree else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Element { tag, .. } = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         assert_eq!(tag, "figure");
     }

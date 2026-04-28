@@ -133,7 +133,7 @@ mod tests {
     fn flow(node: &MdastNode) -> &MdxJsxFlowElement {
         match node {
             MdastNode::MdxJsxFlowElement(j) => j,
-            other => panic!("expected MdxJsxFlowElement, got {other:?}"),
+            other => unreachable!("expected MdxJsxFlowElement, got {other:?}"),
         }
     }
 
@@ -145,7 +145,7 @@ mod tests {
             text_para(":::"),
         ]);
         let MdastNode::Root(Root { children, .. }) = root else {
-            panic!()
+            unreachable!("expected MdastNode::Root")
         };
         assert_eq!(children.len(), 1);
         let j = flow(&children[0]);
@@ -170,7 +170,7 @@ mod tests {
                 text_para(":::"),
             ]);
             let MdastNode::Root(Root { children, .. }) = root else {
-                panic!()
+                unreachable!("expected MdastNode::Root")
             };
             assert_eq!(children.len(), 1);
             let j = flow(&children[0]);
@@ -186,17 +186,17 @@ mod tests {
             text_para(":::"),
         ]);
         let MdastNode::Root(Root { children, .. }) = root else {
-            panic!()
+            unreachable!("expected MdastNode::Root")
         };
         let j = flow(&children[0]);
         assert_eq!(j.attributes.len(), 1);
         let AttributeContent::Property(prop) = &j.attributes[0] else {
-            panic!()
+            unreachable!("expected AttributeContent::Property")
         };
         assert_eq!(prop.name, "title");
         match &prop.value {
             Some(AttributeValue::Literal(v)) => assert_eq!(v, "Click me"),
-            other => panic!("expected literal, got {other:?}"),
+            other => unreachable!("expected literal, got {other:?}"),
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
             text_para(":::"),
         ]);
         let MdastNode::Root(Root { children, .. }) = root else {
-            panic!()
+            unreachable!("expected MdastNode::Root")
         };
         // No transformation: 3 paragraphs preserved.
         assert_eq!(children.len(), 3);
@@ -218,7 +218,7 @@ mod tests {
     fn missing_close_left_alone() {
         let root = run_root(vec![text_para(":::note"), text_para("body")]);
         let MdastNode::Root(Root { children, .. }) = root else {
-            panic!()
+            unreachable!("expected MdastNode::Root")
         };
         assert_eq!(children.len(), 2);
         assert!(matches!(children[0], MdastNode::Paragraph(_)));

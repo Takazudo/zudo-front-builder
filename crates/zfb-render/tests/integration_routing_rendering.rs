@@ -139,6 +139,9 @@ fn assert_snapshot_eq(actual: &str, snapshot_path: &Path) {
                 actual.lines().count(),
             )
         });
+    // Snapshot mismatch is a legitimate test-failure mechanism. `panic!`
+    // is the assertion primitive here because the bespoke diff output is
+    // more readable than `assert_eq!` of two large strings.
     panic!(
         "snapshot mismatch at {snapshot_path:?}\n{line}\n--- expected ---\n{expected}\n--- actual ---\n{actual}",
     );

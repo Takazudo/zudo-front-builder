@@ -978,7 +978,7 @@ mod tests {
             ScanError::Parse { path, .. } => {
                 assert_eq!(path, root().join("pages/broken.tsx"));
             }
-            other => panic!("expected Parse error, got {other:?}"),
+            other => unreachable!("expected Parse error, got {other:?}"),
         }
     }
 

@@ -577,7 +577,7 @@ mod tests {
                 assert_eq!(name, "slug");
                 assert_eq!(route, "blog/[slug].tsx");
             }
-            other => panic!("expected MissingParam, got {other:?}"),
+            other => unreachable!("expected MissingParam, got {other:?}"),
         }
     }
 
@@ -595,7 +595,7 @@ mod tests {
                 assert_eq!(name, "unexpected");
                 assert_eq!(route, "blog/[slug].tsx");
             }
-            other => panic!("expected ExtraParam, got {other:?}"),
+            other => unreachable!("expected ExtraParam, got {other:?}"),
         }
     }
 
@@ -758,7 +758,7 @@ mod tests {
             PathsError::AmbiguousResolution { route, .. } => {
                 assert_eq!(route, "blog/[slug].tsx");
             }
-            other => panic!("expected AmbiguousResolution, got {other:?}"),
+            other => unreachable!("expected AmbiguousResolution, got {other:?}"),
         }
     }
 

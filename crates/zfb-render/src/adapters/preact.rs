@@ -166,7 +166,7 @@ mod tests {
         let err = PreactAdapter.pre_render_setup(&mut host).unwrap_err();
         let msg = match err {
             RenderError::Adapter(m) => m,
-            other => panic!("expected RenderError::Adapter, got {other:?}"),
+            other => unreachable!("expected RenderError::Adapter, got {other:?}"),
         };
         assert!(msg.contains("preact"));
         assert!(msg.contains("oops"));

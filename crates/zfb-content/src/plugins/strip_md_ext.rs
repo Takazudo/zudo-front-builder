@@ -89,10 +89,10 @@ mod tests {
 
     fn href(node: &HastNode) -> String {
         let HastNode::Root { children } = node else {
-            panic!()
+            unreachable!("expected HastNode::Root")
         };
         let HastNode::Element { attrs, .. } = &children[0] else {
-            panic!()
+            unreachable!("expected HastNode::Element")
         };
         attrs.iter().find(|(k, _)| k == "href").unwrap().1.clone()
     }

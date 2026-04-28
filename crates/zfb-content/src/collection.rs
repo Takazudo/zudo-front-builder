@@ -783,7 +783,7 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 assert!(matches!(errors[0], CollectionError::Frontmatter { .. }));
             }
-            other => panic!("expected Multiple, got {other:?}"),
+            other => unreachable!("expected Multiple, got {other:?}"),
         }
     }
 
@@ -802,7 +802,7 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 assert!(matches!(errors[0], CollectionError::Frontmatter { .. }));
             }
-            other => panic!("expected Multiple, got {other:?}"),
+            other => unreachable!("expected Multiple, got {other:?}"),
         }
     }
 
@@ -817,7 +817,7 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 assert!(matches!(errors[0], CollectionError::Schema { .. }));
             }
-            other => panic!("expected Multiple, got {other:?}"),
+            other => unreachable!("expected Multiple, got {other:?}"),
         }
     }
 
@@ -839,7 +839,7 @@ mod tests {
                 assert_eq!(errors.len(), 1);
                 assert!(matches!(errors[0], CollectionError::Schema { .. }));
             }
-            other => panic!("expected Multiple, got {other:?}"),
+            other => unreachable!("expected Multiple, got {other:?}"),
         }
     }
 
@@ -867,7 +867,7 @@ mod tests {
                 assert!(kinds.contains(&"schema"));
                 assert!(!summary.is_empty());
             }
-            other => panic!("expected Multiple, got {other:?}"),
+            other => unreachable!("expected Multiple, got {other:?}"),
         }
     }
 
