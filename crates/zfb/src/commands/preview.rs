@@ -57,6 +57,12 @@ use crate::cli::PreviewArgs;
 use crate::config;
 use crate::output;
 
+// Re-export from the canonical source so callers that already reference
+// `zfb::commands::preview::EXPECTED_WRANGLER_VERSION` keep compiling.
+pub use zfb_toolchain_pins::{
+    EXPECTED_MINIFLARE_VERSION, EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION,
+};
+
 /// Built-in default port for `zfb preview` when neither the CLI nor the
 /// project config supplies one. 4321 keeps `dev` (3000) and `preview`
 /// running side-by-side, and matches what npm-side scaffolds expect.
@@ -66,35 +72,6 @@ const DEFAULT_PREVIEW_PORT: u16 = 4321;
 /// exists today; if a project configures something else, we error out
 /// rather than silently falling through to static-only.
 const CLOUDFLARE_ADAPTER: &str = "@takazudo/zfb-adapter-cloudflare";
-
-/// Pinned `wrangler` CLI version. `zfb preview` runs
-/// `pnpm exec wrangler --version` before handing off to
-/// `wrangler pages dev` and aborts with a clear error if the reported
-/// version does not match this constant.
-///
-/// Kept in lock-step with the exact-pinned `wrangler` entry in the root
-/// `package.json` (and with `EXPECTED_MINIFLARE_VERSION` /
-/// `EXPECTED_WORKERD_VERSION` below) so the SSR/preview pipeline is
-/// reproducible. To bump, see `CONTRIBUTING.md "External tool version pins"`.
-pub const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
-
-/// Pinned `miniflare` package version. zfb does not spawn miniflare
-/// directly today (it goes through `pnpm exec wrangler pages dev`),
-/// but the version is exact-pinned in `package.json` so the SSR
-/// pipeline's behavior is reproducible. Kept here as the canonical
-/// source of truth — `pnpm-lock.yaml` snapshots the resolution. To
-/// bump, see `CONTRIBUTING.md "External tool version pins"`.
-#[allow(dead_code)]
-pub const EXPECTED_MINIFLARE_VERSION: &str = "4.20260424.0";
-
-/// Pinned `workerd` package version that miniflare drives. Not
-/// directly listed in `package.json` (it comes in transitively via
-/// `miniflare`'s peer dependency); the lockfile snapshots the exact
-/// resolved version. Kept here so a single `grep EXPECTED_WORKERD_VERSION`
-/// surfaces the workerd pin alongside the rest of the external-tool
-/// pins. To bump, see `CONTRIBUTING.md "External tool version pins"`.
-#[allow(dead_code)]
-pub const EXPECTED_WORKERD_VERSION: &str = "1.20260424.1";
 
 /// Set this env var to `1` to skip the pre-flight wrangler version
 /// gate. Intended as an emergency escape hatch (e.g. while a
@@ -462,7 +439,7 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
             "wrangler version mismatch: expected `{expected}` (pinned in zfb), \
              got `{reported}`. \
              Update both the `wrangler` entry in package.json and \
-             EXPECTED_WRANGLER_VERSION in crates/zfb/src/commands/preview.rs in \
+             EXPECTED_WRANGLER_VERSION in crates/zfb-toolchain-pins/src/lib.rs in \
              lock-step (see the External tool version pins section in CONTRIBUTING.md), then run \
              `pnpm install`. To bypass this gate temporarily, set \
              {env}=1 (not recommended for steady-state use).",
