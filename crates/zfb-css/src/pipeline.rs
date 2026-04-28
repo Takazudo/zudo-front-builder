@@ -355,6 +355,10 @@ fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
     }
 
+    // Rust's `std::fs::rename` replaces an existing destination on
+    // both POSIX and Windows (Windows: implemented via `MoveFileExW`
+    // with `MOVEFILE_REPLACE_EXISTING`). We rely on it directly.
+    // See https://doc.rust-lang.org/std/fs/fn.rename.html.
     if let Err(e) = std::fs::rename(&temp_path, dest) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e).with_context(|| {
@@ -419,5 +423,39 @@ mod tests {
             link_href("https://cdn.example.com", &p),
             "https://cdn.example.com/assets/styles-deadbeef.css"
         );
+    }
+
+    /// Round 2 regression guard. CSS pipeline reuses stable filenames
+    /// across rebuilds — a second write to the same destination must
+    /// succeed and replace the prior bytes. `std::fs::rename` does the
+    /// right thing on both POSIX and Windows; verifying it here keeps
+    /// repeat builds covered on every platform CI runs on.
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("styles-abcd1234.css");
+        atomic_write(&dest, b".a{color:red}").unwrap();
+        atomic_write(&dest, b".a{color:blue}").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b".a{color:blue}");
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("nested/deep/styles.css");
+        atomic_write(&dest, b"body{}").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"body{}");
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_files_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("a.css");
+        atomic_write(&dest, b"hi").unwrap();
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["a.css".to_string()]);
     }
 }
