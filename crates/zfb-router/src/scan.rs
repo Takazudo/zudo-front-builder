@@ -9,7 +9,7 @@
 //! | `pages/blog/index.tsx`              | `/blog`       |
 //! | `pages/blog/[slug].tsx`             | `/blog/:slug` |
 //! | `pages/blog/page/[page].tsx`        | `/blog/page/:page` |
-//! | `pages/docs/[...slug].tsx`          | `/docs/:slug*` |
+//! | `pages/docs/[...slug].tsx`          | `/docs/:slug{.+}` |
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug` |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) and any file
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn parses_catchall_segment() {
         let r = route_from("docs/[...slug].tsx");
-        assert_eq!(r.template(), "/docs/:slug*");
+        assert_eq!(r.template(), "/docs/:slug{.+}");
         assert_eq!(r.kind, RouteKind::Catchall);
     }
 

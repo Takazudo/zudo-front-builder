@@ -29,14 +29,21 @@ pub enum Segment {
 }
 
 impl Segment {
-    /// Render this segment using the canonical `:name` / `:name*` template
-    /// syntax (Astro / Express style). Used for ambiguity detection and for
-    /// human-readable diagnostics.
+    /// Render this segment using the canonical `:name` / `:name{.+}` template
+    /// syntax (Hono path-pattern style). Used for ambiguity detection,
+    /// `/__paths__/` worker lookups, and human-readable diagnostics.
+    ///
+    /// Catchall segments emit Hono's regex-quantifier form `:name{.+}`
+    /// rather than the Astro / Express `:name*` style. This keeps the
+    /// route-key produced by `Route::template()` and the route-key
+    /// registered by `bracket_to_hono` (in zfb-build) bit-identical, so
+    /// the worker's `pagesByRoute` map can be looked up from the
+    /// build/dev side without a separate translation step.
     pub fn template(&self) -> String {
         match self {
             Segment::Static(s) => s.clone(),
             Segment::Dynamic(name) => format!(":{name}"),
-            Segment::Catchall(name) => format!(":{name}*"),
+            Segment::Catchall(name) => format!(":{name}{{.+}}"),
         }
     }
 }

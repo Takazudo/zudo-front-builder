@@ -343,7 +343,12 @@ function readProps(element: Element): Record<string, unknown> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === "object") {
+    // Reject arrays explicitly: `typeof [] === "object"` is true but
+    // an array is not a valid props bag, and passing it through would
+    // mean the component receives index-keyed values where it
+    // expected a record. Fall through to the empty-object default
+    // instead of forwarding a malformed shape.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
   } catch {

@@ -22,9 +22,19 @@
 // once the content engine ships end-to-end.
 
 import { readdir, readFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
+import { parseFrontmatter } from "./frontmatter.js";
+import type { ParsedFrontmatter } from "./frontmatter.js";
 import type { VNode } from "./jsx-types.js";
+
+// Re-export the parser surface so existing `zfb/content` consumers that
+// import `parseFrontmatter` / `ParsedFrontmatter` from the content
+// subpath keep working. The implementation now lives in `./frontmatter.ts`
+// (BCI-3 fs-free subpath) — this re-export is the bridge for callers
+// that have not migrated yet.
+export { parseFrontmatter };
+export type { ParsedFrontmatter };
 
 // ---------------------------------------------------------------------------
 // In-memory ContentSnapshot bridge (consumed by `@takazudo/zfb-runtime`).
@@ -327,7 +337,7 @@ export async function getCollection<T = Record<string, unknown>>(
     // produces the same value as before; for nested files it produces a
     // path-based slug (e.g. `2024/hello`).
     const rel = relative(dir, fullPath);
-    const slug = rel.slice(0, -".md".length);
+    const slug = _relPathToSlug(rel);
     const module_specifier = buildModuleSpecifier(name, slug);
     return {
       slug,
@@ -433,134 +443,29 @@ async function mapWithConcurrency<I, O>(
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Minimal frontmatter parser. Intentionally NOT a full YAML implementation —
-// the v0 surface is documented above. This avoids pulling in `gray-matter`
-// or `js-yaml` for what is, in v0, three field types.
-// ---------------------------------------------------------------------------
-
-const FRONTMATTER_DELIM = "---";
-
-export type ParsedFrontmatter = {
-  data: Record<string, unknown>;
-  body: string;
-};
-
 /**
- * Parse a leading YAML-ish frontmatter block off a markdown document.
+ * @internal
  *
- * **Public SDK surface.** Re-exported from `zfb/content` so consumers can
- * write their own custom content loaders without re-implementing the
- * (deliberately minimal) v0 frontmatter parser. The accepted grammar is
- * documented at the top of this module.
+ * Convert a `path.relative()` result into a forward-slash-separated
+ * slug with the trailing `.md` extension stripped.
  *
- * Handles:
- * - empty frontmatter (`---\n---\nbody`) → `{ data: {}, body: "body" }`
- * - file ending exactly with `---` (no trailing newline) → frontmatter
- *   parsed, body is empty.
+ * Slugs are URL-flavored identifiers, not filesystem paths — they
+ * MUST use `/` regardless of the host OS so a nested entry like
+ * `2024/hello.md` produces the slug `2024/hello` on both POSIX and
+ * Windows. Without this normalisation, Windows callers would see
+ * `2024\hello`, which then leaks through to `module_specifier` and
+ * any URL the consumer derives from the slug.
  *
- * Returns `{ data: {}, body: <input> }` unchanged when no frontmatter
- * fence is present, or when the opening fence has no matching closer.
+ * Exported solely so the unit test suite can pin the Windows
+ * behaviour without needing an actual Windows host. Do not depend on
+ * this from application code — name and signature may change.
  */
-export function parseFrontmatter(raw: string): ParsedFrontmatter {
-  // Strip a leading BOM and normalise line endings before splitting.
-  const text = raw.replace(/^﻿/, "").replace(/\r\n/g, "\n");
-  if (!text.startsWith(`${FRONTMATTER_DELIM}\n`)) {
-    return { data: {}, body: text };
-  }
-  const headerStart = FRONTMATTER_DELIM.length + 1; // after first "---\n"
-
-  // Search for the closing fence. Accept either `\n---\n` (frontmatter
-  // followed by body) or `\n---` at the very end of the document
-  // (frontmatter with no trailing newline). Start the search at
-  // `headerStart - 1` so the empty-frontmatter case `---\n---\n...`
-  // is detected (the `\n---` at index 3 immediately follows the opener).
-  const searchFrom = headerStart - 1;
-  let closeIdx = -1;
-  let bodyStart = -1;
-  let i = searchFrom;
-  while (i <= text.length - `\n${FRONTMATTER_DELIM}`.length) {
-    const candidate = text.indexOf(`\n${FRONTMATTER_DELIM}`, i);
-    if (candidate === -1) break;
-    const afterFence = candidate + `\n${FRONTMATTER_DELIM}`.length;
-    if (afterFence === text.length) {
-      // `\n---` at end-of-string — frontmatter ends here, body is empty.
-      closeIdx = candidate;
-      bodyStart = afterFence;
-      break;
-    }
-    if (text.charAt(afterFence) === "\n") {
-      // `\n---\n` — body starts after the trailing newline.
-      closeIdx = candidate;
-      bodyStart = afterFence + 1;
-      break;
-    }
-    // `\n---` followed by more `-` (e.g. `\n----`) — keep searching.
-    i = candidate + 1;
-  }
-  if (closeIdx === -1 || bodyStart === -1) {
-    // Malformed frontmatter (no closing delimiter): treat as plain body.
-    return { data: {}, body: text };
-  }
-  const header = text.slice(headerStart, closeIdx);
-  const body = text.slice(bodyStart);
-  return { data: parseFrontmatterHeader(header), body };
-}
-
-function parseFrontmatterHeader(header: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const lines = header.split("\n");
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i] ?? "";
-    if (line.trim() === "" || line.trimStart().startsWith("#")) {
-      i++;
-      continue;
-    }
-    // Top-level keys are unindented `key: value` or `key:` (then list).
-    const m = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
-    if (!m) {
-      i++;
-      continue;
-    }
-    const key = m[1] as string;
-    const inlineValue = (m[2] ?? "").trim();
-    if (inlineValue === "") {
-      // Possible block list.
-      const list: string[] = [];
-      let j = i + 1;
-      while (j < lines.length) {
-        const next = lines[j] ?? "";
-        const itemMatch = /^\s*-\s+(.*)$/.exec(next);
-        if (!itemMatch) break;
-        list.push(unwrapScalar((itemMatch[1] ?? "").trim()));
-        j++;
-      }
-      if (list.length > 0) {
-        out[key] = list;
-        i = j;
-        continue;
-      }
-      // Empty value with no list — record empty string for completeness.
-      out[key] = "";
-      i++;
-      continue;
-    }
-    out[key] = unwrapScalar(inlineValue);
-    i++;
-  }
-  return out;
-}
-
-function unwrapScalar(value: string): string {
-  if (value.length >= 2) {
-    const first = value.charAt(0);
-    const last = value.charAt(value.length - 1);
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return value.slice(1, -1);
-    }
-  }
-  return value;
+export function _relPathToSlug(relPath: string): string {
+  const posix = sep === "/" ? relPath : relPath.split(sep).join("/");
+  // Some Node versions normalise `\` even when sep is `/`, so be
+  // defensive: collapse any straggling backslashes too.
+  const normalised = posix.includes("\\") ? posix.split("\\").join("/") : posix;
+  return normalised.endsWith(".md") ? normalised.slice(0, -".md".length) : normalised;
 }
 
 // ---------------------------------------------------------------------------

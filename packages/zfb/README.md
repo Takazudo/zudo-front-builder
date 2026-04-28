@@ -112,7 +112,7 @@ The hydration runtime imports (or inlines) `scheduleHydrate` from this
 package:
 
 ```ts
-import { scheduleHydrate } from "zfb/runtime";
+import { scheduleHydrate } from "@takazudo/zfb/runtime";
 
 for (const el of document.querySelectorAll<HTMLElement>("[data-zfb-island]")) {
   const when = el.getAttribute("data-when") ?? "load";
@@ -127,7 +127,7 @@ no-op.
 ## Tests
 
 ```sh
-pnpm --filter zfb test
+pnpm --filter @takazudo/zfb test
 ```
 
 The tests run under [vitest][vitest] with [happy-dom][happy-dom] as the

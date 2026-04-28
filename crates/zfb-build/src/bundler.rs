@@ -847,14 +847,21 @@ fn write_entry_module(
     // would indicate a bug rather than user input, but the check prevents
     // accidental JS injection if the call site ever changes.
     let snapshot_literal = if let Some(json) = content_snapshot_json {
+        // Validate both syntax AND shape. The runtime expects a top-level
+        // object whose `collections` field is itself an object — anything
+        // else (a JSON array, a scalar, an object missing `collections`)
+        // would crash `getCollection` at request time. Fall back to the
+        // safe empty snapshot so the build still produces a working
+        // worker; the resolver will return empty collections, which is
+        // visible in the build summary (zero dynamic pages).
         serde_json::from_str::<serde_json::Value>(json)
-            .map(|_| json)
-            .unwrap_or_else(|_| {
-                // Invalid JSON — fall back to the safe empty snapshot.
-                // The resolver will return empty collections, which is
-                // visible in the build summary (zero dynamic pages).
-                r#"{ "collections": {} }"#
+            .ok()
+            .filter(|v| {
+                v.is_object()
+                    && v.get("collections").is_some_and(|c| c.is_object())
             })
+            .map(|_| json)
+            .unwrap_or(r#"{ "collections": {} }"#)
     } else {
         r#"{ "collections": {} }"#
     };
@@ -1269,6 +1276,66 @@ mod tests {
         assert!(body.contains("fetch: (request) => __zfb_router(request)"));
         // pages array exists but is empty.
         assert!(body.contains("const __zfb_pages = [\n];"));
+    }
+
+    /// Helper: emit `entry.mjs` with a given snapshot string and return
+    /// the snapshot literal embedded in the generated source.
+    fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot).unwrap();
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        // Pull just the assignment line so the assertion is precise.
+        let prefix = "const __zfb_content_snapshot = ";
+        let idx = body.find(prefix).expect("snapshot literal assignment");
+        let after = &body[idx + prefix.len()..];
+        // The line ends with `;\n`. Strip from the first `;` onward.
+        let end = after.find(';').expect("statement terminator");
+        after[..end].trim().to_string()
+    }
+
+    #[test]
+    fn snapshot_literal_falls_back_when_json_is_malformed() {
+        // M3: validation must reject bare-syntax JSON values that aren't
+        // objects with a `collections` field. Each of these would crash
+        // `getCollection` at request time, so the bundler swaps in the
+        // safe empty-snapshot literal instead.
+        for malformed in &["null", "42", "[]", "\"string\"", "{}", "{ \"foo\": 1 }"] {
+            let literal = entry_module_snapshot_literal(Some(malformed));
+            assert_eq!(
+                literal, "{ \"collections\": {} }",
+                "malformed snapshot {malformed:?} should fall back to empty; got {literal:?}"
+            );
+        }
+        // Truly invalid JSON also falls back.
+        let literal = entry_module_snapshot_literal(Some("not json at all"));
+        assert_eq!(literal, "{ \"collections\": {} }");
+    }
+
+    #[test]
+    fn snapshot_literal_preserves_valid_snapshot() {
+        // A well-formed snapshot — a top-level object with a
+        // `collections` object — must round-trip through the validator
+        // unchanged so the worker sees the real content map.
+        let valid = r#"{"collections":{"blog":[{"slug":"hello","frontmatter":{"title":"Hello"},"body":"","module_specifier":"mdx://blog/hello","rel_path":"hello.mdx"}]}}"#;
+        let literal = entry_module_snapshot_literal(Some(valid));
+        assert_eq!(literal, valid);
+    }
+
+    #[test]
+    fn snapshot_literal_falls_back_when_collections_is_not_object() {
+        // The `collections` field exists but is the wrong shape (an
+        // array). The validator must still reject — the runtime indexes
+        // collections by name, so an array would crash.
+        let bad = r#"{"collections":["a","b"]}"#;
+        let literal = entry_module_snapshot_literal(Some(bad));
+        assert_eq!(literal, "{ \"collections\": {} }");
+    }
+
+    #[test]
+    fn snapshot_literal_uses_empty_when_input_is_none() {
+        let literal = entry_module_snapshot_literal(None);
+        assert_eq!(literal, "{ \"collections\": {} }");
     }
 
     #[test]

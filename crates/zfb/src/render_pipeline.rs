@@ -1048,7 +1048,7 @@ mod tests {
                 Segment::Static("docs".into()),
                 Segment::Catchall("slug".into()),
             ],
-            "/docs/:slug*",
+            "/docs/:slug{.+}",
             body,
         );
         let mut cache = PathsCache::new();
