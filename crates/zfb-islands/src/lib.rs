@@ -32,6 +32,7 @@ pub mod bundler;
 pub mod esbuild;
 pub mod future_rust_native;
 pub mod hydration;
+pub mod manifest;
 pub mod scanner;
 
 pub use bundler::{
@@ -43,6 +44,7 @@ pub use hydration::{
     hydration_script_tag, rewrite_islands, rewrite_islands_in_attr_skeleton, IslandDescriptor,
     IslandRewriteError, IslandSkeletonRewriteError,
 };
+pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
     is_bare_specifier, normalize_path_lexical, scan_islands, FsResolver, InMemoryResolver,
     IslandsSet, Resolver, ScanError, ScanResult,

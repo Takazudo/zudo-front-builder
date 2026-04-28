@@ -10,8 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use zfb_islands::{
-    bundle_link_href, BundleConfig, BundleOutput, ClientBundler, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, Island, NativeRustBundler,
+    bundle_link_href, manifest_json, scan_islands, BundleConfig, BundleOutput, ClientBundler,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
+    NativeRustBundler,
 };
 
 fn island(name: &str, path: &str) -> Island {
@@ -225,4 +226,61 @@ fn subprocess_bundler_against_real_binary() {
         )
         .expect("real esbuild binary should produce a bundle");
     assert!(out.asset_path.exists());
+}
+
+// -----------------------------------------------------------------------------
+// Sub-task 3 — manifest emission (acceptance)
+//
+// The 2-island fixture under `fixtures/two-islands/` is the smallest realistic
+// project we can scan: one page imports two distinct `"use client"` modules,
+// each exporting a single component. The manifest must surface both with the
+// resolved tsx paths.
+// -----------------------------------------------------------------------------
+
+fn fixture_root(name: &str) -> PathBuf {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    crate_dir.join("fixtures").join(name)
+}
+
+#[test]
+fn two_islands_fixture_yields_two_entry_manifest() {
+    let root = fixture_root("two-islands");
+    let pages = vec![root.join("pages/home.tsx")];
+    let resolver = FsResolver::new();
+    let islands = scan_islands(&pages, &resolver).expect("scan");
+    assert_eq!(islands.len(), 2, "got: {islands:?}");
+
+    // FsResolver canonicalises (e.g. `/var` → `/private/var` on macOS).
+    // Use the canonical form of the fixture root so `relative_to` can
+    // strip the prefix cleanly on every host OS.
+    let root = root.canonicalize().expect("canonicalize fixture root");
+
+    // Build the manifest, rebased to the fixture root so paths are
+    // portable across machines.
+    let manifest = Manifest::from_islands(&islands).relative_to(&root);
+    let counter = manifest.get("Counter").expect("Counter present");
+    let theme = manifest.get("ThemeToggle").expect("ThemeToggle present");
+    assert_eq!(
+        counter,
+        Path::new("components/counter.tsx"),
+        "counter path must be relative to fixture root"
+    );
+    assert_eq!(
+        theme,
+        Path::new("components/theme-toggle.tsx"),
+        "theme-toggle path must be relative to fixture root"
+    );
+    // No collisions for distinct component names.
+    assert!(manifest.collisions().is_empty());
+
+    // Spot-check the JSON wire format. (Use the canonical root as well.)
+    let json = manifest_json(&islands, Some(root.as_path()));
+    assert!(json.contains("\"Counter\""));
+    assert!(json.contains("\"ThemeToggle\""));
+    assert!(json.contains("\"components/counter.tsx\""));
+    assert!(json.contains("\"components/theme-toggle.tsx\""));
+    // Counter sorts before ThemeToggle alphabetically.
+    let cpos = json.find("\"Counter\"").unwrap();
+    let tpos = json.find("\"ThemeToggle\"").unwrap();
+    assert!(cpos < tpos, "json keys must be sorted: {json}");
 }
