@@ -21,3 +21,7 @@ crates/zfb/binaries/esbuild/esbuild
 
 # Ephemeral / temp files (e.g. agent prompts, review diffs)
 __inbox/
+
+# Per-project zfb cache (graph snapshot, etc.) — created in user
+# project roots when `zfb dev` runs. Never committed.
+.zfb/

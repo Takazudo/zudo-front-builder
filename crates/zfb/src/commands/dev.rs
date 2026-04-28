@@ -74,6 +74,7 @@ use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, OrchestratorConfig,
     PageRenderer, RenderedPage,
 };
+use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 
@@ -137,9 +138,36 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     };
 
     // 3. Build orchestrator setup.
-    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
-    let pipeline = DevAssetPipeline::new();
+    //
+    // Cold-start optimisation: try to reuse a previously persisted
+    // graph from `.zfb/graph.bin`. If the manifest digest still
+    // matches the current project layout, deserialise and reuse —
+    // otherwise build fresh and save the new graph back so the
+    // *next* cold start is fast.
     let watch_roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+    let graph_cache_path = project_root.join(".zfb").join("graph.bin");
+    let manifest_digest = compute_manifest_digest(&project_root, &watch_roots);
+    let initial_graph = load_persisted_graph(&graph_cache_path, manifest_digest.as_ref());
+    if initial_graph.is_none() {
+        // Best-effort: write the (currently empty) fresh graph so a
+        // crash before population still gives the next start a valid
+        // — if stale — header to invalidate against. Errors are
+        // logged and ignored: persistence is an optimisation, never
+        // a correctness gate.
+        if let Some(d) = manifest_digest.as_ref() {
+            if let Err(err) =
+                save_to_disk(&DependencyGraph::new(), d, &graph_cache_path)
+            {
+                output::warn(format!(
+                    "graph persistence: write to {} failed (ignored): {err:#}",
+                    graph_cache_path.display()
+                ));
+            }
+        }
+    }
+    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
+    let graph_for_save = Arc::clone(&graph);
+    let pipeline = DevAssetPipeline::new();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
@@ -206,7 +234,72 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         session.shutdown_explicit();
     }
 
+    // Persist the graph one more time before exit so the latest
+    // populated state — not just the boot-time fresh one — is what
+    // the next cold start sees. Best-effort; warn-and-ignore on
+    // failure (don't block shutdown on a disk error).
+    if let Some(d) = manifest_digest.as_ref() {
+        if let Ok(g) = graph_for_save.lock() {
+            if let Err(err) = save_to_disk(&g, d, &graph_cache_path) {
+                output::warn(format!(
+                    "graph persistence: shutdown write to {} failed (ignored): {err:#}",
+                    graph_cache_path.display()
+                ));
+            }
+        }
+    }
+
     result
+}
+
+/// Compute the manifest digest for the current project, or return
+/// `None` if the digest itself could not be computed (e.g. permission
+/// denied while walking sources). On `None` the caller should bypass
+/// the persistence layer entirely — never falsely reuse a stale
+/// graph.
+fn compute_manifest_digest(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+) -> Option<ManifestDigest> {
+    // Config files that, when changed, must invalidate the graph
+    // even though they live next to (not under) the watched roots.
+    // Both JSON and TS are listed; missing ones are silently
+    // skipped by the digest builder.
+    let cfg_files = [
+        PathBuf::from("zfb.config.json"),
+        PathBuf::from("zfb.config.ts"),
+    ];
+    match ManifestDigest::compute(project_root, watch_roots, &cfg_files) {
+        Ok(d) => Some(d),
+        Err(err) => {
+            output::warn(format!(
+                "graph persistence: manifest digest failed (cache disabled): {err:#}"
+            ));
+            None
+        }
+    }
+}
+
+/// Try to reuse a persisted graph. Returns `Some(graph)` only when
+/// the on-disk file exists and its digest matches the live one. All
+/// other outcomes (no digest, missing file, mismatch, IO error) map
+/// to `None` so the caller falls back to a fresh graph.
+fn load_persisted_graph(
+    graph_cache_path: &Path,
+    digest: Option<&ManifestDigest>,
+) -> Option<DependencyGraph> {
+    let d = digest?;
+    match load_from_disk(graph_cache_path, d) {
+        Ok(Some(g)) => Some(g),
+        Ok(None) => None,
+        Err(err) => {
+            output::warn(format!(
+                "graph persistence: load from {} failed (ignored): {err:#}",
+                graph_cache_path.display()
+            ));
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
