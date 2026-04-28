@@ -20,6 +20,8 @@
 //! Preact and React (aria casing, controlled inputs, hydrate vs
 //! hydrateRoot, bundle size).
 
+use async_trait::async_trait;
+
 use crate::{RenderError, RenderHost};
 
 use super::Adapter;
@@ -65,6 +67,7 @@ export function hydrateIsland(Component, props, element) {
 }
 "#;
 
+#[async_trait(?Send)]
 impl Adapter for ReactAdapter {
     fn name(&self) -> &'static str {
         "react"
@@ -78,8 +81,9 @@ impl Adapter for ReactAdapter {
         "react-dom/server"
     }
 
-    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError> {
+    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError> {
         host.execute_module(REACT_SETUP_SPECIFIER, REACT_SETUP_SOURCE)
+            .await
             .map(|_handle| ())
             .map_err(|e| RenderError::Adapter(format!("react pre-render setup failed: {e}")))
     }
@@ -96,6 +100,7 @@ impl Adapter for ReactAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use crate::render_host::ModuleHandle;
     use serde_json::Value as JsonValue;
 
@@ -108,8 +113,9 @@ mod tests {
         fail_with: Option<String>,
     }
 
+    #[async_trait(?Send)]
     impl RenderHost for CapturingHost {
-        fn execute_module(
+        async fn execute_module(
             &mut self,
             name: &str,
             source: &str,
@@ -121,7 +127,7 @@ mod tests {
             Ok(ModuleHandle::new(self.calls.len() as u32, name))
         }
 
-        fn call_default(
+        async fn call_default(
             &mut self,
             _handle: &ModuleHandle,
             _props: JsonValue,
@@ -129,7 +135,7 @@ mod tests {
             Ok(String::new())
         }
 
-        fn get_export(
+        async fn get_export(
             &mut self,
             _handle: &ModuleHandle,
             _name: &str,
@@ -146,10 +152,10 @@ mod tests {
         assert_eq!(a.render_to_string_module(), "react-dom/server");
     }
 
-    #[test]
-    fn pre_render_setup_evaluates_shim_module() {
+    #[tokio::test]
+    async fn pre_render_setup_evaluates_shim_module() {
         let mut host = CapturingHost::default();
-        ReactAdapter.pre_render_setup(&mut host).unwrap();
+        ReactAdapter.pre_render_setup(&mut host).await.unwrap();
         assert_eq!(host.calls.len(), 1);
         let (specifier, source) = &host.calls[0];
         assert_eq!(specifier, REACT_SETUP_SPECIFIER);
@@ -183,13 +189,13 @@ mod tests {
         assert!(a.hydrate_shim_specifier().starts_with("zfb:internal/"));
     }
 
-    #[test]
-    fn pre_render_setup_wraps_host_errors_with_adapter_context() {
+    #[tokio::test]
+    async fn pre_render_setup_wraps_host_errors_with_adapter_context() {
         let mut host = CapturingHost {
             fail_with: Some("oops".into()),
             ..Default::default()
         };
-        let err = ReactAdapter.pre_render_setup(&mut host).unwrap_err();
+        let err = ReactAdapter.pre_render_setup(&mut host).await.unwrap_err();
         let msg = match err {
             RenderError::Adapter(m) => m,
             other => unreachable!("expected RenderError::Adapter, got {other:?}"),

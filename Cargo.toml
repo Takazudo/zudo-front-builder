@@ -13,6 +13,7 @@ syntect = "5"
 garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
 walkdir = "2"
+async-trait = "0.1"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and

@@ -28,6 +28,7 @@ pub mod sourcemap;
 pub mod swc_pipeline;
 
 pub use error::{RenderError, Result};
+pub use loader::{read_to_string, ResolverError};
 pub use render::{RenderRequest, Renderer};
 pub use render_host::{ModuleHandle, RenderHost};
 pub use swc_pipeline::{CompileOptions, CompiledModule, JsxRuntime, SwcPipeline};
