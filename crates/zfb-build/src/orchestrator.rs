@@ -167,9 +167,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // first so we don't lose the paths from later
                     // changes in the same tick — the caller still
                     // wants to know about them for logging.
+                    //
+                    // `path` is already in `plan.triggers` (recorded by
+                    // `plan.record_trigger(path.clone())` above), so the
+                    // `mem::take` covers it. Pushing `path` again here
+                    // would duplicate it — leave it to the take.
                     let mut full = RebuildPlan::full_rebuild();
                     full.triggers = std::mem::take(&mut plan.triggers);
-                    full.triggers.push(path);
+                    let _ = path;
                     for remaining in changes_iter {
                         full.triggers.push(remaining.into());
                     }
@@ -406,6 +411,19 @@ mod tests {
         assert!(plan.pages.is_all());
         assert!(plan.rerun_css);
         assert!(plan.rerun_islands);
+    }
+
+    /// Round 2 regression guard: when a Global change fires, each
+    /// trigger path must appear exactly once in `plan.triggers`. The
+    /// previous code recorded the change once via `record_trigger` and
+    /// then re-pushed the same path into `full.triggers`, doubling it.
+    #[test]
+    fn global_change_does_not_duplicate_trigger_paths() {
+        let orch = make_orch(CountingPipeline::default());
+        let cfg = PathBuf::from("/proj/zfb.config.ts");
+        let other = PathBuf::from("/proj/pages/a.tsx");
+        let plan = orch.plan_for_changes(vec![cfg.clone(), other.clone()]);
+        assert_eq!(plan.triggers, vec![cfg, other]);
     }
 
     #[test]

@@ -504,7 +504,17 @@ fn render_one_inner(
             user_location,
         });
     }
-    let dest = dist_dir.join(&entry.output_path);
+    // Validate `output_path` before joining: the value comes from the
+    // route universe (router + page modules), but a malformed entry
+    // could carry an absolute or `..`-escaping relative path. Reject
+    // those at the write boundary so a hostile or buggy page module
+    // cannot corrupt files outside dist.
+    let dest = crate::atomic::validate_output_path(dist_dir, &entry.output_path).map_err(|e| {
+        RendererError::Io {
+            path: entry.output_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+        }
+    })?;
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| RendererError::Io {
             path: parent.to_path_buf(),

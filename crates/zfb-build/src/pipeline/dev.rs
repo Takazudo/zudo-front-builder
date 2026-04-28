@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
@@ -107,7 +107,8 @@ impl AssetPipeline for DevAssetPipeline {
                 // `..` or absolute roots before we touch the
                 // filesystem. Paths come from the renderer/router but
                 // we still validate at the write boundary.
-                let dest = validate_output_path(&ctx.dist_root, &r.output_path)?;
+                let dest = validate_output_path(&ctx.dist_root, &r.output_path)
+                    .with_context(|| format!("while building page {:?}", r.page))?;
                 let new_bytes = r.html.into_bytes();
 
                 // Compute (but do not yet apply) any stale-output

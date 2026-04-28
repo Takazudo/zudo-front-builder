@@ -272,7 +272,8 @@ impl AssetPipeline for ProductionAssetPipeline {
         //    sourcemap reference.
         rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for r in rendered {
-            let dest = validate_output_path(&ctx.dist_root, &r.output_path)?;
+            let dest = validate_output_path(&ctx.dist_root, &r.output_path)
+                .with_context(|| format!("while building page {:?}", r.page))?;
             let body = if rewrites.is_empty() {
                 r.html
             } else {
@@ -303,7 +304,15 @@ fn ship_asset(
 ) -> Result<String> {
     let hash = sha256_8(&asset.bytes);
     let hashed_relative = insert_hash_before_extension(&asset.relative_path, &hash);
-    let dest = ctx.dist_root.join(&hashed_relative);
+    // The relative path comes from the asset emitter — validate before
+    // joining so a malformed (e.g. absolute, traversal-laden, or
+    // symlink-escaping) `relative_path` cannot land outside dist_root.
+    let dest = validate_output_path(&ctx.dist_root, &hashed_relative).with_context(|| {
+        format!(
+            "production: refused to write hashed asset relative path {}",
+            hashed_relative.display()
+        )
+    })?;
 
     atomic_write(&dest, &asset.bytes).with_context(|| {
         format!(
