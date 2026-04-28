@@ -168,14 +168,14 @@ describe("createPageRouter", () => {
     expect(res.status).toBe(404);
   });
 
-  it("respects a page module's content_type override", async () => {
+  it("respects a page module's contentType override", async () => {
     const xmlPage: PageModule = {
       default: () => ({
         type: "rss",
         props: { children: { type: "channel", props: { children: "..." }, key: null } },
         key: null,
       }),
-      content_type: "application/xml; charset=utf-8",
+      contentType: "application/xml; charset=utf-8",
     };
     const router = createPageRouter({
       pages: [{ route: "/feed.xml", module: () => Promise.resolve(xmlPage) }],

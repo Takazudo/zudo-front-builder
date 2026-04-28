@@ -67,7 +67,7 @@ export interface PageHeading {
  *   contract). The page router still serves it under miniflare so dev
  *   mode behaves identically; SSG callers filter the route list before
  *   driving the renderer.
- * - `content_type`: optional override for non-HTML routes (e.g.
+ * - `contentType`: optional override for non-HTML routes (e.g.
  *   `application/xml` for `rss.xml.tsx`). Default is
  *   `text/html; charset=utf-8`. Cross-ref shipped #49.
  * - `headings`: optional list emitted by MDX (T4).
@@ -80,7 +80,7 @@ export interface PageHeading {
 export interface PageModule {
   readonly default: (props: Record<string, unknown>) => unknown;
   readonly prerender?: boolean;
-  readonly content_type?: string;
+  readonly contentType?: string;
   readonly headings?: readonly PageHeading[];
   readonly paths?: () => unknown[] | Promise<unknown[]>;
 }
@@ -126,7 +126,7 @@ export type PageRouter = (request: Request) => Promise<Response>;
 /**
  * Default content-type when a page module does not override.
  *
- * Aligned with #49's per-page `content_type` convention: the default
+ * Aligned with #49's per-page `contentType` convention: the default
  * served for HTML pages is `text/html; charset=utf-8`. Tests pin this
  * verbatim because miniflare/workerd does NOT auto-set a charset.
  */
@@ -235,7 +235,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
 
       const vnode = mod.default(componentProps);
       const html = opts.framework.renderToString(vnode);
-      const contentType = mod.content_type ?? DEFAULT_CONTENT_TYPE;
+      const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
       return c.body(html, 200, { "Content-Type": contentType });
     });
   }

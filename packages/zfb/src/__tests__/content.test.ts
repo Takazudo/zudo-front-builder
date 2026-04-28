@@ -149,6 +149,53 @@ describe("getCollection", () => {
     const items = await getCollection("blog");
     expect(items[0]?.module_specifier).toBe("mdx://blog/alpha");
   });
+
+  // BCI-6: recursive traversal
+  it("finds .md files in subdirectories (recursive traversal)", async () => {
+    await mkdir(join(dir, "blog", "2024"), { recursive: true });
+    await writeFile(join(dir, "blog", "top.md"), "---\ntitle: Top\n---\ntop body\n", "utf8");
+    await writeFile(
+      join(dir, "blog", "2024", "nested.md"),
+      "---\ntitle: Nested\n---\nnested body\n",
+      "utf8",
+    );
+
+    type Frontmatter = { title: string };
+    const items = await getCollection<Frontmatter>("blog");
+    const bySlug = new Map(items.map((e) => [e.slug, e]));
+
+    expect(items).toHaveLength(2);
+    expect(bySlug.get("top")?.data.title).toBe("Top");
+    expect(bySlug.get("2024/nested")?.data.title).toBe("Nested");
+  });
+
+  it("derives path-based slug and module_specifier for nested entries", async () => {
+    await mkdir(join(dir, "blog", "2024"), { recursive: true });
+    await writeFile(
+      join(dir, "blog", "2024", "hello.md"),
+      "---\ntitle: Hello\n---\nhello body\n",
+      "utf8",
+    );
+    const items = await getCollection("blog");
+    expect(items[0]?.slug).toBe("2024/hello");
+    expect(items[0]?.module_specifier).toBe("mdx://blog/2024/hello");
+  });
+
+  it("skips hidden directories during recursive traversal", async () => {
+    await mkdir(join(dir, "blog", ".hidden"), { recursive: true });
+    await writeFile(
+      join(dir, "blog", ".hidden", "secret.md"),
+      "---\ntitle: Secret\n---\nhidden\n",
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "blog", "visible.md"),
+      "---\ntitle: Visible\n---\nvisible body\n",
+      "utf8",
+    );
+    const items = await getCollection("blog");
+    expect(items.map((i) => i.slug)).toEqual(["visible"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
