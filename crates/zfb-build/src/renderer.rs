@@ -724,16 +724,16 @@ const SPAWN_INITIAL_BACKOFF_MS: u64 = 200;
 /// starting at [`SPAWN_INITIAL_BACKOFF_MS`] ms. A transient port-bind
 /// collision (zombie port from a previous run, concurrent CI job, etc.)
 /// resolves within a few hundred ms; the retry loop handles that without
-/// operator intervention. All attempt errors are accumulated so the
-/// final error message names every failure.
+/// operator intervention. The final error message includes the last
+/// failure reason.
 fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    let mut last_err = String::new();
+    let mut errors: Vec<String> = Vec::new();
     let mut backoff_ms = SPAWN_INITIAL_BACKOFF_MS;
     for attempt in 1..=SPAWN_MAX_ATTEMPTS {
         match spawn_miniflare_once(bundle_path) {
             Ok(result) => return Ok(result),
             Err(RendererError::MiniflareSpawn(msg)) => {
-                last_err = msg;
+                errors.push(format!("attempt {attempt}: {msg}"));
                 if attempt < SPAWN_MAX_ATTEMPTS {
                     thread::sleep(Duration::from_millis(backoff_ms));
                     backoff_ms = (backoff_ms * 2).min(3_000);
@@ -742,8 +742,9 @@ fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), Rende
             Err(other) => return Err(other),
         }
     }
+    let summary = errors.join("\n  ");
     Err(RendererError::MiniflareSpawn(format!(
-        "miniflare failed to start after {SPAWN_MAX_ATTEMPTS} attempts; last error: {last_err}"
+        "miniflare failed to start after {SPAWN_MAX_ATTEMPTS} attempts:\n  {summary}"
     )))
 }
 
@@ -1508,8 +1509,14 @@ mod tests {
         struct BlockingReader;
         impl std::io::Read for BlockingReader {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                thread::sleep(Duration::from_secs(10));
-                Ok(0) // never actually reached within the test deadline
+                // Sleep long enough that the channel timeout (100 ms
+                // below) fires first, but short enough that the
+                // background thread is done quickly after the test
+                // asserts. The thread cannot be interrupted once
+                // started; keeping the sleep short minimises the gap
+                // between test assertion and thread exit.
+                thread::sleep(Duration::from_millis(500));
+                Ok(0)
             }
         }
 
