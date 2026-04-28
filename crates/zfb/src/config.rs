@@ -85,6 +85,23 @@ pub struct Config {
     /// User-supplied plugins.
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
+
+    /// Deploy-target adapter package name. `None` (or omitted) means
+    /// pure-static build — any route exporting `prerender = false` is
+    /// rejected at build time. A package name like
+    /// `"@takazudo/zfb-adapter-cloudflare"` selects the matching
+    /// adapter; the build then invokes that package's bin to wrap the
+    /// SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js`).
+    ///
+    /// Accepted shapes: `None`, omitted, the literal string `"none"`,
+    /// or any non-empty package name. Empty / whitespace-only strings
+    /// are rejected at parse time so a typo doesn't silently fall back
+    /// to no-adapter.
+    ///
+    /// See [`zfb_build::AdapterChoice::from_config`] for the parser
+    /// the build orchestrator runs against this field.
+    #[serde(default)]
+    pub adapter: Option<String>,
 }
 
 impl Default for Config {
@@ -98,6 +115,7 @@ impl Default for Config {
             collections: Vec::new(),
             tailwind: None,
             plugins: Vec::new(),
+            adapter: None,
         }
     }
 }

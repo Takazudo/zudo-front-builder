@@ -21,4 +21,11 @@ export default defineConfig({
       path: "content/blog",
     },
   ],
+  // Deploy-target adapter. Omit (or set to "none") for a pure-static
+  // build — the default for this example. Set to a package name like
+  // "@takazudo/zfb-adapter-cloudflare" to produce dist/_worker.js
+  // alongside the static HTML so SSR routes (`export const prerender =
+  // false`) become deployable. Adding an SSR route without an adapter
+  // is a hard build error.
+  // adapter: "@takazudo/zfb-adapter-cloudflare",
 });
