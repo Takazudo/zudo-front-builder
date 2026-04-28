@@ -324,11 +324,10 @@ impl DevRenderSession {
             Some(e) => e.clone(),
             None => return Ok(None),
         };
-        let lock = self
-            .inner
-            .renderer
-            .lock()
-            .expect("DevRenderSession::renderer mutex poisoned");
+        let lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+            tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
+            p.into_inner()
+        });
         let state = lock
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
@@ -346,11 +345,10 @@ impl DevRenderSession {
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
     /// multiple times — subsequent calls are a no-op.
     fn shutdown_explicit(&self) {
-        let mut lock = self
-            .inner
-            .renderer
-            .lock()
-            .expect("DevRenderSession::renderer mutex poisoned");
+        let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+            tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
+            p.into_inner()
+        });
         if let Some(state) = lock.take() {
             let _ = shutdown(state);
         }

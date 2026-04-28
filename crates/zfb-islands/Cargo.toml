@@ -49,6 +49,9 @@ swc_core = { version = "64", features = [
 sha2 = "0.10"
 hex = "0.4"
 
+# Structured logging for diagnostics (e.g. mutex-poisoning recovery).
+tracing = "0.1"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }

@@ -62,11 +62,23 @@ impl DevAssetPipeline {
     pub fn reset_cache(&self) {
         self.last_bytes
             .lock()
-            .expect("DevAssetPipeline::last_bytes lock poisoned")
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "DevAssetPipeline.last_bytes",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
             .clear();
         self.last_output_path
             .lock()
-            .expect("DevAssetPipeline::last_output_path lock poisoned")
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "DevAssetPipeline.last_output_path",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
             .clear();
     }
 }

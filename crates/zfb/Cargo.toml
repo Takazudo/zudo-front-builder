@@ -24,6 +24,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
+tracing = "0.1"
 zfb-build = { path = "../zfb-build" }
 zfb-content = { path = "../zfb-content" }
 zfb-graph = { path = "../zfb-graph" }

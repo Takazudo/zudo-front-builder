@@ -68,9 +68,13 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
     }
     let key = binary_path.to_path_buf();
     {
-        let cache = verification_cache()
-            .lock()
-            .expect("esbuild verification cache mutex poisoned");
+        let cache = verification_cache().lock().unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "esbuild::verification_cache",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        });
         if cache.contains_key(&key) {
             return Ok(());
         }
@@ -144,7 +148,13 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
 
     verification_cache()
         .lock()
-        .expect("esbuild verification cache mutex poisoned")
+        .unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "esbuild::verification_cache",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        })
         .insert(key, ());
     Ok(())
 }
