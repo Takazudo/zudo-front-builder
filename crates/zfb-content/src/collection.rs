@@ -404,6 +404,22 @@ fn collect_collection_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Resu
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        // Skip dotfiles (e.g. `.DS_Store`, editor swap files,
+        // `.git`-style shadow directories). Mirrors the implicit
+        // behaviour of zfb-router's scan, which only matches files
+        // ending in `.tsx` and was therefore already immune.
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
+        // `entry.file_type()` describes the dirent itself, not the
+        // target — symlinks have `is_dir() == false` and
+        // `is_file() == false`. We never recurse into them and never
+        // accept them as collection entries, matching
+        // `WalkDir::follow_links(false)` in zfb-router::scan.
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_collection_files(&path, out)?;
@@ -654,6 +670,23 @@ mod tests {
         let tmp = TmpDir::new("empty");
         let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn walk_skips_dotfiles_and_dotdirs() {
+        // Round 3 regression: editor swap files (`.foo.md.swp`),
+        // `.DS_Store`, and shadow directories like `.git/HEAD` must
+        // not be parsed as collection entries.
+        let tmp = TmpDir::new("dotfiles");
+        tmp.write("ok.md", &valid_md("OK"));
+        tmp.write(".hidden.md", &valid_md("Hidden"));
+        tmp.write(".DS_Store", "noise");
+        // A .md file living under a dotdir must also be skipped — we
+        // never recurse into dot-prefixed directory entries.
+        tmp.write(".git/HEAD.md", &valid_md("Shadow"));
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 1, "only ok.md should survive");
+        assert_eq!(out[0].slug, "ok");
     }
 
     #[test]

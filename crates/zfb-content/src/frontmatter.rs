@@ -140,6 +140,12 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
 /// `Null`. The YAML is deserialized straight into `serde_json::Value`
 /// so the resulting struct is already in the public dialect.
 pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
+    // Strip a leading UTF-8 BOM (U+FEFF, encoded as `\xEF\xBB\xBF`) if
+    // present. Editors on Windows still occasionally write a BOM into
+    // .md files, and without this strip the `---\n` prefix check
+    // would miss and the whole file would be classified as body.
+    let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
+
     // Detect opening delimiter. Must be the very first three bytes followed by
     // either `\n` or `\r\n`. A plain `---` at EOF or followed by other text on
     // the same line is not considered a frontmatter opener.
@@ -274,6 +280,18 @@ mod tests {
         assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, "body starts here\n");
         assert_eq!(&input[parsed.body_offset..], parsed.body);
+    }
+
+    #[test]
+    fn parse_strips_leading_utf8_bom() {
+        // Some Windows editors prepend a UTF-8 BOM (\xEF\xBB\xBF) to
+        // .md files. Round 3 regression: the BOM was previously
+        // treated as the first byte and the `---\n` prefix check
+        // missed, classifying the entire file as body.
+        let input = "\u{FEFF}---\ntitle: BOM\n---\nbody\n";
+        let parsed = parse(input).expect("parse ok");
+        assert_eq!(parsed.frontmatter["title"].as_str(), Some("BOM"));
+        assert_eq!(parsed.body, "body\n");
     }
 
     #[test]
