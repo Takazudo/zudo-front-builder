@@ -61,7 +61,7 @@ pub use adapter::{
     ensure_no_ssr_without_adapter, run_adapter_bundle, run_adapter_bundle_with, AdapterBundleInput,
     AdapterBundleOutput, AdapterChoice, AdapterRunner, DefaultAdapterRunner, SsrRouteRef,
 };
-pub use atomic::{atomic_write, atomic_write_string};
+pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
     bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, RouteEntry,
 };

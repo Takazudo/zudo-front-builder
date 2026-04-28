@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use anyhow::Result;
 use zfb_graph::PageId;
 
-use crate::atomic::atomic_write_string;
+use crate::atomic::{atomic_write, validate_output_path};
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -103,31 +103,25 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.pages_rendered = rendered.len();
 
             for r in rendered {
-                let dest = ctx.dist_root.join(&r.output_path);
+                // Reject any output_path that escapes dist_root via
+                // `..` or absolute roots before we touch the
+                // filesystem. Paths come from the renderer/router but
+                // we still validate at the write boundary.
+                let dest = validate_output_path(&ctx.dist_root, &r.output_path)?;
                 let new_bytes = r.html.into_bytes();
 
-                // Stale-output prune: if this page previously produced a
-                // *different* absolute path (e.g. extension flipped
-                // from xml to rss), delete the old artifact and forget
-                // its byte cache so we never serve a stale file. The
-                // delete is best-effort: if the file was already gone
-                // we silently move on.
-                let pruned = {
+                // Compute (but do not yet apply) any stale-output
+                // prune. The actual delete happens AFTER the new
+                // artifact lands on disk, so a reader never observes
+                // a window where neither file exists.
+                let prune_target = {
                     let mut last_out = self
                         .last_output_path
                         .lock()
-                        .expect("DevAssetPipeline::last_output_path lock poisoned");
+                        .unwrap_or_else(|p| p.into_inner());
                     match last_out.insert(r.page.clone(), dest.clone()) {
-                        Some(prev) if prev != dest => {
-                            let _ = std::fs::remove_file(&prev);
-                            self.last_bytes
-                                .lock()
-                                .expect("DevAssetPipeline::last_bytes lock poisoned")
-                                .remove(&prev);
-                            outcome.pages_pruned.push(prev);
-                            true
-                        }
-                        _ => false,
+                        Some(prev) if prev != dest => Some(prev),
+                        _ => None,
                     }
                 };
 
@@ -135,7 +129,7 @@ impl AssetPipeline for DevAssetPipeline {
                     let mut cache = self
                         .last_bytes
                         .lock()
-                        .expect("DevAssetPipeline::last_bytes lock poisoned");
+                        .unwrap_or_else(|p| p.into_inner());
                     match cache.get(&dest) {
                         Some(prev) if prev == &new_bytes => false,
                         _ => {
@@ -148,13 +142,28 @@ impl AssetPipeline for DevAssetPipeline {
                 // After a prune the new path is by definition different
                 // from anything we've written before, so we always
                 // (re-)emit. `changed` already flips true via the
-                // cache miss above; this `_pruned` line just documents
-                // the invariant for future readers.
-                let _ = pruned;
+                // cache miss above. We still want to write before we
+                // delete the previous artifact below.
 
                 if changed {
-                    atomic_write_string(&dest, std::str::from_utf8(&new_bytes).unwrap_or(""))?;
+                    // Pass the raw bytes through — `atomic_write` is
+                    // the canonical write helper. Going through
+                    // `from_utf8(...).unwrap_or("")` previously turned
+                    // any encoding hiccup into a silent blank file.
+                    atomic_write(&dest, &new_bytes)?;
                     outcome.pages_written.push(r.page);
+                }
+
+                // Now that the new artifact is on disk, delete the
+                // stale one. Best-effort: if it was already gone we
+                // silently move on.
+                if let Some(prev) = prune_target {
+                    let _ = std::fs::remove_file(&prev);
+                    self.last_bytes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&prev);
+                    outcome.pages_pruned.push(prev);
                 }
             }
         }

@@ -29,10 +29,10 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -77,6 +77,50 @@ pub fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
 /// Convenience: atomically write a `&str` to `dest`.
 pub fn atomic_write_string(dest: &Path, s: &str) -> Result<()> {
     atomic_write(dest, s.as_bytes())
+}
+
+/// Lexically validate that `dist_root.join(output_path)` lands inside
+/// `dist_root` — that is, `output_path` cannot escape via `..` segments
+/// or absolute roots. Returns the joined path on success.
+///
+/// The check is purely lexical so it works for paths that don't yet
+/// exist (typical for build outputs). It rejects:
+///
+/// - Absolute `output_path` (would discard `dist_root` after `join`).
+/// - Any sequence of `..` that would walk above `dist_root`.
+/// - Any prefix component (e.g. a Windows drive letter on the
+///   `output_path`).
+pub fn validate_output_path(dist_root: &Path, output_path: &Path) -> Result<PathBuf> {
+    // Walk the components, building a normalized PathBuf relative to
+    // dist_root. Reject absolute paths, Windows prefixes, and any `..`
+    // that would walk above the root.
+    let mut normalized: Vec<&std::ffi::OsStr> = Vec::new();
+    for c in output_path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(anyhow!(
+                    "output path {} must be relative to dist_root",
+                    output_path.display()
+                ));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.pop().is_none() {
+                    return Err(anyhow!(
+                        "output path {} escapes dist_root via `..`",
+                        output_path.display()
+                    ));
+                }
+            }
+            Component::Normal(s) => normalized.push(s),
+        }
+    }
+
+    let mut joined = dist_root.to_path_buf();
+    for seg in normalized {
+        joined.push(seg);
+    }
+    Ok(joined)
 }
 
 /// Build the sibling temp path. Pub for tests; not part of the stable API.
@@ -127,6 +171,43 @@ mod tests {
         assert_eq!(t.parent(), Some(Path::new("/tmp/some/dir")));
         let name = t.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("file.html.tmp-"), "got {name}");
+    }
+
+    #[test]
+    fn validate_output_path_accepts_normal() {
+        let root = Path::new("/dist");
+        assert_eq!(
+            validate_output_path(root, Path::new("blog/index.html")).unwrap(),
+            PathBuf::from("/dist/blog/index.html"),
+        );
+    }
+
+    #[test]
+    fn validate_output_path_rejects_absolute() {
+        let root = Path::new("/dist");
+        assert!(validate_output_path(root, Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn validate_output_path_rejects_traversal() {
+        let root = Path::new("/dist");
+        assert!(
+            validate_output_path(root, Path::new("../etc/passwd")).is_err()
+        );
+        assert!(
+            validate_output_path(root, Path::new("blog/../../etc/passwd")).is_err()
+        );
+    }
+
+    #[test]
+    fn validate_output_path_allows_inner_dotdot() {
+        // `blog/../index.html` resolves to `index.html`, which is still
+        // inside dist_root, so it's allowed.
+        let root = Path::new("/dist");
+        assert_eq!(
+            validate_output_path(root, Path::new("blog/../index.html")).unwrap(),
+            PathBuf::from("/dist/index.html"),
+        );
     }
 
     #[test]

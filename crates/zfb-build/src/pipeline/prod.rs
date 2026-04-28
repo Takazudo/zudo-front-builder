@@ -63,7 +63,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use zfb_graph::PageId;
 
-use crate::atomic::atomic_write;
+use crate::atomic::{atomic_write, validate_output_path};
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -264,8 +264,15 @@ impl AssetPipeline for ProductionAssetPipeline {
         //    emitters are expected to declare URLs that are unique
         //    enough not to collide with arbitrary page text (e.g.
         //    `/assets/styles.css` rather than `styles.css`).
+        //
+        //    Sort rewrites by `from` length descending so that longer
+        //    keys are applied before any shorter prefixes. Without
+        //    this, a stable URL like `/styles.css` would also rewrite
+        //    occurrences inside `/styles.css.map` and corrupt the
+        //    sourcemap reference.
+        rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for r in rendered {
-            let dest = ctx.dist_root.join(&r.output_path);
+            let dest = validate_output_path(&ctx.dist_root, &r.output_path)?;
             let body = if rewrites.is_empty() {
                 r.html
             } else {

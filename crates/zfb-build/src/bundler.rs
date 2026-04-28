@@ -496,6 +496,21 @@ fn materialise_shadow(
     }
 
     routes.sort_by(|a, b| a.route.cmp(&b.route));
+    // Detect route collisions before silently de-duplicating. Two
+    // pages producing the same route from different source extensions
+    // (e.g. `index.tsx` and `index.md`) is an authoring bug — surface
+    // it with both source paths in the message rather than letting
+    // one win arbitrarily.
+    for w in routes.windows(2) {
+        if w[0].route == w[1].route && w[0].source_path != w[1].source_path {
+            return Err(anyhow!(
+                "bundler: route collision: {} is produced by both {} and {}",
+                w[0].route,
+                w[0].source_path.display(),
+                w[1].source_path.display(),
+            ));
+        }
+    }
     routes.dedup_by(|a, b| a.route == b.route);
     Ok(())
 }

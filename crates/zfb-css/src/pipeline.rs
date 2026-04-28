@@ -15,7 +15,9 @@
 //! renderer's responsibility (Epic 3 / Epic 7 wiring).
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -165,11 +167,7 @@ impl<E: CssEngine> CssPipeline<E> {
             .join("assets")
             .join(format!("styles-{hash}.css"));
 
-        if let Some(parent) = asset_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        std::fs::write(&asset_path, combined.as_bytes())
+        atomic_write(&asset_path, combined.as_bytes())
             .with_context(|| format!("failed to write {}", asset_path.display()))?;
 
         // Emit JSON class-name maps if requested.
@@ -262,7 +260,7 @@ fn write_class_map_files(
                 .collect::<std::collections::BTreeMap<_, _>>(),
         )
         .context("failed to serialise CSS Modules class-name map")?;
-        std::fs::write(&json_path, json.as_bytes())
+        atomic_write(&json_path, json.as_bytes())
             .with_context(|| format!("failed to write {}", json_path.display()))?;
         out.insert(module_path.clone(), json_path);
     }
@@ -319,6 +317,56 @@ pub fn link_href(base_url: &str, asset_path: &Path) -> String {
         .unwrap_or_default();
     let trimmed = base_url.trim_end_matches('/');
     format!("{trimmed}/assets/{filename}")
+}
+
+/// Atomic write helper local to this crate. Mirrors the
+/// `write-temp-then-rename` recipe used by `zfb-build::atomic` so the
+/// CSS pipeline never leaves a half-written `.css` (or class-map JSON)
+/// behind.
+fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+
+    let pid = std::process::id();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut name = dest
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("zfb-css"));
+    name.push(format!(".tmp-{pid}-{seq}"));
+    let mut temp_path = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    if temp_path.as_os_str().is_empty() {
+        temp_path = PathBuf::from(".");
+    }
+    temp_path.push(name);
+
+    {
+        let mut f = std::fs::File::create(&temp_path)
+            .with_context(|| format!("failed to create temp file {}", temp_path.display()))?;
+        f.write_all(bytes)
+            .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+        f.sync_all()
+            .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
+    }
+
+    if let Err(e) = std::fs::rename(&temp_path, dest) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e).with_context(|| {
+            format!(
+                "failed to rename {} -> {}",
+                temp_path.display(),
+                dest.display()
+            )
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
