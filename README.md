@@ -30,6 +30,44 @@ pnpm docs:preview        # preview the built site
 pnpm docs:check          # astro check (type/content validation)
 ```
 
+## Limits
+
+`zfb build` reads every configured content collection, builds an
+in-memory `ContentSnapshot` (one entry per `.md` / `.mdx` / `.tsx`
+under each collection root), and embeds it into the worker bundle that
+miniflare loads at build time. The full snapshot lives in V8 RAM for
+the duration of the render pass — there is no streaming or sharding
+today.
+
+For the project sizes the engine targets (the docs site, blogs,
+typical `zudo-doc`-scale content sets — hundreds of MDX files with
+short bodies) this fits comfortably in default Node + workerd memory.
+Very large content sets (tens of thousands of entries, or entries
+with multi-megabyte bodies) will push V8 RSS up linearly with snapshot
+size; if you are headed in that direction, you should monitor the
+snapshot size and plan for the streaming / per-collection sharding
+work tracked as future engine roadmap.
+
+To inspect the snapshot footprint of a build, set `ZFB_DEBUG_SNAPSHOT`
+to `1` (or `true`):
+
+```sh
+ZFB_DEBUG_SNAPSHOT=1 pnpm exec zfb build
+```
+
+zfb will print one line to stderr while building:
+
+```
+content snapshot: 187 entries / 412 KB
+```
+
+`entries` is the total number of content entries across all
+collections. `KB` is the byte size of the deterministic JSON
+serialization of the snapshot — a useful proxy for the V8 heap cost,
+since that is the shape miniflare receives. Any other value (`0`,
+unset, `yes`, etc.) leaves the build silent so a stray export does
+not change CI output.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
