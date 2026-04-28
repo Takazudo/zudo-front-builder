@@ -205,17 +205,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     output::ready(&format!("http://{host}:{port}"));
 
-    // 7. Run the server until Ctrl+C. The renderer guard tears down on
-    //    drop here — the explicit `shutdown` call belt-and-braces keeps
-    //    the surface symmetrical (start ↔ shutdown).
+    // 7. Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
+    //    signal so axum drains in-flight connections before exiting. The
+    //    renderer guard tears down on drop here — the explicit `shutdown`
+    //    call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
     let result = tokio::select! {
-        res = serve(opts) => {
+        res = serve(opts, ctrl_c) => {
             orch_handle.abort();
             res
-        }
-        _ = tokio::signal::ctrl_c() => {
-            orch_handle.abort();
-            Ok(())
         }
     };
 

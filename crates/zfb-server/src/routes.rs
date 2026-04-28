@@ -58,10 +58,16 @@ pub const DEV_404_BODY: &str = "<!doctype html><html lang=\"en\"><head><meta cha
 /// `Content-Type`. When `content_type` is `None`, the server derives
 /// one from the cache key's file extension via
 /// [`content_type_for_extension`].
+///
+/// The body is stored as raw bytes (`Vec<u8>`) so binary responses
+/// (images, fonts, WASM, …) can flow through the cache without
+/// requiring valid UTF-8.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedPage {
-    /// Body to send back to the browser.
-    pub body: String,
+    /// Body to send back to the browser. Stored as raw bytes so binary
+    /// responses (images, fonts, WASM, …) are supported without
+    /// requiring UTF-8.
+    pub body: Vec<u8>,
     /// Optional explicit `Content-Type` (typically supplied by a page's
     /// `export const contentType = "…"` frontmatter via Sub 1's
     /// extractor). `None` means "derive from the URL/extension".
@@ -69,9 +75,19 @@ pub struct CachedPage {
 }
 
 impl CachedPage {
-    /// Convenience: build an HTML cache entry with no explicit
-    /// content-type override (the server will derive one).
+    /// Convenience: build an HTML cache entry from a `String` (or
+    /// `&str`) with no explicit content-type override (the server will
+    /// derive one).
     pub fn html(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into().into_bytes(),
+            content_type: None,
+        }
+    }
+
+    /// Build a cache entry from raw bytes with no explicit content-type
+    /// override. Use this for binary responses (images, fonts, WASM, …).
+    pub fn bytes(body: impl Into<Vec<u8>>) -> Self {
         Self {
             body: body.into(),
             content_type: None,
@@ -124,10 +140,31 @@ impl PageCache {
     /// `Content-Type` the dev server uses for this URL. Pass `None`
     /// for `content_type` to let the server derive it from the URL's
     /// file extension.
+    ///
+    /// `body` is accepted as a `String` (or `&str`); for binary bodies
+    /// use [`insert_bytes_with_content_type`](Self::insert_bytes_with_content_type).
     pub async fn insert_with_content_type(
         &self,
         key: impl Into<String>,
         body: impl Into<String>,
+        content_type: Option<String>,
+    ) {
+        self.inner.write().await.insert(
+            key.into(),
+            CachedPage {
+                body: body.into().into_bytes(),
+                content_type,
+            },
+        );
+    }
+
+    /// Insert or replace an entry with a raw-bytes body, optionally
+    /// overriding the `Content-Type`. Use this for binary responses
+    /// (images, fonts, WASM, …) where the body is not valid UTF-8.
+    pub async fn insert_bytes_with_content_type(
+        &self,
+        key: impl Into<String>,
+        body: impl Into<Vec<u8>>,
         content_type: Option<String>,
     ) {
         self.inner.write().await.insert(
@@ -170,48 +207,53 @@ impl PageCache {
 /// `export const contentType = "…"` in their frontmatter and rely on
 /// the [`CachedPage::content_type`] override path instead.
 ///
-/// Mirrors [`zfb_render::meta::derive_content_type`]; keep both in
-/// sync (and ADR-003).
-pub fn content_type_for_extension(extension: &str) -> &'static str {
-    match extension.to_ascii_lowercase().as_str() {
-        // Documents
-        "html" | "htm" => "text/html; charset=utf-8",
-        "xml" => "application/xml",
-        "rss" => "application/rss+xml",
-        "atom" => "application/atom+xml",
-        "json" | "map" => "application/json",
-        "webmanifest" => "application/manifest+json",
-        "txt" => "text/plain; charset=utf-8",
-        // Code / styles
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" | "cjs" => "application/javascript; charset=utf-8",
-        "wasm" => "application/wasm",
-        // Images
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "gif" => "image/gif",
-        "ico" => "image/x-icon",
-        // Fonts
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "eot" => "application/vnd.ms-fontobject",
-        // Media
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        // Misc
-        "pdf" => "application/pdf",
-        // Unknown / missing extension: fall back to a generic
-        // octet-stream so the browser doesn't mistakenly sniff it as
-        // HTML and execute scripts inside it.
-        _ => "application/octet-stream",
+/// Uses the [`mime_guess`] crate for the actual MIME lookup so the
+/// table stays up-to-date without manual maintenance. A small set of
+/// overrides is applied on top for extensions where `mime_guess` would
+/// omit a required `charset` parameter or return a non-canonical
+/// string for our use-case:
+///
+/// - `html`/`htm`, `txt`, `css`, `js`/`mjs`/`cjs` all get an explicit
+///   `; charset=utf-8` suffix appended.
+/// - `map` is canonicalised to `application/json` (source maps).
+/// - `webmanifest` → `application/manifest+json`.
+/// - `rss` → `application/rss+xml`.
+/// - `atom` → `application/atom+xml`.
+/// - `wasm` → `application/wasm` (mime_guess may return
+///   `application/wasm` or miss it on older databases).
+pub fn content_type_for_extension(extension: &str) -> String {
+    // Hard-coded overrides take precedence — these are extensions where
+    // mime_guess does not include a charset suffix we need, returns a
+    // non-canonical type, or is absent from the database.
+    let ext = extension.to_ascii_lowercase();
+    match ext.as_str() {
+        // Text types that need explicit charset.
+        "html" | "htm" => return "text/html; charset=utf-8".to_string(),
+        "txt" => return "text/plain; charset=utf-8".to_string(),
+        "css" => return "text/css; charset=utf-8".to_string(),
+        "js" | "mjs" | "cjs" => return "application/javascript; charset=utf-8".to_string(),
+        // Generic XML: mime_guess returns "text/xml" but RFC 3023 /
+        // RFC 7303 prefers "application/xml" for XML not intended as
+        // a browser-rendered document. Keep the more correct type.
+        "xml" => return "application/xml".to_string(),
+        // Specialised XML subtypes not carried by the mime database.
+        "rss" => return "application/rss+xml".to_string(),
+        "atom" => return "application/atom+xml".to_string(),
+        // Canonical JSON variants.
+        "map" => return "application/json".to_string(),
+        "webmanifest" => return "application/manifest+json".to_string(),
+        // WASM (some older mime databases miss this).
+        "wasm" => return "application/wasm".to_string(),
+        _ => {}
     }
+
+    // Delegate everything else to mime_guess. It handles images, fonts,
+    // video/audio, PDF, and hundreds of other types without any
+    // maintenance burden on our side.
+    mime_guess::from_ext(&ext)
+        .first_raw()
+        .unwrap_or("application/octet-stream")
+        .to_string()
 }
 
 /// Pick the `Content-Type` for a page-cache entry, applying the
@@ -240,7 +282,7 @@ pub fn resolve_content_type(entry: &CachedPage, url_path: &str) -> String {
         // the helper's fallback.
         return "text/html; charset=utf-8".to_string();
     }
-    content_type_for_extension(ext).to_string()
+    content_type_for_extension(ext)
 }
 
 /// Shared state for the route handlers.
@@ -331,15 +373,15 @@ async fn serve_page(state: &AppState, raw_path: &str) -> Response {
             let is_html = content_type
                 .to_ascii_lowercase()
                 .starts_with("text/html");
-            return page_response(StatusCode::OK, &entry.body, &content_type, is_html);
+            return page_response_bytes(StatusCode::OK, entry.body, &content_type, is_html);
         }
     }
 
     // 404 is always the dev HTML body so the page is replaced once
     // a real one lands. The live-reload script gets injected.
-    page_response(
+    page_response_bytes(
         StatusCode::NOT_FOUND,
-        DEV_404_BODY,
+        DEV_404_BODY.as_bytes().to_vec(),
         "text/html; charset=utf-8",
         true,
     )
@@ -374,20 +416,31 @@ fn lookup_keys(path: &str) -> Vec<String> {
     ]
 }
 
-/// Build a page response with a custom `Content-Type`, injecting the
-/// live-reload tag only for HTML responses (Sub 49: non-HTML pages
-/// like RSS feeds or sitemaps must not be polluted with a script
-/// tag — they'd fail XML parsers).
-fn page_response(
+/// Build a page response from a raw-bytes body with a custom
+/// `Content-Type`, injecting the live-reload tag only for HTML
+/// responses (Sub 49: non-HTML pages like RSS feeds or sitemaps must
+/// not be polluted with a script tag — they'd fail XML parsers).
+///
+/// When `inject_reload` is `true` the body bytes are interpreted as a
+/// UTF-8 HTML document (a reasonable assumption for dev-mode HTML).
+/// Non-UTF-8 bytes in an HTML body are served as-is without injection
+/// rather than panicking — a graceful degradation for the unlikely
+/// case of a malformed page reaching the dev cache.
+fn page_response_bytes(
     status: StatusCode,
-    body: &str,
+    body: Vec<u8>,
     content_type: &str,
     inject_reload: bool,
 ) -> Response {
-    let body_out = if inject_reload {
-        inject_livereload(body)
+    let body_out: Vec<u8> = if inject_reload {
+        // HTML should always be valid UTF-8; fall back to raw bytes on
+        // the rare occasion it isn't so we don't panic in dev mode.
+        match std::str::from_utf8(&body) {
+            Ok(html) => inject_livereload(html).into_bytes(),
+            Err(_) => body,
+        }
     } else {
-        body.to_string()
+        body
     };
 
     // The Content-Type may come from a user frontmatter override and
@@ -643,7 +696,7 @@ mod tests {
     #[test]
     fn resolve_content_type_uses_override_first() {
         let entry = CachedPage {
-            body: "<rss/>".into(),
+            body: b"<rss/>".to_vec(),
             content_type: Some("application/rss+xml".into()),
         };
         // URL says `.xml`, but the override (`application/rss+xml`)
@@ -654,7 +707,7 @@ mod tests {
     #[test]
     fn resolve_content_type_falls_back_to_url_extension() {
         let entry = CachedPage {
-            body: "<urlset/>".into(),
+            body: b"<urlset/>".to_vec(),
             content_type: None,
         };
         assert_eq!(resolve_content_type(&entry, "/sitemap.xml"), "application/xml");
@@ -664,7 +717,7 @@ mod tests {
     #[test]
     fn resolve_content_type_html_default_for_extensionless() {
         let entry = CachedPage {
-            body: "<p>x</p>".into(),
+            body: b"<p>x</p>".to_vec(),
             content_type: None,
         };
         // No extension on the URL → HTML default.

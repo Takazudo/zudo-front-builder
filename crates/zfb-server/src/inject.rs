@@ -29,7 +29,42 @@ pub const LIVERELOAD_TAG: &str = "<script src=\"/__zfb/livereload.js\"></script>
 ///
 /// The function never errors; the worst case is a fragment getting an
 /// extra script tag at the end, which is harmless in dev mode.
+///
+/// This is a convenience wrapper around [`inject_livereload_into`]
+/// that allocates and returns a new `String`. Prefer
+/// [`inject_livereload_into`] when you already hold a buffer you want
+/// to reuse across calls.
 pub fn inject_livereload(html: &str) -> String {
+    let mut buf = String::with_capacity(html.len() + LIVERELOAD_TAG.len());
+    inject_livereload_into(html, &mut buf);
+    buf
+}
+
+/// In-place variant of [`inject_livereload`]: writes the result into
+/// `buf` instead of allocating a new `String`.
+///
+/// `buf` is **cleared** before writing so the caller does not need to
+/// reset it between calls. After this function returns `buf` contains
+/// exactly the same content that [`inject_livereload`] would return.
+///
+/// # Example
+///
+/// ```
+/// use zfb_server::inject::{inject_livereload_into, LIVERELOAD_TAG};
+///
+/// let mut buf = String::new();
+/// inject_livereload_into("<html><body>hi</body></html>", &mut buf);
+/// assert!(buf.contains(LIVERELOAD_TAG));
+///
+/// // Reuse the buffer: buf is cleared before each call.
+/// inject_livereload_into("<html><body>world</body></html>", &mut buf);
+/// assert!(buf.contains("world"));
+/// assert_eq!(buf.matches(LIVERELOAD_TAG).count(), 1);
+/// ```
+pub fn inject_livereload_into(html: &str, buf: &mut String) {
+    buf.clear();
+    buf.reserve(html.len() + LIVERELOAD_TAG.len());
+
     // Find the byte offset of the LAST </body> match, case-insensitive.
     // We scan the bytes directly rather than allocating a full
     // lowercase copy of the page — the previous implementation cost
@@ -70,17 +105,13 @@ pub fn inject_livereload(html: &str) -> String {
 
     match last {
         Some(idx) => {
-            let mut out = String::with_capacity(html.len() + LIVERELOAD_TAG.len());
-            out.push_str(&html[..idx]);
-            out.push_str(LIVERELOAD_TAG);
-            out.push_str(&html[idx..]);
-            out
+            buf.push_str(&html[..idx]);
+            buf.push_str(LIVERELOAD_TAG);
+            buf.push_str(&html[idx..]);
         }
         None => {
-            let mut out = String::with_capacity(html.len() + LIVERELOAD_TAG.len());
-            out.push_str(html);
-            out.push_str(LIVERELOAD_TAG);
-            out
+            buf.push_str(html);
+            buf.push_str(LIVERELOAD_TAG);
         }
     }
 }
@@ -189,5 +220,46 @@ mod tests {
         let expected =
             format!("<body>あ</body><body>い{LIVERELOAD_TAG}</body>");
         assert_eq!(out, expected);
+    }
+
+    // ---- inject_livereload_into -------------------------------------------------
+
+    #[test]
+    fn into_variant_produces_same_result_as_allocating_variant() {
+        let cases = [
+            "<html><body><h1>hi</h1></body></html>",
+            "<div>fragment</div>",
+            "",
+            "<BODY>x</BODY>",
+            "<body>a</body><body>b</body>",
+        ];
+        for html in &cases {
+            let expected = inject_livereload(html);
+            let mut buf = String::new();
+            inject_livereload_into(html, &mut buf);
+            assert_eq!(buf, expected, "mismatch for input: {html:?}");
+        }
+    }
+
+    #[test]
+    fn into_variant_clears_existing_buffer_contents() {
+        let mut buf = String::from("stale content that should be overwritten");
+        inject_livereload_into("<body></body>", &mut buf);
+        // Must not contain "stale".
+        assert!(!buf.contains("stale"), "buf was not cleared: {buf}");
+        assert!(buf.contains(LIVERELOAD_TAG));
+    }
+
+    #[test]
+    fn into_variant_reusable_across_calls() {
+        let mut buf = String::new();
+        inject_livereload_into("<body>first</body>", &mut buf);
+        assert!(buf.contains("first"));
+        assert_eq!(buf.matches(LIVERELOAD_TAG).count(), 1);
+
+        inject_livereload_into("<body>second</body>", &mut buf);
+        assert!(buf.contains("second"));
+        assert!(!buf.contains("first"), "old content leaked into reused buf");
+        assert_eq!(buf.matches(LIVERELOAD_TAG).count(), 1);
     }
 }
