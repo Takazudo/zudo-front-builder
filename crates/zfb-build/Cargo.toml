@@ -16,9 +16,10 @@ zfb-graph = { path = "../zfb-graph" }
 zfb-content = { path = "../zfb-content" }
 # Read-only consumption of the framework adapter contract (ADR-002).
 # The bundler only touches `Framework`, `make_adapter`, and the adapter's
-# `hydrate_shim_*` accessors. Default features are kept (no
-# `deno_core_host`) so this stays compile-cheap and does not drag V8 into
-# `zfb-build`'s dependency surface.
+# `hydrate_shim_*` accessors. Per ADR-005 the JS runtime is no longer
+# embedded (deno_core was retired), so `zfb-render` is compile-cheap and
+# carries no V8 / native-runtime cost into `zfb-build`'s dependency
+# surface.
 zfb-render = { path = "../zfb-render" }
 
 anyhow = { workspace = true }

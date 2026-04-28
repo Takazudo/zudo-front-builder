@@ -3,10 +3,10 @@
 //! This module defines the serializable shape that flows from the Rust
 //! build into the JS runtime so TSX page modules can call
 //! `getCollection("docs")` and `getEntry("docs", "slug")` synchronously
-//! during SSR. The actual deno_core wiring (embedding the snapshot into
-//! `globalThis.__zfb.content`) is gated by ADR-001 and lands in a
-//! follow-up epic — this sub delivers ONLY the Rust contract and the
-//! TypeScript surface.
+//! during SSR. The actual JS-side wiring (embedding the snapshot into
+//! `globalThis.__zfb.content` via the miniflare runtime per ADR-005)
+//! lands in a follow-up epic — this sub delivers ONLY the Rust contract
+//! and the TypeScript surface.
 //!
 //! See `docs/architecture/adr-004-content-bridge.md` for the JS-side
 //! contract spec.

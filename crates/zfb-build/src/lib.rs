@@ -15,8 +15,10 @@
 //! goes through pluggable callback functions ([`PageRenderer`],
 //! [`CssRunner`], [`IslandsRunner`]) so:
 //!
-//! - the orchestrator's surface stays free of feature-gated dependencies
-//!   (notably `zfb-render`'s `deno_core_host` feature), and
+//! - the orchestrator's surface stays free of heavyweight transitive
+//!   dependencies (SWC's TSX→JS pipeline in `zfb-render`, and the
+//!   miniflare/esbuild npm subprocess wrappers in `zfb-css` /
+//!   `zfb-islands`), and
 //! - tests can plug in fakes that count invocations rather than spinning
 //!   up Tailwind/esbuild subprocesses.
 //!
