@@ -249,9 +249,19 @@ fn escape_attr(value: &str) -> String {
 pub enum IslandSkeletonRewriteError {
     /// The number of empty `data-zfb-island=""` skeletons in the rendered
     /// HTML does not equal the number of descriptors. Indicates an
-    /// orchestration bug in the renderer.
+    /// orchestration bug in the renderer — or, more rarely, user content
+    /// that contains the literal string ` data-zfb-island=""` (substring
+    /// matching is fragile here; tracked for replacement under
+    /// https://github.com/Takazudo/zfb2/issues/65).
     #[error(
-        "skeleton/descriptor count mismatch: {skeletons} skeletons but {descriptors} descriptors"
+        "island skeleton/descriptor count mismatch: rendered HTML contains {skeletons} \
+         empty data-zfb-island=\"\" skeletons but the renderer produced {descriptors} \
+         IslandDescriptor(s). \
+         Causes: (1) bug in the renderer's descriptor-collection step, OR \
+         (2) user content (e.g. Markdown body text, code fences) that contains the \
+         literal string ` data-zfb-island=\"\"` and is being miscounted as a skeleton. \
+         The substring-based matching is fragile and is being replaced with \
+         anchor-based locators — see issue #65."
     )]
     CountMismatch {
         /// Number of `data-zfb-island=""` skeletons found in the input HTML.
@@ -296,12 +306,12 @@ pub fn rewrite_islands_in_attr_skeleton(
     // the literal attribute pair (with a leading space so we don't match
     // a non-data-zfb-island prefix).
     //
-    // TODO(review-loop): substring-based matching is fragile — if user
-    // content (e.g. a Markdown body) contains the literal string
-    // ` data-zfb-island=""` it will be counted as a skeleton, and we
-    // either error out (count mismatch, this branch) or mis-pair
-    // descriptors. Replace with an anchor-based locator emitted by the
-    // wrapper itself. Tracked separately as the breaking-change idea.
+    // Substring-based matching is fragile — if user content (e.g. a
+    // Markdown body) contains the literal string ` data-zfb-island=""`
+    // it will be counted as a skeleton, and we either error out
+    // (count mismatch, this branch) or mis-pair descriptors. The
+    // anchor-based replacement is tracked under
+    // https://github.com/Takazudo/zfb2/issues/65.
     const NEEDLE: &str = " data-zfb-island=\"\"";
 
     let mut positions: Vec<usize> = Vec::new();

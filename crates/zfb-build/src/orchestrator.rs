@@ -147,8 +147,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // Recover from poisoning rather than crashing the long-running
         // dev loop: a panicked previous holder leaves the mutex
         // poisoned, but the graph data itself is still consistent for
-        // our purposes.
-        let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
+        // our purposes. Surface the recovery via warn so the operator
+        // notices the upstream panic instead of silently absorbing it.
+        let graph = self.graph.lock().unwrap_or_else(|p| {
+            warn!(site = "plan_for_changes", "graph mutex poisoned, recovering");
+            p.into_inner()
+        });
 
         let mut changes_iter = changes.into_iter();
         loop {
@@ -223,7 +227,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// pipeline.
     fn resolve_all(&self, plan: &mut RebuildPlan) {
         if plan.pages.is_all() {
-            let graph = self.graph.lock().unwrap_or_else(|p| p.into_inner());
+            let graph = self.graph.lock().unwrap_or_else(|p| {
+                warn!(site = "resolve_all", "graph mutex poisoned, recovering");
+                p.into_inner()
+            });
             let pages: std::collections::BTreeSet<_> = graph.pages().into_iter().collect();
             plan.pages = PageSelection::Specific(pages);
         }

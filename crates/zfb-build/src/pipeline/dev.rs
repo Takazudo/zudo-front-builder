@@ -116,10 +116,13 @@ impl AssetPipeline for DevAssetPipeline {
                 // artifact lands on disk, so a reader never observes
                 // a window where neither file exists.
                 let prune_target = {
-                    let mut last_out = self
-                        .last_output_path
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
+                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
                     match last_out.insert(r.page.clone(), dest.clone()) {
                         Some(prev) if prev != dest => Some(prev),
                         _ => None,
@@ -127,10 +130,13 @@ impl AssetPipeline for DevAssetPipeline {
                 };
 
                 let changed = {
-                    let mut cache = self
-                        .last_bytes
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
+                    let mut cache = self.last_bytes.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_bytes",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
                     match cache.get(&dest) {
                         Some(prev) if prev == &new_bytes => false,
                         _ => {
@@ -162,7 +168,13 @@ impl AssetPipeline for DevAssetPipeline {
                     let _ = std::fs::remove_file(&prev);
                     self.last_bytes
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
+                        .unwrap_or_else(|p| {
+                            tracing::warn!(
+                                site = "DevAssetPipeline.last_bytes (prune)",
+                                "mutex poisoned, recovering"
+                            );
+                            p.into_inner()
+                        })
                         .remove(&prev);
                     outcome.pages_pruned.push(prev);
                 }

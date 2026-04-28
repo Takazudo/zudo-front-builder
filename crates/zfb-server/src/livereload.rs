@@ -197,12 +197,13 @@ pub fn sse_response(
                 }
                 Some(Ok(sse))
             }
-            Err(lagged) => {
-                // The connection couldn't keep up. Log a warning so
-                // we don't silently drop reload events under load.
-                // The next real event will still trigger a reload, so
-                // the browser converges on the latest state.
-                tracing::warn!(error = %lagged, "live-reload SSE stream lagged; dropping event");
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+                // The connection couldn't keep up. Log a warning with
+                // the skipped count so we don't silently drop reload
+                // events under load. The next real event will still
+                // trigger a reload, so the browser converges on the
+                // latest state.
+                tracing::warn!(skipped, "live-reload SSE stream lagged; dropping events");
                 None
             }
         }

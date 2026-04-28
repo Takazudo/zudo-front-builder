@@ -157,4 +157,37 @@ mod tests {
         let twice = inject_livereload(&once);
         assert_eq!(twice.matches(LIVERELOAD_TAG).count(), 2);
     }
+
+    /// Round 2: prove the byte-scan splice point is a UTF-8 char
+    /// boundary even when multi-byte content (e.g. Japanese, emoji)
+    /// surrounds the `</body>` needle. The needle itself is pure ASCII
+    /// and none of its bytes are UTF-8 continuation bytes (0x80-0xBF),
+    /// so the scanner can never start a match inside a multi-byte
+    /// sequence — but verify the resulting String contains exactly the
+    /// expected bytes.
+    #[test]
+    fn injects_with_multibyte_content_around_body() {
+        // Japanese before/after, plus a 4-byte emoji literal.
+        let html = "<html><body><h1>こんにちは🎉世界</h1></body></html>";
+        let out = inject_livereload(html);
+        let expected = format!(
+            "<html><body><h1>こんにちは🎉世界</h1>{LIVERELOAD_TAG}</body></html>"
+        );
+        assert_eq!(out, expected);
+        // Byte-level: the result must still be valid UTF-8 (String
+        // construction would have panicked otherwise) and the original
+        // multi-byte sequences must survive verbatim.
+        assert!(out.contains("こんにちは🎉世界"));
+    }
+
+    #[test]
+    fn injects_with_multibyte_content_inside_last_body() {
+        // Two body closes with non-ASCII content between them: confirm
+        // injection still picks the last close cleanly.
+        let html = "<body>あ</body><body>い</body>";
+        let out = inject_livereload(html);
+        let expected =
+            format!("<body>あ</body><body>い{LIVERELOAD_TAG}</body>");
+        assert_eq!(out, expected);
+    }
 }

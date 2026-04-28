@@ -176,10 +176,11 @@ impl Drop for Watcher {
         // will be cancelled by the runtime; that's the unavoidable case
         // where `flush_all` cannot run.
         //
-        // TODO(review-loop): Drop cannot await; flush_all is therefore
-        // best-effort. A fully-correct API would expose an async
-        // `shutdown()` method that the caller awaits before dropping —
-        // but adding that is a breaking change tracked separately.
+        // Drop cannot await; flush_all is therefore best-effort here.
+        // The fully-correct API exposes an async `shutdown()` method
+        // the caller awaits before dropping, which is breaking — see
+        // https://github.com/Takazudo/zfb2/issues/68 (server/runtime
+        // graceful shutdown).
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
