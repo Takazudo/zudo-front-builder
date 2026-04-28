@@ -159,9 +159,23 @@ impl ManifestDigest {
                 continue;
             }
             if abs_root.is_file() {
-                if let Ok(meta) = abs_root.metadata() {
-                    let rel = relativise(project_root, &abs_root);
-                    entries.insert(rel, FileMeta::from_metadata(&meta));
+                match abs_root.metadata() {
+                    Ok(meta) => {
+                        let rel = relativise(project_root, &abs_root);
+                        entries.insert(rel, FileMeta::from_metadata(&meta));
+                    }
+                    Err(e) => {
+                        // Don't silently flip the digest on transient
+                        // permission-denied or TOCTOU races: log so an
+                        // operator can see why the manifest disagrees
+                        // with their intuition. Behaviour is unchanged
+                        // (the file is omitted from the digest).
+                        tracing::warn!(
+                            error = ?e,
+                            path = %abs_root.display(),
+                            "metadata read failed during manifest digest"
+                        );
+                    }
                 }
                 continue;
             }
@@ -173,7 +187,17 @@ impl ManifestDigest {
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                let Ok(meta) = entry.metadata() else { continue };
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = ?e,
+                            path = %entry.path().display(),
+                            "metadata read failed during manifest digest"
+                        );
+                        continue;
+                    }
+                };
                 let rel = relativise(project_root, entry.path());
                 entries.insert(rel, FileMeta::from_metadata(&meta));
             }
