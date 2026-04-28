@@ -313,6 +313,15 @@ impl EsbuildSubprocessBundler {
             cmd.arg("--sourcemap=linked");
         }
         cmd.arg(format!("--outfile={}", tmp.path().display()));
+        // Inline NODE_ENV so the React/Preact build picks the
+        // production flavour. Without this, prod islands ship the dev
+        // builds (extra warnings + larger bytes). esbuild expects the
+        // value to be a JS literal, hence the embedded quotes.
+        if config.minify {
+            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
+        } else {
+            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
+        }
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -472,6 +481,14 @@ impl EsbuildSubprocessBundler {
             cmd.arg("--sourcemap=linked");
         }
         cmd.arg(format!("--outfile={}", out_tmp.path().display()));
+        // Inline NODE_ENV so React/Preact pick their production build
+        // when minifying. esbuild expects the define value to be a JS
+        // literal, hence the embedded quotes.
+        if config.minify {
+            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
+        } else {
+            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
+        }
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
