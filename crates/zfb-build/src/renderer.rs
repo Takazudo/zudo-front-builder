@@ -375,6 +375,17 @@ impl std::fmt::Debug for RendererState {
     }
 }
 
+impl RendererState {
+    /// The base URL of the running miniflare subprocess (e.g.
+    /// `http://127.0.0.1:54321/`). Use this with
+    /// [`Backend::Existing`] to reuse the same subprocess for a
+    /// subsequent [`render_all`] call so you only pay the miniflare
+    /// startup cost once.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
 /// Start the dev-mode renderer.
 pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> {
     let RendererStartInput {

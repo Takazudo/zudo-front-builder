@@ -192,6 +192,18 @@ pub struct BundlerInput {
     /// Mirrors `zfb_islands::EsbuildSubprocessConfig::mock_output` so
     /// unit tests don't need the real binary on disk.
     pub mock_subprocess_output: Option<String>,
+    /// Optional JSON-serialized content snapshot to embed in the worker
+    /// bundle. When `Some`, the bundler replaces the placeholder empty
+    /// `{ collections: {} }` with the supplied JSON so the worker's
+    /// `getCollection(...)` calls resolve real content entries. When
+    /// `None`, the placeholder is used (safe for builds where content
+    /// collections are not needed or not yet built).
+    ///
+    /// The value MUST be a valid JSON object whose top-level shape is
+    /// `{ "collections": { "<name>": [...] } }` — the same shape
+    /// [`zfb_content::ContentSnapshot`] serializes to. The bundler
+    /// inlines it verbatim; no validation is performed.
+    pub content_snapshot_json: Option<String>,
 }
 
 /// Output of [`bundle`].
@@ -338,8 +350,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
-    write_entry_module(shadow, &routes, adapter.render_to_string_module())
-        .context("bundler: failed writing entry.mjs")?;
+    write_entry_module(
+        shadow,
+        &routes,
+        adapter.render_to_string_module(),
+        input.content_snapshot_json.as_deref(),
+    )
+    .context("bundler: failed writing entry.mjs")?;
 
     // 6. Resolve and run esbuild (or the mock).
     fs::create_dir_all(&outdir)
@@ -630,10 +647,15 @@ fn write_synthetic_tsconfig(
 /// the bundle still satisfies workerd's "module must export default
 /// with a fetch handler" contract so miniflare can boot and surface a
 /// clean 404 rather than a missing-export error.
+/// Generate the `entry.mjs` module.
+///
+/// `content_snapshot_json` is the JSON-serialized content snapshot to
+/// embed. When `None`, a placeholder `{ collections: {} }` is used.
 fn write_entry_module(
     shadow: &Path,
     routes: &[RouteEntry],
     render_to_string_module: &str,
+    content_snapshot_json: Option<&str>,
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -713,7 +735,35 @@ fn write_entry_module(
         .unwrap();
     }
     src.push_str("];\n\n");
-    src.push_str("const __zfb_content_snapshot = { collections: {} };\n\n");
+    // Embed the content snapshot. When the caller supplies a real
+    // snapshot (JSON-serialized `ContentSnapshot`), inline it so
+    // `getCollection(...)` resolves from memory inside the worker.
+    // The fallback empty snapshot is used for builds where content
+    // collections are not needed.
+    //
+    // Defensively validate that the supplied string is well-formed JSON
+    // (not just a JSON object) before inlining. The value is produced by
+    // `serde_json::to_string` in the build pipeline, so failures here
+    // would indicate a bug rather than user input, but the check prevents
+    // accidental JS injection if the call site ever changes.
+    let snapshot_literal = if let Some(json) = content_snapshot_json {
+        serde_json::from_str::<serde_json::Value>(json)
+            .map(|_| json)
+            .unwrap_or_else(|_| {
+                // Invalid JSON — fall back to the safe empty snapshot.
+                // The resolver will return empty collections, which is
+                // visible in the build summary (zero dynamic pages).
+                r#"{ "collections": {} }"#
+            })
+    } else {
+        r#"{ "collections": {} }"#
+    };
+    writeln!(
+        &mut src,
+        "const __zfb_content_snapshot = {snapshot_literal};",
+    )
+    .unwrap();
+    src.push('\n');
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
@@ -929,6 +979,7 @@ mod tests {
                 "// mock bundle\nexport const routes = {};\nexport const hydrateIsland = () => {};\n"
                     .to_string(),
             ),
+            content_snapshot_json: None,
         }
     }
 
@@ -974,7 +1025,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string").unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -1035,7 +1086,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server").unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -1123,6 +1174,7 @@ mod tests {
             minify: false,
             esbuild_binary: Some(bin),
             mock_subprocess_output: None,
+            content_snapshot_json: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
