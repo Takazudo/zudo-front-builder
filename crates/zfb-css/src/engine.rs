@@ -63,20 +63,57 @@ pub struct TailwindSubprocessConfig {
     /// Default: the current working directory at engine construction time.
     pub working_dir: PathBuf,
 
-    /// Optional explicit input CSS file (`-i` flag). When `None`, Tailwind
-    /// v4's default scan-and-emit mode is used. Most projects will provide
-    /// a tiny entrypoint like `@import "tailwindcss";`.
+    /// Optional explicit input CSS file (`-i` flag). When `None`, the
+    /// engine will synthesise a minimal entry CSS (see
+    /// [`build_synthesised_entry_css`]) covering Tailwind import +
+    /// content `@source` directives + optional `@theme` block. Most
+    /// projects will set this to point at the user's `styles/global.css`
+    /// — the engine will then *prepend* the synthesised `@source` lines
+    /// to that file's contents inside a temp file before passing it on.
     pub input_css: Option<PathBuf>,
 
     /// Extra CLI args appended to the subprocess invocation, for escape
     /// hatches like `--minify`. These are passed verbatim.
     pub extra_args: Vec<OsString>,
 
+    /// Content globs (Tailwind v4 `@source` targets) for the **user
+    /// project**. Each entry becomes one `@source "<glob>";` directive
+    /// in the synthesised entry CSS.
+    ///
+    /// Globs are written verbatim, so callers can pass either glob
+    /// patterns (`"pages/**/*.tsx"`) or directory shorthands
+    /// (`"./components"`) — Tailwind v4 accepts both.
+    ///
+    /// Defaults to [`DEFAULT_CONTENT_ROOTS`] resolved against
+    /// [`Self::working_dir`].
+    pub content_globs: Vec<String>,
+
+    /// Content globs for **framework packages** that must NOT be
+    /// tree-shaken even though they live outside the user project (e.g.
+    /// `packages/zudo-doc-v2/**` after the Phase B split-out). Each
+    /// entry becomes a separate `@source` directive — listed after the
+    /// user-project globs so per-project overrides win in cascade
+    /// order.
+    pub framework_package_globs: Vec<String>,
+
+    /// Optional inline `@theme { ... }` block to append to the
+    /// synthesised entry CSS. Used by callers that ship a
+    /// programmatically-built design-token block (e.g. derived from
+    /// `zfb.config.ts`).
+    ///
+    /// If both `input_css` (which may itself contain `@theme`) and
+    /// `theme_block` are set, both end up in the final entry CSS —
+    /// later wins per CSS cascade.
+    pub theme_block: Option<String>,
+
     /// When true, the engine will return a *fake* CSS string instead of
     /// invoking the subprocess. Used by unit tests to avoid depending on
     /// the binary being installed.
     ///
-    /// The string returned is taken from [`Self::mock_output`].
+    /// The string returned is taken from [`Self::mock_output`]. When the
+    /// mock path is taken, the synthesised entry CSS is still computed
+    /// and recorded on [`TailwindSubprocessEngine::last_entry_css`] so
+    /// tests can assert on it.
     pub mock_subprocess: bool,
 
     /// Output to return when `mock_subprocess` is true.
@@ -97,6 +134,9 @@ impl Default for TailwindSubprocessConfig {
             working_dir,
             input_css: None,
             extra_args: Vec::new(),
+            content_globs: Vec::new(),
+            framework_package_globs: Vec::new(),
+            theme_block: None,
             mock_subprocess: false,
             mock_output: String::new(),
         }
@@ -129,6 +169,106 @@ impl TailwindSubprocessConfig {
         self.mock_output = output.into();
         self
     }
+
+    /// Replace the user-project content globs (chainable).
+    pub fn with_content_globs<I, S>(mut self, globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.content_globs = globs.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Replace the framework-package content globs (chainable).
+    pub fn with_framework_package_globs<I, S>(mut self, globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.framework_package_globs = globs.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set an inline `@theme { ... }` block (chainable).
+    pub fn with_theme_block(mut self, block: impl Into<String>) -> Self {
+        self.theme_block = Some(block.into());
+        self
+    }
+}
+
+/// Build the synthesised entry CSS that the engine hands to Tailwind v4.
+///
+/// The output, in order, is:
+///
+/// 1. `@import "tailwindcss";` — required for v4 utility generation.
+/// 2. `@source "<glob>";` directives for every entry in
+///    `content_globs` (the user project). Globs are emitted **before**
+///    framework globs so user-project overrides win in cascade order.
+/// 3. `@source "<glob>";` directives for every entry in
+///    `framework_package_globs` (e.g. `packages/zudo-doc-v2/**`).
+/// 4. The contents of `input_css` if provided (the user's
+///    `styles/global.css`, typically including their own `@theme {…}`
+///    and authored CSS rules). When the file already starts with
+///    `@import "tailwindcss";`, the synthesiser drops the duplicate
+///    import we added in step 1 — Tailwind v4 errors on a doubled
+///    import.
+/// 5. The inline `theme_block`, if any.
+///
+/// The returned `String` is what the engine writes to a temp file and
+/// passes to `tailwindcss -i <tmp>`. It is also stashed on
+/// [`TailwindSubprocessEngine::last_entry_css`] so tests can inspect it
+/// without spawning the binary.
+pub fn build_synthesised_entry_css(
+    cfg: &TailwindSubprocessConfig,
+    input_css_text: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    let mut emitted_import = false;
+
+    // Detect a leading `@import "tailwindcss";` in the user CSS so we
+    // don't emit it twice.
+    let user_has_import = input_css_text
+        .map(|t| t.lines().any(|l| {
+            let t = l.trim();
+            t.starts_with("@import \"tailwindcss\"") || t.starts_with("@import 'tailwindcss'")
+        }))
+        .unwrap_or(false);
+
+    if !user_has_import {
+        out.push_str("@import \"tailwindcss\";\n");
+        emitted_import = true;
+    }
+
+    // User-project content globs first.
+    for g in &cfg.content_globs {
+        out.push_str(&format!("@source \"{g}\";\n"));
+    }
+    // Then framework packages.
+    for g in &cfg.framework_package_globs {
+        out.push_str(&format!("@source \"{g}\";\n"));
+    }
+
+    if emitted_import || !cfg.content_globs.is_empty() || !cfg.framework_package_globs.is_empty() {
+        out.push('\n');
+    }
+
+    if let Some(text) = input_css_text {
+        out.push_str(text);
+        if !text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+
+    if let Some(theme) = &cfg.theme_block {
+        out.push('\n');
+        out.push_str(theme);
+        if !theme.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+
+    out
 }
 
 /// The default [`CssEngine`]: shells out to the `tailwindcss` v4 CLI binary.
@@ -148,15 +288,36 @@ impl TailwindSubprocessConfig {
 /// let css = engine.produce_utility_css(&[PathBuf::from("pages/index.tsx")]).unwrap();
 /// assert!(!css.is_empty());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TailwindSubprocessEngine {
     config: TailwindSubprocessConfig,
+    /// Last synthesised entry CSS — populated on every call to
+    /// [`Self::produce_utility_css`] (including when the mock path is
+    /// taken). Tests assert on this without needing the binary.
+    last_entry_css: std::sync::Mutex<Option<String>>,
+}
+
+impl Clone for TailwindSubprocessEngine {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            last_entry_css: std::sync::Mutex::new(
+                self.last_entry_css
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone()),
+            ),
+        }
+    }
 }
 
 impl TailwindSubprocessEngine {
     /// Construct a new engine with the given config.
     pub fn new(config: TailwindSubprocessConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            last_entry_css: std::sync::Mutex::new(None),
+        }
     }
 
     /// Construct a new engine with the default config.
@@ -168,10 +329,38 @@ impl TailwindSubprocessEngine {
     pub fn config(&self) -> &TailwindSubprocessConfig {
         &self.config
     }
+
+    /// Most recent synthesised entry CSS — i.e. the file contents passed
+    /// to `tailwindcss -i <tmp>` on the last
+    /// [`Self::produce_utility_css`] call. Returns `None` if the engine
+    /// has not been invoked yet.
+    pub fn last_entry_css(&self) -> Option<String> {
+        self.last_entry_css.lock().ok().and_then(|g| g.clone())
+    }
 }
 
 impl CssEngine for TailwindSubprocessEngine {
     fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String> {
+        // Build the synthesised entry CSS. Read user input_css if set —
+        // failure to read is fatal because the user explicitly asked for
+        // it.
+        let user_text = match &self.config.input_css {
+            Some(p) => Some(std::fs::read_to_string(p).with_context(|| {
+                format!(
+                    "failed to read user input CSS at {}",
+                    p.display()
+                )
+            })?),
+            None => None,
+        };
+        let entry_css = build_synthesised_entry_css(&self.config, user_text.as_deref());
+
+        // Stash for test introspection. Lock-poison is non-fatal — at
+        // worst we lose the snapshot.
+        if let Ok(mut slot) = self.last_entry_css.lock() {
+            *slot = Some(entry_css.clone());
+        }
+
         if self.config.mock_subprocess {
             return Ok(self.config.mock_output.clone());
         }
@@ -187,18 +376,37 @@ impl CssEngine for TailwindSubprocessEngine {
             ));
         }
 
-        let tmp = tempfile::Builder::new()
-            .prefix("zfb-tailwind-")
+        // Materialise the synthesised entry CSS into a temp file so
+        // Tailwind's `@source` resolution uses our wrapper (and the user
+        // file's relative imports still resolve, since the temp file is
+        // adjacent to the working_dir, not to the user file).
+        let mut entry_tmp = tempfile::Builder::new()
+            .prefix("zfb-tailwind-entry-")
+            .suffix(".css")
+            .tempfile_in(&self.config.working_dir)
+            .context("failed to allocate temp file for tailwind entry CSS")?;
+        {
+            use std::io::Write;
+            entry_tmp
+                .as_file_mut()
+                .write_all(entry_css.as_bytes())
+                .context("failed to write tailwind entry CSS")?;
+            entry_tmp
+                .as_file_mut()
+                .flush()
+                .context("failed to flush tailwind entry CSS")?;
+        }
+
+        let out_tmp = tempfile::Builder::new()
+            .prefix("zfb-tailwind-out-")
             .suffix(".css")
             .tempfile()
             .context("failed to allocate temp file for tailwind output")?;
 
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
-        if let Some(input) = &self.config.input_css {
-            cmd.arg("-i").arg(input);
-        }
-        cmd.arg("-o").arg(tmp.path());
+        cmd.arg("-i").arg(entry_tmp.path());
+        cmd.arg("-o").arg(out_tmp.path());
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -212,19 +420,25 @@ impl CssEngine for TailwindSubprocessEngine {
             .collect();
         cmd.env("ZFB_TAILWIND_SOURCES", sources_joined.join("\n"));
 
+        // Capture both stdout and stderr; relay stderr through a clean
+        // error message rather than letting it scroll into the parent
+        // terminal (zfb-build log will pick this up via the returned
+        // Err's chain).
         let output = cmd
             .output()
             .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(anyhow!(
-                "tailwindcss exited with status {}: {}",
+                "tailwindcss exited with status {}\n--- stderr ---\n{}\n--- stdout ---\n{}",
                 output.status,
-                stderr.trim()
+                stderr.trim(),
+                stdout.trim()
             ));
         }
 
-        let css = std::fs::read_to_string(tmp.path())
+        let css = std::fs::read_to_string(out_tmp.path())
             .context("failed to read tailwind output file")?;
         Ok(css)
     }
