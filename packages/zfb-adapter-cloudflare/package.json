@@ -11,6 +11,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./build": {
+      "types": "./src/build.ts",
+      "default": "./src/build.ts"
     }
   },
   "bin": {
