@@ -295,6 +295,13 @@ pub fn rewrite_islands_in_attr_skeleton(
     // Find every empty data-zfb-island="" attribute occurrence. Match on
     // the literal attribute pair (with a leading space so we don't match
     // a non-data-zfb-island prefix).
+    //
+    // TODO(review-loop): substring-based matching is fragile — if user
+    // content (e.g. a Markdown body) contains the literal string
+    // ` data-zfb-island=""` it will be counted as a skeleton, and we
+    // either error out (count mismatch, this branch) or mis-pair
+    // descriptors. Replace with an anchor-based locator emitted by the
+    // wrapper itself. Tracked separately as the breaking-change idea.
     const NEEDLE: &str = " data-zfb-island=\"\"";
 
     let mut positions: Vec<usize> = Vec::new();
