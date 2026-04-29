@@ -15,7 +15,9 @@
 // no TypeScript loader required) so there is a single source of truth.
 
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Wrapper source — imported from the single canonical source.
@@ -106,13 +108,27 @@ function parseArgs(argv) {
 
 async function main() {
   // Skip when imported (e.g. by the vitest that snapshots
-  // WORKER_WRAPPER_SOURCE). `import.meta.url` will only equal the
-  // process entry when this file is run directly via `node bin/cli.mjs`
-  // (or via the `bin` shim pnpm installs).
+  // WORKER_WRAPPER_SOURCE). When this file is run directly the process
+  // entry resolves (after symlinks) to this file's realpath.
+  //
+  // pnpm's `.bin` shim invokes `node node_modules/.bin/../<pkg>/bin/cli.mjs`,
+  // so `process.argv[1]` lexically resolves to the symlinked
+  // `node_modules/<pkg>/bin/cli.mjs` path — but Node's ESM loader follows
+  // symlinks by default, so `import.meta.url` points at the realpath under
+  // `.pnpm/`. A lexical compare therefore mismatches under pnpm exec and
+  // the CLI silently no-ops. Compare realpaths so direct `node bin/cli.mjs`,
+  // pnpm exec, npm bin shims, and Yarn PnP all agree.
   const entry = process.argv[1];
   if (!entry) return;
-  const thisUrl = new URL("./cli.mjs", import.meta.url).pathname;
-  if (resolve(entry) !== resolve(thisUrl)) return;
+  let entryReal;
+  let selfReal;
+  try {
+    entryReal = realpathSync(entry);
+    selfReal = realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return; // can't resolve either side — treat as imported, not run
+  }
+  if (entryReal !== selfReal) return;
 
   const parsed = parseArgs(process.argv);
   if (parsed.command === "help") {
