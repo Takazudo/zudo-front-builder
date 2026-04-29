@@ -128,7 +128,7 @@ export function Island(props: IslandProps): IslandElement {
   const isSkipSsr = props.ssrFallback !== undefined;
 
   if (isSkipSsr) {
-    return {
+    return makeVNode({
       type: "div",
       props: {
         [SKIP_SSR_MARKER_ATTR]: componentName,
@@ -136,10 +136,10 @@ export function Island(props: IslandProps): IslandElement {
         children: props.ssrFallback ?? null,
       },
       key: null,
-    };
+    });
   }
 
-  return {
+  return makeVNode({
     type: "div",
     props: {
       [HYDRATE_MARKER_ATTR]: componentName,
@@ -147,7 +147,32 @@ export function Island(props: IslandProps): IslandElement {
       children: props.children,
     },
     key: null,
-  };
+  });
+}
+
+/**
+ * Construct the structural JSX-element shape with `constructor` set to
+ * `undefined`.
+ *
+ * Why: `preact-render-to-string` (and Preact's diff path) recognise a
+ * VNode by checking `vnode.constructor === undefined`. A plain object
+ * literal `{ type, props, key }` inherits `Object` for `.constructor`,
+ * so the renderer treats it as foreign data and emits no markup —
+ * which would silently strip every `<Island>` from SSG output. Marking
+ * `constructor: undefined` is the documented sentinel that both
+ * Preact's and React's renderers treat as a structural VNode.
+ *
+ * The cast back to `IslandElement` keeps the public type tight; the
+ * extra runtime field is JS-only and is invisible to type consumers.
+ */
+function makeVNode(shape: {
+  type: string;
+  props: Record<string, unknown>;
+  key: unknown;
+}): IslandElement {
+  const v = shape as unknown as { constructor?: unknown };
+  v.constructor = undefined;
+  return shape as IslandElement;
 }
 
 /**
