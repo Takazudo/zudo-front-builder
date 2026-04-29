@@ -265,6 +265,21 @@ function buildContentComponent(
 }
 
 /**
+ * Stamp the `constructor: undefined` sentinel on a structural JSX-element
+ * shape so `preact-render-to-string` (and Preact's diff path) treat it
+ * as a real VNode. Without this, Preact reads `.constructor` as `Object`
+ * — the value inherited from the literal — and silently drops the node,
+ * which is what produced the empty MDX bodies tracked in zudo-doc#505.
+ *
+ * Same trick `Island`'s `makeVNode` uses; kept private here so callers
+ * keep treating `ContentElement` / `ContentComponentElement` as opaque.
+ */
+function stampVNode<T extends { type: unknown; props: unknown; key: unknown }>(shape: T): T {
+  (shape as { constructor?: unknown }).constructor = undefined;
+  return shape;
+}
+
+/**
  * Build the structural JSX element returned when the bridge is absent.
  *
  * Shape: `<pre data-zfb-content-fallback>{marker}\n{body}</pre>` — the
@@ -273,14 +288,14 @@ function buildContentComponent(
  * pin both the attribute and the marker line.
  */
 function renderFallback(body: string): ContentElement {
-  return {
+  return stampVNode({
     type: "pre",
     props: {
       "data-zfb-content-fallback": "",
       children: `${FALLBACK_MARKER}\n${body}`,
     },
     key: null,
-  };
+  });
 }
 
 /** Leading marker line emitted by [`renderFallback`]. Public contract. */
@@ -504,11 +519,14 @@ export interface ContentComponentProps {
 /** Internal helper: build a structural JSX element of the given tag. */
 function buildOverrideElement(tag: string, props: ContentComponentProps): ContentComponentElement {
   const { children, ...rest } = props;
-  return {
+  // `stampVNode` sets `constructor: undefined` so Preact recognises the
+  // returned object as a VNode rather than foreign data — see the helper's
+  // docblock for context (zudo-doc#505).
+  return stampVNode({
     type: tag,
     props: { ...rest, children },
     key: null,
-  };
+  });
 }
 
 /**
