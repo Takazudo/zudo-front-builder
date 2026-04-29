@@ -162,4 +162,112 @@ export default {
     // ctx in (rather than e.g. a constructor-default empty object).
     expect(waitUntilCalled).toBe(0);
   });
+
+  it("falls through to env.ASSETS when the inner bundle returns 404", async () => {
+    // CF Pages advanced-mode contract: when _worker.js is present, every
+    // request hits the worker. Static assets (search-index.json,
+    // post-build llms.txt, generated SSG HTML at canonical trailing-slash
+    // URLs) are NOT served unless the worker explicitly delegates.
+    // The wrapper must fall through to env.ASSETS on 404 so those keep
+    // working in production.
+    const dir = await scratch();
+    const inputPath = join(dir, "inner.mjs");
+    // Inner bundle that always 404s — simulates a request whose URL
+    // matches no SSR route.
+    await writeFile(
+      inputPath,
+      `export default {
+  async fetch() {
+    return new Response("inner says 404", { status: 404 });
+  },
+};
+`,
+      "utf8",
+    );
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+    });
+    const worker = (await import(pathToFileURL(out.workerPath).href)) as {
+      default: {
+        fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+      };
+    };
+
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
+
+    let assetsCalls = 0;
+    const env = {
+      ASSETS: {
+        fetch: async (req: Request) => {
+          assetsCalls += 1;
+          return new Response(`asset for ${new URL(req.url).pathname}`, {
+            status: 200,
+            headers: { "content-type": "text/plain" },
+          });
+        },
+      },
+    };
+    const request = new Request("https://worker.test/search-index.json");
+
+    const response = await worker.default.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("asset for /search-index.json");
+    expect(assetsCalls).toBe(1);
+  });
+
+  it("does NOT fall through to env.ASSETS when the inner returns a non-404", async () => {
+    // Guards against the wrapper accidentally re-routing legitimate
+    // dynamic responses (200, 4xx other than 404, 5xx, etc.) to the
+    // static asset server.
+    const dir = await scratch();
+    const inputPath = join(dir, "inner.mjs");
+    await writeFile(
+      inputPath,
+      `export default {
+  async fetch() {
+    return new Response('{"error":"bad request"}', {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  },
+};
+`,
+      "utf8",
+    );
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+    });
+    const worker = (await import(pathToFileURL(out.workerPath).href)) as {
+      default: {
+        fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+      };
+    };
+
+    let assetsCalls = 0;
+    const env = {
+      ASSETS: {
+        fetch: async () => {
+          assetsCalls += 1;
+          return new Response("should not be called", { status: 200 });
+        },
+      },
+    };
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
+    const request = new Request("https://worker.test/api/foo", { method: "POST" });
+
+    const response = await worker.default.fetch(request, env, ctx);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "bad request" });
+    expect(assetsCalls).toBe(0);
+  });
 });
