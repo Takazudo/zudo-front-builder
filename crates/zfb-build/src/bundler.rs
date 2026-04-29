@@ -111,6 +111,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use zfb_content::compile_mdx_to_jsx_module_cached;
+use zfb_content::frontmatter as zfb_frontmatter;
 use zfb_render::adapters::{make_adapter, Framework};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -132,6 +133,39 @@ impl BundleMode {
     }
 }
 
+/// One content collection root for the bundler's per-collection
+/// materialisation step.
+///
+/// Mirrors the public-facing `name` + `path` shape of
+/// `zfb_content::CollectionConfig` and `crate::config::CollectionDef`.
+/// Each entry tells the bundler where a collection's source files live
+/// on disk; they are materialised into the shadow tree under
+/// `shadow/content/<name>/<rel_path>`. The collection name doubles as
+/// the prefix used for the `import * as __zfb_content_<i>` lines and
+/// is also what the JS bridge keys on (paired with the `mdx://`
+/// specifier from `compile_mdx_to_jsx_module_cached`).
+///
+/// When [`BundlerInput::content_collections`] is empty, the bundler
+/// falls back to the legacy single-`content_dir` materialisation path
+/// and does NOT emit a content bridge in entry.mjs.
+#[derive(Debug, Clone)]
+pub struct ContentCollectionSpec {
+    /// Public collection name, matching `zfb.config.ts#collections[].name`.
+    pub name: String,
+    /// Source directory (project-relative or absolute).
+    pub root: PathBuf,
+}
+
+impl ContentCollectionSpec {
+    /// Convenience constructor.
+    pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        Self {
+            name: name.into(),
+            root: root.into(),
+        }
+    }
+}
+
 /// All the inputs the bundler needs.
 ///
 /// The struct is deliberately *flat* — no builder, no defaults that hide
@@ -148,7 +182,27 @@ pub struct BundlerInput {
     /// Directory of content collections. `.mdx` files anywhere under
     /// this directory are pre-compiled with
     /// [`compile_mdx_to_jsx_module_cached`] before esbuild sees them.
+    ///
+    /// **Legacy single-root path.** When [`Self::content_collections`]
+    /// is non-empty, the bundler walks each configured collection
+    /// individually and this field is ignored. The legacy field stays
+    /// in the struct so historical test fixtures keep compiling and
+    /// projects whose `zfb.config.ts` has no `collections` entry still
+    /// get a (no-op) materialisation step.
     pub content_dir: PathBuf,
+    /// Per-collection content roots. When non-empty, supersedes
+    /// [`Self::content_dir`]: each collection is materialised under
+    /// `shadow/content/<name>/<rel_path>` so the synthetic `entry.mjs`
+    /// can `import * as __zfb_content_<i> from "./content/<name>/..."`
+    /// for every `.mdx` entry. The paired bridge installer
+    /// (`globalThis.__zfb.content`) is then emitted in `entry.mjs`
+    /// before `createPageRouter`, matching the contract documented in
+    /// `crates/zfb-render/src/loader.rs`.
+    ///
+    /// Empty by default. Callers that want the bridge wired (i.e. all
+    /// production builds whose `zfb.config.ts` declares collections)
+    /// must populate this from `config.collections`.
+    pub content_collections: Vec<ContentCollectionSpec>,
     /// Directory of shared components (subject to `paths` aliasing).
     pub components_dir: PathBuf,
     /// Directory of layout components.
@@ -267,6 +321,7 @@ impl BundlerInput {
             project_root,
             pages_dir: PathBuf::from("pages"),
             content_dir: PathBuf::from("content"),
+            content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework,
@@ -392,13 +447,47 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let mut routes: Vec<RouteEntry> = Vec::new();
     materialise_shadow(&pages_dir, &shadow_pages, &mut routes, &input.project_root)
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
-    materialise_shadow(&content_dir, &shadow_content, &mut Vec::new(), &input.project_root)
-        .with_context(|| {
-            format!(
-                "bundler: failed materialising content from {}",
-                content_dir.display()
-            )
-        })?;
+
+    // Per-collection content materialisation (#506).
+    //
+    // When `content_collections` is non-empty (every production build
+    // whose `zfb.config.ts` declares collections), walk each
+    // collection's source root individually into
+    // `shadow/content/<name>/<rel_path>` and remember the
+    // `(specifier, shadow_rel_path)` pair for each `.mdx` entry.
+    // The pairs feed the bridge installer emitted in `entry.mjs` so
+    // `globalThis.__zfb.content.get(specifier)` resolves to the
+    // compiled MDX module at runtime. When the field is empty, fall
+    // back to the legacy single-`content_dir` walk (no bridge entries)
+    // so existing fixtures and tests keep compiling unchanged.
+    let mut content_imports: Vec<ContentImport> = Vec::new();
+    if !input.content_collections.is_empty() {
+        for col in &input.content_collections {
+            let col_root = resolver.resolve(&col.root);
+            let dest = shadow_content.join(&col.name);
+            materialise_collection(&col_root, &dest, &col.name, &mut content_imports)
+                .with_context(|| {
+                    format!(
+                        "bundler: failed materialising collection `{}` from {}",
+                        col.name,
+                        col_root.display()
+                    )
+                })?;
+        }
+        // Deterministic ordering — keys are `(collection, rel_path)`
+        // so the emitted import indices match the underlying file
+        // tree on every build, regardless of WalkDir's per-OS order.
+        content_imports.sort_by(|a, b| a.shadow_rel_path.cmp(&b.shadow_rel_path));
+    } else {
+        materialise_shadow(&content_dir, &shadow_content, &mut Vec::new(), &input.project_root)
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising content from {}",
+                    content_dir.display()
+                )
+            })?;
+    }
+
     materialise_shadow(&components_dir, &shadow_components, &mut Vec::new(), &input.project_root)
         .with_context(|| {
             format!(
@@ -458,6 +547,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         &routes,
         adapter.render_to_string_module(),
         input.content_snapshot_json.as_deref(),
+        &content_imports,
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -712,6 +802,291 @@ fn strip_yaml_frontmatter(input: &str) -> &str {
     input
 }
 
+/// One MDX entry materialised under `shadow/content/<collection>/`,
+/// recorded so the synthetic `entry.mjs` can:
+///
+/// 1. `import * as __zfb_content_<i> from "./<shadow_rel_path>"` for
+///    each entry, and
+/// 2. register `[<specifier>, __zfb_content_<i>.default]` in the
+///    `globalThis.__zfb.content` bridge map keyed on the
+///    `mdx://<collection>/<slug>#<hash>` form returned by
+///    [`compile_mdx_to_jsx_module_cached`].
+///
+/// `shadow_rel_path` is always forward-slash-separated and starts with
+/// `content/<name>/...` so the import string composed from it stays
+/// portable across OSes.
+#[derive(Debug, Clone)]
+struct ContentImport {
+    /// Specifier baked by `compile_mdx_to_jsx_module_cached` —
+    /// `mdx://<collection_seg>/<slug_seg>#<hash>`. This is the same
+    /// value that `EntrySnapshot.module_specifier` carries on the JS
+    /// side, so a `bridge.get(entry.module_specifier)` call inside
+    /// `<CollectionEntry.Content>` resolves to its compiled module.
+    specifier: String,
+    /// Path relative to the shadow root, in forward-slash form (e.g.
+    /// `content/docs/getting-started/installation.mdx`). Used both as
+    /// the `import` target string and as the deterministic sort key.
+    shadow_rel_path: String,
+}
+
+/// Walk one content collection's source root and materialise its
+/// entries into `dest`, compiling MDX to JSX on the fly via
+/// [`compile_mdx_to_jsx_module_cached`] and recording every entry in
+/// `imports` for the bridge installer (#506).
+///
+/// Mirrors the single-root [`materialise_shadow`] behaviour for files
+/// (.mdx → JSX-rewritten with .mdx extension preserved; everything
+/// else copied verbatim) but:
+///
+/// - Always operates in "content" mode — never collects routes.
+/// - Records `(specifier, shadow_rel_path)` pairs so the synthetic
+///   `entry.mjs` can emit one `import * as __zfb_content_<i>` line
+///   per MDX entry plus the matching bridge map.
+/// - Uses the configured collection `name` as the shadow-tree prefix
+///   (`content/<name>/<rel>`), giving each collection its own subtree
+///   so two collections that share a slug don't collide.
+///
+/// A missing source root is non-fatal — the caller may have a stale
+/// config entry pointing at a deleted directory; the build should
+/// proceed with zero entries from that collection rather than aborting.
+fn materialise_collection(
+    src: &Path,
+    dest: &Path,
+    collection_name: &str,
+    imports: &mut Vec<ContentImport>,
+) -> Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(dest)
+        .with_context(|| format!("create dir {}", dest.display()))?;
+
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.with_context(|| format!("walking {}", src.display()))?;
+        let from = entry.path();
+        let rel = from.strip_prefix(src).map_err(|_| {
+            anyhow!(
+                "bundler: walked entry {} is not under collection root {}",
+                from.display(),
+                src.display()
+            )
+        })?;
+        let to = dest.join(rel);
+
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&to)
+                .with_context(|| format!("create dir {}", to.display()))?;
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
+        if is_mdx {
+            let raw = fs::read_to_string(from)
+                .with_context(|| format!("read mdx {}", from.display()))?;
+            // Use `zfb_content::frontmatter::extract` rather than the
+            // local `strip_yaml_frontmatter` helper so the body fed
+            // into the compiler is **byte-for-byte identical** to the
+            // body that `zfb_content::collection::walk_collection`
+            // (and therefore `zfb_content::build_snapshot`) would
+            // pass. The two helpers have subtly different leading-
+            // newline handling — `strip_yaml_frontmatter` greedily
+            // trims `\r`/`\n` after the closing `---`, dropping the
+            // blank-line separator between frontmatter and body —
+            // which yields a different compiled-JSX content_hash and
+            // therefore a different `mdx://…#<hash>` specifier than
+            // what the snapshot bakes. The bridge map and the
+            // snapshot's `module_specifier` field MUST agree on the
+            // hash byte-for-byte; otherwise every `bridge.get(spec)`
+            // lookup misses and the page renders the raw-markdown
+            // fallback.
+            let body = match zfb_frontmatter::extract(from, &raw) {
+                Ok(uf) => uf.body.unwrap_or_default(),
+                Err(_) => {
+                    // Frontmatter parse failures fall back to the
+                    // local stripper — the snapshot's
+                    // `walk_collection` would surface the same error
+                    // up its CollectionError path, so missing this
+                    // file in the bridge is a no-op (the snapshot
+                    // entry is missing too, the page rendering hits
+                    // the fallback regardless).
+                    strip_yaml_frontmatter(&raw).to_string()
+                }
+            };
+            // Pass the SOURCE path (not the shadow destination) so
+            // `compile_mdx_to_jsx_module_cached`'s
+            // `collection_and_slug` helper sees the same
+            // `(parent_dir, file_stem)` tuple it sees during
+            // `zfb_content::build_snapshot` — and therefore bakes the
+            // same `mdx://...` specifier into both the snapshot and
+            // the bridge map. Mismatch here would make every bridge
+            // lookup miss and silently fall back to the
+            // raw-markdown <pre> block.
+            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, None)
+                .with_context(|| format!("compile mdx {}", from.display()))?;
+            fs::write(&to, compiled.jsx_source.as_bytes())
+                .with_context(|| format!("write compiled mdx to {}", to.display()))?;
+
+            // Defensive skip — see [`jsx_likely_breaks_downstream_parser`].
+            // The MDX → JSX emitter does not understand `remark-math`-flavoured
+            // `$$...$$` blocks, so LaTeX content ends up emitted as raw
+            // JSX expression containers like `{\infty}` / `{-\infty}` —
+            // syntactically invalid JS that esbuild rejects, aborting
+            // the entire bundle. Rather than fail every build that
+            // happens to ship one math file, omit the broken module
+            // from the bridge map: the page that consumes it falls
+            // back to the `<pre data-zfb-content-fallback>` shape
+            // (matching the pre-S4e behaviour for ALL pages, scoped
+            // here to the unparseable subset only). The shadow file
+            // is left on disk so downstream debugging can see the
+            // emitter output.
+            if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
+                eprintln!(
+                    "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains expressions that downstream parsers (esbuild) cannot accept (likely LaTeX without remark-math). The page will render via the <pre data-zfb-content-fallback> shape.",
+                    from.display(),
+                );
+                continue;
+            }
+
+            let rel_str = path_to_posix_string(rel);
+            let shadow_rel_path = format!("content/{}/{}", collection_name, rel_str);
+            imports.push(ContentImport {
+                specifier: compiled.specifier.clone(),
+                shadow_rel_path,
+            });
+        } else {
+            fs::copy(from, &to)
+                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Heuristic check for compiled JSX that downstream parsers (esbuild's
+/// JSX pass, then SWC at render-time) will reject. The emitter that
+/// `compile_mdx_to_jsx_module_cached` drives does not yet know about
+/// `remark-math` style fences, so LaTeX content from a `$$...$$` block
+/// can leak into the JSX as bare expression containers like `{\infty}`
+/// or `{-\infty}` — JS does not accept `\letter` as an identifier
+/// outside a string literal, so the entire bundle aborts on the first
+/// such file.
+///
+/// The check walks the JSX one byte at a time, tracking string-literal
+/// state (`'`, `"`, and template `` ` ``), and flags any `{` that —
+/// outside a string — is followed (optionally by a single `-`) by a
+/// backslash + ASCII letter. That mirrors the `{\foo}` / `{-\foo}`
+/// shape LaTeX leakage produces, while ignoring legitimate JSX such as
+/// `{"…\n…"}` (curly opens a JSX expression, immediately enters a
+/// string literal whose content can contain anything).
+///
+/// Outside strings, `\letter` is genuinely unparseable by JS — there is
+/// no escape sequence at the expression level — so a true match is a
+/// reliable signal that the file would crash esbuild. False positives
+/// are bounded: the only consequence of a skip is a fallback
+/// `<pre data-zfb-content-fallback>` block on that page, matching the
+/// pre-S4e behaviour.
+fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
+    let bytes = jsx.as_bytes();
+    let mut in_string: Option<u8> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        // Line and block comments — `\letter` inside a comment is harmless.
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        // String-literal handling (single, double, template).
+        if let Some(q) = in_string {
+            // Escape: skip the next byte regardless of what it is.
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Comment starts.
+        if c == b'/' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'/' => {
+                    in_line_comment = true;
+                    i += 2;
+                    continue;
+                }
+                b'*' => {
+                    in_block_comment = true;
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // String literal opener.
+        if c == b'"' || c == b'\'' || c == b'`' {
+            in_string = Some(c);
+            i += 1;
+            continue;
+        }
+
+        // The pattern of interest: `{\letter` or `{-\letter`, outside
+        // strings and outside comments.
+        if c == b'{' {
+            let mut j = i + 1;
+            // optional unary minus before the backslash (matches `{-\foo}`).
+            if j < bytes.len() && bytes[j] == b'-' {
+                j += 1;
+            }
+            if j + 1 < bytes.len()
+                && bytes[j] == b'\\'
+                && bytes[j + 1].is_ascii_alphabetic()
+            {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+    false
+}
+
+/// Convert a relative `Path` to a forward-slash-separated string. We
+/// emit Posix separators unconditionally so the resulting `import`
+/// statements are valid on every platform — esbuild on Windows would
+/// otherwise reject backslash-bearing module specifiers.
+fn path_to_posix_string(p: &Path) -> String {
+    p.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Derive a URL route from a path **relative to** `pages_dir`.
 ///
 /// Returns `None` for non-page files (e.g. an accidental `.txt` inside
@@ -804,11 +1179,29 @@ fn write_synthetic_tsconfig(
 ///
 /// `content_snapshot_json` is the JSON-serialized content snapshot to
 /// embed. When `None`, a placeholder `{ collections: {} }` is used.
+///
+/// `content_imports` carries one entry per MDX file the per-collection
+/// materialiser handled (#506). Each entry triggers two emitted lines
+/// in the body:
+///
+/// 1. `import * as __zfb_content_<i> from "./<shadow_rel_path>";`
+/// 2. A `[<specifier>, __zfb_content_<i>.default]` row inside the
+///    `globalThis.__zfb.content` bridge map. Both the hash-bearing
+///    `mdx://<collection>/<slug>#<hash>` form (Rust snapshot) and the
+///    hash-stripped `mdx://<collection>/<slug>` form (JS stub) are
+///    registered so `bridge.get(...)` resolves either flavour, per
+///    the contract documented in `crates/zfb-render/src/loader.rs`.
+///
+/// When `content_imports` is empty the bridge installer is omitted —
+/// runtime `bridge?.get(...)` calls fall through to the
+/// `<pre data-zfb-content-fallback>` shape, matching the behaviour of
+/// builds with no content collections.
 fn write_entry_module(
     shadow: &Path,
     routes: &[RouteEntry],
     render_to_string_module: &str,
     content_snapshot_json: Option<&str>,
+    content_imports: &[ContentImport],
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -843,6 +1236,20 @@ fn write_entry_module(
         )
         .unwrap();
     }
+
+    // Per-MDX-entry namespace imports for the content bridge (#506).
+    // Each `__zfb_content_<i>` is the namespace of a compiled MDX
+    // module; its `.default` is the `MDXContent({components}) → JSX`
+    // function the JS-side `<entry.Content>` invokes.
+    for (idx, ci) in content_imports.iter().enumerate() {
+        writeln!(
+            &mut src,
+            "import * as __zfb_content_{idx} from \"./{path}\";",
+            path = ci.shadow_rel_path,
+        )
+        .unwrap();
+    }
+
     src.push_str("\nexport const routes = {\n");
     for (idx, route) in routes.iter().enumerate() {
         writeln!(
@@ -931,6 +1338,64 @@ fn write_entry_module(
     )
     .unwrap();
     src.push('\n');
+
+    // ---------------------------------------------------------------
+    // Content bridge installer (#506).
+    //
+    // The JS-side `<entry.Content>` (in `@takazudo/zfb/content`)
+    // calls `globalThis.__zfb.content.get(entry.module_specifier)`
+    // and renders the returned `MDXContent({components})` function
+    // when present, falling back to a `<pre
+    // data-zfb-content-fallback>` block otherwise. We install the
+    // bridge before `createPageRouter` so the very first SSR call
+    // already sees the populated map.
+    //
+    // Both forms documented in `crates/zfb-render/src/loader.rs`
+    // are registered:
+    //
+    // - `mdx://<collection>/<slug>#<hash>` — the Rust snapshot's
+    //   `module_specifier`, baked by
+    //   `compile_mdx_to_jsx_module_cached` and serialized into
+    //   `EntrySnapshot.module_specifier`.
+    // - `mdx://<collection>/<slug>` — the hash-less form the JS stub
+    //   constructs in `buildModuleSpecifier(name, slug)` when reading
+    //   collections off disk (no JSX hash to compute).
+    //
+    // Both keys point at the same `__zfb_content_<i>.default` value
+    // so a `bridge.get(spec)` call succeeds regardless of which
+    // shape the caller obtained `entry.module_specifier` from.
+    // ---------------------------------------------------------------
+    if !content_imports.is_empty() {
+        src.push_str("const __zfb_content_modules = new Map([\n");
+        for (idx, ci) in content_imports.iter().enumerate() {
+            // Hash-bearing form (Rust snapshot).
+            writeln!(
+                &mut src,
+                "  [{key}, __zfb_content_{idx}.default],",
+                key = json_str(&ci.specifier),
+            )
+            .unwrap();
+            // Hash-stripped form (JS stub fallback). Skip when the
+            // specifier already has no `#` segment — should never
+            // happen for `compile_mdx_to_jsx_module_cached` output,
+            // but the bundler stays defensive in case the upstream
+            // contract changes.
+            if let Some((no_hash, _)) = ci.specifier.split_once('#') {
+                writeln!(
+                    &mut src,
+                    "  [{key}, __zfb_content_{idx}.default],",
+                    key = json_str(no_hash),
+                )
+                .unwrap();
+            }
+        }
+        src.push_str("]);\n");
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str(
+            "globalThis.__zfb.content = { get: (spec) => __zfb_content_modules.get(spec) };\n\n",
+        );
+    }
+
     src.push_str("const __zfb_router = createPageRouter({\n");
     src.push_str("  pages: __zfb_pages,\n");
     src.push_str("  contentSnapshot: __zfb_content_snapshot,\n");
@@ -1217,6 +1682,7 @@ mod tests {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
             content_dir: PathBuf::from("content"),
+            content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
@@ -1279,7 +1745,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string", None).unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[]).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -1332,6 +1798,245 @@ mod tests {
     }
 
     #[test]
+    fn entry_module_emits_content_bridge_for_provided_imports() {
+        // #506 acceptance: when the bundler hands `write_entry_module`
+        // a non-empty `content_imports`, the synthetic `entry.mjs`
+        // must (a) emit one `import * as __zfb_content_<i>` line per
+        // entry, (b) populate a `__zfb_content_modules` Map keyed on
+        // BOTH the hash-bearing and hash-stripped specifier forms,
+        // and (c) install `globalThis.__zfb.content.get(...)` BEFORE
+        // `createPageRouter` so the very first SSR call sees the map.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        let imports = vec![
+            ContentImport {
+                specifier: "mdx://docs/intro#abc12345".to_string(),
+                shadow_rel_path: "content/docs/intro.mdx".to_string(),
+            },
+            ContentImport {
+                specifier: "mdx://docs-ja/intro#def67890".to_string(),
+                shadow_rel_path: "content/docs-ja/intro.mdx".to_string(),
+            },
+        ];
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports).unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        // Per-import namespace import lines.
+        assert!(
+            body.contains("import * as __zfb_content_0 from \"./content/docs/intro.mdx\";"),
+            "missing __zfb_content_0 import; got:\n{body}"
+        );
+        assert!(
+            body.contains("import * as __zfb_content_1 from \"./content/docs-ja/intro.mdx\";"),
+            "missing __zfb_content_1 import; got:\n{body}"
+        );
+
+        // Bridge map carries both hash-bearing and no-hash keys.
+        assert!(
+            body.contains("[\"mdx://docs/intro#abc12345\", __zfb_content_0.default]"),
+            "hash-bearing key for entry 0 missing; got:\n{body}"
+        );
+        assert!(
+            body.contains("[\"mdx://docs/intro\", __zfb_content_0.default]"),
+            "no-hash key for entry 0 missing; got:\n{body}"
+        );
+        assert!(
+            body.contains("[\"mdx://docs-ja/intro#def67890\", __zfb_content_1.default]"),
+            "hash-bearing key for entry 1 missing; got:\n{body}"
+        );
+        assert!(
+            body.contains("[\"mdx://docs-ja/intro\", __zfb_content_1.default]"),
+            "no-hash key for entry 1 missing; got:\n{body}"
+        );
+
+        // Bridge installer assigns onto `globalThis.__zfb.content`.
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "missing globalThis.__zfb namespacing; got:\n{body}"
+        );
+        assert!(
+            body.contains(
+                "globalThis.__zfb.content = { get: (spec) => __zfb_content_modules.get(spec) };"
+            ),
+            "missing globalThis.__zfb.content installer; got:\n{body}"
+        );
+
+        // The installer must run BEFORE createPageRouter is constructed.
+        let bridge_idx = body
+            .find("globalThis.__zfb.content = ")
+            .expect("bridge install line present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter call present");
+        assert!(
+            bridge_idx < router_idx,
+            "bridge installer must precede createPageRouter; bridge at {bridge_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_content_bridge_when_no_imports() {
+        // No collections → no bridge installer (back-compat: legacy
+        // builds with an empty content_dir keep producing a clean
+        // `entry.mjs` without the bridge symbols).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[]).unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("__zfb_content_modules"),
+            "no imports → no bridge map; got:\n{body}"
+        );
+        assert!(
+            !body.contains("globalThis.__zfb.content"),
+            "no imports → no bridge installer; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn materialise_collection_records_imports_and_compiles_mdx() {
+        // The per-collection materialiser must:
+        //   1. Copy non-MDX files verbatim into the per-collection
+        //      shadow subtree.
+        //   2. Compile MDX files via compile_mdx_to_jsx_module_cached
+        //      and write the resulting JSX text to disk under the
+        //      `.mdx` extension.
+        //   3. Record an `(specifier, shadow_rel_path)` pair for each
+        //      MDX entry, where `shadow_rel_path` is prefixed with
+        //      `content/<collection>/` so esbuild's later import
+        //      resolution lands on the shadow tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(src.join("getting-started")).unwrap();
+        fs::write(
+            src.join("intro.mdx"),
+            "---\ntitle: Intro\n---\n\n# Hello\n\nplain paragraph\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("getting-started/installation.mdx"),
+            "## Install\n\nstep one\n",
+        )
+        .unwrap();
+        fs::write(src.join("README.txt"), "not mdx\n").unwrap();
+
+        let dest = tmp.path().join("shadow_content").join("docs");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        materialise_collection(&src, &dest, "docs", &mut imports).unwrap();
+
+        // Two MDX files → two ContentImport records, with stable
+        // forward-slash shadow_rel_paths under `content/docs/...`.
+        assert_eq!(imports.len(), 2, "expected 2 MDX imports, got {imports:?}");
+        let rels: Vec<&str> = imports
+            .iter()
+            .map(|i| i.shadow_rel_path.as_str())
+            .collect();
+        assert!(
+            rels.iter().any(|r| *r == "content/docs/intro.mdx"),
+            "missing top-level intro entry; got: {rels:?}"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| *r == "content/docs/getting-started/installation.mdx"),
+            "missing nested installation entry; got: {rels:?}"
+        );
+
+        // Specifier shape comes from compile_mdx_to_jsx_module_cached
+        // (`mdx://<parent_dir>/<file_stem>#<hash>`). We don't pin the
+        // hash (compile output may vary as the emitter evolves); we
+        // just check the prefix.
+        for ci in &imports {
+            assert!(
+                ci.specifier.starts_with("mdx://"),
+                "specifier should be mdx://*, got {}",
+                ci.specifier
+            );
+            assert!(
+                ci.specifier.contains('#'),
+                "specifier should include hash, got {}",
+                ci.specifier
+            );
+        }
+
+        // Files were materialised on disk.
+        assert!(dest.join("intro.mdx").is_file());
+        assert!(dest.join("getting-started/installation.mdx").is_file());
+        assert!(dest.join("README.txt").is_file());
+
+        // MDX bodies were rewritten to JSX (the compiled output ships
+        // a `function _createMdxContent` wrapper).
+        let intro_jsx = fs::read_to_string(dest.join("intro.mdx")).unwrap();
+        assert!(
+            intro_jsx.contains("_createMdxContent"),
+            "compiled MDX must contain _createMdxContent; got:\n{intro_jsx}"
+        );
+
+        // Non-MDX files copied verbatim.
+        let txt = fs::read_to_string(dest.join("README.txt")).unwrap();
+        assert_eq!(txt, "not mdx\n");
+    }
+
+    #[test]
+    fn jsx_breakage_heuristic_flags_bare_backslash_expressions() {
+        // Positive cases — these are exactly the patterns the MDX
+        // emitter produces from un-escaped LaTeX (`$$\int_{-\infty}…$$`).
+        assert!(jsx_likely_breaks_downstream_parser(
+            r"<_components.p>{-\infty}{\infty}</_components.p>"
+        ));
+        assert!(jsx_likely_breaks_downstream_parser(
+            r"const x = {\foo}; // no quote"
+        ));
+
+        // Negative cases — these all parse cleanly under esbuild's
+        // JSX pass and must NOT be flagged.
+        // 1. `\` inside a JSX-expression string literal.
+        assert!(!jsx_likely_breaks_downstream_parser(r#"{"\\infty"}"#));
+        assert!(!jsx_likely_breaks_downstream_parser(r#"{"$$\n\\int"}"#));
+        // 2. Curly + escape sequence INSIDE a multi-line string
+        //    literal — emitter output for fenced code blocks
+        //    contains `"...{\n  site:..."` (literal `{` followed
+        //    by an `\n` newline escape, all inside the string).
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r#"{"export default {\n  site: \"x\"\n};"}"#
+        ));
+        // 3. Template literal carrying the same shape.
+        assert!(!jsx_likely_breaks_downstream_parser(
+            "`export default {\\n  site: \\\"x\\\"};`"
+        ));
+        // 4. Plain JS expressions.
+        assert!(!jsx_likely_breaks_downstream_parser(r#"{ a + b }"#));
+        assert!(!jsx_likely_breaks_downstream_parser(r#"{props.children}"#));
+        assert!(!jsx_likely_breaks_downstream_parser(r#"export default x;"#));
+        // 5. Comments may carry arbitrary text including `{\foo`.
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r"// {\infty} explained inline"
+        ));
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r"/* {\infty} block-commented */"
+        ));
+    }
+
+    #[test]
+    fn materialise_collection_treats_missing_root_as_empty() {
+        // A `CollectionConfig` whose source path no longer exists on
+        // disk (stale `zfb.config.ts` entry) must not abort the build —
+        // mirrors `zfb_content::build_snapshot`'s lenient handling.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("shadow_content").join("ghost");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        materialise_collection(
+            &tmp.path().join("does-not-exist"),
+            &dest,
+            "ghost",
+            &mut imports,
+        )
+        .unwrap();
+        assert!(imports.is_empty());
+    }
+
+    #[test]
     fn entry_module_emits_default_fetch_when_routes_are_empty() {
         // The wrapper is emitted unconditionally so miniflare's
         // workerd-Module loader sees a Workers-shaped bundle even when
@@ -1340,7 +2045,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None, &[]).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -1355,7 +2060,7 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[]).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
@@ -1477,6 +2182,7 @@ mod tests {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
             content_dir: PathBuf::from("content"),
+            content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,

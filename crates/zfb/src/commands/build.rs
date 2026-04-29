@@ -402,6 +402,16 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         bundler_input.node_modules_dir = Some(nm);
     }
     bundler_input.tsconfig_paths = read_tsconfig_paths(project_root);
+    // Per-collection content materialisation feeds the MDX content
+    // bridge (#506) — without this every doc page would render as
+    // raw markdown text in a `<pre data-zfb-content-fallback>` block
+    // because `globalThis.__zfb.content.get(specifier)` would return
+    // `undefined`.
+    bundler_input.content_collections = config
+        .collections
+        .iter()
+        .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
+        .collect();
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;

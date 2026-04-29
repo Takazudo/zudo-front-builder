@@ -429,6 +429,14 @@ fn boot_dev_renderer(
         bundler_input.node_modules_dir = Some(nm);
     }
     bundler_input.tsconfig_paths = crate::commands::build::read_tsconfig_paths(project_root);
+    // Per-collection content materialisation so dev-mode SSR also
+    // installs `globalThis.__zfb.content` and renders MDX bodies as
+    // JSX (#506). Mirrors the production-build wiring in build.rs.
+    bundler_input.content_collections = cfg
+        .collections
+        .iter()
+        .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
+        .collect();
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {

@@ -63,7 +63,8 @@ pub use adapter::{
 };
 pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
-    bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, RouteEntry,
+    bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, ContentCollectionSpec,
+    RouteEntry,
 };
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
 pub use pipeline::{
