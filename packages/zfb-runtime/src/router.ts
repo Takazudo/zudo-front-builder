@@ -239,7 +239,14 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   });
 
   for (const page of opts.pages) {
-    app.get(page.route, async (c) => {
+    // `app.all` (vs `app.get`) so SSR routes whose page handler dispatches
+    // by `request.method` (e.g. POST API endpoints like
+    // `pages/api/*.tsx`) actually reach the handler. The handler is then
+    // responsible for returning a method-appropriate status (e.g. 405 for
+    // an unsupported verb). With `app.get` the inner router would 404
+    // before the handler ever ran, leaving e.g. `POST /api/foo` looking
+    // identical to a missing route.
+    app.all(page.route, async (c) => {
       const mod = await page.module();
       if (typeof mod.default !== "function") {
         // Surface as a 500 with a well-known message rather than letting
@@ -331,14 +338,25 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         };
       }
 
-      const vnode = mod.default(componentInput);
+      // `await` so async page modules (e.g. API routes typed as
+      // `(): Promise<Response>`) resolve before we inspect the value.
+      // For sync pages that return a VNode/string the await is a no-op.
+      const result = await mod.default(componentInput);
+      // API route short-circuit: a page module that returns a Response
+      // directly (e.g. `pages/api/*.tsx` handlers that use Web Fetch
+      // primitives instead of returning JSX) is responsible for its own
+      // status, headers, and body — return it as-is rather than running
+      // it through the framework SSR path.
+      if (result instanceof Response) {
+        return result;
+      }
       // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
       // return their body as a pre-serialised `string` instead of a
       // VNode. Routing those through `framework.renderToString` would
       // HTML-escape the angle brackets and ampersands, producing
       // garbage XML. Pass strings through verbatim; only wrap actual
       // VNodes.
-      const html = typeof vnode === "string" ? vnode : opts.framework.renderToString(vnode);
+      const html = typeof result === "string" ? result : opts.framework.renderToString(result);
       const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
       return c.body(html, 200, { "Content-Type": contentType });
     });

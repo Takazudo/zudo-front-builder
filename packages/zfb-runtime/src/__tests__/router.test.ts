@@ -168,6 +168,54 @@ describe("createPageRouter", () => {
     expect(res.status).toBe(404);
   });
 
+  it("short-circuits when the page module returns a Response (API-route shape)", async () => {
+    // Pages that handle non-HTML responses (e.g. `pages/api/*.tsx`) can
+    // return a Response directly. The router must surface that Response
+    // verbatim rather than running it through `framework.renderToString`.
+    const apiPage: PageModule = {
+      default: async () =>
+        new Response(JSON.stringify({ ok: false, error: "bad request" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/api/echo", module: () => Promise.resolve(apiPage) }],
+      contentSnapshot: { collections: {} },
+      framework: stubFramework(),
+    });
+    const res = await router(
+      new Request("http://test.local/api/echo", { method: "POST", body: "{}" }),
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    expect(await res.json()).toEqual({ ok: false, error: "bad request" });
+  });
+
+  it("dispatches non-GET methods to the page handler (app.all semantics)", async () => {
+    // A page module that inspects request.method and returns different
+    // bodies must receive the method-correct request. Before the
+    // `app.get` → `app.all` switch, POST never reached the handler.
+    const methodPage: PageModule = {
+      default: async () => {
+        // The handler doesn't have `request` in `componentInput`; the
+        // contract for API routes is `getCloudflareContext()` from the CF
+        // adapter. For this unit test we just assert the handler runs at
+        // all when the request method is POST — see the integration test
+        // in zfb-adapter-cloudflare for the env/ctx threading.
+        return new Response("post-handled", { status: 201 });
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/api/post-only", module: () => Promise.resolve(methodPage) }],
+      contentSnapshot: { collections: {} },
+      framework: stubFramework(),
+    });
+    const res = await router(new Request("http://test.local/api/post-only", { method: "POST" }));
+    expect(res.status).toBe(201);
+    expect(await res.text()).toBe("post-handled");
+  });
+
   it("respects a page module's contentType override", async () => {
     const xmlPage: PageModule = {
       default: () => ({
