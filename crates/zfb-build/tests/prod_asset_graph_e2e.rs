@@ -623,31 +623,39 @@ fn dev_mode_renderer_path_does_not_inject_head_assets() {
 // S5-dependent test — gated until S5 lands
 // ---------------------------------------------------------------------------
 
-/// S5 contract: once the bundler stops inlining the global CSS into
-/// the SSR worker bundle (`_zfb_inner.mjs`), a recognisable Tailwind
-/// marker (the entry CSS import directive) must NOT appear in the
-/// emitted bundle. Until S5 merges the bundler still inlines, so this
-/// test is `#[ignore]`d to keep day-to-day CI green; once S5 lands the
-/// gate is a one-line removal.
+/// S5 contract — the bundler must NOT inline user CSS into the
+/// Worker bundle. The fix is `--loader:.css=empty` on the esbuild
+/// invocation, which substitutes an empty module for every `.css`
+/// import at compile time. The previous default behaviour either
+/// emitted a sibling `_zfb_inner.css` (orphan) or inlined the CSS as
+/// JS bytes — both ship duplicate CSS alongside the externally-hashed
+/// `dist/assets/styles-<hash>.css` produced by S2 + S4.
+///
+/// This test verifies the contract by reading the public bundler
+/// constant rather than running esbuild end-to-end. The full
+/// fixture-based marker check (load a real built bundle, grep for
+/// `@import "tailwindcss"`) lives in
+/// `prod_asset_graph_with_real_tailwind_binary_against_fixture`,
+/// gated under `#[ignore]` until the binary slot is staged.
 #[test]
-#[ignore = "S5 (bundler de-inline CSS) not yet merged into base/prod-asset-graph; \
-            run with --include-ignored to verify after S5 lands."]
 fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
-    // The actual assertion shape — kept in code so the merge-up
-    // diff is trivial:
-    //
-    //   1. Run `zfb build` against a fixture that has a Tailwind
-    //      utility class.
-    //   2. Read `dist/_zfb_inner.mjs`.
-    //   3. Assert the bundle does NOT contain
-    //      `@import "tailwindcss"` (or whatever CSS marker S5
-    //      identifies as the inline-leak signature). The S5 spec is
-    //      explicit that the marker is `@import "tailwindcss"`.
-    //
-    // This stays as a documented stub until the S5 fix lands; running
-    // it before S5 would correctly fail (bundler still inlines), so
-    // the `#[ignore]` is the intended gate, not a skip.
-    panic!("S5 not yet merged; this test is gated behind #[ignore].");
+    use zfb_build::bundler::ESBUILD_LOADER_ARGS;
+
+    assert!(
+        ESBUILD_LOADER_ARGS.contains(&"--loader:.css=empty"),
+        "Worker bundle must use --loader:.css=empty so .css imports \
+         are dropped at compile time. Got: {:?}",
+        ESBUILD_LOADER_ARGS,
+    );
+    assert!(
+        !ESBUILD_LOADER_ARGS
+            .iter()
+            .any(|a| a.contains("external:") && a.contains(".css")),
+        "Worker bundle must NOT mark .css as external — esbuild leaves \
+         runtime `import` statements workerd cannot resolve. Use \
+         --loader:.css=empty instead. Got: {:?}",
+        ESBUILD_LOADER_ARGS,
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -426,7 +426,7 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   crash the Worker at module load. The alternative
 ///   `--external:*.css` was REJECTED because esbuild can leave runtime
 ///   `import` statements that workerd cannot resolve.
-const ESBUILD_LOADER_ARGS: &[&str] = &["--loader:.mdx=jsx", "--loader:.css=empty"];
+pub const ESBUILD_LOADER_ARGS: &[&str] = &["--loader:.mdx=jsx", "--loader:.css=empty"];
 
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
