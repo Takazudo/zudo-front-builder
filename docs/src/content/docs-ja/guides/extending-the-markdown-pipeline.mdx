@@ -1,0 +1,27 @@
+---
+title: Markdown パイプラインの拡張
+description: zfb の Markdown / MDX パイプラインに新しい機能を追加する方法 — ディレクティブで足りるとき、Rust の visitor を書くとき、AST コンバーター自体に手を入れるとき
+sidebar_position: 3.5
+---
+
+<Info title="翻訳予定">
+
+このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
+英語版: [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+
+</Info>
+
+## 概要
+
+`zfb-content` クレートの Markdown パイプラインをエンジン側で拡張する方法について解説します。新しいディレクティブを追加するだけなら
+[Custom Directives](/concepts/custom-directives) で十分ですが、AST レベルの書き換え（見出しスラッグ、コードブロック装飾、画像変換、リンク解決など）が必要な場合は `MdastVisitor` または `HastVisitor` を実装して in-tree のプラグインとして追加します。
+
+主なトピック:
+
+- 2 段階パイプライン（mdast → hast）と、どちらの段階で何をすべきか
+- visitor トレイトの形（`visit` メソッド一つ、再帰は呼び出し側責任、in-place 変更）
+- プラグインファイルの置き場所と `plugins.rs` への公開方法
+- `Pipeline::with_defaults` に組み込まれた依存順序のルール
+- markdown-rs がパースしているがコンバーターが捨てている構文（テーブル、脚注、定義、math など）を有効化するための `mdast_to_hast` 拡張手順
+
+英語の最新ドキュメントは [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。

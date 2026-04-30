@@ -72,23 +72,45 @@ you accept Markdown from untrusted users, sanitize before storing.
   individual extensions off in v0.
 - **HTML wrapping** — fully under your control. The `entry.body` string
   is plain HTML; wrap, slot, and style it however you like.
+- **`.mdx` entries** — content collections accept `.md`, `.mdx`, and
+  `.tsx` files side by side. MDX entries compile to JSX modules; see
+  [MDX Components](/concepts/mdx-components).
+- **Custom directives** — `:::name` (container), `::name[label]`
+  (leaf), and `:name[label]` (text) directive shapes are supported
+  by the engine and register against a runtime
+  [`DirectiveRegistry`](/concepts/custom-directives). The six built-in
+  admonitions (`:::note`, `:::tip`, `:::info`, `:::warning`,
+  `:::danger`, `:::details`) ship through that registry; your project
+  or framework adds its own directives the same way.
+- **Engine-side plugin chain** — `zfb-content` exposes
+  `MdastVisitor` and `HastVisitor` traits and a default plugin chain
+  via `Pipeline::with_defaults()`. New rewrites (custom code-block
+  treatment, link normalisation, heading anchors, etc.) ship as Rust
+  visitors. See
+  [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+  for the engine-extender path.
 
 ## What is planned, not built
 
 The following are deliberately out of scope for v0 and tracked for a
 later release:
 
-- Per-collection rehype / remark plugins.
-- Custom container directives — for example, `:::note` blocks that
-  expand into admonition components.
-- Shortcodes — inline component calls embedded in Markdown.
-- MDX support for content collections. (The docs site itself uses MDX,
-  but that runs through Astro and zudo-doc, not through zfb.)
+- **Userland-configurable plugins via `zfb.config`.** The config
+  schema reserves a `plugins: []` field, but it is not yet wired
+  into the build pipeline. For now, extending the chain means
+  modifying `Pipeline::with_defaults()` in-tree (see the engine
+  guide above).
+- **Per-collection plugin overrides** — running a different visitor
+  set for `blog` than for `docs` from config alone.
+- **A formal third-party plugin protocol** — there is no equivalent
+  of remark's npm-installable plugins. Visitors compile into the
+  binary today.
 
-If your site needs any of these today, the practical options are: do
-the post-processing yourself in the page component, or ship a small
-remark step outside zfb and feed the rendered HTML back through your
-collection.
+If your site needs an engine-level rewrite that does not fit the
+directive registry, write a `MdastVisitor` / `HastVisitor` and add
+it in-tree — the
+[engine extension guide](/guides/extending-the-markdown-pipeline)
+walks through the surface.
 
 <Tip>
 
@@ -96,3 +118,10 @@ collection.
   Markdown" requests turn out to be styling questions that CSS solves.
 
 </Tip>
+
+## See also
+
+- [Custom Directives](/concepts/custom-directives) — register new
+  directive names against the `DirectiveRegistry`, no Rust required.
+- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) —
+  write a Rust visitor and wire it into the engine.
