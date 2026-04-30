@@ -113,8 +113,21 @@ fn mdx_to_jsx_module_inner(
     // we need is for import/export statements to be classified as MdxjsEsm
     // nodes so the emitter can silently drop them (they fall through to the
     // `_ => String::new()` catch-all in `emit_node`).
+    // `math_flow` / `math_text` aren't part of `Constructs::mdx()` by
+    // default. We turn them on so `$$...$$` and `$...$` blocks parse
+    // into proper `Math` / `InlineMath` mdast nodes (see the dedicated
+    // arms in `emit_node` below). Without these, the LaTeX content
+    // would leak into the emitted JSX as bare expression containers
+    // like `{\infty}` — syntactically invalid JS that esbuild rejects,
+    // forcing the bundler's defensive skip in
+    // `crates/zfb-build/src/bundler.rs` to fall the whole page back to
+    // `<pre data-zfb-content-fallback>`. See zfb#93.
     let parse_options = markdown::ParseOptions {
-        constructs: markdown::Constructs::mdx(),
+        constructs: markdown::Constructs {
+            math_flow: true,
+            math_text: true,
+            ..markdown::Constructs::mdx()
+        },
         mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
             markdown::MdxSignal::Ok
         })),
@@ -306,6 +319,14 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
         }
         MdastNode::Image(i) => out.push_str(&i.alt),
         MdastNode::Break(_) => out.push(' '),
+        // Math nodes contribute their raw LaTeX as plain text — best
+        // available projection for a TOC entry like `## Limit as $x \to
+        // \infty$`. `extract_text` over the rendered `<code class="math
+        // math-inline">…raw LaTeX…</code>` would surface the same
+        // bytes, so this keeps `headings[i].text` consistent with the
+        // rendered DOM.
+        MdastNode::Math(m) => out.push_str(&m.value),
+        MdastNode::InlineMath(m) => out.push_str(&m.value),
         // Everything else (MDX expressions, raw HTML literals, JSX
         // elements, …) contributes no plain text — TOCs cannot do
         // anything useful with `{count}` or `<Note/>` tokens.
@@ -467,9 +488,36 @@ impl JsxEmitter {
             }
             MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
             MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+            // remark-math `$$...$$` block. Mirrors the shape
+            // markdown-rs's HTML serializer (`on_enter_raw_flow`)
+            // produces — `<pre><code class="language-math math-display">`
+            // — routed through `_components` so MDX consumers can still
+            // override `<pre>` / `<code>`. The LaTeX body goes in as a
+            // JS string literal (`{"…"}`) so backslash sequences never
+            // surface as raw JSX expressions, which is the bug in #93.
+            // Client-side KaTeX auto-render keys on `math-display`.
+            MdastNode::Math(m) => {
+                self.html_tags.insert("pre".to_string());
+                self.html_tags.insert("code".to_string());
+                format!(
+                    "<_components.pre><_components.code className=\"language-math math-display\">{}</_components.code></_components.pre>",
+                    js_string_literal_in_braces(&m.value),
+                )
+            }
+            // remark-math `$...$` inline. Same shape as inline code
+            // with an added `language-math math-inline` class — the
+            // companion to `Math` above and to markdown-rs's
+            // `on_enter_raw_text` HTML output.
+            MdastNode::InlineMath(m) => {
+                self.html_tags.insert("code".to_string());
+                format!(
+                    "<_components.code className=\"language-math math-inline\">{}</_components.code>",
+                    js_string_literal_in_braces(&m.value),
+                )
+            }
             // Unhandled node kinds (tables, footnotes, definitions,
-            // math, references, ESM, frontmatter, …) emit nothing
-            // rather than panicking. Sub 4+ can broaden coverage.
+            // references, ESM, frontmatter, …) emit nothing rather
+            // than panicking. Sub 4+ can broaden coverage.
             _ => String::new(),
         }
     }
@@ -1137,4 +1185,70 @@ mod tests {
         assert!(out.contains("<style>"), "got: {out}");
     }
 
+    /// Block math (`$$...$$`) emits a `<pre><code class="language-math
+    /// math-display">…</code></pre>` shape with the LaTeX wrapped as a
+    /// JS string literal — never as a bare `{\foo}` JSX expression.
+    /// This is the headline regression test for zfb#93.
+    #[test]
+    fn block_math_emits_safe_jsx_with_display_class() {
+        let src = "$$\n\\int_{-\\infty}^{\\infty} f(x)\\,dx\n$$\n";
+        let out = emit(src);
+        assert!(
+            out.contains("language-math math-display"),
+            "missing math-display class: {out}"
+        );
+        assert!(
+            out.contains("<_components.pre><_components.code"),
+            "math should route through _components.pre/code: {out}"
+        );
+        // The LaTeX body is wrapped in a JS string literal — the
+        // backslashes must be doubled, not bare. If any bare `{\letter}`
+        // pattern leaked through, the bundler heuristic
+        // `jsx_likely_breaks_downstream_parser` would skip the bridge.
+        assert!(
+            out.contains("\\\\int_"),
+            "expected backslash-escaped LaTeX inside JS string: {out}"
+        );
+        assert!(
+            !out.contains("{\\int") && !out.contains("{-\\infty}"),
+            "raw LaTeX leaked into JSX expression containers: {out}"
+        );
+    }
+
+    /// Inline math (`$x$`) emits a single `<code class="language-math
+    /// math-inline">…</code>` with the LaTeX as a JS string literal.
+    #[test]
+    fn inline_math_emits_safe_jsx_with_inline_class() {
+        let src = "When $x \\to \\infty$ the limit holds.\n";
+        let out = emit(src);
+        assert!(
+            out.contains("language-math math-inline"),
+            "missing math-inline class: {out}"
+        );
+        assert!(
+            out.contains("<_components.code className=\"language-math math-inline\">"),
+            "inline math should route through _components.code with class: {out}"
+        );
+        // Same bare-backslash safety check as block math.
+        assert!(
+            !out.contains("{\\to") && !out.contains("{\\infty}"),
+            "raw LaTeX leaked into JSX expression containers: {out}"
+        );
+    }
+
+    /// Headings with inline math contribute the raw LaTeX as plain
+    /// text in the `headings` projection. Without this, the slug for
+    /// `## Limit as $x \\to \\infty$` would drop the math entirely
+    /// (everything after `Limit as `), producing a slug that no longer
+    /// matches what a runtime TOC consumer expects.
+    #[test]
+    fn heading_with_inline_math_keeps_latex_in_text_projection() {
+        let src = "## Limit as $x \\to \\infty$\n";
+        let out = emit(src);
+        // The plain-text projection includes the raw LaTeX body.
+        assert!(
+            out.contains("text: \"Limit as x \\\\to \\\\infty\""),
+            "expected LaTeX in heading text projection: {out}"
+        );
+    }
 }

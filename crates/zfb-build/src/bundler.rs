@@ -952,21 +952,23 @@ fn materialise_collection(
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
 
             // Defensive skip — see [`jsx_likely_breaks_downstream_parser`].
-            // The MDX → JSX emitter does not understand `remark-math`-flavoured
-            // `$$...$$` blocks, so LaTeX content ends up emitted as raw
-            // JSX expression containers like `{\infty}` / `{-\infty}` —
-            // syntactically invalid JS that esbuild rejects, aborting
-            // the entire bundle. Rather than fail every build that
-            // happens to ship one math file, omit the broken module
-            // from the bridge map: the page that consumes it falls
-            // back to the `<pre data-zfb-content-fallback>` shape
-            // (matching the pre-S4e behaviour for ALL pages, scoped
-            // here to the unparseable subset only). The shadow file
-            // is left on disk so downstream debugging can see the
-            // emitter output.
+            // The original trigger for this guard was `remark-math`
+            // `$$...$$` blocks leaking into the JSX as bare expression
+            // containers like `{\infty}` (zfb#93). The emitter now
+            // recognises `Math` / `InlineMath` mdast nodes natively
+            // (see `crates/zfb-content/src/mdx_jsx_emit.rs`), so the
+            // intended math path no longer trips this heuristic. We
+            // keep the skip in place as a defensive net for any
+            // future leak — bare `{\foo}` expressions in the emitted
+            // JSX are unparseable by esbuild and would abort the
+            // whole bundle. When the heuristic does fire, omitting
+            // the broken module from the bridge map falls the page
+            // back to the `<pre data-zfb-content-fallback>` shape;
+            // the shadow file is left on disk so downstream debugging
+            // can see the emitter output.
             if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
                 eprintln!(
-                    "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains expressions that downstream parsers (esbuild) cannot accept (likely LaTeX without remark-math). The page will render via the <pre data-zfb-content-fallback> shape.",
+                    "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
                     from.display(),
                 );
                 continue;
