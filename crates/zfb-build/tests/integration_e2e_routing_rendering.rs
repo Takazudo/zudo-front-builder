@@ -441,6 +441,7 @@ fn e2e_routing_rendering_with_real_miniflare() {
         prerender_map: BTreeMap::new(), // all SSG
         backend: Backend::SpawnMiniflare,
         request_timeout: None,
+        prod_head_assets: None,
     })
     .expect("render_all with Preact should succeed");
 
@@ -515,6 +516,7 @@ fn e2e_routing_rendering_with_real_miniflare() {
             prerender_map: BTreeMap::new(),
             backend: Backend::SpawnMiniflare,
             request_timeout: None,
+            prod_head_assets: None,
         })
         .expect("render_all with React should succeed");
 
