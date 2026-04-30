@@ -122,6 +122,11 @@ fn mdx_to_jsx_module_inner(
     // forcing the bundler's defensive skip in
     // `crates/zfb-build/src/bundler.rs` to fall the whole page back to
     // `<pre data-zfb-content-fallback>`. See zfb#93.
+    //
+    // Side effect: a literal `$` in prose is now parsed as the start
+    // of inline math (markdown-rs's `math_text_single_dollar` defaults
+    // to true). Authors who want a literal dollar sign must escape it
+    // as `\$` — same convention as the upstream remark-math ecosystem.
     let parse_options = markdown::ParseOptions {
         constructs: markdown::Constructs {
             math_flow: true,
