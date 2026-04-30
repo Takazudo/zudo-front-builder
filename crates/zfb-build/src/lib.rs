@@ -72,10 +72,11 @@ pub use head_inject::{
 };
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
 pub use pipeline::{
-    AssetEmitter, AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner,
-    DevAssetPipeline, DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
-    ProductionAssetPipeline, ProductionEmitters, ProdBuildContext, RelDistPath, RenderedPage,
-    RendererReloader,
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
+    AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner, DevAssetPipeline,
+    DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
+    ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
+    ProductionEmitters, RelDistPath, RenderedPage, RendererReloader,
 };
 pub use plan::{PageSelection, RebuildPlan};
 pub use policy::{classify_change, GranularityPolicy, PathClass};

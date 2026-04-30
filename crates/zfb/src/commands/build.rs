@@ -47,6 +47,11 @@ use zfb_build::adapter::{
     AdapterBundleOutput, AdapterChoice, AdapterRunner, DefaultAdapterRunner, SsrRouteRef,
 };
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
+use zfb_build::head_inject::ProdHeadAssets;
+use zfb_build::pipeline::{
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, ProdAssetEmitterInputs,
+    ProdRenderedFile, RelDistPath,
+};
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_router::Router;
 
@@ -175,6 +180,31 @@ trait BuildRunner {
     /// [`zfb_build::renderer::RendererError::RenderFailed`] including
     /// the source-mapped user location.
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput>;
+
+    /// Produce bytes-only payloads for the production asset emitters
+    /// (S4 wiring). Called once per build, BEFORE `render_all`, so the
+    /// orchestration can decide whether the renderer should inject
+    /// `<link rel=stylesheet>` / `<script type=module>` for the
+    /// matching stable URL — emitting head tags pointing at an asset
+    /// that is never written would leak an unhashed URL into the
+    /// shipped HTML.
+    ///
+    /// Default implementations live on:
+    ///
+    /// - [`DefaultRunner`] — currently returns
+    ///   [`ProdAssetEmitterInputs::default`] (no CSS / no islands).
+    ///   Wiring real `CssPipeline::build_emitter` and
+    ///   `build_production_islands_asset` calls is the scope of S5
+    ///   (CSS de-inlining) and follow-ups; S4 only delivers the
+    ///   orchestration plumbing.
+    /// - `FakeRunner` (test-only) — returns whatever bytes the test
+    ///   set up so the rewrite path can be exercised without running
+    ///   Tailwind / esbuild subprocesses.
+    fn emit_prod_assets(
+        &self,
+        project_root: &Path,
+        config: &Config,
+    ) -> Result<ProdAssetEmitterInputs>;
 }
 
 /// Opaque handle that keeps a background miniflare subprocess alive.
@@ -239,6 +269,22 @@ impl BuildRunner for DefaultRunner {
 
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
         render_all(input).map_err(anyhow::Error::from)
+    }
+
+    fn emit_prod_assets(
+        &self,
+        _project_root: &Path,
+        _config: &Config,
+    ) -> Result<ProdAssetEmitterInputs> {
+        // S5/S6 wire real CssPipeline / ClientBundler invocations
+        // here. Today's production runner returns the empty default —
+        // the orchestrator round-trips HTML untouched (no head
+        // injection, no asset writes), preserving today's emit-only
+        // behaviour for users who have not yet adopted the asset
+        // graph. Once CSS / islands wiring lands, this method runs
+        // them eagerly before render so head injection knows whether
+        // each stable URL has bytes backing it.
+        Ok(ProdAssetEmitterInputs::default())
     }
 }
 
@@ -441,6 +487,26 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         return Ok(0);
     }
 
+    // 2.5. Pre-render: produce CSS / islands bytes so we know which
+    //      stable URLs to inject into the rendered HTML head. We MUST
+    //      know up front whether each emitter slot will produce
+    //      bytes; injecting a `<link>` for a stylesheet that is then
+    //      never written would leak the unhashed `/assets/styles.css`
+    //      URL into shipped HTML (the prod pipeline only rewrites
+    //      stable→hashed for slots it actually emits).
+    let prod_asset_inputs = runner
+        .emit_prod_assets(project_root, config)
+        .context("production asset emitters failed")?;
+    let prod_head_assets = derive_prod_head_assets(&prod_asset_inputs);
+
+    // Snapshot the route universe *before* moving it into RendererInput
+    // — we need the per-page output paths to drive the post-render
+    // rewrite step.
+    let route_universe_for_rewrite: Vec<(String, std::path::PathBuf)> = static_routes
+        .iter()
+        .map(|e| (e.url_path.clone(), e.output_path.clone()))
+        .collect();
+
     // 3. Render.
     let renderer_input = RendererInput {
         bundle_path: bundler_out.bundle_path.clone(),
@@ -451,14 +517,33 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         prerender_map,
         backend,
         request_timeout: None,
-        // S4 will populate this once `ProductionAssetPipeline` is wired
-        // into `zfb build`. Today's build path keeps emitting raw
-        // worker-rendered HTML to preserve current dev/test behaviour.
-        prod_head_assets: None,
+        // S4: inject the stable URLs for any asset slot that produced
+        // bytes. `ProductionAssetPipeline` will rewrite each match in
+        // the rendered HTML to the hashed URL after the file has
+        // landed on disk.
+        prod_head_assets,
     };
     let render_out = runner
         .render_all(renderer_input)
         .context("renderer step failed")?;
+
+    // 3.5. Production asset pipeline pass.
+    //
+    // The renderer just wrote SSG HTML files to disk with stable
+    // asset URLs spliced into `<head>` (when an emitter slot produced
+    // bytes). Now hash + ship the asset bytes and rewrite each HTML
+    // file's stable URLs to the hashed equivalents in place. This is
+    // a no-op (no asset writes, HTML round-tripped) when both
+    // emitter slots returned `None`.
+    if !prod_asset_inputs.css.is_none() || !prod_asset_inputs.islands.is_none() {
+        let prod_pages = build_prod_rendered_files(
+            outdir,
+            &route_universe_for_rewrite,
+            &render_out.ssg_files_written,
+        );
+        apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
+            .context("production asset pipeline (hash + URL rewrite) failed")?;
+    }
 
     // Surface miniflare's stderr (workerd/console.warn lines) so the
     // user sees them even on a green build — they are often informative
@@ -507,6 +592,83 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     }
 
     Ok(render_out.ssg_files_written.len())
+}
+
+/// Derive the [`ProdHeadAssets`] payload for [`RendererInput`] from
+/// the bytes-only emitter inputs. Returns `None` when no slot has
+/// bytes — the renderer then ships HTML untouched (matching today's
+/// behaviour for projects with no CSS / islands).
+///
+/// The stable URLs come straight from
+/// [`zfb_build::pipeline::AssetEmitterPayload::stable_url`] (which the
+/// CSS / islands adapters seed from `zfb_types::asset_urls`
+/// constants). This lets a future caller mount assets at a non-default
+/// URL prefix without rewriting this function.
+fn derive_prod_head_assets(inputs: &ProdAssetEmitterInputs) -> Option<ProdHeadAssets> {
+    let css_url = inputs.css.as_ref().map(|p| p.stable_url.clone());
+    let mut island_module_urls: Vec<String> = Vec::new();
+    if let Some(islands) = inputs.islands.as_ref() {
+        island_module_urls.push(islands.stable_url.clone());
+    }
+    if css_url.is_none() && island_module_urls.is_empty() {
+        return None;
+    }
+    Some(ProdHeadAssets {
+        css_url,
+        island_module_urls,
+    })
+}
+
+/// Pair each route-universe entry's relative `output_path` with the
+/// renderer's report of which absolute paths were actually written —
+/// returning the SSG-written subset as
+/// [`ProdRenderedFile`]s ready for the prod orchestrator.
+///
+/// SSR-only entries are skipped (their absolute path never appears in
+/// `ssg_files_written`). Each surviving relative path is validated
+/// through [`RelDistPath::new`] so a malformed path can never reach
+/// the orchestrator's atomic-write step.
+fn build_prod_rendered_files(
+    dist_dir: &Path,
+    route_universe: &[(String, std::path::PathBuf)],
+    ssg_files_written: &[std::path::PathBuf],
+) -> Vec<ProdRenderedFile> {
+    use std::collections::HashSet;
+    // The renderer writes to `dist_dir.join(entry.output_path)`. Build
+    // a set of the absolute paths it reported so we can filter SSG
+    // entries from SSR-only entries cheaply.
+    let written: HashSet<std::path::PathBuf> = ssg_files_written.iter().cloned().collect();
+
+    let mut out: Vec<ProdRenderedFile> = Vec::with_capacity(written.len());
+    let mut seen_paths: HashSet<std::path::PathBuf> = HashSet::new();
+    for (_url, rel) in route_universe {
+        let abs = dist_dir.join(rel);
+        if !written.contains(&abs) {
+            continue;
+        }
+        if !seen_paths.insert(rel.clone()) {
+            // De-duplicate: two route entries sharing an output path
+            // would otherwise produce duplicate synthetic page ids
+            // and break the orchestrator's BTreeSet invariant.
+            continue;
+        }
+        match RelDistPath::new(rel.clone()) {
+            Ok(rel_path) => {
+                let page = synthesize_page_id_from_output(&rel_path);
+                out.push(ProdRenderedFile {
+                    page,
+                    output_path: rel_path,
+                });
+            }
+            Err(err) => {
+                output::warn(format!(
+                    "production asset pipeline: skipping invalid output path {} ({err})",
+                    rel.display(),
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn warn_deferred_dynamic(routes: &[DeferredDynamicRoute]) {
@@ -733,6 +895,11 @@ mod tests {
         bundle_calls: RefCell<Vec<BundlerInput>>,
         render_calls: RefCell<Vec<RendererInput>>,
         mock_bundle_path: PathBuf,
+        /// Canned production asset emitter inputs returned from
+        /// `emit_prod_assets`. Default = empty (parity with
+        /// `DefaultRunner`); tests can preload bytes to exercise the
+        /// hash + URL rewrite path.
+        prod_asset_inputs: RefCell<ProdAssetEmitterInputs>,
     }
 
     impl FakeRunner {
@@ -741,7 +908,15 @@ mod tests {
                 bundle_calls: RefCell::new(Vec::new()),
                 render_calls: RefCell::new(Vec::new()),
                 mock_bundle_path,
+                prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
             }
+        }
+
+        /// Preload canned bytes for the production asset emitters.
+        /// Used by the orchestrator-wiring tests below.
+        fn with_prod_asset_inputs(self, inputs: ProdAssetEmitterInputs) -> Self {
+            *self.prod_asset_inputs.borrow_mut() = inputs;
+            self
         }
     }
 
@@ -786,7 +961,28 @@ mod tests {
         }
         fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
             // Honour the input contract: write each ssg route's output
-            // path so callers that inspect `dist/` see real files.
+            // path so callers that inspect `dist/` see real files. If
+            // `prod_head_assets` is set, splice the stable URL tags
+            // into a `<head>` so the post-render rewrite pass has
+            // something to match. The shape mirrors what real
+            // `render_all` produces with a non-`None` `prod_head_assets`.
+            let head_extra = match input.prod_head_assets.as_ref() {
+                Some(assets) => {
+                    let mut s = String::new();
+                    if let Some(href) = assets.css_url.as_deref() {
+                        s.push_str(&format!(
+                            "<link rel=\"stylesheet\" href=\"{href}\">"
+                        ));
+                    }
+                    for src in &assets.island_module_urls {
+                        s.push_str(&format!(
+                            "<script type=\"module\" src=\"{src}\"></script>"
+                        ));
+                    }
+                    s
+                }
+                None => String::new(),
+            };
             for entry in &input.route_universe {
                 let dest = input.dist_dir.join(&entry.output_path);
                 if let Some(parent) = dest.parent() {
@@ -794,7 +990,10 @@ mod tests {
                 }
                 std::fs::write(
                     &dest,
-                    format!("<html><body><main>rendered {}</main></body></html>", entry.url_path),
+                    format!(
+                        "<html><head>{head_extra}</head><body><main>rendered {}</main></body></html>",
+                        entry.url_path,
+                    ),
                 )
                 .ok();
             }
@@ -808,6 +1007,20 @@ mod tests {
                 ssg_files_written: written,
                 ssr_manifest: SsrManifest::default(),
                 miniflare_logs: String::new(),
+            })
+        }
+
+        fn emit_prod_assets(
+            &self,
+            _project_root: &Path,
+            _config: &Config,
+        ) -> Result<ProdAssetEmitterInputs> {
+            // Clone the canned inputs so multiple tests can share the
+            // same FakeRunner without consuming its state.
+            let inputs = self.prod_asset_inputs.borrow();
+            Ok(ProdAssetEmitterInputs {
+                css: inputs.css.clone(),
+                islands: inputs.islands.clone(),
             })
         }
     }
@@ -1087,6 +1300,13 @@ mod tests {
             fn render_all(&self, _input: RendererInput) -> Result<RendererOutput> {
                 Err(anyhow!("renderer crashed at pages/error.tsx:5:3"))
             }
+            fn emit_prod_assets(
+                &self,
+                _project_root: &Path,
+                _config: &Config,
+            ) -> Result<ProdAssetEmitterInputs> {
+                Ok(ProdAssetEmitterInputs::default())
+            }
         }
         let tmp = tempdir().unwrap();
         make_runtime(tmp.path());
@@ -1290,6 +1510,149 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("empty string"), "{msg}");
+    }
+
+    /// S4 happy path: when an emitter slot has bytes, the renderer
+    /// receives `prod_head_assets` with the matching stable URL, the
+    /// FakeRunner splices that URL into rendered HTML, and the
+    /// post-render orchestration pass writes a hashed asset file to
+    /// disk and rewrites the HTML to point at the hashed URL.
+    #[test]
+    fn run_build_writes_hashed_css_and_rewrites_html_when_css_emitter_has_bytes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            static_route(vec!["about"], "pages/about.tsx"),
+        ];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b".btn{color:red}".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    stable_url: "/assets/styles.css".to_string(),
+                }),
+                islands: None,
+            });
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // (a) CSS bytes land on disk under dist/assets/styles-<8hex>.css.
+        let assets_entries: Vec<String> = std::fs::read_dir(outdir.join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            assets_entries.len(),
+            1,
+            "expected exactly one hashed asset on disk; got {assets_entries:?}",
+        );
+        let name = &assets_entries[0];
+        assert!(
+            name.starts_with("styles-")
+                && name.ends_with(".css")
+                && name.len() == "styles-12345678.css".len(),
+            "expected styles-<8hex>.css; got {name}",
+        );
+        let bytes = std::fs::read(outdir.join("assets").join(name)).unwrap();
+        assert!(!bytes.is_empty(), "hashed css must contain bytes");
+
+        // (b) HTML files contain the hashed URL after rewrite.
+        let hashed_url = format!("/assets/{name}");
+        for rel in &["index.html", "about/index.html"] {
+            let html = std::fs::read_to_string(outdir.join(rel)).unwrap();
+            assert!(
+                html.contains(&hashed_url),
+                "hashed URL {hashed_url} missing from {rel}: {html}",
+            );
+
+            // (c) HTML does NOT contain the unhashed URL.
+            assert!(
+                !html.contains("/assets/styles.css\""),
+                "stable URL leaked into {rel}: {html}",
+            );
+        }
+
+        // The renderer was handed a non-None prod_head_assets carrying
+        // the stable URL — that's the load-bearing wiring S4 fixes.
+        let render_calls = runner.render_calls.borrow();
+        assert_eq!(render_calls.len(), 1);
+        let prod_assets = render_calls[0]
+            .prod_head_assets
+            .as_ref()
+            .expect("prod build must populate prod_head_assets when emitter has bytes");
+        assert_eq!(prod_assets.css_url.as_deref(), Some("/assets/styles.css"));
+        assert!(prod_assets.island_module_urls.is_empty());
+    }
+
+    /// Dev-no-regression assertion (S4 spec): with no emitter bytes
+    /// (the production path users have today, before S5/S6 wires real
+    /// CSS/islands), the renderer is handed `prod_head_assets: None`,
+    /// no hashed asset file is written, and the dist HTML stays
+    /// byte-identical to a pre-S4 build for the same fixture.
+    ///
+    /// We assert byte-identity by re-rendering the same fixture
+    /// without any emitter inputs (the orchestrator's `if !inputs.css
+    /// || !inputs.islands` gate short-circuits) and verifying the
+    /// resulting HTML matches the FakeRunner's deterministic output
+    /// shape with no head-injected tags.
+    #[test]
+    fn run_build_with_no_emitter_bytes_skips_orchestrator_and_does_not_inject_head() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // Default FakeRunner: no preset emitter bytes ⇒ both slots None.
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // No assets/ directory — the orchestrator was never invoked.
+        assert!(
+            !outdir.join("assets").exists(),
+            "assets/ must be absent when no emitter produced bytes",
+        );
+
+        // Renderer received `prod_head_assets: None` (matching the
+        // pre-S4 / dev contract).
+        let render_calls = runner.render_calls.borrow();
+        assert!(
+            render_calls[0].prod_head_assets.is_none(),
+            "prod_head_assets must be None when no emitter has bytes",
+        );
+
+        // HTML body shape: FakeRunner emits `<head>` empty when no
+        // head injection. No `<link>` or `<script>` snuck in.
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            !html.contains("<link rel=\"stylesheet\""),
+            "no CSS link should appear without emitter bytes: {html}",
+        );
+        assert!(
+            !html.contains("<script type=\"module\""),
+            "no islands script should appear without emitter bytes: {html}",
+        );
     }
 
     /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on
