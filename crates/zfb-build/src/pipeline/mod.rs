@@ -71,9 +71,14 @@ use zfb_graph::PageId;
 use crate::plan::RebuildPlan;
 
 pub mod dev;
+pub mod orchestrator;
 pub mod prod;
 
 pub use dev::DevAssetPipeline;
+pub use orchestrator::{
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload,
+    ProdAssetEmitterInputs, ProdRenderedFile,
+};
 pub use prod::{
     AssetEmitter, AssetKind, EmittedAsset, ProductionAssetPipeline, ProductionEmitters,
 };

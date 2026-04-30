@@ -18,17 +18,24 @@
 //! ## Contract
 //!
 //! - The bundler MUST be deterministic: the same `(islands, config)` pair
-//!   must produce the same asset path and module-id list. Downstream
-//!   hashing assumes byte-stable bundle output.
-//! - The output asset filename convention is `islands-{hash}.js` under
-//!   `{outdir}/assets/` — mirror of `zfb_css`'s `styles-{hash}.css` layout.
+//!   must produce the same asset bytes and module-id list. Downstream
+//!   hashing in [`zfb_build::pipeline::prod::ProductionAssetPipeline`]
+//!   assumes byte-stable bundle output.
+//! - The output asset filename is the **stable** name
+//!   `{outdir}/assets/islands.js` (per `zfb_types::STABLE_ISLANDS_FILENAME`)
+//!   — `ProductionAssetPipeline` is the single source of truth for
+//!   content hashing, so emitters under this crate no longer bake
+//!   `-<hash>` into the on-disk name. Mirror of `zfb-css`'s
+//!   `styles.css` stable-name layout.
 //! - `module_ids` returns the bundled module identifiers (typically the
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+use zfb_types::{DIST_ASSETS_DIR, STABLE_ISLANDS_FILENAME, STABLE_ISLANDS_URL};
 
 /// Stable identifier of a bundled module emitted by [`ClientBundler::bundle`].
 ///
@@ -77,8 +84,9 @@ pub struct BundleConfig {
     /// `//# sourceMappingURL=` comment). Production: `false`. Dev: `true`.
     pub sourcemap: bool,
 
-    /// Output root. The asset lands at
-    /// `{outdir}/assets/islands-{hash}.js`.
+    /// Output root. The asset lands at the stable path
+    /// `{outdir}/assets/islands.js`. (Hashing is the
+    /// `ProductionAssetPipeline`'s job — see crate-level contract.)
     /// Default: `dist/`.
     pub outdir: PathBuf,
 
@@ -141,12 +149,19 @@ impl BundleConfig {
 /// Result of a successful [`ClientBundler::bundle`] call.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
-    /// Output file path on disk, e.g. `dist/assets/islands-abc12345.js`.
+    /// Output file path on disk — the stable form
+    /// `dist/assets/islands.js`. `ProductionAssetPipeline` reads these
+    /// bytes and renames to `dist/assets/islands-<hash>.js` at deploy
+    /// time; the name handed to callers here stays unhashed so the
+    /// pipeline can drive HTML rewrites against
+    /// `STABLE_ISLANDS_URL` without coordinating an extra string
+    /// channel.
     pub asset_path: PathBuf,
 
-    /// Public URL the renderer should reference, e.g.
-    /// `/assets/islands-abc12345.js`. Computed via [`bundle_link_href`]
-    /// from the asset path and the `base_url` in [`BundleConfig`].
+    /// Public URL the renderer should reference — the stable form
+    /// `/assets/islands.js` (see `zfb_types::STABLE_ISLANDS_URL`).
+    /// Computed via [`bundle_link_href`] from the asset path and the
+    /// `base_url` in [`BundleConfig`].
     pub asset_url: String,
 
     /// Identifiers of the modules included in the bundle. Order is stable
@@ -167,24 +182,32 @@ pub trait ClientBundler {
 /// One per-island bundle output, produced by
 /// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
 ///
-/// Per-island bundles land at `{outdir}/islands/{component}-{hash}.js` so
-/// the runtime can dynamic-import each island's JS independently. Sharing
-/// is the bundler's concern — at this layer we just record one entry per
-/// island.
+/// Per-island bundles land at the stable path
+/// `{outdir}/islands/{component}.js` so the runtime can dynamic-import
+/// each island's JS independently. Sharing is the bundler's concern —
+/// at this layer we just record one entry per island. The
+/// content-hash field is still computed and exposed (see
+/// [`IslandBundle::hash`]) for dev-mode change detection and for
+/// downstream consumers that wrap this output through
+/// `ProductionAssetPipeline`, but it is **not** baked into the
+/// filename or URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IslandBundle {
     /// Component export name. Mirrors [`Island::component_name`] of the
     /// input island so callers can pair entries by name.
     pub component_name: String,
-    /// Output file path on disk, e.g.
-    /// `dist/islands/Counter-abc12345.js`.
+    /// Output file path on disk — the stable form
+    /// `dist/islands/{component}.js`.
     pub asset_path: PathBuf,
-    /// Public URL the runtime should `import()` from, e.g.
-    /// `/islands/Counter-abc12345.js`.
+    /// Public URL the runtime should `import()` from — the stable form
+    /// `/islands/{component}.js`.
     pub asset_url: String,
-    /// 8-char content hash (lowercase hex) the URL was suffixed with.
-    /// Useful for tests asserting deterministic naming and for callers
-    /// that need to expose the hash separately (e.g. integrity tags).
+    /// 8-char content hash (lowercase hex) of the bundled JS. Reported
+    /// for dev-mode change detection and for downstream consumers
+    /// that delegate hashing to `ProductionAssetPipeline`. The hash is
+    /// **not** part of the on-disk filename or URL — those are
+    /// stable-named per the S0 single-source-of-truth-for-hashing
+    /// contract.
     pub hash: String,
 }
 
@@ -199,11 +222,13 @@ pub struct IslandBundle {
 pub struct PerIslandBundleOutput {
     /// One entry per island, in the same order the input slice provided.
     pub islands: Vec<IslandBundle>,
-    /// Runtime bundle file path, e.g.
-    /// `dist/islands/islands-runtime-abc12345.js`.
+    /// Runtime bundle file path — the stable form
+    /// `dist/islands/islands-runtime.js`. Hashing, when needed, is
+    /// applied later by `ProductionAssetPipeline`.
     pub runtime_asset_path: PathBuf,
     /// Runtime bundle public URL — the `<script type="module" src="…">`
-    /// the page-router HTML pass injects into `<head>`.
+    /// the page-router HTML pass injects into `<head>`. Stable form:
+    /// `/islands/islands-runtime.js`.
     pub runtime_asset_url: String,
 }
 
@@ -236,7 +261,10 @@ impl FrameworkKind {
 ///
 /// Mirrors [`bundle_link_href`] but lives under `/islands/` instead of
 /// `/assets/` so per-island and shared bundles can share an outdir
-/// without colliding.
+/// without colliding. With S0's stable-naming contract the typical
+/// inputs look like `dist/islands/Counter.js` →
+/// `/islands/Counter.js`; `ProductionAssetPipeline` is the only
+/// component allowed to substitute hashed forms.
 pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
     let filename = asset_path
         .file_name()
@@ -257,11 +285,11 @@ pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
 /// use std::path::PathBuf;
 /// use zfb_islands::bundle_link_href;
 ///
-/// let p = PathBuf::from("dist/assets/islands-abc12345.js");
-/// assert_eq!(bundle_link_href("/", &p), "/assets/islands-abc12345.js");
+/// let p = PathBuf::from("dist/assets/islands.js");
+/// assert_eq!(bundle_link_href("/", &p), "/assets/islands.js");
 /// assert_eq!(
 ///     bundle_link_href("https://cdn.example.com", &p),
-///     "https://cdn.example.com/assets/islands-abc12345.js",
+///     "https://cdn.example.com/assets/islands.js",
 /// );
 /// ```
 pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
@@ -271,6 +299,89 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
         .unwrap_or_default();
     let trimmed = base_url.trim_end_matches('/');
     format!("{trimmed}/assets/{filename}")
+}
+
+/// Bytes-only payload describing the islands client bundle as a single
+/// hashable production asset, ready for plugging into
+/// `zfb_build::pipeline::prod::ProductionAssetPipeline` (S4 wiring).
+///
+/// The shape mirrors `zfb_build`'s `EmittedAsset` field-by-field but
+/// stays in this crate to avoid a `zfb-islands → zfb-build` dep cycle
+/// (`zfb-build` already imports — or will import via S4 — the islands
+/// pipeline; the reverse direction would be circular). S4 lifts these
+/// fields into a real `EmittedAsset` via the `Fn() -> Result<Option<…>>`
+/// blanket impl on `AssetEmitter`, so no trait wrapper is needed here.
+///
+/// Per the S0 single-source-of-truth-for-hashing contract:
+///
+/// - `relative_path` is **stable** (`assets/islands.js`); the pipeline
+///   inserts the content hash before the extension.
+/// - `stable_url` is the unhashed public URL the renderer embeds
+///   (`/assets/islands.js`); the pipeline rewrites every match in the
+///   rendered HTML to the hashed form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionIslandsAsset {
+    /// Bundled JS bytes — already minified per `BundleConfig::production`
+    /// when constructed that way. The pipeline is opaque to the contents;
+    /// it only hashes and ships them.
+    pub bytes: Vec<u8>,
+
+    /// Output path relative to `dist_root` — the stable form
+    /// `assets/islands.js`. Must include the file extension; the
+    /// pipeline splices the hash in before the extension.
+    pub relative_path: PathBuf,
+
+    /// The unhashed public URL the rendered HTML uses by default
+    /// (`/assets/islands.js`). The pipeline rewrites every match of this
+    /// string in HTML bodies with the hashed equivalent.
+    pub stable_url: String,
+}
+
+/// Run `bundler` over `islands` and return a bytes-only adapter payload
+/// suitable for `ProductionAssetPipeline`.
+///
+/// **Empty input is a no-op.** When `islands` is empty (project carries
+/// no `"use client"` components) this returns `Ok(None)` *without*
+/// invoking the bundler — so esbuild is never asked to write a
+/// zero-entry-points bundle, no empty `dist/assets/islands.js` lands on
+/// disk, and the rendered HTML stays free of a `<script>` tag pointing
+/// at a non-existent asset (S3 acceptance criterion: islands emitter is
+/// a no-op when the project has no islands).
+///
+/// On a non-empty `islands` slice the bundler writes the stable
+/// `<outdir>/assets/islands.js` file as part of its normal contract;
+/// this adapter then reads those bytes back into memory and packages
+/// them with the canonical relative path + stable URL constants from
+/// `zfb-types`. The stable filename / URL match exactly what
+/// `STABLE_ISLANDS_FILENAME` / `STABLE_ISLANDS_URL` declare so S1's head
+/// injection and S4's pipeline rewrite agree on the same key.
+pub fn build_production_islands_asset(
+    bundler: &dyn ClientBundler,
+    islands: &[Island],
+    config: &BundleConfig,
+) -> Result<Option<ProductionIslandsAsset>> {
+    if islands.is_empty() {
+        return Ok(None);
+    }
+
+    let output = bundler
+        .bundle(islands, config)
+        .context("islands production emitter: bundler.bundle() failed")?;
+
+    let bytes = std::fs::read(&output.asset_path).with_context(|| {
+        format!(
+            "islands production emitter: failed to read bundled asset bytes from {}",
+            output.asset_path.display()
+        )
+    })?;
+
+    let relative_path = PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME);
+
+    Ok(Some(ProductionIslandsAsset {
+        bytes,
+        relative_path,
+        stable_url: STABLE_ISLANDS_URL.to_string(),
+    }))
 }
 
 #[cfg(test)]
@@ -314,16 +425,152 @@ mod tests {
 
     #[test]
     fn link_href_normalises_trailing_slash() {
-        let p = PathBuf::from("dist/assets/islands-deadbeef.js");
-        assert_eq!(bundle_link_href("/", &p), "/assets/islands-deadbeef.js");
-        assert_eq!(bundle_link_href("", &p), "/assets/islands-deadbeef.js");
+        // S0 contract: emitter writes the stable filename
+        // `assets/islands.js`. Hashed forms are produced by
+        // `ProductionAssetPipeline`, not by the bundler.
+        let p = PathBuf::from("dist/assets/islands.js");
+        assert_eq!(bundle_link_href("/", &p), "/assets/islands.js");
+        assert_eq!(bundle_link_href("", &p), "/assets/islands.js");
         assert_eq!(
             bundle_link_href("https://cdn.example.com/", &p),
-            "https://cdn.example.com/assets/islands-deadbeef.js"
+            "https://cdn.example.com/assets/islands.js"
         );
         assert_eq!(
             bundle_link_href("https://cdn.example.com", &p),
-            "https://cdn.example.com/assets/islands-deadbeef.js"
+            "https://cdn.example.com/assets/islands.js"
+        );
+    }
+
+    /// Test double for the S3 production-emitter adapter.
+    ///
+    /// Records every `bundle()` invocation so the no-islands no-op test
+    /// can assert the bundler was never called, and writes a configured
+    /// payload to the stable `<outdir>/assets/islands.js` path so the
+    /// happy-path test can read deterministic bytes back.
+    struct RecordingBundler {
+        payload: Vec<u8>,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl RecordingBundler {
+        fn new(payload: impl Into<Vec<u8>>) -> Self {
+            Self {
+                payload: payload.into(),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.get()
+        }
+    }
+
+    impl ClientBundler for RecordingBundler {
+        fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
+            self.calls.set(self.calls.get() + 1);
+
+            let asset_path = config
+                .outdir
+                .join(zfb_types::DIST_ASSETS_DIR)
+                .join(zfb_types::STABLE_ISLANDS_FILENAME);
+            if let Some(parent) = asset_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&asset_path, &self.payload).unwrap();
+
+            let asset_url = bundle_link_href(&config.base_url, &asset_path);
+            let module_ids = islands.iter().map(|i| i.component_name.clone()).collect();
+            Ok(BundleOutput {
+                asset_path,
+                asset_url,
+                module_ids,
+            })
+        }
+    }
+
+    #[test]
+    fn build_production_islands_asset_returns_none_when_no_islands() {
+        // Acceptance criterion: with no islands the adapter must be a
+        // no-op — the bundler is not invoked, no empty asset lands on
+        // disk, and the rendered HTML keeps no stale `<script>` tag.
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = RecordingBundler::new(b"unused".to_vec());
+        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+
+        let out = build_production_islands_asset(&bundler, &[], &cfg).unwrap();
+        assert!(out.is_none(), "no islands → adapter must return None");
+        assert_eq!(
+            bundler.call_count(),
+            0,
+            "bundler.bundle() must not be invoked when islands slice is empty"
+        );
+        // No `assets/` directory was created — nothing was written.
+        assert!(
+            !dir.path().join(zfb_types::DIST_ASSETS_DIR).exists(),
+            "no-islands case must not touch dist/assets/"
+        );
+    }
+
+    #[test]
+    fn build_production_islands_asset_returns_bytes_and_stable_url() {
+        // Happy path: non-empty islands → adapter runs the bundler,
+        // reads the stable `assets/islands.js` bytes back, and packages
+        // them with the canonical relative path + stable URL constants
+        // from `zfb-types`. Hashing is `ProductionAssetPipeline`'s job
+        // (S4); this adapter must NOT bake any hash into the URL or
+        // path.
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"// bundled islands payload\nexport const x = 1;\n".to_vec();
+        let bundler = RecordingBundler::new(payload.clone());
+        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+
+        let asset = build_production_islands_asset(&bundler, &islands, &cfg)
+            .unwrap()
+            .expect("non-empty islands → adapter returns Some(_)");
+
+        assert_eq!(bundler.call_count(), 1);
+        assert_eq!(asset.bytes, payload);
+        assert_eq!(
+            asset.relative_path,
+            PathBuf::from(zfb_types::DIST_ASSETS_DIR).join(zfb_types::STABLE_ISLANDS_FILENAME)
+        );
+        assert_eq!(asset.stable_url, zfb_types::STABLE_ISLANDS_URL);
+        // Stable URL must NOT carry a hash — the pipeline owns hashing.
+        assert!(
+            !asset.stable_url.contains('-')
+                || asset.stable_url == zfb_types::STABLE_ISLANDS_URL,
+            "adapter must emit the unhashed stable URL: got {}",
+            asset.stable_url
+        );
+    }
+
+    #[test]
+    fn build_production_islands_asset_propagates_bundler_errors() {
+        // Bundler failure surfaces as an error from the adapter (with
+        // context wrapping it for the diagnostic chain). The adapter
+        // must not swallow the failure into `Ok(None)` — that would be
+        // indistinguishable from "no islands" and silently drop the
+        // `<script>` tag.
+        struct FailingBundler;
+        impl ClientBundler for FailingBundler {
+            fn bundle(&self, _: &[Island], _: &BundleConfig) -> Result<BundleOutput> {
+                Err(anyhow::anyhow!("synthetic bundler failure"))
+            }
+        }
+
+        let cfg = BundleConfig::default();
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+        let err = build_production_islands_asset(&FailingBundler, &islands, &cfg)
+            .expect_err("bundler error must propagate");
+        let chain: String = err
+            .chain()
+            .map(|e| format!("{e}"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        assert!(
+            chain.contains("synthetic bundler failure"),
+            "underlying error must be in the chain: {chain}"
         );
     }
 }

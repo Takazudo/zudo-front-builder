@@ -51,6 +51,7 @@
 pub mod adapter;
 pub mod atomic;
 pub mod bundler;
+pub mod head_inject;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
@@ -66,12 +67,16 @@ pub use bundler::{
     bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, ContentCollectionSpec,
     RouteEntry,
 };
+pub use head_inject::{
+    css_link_tag, inject_prod_head_assets, island_module_script_tag, ProdHeadAssets,
+};
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
 pub use pipeline::{
-    AssetEmitter, AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner,
-    DevAssetPipeline, DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
-    ProductionAssetPipeline, ProductionEmitters, ProdBuildContext, RelDistPath, RenderedPage,
-    RendererReloader,
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
+    AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner, DevAssetPipeline,
+    DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
+    ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
+    ProductionEmitters, RelDistPath, RenderedPage, RendererReloader,
 };
 pub use plan::{PageSelection, RebuildPlan};
 pub use policy::{classify_change, GranularityPolicy, PathClass};

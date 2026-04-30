@@ -62,8 +62,10 @@ fn subprocess_bundler_mock_short_circuits_command() {
     let on_disk = std::fs::read_to_string(&out.asset_path).expect("read asset");
     assert!(on_disk.contains("Counter"));
     assert_eq!(out.module_ids, vec!["Counter".to_string()]);
-    assert!(out.asset_url.starts_with("/assets/islands-"));
-    assert!(out.asset_url.ends_with(".js"));
+    // S0 contract: stable filename + URL, no hash. Production hashing
+    // happens in `ProductionAssetPipeline`.
+    assert_eq!(out.asset_url, "/assets/islands.js");
+    assert_eq!(out.asset_path, tmp.path().join("assets").join("islands.js"));
 }
 
 #[test]
@@ -79,32 +81,11 @@ fn subprocess_bundler_reports_missing_binary_clearly() {
 }
 
 #[test]
-fn bundle_hash_is_deterministic_across_runs() {
-    let payload = "export const X = 1;\n";
-
-    let make = |root: &Path| {
-        let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
-        let bundler = EsbuildSubprocessBundler::new(cfg);
-        let bundle_cfg = BundleConfig::default().with_outdir(root);
-        bundler
-            .bundle(&[island("X", "components/x.tsx")], &bundle_cfg)
-            .expect("bundle")
-    };
-
-    let tmp1 = tempfile::tempdir().expect("tempdir");
-    let tmp2 = tempfile::tempdir().expect("tempdir");
-    let a = make(tmp1.path());
-    let b = make(tmp2.path());
-    assert_eq!(
-        a.asset_path.file_name(),
-        b.asset_path.file_name(),
-        "filename suffix derives from hash; identical payload must yield identical filename"
-    );
-    assert_eq!(a.asset_url, b.asset_url);
-}
-
-#[test]
-fn bundle_hash_changes_when_payload_changes() {
+fn bundle_filename_is_stable_regardless_of_payload() {
+    // Under the S0 contract the bundler emits the stable filename
+    // `assets/islands.js` — the bytes vary with input, but the
+    // filename and public URL never do. Hashing is the
+    // `ProductionAssetPipeline`'s job.
     let make = |payload: &str, root: &Path| {
         let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
         let bundler = EsbuildSubprocessBundler::new(cfg);
@@ -113,19 +94,23 @@ fn bundle_hash_changes_when_payload_changes() {
             .bundle(&[island("X", "components/x.tsx")], &bundle_cfg)
             .expect("bundle")
     };
+
     let tmp1 = tempfile::tempdir().expect("tempdir");
     let tmp2 = tempfile::tempdir().expect("tempdir");
     let a = make("export const X = 1;\n", tmp1.path());
     let b = make("export const X = 2;\n", tmp2.path());
-    assert_ne!(
-        a.asset_path.file_name(),
-        b.asset_path.file_name(),
-        "different payload must change the hash → change the filename"
-    );
+    assert_eq!(a.asset_path.file_name(), b.asset_path.file_name());
+    assert_eq!(a.asset_url, b.asset_url);
+    assert_eq!(a.asset_url, "/assets/islands.js");
+
+    // Bytes-on-disk still differ even though the names match.
+    let bytes_a = std::fs::read(&a.asset_path).unwrap();
+    let bytes_b = std::fs::read(&b.asset_path).unwrap();
+    assert_ne!(bytes_a, bytes_b);
 }
 
 #[test]
-fn bundle_output_layout_is_assets_islands_hash_js() {
+fn bundle_output_layout_is_stable_assets_islands_js() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = EsbuildSubprocessConfig::default().with_mock_output("export {};\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
@@ -134,7 +119,8 @@ fn bundle_output_layout_is_assets_islands_hash_js() {
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
 
-    // Path layout: {outdir}/assets/islands-{hash}.js
+    // Path layout: {outdir}/assets/islands.js (stable; hashing is
+    // performed downstream by `ProductionAssetPipeline`).
     let parent = out
         .asset_path
         .parent()
@@ -147,23 +133,18 @@ fn bundle_output_layout_is_assets_islands_hash_js() {
         .expect("asset path has a filename")
         .to_string_lossy()
         .into_owned();
-    assert!(filename.starts_with("islands-"));
-    assert!(filename.ends_with(".js"));
-    // hash is the 8-char hex segment between the prefix and suffix
-    let hash = filename
-        .strip_prefix("islands-")
-        .and_then(|s| s.strip_suffix(".js"))
-        .expect("filename has the islands-{hash}.js shape");
-    assert_eq!(hash.len(), 8);
+    assert_eq!(filename, "islands.js");
 }
 
 #[test]
 fn bundle_link_href_derives_public_url_from_asset_path() {
-    let p = PathBuf::from("dist/assets/islands-abc12345.js");
-    assert_eq!(bundle_link_href("/", &p), "/assets/islands-abc12345.js");
+    // The helper itself is content-agnostic — feed it the stable
+    // asset path the bundler now emits.
+    let p = PathBuf::from("dist/assets/islands.js");
+    assert_eq!(bundle_link_href("/", &p), "/assets/islands.js");
     assert_eq!(
         bundle_link_href("https://cdn.example.com", &p),
-        "https://cdn.example.com/assets/islands-abc12345.js"
+        "https://cdn.example.com/assets/islands.js"
     );
 }
 
@@ -196,8 +177,9 @@ fn asset_url_uses_configured_base_url() {
     let out = bundler
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
-    assert!(
-        out.asset_url.starts_with("https://cdn.example.com/assets/islands-"),
+    // Stable filename, configurable base URL.
+    assert_eq!(
+        out.asset_url, "https://cdn.example.com/assets/islands.js",
         "got: {}",
         out.asset_url
     );

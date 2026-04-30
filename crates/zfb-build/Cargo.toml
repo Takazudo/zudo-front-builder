@@ -21,6 +21,12 @@ zfb-content = { path = "../zfb-content" }
 # carries no V8 / native-runtime cost into `zfb-build`'s dependency
 # surface.
 zfb-render = { path = "../zfb-render" }
+# Shared stable-URL constants for the production asset graph
+# (`STABLE_CSS_URL`, `STABLE_ISLANDS_URL`, …). The renderer's prod-head
+# injector embeds these so the link/script tags it splices match the
+# on-disk filenames the emitter adapters write. `zfb-types` is a
+# zero-zfb-dep leaf crate, so this introduces no transitive cost.
+zfb-types = { path = "../zfb-types" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -59,3 +65,10 @@ tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-t
 # Route scanning for the e2e integration test: discovers pages and their
 # dynamic-route templates without re-authoring the zfb-router walk.
 zfb-router = { path = "../zfb-router" }
+# Real CssPipeline + TailwindSubprocessEngine wiring so the prod-asset
+# graph e2e test (`tests/prod_asset_graph_e2e.rs`) exercises the same
+# bytes-only emitter path that `DefaultRunner::emit_prod_assets` uses
+# in the `zfb` bin. The default test uses `mock_subprocess` to keep
+# the happy path binary-free; the `#[ignore]`-gated test calls the
+# real Tailwind v4 CLI when the binary slot is staged.
+zfb-css = { path = "../zfb-css" }
