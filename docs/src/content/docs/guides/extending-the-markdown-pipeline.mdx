@@ -1,0 +1,263 @@
+---
+title: Extending the Markdown Pipeline
+description: How to add a new Markdown / MDX feature to zfb — when a directive is enough, when to write a Rust visitor, and when the AST converter itself needs a new arm.
+sidebar_position: 3.5
+---
+
+<Info title="What this page covers">
+
+The engine-side extension surface for `zfb-content`'s Markdown
+pipeline. When you want a new syntax-level feature — admonition
+variants, heading rewrites, custom code-block treatment, link
+resolvers — this page tells you where to put it and how to wire it
+in.
+
+</Info>
+
+The pipeline that turns Markdown / MDX into HTML lives in
+`crates/zfb-content`. It is plugin-shaped: parse to mdast, run mdast
+visitors, convert to hast, run hast visitors, serialize. There is no
+runtime / userland plugin loader — every visitor compiles into the
+binary — but the surface for adding a new visitor in-tree is small
+and stable, and that is where almost every "I want a new Markdown
+feature" change lives.
+
+If your feature is just a new directive name (`:::callout`,
+`::youtube`, `:badge`), you do not need this page — the directive
+registry handles it without touching Rust beyond a one-line
+`register` call. See [Custom Directives](/concepts/custom-directives)
+for that path.
+
+## Decision: directive, visitor, or AST arm
+
+| You want to … | Path | Where it goes |
+|---|---|---|
+| Add `:::name` / `::name` / `:name` syntax that compiles to a JSX component | Register a directive | `Pipeline::with_defaults` + `DirectiveRegistry` ([Custom Directives](/concepts/custom-directives)) |
+| Rewrite existing AST nodes (slugify headings, wrap code blocks, swap `<img>` for a JSX marker, normalise links) | Write a visitor | New file under `crates/zfb-content/src/plugins/` |
+| Surface a Markdown construct that markdown-rs parses but zfb currently drops (tables, footnotes, math, definitions, reference-style links) | Extend the AST converter | `mdast_to_hast` in `crates/zfb-content/src/pipeline.rs` |
+| Add brand-new Markdown syntax that markdown-rs cannot parse | Out of scope | Upstream change against the `markdown` crate, then a converter arm in zfb |
+
+Most contributions land in the second row — a fresh visitor.
+
+## The two-phase pipeline
+
+The pipeline runs two distinct passes over two different ASTs:
+
+1. **Parse** the input into mdast (`markdown::mdast::Node`) using
+   markdown-rs with MDX-aware options.
+2. **mdast visitors** — `MdastVisitor` implementations rewrite the
+   markdown AST in place. Run first because some transforms only
+   make sense before HTML structure exists. The directive registry
+   is a mdast visitor: it folds runs of paragraphs delimited by
+   `:::name` / `:::` into a single MDX JSX element, which is much
+   easier on mdast than after `<p>` tags have appeared.
+3. **Convert** mdast → hast via `mdast_to_hast`. hast is zfb's
+   minimal HTML AST (`HastNode`).
+4. **hast visitors** — `HastVisitor` implementations rewrite the
+   HTML AST in place. Most rewrites that target HTML element
+   structure (heading anchors, `<figure>` wrappers, `<img>` → JSX
+   markers, syntax highlighting) live here.
+5. **Serialize** hast to an HTML string in
+   `zfb_content::serializer`.
+
+Pick the phase that matches what you are operating on. Rule of
+thumb: if you need to look at the original Markdown structure (a
+directive, a paragraph run, a particular link reference style),
+mdast. If you need to look at HTML element structure (a `<pre>`, a
+heading level, an `<img>` with a width attribute), hast.
+
+## Visitor trait shape
+
+Both visitor traits are intentionally small — one method, called
+once on a node, mutate in place:
+
+```rust
+pub trait MdastVisitor {
+    fn visit(&mut self, node: &mut MdastNode);
+}
+
+pub trait HastVisitor {
+    fn visit(&mut self, node: &mut HastNode);
+}
+```
+
+The pipeline calls `visit` exactly once, with the root node.
+Recursion is the visitor's responsibility — there is no auto-walk.
+A typical hast visitor looks like:
+
+```rust
+use crate::pipeline::{HastNode, HastVisitor};
+
+pub struct MyPlugin;
+
+impl HastVisitor for MyPlugin {
+    fn visit(&mut self, node: &mut HastNode) {
+        match node {
+            HastNode::Root { children }
+            | HastNode::Element { children, .. } => {
+                for child in children {
+                    // mutate `child` here, then recurse
+                    self.visit(child);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+Visitors can carry state (per-document slug counters, configuration
+options, references to a shared resource). `HeadingLinksPlugin` keeps
+a `HashMap<String, usize>` for github-slugger-equivalent dedup;
+`SyntectPlugin` holds an `Arc<Highlighter>` so the syntax theme is
+shared across all code blocks in the build.
+
+## Where files go
+
+Plugins live under `crates/zfb-content/src/plugins/`. The convention
+is one file per plugin, named after the feature:
+
+```
+crates/zfb-content/src/plugins/
+├── admonitions.rs
+├── code_title.rs
+├── directives.rs
+├── heading_links.rs
+├── image_enlarge.rs
+├── mermaid.rs
+├── resolve_links.rs
+├── strip_md_ext.rs
+├── syntect_plugin.rs
+└── util/        # helpers shared by multiple plugins
+```
+
+Add your file, then re-export the public type from
+`crates/zfb-content/src/plugins.rs`:
+
+```rust
+// in plugins.rs
+pub mod my_plugin;
+pub use my_plugin::MyPlugin;
+```
+
+Tests typically live in a `#[cfg(test)] mod tests {}` block alongside
+the plugin, with cross-plugin integration cases in
+`crates/zfb-content/tests/`. The existing
+`tests/integration_pipeline.rs` is the reference shape.
+
+## Wiring into the default pipeline
+
+`Pipeline::with_defaults()` is the project-wide default plugin chain.
+Adding your visitor there means every caller that uses the defaults
+picks it up automatically. Append it in the right phase:
+
+```rust
+// in crates/zfb-content/src/pipeline.rs, inside Pipeline::with_defaults()
+let mut p = Self::with_mdx();
+
+// mdast phase
+p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+
+// hast phase
+p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
+p.add_hast_visitor(Box::new(MyPlugin));     // <-- new
+p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
+p.add_hast_visitor(Box::new(MermaidPlugin::new()));
+p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+p
+```
+
+If your plugin is opt-in (project-specific link rewriting, optional
+extensions a particular framework wants), do **not** put it in
+`with_defaults()`. Construct a pipeline via `Pipeline::with_mdx()`
+(which is plugin-free) and append the visitors the caller wants —
+that is exactly how `ResolveLinksPlugin` and
+`StripMdExtensionPlugin` are wired today, since both need a
+project-specific source map.
+
+## Ordering matters
+
+Visitor order is **load-bearing**. The defaults document the full
+rationale in `Pipeline::with_defaults`'s doc comment, but the rules
+that bite most often:
+
+- **`HeadingLinksPlugin` runs first in the hast phase.** Anything
+  that mutates headings later sees the slugified `id` attributes.
+- **`CodeTitlePlugin` runs before `SyntectPlugin`.** SyntectPlugin
+  replaces the entire `<pre>` element with a `HastNode::Raw` HTML
+  fragment; once that happens, the `data-meta` attribute that
+  carries `title="…"` is no longer reachable as structured AST.
+- **`MermaidPlugin` runs before `SyntectPlugin`.** MermaidPlugin
+  flags mermaid code blocks with `data-mermaid="true"`; SyntectPlugin
+  uses that flag to skip them rather than syntax-highlighting the
+  diagram source.
+- **`ImageEnlargePlugin` is order-independent** relative to the code
+  pipeline above — it only touches `<img>` elements.
+
+When inserting a new plugin, ask: do I need to see element shapes
+that a later plugin will erase? Run before that plugin. Do I need
+the results of an earlier plugin's rewrite (a generated `id`, a
+synthesised JSX element)? Run after it.
+
+## Adding genuinely new syntax
+
+Some Markdown constructs that markdown-rs parses are currently
+**dropped** by the mdast → hast converter. Look at `mdast_to_hast`
+in `crates/zfb-content/src/pipeline.rs`:
+
+```rust
+// Unhandled: degrade to empty Raw so we never crash on
+// unsupported input. Tables, footnotes, definitions, math,
+// reference links/images, ESM, frontmatter, etc. fall here.
+_ => HastNode::Raw(String::new()),
+```
+
+If you want zfb to surface tables, footnotes, definitions, math,
+reference-style links, or anything else that lives in the catch-all,
+two changes are needed:
+
+1. **Add a match arm** to `mdast_to_hast` that turns the mdast
+   variant into the right `HastNode::Element` (or `Raw` for
+   passthrough JSX/HTML). Mirror the existing arms — handle children
+   with `convert_children`, build attributes as
+   `Vec<(String, String)>`.
+2. **Possibly toggle `markdown::ParseOptions`** if the construct
+   needs an extension flag. The current `Pipeline::with_mdx()` uses
+   `markdown::ParseOptions::mdx()`; you may need a custom
+   `ParseOptions` with additional `constructs.*` fields enabled.
+   Check the `markdown` crate's docs for the exact flag.
+
+Tests for converter changes belong in `pipeline.rs`'s own
+`#[cfg(test)] mod tests {}` block (the file already covers headings,
+code blocks, links, images, lists, blockquotes, MDX JSX) plus a
+matching round-trip case in `crates/zfb-content/tests/`.
+
+## What about runtime / userland plugins?
+
+There is no plugin loader today. Every visitor compiles into the
+binary. The closest the user-facing config (`zfb.config`) gets to
+plugins is a `plugins: []` field reserved for future use; it is not
+yet wired into the build pipeline.
+
+For now the practical extension model is: add the visitor in-tree.
+The visitor traits are stable across the workspace, so a feature
+written as a fresh `plugins/` file rarely needs follow-up changes
+when the rest of the codebase moves.
+
+## See also
+
+- [Custom Directives](/concepts/custom-directives) — author-facing
+  story for `:::name` / `::name` / `:name` syntax, no Rust required.
+- [Customizing Markdown](/guides/customizing-markdown) — what the
+  Markdown rendering pipeline looks like from a content-collection
+  consumer's perspective.
+- `crates/zfb-content/src/pipeline.rs` — `Pipeline`, `MdastVisitor`
+  / `HastVisitor` traits, and the `Pipeline::with_defaults()`
+  ordering rationale in its doc comment.
+- `crates/zfb-content/src/plugins/code_title.rs` — small, stateless
+  `HastVisitor` example.
+- `crates/zfb-content/src/plugins/heading_links.rs` — stateful
+  `HastVisitor` (per-document slug counter) example.
+- `crates/zfb-content/src/plugins/admonitions.rs` — façade over
+  `DirectiveRegistry`, an `MdastVisitor` example.
