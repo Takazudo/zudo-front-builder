@@ -805,6 +805,11 @@ mod tests {
 
     #[test]
     fn hydration_script_tag_escapes_urls() {
+        // Inputs deliberately include adversarial characters and a
+        // hashed URL fragment to verify attribute-escaping; the
+        // bundler itself no longer mints hashed URLs (those come from
+        // `ProductionAssetPipeline`), but this helper must still
+        // round-trip whatever URL its caller passes.
         let tag = hydration_script_tag(
             "/runtime?v=1&t=2",
             "/dist/assets/islands-deadbeef.js?\"oops",
@@ -817,10 +822,12 @@ mod tests {
 
     #[test]
     fn islands_runtime_script_tag_minimal_shape() {
-        let tag = islands_runtime_script_tag("/islands/islands-runtime-abc12345.js");
+        // Stable URL per the S0 contract; production hashing is the
+        // `ProductionAssetPipeline`'s job.
+        let tag = islands_runtime_script_tag("/islands/islands-runtime.js");
         assert_eq!(
             tag,
-            "<script type=\"module\" src=\"/islands/islands-runtime-abc12345.js\"></script>"
+            "<script type=\"module\" src=\"/islands/islands-runtime.js\"></script>"
         );
     }
 
@@ -835,11 +842,13 @@ mod tests {
         let html =
             "<!doctype html><html><head><title>X</title></head><body><p>hi</p></body></html>";
         let mut tree = HtmlTree::parse(html);
-        inject_runtime_script_into_head(&mut tree, "/islands/islands-runtime-abc.js");
+        // Stable URL per the S0 contract — `ProductionAssetPipeline`
+        // handles any hashing pass downstream.
+        inject_runtime_script_into_head(&mut tree, "/islands/islands-runtime.js");
         let out = tree.serialize();
         let head_close = out.find("</head>").unwrap();
         let script_at = out
-            .find("<script type=\"module\" src=\"/islands/islands-runtime-abc.js\">")
+            .find("<script type=\"module\" src=\"/islands/islands-runtime.js\">")
             .expect("script tag injected");
         assert!(script_at < head_close, "script must appear before </head>");
         assert!(out.contains("<title>X</title>"));

@@ -29,6 +29,12 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 [lib]
 
 [dependencies]
+# Stable asset-URL / on-disk-path constants shared with zfb-render
+# (head injection, S1) and zfb-build (production pipeline, S4).
+# zfb-types is a zero-zfb-dep leaf crate, so this introduces no
+# coupling beyond the constants themselves.
+zfb-types = { path = "../zfb-types" }
+
 # Workspace-shared helpers.
 anyhow = { workspace = true }
 thiserror = { workspace = true }

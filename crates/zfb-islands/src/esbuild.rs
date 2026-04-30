@@ -10,8 +10,10 @@
 //! Mirror of `zfb_css::engine::TailwindSubprocessEngine`: a config struct
 //! that locates the binary (defaulting to
 //! `crates/zfb/binaries/esbuild`), an implementation that builds the
-//! command line, runs it, hashes the output, and writes
-//! `{outdir}/assets/islands-{hash}.js`.
+//! command line, runs it, and writes
+//! `{outdir}/assets/islands.js` (the **stable** name —
+//! `ProductionAssetPipeline` is the single source of truth for
+//! content hashing per the Prod Asset Graph epic).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -264,8 +266,11 @@ impl EsbuildSubprocessConfig {
 /// --tree-shaking=true` (esbuild tree-shakes ESM by default but we set the
 /// flag explicitly so the contract is visible). `--minify` and
 /// `--sourcemap=linked` are appended per [`BundleConfig`]. The payload is
-/// written to a temp file (`--outfile=`), read back, hashed, and written
-/// to its final location at `{outdir}/assets/islands-{hash}.js`.
+/// written to a temp file (`--outfile=`), read back, and written to its
+/// final location at the **stable** path
+/// `{outdir}/assets/islands.js`.
+/// `ProductionAssetPipeline` performs the content-hash + rename pass
+/// at deploy time.
 ///
 /// ### Example
 ///
@@ -282,7 +287,7 @@ impl EsbuildSubprocessConfig {
 ///     source_path: PathBuf::from("components/counter.tsx"),
 /// }];
 /// let out = bundler.bundle(&islands, &BundleConfig::production()).unwrap();
-/// assert!(out.asset_url.starts_with("/assets/islands-"));
+/// assert_eq!(out.asset_url, "/assets/islands.js");
 /// ```
 #[derive(Debug, Clone)]
 pub struct EsbuildSubprocessBundler {
@@ -379,22 +384,32 @@ impl EsbuildSubprocessBundler {
     /// hydration glue, then runs `esbuild --bundle --format=esm` on it
     /// (one subprocess per island — code-split by isolation rather than
     /// by `--splitting`, so dynamic-imports from the runtime stay 1:1
-    /// with components). Each per-island bundle is hashed and written
-    /// to `{outdir}/islands/{ComponentName}-{hash}.js`. Sourcemaps are
-    /// preserved end-to-end when [`BundleConfig::sourcemap`] is true:
-    /// esbuild emits a sibling `<file>.map` alongside the asset and a
-    /// `//# sourceMappingURL=` comment in the JS so DevTools picks it
-    /// up automatically.
+    /// with components). Each per-island bundle is written to the
+    /// stable path `{outdir}/islands/{ComponentName}.js`. Sourcemaps
+    /// are preserved end-to-end when [`BundleConfig::sourcemap`] is
+    /// true: esbuild emits a sibling `<file>.map` alongside the asset
+    /// and a `//# sourceMappingURL=` comment in the JS so DevTools
+    /// picks it up automatically.
     ///
     /// In addition to the per-island bundles, a small **runtime**
     /// bundle is emitted under
-    /// `{outdir}/islands/islands-runtime-{hash}.js`. The runtime is
+    /// `{outdir}/islands/islands-runtime.js`. The runtime is
     /// produced from a generated entry that imports
     /// `scheduleHydrate` + `mountIslands` from the
     /// `@takazudo/zfb-runtime` style runtime (`packages/zfb/src/runtime.ts`)
     /// and ships a manifest of `ComponentName → island-bundle-URL` so
     /// the runtime can dynamic-import the right per-island bundle for
     /// each `[data-zfb-island]` element on the page.
+    ///
+    /// # Hashing
+    ///
+    /// All filenames written by this method are **stable** — no
+    /// `-<hash>` suffix. The Prod Asset Graph epic centralises content
+    /// hashing in `ProductionAssetPipeline`, which is the only place
+    /// allowed to produce hashed URLs/filenames so HTML rewrites do
+    /// not double-hash. For dev-mode change detection, the per-island
+    /// hash is still computed and exposed through
+    /// [`crate::IslandBundle::hash`].
     ///
     /// # Determinism
     ///
@@ -425,8 +440,16 @@ impl EsbuildSubprocessBundler {
             //    *would* have shipped without spawning esbuild.
             let bundled_js = self.bundle_one_entry(&entry_source, config)?;
 
+            // Stable filename: `<outdir>/islands/<Component>.js`.
+            // `ProductionAssetPipeline` is the only place allowed to
+            // emit content-addressed names; this path keeps a stable
+            // shape so S0's "no hashed URLs in zfb-islands" rule
+            // applies to both the shared-bundle and per-island
+            // emitters. The `IslandBundle::hash` field is still
+            // populated so dev-mode change detection has something to
+            // compare against without touching the on-disk name.
             let hash = hash_8(&bundled_js);
-            let asset_path = islands_dir.join(format!("{}-{}.js", island.component_name, hash));
+            let asset_path = islands_dir.join(format!("{}.js", island.component_name));
             std::fs::write(&asset_path, bundled_js.as_bytes())
                 .with_context(|| format!("failed to write {}", asset_path.display()))?;
 
@@ -443,11 +466,11 @@ impl EsbuildSubprocessBundler {
 
         // 3. Runtime bundle. The manifest entries are passed directly to
         //    render_runtime_entry_source, which handles serialisation
-        //    internally.
+        //    internally. Stable filename `islands-runtime.js` —
+        //    `ProductionAssetPipeline` would do any hashing pass.
         let runtime_entry_source = render_runtime_entry_source(&manifest);
         let runtime_js = self.bundle_one_entry(&runtime_entry_source, config)?;
-        let runtime_hash = hash_8(&runtime_js);
-        let runtime_asset_path = islands_dir.join(format!("islands-runtime-{runtime_hash}.js"));
+        let runtime_asset_path = islands_dir.join("islands-runtime.js");
         std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
             .with_context(|| format!("failed to write {}", runtime_asset_path.display()))?;
         let runtime_asset_url = island_link_href(&config.base_url, &runtime_asset_path);
@@ -664,11 +687,20 @@ impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
         let js = self.produce_bundle_js(islands, config)?;
 
-        let hash = hash_8(&js);
+        // Stable filename: `dist/assets/islands.js`. Per the Prod
+        // Asset Graph epic, the **single source of truth for content
+        // hashing is `ProductionAssetPipeline`** — no emitter under
+        // `zfb-islands` may bake a hash into the on-disk filename or
+        // public URL anymore. The pipeline reads these stable bytes,
+        // computes `sha256(bytes)[..8]`, renames to
+        // `assets/islands-<hash>.js`, and rewrites the
+        // `STABLE_ISLANDS_URL` references in rendered HTML in one
+        // pass. Without this stable-filename contract the pipeline
+        // would double-hash (S0 spec, acceptance criterion 3).
         let asset_path = config
             .outdir
-            .join("assets")
-            .join(format!("islands-{hash}.js"));
+            .join(zfb_types::DIST_ASSETS_DIR)
+            .join(zfb_types::STABLE_ISLANDS_FILENAME);
 
         if let Some(parent) = asset_path.parent() {
             std::fs::create_dir_all(parent)
@@ -737,20 +769,16 @@ mod tests {
 
     #[test]
     fn serialize_manifest_round_trips_through_serde_json() {
+        // Stable URLs per the S0 contract — hashing happens later in
+        // `ProductionAssetPipeline`, not in the bundler.
         let entries = vec![
-            ("Counter".into(), "/islands/Counter-abc12345.js".into()),
-            ("Button".into(), "/islands/Button-deadbeef.js".into()),
+            ("Counter".into(), "/islands/Counter.js".into()),
+            ("Button".into(), "/islands/Button.js".into()),
         ];
         let s = serialize_manifest(&entries);
         let parsed: serde_json::Value = serde_json::from_str(&s).expect("valid json");
-        assert_eq!(
-            parsed["Counter"].as_str(),
-            Some("/islands/Counter-abc12345.js")
-        );
-        assert_eq!(
-            parsed["Button"].as_str(),
-            Some("/islands/Button-deadbeef.js")
-        );
+        assert_eq!(parsed["Counter"].as_str(), Some("/islands/Counter.js"));
+        assert_eq!(parsed["Button"].as_str(), Some("/islands/Button.js"));
     }
 
     #[test]
@@ -779,13 +807,14 @@ mod tests {
 
     #[test]
     fn render_runtime_entry_source_inlines_manifest_and_calls_mount() {
+        // Stable URLs per the S0 contract.
         let manifest = vec![
-            ("Counter".into(), "/islands/Counter-abc.js".into()),
-            ("Button".into(), "/islands/Button-def.js".into()),
+            ("Counter".into(), "/islands/Counter.js".into()),
+            ("Button".into(), "/islands/Button.js".into()),
         ];
         let src = render_runtime_entry_source(&manifest);
         assert!(src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
-        assert!(src.contains(r#""Counter":"/islands/Counter-abc.js""#));
+        assert!(src.contains(r#""Counter":"/islands/Counter.js""#));
         assert!(src.contains("mountIslands(ISLAND_MANIFEST);"));
     }
 
@@ -817,27 +846,41 @@ mod tests {
         assert_eq!(out.islands[1].component_name, "Modal");
 
         for entry in &out.islands {
-            // Hash is 8 lowercase hex chars.
+            // Hash is still computed and exposed (8 lowercase hex
+            // chars) for dev-mode change detection, but it is **not**
+            // part of the on-disk filename or URL — those are stable
+            // per the S0 single-source-of-truth-for-hashing contract.
             assert_eq!(entry.hash.len(), 8);
             assert!(entry.hash.chars().all(|c| c.is_ascii_hexdigit()));
-            // File exists on disk under {outdir}/islands/.
+            // File exists on disk at the stable path
+            // `<outdir>/islands/<Component>.js`.
             assert!(entry.asset_path.exists(), "{:?}", entry.asset_path);
             assert!(entry.asset_path.starts_with(dir.path().join("islands")));
-            // Public URL lives under /islands/.
-            assert!(entry.asset_url.starts_with("/islands/"));
-            assert!(entry.asset_url.ends_with(".js"));
+            let expected_filename = format!("{}.js", entry.component_name);
+            assert_eq!(
+                entry
+                    .asset_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                expected_filename,
+            );
+            // Public URL is the stable `/islands/<Component>.js`.
+            assert_eq!(entry.asset_url, format!("/islands/{expected_filename}"));
         }
 
-        // Runtime bundle exists, has its own hash, sits next to the
-        // per-island bundles, and bears a /islands/ public URL.
+        // Runtime bundle exists at the stable path
+        // `<outdir>/islands/islands-runtime.js` (no hash suffix) and
+        // bears the matching stable URL `/islands/islands-runtime.js`.
         assert!(out.runtime_asset_path.exists());
-        assert!(out
-            .runtime_asset_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("islands-runtime-"));
-        assert!(out.runtime_asset_url.starts_with("/islands/"));
+        assert_eq!(
+            out.runtime_asset_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "islands-runtime.js",
+        );
+        assert_eq!(out.runtime_asset_url, "/islands/islands-runtime.js");
     }
 
     #[test]
@@ -855,6 +898,10 @@ mod tests {
         let b = bundler
             .bundle_per_island(&islands, FrameworkKind::Preact, &config)
             .unwrap();
+        // Stable filenames mean the URLs are determined entirely by
+        // the input slice — independent of the bundled byte stream.
+        // The exposed `hash` field still varies with byte content and
+        // therefore must also be stable across identical inputs.
         assert_eq!(a.islands[0].hash, b.islands[0].hash);
         assert_eq!(a.islands[0].asset_url, b.islands[0].asset_url);
         assert_eq!(a.runtime_asset_url, b.runtime_asset_url);
