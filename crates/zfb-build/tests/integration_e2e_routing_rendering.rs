@@ -364,6 +364,7 @@ fn build_bundle(
         content_snapshot_json: None,
         node_modules_dir: Some(node_modules.path().to_path_buf()),
         node_modules_preserve_symlinks: true,
+        content_collections: Vec::new(),
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");
