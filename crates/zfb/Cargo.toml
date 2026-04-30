@@ -28,9 +28,19 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tracing = "0.1"
+# Source-file discovery for the production asset emit path: the CSS
+# pipeline takes a `Vec<PathBuf>` of project sources to feed into
+# Tailwind's content scanner, and the islands scanner takes the same
+# shape as DFS entry points.
+walkdir = { workspace = true }
 zfb-build = { path = "../zfb-build" }
 zfb-content = { path = "../zfb-content" }
+# Production asset emit path (S4): `DefaultRunner::emit_prod_assets`
+# constructs a `CssPipeline` + `EsbuildSubprocessBundler` and feeds
+# their bytes to `ProductionAssetPipeline` for hashing + HTML rewrite.
+zfb-css = { path = "../zfb-css" }
 zfb-graph = { path = "../zfb-graph" }
+zfb-islands = { path = "../zfb-islands" }
 zfb-render = { path = "../zfb-render" }
 zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
