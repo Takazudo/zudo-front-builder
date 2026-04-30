@@ -442,6 +442,19 @@ fn smoke_self_closing_jsx_compiles_via_swc() {
     assert_swc_accepts(&jsx, "self-closing");
 }
 
+/// remark-math `$$...$$` and `$...$` flow through the emitter cleanly
+/// — historically (zfb#93) LaTeX content leaked into the JSX as bare
+/// `{\foo}` expression containers and SWC/esbuild rejected the
+/// resulting module. This smoke test guards that regression by
+/// piping a real-world-flavoured math fixture through the full
+/// emitter → SWC pipeline.
+#[test]
+fn smoke_math_block_and_inline_compile_via_swc() {
+    let src = "## Limit\n\nWhen $x \\to \\infty$ the integral converges:\n\n$$\n\\int_{-\\infty}^{\\infty} f(x)\\,dx\n$$\n";
+    let jsx = emit(src);
+    assert_swc_accepts(&jsx, "remark-math");
+}
+
 // ───────────────────────────────────────────────────────────────────
 // Real-world fixtures from zudo-doc
 // ───────────────────────────────────────────────────────────────────
