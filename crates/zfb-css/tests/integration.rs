@@ -436,3 +436,140 @@ fn scanner_finds_module_imports_in_real_tsx_file() {
         "scan: {scan:?}"
     );
 }
+
+// ----------------------------------------------------------------------
+// Bytes-only emitter adapter (Prod Asset Graph S2).
+//
+// The new `CssPipeline::build_emitter()` entry point is what
+// `ProductionAssetPipeline` calls — bytes + stable URL, no disk write
+// for the hashed asset. The existing `build()` keeps writing the
+// hashed file directly for any caller that still depends on that
+// contract.
+// ----------------------------------------------------------------------
+
+#[test]
+fn build_emitter_returns_bytes_and_stable_url_without_writing_asset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output_root = tmp.path().to_path_buf();
+
+    let engine = TailwindSubprocessEngine::new(
+        TailwindSubprocessConfig::default()
+            .with_mock_output(".u-text-red { color: red; }\n"),
+    );
+    let cfg = CssPipelineConfig {
+        sources: vec![PathBuf::from("pages/index.tsx")],
+        css_modules: vec![],
+        output_root: output_root.clone(),
+        base_url: "/".to_string(),
+        ..CssPipelineConfig::default()
+    };
+
+    let pipeline = CssPipeline::new(engine, cfg);
+    let out = pipeline
+        .build_emitter()
+        .expect("build_emitter must succeed");
+
+    // Bytes are populated and contain the engine's CSS.
+    assert!(!out.bytes.is_empty(), "emitter bytes must not be empty");
+    let s = std::str::from_utf8(&out.bytes).expect("utf8");
+    assert!(
+        s.contains(".u-text-red"),
+        "emitter bytes must include the engine output, got: {s}"
+    );
+
+    // Stable URL matches the cross-crate constant.
+    assert_eq!(out.stable_url, zfb_types::STABLE_CSS_URL);
+
+    // Crucially: no `assets/` directory was written under output_root.
+    // `ProductionAssetPipeline` owns the hashed-file write; emitter
+    // double-writes would race with it.
+    let assets_dir = output_root.join("assets");
+    assert!(
+        !assets_dir.exists(),
+        "build_emitter must NOT write the hashed asset to disk; found {}",
+        assets_dir.display()
+    );
+}
+
+#[test]
+fn build_emitter_bytes_match_build_output_for_same_inputs() {
+    // The bytes-only entry point and the file-writing entry point
+    // must agree on byte content for the same engine output, so
+    // `ProductionAssetPipeline`'s hash matches what `build()` would
+    // have computed locally — guards against a divergent code path
+    // emitting different separators or trailing whitespace.
+    let mock = ".u-x { color: red; }\n";
+
+    let tmp1 = tempfile::tempdir().expect("tempdir");
+    let cfg1 = CssPipelineConfig {
+        sources: vec![PathBuf::from("pages/index.tsx")],
+        output_root: tmp1.path().to_path_buf(),
+        ..CssPipelineConfig::default()
+    };
+    let p1 = CssPipeline::new(
+        TailwindSubprocessEngine::new(
+            TailwindSubprocessConfig::default().with_mock_output(mock),
+        ),
+        cfg1,
+    );
+    let built = p1.build().expect("build");
+
+    let tmp2 = tempfile::tempdir().expect("tempdir");
+    let cfg2 = CssPipelineConfig {
+        sources: vec![PathBuf::from("pages/index.tsx")],
+        output_root: tmp2.path().to_path_buf(),
+        ..CssPipelineConfig::default()
+    };
+    let p2 = CssPipeline::new(
+        TailwindSubprocessEngine::new(
+            TailwindSubprocessConfig::default().with_mock_output(mock),
+        ),
+        cfg2,
+    );
+    let emitted = p2.build_emitter().expect("build_emitter");
+
+    assert_eq!(emitted.bytes, built.css.as_bytes());
+}
+
+#[test]
+fn build_emitter_still_writes_class_map_jsons_when_configured() {
+    // Class-map JSONs are *not* asset-graph nodes; the bundler reads
+    // them at the next stage. The bytes-only path must keep emitting
+    // them so a project using CSS Modules does not break when the
+    // prod orchestrator switches to `build_emitter`.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    let pages = root.join("pages");
+    std::fs::create_dir_all(&pages).unwrap();
+    let module = pages.join("button.module.css");
+    std::fs::write(&module, ".btn { color: red; }\n").unwrap();
+
+    let class_map_dir = root.join("dist").join("css-modules");
+    let cfg = CssPipelineConfig {
+        sources: vec![],
+        css_modules: vec![module.clone()],
+        output_root: root.join("dist"),
+        base_url: "/".to_string(),
+        auto_discover_modules: false,
+        class_map_dir: Some(class_map_dir.clone()),
+        ..CssPipelineConfig::default()
+    };
+    let engine = TailwindSubprocessEngine::new(
+        TailwindSubprocessConfig::default().with_mock_output(""),
+    );
+    let pipeline = CssPipeline::new(engine, cfg);
+    let _ = pipeline.build_emitter().expect("build_emitter");
+
+    let entries: Vec<_> = std::fs::read_dir(&class_map_dir)
+        .expect("class_map_dir exists")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        entries.iter().any(|n| n.ends_with("button.module.css.classes.json")),
+        "expected button class-map json, got entries: {entries:?}"
+    );
+
+    // And the hashed asset is still NOT written.
+    assert!(!root.join("dist").join("assets").exists());
+}
