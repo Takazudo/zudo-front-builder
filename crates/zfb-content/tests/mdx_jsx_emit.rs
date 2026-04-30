@@ -272,6 +272,95 @@ fn default_components_are_alphabetised_and_unique() {
 }
 
 // ───────────────────────────────────────────────────────────────────
+// ESM import stripping (B-14-5 regression tests)
+//
+// markdown-rs requires `mdx_esm_parse` to be Some for the MdxjsEsm
+// construct to activate. Without it, import statements fall through
+// to Paragraph parsing: `import { Foo } from "pkg"` becomes a
+// paragraph where `{ Foo }` is an MdxTextExpression that evaluates to
+// the `Foo` identifier (undefined at runtime → empty string in the
+// rendered output, leaving the double-space skeleton visible).
+// ───────────────────────────────────────────────────────────────────
+
+/// Default import (`import X from 'pkg'`) must be stripped from output
+/// and must not appear inside the rendered JSX body.
+#[test]
+fn esm_default_import_is_stripped() {
+    let out = emit("import PresetGenerator from '@/components/preset-generator';\n\nhello\n");
+    // The import keyword and module specifier must NOT leak into the body.
+    assert!(
+        !out.contains("import PresetGenerator"),
+        "default import leaked into JSX output:\n{out}"
+    );
+    assert!(
+        !out.contains("components/preset-generator"),
+        "module path leaked into JSX output:\n{out}"
+    );
+    // The rest of the document still renders.
+    assert!(out.contains("\"hello\""), "body text missing:\n{out}");
+}
+
+/// Named import (`import { X } from 'pkg'`) must be stripped, not rendered
+/// as a paragraph. Before the fix, `{ X }` was parsed as an MdxTextExpression
+/// inside a Paragraph, producing `import  from "pkg"` (double-space) in the
+/// rendered output.
+#[test]
+fn esm_named_import_is_stripped() {
+    let out = emit("import { Island } from \"@takazudo/zfb\";\n\nhello\n");
+    // The source import must not appear in the JSX body. Check for the
+    // module specifier (not just "import" which also appears in the React
+    // preamble `import { Fragment as _Fragment } from "react/jsx-runtime"`).
+    assert!(
+        !out.contains("@takazudo/zfb"),
+        "module specifier leaked into JSX output:\n{out}"
+    );
+    // The "import " text (with trailing space as it appears in the source
+    // paragraph form) must not appear in the rendered body.
+    assert!(
+        !out.contains("\"import "),
+        "import text leaked as JS string literal:\n{out}"
+    );
+    // Body still renders.
+    assert!(out.contains("\"hello\""), "body text missing:\n{out}");
+}
+
+/// Two consecutive imports (default then named) must both be stripped.
+/// This is the exact pattern from /docs/getting-started/setup-preset-generator.
+#[test]
+fn esm_two_consecutive_imports_are_stripped() {
+    let src = "import PresetGenerator from '@/components/preset-generator';\nimport { Island } from \"@takazudo/zfb\";\n\nhello\n";
+    let out = emit(src);
+    // Neither module specifier must appear in the output body.
+    assert!(
+        !out.contains("preset-generator"),
+        "preset-generator module path leaked:\n{out}"
+    );
+    assert!(
+        !out.contains("@takazudo/zfb"),
+        "@takazudo/zfb module specifier leaked:\n{out}"
+    );
+    // The import text must not appear as a JS string literal (which would
+    // indicate it was emitted inside a paragraph).
+    assert!(
+        !out.contains("\"import "),
+        "import text leaked as JS string literal:\n{out}"
+    );
+    // Body still renders.
+    assert!(out.contains("\"hello\""), "body text missing:\n{out}");
+}
+
+/// ESM export statements must also be stripped (export const, export default, etc.).
+#[test]
+fn esm_export_statement_is_stripped() {
+    let out = emit("export const version = '1.0.0';\n\nhello\n");
+    assert!(
+        !out.contains("export const version"),
+        "export statement leaked:\n{out}"
+    );
+    assert!(out.contains("\"hello\""), "body text missing:\n{out}");
+}
+
+// ───────────────────────────────────────────────────────────────────
 // Error-path tests
 // ───────────────────────────────────────────────────────────────────
 
