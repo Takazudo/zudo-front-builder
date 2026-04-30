@@ -174,6 +174,22 @@ pub struct RendererInput {
     /// is intentionally generous; the dev loop overrides via
     /// [`RendererStartInput::request_timeout`].
     pub request_timeout: Option<Duration>,
+    /// Prod-only head-asset injection switch.
+    ///
+    /// When `Some`, every successful HTML response is post-processed
+    /// before atomic-write: a stable `<link rel="stylesheet">` tag and
+    /// any number of `<script type="module">` tags are spliced
+    /// immediately before the page's `</head>`. When `None`, HTML is
+    /// written byte-for-byte as the worker emitted it — matching dev's
+    /// existing behaviour. See [`crate::head_inject`] for the
+    /// rewrite contract (passthrough on missing close tag, idempotent
+    /// against the exact tag bytes, etc.).
+    ///
+    /// Dev mode (via [`start`] / [`render_one`]) does **not** plumb
+    /// this field — the dev pipeline runs without `CssRunner` /
+    /// `IslandsRunner` and would otherwise ship references to assets
+    /// the dev server never emits.
+    pub prod_head_assets: Option<crate::head_inject::ProdHeadAssets>,
 }
 
 /// Inputs to [`start`] (dev-mode long-lived state).
@@ -297,6 +313,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         prerender_map,
         backend,
         request_timeout,
+        prod_head_assets,
     } = input;
 
     fs::create_dir_all(&dist_dir).map_err(|e| RendererError::Io {
@@ -330,7 +347,14 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     let mut written: Vec<PathBuf> = Vec::with_capacity(ssg_routes.len());
     let mut last_err: Option<RendererError> = None;
     for entry in &ssg_routes {
-        match render_one_inner(&client, &base_url, entry, &dist_dir, sourcemap.as_ref()) {
+        match render_one_inner(
+            &client,
+            &base_url,
+            entry,
+            &dist_dir,
+            sourcemap.as_ref(),
+            prod_head_assets.as_ref(),
+        ) {
             Ok(path) => written.push(path),
             Err(e) => {
                 last_err = Some(e);
@@ -422,6 +446,9 @@ pub fn render_one(
         entry,
         dist_dir,
         state.sourcemap.as_ref(),
+        // Dev mode never injects prod head assets — see the
+        // `prod_head_assets` field doc on `RendererInput`.
+        None,
     )
 }
 
@@ -506,6 +533,7 @@ fn render_one_inner(
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
     sourcemap: Option<&sourcemap::SourceMap>,
+    prod_head_assets: Option<&crate::head_inject::ProdHeadAssets>,
 ) -> Result<PathBuf, RendererError> {
     let url = join_url(base_url, &entry.url_path);
     let resp = client
@@ -541,12 +569,31 @@ fn render_one_inner(
             source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
         }
     })?;
+    // Prod-only head injection. When `prod_head_assets` is `Some` the
+    // helper splices `<link>` / `<script type="module">` tags before
+    // `</head>`. Non-HTML output (no `</head>`) and dev mode (no
+    // `prod_head_assets`) round-trip unchanged.
+    //
+    // We only attempt the rewrite when the body parses as UTF-8; binary
+    // payloads (rare — favicons via the route universe, etc.) bypass
+    // the rewriter and are written verbatim. `from_utf8` on bytes the
+    // client returned is cheap because `reqwest` does not validate.
+    let written_bytes: std::borrow::Cow<'_, [u8]> = match prod_head_assets {
+        Some(assets) if !assets.is_empty() => match std::str::from_utf8(&body) {
+            Ok(text) => match crate::head_inject::inject_prod_head_assets(text, assets) {
+                std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(body.as_ref()),
+                std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s.into_bytes()),
+            },
+            Err(_) => std::borrow::Cow::Borrowed(body.as_ref()),
+        },
+        _ => std::borrow::Cow::Borrowed(body.as_ref()),
+    };
     // Atomic write is consistent with both pipelines (dev and prod) and
     // prevents a half-written .html file from being observed if the
     // process is killed mid-write. atomic_write also creates the parent
     // directory internally, so we don't need a separate
     // `create_dir_all` call.
-    crate::atomic::atomic_write(&dest, &body).map_err(|e| RendererError::Io {
+    crate::atomic::atomic_write(&dest, &written_bytes).map_err(|e| RendererError::Io {
         path: dest.clone(),
         source: std::io::Error::other(format!("{e:#}")),
     })?;
@@ -1228,6 +1275,7 @@ mod tests {
                 base_url: srv.base_url(),
             },
             request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: None,
         })
         .expect("render_all");
 
@@ -1276,6 +1324,7 @@ mod tests {
                 base_url: srv.base_url(),
             },
             request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: None,
         })
         .unwrap();
         assert_eq!(out.ssg_files_written.len(), 1);
@@ -1309,6 +1358,7 @@ mod tests {
                 base_url: srv.base_url(),
             },
             request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: None,
         })
         .unwrap_err();
         match err {
@@ -1318,6 +1368,123 @@ mod tests {
             }
             other => unreachable!("expected RenderFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn render_all_without_prod_head_assets_writes_html_byte_for_byte() {
+        // Dev-no-regression assertion: when `prod_head_assets` is None,
+        // the renderer must write the worker's HTML response to disk
+        // unchanged. A future regression that inadvertently always
+        // injects (e.g. a default-Some) would trip this.
+        let raw_html = b"<!doctype html><html><head><title>T</title></head><body>x</body></html>";
+        let raw_html_owned = raw_html.to_vec();
+        let handler: Handler = Arc::new(move |_| {
+            (200, "text/html; charset=utf-8", raw_html_owned.clone())
+        });
+        let srv = FakeServer::start(handler);
+        let dist = tempfile::tempdir().unwrap();
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/".into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: "/".into(),
+        }];
+        render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: Backend::Existing {
+                base_url: srv.base_url(),
+            },
+            request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: None,
+        })
+        .expect("render_all");
+        let written = fs::read(dist.path().join("index.html")).unwrap();
+        assert_eq!(written, raw_html);
+    }
+
+    #[test]
+    fn render_all_with_prod_head_assets_injects_link_and_script() {
+        let raw_html = b"<!doctype html><html><head><title>T</title></head><body>x</body></html>";
+        let raw_html_owned = raw_html.to_vec();
+        let handler: Handler = Arc::new(move |_| {
+            (200, "text/html; charset=utf-8", raw_html_owned.clone())
+        });
+        let srv = FakeServer::start(handler);
+        let dist = tempfile::tempdir().unwrap();
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/".into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: "/".into(),
+        }];
+        let assets = crate::head_inject::ProdHeadAssets {
+            css_url: Some("/assets/styles.css".into()),
+            island_module_urls: vec!["/assets/islands.js".into()],
+        };
+        render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: Backend::Existing {
+                base_url: srv.base_url(),
+            },
+            request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: Some(assets),
+        })
+        .expect("render_all");
+        let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
+        let close_at = written.find("</head>").unwrap();
+        let link_at = written.find("<link rel=\"stylesheet\"").unwrap();
+        let script_at = written.find("src=\"/assets/islands.js\"").unwrap();
+        assert!(link_at < close_at);
+        assert!(script_at < close_at);
+        assert!(written.contains("<title>T</title>"));
+        assert!(written.contains("<body>x</body>"));
+    }
+
+    #[test]
+    fn render_all_passes_through_non_html_routes_when_assets_present() {
+        // `feed.xml` carries no `</head>` — head_inject must passthrough
+        // even when `prod_head_assets` is Some. Critical: the route
+        // universe in real builds mixes HTML and non-HTML outputs.
+        let xml_body = b"<?xml version=\"1.0\"?><rss/>";
+        let xml_owned = xml_body.to_vec();
+        let handler: Handler = Arc::new(move |_| {
+            (200, "application/xml", xml_owned.clone())
+        });
+        let srv = FakeServer::start(handler);
+        let dist = tempfile::tempdir().unwrap();
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/feed.xml".into(),
+            output_path: PathBuf::from("feed.xml"),
+            route_key: "/feed.xml".into(),
+        }];
+        let assets = crate::head_inject::ProdHeadAssets {
+            css_url: Some("/assets/styles.css".into()),
+            island_module_urls: vec![],
+        };
+        render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: Backend::Existing {
+                base_url: srv.base_url(),
+            },
+            request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: Some(assets),
+        })
+        .expect("render_all");
+        let written = fs::read(dist.path().join("feed.xml")).unwrap();
+        assert_eq!(written, xml_body);
     }
 
     #[test]
@@ -1410,6 +1577,7 @@ mod tests {
                 base_url: srv.base_url(),
             },
             request_timeout: Some(Duration::from_secs(5)),
+            prod_head_assets: None,
         })
         .unwrap_err();
 
@@ -1680,6 +1848,7 @@ mod tests {
             prerender_map: BTreeMap::new(),
             backend: Backend::SpawnMiniflare,
             request_timeout: Some(Duration::from_secs(15)),
+            prod_head_assets: None,
         })
         .expect("render_all against real miniflare");
         let elapsed = started.elapsed();

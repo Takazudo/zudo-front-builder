@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+use crate::emitter::CssEmitterOutput;
 use crate::engine::CssEngine;
 use crate::modules::{CssModulesConfig, CssModulesProcessor};
 use crate::scanner::{scan_css_module_imports, ModuleImportScan, SourceModuleUsage};
@@ -184,6 +185,52 @@ impl<E: CssEngine> CssPipeline<E> {
             class_maps: modules.class_maps,
             per_source_modules,
             class_map_files,
+        })
+    }
+
+    /// Bytes-only entry point used by `ProductionAssetPipeline`.
+    ///
+    /// Runs every stage `build()` runs *except* the disk write of the
+    /// hashed `styles-<hash>.css` file: the prod pipeline owns asset
+    /// hashing and writes the file once after URL rewrite, so any
+    /// emit-side write here would leave a stale duplicate next to the
+    /// hashed copy. The CSS Modules class-map JSONs are still emitted
+    /// when [`CssPipelineConfig::class_map_dir`] is set — those files
+    /// are not asset-graph nodes and the bundler reads them at the
+    /// next stage.
+    ///
+    /// The returned [`CssEmitterOutput`] carries the combined CSS
+    /// bytes plus the stable URL constant from
+    /// [`zfb_types::STABLE_CSS_URL`]; the `ProductionAssetPipeline`
+    /// matches HTML occurrences of that string and rewrites them to
+    /// the hashed URL before writing pages.
+    pub fn build_emitter(&self) -> Result<CssEmitterOutput> {
+        let (module_files, _per_source_modules) = self.collect_modules()?;
+
+        let tailwind = self
+            .engine
+            .produce_utility_css(&self.config.sources)
+            .context("CSS engine stage failed")?;
+
+        let modules = self
+            .modules
+            .process(&module_files)
+            .context("CSS Modules stage failed")?;
+
+        let combined = combine(&tailwind, &modules.css);
+
+        // Emit JSON class-name maps if requested. Done here too so the
+        // bundler stage can resolve `*.module.css` imports against the
+        // map files, exactly as `build()` does — dropping this would
+        // break the bytes-only path for any project that uses CSS
+        // Modules.
+        if let Some(dir) = &self.config.class_map_dir {
+            write_class_map_files(dir, &modules.class_maps)?;
+        }
+
+        Ok(CssEmitterOutput {
+            bytes: combined.into_bytes(),
+            stable_url: zfb_types::STABLE_CSS_URL.to_string(),
         })
     }
 

@@ -76,12 +76,14 @@
 //! that prefers to inline the maps can do so without touching the disk
 //! artefacts.
 
+pub mod emitter;
 pub mod engine;
 pub mod modules;
 pub mod native_engine;
 pub mod pipeline;
 pub mod scanner;
 
+pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::{
     build_synthesised_entry_css, CssEngine, TailwindSubprocessConfig,
     TailwindSubprocessEngine,

@@ -406,6 +406,28 @@ const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
 const SHADOW_ENTRY_FILENAME: &str = "entry.mjs";
 const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 
+/// Esbuild `--loader:` flags for the Worker bundle.
+///
+/// - `.mdx=jsx` — `.mdx` files were rewritten to JSX text by
+///   `materialise_shadow`; tell esbuild to parse them as JSX so the
+///   `.mdx` extension keeps working for user import paths.
+/// - `.css=empty` — `.css` imports inside JS modules are converted to
+///   no-op modules at compile time. The Worker bundle must NOT carry
+///   user CSS bytes — `ProductionAssetPipeline` writes the real
+///   hashed `dist/assets/styles-<hash>.css` from
+///   `CssPipeline::build_emitter` (S2) and the renderer injects a
+///   `<link rel=stylesheet>` pointing at that file (S1+S4). With
+///   esbuild's default `.css` loader the import would either (a) emit
+///   a sibling `_zfb_inner.css` next to the worker bundle that nothing
+///   references, or (b) inline the CSS, both inflating the Worker
+///   bundle with bytes that are already shipped externally.
+///   `loader=empty` substitutes an empty exports object at compile
+///   time, so no runtime `import "...css"` statement is left behind to
+///   crash the Worker at module load. The alternative
+///   `--external:*.css` was REJECTED because esbuild can leave runtime
+///   `import` statements that workerd cannot resolve.
+pub const ESBUILD_LOADER_ARGS: &[&str] = &["--loader:.mdx=jsx", "--loader:.css=empty"];
+
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
 /// sync deliberately, both crates resolve the same slot.
@@ -1499,10 +1521,9 @@ fn run_esbuild(
     cmd.arg("--tree-shaking=true");
     cmd.arg("--sourcemap=linked");
     cmd.arg("--log-level=warning");
-    // .mdx files were rewritten to JSX text by `materialise_shadow`;
-    // tell esbuild to parse them as JSX so the .mdx extension keeps
-    // working for user import paths.
-    cmd.arg("--loader:.mdx=jsx");
+    for arg in ESBUILD_LOADER_ARGS {
+        cmd.arg(arg);
+    }
 
     if input.mode.is_prod() && input.minify {
         cmd.arg("--minify");
@@ -2364,5 +2385,44 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn esbuild_loader_args_neutralise_css_imports() {
+        // S5 contract — `.css` imports inside JS modules must be
+        // neutralised at the loader level so the Worker bundle does not
+        // carry user CSS bytes alongside the externally-shipped
+        // `dist/assets/styles-<hash>.css` produced by
+        // `ProductionAssetPipeline`. The wrong fix here (the rejected
+        // `--external:*.css` alternative) would leave runtime `import`
+        // statements that workerd cannot resolve, crashing the Worker
+        // at module load. This test locks in `loader=empty` as the
+        // chosen mechanism.
+        assert!(
+            ESBUILD_LOADER_ARGS.contains(&"--loader:.css=empty"),
+            "Worker bundle must use `--loader:.css=empty` to drop user CSS \
+             imports at compile time; got: {:?}",
+            ESBUILD_LOADER_ARGS,
+        );
+
+        // Defensive: nothing in the loader list should ever be
+        // `--external:*.css`. The rejected alternative is documented in
+        // the constant's doc comment; this guard turns the rejection
+        // into a compile-time invariant.
+        assert!(
+            !ESBUILD_LOADER_ARGS.iter().any(|a| a.contains("external:") && a.contains(".css")),
+            "Worker bundle must NOT mark .css as external — esbuild can \
+             leave runtime `import` statements workerd cannot resolve. \
+             Use `--loader:.css=empty` instead. Got: {:?}",
+            ESBUILD_LOADER_ARGS,
+        );
+
+        // Existing .mdx contract preserved — same list, no regression.
+        assert!(
+            ESBUILD_LOADER_ARGS.contains(&"--loader:.mdx=jsx"),
+            "Worker bundle must keep `--loader:.mdx=jsx` so MDX modules \
+             continue to be parsed as JSX; got: {:?}",
+            ESBUILD_LOADER_ARGS,
+        );
     }
 }
