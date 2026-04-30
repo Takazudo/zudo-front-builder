@@ -18,10 +18,15 @@
 //! ## Contract
 //!
 //! - The bundler MUST be deterministic: the same `(islands, config)` pair
-//!   must produce the same asset path and module-id list. Downstream
-//!   hashing assumes byte-stable bundle output.
-//! - The output asset filename convention is `islands-{hash}.js` under
-//!   `{outdir}/assets/` — mirror of `zfb_css`'s `styles-{hash}.css` layout.
+//!   must produce the same asset bytes and module-id list. Downstream
+//!   hashing in [`zfb_build::pipeline::prod::ProductionAssetPipeline`]
+//!   assumes byte-stable bundle output.
+//! - The output asset filename is the **stable** name
+//!   `{outdir}/assets/islands.js` (per `zfb_types::STABLE_ISLANDS_FILENAME`)
+//!   — `ProductionAssetPipeline` is the single source of truth for
+//!   content hashing, so emitters under this crate no longer bake
+//!   `-<hash>` into the on-disk name. Mirror of `zfb-css`'s
+//!   `styles.css` stable-name layout.
 //! - `module_ids` returns the bundled module identifiers (typically the
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
@@ -77,8 +82,9 @@ pub struct BundleConfig {
     /// `//# sourceMappingURL=` comment). Production: `false`. Dev: `true`.
     pub sourcemap: bool,
 
-    /// Output root. The asset lands at
-    /// `{outdir}/assets/islands-{hash}.js`.
+    /// Output root. The asset lands at the stable path
+    /// `{outdir}/assets/islands.js`. (Hashing is the
+    /// `ProductionAssetPipeline`'s job — see crate-level contract.)
     /// Default: `dist/`.
     pub outdir: PathBuf,
 
@@ -141,12 +147,19 @@ impl BundleConfig {
 /// Result of a successful [`ClientBundler::bundle`] call.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
-    /// Output file path on disk, e.g. `dist/assets/islands-abc12345.js`.
+    /// Output file path on disk — the stable form
+    /// `dist/assets/islands.js`. `ProductionAssetPipeline` reads these
+    /// bytes and renames to `dist/assets/islands-<hash>.js` at deploy
+    /// time; the name handed to callers here stays unhashed so the
+    /// pipeline can drive HTML rewrites against
+    /// `STABLE_ISLANDS_URL` without coordinating an extra string
+    /// channel.
     pub asset_path: PathBuf,
 
-    /// Public URL the renderer should reference, e.g.
-    /// `/assets/islands-abc12345.js`. Computed via [`bundle_link_href`]
-    /// from the asset path and the `base_url` in [`BundleConfig`].
+    /// Public URL the renderer should reference — the stable form
+    /// `/assets/islands.js` (see `zfb_types::STABLE_ISLANDS_URL`).
+    /// Computed via [`bundle_link_href`] from the asset path and the
+    /// `base_url` in [`BundleConfig`].
     pub asset_url: String,
 
     /// Identifiers of the modules included in the bundle. Order is stable
@@ -167,24 +180,32 @@ pub trait ClientBundler {
 /// One per-island bundle output, produced by
 /// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
 ///
-/// Per-island bundles land at `{outdir}/islands/{component}-{hash}.js` so
-/// the runtime can dynamic-import each island's JS independently. Sharing
-/// is the bundler's concern — at this layer we just record one entry per
-/// island.
+/// Per-island bundles land at the stable path
+/// `{outdir}/islands/{component}.js` so the runtime can dynamic-import
+/// each island's JS independently. Sharing is the bundler's concern —
+/// at this layer we just record one entry per island. The
+/// content-hash field is still computed and exposed (see
+/// [`IslandBundle::hash`]) for dev-mode change detection and for
+/// downstream consumers that wrap this output through
+/// `ProductionAssetPipeline`, but it is **not** baked into the
+/// filename or URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IslandBundle {
     /// Component export name. Mirrors [`Island::component_name`] of the
     /// input island so callers can pair entries by name.
     pub component_name: String,
-    /// Output file path on disk, e.g.
-    /// `dist/islands/Counter-abc12345.js`.
+    /// Output file path on disk — the stable form
+    /// `dist/islands/{component}.js`.
     pub asset_path: PathBuf,
-    /// Public URL the runtime should `import()` from, e.g.
-    /// `/islands/Counter-abc12345.js`.
+    /// Public URL the runtime should `import()` from — the stable form
+    /// `/islands/{component}.js`.
     pub asset_url: String,
-    /// 8-char content hash (lowercase hex) the URL was suffixed with.
-    /// Useful for tests asserting deterministic naming and for callers
-    /// that need to expose the hash separately (e.g. integrity tags).
+    /// 8-char content hash (lowercase hex) of the bundled JS. Reported
+    /// for dev-mode change detection and for downstream consumers
+    /// that delegate hashing to `ProductionAssetPipeline`. The hash is
+    /// **not** part of the on-disk filename or URL — those are
+    /// stable-named per the S0 single-source-of-truth-for-hashing
+    /// contract.
     pub hash: String,
 }
 
@@ -199,11 +220,13 @@ pub struct IslandBundle {
 pub struct PerIslandBundleOutput {
     /// One entry per island, in the same order the input slice provided.
     pub islands: Vec<IslandBundle>,
-    /// Runtime bundle file path, e.g.
-    /// `dist/islands/islands-runtime-abc12345.js`.
+    /// Runtime bundle file path — the stable form
+    /// `dist/islands/islands-runtime.js`. Hashing, when needed, is
+    /// applied later by `ProductionAssetPipeline`.
     pub runtime_asset_path: PathBuf,
     /// Runtime bundle public URL — the `<script type="module" src="…">`
-    /// the page-router HTML pass injects into `<head>`.
+    /// the page-router HTML pass injects into `<head>`. Stable form:
+    /// `/islands/islands-runtime.js`.
     pub runtime_asset_url: String,
 }
 
@@ -236,7 +259,10 @@ impl FrameworkKind {
 ///
 /// Mirrors [`bundle_link_href`] but lives under `/islands/` instead of
 /// `/assets/` so per-island and shared bundles can share an outdir
-/// without colliding.
+/// without colliding. With S0's stable-naming contract the typical
+/// inputs look like `dist/islands/Counter.js` →
+/// `/islands/Counter.js`; `ProductionAssetPipeline` is the only
+/// component allowed to substitute hashed forms.
 pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
     let filename = asset_path
         .file_name()
@@ -257,11 +283,11 @@ pub fn island_link_href(base_url: &str, asset_path: &Path) -> String {
 /// use std::path::PathBuf;
 /// use zfb_islands::bundle_link_href;
 ///
-/// let p = PathBuf::from("dist/assets/islands-abc12345.js");
-/// assert_eq!(bundle_link_href("/", &p), "/assets/islands-abc12345.js");
+/// let p = PathBuf::from("dist/assets/islands.js");
+/// assert_eq!(bundle_link_href("/", &p), "/assets/islands.js");
 /// assert_eq!(
 ///     bundle_link_href("https://cdn.example.com", &p),
-///     "https://cdn.example.com/assets/islands-abc12345.js",
+///     "https://cdn.example.com/assets/islands.js",
 /// );
 /// ```
 pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
@@ -314,16 +340,19 @@ mod tests {
 
     #[test]
     fn link_href_normalises_trailing_slash() {
-        let p = PathBuf::from("dist/assets/islands-deadbeef.js");
-        assert_eq!(bundle_link_href("/", &p), "/assets/islands-deadbeef.js");
-        assert_eq!(bundle_link_href("", &p), "/assets/islands-deadbeef.js");
+        // S0 contract: emitter writes the stable filename
+        // `assets/islands.js`. Hashed forms are produced by
+        // `ProductionAssetPipeline`, not by the bundler.
+        let p = PathBuf::from("dist/assets/islands.js");
+        assert_eq!(bundle_link_href("/", &p), "/assets/islands.js");
+        assert_eq!(bundle_link_href("", &p), "/assets/islands.js");
         assert_eq!(
             bundle_link_href("https://cdn.example.com/", &p),
-            "https://cdn.example.com/assets/islands-deadbeef.js"
+            "https://cdn.example.com/assets/islands.js"
         );
         assert_eq!(
             bundle_link_href("https://cdn.example.com", &p),
-            "https://cdn.example.com/assets/islands-deadbeef.js"
+            "https://cdn.example.com/assets/islands.js"
         );
     }
 }
