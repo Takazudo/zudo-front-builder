@@ -8,6 +8,12 @@ description = "zfb css pipeline: Tailwind v4 subprocess engine, CSS Modules via 
 [lib]
 
 [dependencies]
+# Cross-crate shared constants (stable asset URLs / filenames). Keeps
+# `STABLE_CSS_URL` aligned between this crate's bytes-only emitter
+# adapter and the renderer / `ProductionAssetPipeline` consumer in
+# `zfb-build` without string duplication.
+zfb-types = { path = "../zfb-types" }
+
 # Workspace-shared helpers.
 anyhow = { workspace = true }
 thiserror = { workspace = true }
