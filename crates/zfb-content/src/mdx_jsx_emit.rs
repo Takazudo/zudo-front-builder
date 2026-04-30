@@ -101,7 +101,25 @@ fn mdx_to_jsx_module_inner(
     opts: MdxJsxOptions,
     pipeline: Option<&mut Pipeline>,
 ) -> Result<String, PipelineError> {
-    let parse_options = markdown::ParseOptions::mdx();
+    // `ParseOptions::mdx()` enables the `mdx_esm` construct but does NOT
+    // activate it: the construct's start state checks `mdx_esm_parse.is_some()`
+    // before firing (see markdown-rs `crates/zfb-content/construct/mdx_esm.rs`).
+    // Without a parse function, `import { Foo } from "pkg"` is parsed as a
+    // Paragraph — the `{ Foo }` becomes an MdxTextExpression, leaving the
+    // skeletal text visible in the rendered output.
+    //
+    // We supply a permissive parser that always returns Ok. zfb does not need
+    // to validate ESM syntax here — the bundler (SWC) handles that later. All
+    // we need is for import/export statements to be classified as MdxjsEsm
+    // nodes so the emitter can silently drop them (they fall through to the
+    // `_ => String::new()` catch-all in `emit_node`).
+    let parse_options = markdown::ParseOptions {
+        constructs: markdown::Constructs::mdx(),
+        mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
+            markdown::MdxSignal::Ok
+        })),
+        ..markdown::ParseOptions::default()
+    };
     let mut root = markdown::to_mdast(input, &parse_options).map_err(|m| {
         // markdown-rs's Display already emits "line:col-line:col: reason".
         PipelineError::Parse(format!("{}: {m}", opts.filename))
@@ -1118,4 +1136,5 @@ mod tests {
         // Source survives, double-quote-escaped inside the JS literal.
         assert!(out.contains("<style>"), "got: {out}");
     }
+
 }
