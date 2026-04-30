@@ -451,6 +451,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         prerender_map,
         backend,
         request_timeout: None,
+        // S4 will populate this once `ProductionAssetPipeline` is wired
+        // into `zfb build`. Today's build path keeps emitting raw
+        // worker-rendered HTML to preserve current dev/test behaviour.
+        prod_head_assets: None,
     };
     let render_out = runner
         .render_all(renderer_input)

@@ -21,6 +21,12 @@ zfb-content = { path = "../zfb-content" }
 # carries no V8 / native-runtime cost into `zfb-build`'s dependency
 # surface.
 zfb-render = { path = "../zfb-render" }
+# Shared stable-URL constants for the production asset graph
+# (`STABLE_CSS_URL`, `STABLE_ISLANDS_URL`, …). The renderer's prod-head
+# injector embeds these so the link/script tags it splices match the
+# on-disk filenames the emitter adapters write. `zfb-types` is a
+# zero-zfb-dep leaf crate, so this introduces no transitive cost.
+zfb-types = { path = "../zfb-types" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
