@@ -281,8 +281,27 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
 async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     // Same as the first test, but driven by the real watcher rather
     // than a synthetic `tick`. Validates the watcher → orchestrator →
-    // pipeline path end-to-end. Uses a generous (200ms) debounce so
-    // the test is robust against jittery filesystems on CI.
+    // pipeline path end-to-end.
+    //
+    // Timing notes — the test is intentionally generous because a busy
+    // CI box (or a filesystem with low-resolution mtimes) was observed
+    // to flake when the windows were tighter:
+    //
+    // * Debounce: 200ms. The watcher's debouncer uses a `interval(d/2)`
+    //   wake-up, so worst-case latency from write→emit is roughly
+    //   `debounce + debounce/2`. 200ms keeps that under ~300ms with
+    //   plenty of headroom over the 2s `recv` timeout.
+    // * Initial settle: 200ms after `start_with_debounce` returns. The
+    //   inotify hook is installed synchronously inside `start_*`, but
+    //   the spawned debouncer task may not have scheduled its first
+    //   wake yet on a contended runtime, and notify itself sometimes
+    //   needs a beat before delivering events for a path that was
+    //   created only moments before the watch was installed.
+    // * Channel drain: after the first `recv` returns, we drain any
+    //   extra `Change`s the platform may emit for a single logical
+    //   write (e.g. notify can split a single editor-style write into
+    //   multiple kernel events). The orchestrator collapses duplicates
+    //   on the same path, so this is purely defensive.
     let dir = tempdir().unwrap();
     let project = dir.path();
 
@@ -296,9 +315,10 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     let render_calls: Arc<Mutex<Vec<Vec<PageId>>>> = Arc::new(Mutex::new(Vec::new()));
     let render_calls_cb = render_calls.clone();
 
+    let debounce = Duration::from_millis(200);
+
     let orch = BuildOrchestrator::new(
-        OrchestratorConfig::new(project, vec![PathBuf::from("content")])
-            .with_debounce(Duration::from_millis(50)),
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]).with_debounce(debounce),
         graph.clone(),
         TestPipeline {
             inner: DevAssetPipeline::new(),
@@ -329,28 +349,34 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     // Spawn watcher manually so the test can observe the channel and
     // then drive a single tick. We do NOT call `orch.run` here because
     // the test wants explicit control over when the rebuild happens.
-    let (handle, mut rx) = Watcher::start_with_debounce(
-        project,
-        ["content"],
-        Duration::from_millis(50),
-    )
-    .expect("watcher start");
+    let (watcher, mut rx) =
+        Watcher::start_with_debounce(project, ["content"], debounce).expect("watcher start");
 
-    // Wait briefly for the watcher to install its inotify on the dir,
-    // then change the file.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the watcher's debouncer task to be polled at least once
+    // before mutating the file. See the timing notes at the top of the
+    // test for the rationale.
+    tokio::time::sleep(Duration::from_millis(200)).await;
     std::fs::write(&md_path, "# v2\n").unwrap();
 
-    // Wait for the change to propagate.
-    let change = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    // Wait for the change to propagate. 2s is far longer than the
+    // worst-case debounce latency (~300ms) but short enough that a
+    // genuinely-broken watcher will fail the test instead of hanging
+    // CI.
+    let first = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
         .expect("watcher emitted within 2s")
         .expect("channel still open");
 
-    let outcome = orch
-        .tick(vec![change.path], &ctx)
-        .expect("tick ok")
-        .expect("non-noop");
+    // Drain any further events the platform happened to coalesce into
+    // a separate emit. We feed all of them to the orchestrator so the
+    // test exercises the same batching path that `BuildOrchestrator::run`
+    // uses in production.
+    let mut paths: Vec<PathBuf> = vec![first.path];
+    while let Ok(extra) = rx.try_recv() {
+        paths.push(extra.path);
+    }
+
+    let outcome = orch.tick(paths, &ctx).expect("tick ok").expect("non-noop");
     assert_eq!(outcome.pages_rendered, 1);
     assert_eq!(outcome.pages_written.len(), 1);
 
@@ -358,7 +384,13 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     assert!(html_path.exists());
     assert_eq!(std::fs::read_to_string(&html_path).unwrap(), "<h1>v2</h1>");
 
-    drop(handle);
+    // Drop the watcher to stop the OS-level watch. We deliberately do
+    // not call `Watcher::shutdown` here — that path awaits the bridge
+    // task which will not exit until `_notify` itself is dropped, so
+    // the test would hang. Drop is the path used in production
+    // (`BuildOrchestrator::run` ends by dropping its watcher), so this
+    // also matches the real shutdown ordering.
+    drop(watcher);
 }
 
 /// Wrapper pipeline that delegates to `DevAssetPipeline` but counts
