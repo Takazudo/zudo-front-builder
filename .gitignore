@@ -7,15 +7,15 @@ Cargo.lock
 node_modules/
 .pnpm-store/
 
-# Test-fixture node_modules — NOT real installs. The
-# pnpm-workspace-consumer fixture intentionally hand-authors the
-# `node_modules/@takazudo/zfb-blog-islands/` package layout that pnpm
-# creates for a workspace dependency, so the islands scanner can be
-# regression-tested without spinning up a real pnpm install. Whitelist
-# the fixture path so the global `node_modules/` rule above doesn't
-# strip it from git.
-!crates/zfb-islands/fixtures/pnpm-workspace-consumer/node_modules/
-!crates/zfb-islands/fixtures/pnpm-workspace-consumer/node_modules/**
+# Test-fixture node_modules — the pnpm-workspace-consumer fixture
+# (`crates/zfb-islands/fixtures/pnpm-workspace-consumer/`) keeps its
+# workspace package source under `workspace/zfb-blog-islands/` and the
+# integration test wires up
+# `node_modules/@takazudo/zfb-blog-islands` as a symlink at runtime
+# (post codex-review fix on PR #125 — the scanner now requires the
+# pnpm symlink shape before descending into a bare specifier). The
+# global `node_modules/` rule above already keeps that runtime symlink
+# out of git, so we no longer need a fixture whitelist.
 
 # Editors
 .DS_Store
