@@ -3,9 +3,9 @@
 //! Equivalent to the unified ecosystem's `hast-util-to-string` /
 //! `extractText` helper used by zudo-doc's md-plugins. We concatenate
 //! every [`HastNode::Text`] payload encountered in document order, and
-//! ignore [`HastNode::Raw`] and [`HastNode::Comment`] (so JSX
-//! passthrough and HTML comments do not bleed into slugs / aria
-//! labels).
+//! ignore [`HastNode::Raw`] / [`HastNode::JsxRaw`] / [`HastNode::Comment`]
+//! (so JSX passthrough, raw HTML, and HTML comments do not bleed into
+//! slugs / aria labels).
 
 use crate::pipeline::HastNode;
 
@@ -33,7 +33,7 @@ fn walk(node: &HastNode, out: &mut String) {
                 walk(c, out);
             }
         }
-        HastNode::Raw(_) | HastNode::Comment(_) => {}
+        HastNode::Raw(_) | HastNode::JsxRaw(_) | HastNode::Comment(_) => {}
     }
 }
 

@@ -56,10 +56,30 @@ pub enum HastNode {
     },
     /// Plain text content (escaped on serialization).
     Text(String),
-    /// Raw HTML or JSX-component passthrough; the serializer emits this
-    /// verbatim without escaping. Used for embedded HTML and MDX/JSX
-    /// expressions and elements that downstream tooling will handle.
+    /// Raw HTML passthrough; the serializer emits this verbatim without
+    /// escaping. Produced by the mdast→hast conversion for
+    /// [`MdastNode::Html`](markdown::mdast::Node::Html), and by hast
+    /// plugins that synthesize complete HTML fragments (e.g. syntect).
+    ///
+    /// On the JSX-emit path (`mdx_jsx_emit::mdx_to_jsx_module_with_pipeline`),
+    /// `Raw` cannot be embedded verbatim — JSX does not understand
+    /// arbitrary HTML such as `class="…"` or inline `<span style="…">`.
+    /// The hast→JSX bridge wraps `Raw` content in a span with
+    /// `dangerouslySetInnerHTML` so the rendered DOM still receives the
+    /// original markup. See [`HastNode::JsxRaw`] for the JSX-shaped
+    /// counterpart that IS safe to inline.
     Raw(String),
+    /// JSX-shaped passthrough — MDX components (`<Note>…</Note>`),
+    /// flow / text expressions (`{1 + 1}`), and synthesized JSX
+    /// fragments. The serializer treats this identically to
+    /// [`HastNode::Raw`] (verbatim, no escaping); the JSX-emit path
+    /// embeds it verbatim into the output module so PascalCase
+    /// component references and `{…}` expression containers survive
+    /// untouched.
+    ///
+    /// Splitting JSX from HTML at the hast level lets the JSX bridge
+    /// pick the right embedding strategy without parsing the payload.
+    JsxRaw(String),
     /// HTML comment body (without the `<!--` / `-->` delimiters).
     Comment(String),
 }
@@ -262,6 +282,21 @@ impl Pipeline {
         }
     }
 
+    /// Run only the hast visitor chain against an externally-built
+    /// hast tree.
+    ///
+    /// Mirror of [`Pipeline::apply_mdast_visitors`], added for #121 so
+    /// the JSX emit path can detour through hast — `mdast → hast →
+    /// hast visitors → JSX emit` — and pick up the project's hast-phase
+    /// plugins (heading-links, code-title, image-enlarge, mermaid,
+    /// syntect, optional strip-md-ext) on MDX content. The HTML
+    /// serializer path keeps using [`Pipeline::run`] unchanged.
+    pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
+        for v in &mut self.hast_visitors {
+            v.visit(node);
+        }
+    }
+
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///
@@ -376,18 +411,26 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
             void: true,
         },
         MdastNode::Html(h) => HastNode::Raw(h.value.clone()),
-        MdastNode::MdxJsxFlowElement(j) => HastNode::Raw(reconstruct_jsx(
+        // MDX JSX / expression nodes carry JSX-shaped source. Mark them
+        // as `JsxRaw` so the JSX-emit bridge can inline them verbatim
+        // into the output module — wrapping these in
+        // `dangerouslySetInnerHTML` (the path `Raw` takes) would break
+        // PascalCase component references and `{…}` expression
+        // containers. The HTML serializer treats `JsxRaw` and `Raw`
+        // identically (verbatim passthrough), so this distinction is
+        // invisible on the HTML path.
+        MdastNode::MdxJsxFlowElement(j) => HastNode::JsxRaw(reconstruct_jsx(
             j.name.as_deref(),
             &j.attributes,
             &j.children,
         )),
-        MdastNode::MdxJsxTextElement(j) => HastNode::Raw(reconstruct_jsx(
+        MdastNode::MdxJsxTextElement(j) => HastNode::JsxRaw(reconstruct_jsx(
             j.name.as_deref(),
             &j.attributes,
             &j.children,
         )),
-        MdastNode::MdxFlowExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
-        MdastNode::MdxTextExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
+        MdastNode::MdxFlowExpression(e) => HastNode::JsxRaw(format!("{{{}}}", e.value)),
+        MdastNode::MdxTextExpression(e) => HastNode::JsxRaw(format!("{{{}}}", e.value)),
         // Unhandled: degrade to empty Raw so we never crash on
         // unsupported input. Tables, footnotes, definitions, math,
         // reference links/images, ESM, frontmatter, etc. fall here. They
@@ -678,16 +721,17 @@ mod tests {
         );
     }
 
-    // 10. MDX JSX element passes through as Raw.
+    // 10. MDX JSX element passes through as JsxRaw.
     //
-    // Walk the hast tree and collect every [`HastNode::Raw`] payload —
-    // markdown-rs may parse JSX as either a flow element (top-level) or
-    // a text element (inside a paragraph) depending on surrounding
-    // whitespace. Either way the converter must produce Raw with the
-    // original-ish source so the serializer passes it through.
+    // Walk the hast tree and collect every [`HastNode::JsxRaw`] /
+    // [`HastNode::Raw`] payload — markdown-rs may parse JSX as either a
+    // flow element (top-level) or a text element (inside a paragraph)
+    // depending on surrounding whitespace. Either way the converter
+    // must produce JsxRaw with the original-ish source so the
+    // serializer passes it through.
     fn collect_raw(node: &HastNode, out: &mut Vec<String>) {
         match node {
-            HastNode::Raw(s) => out.push(s.clone()),
+            HastNode::Raw(s) | HastNode::JsxRaw(s) => out.push(s.clone()),
             HastNode::Root { children } => {
                 for c in children {
                     collect_raw(c, out);
