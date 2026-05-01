@@ -12,30 +12,25 @@
 //! a missing snapshot is also captured-and-passed (first-run behaviour).
 //! Re-running with the snapshot present and the env var unset compares.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use zfb_content::frontmatter::{self};
-use zfb_content::pipeline::{HastNode, HastVisitor, Pipeline};
-use zfb_content::plugins::{
-    AdmonitionsPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin,
-    StripMdExtensionPlugin, SyntectPlugin,
-};
+use zfb_content::pipeline::Pipeline;
+use zfb_content::plugins::{ResolveLinksPlugin, ResolveMarkdownLinksOptions};
 use zfb_content::serializer::serialize;
-use zfb_content::syntect_highlight::Highlighter;
 
 /// Build the full plugin chain.
 ///
 /// Sub 4b (#47) replaced the explicit per-plugin wiring here with
-/// [`Pipeline::with_defaults`], plus [`StripMdExtensionPlugin`]
-/// layered on top so the existing 06-links fixture continues to
-/// assert that internal `.md` extensions are stripped from `<a href>`
-/// values. We deliberately omit `ResolveLinksPlugin`: with an empty
-/// source map it would be a no-op anyway, and `StripMdExtensionPlugin`
-/// already covers the `.md` rewriting we want to assert on.
+/// [`Pipeline::with_defaults`], plus the trailing-slash-aware
+/// `StripMdExtensionPlugin` layered on top via `add_strip_md_ext()`.
+/// We deliberately omit `ResolveLinksPlugin`: with an empty source map
+/// it would be a no-op anyway, and `StripMdExtensionPlugin` already
+/// covers the `.md` rewriting we want to assert on.
 fn build_full_pipeline() -> Pipeline {
     let mut p = Pipeline::with_defaults();
-    p.add_hast_visitor(Box::new(StripMdExtensionPlugin::new()));
+    p.add_strip_md_ext();
     p
 }
 
@@ -73,59 +68,6 @@ fn render_fixture_with(name: &str, mut pipeline: Pipeline) -> String {
     serialize(&hast)
 }
 
-/// Test-only hast visitor: walks the tree and tags every `<img>` that
-/// has `alt="hero"` with `width="400"` and `height="300"`.
-///
-/// This is the only realistic way to feed a width-bearing `<img>`
-/// element into `ImageEnlargePlugin` from a markdown fixture: the
-/// markdown image syntax (`![alt](src)`) doesn't accept dimensions,
-/// and raw `<img>` HTML embedded in MDX rides through as
-/// `HastNode::Raw`, which `ImageEnlargePlugin` (rightly) ignores.
-struct InjectHeroDimensions;
-
-impl HastVisitor for InjectHeroDimensions {
-    fn visit(&mut self, node: &mut HastNode) {
-        if let HastNode::Element { tag, attrs, .. } = node {
-            if tag == "img" {
-                let is_hero = attrs.iter().any(|(k, v)| k == "alt" && v == "hero");
-                if is_hero {
-                    if !attrs.iter().any(|(k, _)| k == "width") {
-                        attrs.push(("width".to_string(), "400".to_string()));
-                    }
-                    if !attrs.iter().any(|(k, _)| k == "height") {
-                        attrs.push(("height".to_string(), "300".to_string()));
-                    }
-                }
-            }
-        }
-        match node {
-            HastNode::Root { children } | HastNode::Element { children, .. } => {
-                for c in children {
-                    self.visit(c);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Pipeline used by the image fixture: same as the default chain but
-/// with `InjectHeroDimensions` inserted BEFORE `ImageEnlargePlugin` so
-/// the latter has a width attribute to act on.
-fn build_image_pipeline() -> Pipeline {
-    let mut p = Pipeline::with_mdx();
-    p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
-    p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
-    p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-    // Inject width/height onto the `hero` img before ImageEnlargePlugin
-    // gets to look at it.
-    p.add_hast_visitor(Box::new(InjectHeroDimensions));
-    p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
-    p.add_hast_visitor(Box::new(MermaidPlugin::new()));
-    p.add_hast_visitor(Box::new(StripMdExtensionPlugin::new()));
-    p.add_hast_visitor(Box::new(SyntectPlugin::new(Arc::new(Highlighter::new()))));
-    p
-}
 
 /// Snapshot equality with first-run capture.
 ///
@@ -275,17 +217,17 @@ fn caller_can_override_with_bare_pipeline() {
 }
 
 #[test]
-fn fixture_04_code_block_wraps_in_figure() {
+fn fixture_04_code_block_wraps_in_container() {
     check_fixture("04-code-block.md", "04-code-block.html");
     let snapshot = std::fs::read_to_string(snapshots_dir().join("04-code-block.html"))
         .expect("snapshot present after first run");
     assert!(
-        snapshot.contains("<figure class=\"code-figure\">"),
-        "expected code-figure wrapper in snapshot:\n{snapshot}",
+        snapshot.contains("<div class=\"code-block-container\">"),
+        "expected code-block-container wrapper in snapshot:\n{snapshot}",
     );
     assert!(
-        snapshot.contains("<figcaption>example.rs</figcaption>"),
-        "expected figcaption with title in snapshot:\n{snapshot}",
+        snapshot.contains("<div class=\"code-block-title\">example.rs</div>"),
+        "expected code-block-title with file name in snapshot:\n{snapshot}",
     );
     assert!(
         snapshot.contains("<pre class=\"syntect-"),
@@ -310,8 +252,17 @@ fn fixture_05_headings_get_anchors() {
         );
     }
     assert!(
-        snapshot.contains("class=\"heading-anchor\""),
-        "expected heading-anchor class in snapshot:\n{snapshot}",
+        snapshot.contains("class=\"hash-link\""),
+        "expected hash-link class in snapshot:\n{snapshot}",
+    );
+    // The anchor body is empty — the `#` glyph is rendered by CSS.
+    assert!(
+        snapshot.contains("aria-label=\"Direct link to "),
+        "expected `Direct link to {{text}}` aria-label in snapshot:\n{snapshot}",
+    );
+    assert!(
+        !snapshot.contains(">#</a>"),
+        "anchor body must be empty (CSS renders the # glyph):\n{snapshot}",
     );
     // h1 must NOT receive an id.
     assert!(
@@ -325,15 +276,17 @@ fn fixture_06_links_strip_md_extension() {
     check_fixture("06-links.md", "06-links.html");
     let snapshot = std::fs::read_to_string(snapshots_dir().join("06-links.html"))
         .expect("snapshot present after first run");
-    // Internal `.md` link → extension stripped.
+    // Internal `.md` link → extension stripped AND trailing slash
+    // appended (JS-aligned shape; the default `add_trailing_slash=true`
+    // converges with `ResolveLinksPlugin`'s output shape).
     assert!(
-        snapshot.contains("href=\"other-doc\""),
-        "internal .md href should be stripped to other-doc:\n{snapshot}",
+        snapshot.contains("href=\"other-doc/\""),
+        "internal .md href should be stripped to other-doc/:\n{snapshot}",
     );
-    // Internal link with fragment keeps fragment.
+    // Internal link with fragment keeps fragment AFTER the slash.
     assert!(
-        snapshot.contains("href=\"other-doc#sec\""),
-        "internal .md#sec should become other-doc#sec:\n{snapshot}",
+        snapshot.contains("href=\"other-doc/#sec\""),
+        "internal .md#sec should become other-doc/#sec:\n{snapshot}",
     );
     // External link is untouched.
     assert!(
@@ -347,57 +300,132 @@ fn fixture_06_links_strip_md_extension() {
     );
 }
 
+/// Convergence (Sub 5 / #110 + Sub 6.5): when `ResolveLinksPlugin` is
+/// chained alongside `StripMdExtensionPlugin` in trailing-slash mode,
+/// both plugins must produce the same URL shape for the same target —
+/// mapped links resolved by the resolver and unmapped extension-stripped
+/// links rewritten by the strip plugin should both end in `/`.
 #[test]
-fn fixture_07_image_wraps_with_image_enlarge() {
-    let actual = render_fixture_with("07-image.md", build_image_pipeline());
-    let snap_path = snapshots_dir().join("07-image.html");
-    assert_snapshot_eq(&actual, &snap_path);
-    let snapshot = std::fs::read_to_string(&snap_path).expect("snapshot present after first run");
-    // The hero image with width should be wrapped in an ImageEnlarge marker.
+fn convergence_resolve_links_and_strip_md_share_url_shape() {
+    // One mapped target, one unmapped — both .md, both should land on
+    // `<target>/` after the pipeline runs.
+    let mut source_map: HashMap<PathBuf, String> = HashMap::new();
+    source_map.insert(PathBuf::from("mapped.md"), "/docs/mapped/".to_string());
+
+    let mut p = Pipeline::with_mdx();
+    // mdast phase: resolver runs first to rewrite mapped .md → /docs/mapped/.
+    p.add_mdast_visitor(Box::new(ResolveLinksPlugin::new(
+        ResolveMarkdownLinksOptions {
+            source_map,
+            source_dir: None,
+        },
+    )));
+    // hast phase: strip+slash for any remaining unmapped .md.
+    p.add_strip_md_ext();
+
+    let body = "[m](mapped.md) and [u](./unmapped.md)";
+    let h = p.run(body).expect("pipeline ok");
+    let html = serialize(&h);
+
     assert!(
-        snapshot.contains("<ImageEnlarge"),
-        "expected ImageEnlarge marker in snapshot:\n{snapshot}",
+        html.contains("href=\"/docs/mapped/\""),
+        "mapped link must be resolved to /docs/mapped/ — got:\n{html}",
     );
     assert!(
-        snapshot.contains("width=\"400\""),
-        "expected width=400 preserved on ImageEnlarge:\n{snapshot}",
+        html.contains("href=\"./unmapped/\""),
+        "unmapped .md must be stripped + slashed to ./unmapped/ — got:\n{html}",
     );
-    // The bare image (no width) should remain a plain <img …/>.
+
+    // Both URLs end in `/` — that's the convergence assertion.
+    let mapped_ok = html.contains("href=\"/docs/mapped/\"");
+    let unmapped_ok = html.contains("href=\"./unmapped/\"");
     assert!(
-        snapshot.contains("src=\"bare.png\""),
-        "bare image should be preserved as plain <img>:\n{snapshot}",
+        mapped_ok && unmapped_ok,
+        "convergence violated — mapped and unmapped must both end in `/`:\n{html}",
     );
-    // And the bare image must NOT be wrapped (the fixture proves the
-    // plugin is selective).
-    let bare_count = snapshot.matches("src=\"bare.png\"").count();
-    let bare_in_enlarge = snapshot.matches("<ImageEnlarge src=\"bare.png\"").count();
-    assert_eq!(
-        bare_in_enlarge, 0,
-        "bare image must not be wrapped in ImageEnlarge: {snapshot}",
-    );
-    assert_eq!(bare_count, 1, "bare image must appear exactly once");
 }
 
 #[test]
-fn fixture_08_mermaid_block_is_marked() {
+fn fixture_07_image_wraps_with_enlargeable_figure() {
+    check_fixture("07-image.md", "07-image.html");
+    let snapshot = std::fs::read_to_string(snapshots_dir().join("07-image.html"))
+        .expect("snapshot present after first run");
+    // Both block-level paragraph-only images get wrapped now (the
+    // selector is "paragraph with only an <img>", no width gating).
+    assert!(
+        snapshot.contains("<figure class=\"zd-enlargeable\">"),
+        "expected zd-enlargeable figure in snapshot:\n{snapshot}",
+    );
+    assert!(
+        snapshot.contains("class=\"zd-enlarge-btn\""),
+        "expected zd-enlarge-btn button in snapshot:\n{snapshot}",
+    );
+    assert!(
+        snapshot.contains("aria-label=\"Enlarge image\""),
+        "expected enlarge-button aria-label in snapshot:\n{snapshot}",
+    );
+    // Both images present in the snapshot.
+    assert!(
+        snapshot.contains("src=\"bare.png\""),
+        "bare image must still appear in snapshot:\n{snapshot}",
+    );
+    assert!(
+        snapshot.contains("src=\"pic.png\""),
+        "pic image must still appear in snapshot:\n{snapshot}",
+    );
+    // The legacy `<ImageEnlarge>` JSX-marker path is gone — no consumer
+    // depends on it post-cutover.
+    assert!(
+        !snapshot.contains("<ImageEnlarge"),
+        "legacy <ImageEnlarge> marker must not leak into output:\n{snapshot}",
+    );
+}
+
+/// Opt-out: `title="no-enlarge"` leaves the `<p>` alone and strips the
+/// title sentinel from the `<img>` so it never reaches the rendered DOM.
+#[test]
+fn fixture_07b_image_opt_out_strips_title() {
+    let actual = render_fixture("07b-image-opt-out.md");
+    assert!(
+        !actual.contains("<figure class=\"zd-enlargeable\">"),
+        "opt-out must skip the enlargeable wrap:\n{actual}",
+    );
+    assert!(
+        !actual.contains("title=\"no-enlarge\""),
+        "title=\"no-enlarge\" sentinel must be stripped from <img>:\n{actual}",
+    );
+    assert!(
+        actual.contains("src=\"keep.png\""),
+        "image src must survive the opt-out:\n{actual}",
+    );
+}
+
+#[test]
+fn fixture_08_mermaid_block_replaced_with_div() {
     check_fixture("08-mermaid.md", "08-mermaid.html");
     let snapshot = std::fs::read_to_string(snapshots_dir().join("08-mermaid.html"))
         .expect("snapshot present after first run");
-    // MermaidPlugin must have flagged the <pre>.
+    // MermaidPlugin replaces the entire <pre> with <div class="mermaid">
+    // (JS-aligned shape; the `<pre>` no longer survives).
     assert!(
-        snapshot.contains("data-mermaid=\"true\""),
+        snapshot.contains("<div class=\"mermaid\""),
+        "expected <div class=\"mermaid\"> wrapper in snapshot:\n{snapshot}",
+    );
+    assert!(
+        snapshot.contains("data-mermaid"),
         "expected data-mermaid attribute in snapshot:\n{snapshot}",
     );
+    // The original `<pre>` shell is gone — no `language-mermaid` class
+    // and no syntect wrapping should leak out.
     assert!(
-        snapshot.contains("language-mermaid"),
-        "expected class=language-mermaid in snapshot:\n{snapshot}",
+        !snapshot.contains("language-mermaid"),
+        "mermaid <pre>/<code> should be replaced — no language-mermaid leftover:\n{snapshot}",
     );
-    // Mermaid body must NOT be syntect-wrapped.
     assert!(
         !snapshot.contains("<pre class=\"syntect-"),
         "mermaid block must not be syntect-highlighted:\n{snapshot}",
     );
-    // Original mermaid source must survive (escaped).
+    // Diagram source survives as escaped text inside the div.
     assert!(
         snapshot.contains("graph TD"),
         "mermaid source must be preserved:\n{snapshot}",

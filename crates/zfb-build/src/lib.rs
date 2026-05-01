@@ -55,6 +55,7 @@ pub mod head_inject;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
+pub mod plugin_runner;
 pub mod policy;
 pub mod renderer;
 
@@ -71,6 +72,10 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, ProdHeadAssets,
 };
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
+pub use plugin_runner::{
+    annotate_with_plugin_error, extract_plugin_error, BuildHookContext, DevRegisterContext,
+    DevRegistration, DevRequest, DevResponse, PluginError, PluginHost, PluginSpec,
+};
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
     AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner, DevAssetPipeline,

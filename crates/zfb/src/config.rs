@@ -301,11 +301,31 @@ impl Default for TailwindConfig {
 }
 
 /// One user plugin entry.
+///
+/// `name` is the user-supplied reference written in `zfb.config.ts`
+/// (npm package name or `./`-relative module path). `resolved_module`
+/// is the absolute module specifier (a `file://` URL) the JS-side
+/// plugin host will hand to `import()`. It is `None` for the JSON-
+/// config path (no node subprocess runs there) and for synthetic
+/// configs constructed in tests; the [`Config`] consumers that actually
+/// load plugins (the build/dev orchestration) treat a `None`
+/// `resolved_module` as "no plugin module — skip this entry".
+///
+/// Sub 3 / issue #108: this field is populated by
+/// `crates/zfb/js/config-loader.mjs` when the config goes through the
+/// TS load path. The loader emits a `{ config, plugins }` envelope
+/// where `plugins[i]` is the absolute module specifier for
+/// `config.plugins[i].name`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfig {
     pub name: String,
     #[serde(default)]
     pub options: serde_json::Value,
+    /// Absolute module specifier (file URL) the plugin host will load
+    /// via dynamic `import()`. Populated by the TS-load path; `None`
+    /// for JSON-only configs and synthetic test configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_module: Option<String>,
 }
 
 // --- defaults --------------------------------------------------------------
@@ -414,7 +434,9 @@ pub async fn load_from_dir_with_options(
 }
 
 /// Load a single `zfb.config.ts` file: bundle it with esbuild, evaluate
-/// it with node, parse the JSON of the default export.
+/// it with node, parse the JSON envelope (`{ config, plugins }`) the
+/// loader emits, and merge the resolved plugin module specifiers back
+/// onto `Config.plugins[].resolved_module`.
 async fn load_from_ts_file(
     ts_path: &Path,
     dir: &Path,
@@ -425,7 +447,48 @@ async fn load_from_ts_file(
     } else {
         load_ts_via_subprocess(ts_path, dir, opts).await?
     };
-    let cfg: Config = serde_json::from_str(&json).map_err(|e| {
+    parse_loader_envelope(&json, ts_path)
+}
+
+/// Internal envelope shape emitted by `crates/zfb/js/config-loader.mjs`.
+///
+/// The TS-load subprocess writes `{"config": <user-default-export>,
+/// "plugins": [<resolved-module-specifier>, …]}` so we get both halves
+/// in one parse. Older callers that supply `test_default_export_json`
+/// can still pass either the envelope shape or a bare config object —
+/// the bare-config branch is kept for backwards-test-compat.
+#[derive(Debug, Deserialize)]
+struct LoaderEnvelope {
+    config: Config,
+    #[serde(default)]
+    plugins: Vec<String>,
+}
+
+fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
+    // Try the envelope shape first.
+    if let Ok(envelope) = serde_json::from_str::<LoaderEnvelope>(json) {
+        let LoaderEnvelope {
+            mut config,
+            plugins: resolved,
+        } = envelope;
+        if !resolved.is_empty() && resolved.len() != config.plugins.len() {
+            bail!(
+                "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
+                 this indicates a bug in config-loader.mjs",
+                ts_path.display(),
+                config.plugins.len(),
+                resolved.len()
+            );
+        }
+        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved.into_iter()) {
+            entry.resolved_module = Some(resolved_specifier);
+        }
+        return Ok(config);
+    }
+    // Backwards-compat: tests that pre-date Sub 3 supply the bare config
+    // JSON directly via `test_default_export_json`. Accept that shape so
+    // the existing test suite keeps working.
+    let cfg: Config = serde_json::from_str(json).map_err(|e| {
         anyhow!(
             "{}: failed to parse the default export as zfb config JSON \
              (line {}, column {}): {}\n--- received ---\n{}",
@@ -542,6 +605,9 @@ async fn load_ts_via_subprocess(
     node_cmd.current_dir(dir);
     node_cmd.arg(&loader_path);
     node_cmd.arg(&bundle_path);
+    // Project root — the loader uses this for path-relative plugin
+    // resolution and for bare-specifier `node_modules` lookup.
+    node_cmd.arg(dir);
 
     let node_out = match node_cmd.output().await {
         Ok(o) => o,
@@ -1017,6 +1083,77 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("should accept");
         assert_eq!(cfg.collections.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn ts_envelope_populates_resolved_plugin_modules() {
+        // The Sub 3 / #108 envelope format: the loader subprocess
+        // emits `{ config, plugins: [...resolved-specifiers...] }`.
+        // The Rust side merges resolved specifiers onto
+        // `Config.plugins[].resolved_module` by index.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                r#"{
+                    "config": {
+                        "plugins": [
+                            { "name": "@example/zfb-plugin-search", "options": { "level": 2 } },
+                            { "name": "./plugins/local.mjs" }
+                        ]
+                    },
+                    "plugins": [
+                        "file:///abs/node_modules/@example/zfb-plugin-search/index.js",
+                        "file:///abs/project/plugins/local.mjs"
+                    ]
+                }"#
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("envelope load ok");
+        assert_eq!(cfg.plugins.len(), 2);
+        assert_eq!(cfg.plugins[0].name, "@example/zfb-plugin-search");
+        assert_eq!(
+            cfg.plugins[0].resolved_module.as_deref(),
+            Some("file:///abs/node_modules/@example/zfb-plugin-search/index.js"),
+        );
+        assert_eq!(cfg.plugins[1].name, "./plugins/local.mjs");
+        assert_eq!(
+            cfg.plugins[1].resolved_module.as_deref(),
+            Some("file:///abs/project/plugins/local.mjs"),
+        );
+    }
+
+    #[tokio::test]
+    async fn ts_envelope_count_mismatch_is_rejected() {
+        // Defensive guard — if config-loader.mjs ever drifts and emits
+        // a plugins array that doesn't 1:1 match config.plugins, we
+        // surface that as a clear error rather than silently dropping
+        // resolutions.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                r#"{
+                    "config": { "plugins": [{ "name": "a" }, { "name": "b" }] },
+                    "plugins": ["file:///x/a.mjs"]
+                }"#
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+        let err = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect_err("count mismatch must be rejected");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("plugin resolution count mismatch"), "msg: {msg}");
     }
 
     #[tokio::test]

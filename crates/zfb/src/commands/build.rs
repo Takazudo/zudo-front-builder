@@ -96,6 +96,24 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 
     let outdir = resolve_outdir(&project_root, &args.outdir);
 
+    // Sub 3 / #108 — plugin lifecycle. Spawn the host before any heavy
+    // work so `preBuild` can prepare files the bundler will see (e.g.
+    // claude-resources index emission). If no plugins are declared, we
+    // skip the spawn entirely so a config-less project pays nothing.
+    let plugin_host = crate::commands::plugins::maybe_spawn_host(&config).await?;
+    if let Some(host) = plugin_host.as_ref() {
+        let ctx = zfb_build::BuildHookContext {
+            project_root: project_root.clone(),
+            out_dir: outdir.clone(),
+            config: serde_json::to_value(&config)
+                .context("plugin lifecycle: serialise config for preBuild ctx")?,
+        };
+        host.run_pre_build(&ctx)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("preBuild lifecycle hook")?;
+    }
+
     let router = Router::scan(&pages_dir)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
@@ -119,6 +137,28 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             adapter_runner: &DefaultAdapterRunner,
         })
     })?;
+
+    // postBuild fires AFTER the renderer has finished writing dist/
+    // (and the adapter has wrapped any SSR output). Run it before the
+    // success banner so a failure here surfaces as a build error
+    // rather than a phantom "build succeeded but plugin crashed".
+    if let Some(host) = plugin_host.as_ref() {
+        let ctx = zfb_build::BuildHookContext {
+            project_root: project_root.clone(),
+            out_dir: outdir.clone(),
+            config: serde_json::to_value(&config)
+                .context("plugin lifecycle: serialise config for postBuild ctx")?,
+        };
+        host.run_post_build(&ctx)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("postBuild lifecycle hook")?;
+    }
+    if let Some(host) = plugin_host {
+        // Best-effort shutdown — we already extracted whatever errors
+        // matter from the hook calls.
+        let _ = host.shutdown().await;
+    }
 
     let elapsed = started.elapsed().as_secs_f64();
     output::success(format!("{pages_built} pages built in {elapsed:.2}s"));

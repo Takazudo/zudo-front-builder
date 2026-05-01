@@ -24,8 +24,8 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
-    AdmonitionsPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin,
-    SyntectPlugin,
+    AdmonitionsPlugin, CjkFriendlyPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin,
+    MermaidPlugin, StripMdExtensionPlugin, SyntectPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -96,6 +96,12 @@ pub struct Pipeline {
     mdast_visitors: Vec<Box<dyn MdastVisitor>>,
     hast_visitors: Vec<Box<dyn HastVisitor>>,
     parse_options: markdown::ParseOptions,
+    /// When the `StripMdExtensionPlugin` is wired into the pipeline,
+    /// this flag controls whether the plugin appends `/` to internal
+    /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
+    /// relative href that lacks one). Defaults to `true` to match the
+    /// JS engine and converge URL shape with `ResolveLinksPlugin`.
+    add_trailing_slash: bool,
 }
 
 impl Default for Pipeline {
@@ -120,7 +126,27 @@ impl Pipeline {
             mdast_visitors: Vec::new(),
             hast_visitors: Vec::new(),
             parse_options: markdown::ParseOptions::mdx(),
+            add_trailing_slash: true,
         }
+    }
+
+    /// Set the `add_trailing_slash` option. Affects subsequent
+    /// `add_strip_md_ext()` calls. Defaults to `true`.
+    pub fn set_add_trailing_slash(&mut self, value: bool) -> &mut Self {
+        self.add_trailing_slash = value;
+        self
+    }
+
+    /// Append a [`StripMdExtensionPlugin`] configured by the pipeline's
+    /// current `add_trailing_slash` setting (defaults to `true`).
+    pub fn add_strip_md_ext(&mut self) -> &mut Self {
+        let plugin = if self.add_trailing_slash {
+            StripMdExtensionPlugin::with_trailing_slash()
+        } else {
+            StripMdExtensionPlugin::new()
+        };
+        self.add_hast_visitor(Box::new(plugin));
+        self
     }
 
     /// New pipeline preloaded with the project's default plugin chain.
@@ -128,11 +154,12 @@ impl Pipeline {
     /// This is the entry point most orchestrator call sites want: it
     /// bundles the directive registry (via [`AdmonitionsPlugin`]) plus
     /// the five custom hast plugins so a `:::note` block compiles to
-    /// `<Note>…</Note>`, headings get permalink anchors, code blocks
-    /// get figure wrappers + syntect highlighting, mermaid blocks are
-    /// flagged for client-side rendering, and width-bearing `<img>`
-    /// tags become `<ImageEnlarge>` markers — all without manual
-    /// plugin wiring at the call site.
+    /// `<Note>…</Note>`, headings get permalink anchors, titled code
+    /// blocks get a `<div class="code-block-container">` wrapper plus
+    /// syntect highlighting, mermaid blocks become
+    /// `<div class="mermaid">` containers, and block-level paragraph
+    /// images get wrapped in an enlargeable `<figure>` — all without
+    /// manual plugin wiring at the call site.
     ///
     /// Callers that need a different mix should construct a pipeline
     /// via [`Pipeline::with_mdx`] (or [`Pipeline::new`]) and append
@@ -146,7 +173,11 @@ impl Pipeline {
     ///
     /// **mdast phase** (run first, against the parsed markdown tree):
     ///
-    /// 1. [`AdmonitionsPlugin`] — directive-style transforms run on
+    /// 1. [`CjkFriendlyPlugin`] — re-tokenises emphasis/strong markers
+    ///    around CJK characters that base CommonMark flanking rules
+    ///    rejected. Runs before any visitor that depends on emphasis
+    ///    being already tokenised.
+    /// 2. [`AdmonitionsPlugin`] — directive-style transforms run on
     ///    mdast because [`DirectiveRegistry`] folds runs of paragraphs
     ///    delimited by `:::name` … `:::` into a single
     ///    [`MdxJsxFlowElement`]. That collapsing has to happen before
@@ -156,24 +187,26 @@ impl Pipeline {
     ///
     /// **hast phase** (run after mdast→hast conversion, in this order):
     ///
-    /// 2. [`HeadingLinksPlugin`] — adds `id` + permalink anchor to
+    /// 3. [`HeadingLinksPlugin`] — adds `id` + permalink anchor to
     ///    `<h2>`–`<h6>`. Runs first in the hast phase so subsequent
     ///    plugins that might rewrite headings (none today, but the
     ///    door is open) see the slugified ids.
-    /// 3. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
-    ///    in `<figure>` + `<figcaption>`. Must run BEFORE
+    /// 4. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
+    ///    in `<div class="code-block-container">` +
+    ///    `<div class="code-block-title">`. Must run BEFORE
     ///    [`SyntectPlugin`] because syntect replaces the whole `<pre>`
     ///    with a [`HastNode::Raw`] HTML fragment; once that happens,
     ///    the `data-meta` attribute is no longer reachable.
-    /// 4. [`ImageEnlargePlugin`] — replaces `<img>` elements that have
-    ///    an explicit `width` attribute with `<ImageEnlarge>` JSX
-    ///    markers. Order-independent relative to syntect/mermaid (it
-    ///    only touches `<img>`).
-    /// 5. [`MermaidPlugin`] — flags `<pre><code class="language-mermaid">`
-    ///    blocks with `data-mermaid="true"`. Must run BEFORE
-    ///    [`SyntectPlugin`] so the latter can identify and skip
-    ///    mermaid blocks rather than syntect-highlighting them.
-    /// 6. [`SyntectPlugin`] — replaces remaining fenced code blocks
+    /// 5. [`ImageEnlargePlugin`] — wraps any `<p>` whose only
+    ///    non-whitespace child is `<img>` in
+    ///    `<figure class="zd-enlargeable">` + an enlarge `<button>`.
+    ///    Order-independent relative to syntect/mermaid (it only
+    ///    touches `<p>`/`<img>` shapes).
+    /// 6. [`MermaidPlugin`] — replaces `<pre><code class="language-mermaid">`
+    ///    blocks with `<div class="mermaid" data-mermaid>…</div>`.
+    ///    Must run BEFORE [`SyntectPlugin`] so the latter can identify
+    ///    and skip mermaid blocks rather than syntect-highlighting them.
+    /// 7. [`SyntectPlugin`] — replaces remaining fenced code blocks
     ///    with syntect-highlighted HTML. Runs last in the code-block
     ///    chain so the title-figure wrapper and the mermaid-skip
     ///    decision are already baked in.
@@ -191,6 +224,7 @@ impl Pipeline {
         let highlighter = Arc::new(Highlighter::new());
         let mut p = Self::with_mdx();
         // mdast phase.
+        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
@@ -768,6 +802,36 @@ mod tests {
                 "no-plugins pipeline must not synthesize <Note>; got raws={raws:?}",
             );
         }
+    }
+
+    // 15. The `add_trailing_slash` option is honoured both ways when
+    // `StripMdExtensionPlugin` is wired via `add_strip_md_ext()`.
+    #[test]
+    fn add_trailing_slash_option_honoured_both_ways() {
+        // Default (true) — JS-aligned shape with the slash.
+        let mut p = Pipeline::with_mdx();
+        p.add_strip_md_ext();
+        let h = p.run("[x](./guide.md)").expect("ok");
+        let html = crate::serializer::serialize(&h);
+        assert!(
+            html.contains("href=\"./guide/\""),
+            "default add_trailing_slash=true should produce ./guide/, got: {html}",
+        );
+
+        // Off — legacy shape without the slash.
+        let mut p = Pipeline::with_mdx();
+        p.set_add_trailing_slash(false);
+        p.add_strip_md_ext();
+        let h = p.run("[x](./guide.md)").expect("ok");
+        let html = crate::serializer::serialize(&h);
+        assert!(
+            html.contains("href=\"./guide\""),
+            "add_trailing_slash=false should keep legacy shape, got: {html}",
+        );
+        assert!(
+            !html.contains("href=\"./guide/\""),
+            "add_trailing_slash=false must NOT add the trailing slash, got: {html}",
+        );
     }
 
     #[test]
