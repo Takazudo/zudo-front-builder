@@ -11,7 +11,7 @@
 //! viable, we want the swap to be a one-line change at the `CssPipeline`
 //! constructor:
 //!
-//! ```ignore
+//! ```text
 //! // before:
 //! let engine = TailwindSubprocessEngine::with_default_config();
 //! // after:
