@@ -23,9 +23,12 @@
 //!    for compiled collection entries — see
 //!    `zfb_content::mdx_jsx_emit::compile_mdx_to_jsx_module`).
 //!
-//! In both cases the loader calls `zfb_content::mdx_jsx_emit::mdx_to_jsx_module`
-//! first, then hands the resulting JSX source through the existing SWC
-//! pipeline. Compile errors from `zfb-content` are wrapped as
+//! In both cases the loader calls
+//! `zfb_content::mdx_jsx_emit::mdx_to_jsx_module_with_pipeline` first
+//! (threading the loader's cached default content [`Pipeline`] so
+//! mdast-phase plugins like admonitions and CJK-friendly emphasis fire on
+//! the MDX source), then hands the resulting JSX source through the
+//! existing SWC pipeline. Compile errors from `zfb-content` are wrapped as
 //! [`RenderError::Compile`] carrying the original specifier as the file
 //! location so the rest of the renderer's error UX still applies.
 //!

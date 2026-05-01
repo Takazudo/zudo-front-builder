@@ -145,11 +145,15 @@ fn mdx_admonition_directive_runs_through_pipeline() {
         "literal `:::note` leaked into compiled output (pipeline not threaded?), got:\n{js}",
     );
     // The admonitions plugin emits a `<Note>` JSX element. The emitter
-    // synthesises `Note` references and a `throw new Error(...)` guard
-    // — both of which carry the literal identifier into the lowered JS.
+    // then synthesises a `const Note = _components.Note ?? components.Note`
+    // preamble entry, so the literal `_components.Note` substring only
+    // appears in the lowered JS when the AdmonitionsPlugin actually ran
+    // — pinning the assertion to that specific shape (rather than the bare
+    // word `Note`, which could appear in unrelated comments or fixture
+    // strings) keeps the test robust against future refactors.
     assert!(
-        js.contains("Note"),
-        "expected `Note` component reference from admonitions plugin, got:\n{js}",
+        js.contains("_components.Note"),
+        "expected `_components.Note` preamble entry from admonitions plugin, got:\n{js}",
     );
 }
 
