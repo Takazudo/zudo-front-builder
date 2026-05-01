@@ -533,6 +533,20 @@ fn build_default_islands_payload(
         }
     };
     if islands_set.is_empty() {
+        // Issue #122 / #117: this branch used to be silent, which made
+        // pnpm-workspace consumers with `"use client"` islands inside a
+        // workspace package look "fine" while shipping no client
+        // runtime. Surface it loudly so authoring problems (a missing
+        // `"use client"` directive, an island reachable only through a
+        // path the scanner can't follow) become discoverable.
+        output::warn(format!(
+            "scanned {} page entr{} but found no \"use client\" islands; \
+             dist/assets/islands.js will not be emitted. \
+             Verify each island module starts with the literal directive \
+             \"use client\" and is reachable from a page in pages/.",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        ));
         return Ok(None);
     }
 

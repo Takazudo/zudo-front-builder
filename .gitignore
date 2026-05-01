@@ -7,6 +7,16 @@ Cargo.lock
 node_modules/
 .pnpm-store/
 
+# Test-fixture node_modules — NOT real installs. The
+# pnpm-workspace-consumer fixture intentionally hand-authors the
+# `node_modules/@takazudo/zfb-blog-islands/` package layout that pnpm
+# creates for a workspace dependency, so the islands scanner can be
+# regression-tested without spinning up a real pnpm install. Whitelist
+# the fixture path so the global `node_modules/` rule above doesn't
+# strip it from git.
+!crates/zfb-islands/fixtures/pnpm-workspace-consumer/node_modules/
+!crates/zfb-islands/fixtures/pnpm-workspace-consumer/node_modules/**
+
 # Editors
 .DS_Store
 .vscode/

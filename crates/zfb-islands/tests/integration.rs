@@ -224,6 +224,53 @@ fn fixture_root(name: &str) -> PathBuf {
     crate_dir.join("fixtures").join(name)
 }
 
+/// Regression for issue #122 / #117 — pnpm-workspace consumer shape.
+///
+/// Reproduces the bug where production builds of a pnpm-workspace
+/// consumer ship `data-zfb-island` markers but no client runtime: the
+/// scanner used to short-circuit on bare specifiers and `FsResolver`
+/// returned `None` for them, so workspace packages whose source `.tsx`
+/// carried `"use client"` never made it into the islands set.
+///
+/// The fixture lays out a consumer with:
+///
+/// - `pages/home.tsx` importing `@takazudo/zfb-blog-islands` by its
+///   scoped bare name.
+/// - `node_modules/@takazudo/zfb-blog-islands/package.json` with a
+///   `"source": "src/index.tsx"` field (the convention pnpm-workspace
+///   TypeScript packages use for un-built sources).
+/// - `node_modules/@takazudo/zfb-blog-islands/src/index.tsx` carrying
+///   `"use client"` and exporting two components.
+///
+/// `scan_islands` against this fixture must yield two islands —
+/// `Counter` and `ThemeToggle` — each pointing at the workspace
+/// package's source file.
+#[test]
+fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
+    let root = fixture_root("pnpm-workspace-consumer");
+    let pages = vec![root.join("pages/home.tsx")];
+    let resolver = FsResolver::new();
+    let islands = scan_islands(&pages, &resolver).expect("scan");
+
+    let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
+    assert_eq!(
+        names,
+        vec!["Counter".to_string(), "ThemeToggle".to_string()],
+        "expected exactly Counter + ThemeToggle from workspace package; got {islands:?}",
+    );
+
+    // Both islands must point at the same workspace-package source file
+    // — proves the scanner walked node_modules and read package.json's
+    // `source` field rather than picking up a stray copy somewhere else.
+    let expected = root
+        .join("node_modules/@takazudo/zfb-blog-islands/src/index.tsx")
+        .canonicalize()
+        .expect("canonicalize workspace island source");
+    for island in &islands {
+        assert_eq!(island.source_path, expected, "got: {island:?}");
+    }
+}
+
 #[test]
 fn two_islands_fixture_yields_two_entry_manifest() {
     let root = fixture_root("two-islands");

@@ -1,0 +1,6 @@
+{
+  "name": "@takazudo/zfb-blog-islands",
+  "version": "0.0.0",
+  "type": "module",
+  "source": "src/index.tsx"
+}
