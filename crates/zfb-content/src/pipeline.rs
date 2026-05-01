@@ -24,8 +24,8 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
-    AdmonitionsPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin,
-    SyntectPlugin,
+    AdmonitionsPlugin, CjkFriendlyPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin,
+    MermaidPlugin, SyntectPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -146,7 +146,11 @@ impl Pipeline {
     ///
     /// **mdast phase** (run first, against the parsed markdown tree):
     ///
-    /// 1. [`AdmonitionsPlugin`] — directive-style transforms run on
+    /// 1. [`CjkFriendlyPlugin`] — re-tokenises emphasis/strong markers
+    ///    around CJK characters that base CommonMark flanking rules
+    ///    rejected. Runs before any visitor that depends on emphasis
+    ///    being already tokenised.
+    /// 2. [`AdmonitionsPlugin`] — directive-style transforms run on
     ///    mdast because [`DirectiveRegistry`] folds runs of paragraphs
     ///    delimited by `:::name` … `:::` into a single
     ///    [`MdxJsxFlowElement`]. That collapsing has to happen before
@@ -156,24 +160,24 @@ impl Pipeline {
     ///
     /// **hast phase** (run after mdast→hast conversion, in this order):
     ///
-    /// 2. [`HeadingLinksPlugin`] — adds `id` + permalink anchor to
+    /// 3. [`HeadingLinksPlugin`] — adds `id` + permalink anchor to
     ///    `<h2>`–`<h6>`. Runs first in the hast phase so subsequent
     ///    plugins that might rewrite headings (none today, but the
     ///    door is open) see the slugified ids.
-    /// 3. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
+    /// 4. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
     ///    in `<figure>` + `<figcaption>`. Must run BEFORE
     ///    [`SyntectPlugin`] because syntect replaces the whole `<pre>`
     ///    with a [`HastNode::Raw`] HTML fragment; once that happens,
     ///    the `data-meta` attribute is no longer reachable.
-    /// 4. [`ImageEnlargePlugin`] — replaces `<img>` elements that have
+    /// 5. [`ImageEnlargePlugin`] — replaces `<img>` elements that have
     ///    an explicit `width` attribute with `<ImageEnlarge>` JSX
     ///    markers. Order-independent relative to syntect/mermaid (it
     ///    only touches `<img>`).
-    /// 5. [`MermaidPlugin`] — flags `<pre><code class="language-mermaid">`
+    /// 6. [`MermaidPlugin`] — flags `<pre><code class="language-mermaid">`
     ///    blocks with `data-mermaid="true"`. Must run BEFORE
     ///    [`SyntectPlugin`] so the latter can identify and skip
     ///    mermaid blocks rather than syntect-highlighting them.
-    /// 6. [`SyntectPlugin`] — replaces remaining fenced code blocks
+    /// 7. [`SyntectPlugin`] — replaces remaining fenced code blocks
     ///    with syntect-highlighted HTML. Runs last in the code-block
     ///    chain so the title-figure wrapper and the mermaid-skip
     ///    decision are already baked in.
@@ -191,6 +195,7 @@ impl Pipeline {
         let highlighter = Arc::new(Highlighter::new());
         let mut p = Self::with_mdx();
         // mdast phase.
+        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
