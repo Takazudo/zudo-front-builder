@@ -27,3 +27,8 @@ __inbox/
 # Per-project zfb cache (graph snapshot, etc.) — created in user
 # project roots when `zfb dev` runs. Never committed.
 .zfb/
+
+# Stale renderer bootstrap files left at workspace root when the
+# miniflare subprocess is killed before NamedTempFile drop runs
+# (e.g. SIGKILL). See crates/zfb-build/src/renderer.rs.
+/zfb-renderer-bootstrap-*.mjs
