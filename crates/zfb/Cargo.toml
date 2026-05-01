@@ -17,6 +17,9 @@ path = "src/lib.rs"
 zfb-diagnostics = { path = "../zfb-diagnostics" }
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 anyhow = { workspace = true }
+# Sub 3 / #108: dyn-compat async trait used by the plugin-host →
+# zfb-server dispatcher adapter in `commands::plugins`.
+async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

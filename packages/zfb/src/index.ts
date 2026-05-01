@@ -22,6 +22,21 @@ export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 // canonical access path. Each named override is also re-exported so
 // consumers can tree-shake-import a single one (`import { ContentLink } from "@takazudo/zfb"`)
 // without dragging in the whole map.
+// Plugin lifecycle types + `definePlugin` identity helper. Plugin
+// authors typically import these from "@takazudo/zfb/plugins" but the
+// root entry re-exports them so simple plugins can pull everything from
+// one path.
+export {
+  definePlugin,
+  type ZfbBuildHookContext,
+  type ZfbDevMiddlewareContext,
+  type ZfbDevMiddlewareHandler,
+  type ZfbDevMiddlewareRequest,
+  type ZfbDevMiddlewareResponse,
+  type ZfbPlugin,
+  type ZfbPluginLogger,
+} from "./plugins.js";
+
 export {
   ContentBlockquote,
   ContentCode,

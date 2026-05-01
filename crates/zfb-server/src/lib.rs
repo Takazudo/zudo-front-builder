@@ -40,6 +40,7 @@
 
 pub mod inject;
 pub mod livereload;
+pub mod plugin_middleware;
 pub mod routes;
 
 use std::future::Future;
@@ -52,6 +53,11 @@ use tracing::info;
 
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
+pub use plugin_middleware::{
+    path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,
+    PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
+    PluginResponseEncoding,
+};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
@@ -88,6 +94,12 @@ pub struct ServeOpts {
     /// crate sends [`ReloadEvent`]s into this from
     /// [`zfb_build::BuildOrchestrator::run`]'s `on_outcome` callback.
     pub broadcast: ReloadTx,
+
+    /// Dev-middleware registrations from user plugins (Sub 3 / #108).
+    /// `None` = no plugins declared a `devMiddleware` hook; the dev
+    /// router skips the plugin-dispatch leg entirely. The bin crate
+    /// (`zfb dev`) builds this from the long-lived plugin host.
+    pub plugins: Option<DevMiddlewareSet>,
 }
 
 impl ServeOpts {
@@ -150,6 +162,7 @@ where
     let state = AppState {
         pages: opts.pages,
         broadcast: opts.broadcast,
+        plugins: opts.plugins,
     };
     let router = build_router(state, opts.dist_root.clone(), opts.public_root.clone());
 

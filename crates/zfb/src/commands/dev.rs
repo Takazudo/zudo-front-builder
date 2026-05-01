@@ -123,6 +123,30 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
     let pages = PageCache::new();
 
+    // Sub 3 / #108 — plugin lifecycle. Spawn the host once at boot so
+    // `preBuild` runs before the bundler/renderer start, and so dev-
+    // middleware registrations can be installed into the dev server.
+    // The host is dropped when this `run` returns (Ctrl+C path), which
+    // kills the subprocess.
+    let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
+    if let Some(h) = plugin_host.as_ref() {
+        let ctx = zfb_build::BuildHookContext {
+            project_root: project_root.clone(),
+            out_dir: dist_root.clone(),
+            config: serde_json::to_value(&cfg)
+                .context("plugin lifecycle: serialise config for preBuild ctx")?,
+        };
+        h.run_pre_build(&ctx)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("preBuild lifecycle hook")?;
+    }
+    let plugin_set = if let Some(h) = plugin_host.as_ref() {
+        crate::commands::plugins::build_dev_middleware_set(h, &project_root, &cfg).await?
+    } else {
+        None
+    };
+
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
     //    noop renderer so the dev server still boots — the user can
@@ -207,6 +231,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         addr,
         pages,
         broadcast: tx,
+        plugins: plugin_set,
     };
 
     output::ready(&format!("http://{host}:{port}"));
@@ -227,6 +252,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     if let Some(session) = dev_session {
         session.shutdown_explicit();
+    }
+
+    // Sub 3 / #108 — tear down the plugin host before exit so the Node
+    // subprocess doesn't outlive `zfb dev`. Best-effort: a kill via
+    // `kill_on_drop` covers the panic / Ctrl+C path; the explicit
+    // shutdown is the graceful one.
+    if let Some(h) = plugin_host {
+        let _ = h.shutdown().await;
     }
 
     // Persist the graph one more time before exit so the latest

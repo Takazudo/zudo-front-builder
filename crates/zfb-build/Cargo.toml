@@ -34,7 +34,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+# Sub 3 / #108: `process` + `io-util` + `fs` add the long-lived plugin
+# host subprocess with newline-delimited JSON over stdio. `process`
+# brings `tokio::process::Command`, `io-util` brings `AsyncBufReadExt`
+# / `AsyncWriteExt`, `fs` brings `tokio::fs::write` for staging the
+# embedded `plugin-host.mjs` into a tempdir at spawn time.
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "process", "io-util", "fs"] }
 tracing = "0.1"
 # Build-time render orchestrator (T6). `blocking` keeps the renderer
 # loop synchronous to match the bundler's call style; `rustls-tls`
