@@ -1,0 +1,293 @@
+//! Tests for `mdx_to_jsx_module_with_pipeline` (#121).
+//!
+//! These tests exercise the hast-detour wired in for issue #121: when
+//! the JSX emit path is given a [`Pipeline`], it now runs both mdast
+//! AND hast visitors against the parsed tree. Today the HTML serializer
+//! path (`Pipeline::run`) and the JSX emit path share the same
+//! plugin chain end-to-end.
+//!
+//! Coverage matrix (one test per default plugin shipped by
+//! `Pipeline::with_defaults`, plus one for the opt-in
+//! `add_strip_md_ext()`, plus one MDX-passthrough sanity case):
+//!
+//! 1. heading-links: `<h2>`–`<h6>` get an `id` attribute and an empty
+//!    permalink anchor child.
+//! 2. code-title: `<pre data-meta='title="…"'>` is wrapped in a
+//!    `code-block-container` div.
+//! 3. image-enlarge: a `<p>` whose only child is `<img>` becomes a
+//!    `<figure class="zd-enlargeable">` with an enlarge button.
+//! 4. mermaid: a fenced ```mermaid block becomes a
+//!    `<div class="mermaid" data-mermaid>…</div>`.
+//! 5. syntect: a non-mermaid fenced code block routes through
+//!    syntect (output reaches the JSX module wrapped in
+//!    `dangerouslySetInnerHTML`).
+//! 6. strip-md-ext (opt-in): internal `[x](./guide.md)` links lose
+//!    the `.md` and gain a trailing slash on the JSX path.
+//! 7. MDX component passthrough: a `<Note>` reference still triggers
+//!    the PascalCase preamble and survives in the JSX body.
+
+use zfb_content::pipeline::Pipeline;
+use zfb_content::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
+use zfb_render::{CompileOptions, SwcPipeline};
+
+fn emit_with_defaults(src: &str) -> String {
+    let mut p = Pipeline::with_defaults();
+    mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
+        .expect("pipeline emit ok")
+}
+
+fn emit_with_defaults_strip_md(src: &str) -> String {
+    let mut p = Pipeline::with_defaults();
+    p.add_strip_md_ext();
+    mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
+        .expect("pipeline emit ok")
+}
+
+#[test]
+fn heading_links_plugin_fires_on_jsx_path() {
+    // h2 must get an id="…" attribute AND an empty permalink anchor
+    // child with class="hash-link".
+    let out = emit_with_defaults("## Hello World\n");
+    assert!(
+        out.contains("id=\"hello-world\""),
+        "heading should get id slug from heading-links plugin:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"hash-link\""),
+        "heading should get hash-link anchor child:\n{out}",
+    );
+    assert!(
+        out.contains("aria-label=\"Direct link to Hello World\""),
+        "heading anchor should carry aria-label:\n{out}",
+    );
+    // h1 stays untouched (heading-links never sees it).
+    let out = emit_with_defaults("# Page Title\n");
+    assert!(
+        !out.contains("id=\"page-title\""),
+        "h1 must NOT receive an id:\n{out}",
+    );
+}
+
+#[test]
+fn code_title_plugin_fires_on_jsx_path() {
+    let out =
+        emit_with_defaults("```rust title=\"main.rs\"\nfn main() {}\n```\n");
+    assert!(
+        out.contains("class=\"code-block-container\""),
+        "code-title plugin should wrap titled <pre> in a container:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"code-block-title\""),
+        "code-title plugin should emit a title bar:\n{out}",
+    );
+    // Title text survives.
+    assert!(
+        out.contains("\"main.rs\""),
+        "title text should survive into the JSX body:\n{out}",
+    );
+}
+
+#[test]
+fn image_enlarge_plugin_fires_on_jsx_path() {
+    // A standalone <p><img></p> becomes <figure class="zd-enlargeable">…</figure>.
+    let out = emit_with_defaults("![alt](pic.png)\n");
+    assert!(
+        out.contains("class=\"zd-enlargeable\""),
+        "image-enlarge should produce a zd-enlargeable figure:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"zd-enlarge-btn\""),
+        "image-enlarge should attach the enlarge button:\n{out}",
+    );
+    assert!(
+        out.contains("aria-label=\"Enlarge image\""),
+        "enlarge button must carry aria-label:\n{out}",
+    );
+}
+
+#[test]
+fn mermaid_plugin_fires_on_jsx_path() {
+    let out = emit_with_defaults("```mermaid\ngraph TD;\n  A-->B;\n```\n");
+    assert!(
+        out.contains("class=\"mermaid\""),
+        "mermaid plugin should produce a mermaid div:\n{out}",
+    );
+    assert!(
+        out.contains("data-mermaid"),
+        "mermaid plugin should emit the data-mermaid attribute:\n{out}",
+    );
+    // The original code/pre shell must NOT survive — the mermaid
+    // plugin replaces the entire <pre>.
+    assert!(
+        !out.contains("language-mermaid"),
+        "language-mermaid class must not leak past mermaid plugin:\n{out}",
+    );
+    // Diagram source text survives via the JS string literal route.
+    assert!(
+        out.contains("graph TD;"),
+        "mermaid source text should survive into the JSX body:\n{out}",
+    );
+}
+
+#[test]
+fn syntect_plugin_fires_on_jsx_path() {
+    // syntect emits HTML, which the bridge wraps in
+    // dangerouslySetInnerHTML — both markers must show up.
+    let out = emit_with_defaults("```rust\nfn main() {}\n```\n");
+    assert!(
+        out.contains("dangerouslySetInnerHTML"),
+        "syntect HTML output must be embedded via dangerouslySetInnerHTML:\n{out}",
+    );
+    assert!(
+        out.contains("syntect-"),
+        "syntect class hook must reach the JSX body:\n{out}",
+    );
+}
+
+#[test]
+fn strip_md_ext_plugin_fires_on_jsx_path() {
+    // Opt-in via `add_strip_md_ext()` after `with_defaults()`. The
+    // default trailing-slash mode should rewrite ./guide.md → ./guide/.
+    let out = emit_with_defaults_strip_md("[x](./guide.md)\n");
+    assert!(
+        out.contains("href=\"./guide/\""),
+        "strip-md-ext should rewrite internal .md to ./guide/:\n{out}",
+    );
+    assert!(
+        !out.contains("./guide.md"),
+        ".md must be stripped from internal hrefs:\n{out}",
+    );
+}
+
+#[test]
+fn mdx_component_passthrough_survives_hast_detour() {
+    // A PascalCase MDX component reference must still trigger the
+    // preamble and survive verbatim in the JSX body. This is the
+    // sanity case for the hast detour: the JsxRaw flavour of hast
+    // raw nodes preserves JSX semantics across the detour.
+    let out = emit_with_defaults("<Note>hello</Note>\n");
+    assert!(
+        out.contains("const Note = _components.Note ?? components.Note;"),
+        "PascalCase preamble must be emitted for <Note>:\n{out}",
+    );
+    assert!(
+        out.contains("if (!Note) throw new Error("),
+        "PascalCase guard must be emitted for <Note>:\n{out}",
+    );
+    assert!(
+        out.contains("<Note>") && out.contains("</Note>"),
+        "<Note> opening/closing tags must survive the detour:\n{out}",
+    );
+}
+
+#[test]
+fn bare_pipeline_runs_no_plugins_on_jsx_path() {
+    // `Pipeline::with_mdx()` ships zero visitors. The hast detour
+    // still runs (we built a tree, walked it, emitted JSX), but no
+    // visitor mutated it — so heading-links / code-title / etc. must
+    // NOT fire.
+    let mut p = Pipeline::with_mdx();
+    let out = mdx_to_jsx_module_with_pipeline(
+        "## Hello\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("emit ok");
+    assert!(
+        !out.contains("id=\"hello\""),
+        "bare pipeline must NOT add heading-links id:\n{out}",
+    );
+    assert!(
+        !out.contains("class=\"hash-link\""),
+        "bare pipeline must NOT add hash-link anchor:\n{out}",
+    );
+}
+
+#[test]
+fn defaults_compose_for_titled_rust_block() {
+    // code-title MUST run before syntect: the title wrapper survives
+    // and the inner <pre> becomes syntect HTML inside dangerously-set
+    // inner HTML.
+    let out = emit_with_defaults(
+        "```rust title=\"main.rs\"\nfn main() {}\n```\n",
+    );
+    assert!(
+        out.contains("class=\"code-block-container\""),
+        "container must survive composition:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"code-block-title\""),
+        "title bar must survive composition:\n{out}",
+    );
+    assert!(
+        out.contains("dangerouslySetInnerHTML"),
+        "syntect output must be embedded via dangerouslySetInnerHTML:\n{out}",
+    );
+    assert!(
+        out.contains("syntect-"),
+        "syntect class hook must reach the JSX body:\n{out}",
+    );
+}
+
+/// SWC-acceptance smoke: every plugin's output (including the
+/// dangerouslySetInnerHTML wrap and the JsxRaw passthrough) must
+/// produce a valid TSX module that survives SWC's JSX transform.
+#[test]
+fn jsx_with_hast_detour_compiles_via_swc() {
+    let pipeline_compile = SwcPipeline::new();
+
+    // Cover heading-links + syntect + code-title + image-enlarge +
+    // mermaid + an MDX component in one document so the smoke covers
+    // the full default chain end-to-end.
+    let src = "# Title\n\
+        \n\
+        ## Section\n\
+        \n\
+        Welcome to **bold** text.\n\
+        \n\
+        <Note>callout body</Note>\n\
+        \n\
+        ![alt](pic.png)\n\
+        \n\
+        ```rust title=\"main.rs\"\n\
+        fn main() {}\n\
+        ```\n\
+        \n\
+        ```mermaid\n\
+        graph TD;\n\
+          A-->B;\n\
+        ```\n";
+    let out = emit_with_defaults(src);
+    let opts =
+        CompileOptions::default().with_filename("hast-detour.tsx".to_string());
+    let compiled = pipeline_compile
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected hast-detour output: {e}\n--- src ---\n{out}"));
+    assert!(
+        compiled.code.contains("MDXContent"),
+        "compiled output missing MDXContent default export:\n{}",
+        compiled.code,
+    );
+    // JSX is fully desugared.
+    assert!(
+        !compiled.code.contains("<_Fragment>"),
+        "JSX leaked through SWC:\n{}",
+        compiled.code,
+    );
+}
+
+#[test]
+fn admonitions_directive_survives_with_hast_phase() {
+    // mdast phase: AdmonitionsPlugin folds `:::note … :::` into a
+    // <Note> element. hast phase: the JsxRaw payload survives
+    // verbatim and registers `Note` for the preamble.
+    let out = emit_with_defaults(":::note\n\nbody text\n\n:::\n");
+    assert!(
+        out.contains("<Note") && out.contains("</Note>"),
+        "directive transform should yield <Note>:\n{out}",
+    );
+    assert!(
+        out.contains("const Note = _components.Note ?? components.Note;"),
+        "Note preamble must be emitted from JsxRaw scan:\n{out}",
+    );
+}
