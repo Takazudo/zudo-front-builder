@@ -9,6 +9,8 @@
   "scripts": {
     "//// === ROOT ===": "",
     "prepare": "lefthook install --reset-hooks-path",
+    "//// === BINARIES ===": "",
+    "fetch:tailwind": "node scripts/fetch-tailwind.mjs",
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",
     "docs:dev": "pnpm --filter docs dev",

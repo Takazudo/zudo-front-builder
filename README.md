@@ -68,6 +68,10 @@ since that is the shape miniflare receives. Any other value (`0`,
 unset, `yes`, etc.) leaves the build silent so a stray export does
 not change CI output.
 
+## Building locally
+
+See [BUILDING.md](./BUILDING.md) for the toolchain, the one-time `pnpm fetch:tailwind` setup, and the `ZFB_TAILWIND_BIN` override.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
