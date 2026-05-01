@@ -95,6 +95,19 @@ impl Route {
             .or(self.output_extension.as_deref())
             .unwrap_or(DEFAULT_OUTPUT_EXTENSION);
 
+        // Well-known error-page convention: `pages/404.tsx` → `404.html`
+        // (not `404/index.html`). Applies only to top-level error pages —
+        // a single static segment whose name is the bare error code — so
+        // that `pages/foo/404.tsx` (segment count > 1) continues to
+        // produce `foo/404/index.html`.
+        if ext == DEFAULT_OUTPUT_EXTENSION && frontmatter_extension_override.is_none() {
+            if let [Segment::Static(name)] = self.segments.as_slice() {
+                if matches!(name.as_str(), "404" | "500") {
+                    return PathBuf::from(format!("{name}.html"));
+                }
+            }
+        }
+
         // Build the URL-style path from segments. Dynamic / catchall
         // segments fall back to their template form (`:name`,
         // `:name{.+}`); concrete builds wouldn't reach here.

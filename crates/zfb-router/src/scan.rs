@@ -527,4 +527,47 @@ mod tests {
             PathBuf::from("blog/index.xml"),
         );
     }
+
+    // ---- error-page convention (Sub 107) ------------------------------------
+
+    #[test]
+    fn top_level_404_emits_at_root() {
+        // `pages/404.tsx` → `404.html` (not `404/index.html`).
+        let r = route_from("404.tsx");
+        assert_eq!(r.template(), "/404");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+        assert_eq!(r.output_filename(None), PathBuf::from("404.html"));
+    }
+
+    #[test]
+    fn top_level_500_emits_at_root() {
+        // `pages/500.tsx` → `500.html` (not `500/index.html`).
+        let r = route_from("500.tsx");
+        assert_eq!(r.template(), "/500");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+        assert_eq!(r.output_filename(None), PathBuf::from("500.html"));
+    }
+
+    #[test]
+    fn nested_404_still_uses_directory_index() {
+        // `pages/foo/404.tsx` is a regular page: `foo/404/index.html`.
+        let r = route_from("foo/404.tsx");
+        assert_eq!(r.template(), "/foo/404");
+        assert_eq!(
+            r.output_filename(None),
+            PathBuf::from("foo/404/index.html"),
+        );
+    }
+
+    #[test]
+    fn about_still_uses_directory_index() {
+        // Non-error pages are unaffected.
+        let r = route_from("about.tsx");
+        assert_eq!(
+            r.output_filename(None),
+            PathBuf::from("about/index.html"),
+        );
+    }
 }
