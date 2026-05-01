@@ -67,6 +67,7 @@ impl Harness {
             addr,
             pages: pages.clone(),
             broadcast: tx.clone(),
+            plugins: None,
         };
 
         let server = tokio::spawn(async move {

@@ -28,6 +28,10 @@
       "types": "./src/config.ts",
       "default": "./src/config.ts"
     },
+    "./plugins": {
+      "types": "./src/plugins.ts",
+      "default": "./src/plugins.ts"
+    },
     "./frontmatter": {
       "types": "./src/frontmatter.ts",
       "default": "./src/frontmatter.ts"

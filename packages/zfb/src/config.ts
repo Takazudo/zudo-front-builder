@@ -30,6 +30,26 @@ export type TailwindConfig = {
   enabled?: boolean;
 };
 
+/**
+ * One plugin entry in `zfb.config.ts`.
+ *
+ * `name` MUST be a module reference that Node's resolver can locate from
+ * the project root. The zfb config loader (`crates/zfb/js/config-loader.mjs`)
+ * resolves it to an absolute module specifier and the build / dev plugin
+ * host loads it via dynamic `import()`:
+ *
+ * - `"./plugins/my-plugin.mjs"` / `"../shared/plugin.mjs"` —
+ *   path-relative to the project root (the dir containing `zfb.config.ts`).
+ * - `"/abs/path/to/plugin.mjs"` — absolute filesystem path.
+ * - `"@takazudo/zfb-plugin-search"` / `"my-plugin"` — npm bare specifier
+ *   resolved against the project's `node_modules`.
+ *
+ * Inline-function hooks are NOT supported; the plugin module's default
+ * export must be a [`ZfbPlugin`] (see `@takazudo/zfb/plugins`).
+ *
+ * `options` is passed verbatim to the plugin's hook contexts; treat
+ * the schema as plugin-specific.
+ */
 export type PluginConfig = {
   name: string;
   options?: Record<string, unknown>;

@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -45,6 +45,10 @@ use tower_http::trace::TraceLayer;
 
 use crate::inject::inject_livereload;
 use crate::livereload::{sse_response, ReloadTx};
+use crate::plugin_middleware::{
+    DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
+    PluginResponseEncoding,
+};
 
 /// HTML body returned when a page is not in the cache.
 ///
@@ -292,6 +296,9 @@ pub struct AppState {
     pub pages: PageCache,
     /// Live-reload broadcast sender — cloned per SSE subscription.
     pub broadcast: ReloadTx,
+    /// Optional plugin dev-middleware set. `None` when no user plugins
+    /// declared a `devMiddleware` hook.
+    pub plugins: Option<DevMiddlewareSet>,
 }
 
 /// Build the axum router for the dev server.
@@ -344,22 +351,46 @@ pub async fn sse_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Handler for `GET /` — serve the root page.
-pub async fn page_root(State(state): State<AppState>) -> Response {
-    serve_page(&state, "").await
+pub async fn page_root(State(state): State<AppState>, uri: Uri) -> Response {
+    serve_page(&state, "/", &uri).await
 }
 
 /// Handler for `GET /*path` — serve any other rendered page.
 pub async fn page_handler(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
+    uri: Uri,
 ) -> Response {
-    serve_page(&state, &path).await
+    serve_page(&state, &path, &uri).await
 }
 
-async fn serve_page(state: &AppState, raw_path: &str) -> Response {
+async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
     // Strip any leading slash from the captured wildcard so we can
     // build canonical lookup keys ourselves.
     let trimmed = raw_path.trim_start_matches('/');
+
+    // Sub 3 / #108 — plugin dev-middleware takes priority over the
+    // page cache so a plugin can override a URL that also has a
+    // `pages/foo.tsx`. Handlers may signal "passthrough" if they
+    // decide not to handle the request, in which case we fall back
+    // to the cache lookup below. Forward the full request URI
+    // (including query string) so the plugin can implement
+    // `?since=<timestamp>` etc.
+    if let Some(set) = state.plugins.as_ref() {
+        let path_only = format!("/{trimmed}");
+        if let Some(reg) = set.find_match(&path_only) {
+            // Path + optional query.
+            let full = match uri.path_and_query() {
+                Some(pq) => pq.as_str().to_string(),
+                None => path_only.clone(),
+            };
+            match dispatch_plugin(set, reg, &full).await {
+                PluginDispatchAttempt::Responded(resp) => return resp,
+                PluginDispatchAttempt::Passthrough => {}
+                PluginDispatchAttempt::Errored(resp) => return resp,
+            }
+        }
+    }
 
     let candidates = lookup_keys(trimmed);
     for key in &candidates {
@@ -385,6 +416,132 @@ async fn serve_page(state: &AppState, raw_path: &str) -> Response {
         "text/html; charset=utf-8",
         true,
     )
+}
+
+/// Result of a plugin dev-middleware dispatch attempt. The dev server
+/// folds `Passthrough` into the regular page-cache lookup; everything
+/// else short-circuits with a Response.
+enum PluginDispatchAttempt {
+    Responded(Response),
+    Passthrough,
+    Errored(Response),
+}
+
+/// Build a [`PluginRequest`] for the given URL and dispatch it. Body
+/// extraction is deliberately not done here: dev-middleware in v1 is
+/// scoped to GET-style endpoints (search index, llms.txt, doc-history
+/// proxy). Adding body forwarding is a future extension that requires
+/// drinking the body before the catch-all handler runs.
+async fn dispatch_plugin(
+    set: &DevMiddlewareSet,
+    reg: &PluginRegistration,
+    url_path: &str,
+) -> PluginDispatchAttempt {
+    let req = PluginRequest {
+        method: "GET".into(),
+        url: url_path.to_string(),
+        headers: HashMap::new(),
+        body: None,
+    };
+    match set.dispatcher.dispatch(&reg.handler_id, req).await {
+        Ok(PluginDispatchOutcome::Response(resp)) => {
+            // Decode body and build an axum response. The plugin host
+            // pre-validates the status code; clamp out-of-range to 500
+            // so a misbehaving handler can't synthesise an invalid
+            // response.
+            let status =
+                StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let body_bytes: Vec<u8> = match resp.body_encoding {
+                PluginResponseEncoding::Base64 => match base64_decode(&resp.body) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let msg = format!(
+                            "plugin `{}` returned an invalid base64 body: {}",
+                            reg.plugin, e
+                        );
+                        return PluginDispatchAttempt::Errored(plugin_error_response(&msg));
+                    }
+                },
+                PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
+            };
+            let mut builder = Response::builder().status(status);
+            for (k, v) in resp.headers {
+                if let Ok(value) = HeaderValue::try_from(v) {
+                    builder = builder.header(k, value);
+                }
+            }
+            // Cache busting matches the rest of the dev server — plugin
+            // responses are dev-only artefacts; never let a browser
+            // cache a stale plugin emission across reloads.
+            builder = builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            match builder.body(axum::body::Body::from(body_bytes)) {
+                Ok(resp) => PluginDispatchAttempt::Responded(resp),
+                Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
+                    "failed to build response from plugin `{}`: {e}",
+                    reg.plugin,
+                ))),
+            }
+        }
+        Ok(PluginDispatchOutcome::Passthrough) => PluginDispatchAttempt::Passthrough,
+        Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
+            "plugin `{}` dev-middleware failed: {}",
+            err.plugin, err.message,
+        ))),
+    }
+}
+
+fn plugin_error_response(message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
+        html_escape(message),
+    );
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
+    // Minimal base64 decoder — the dev server already accepts the
+    // utf8 path for the common case; binary bodies are rare here so
+    // we keep the dependency surface lean. Returns the decoded bytes
+    // or a static error description.
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u8 = 0;
+    for ch in s.bytes() {
+        let v = match ch {
+            b'A'..=b'Z' => ch - b'A',
+            b'a'..=b'z' => ch - b'a' + 26,
+            b'0'..=b'9' => ch - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b'\n' | b'\r' | b' ' => continue,
+            _ => return Err("invalid base64 char"),
+        };
+        buf = (buf << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
 }
 
 /// Generate the lookup-key candidates for a given URL path.
@@ -470,6 +627,7 @@ mod tests {
         AppState {
             pages: PageCache::new(),
             broadcast: tx,
+            plugins: None,
         }
     }
 

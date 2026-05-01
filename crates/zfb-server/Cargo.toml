@@ -12,6 +12,10 @@ zfb-build = { path = "../zfb-build" }
 zfb-islands = { path = "../zfb-islands" }
 
 axum = "0.8"
+# Sub 3 / #108: dyn-compat async trait for the dev-middleware
+# dispatcher seam between zfb-server and the plugin host owner. Used
+# only inside `plugin_middleware.rs`.
+async-trait = "0.1"
 mime_guess = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
