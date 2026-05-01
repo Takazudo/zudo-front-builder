@@ -452,16 +452,24 @@ async fn dispatch_plugin(
             let status =
                 StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let body_bytes: Vec<u8> = match resp.body_encoding {
-                PluginResponseEncoding::Base64 => match base64_decode(&resp.body) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let msg = format!(
-                            "plugin `{}` returned an invalid base64 body: {}",
-                            reg.plugin, e
-                        );
-                        return PluginDispatchAttempt::Errored(plugin_error_response(&msg));
+                // Plugin handlers may opt into binary bodies via
+                // `bodyEncoding: "base64"`. Use the standard crate
+                // rather than rolling our own decoder so all the edge
+                // cases (padding, whitespace, URL-safe alphabet) are
+                // handled correctly.
+                PluginResponseEncoding::Base64 => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(resp.body.as_bytes()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            let msg = format!(
+                                "plugin `{}` returned an invalid base64 body: {}",
+                                reg.plugin, e
+                            );
+                            return PluginDispatchAttempt::Errored(plugin_error_response(&msg));
+                        }
                     }
-                },
+                }
                 PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
             };
             let mut builder = Response::builder().status(status);
@@ -513,35 +521,6 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-fn base64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
-    // Minimal base64 decoder — the dev server already accepts the
-    // utf8 path for the common case; binary bodies are rare here so
-    // we keep the dependency surface lean. Returns the decoded bytes
-    // or a static error description.
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let mut buf: u32 = 0;
-    let mut bits: u8 = 0;
-    for ch in s.bytes() {
-        let v = match ch {
-            b'A'..=b'Z' => ch - b'A',
-            b'a'..=b'z' => ch - b'a' + 26,
-            b'0'..=b'9' => ch - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            b'\n' | b'\r' | b' ' => continue,
-            _ => return Err("invalid base64 char"),
-        };
-        buf = (buf << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(((buf >> bits) & 0xff) as u8);
-        }
-    }
-    Ok(out)
 }
 
 /// Generate the lookup-key candidates for a given URL path.

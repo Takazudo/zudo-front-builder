@@ -16,6 +16,9 @@ axum = "0.8"
 # dispatcher seam between zfb-server and the plugin host owner. Used
 # only inside `plugin_middleware.rs`.
 async-trait = "0.1"
+# Sub 3 / #108: base64-decode dev-middleware response bodies declared
+# with `bodyEncoding: "base64"` (binary plugin responses).
+base64 = "0.22"
 mime_guess = "2"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }

@@ -141,14 +141,40 @@ impl DevMiddlewareSet {
 
 /// True iff `url_path` is exactly `prefix` or starts with `prefix/`.
 /// Avoids the classic `"foox".starts_with("foo")` false-positive.
+///
+/// Trailing slashes are normalised first so a registration at `/foo/`
+/// matches a request to `/foo`, `/foo/`, or `/foo/bar` — the operator
+/// shouldn't have to think about whether a plugin spelled the prefix
+/// with or without a trailing slash. Matching the empty prefix `/` is
+/// allowed and behaves like a catch-all.
 pub fn path_matches_prefix(url_path: &str, prefix: &str) -> bool {
-    if url_path == prefix {
+    let url = strip_trailing_slash(url_path);
+    let pref = strip_trailing_slash(prefix);
+    // Empty `pref` after trimming = a literal `/` registration; treat
+    // as a catch-all that matches every URL.
+    if pref.is_empty() {
         return true;
     }
-    if let Some(rest) = url_path.strip_prefix(prefix) {
+    if url == pref {
+        return true;
+    }
+    if let Some(rest) = url.strip_prefix(pref) {
         return rest.starts_with('/');
     }
     false
+}
+
+fn strip_trailing_slash(s: &str) -> &str {
+    // Keep the leading `/` so `"/"` collapses to `""` (the catch-all
+    // signal in `path_matches_prefix`). Stripping a trailing slash
+    // off `"/foo/"` yields `"/foo"` which matches `"/foo"` exactly.
+    if s.len() > 1 && s.ends_with('/') {
+        &s[..s.len() - 1]
+    } else if s == "/" {
+        ""
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
@@ -194,5 +220,26 @@ mod tests {
         assert!(!path_matches_prefix("/foox", "/foo"));
         assert!(path_matches_prefix("/foo", "/foo"));
         assert!(path_matches_prefix("/foo/bar", "/foo"));
+    }
+
+    #[test]
+    fn trailing_slashes_are_normalised_in_both_directions() {
+        // Registration with trailing slash matches request without it.
+        assert!(path_matches_prefix("/foo", "/foo/"));
+        // Request with trailing slash matches registration without it.
+        assert!(path_matches_prefix("/foo/", "/foo"));
+        // Both with trailing slash.
+        assert!(path_matches_prefix("/foo/", "/foo/"));
+        // Sub-paths still match.
+        assert!(path_matches_prefix("/foo/bar", "/foo/"));
+    }
+
+    #[test]
+    fn root_prefix_is_a_catchall() {
+        // A plugin registering `/` claims every URL — used as a
+        // fallback / "catch-everything" surface.
+        assert!(path_matches_prefix("/", "/"));
+        assert!(path_matches_prefix("/anything", "/"));
+        assert!(path_matches_prefix("/anything/nested", "/"));
     }
 }
