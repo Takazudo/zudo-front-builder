@@ -30,15 +30,25 @@ and `crates/zfb/binaries/esbuild/README.md` for the slot-shape rationale
 Binaries are large, platform-specific, and license-bound. They are **never**
 committed to this repository. Instead:
 
-- `.gitignore` excludes the actual binary file paths (e.g. `tailwindcss-v4`).
+- `.gitignore` excludes the actual binary file paths (e.g. `tailwindcss-v4`,
+  `tailwindcss-v4.exe`).
 - The slot directory is preserved in git via `.gitkeep`.
-- Release engineering (a separate, future epic) is responsible for downloading
-  the correct platform-specific binary, verifying its signature/checksum, and
-  placing it into this directory before the release tarball is assembled.
+- Workspace-level fetch tooling materializes the binary on demand:
+  `pnpm fetch:tailwind` (see `scripts/fetch-tailwind.mjs` at the repo root)
+  downloads the pinned asset from the upstream GitHub release, verifies its
+  SHA-256 against the release's `sha256sums.txt`, and places it here.
+  Re-runs are no-ops when the on-disk binary already matches the pinned
+  checksum.
+- The `ZFB_TAILWIND_BIN` env var is the documented escape hatch for
+  consumers and CI environments that already have a tailwindcss binary
+  available — see `crates/zfb-css/README.md` ("Getting the binary").
 
-This sub-task (Sub 4 of [issue #5](https://github.com/Takazudo/zudo-front-builder/issues/5))
-only **reserves the slot** — it does not implement the download or
-release-tarball assembly logic.
+The original Sub 4 of [issue #5](https://github.com/Takazudo/zudo-front-builder/issues/5)
+only **reserved** the slot. The fetch + verify step is now wired up via the
+workspace `fetch:tailwind` script. Release-tarball assembly (bundling the
+binary alongside the `zfb` executable for distribution) is still a separate,
+future concern — this directory's contract is just "where the binary ends up
+at runtime".
 
 ## Runtime contract (sketch)
 

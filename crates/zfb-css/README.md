@@ -22,8 +22,62 @@ This crate invokes the **Tailwind CSS v4 standalone CLI** as a subprocess.
 
 > The pin **must be reviewed and refreshed before each `zfb` release**. Bump
 > `4.2.0` to whatever the latest stable Tailwind v4.x is at release-cut time,
-> and re-run the release-engineering binary-fetch step (future epic) to
-> materialize the matching binary.
+> and re-run `pnpm fetch:tailwind` to materialize the matching binary.
+> The version constant in `scripts/fetch-tailwind.mjs` must move in lockstep
+> with the version line above — both are the source of truth until we add a
+> shared workspace pin file.
+
+## Getting the binary
+
+The binary file is **not** committed to git. There are two supported ways to
+provide it for builds and tests that exercise the Tailwind subprocess path.
+
+### Option 1 (default): `pnpm fetch:tailwind`
+
+From the workspace root:
+
+```sh
+pnpm fetch:tailwind
+```
+
+The script (`scripts/fetch-tailwind.mjs`) detects your platform/arch, downloads
+the matching asset from the [pinned tailwindlabs/tailwindcss release](https://github.com/tailwindlabs/tailwindcss/releases),
+verifies its SHA-256 against the release's `sha256sums.txt`, places it at
+`crates/zfb/binaries/tailwindcss-v4` (or `tailwindcss-v4.exe` on Windows), and
+makes it executable. Re-runs are a fast no-op when the on-disk binary already
+matches the pinned checksum.
+
+Supported platforms: `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`,
+`win32-x64`. On musl-libc Linux distros (Alpine and friends), use the override
+below to point at a manually-fetched musl asset.
+
+### Option 2 (override): `ZFB_TAILWIND_BIN`
+
+If you already have a tailwindcss v4 standalone binary on disk — for example
+because your CI image bundles it, or because you maintain a system-wide copy —
+set the env var to its absolute path and the engine will use it directly:
+
+```sh
+export ZFB_TAILWIND_BIN=/usr/local/bin/tailwindcss
+cargo test -p zfb-css -- --ignored
+```
+
+When `ZFB_TAILWIND_BIN` is set, `pnpm fetch:tailwind` is a no-op (it trusts
+the override). The engine's path resolution is implemented at
+[`crates/zfb-css/src/engine.rs`](src/engine.rs).
+
+### Running the heavyweight tests locally
+
+Tests that need the real binary are gated with `#[ignore]` and run via:
+
+```sh
+ZFB_TAILWIND_BIN="$(pwd)/crates/zfb/binaries/tailwindcss-v4" \
+  cargo test -p zfb-css --tests -- --ignored
+```
+
+The `ZFB_TAILWIND_BIN` export is needed because `cargo test -p <crate>` runs
+with the package directory as CWD; the engine's default relative path
+(`crates/zfb/binaries/tailwindcss-v4`) is resolved from the workspace root.
 
 ### Why a pinned version
 
