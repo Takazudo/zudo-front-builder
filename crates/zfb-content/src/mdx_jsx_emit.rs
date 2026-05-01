@@ -46,7 +46,9 @@ use std::sync::{Mutex, MutexGuard};
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
-use crate::pipeline::{mdast_to_hast, HastNode, Pipeline, PipelineError};
+use crate::pipeline::{
+    mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline, PipelineError,
+};
 use crate::plugins::heading_links::{next_slug, slugify};
 
 /// Options controlling the emitted JSX module.
@@ -208,18 +210,27 @@ fn mdx_to_jsx_module_inner(
     // hast (slug → `id` attribute, anchor child) but the slug
     // computation in `collect_headings` shares the same `next_slug`
     // helper so the emitted `headings` array stays in lockstep with
-    // the rendered `<hN id="…">`.
+    // the rendered `<hN id="…">`. Custom hast visitors that rewrite
+    // heading text or remove headings would diverge — none ship with
+    // `Pipeline::with_defaults()` today; if a future plugin needs to
+    // rewrite headings, this collection should move post-hast.
     let headings = collect_headings(&children);
 
     let (body, html_tags, component_names) = if take_hast_detour {
-        // Wrap children back into a Root so `mdast_to_hast` can recurse
-        // through them as a single node — its public signature takes
-        // `&MdastNode`.
+        // Wrap children back into a Root so `mdast_to_hast_with` can
+        // recurse through them as a single node — its public signature
+        // takes `&MdastNode`.
         let mdast_root = MdastNode::Root(markdown::mdast::Root {
             children,
             position: None,
         });
-        let mut hast = mdast_to_hast(&mdast_root);
+        // Use the JSX-aware strategy so MDX JSX bodies preserve
+        // markdown formatting recursively (`<Note>**bold**</Note>` →
+        // `<Note><strong>bold</strong></Note>`). The HTML serializer
+        // path keeps using the lossy fallback to preserve its
+        // long-standing snapshot output.
+        let strategy = JsxEmitStrategy::JsxPath(&jsx_raw_recursive);
+        let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
         if let Some(p) = pipeline_mut {
             p.apply_hast_visitors(&mut hast);
         }
@@ -906,6 +917,185 @@ fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<S
         }
         i = j;
     }
+}
+
+/// JSX-text recursive renderer plugged into `mdast_to_hast_with` via
+/// [`JsxEmitStrategy::JsxPath`]. Produces JSX-shaped source for the
+/// MDX JSX, MDX expression, and remark-math arms while preserving
+/// markdown formatting inside MDX bodies (`<Note>**bold**</Note>` →
+/// `<Note><strong>bold</strong></Note>`).
+///
+/// The HTML serializer path keeps using `pipeline::reconstruct_jsx`'s
+/// flat-text fallback so existing snapshots stay byte-stable. Picking
+/// recursion only on the JSX path is safe because the bridge already
+/// embeds the resulting JsxRaw payload verbatim — JSX accepts plain
+/// HTML tags inside MDX JSX bodies.
+fn jsx_raw_recursive(node: &MdastNode) -> String {
+    match node {
+        MdastNode::MdxJsxFlowElement(j) => {
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::MdxJsxTextElement(j) => {
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        // Defensive — `mdast_to_hast_with`'s strategy callback only
+        // fires for the JSX-shaped arms above, but if the contract
+        // ever changes we fall back to the recursive child renderer
+        // rather than dropping the node.
+        other => jsx_render_child(other),
+    }
+}
+
+fn jsx_element_text(
+    name: Option<&str>,
+    attrs: &[AttributeContent],
+    children: &[MdastNode],
+) -> String {
+    let tag = name.unwrap_or("");
+    let attrs_str = render_jsx_attrs(attrs);
+    if children.is_empty() {
+        return format!("<{tag}{attrs_str} />");
+    }
+    let inner: String = children.iter().map(jsx_render_child).collect();
+    format!("<{tag}{attrs_str}>{inner}</{tag}>")
+}
+
+/// Recursively render an mdast child as JSX-shaped source.
+///
+/// Mirrors the coverage of [`mdast_to_hast`](crate::pipeline::mdast_to_hast)
+/// — every node kind that has a meaningful HTML rendering produces a
+/// matching plain-HTML JSX tag. Inside an MDX JSX block we cannot
+/// route through `_components.<tag>` (the children live inside a
+/// JsxRaw string, not a `JsxEmitter` invocation), so plain
+/// `<p>`/`<strong>`/etc. ship to JSX as regular HTML elements.
+fn jsx_render_child(node: &MdastNode) -> String {
+    match node {
+        MdastNode::Text(t) => jsx_text_escape(&t.value),
+        MdastNode::Html(h) => h.value.clone(),
+        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxJsxFlowElement(j) => {
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::MdxJsxTextElement(j) => {
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children),
+        MdastNode::Heading(h) => {
+            let depth = h.depth.clamp(1, 6);
+            jsx_wrap_children(&format!("h{depth}"), "", &h.children)
+        }
+        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children),
+        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children),
+        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children),
+        MdastNode::InlineCode(c) => format!("<code>{}</code>", jsx_text_escape(&c.value)),
+        MdastNode::Code(c) => {
+            let mut attrs = String::new();
+            if let Some(lang) = &c.lang {
+                attrs.push_str(&format!(" class=\"language-{}\"", jsx_attr_escape(lang)));
+            }
+            format!(
+                "<pre><code{attrs}>{}</code></pre>",
+                jsx_text_escape(&c.value),
+            )
+        }
+        MdastNode::Link(l) => {
+            let mut attrs = format!(" href=\"{}\"", jsx_attr_escape(&l.url));
+            if let Some(title) = &l.title {
+                attrs.push_str(&format!(" title=\"{}\"", jsx_attr_escape(title)));
+            }
+            format!(
+                "<a{attrs}>{}</a>",
+                l.children.iter().map(jsx_render_child).collect::<String>(),
+            )
+        }
+        MdastNode::Image(i) => {
+            let mut attrs = format!(
+                " src=\"{}\" alt=\"{}\"",
+                jsx_attr_escape(&i.url),
+                jsx_attr_escape(&i.alt),
+            );
+            if let Some(title) = &i.title {
+                attrs.push_str(&format!(" title=\"{}\"", jsx_attr_escape(title)));
+            }
+            format!("<img{attrs} />")
+        }
+        MdastNode::List(l) => {
+            let tag = if l.ordered { "ol" } else { "ul" };
+            let mut attrs = String::new();
+            if l.ordered {
+                if let Some(start) = l.start {
+                    if start != 1 {
+                        attrs.push_str(&format!(" start={{{start}}}"));
+                    }
+                }
+            }
+            format!(
+                "<{tag}{attrs}>{}</{tag}>",
+                l.children.iter().map(jsx_render_child).collect::<String>(),
+            )
+        }
+        MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children),
+        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children),
+        MdastNode::ThematicBreak(_) => "<hr />".to_string(),
+        MdastNode::Break(_) => "<br />".to_string(),
+        MdastNode::Math(m) => format!(
+            "<pre><code class=\"language-math math-display\">{}</code></pre>",
+            jsx_text_escape(&m.value),
+        ),
+        MdastNode::InlineMath(m) => format!(
+            "<code class=\"language-math math-inline\">{}</code>",
+            jsx_text_escape(&m.value),
+        ),
+        MdastNode::Root(r) => r.children.iter().map(jsx_render_child).collect(),
+        // Tables, footnotes, references, ESM, frontmatter, etc. drop
+        // silently here — better than leaking a `Debug` repr.
+        _ => String::new(),
+    }
+}
+
+fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode]) -> String {
+    format!(
+        "<{tag}{attrs}>{}</{tag}>",
+        children.iter().map(jsx_render_child).collect::<String>(),
+    )
+}
+
+/// Escape characters that would terminate / re-open JSX syntax inside
+/// element bodies (`<` / `>` / `{` / `}`). `&` is left alone — JSX
+/// accepts HTML entities verbatim and authors may use them on
+/// purpose.
+fn jsx_text_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '{' => out.push_str("&#123;"),
+            '}' => out.push_str("&#125;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Escape characters that must not appear inside a JSX `"…"` attribute
+/// value (`&` / `<` / `>` / `"`). Mirrors `escape_attr_literal` above
+/// but lives here so the recursive renderer is self-contained.
+fn jsx_attr_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Attribute value carried by HTML-element synthesis (links, images,

@@ -276,6 +276,75 @@ fn jsx_with_hast_detour_compiles_via_swc() {
     );
 }
 
+/// Real-world `<Note>\n\nbody **bold** body\n\n</Note>` shape — the
+/// markdown inside the MDX block must survive into the JSX output so
+/// the rendered DOM still gets the bold formatting. This is the
+/// regression Codex caught in the first round of #121 review: the old
+/// `reconstruct_jsx` fallback `other.to_string()` produced a debug
+/// string instead of recursing into Strong/Emphasis/etc.
+#[test]
+fn mdx_jsx_block_with_markdown_body_preserves_formatting() {
+    let out = emit_with_defaults(
+        "<Note>\n\nThis is **bold** and *italic* text with `code`.\n\n</Note>\n",
+    );
+    // The body must remain visible (not replaced by a debug stringification).
+    assert!(
+        out.contains("This is "),
+        "body text must survive into JSX:\n{out}",
+    );
+    // Bold formatting must reach the output as a JSX element.
+    assert!(
+        out.contains("<strong>") || out.contains("<_components.strong>"),
+        "bold must render as a strong element:\n{out}",
+    );
+    assert!(
+        out.contains("bold"),
+        "bold word must appear in the JSX body:\n{out}",
+    );
+    // The previous regression produced literal `Paragraph` /
+    // `Strong` debug repr — make sure that does not leak.
+    assert!(
+        !out.contains("Paragraph {"),
+        "mdast Debug repr leaked into JSX body:\n{out}",
+    );
+    assert!(
+        !out.contains("Strong {"),
+        "mdast Debug repr leaked into JSX body:\n{out}",
+    );
+}
+
+/// Inline math survives the hast detour (regression for #121 round
+/// one — Math/InlineMath were dropped by the `_ => Raw("")` fallback
+/// in `mdast_to_hast`).
+#[test]
+fn inline_math_survives_hast_detour() {
+    let out = emit_with_defaults("When $x \\to \\infty$ converges.\n");
+    assert!(
+        out.contains("language-math math-inline"),
+        "inline math must reach the JSX output:\n{out}",
+    );
+    // The LaTeX body must be preserved (escaped as a JS string
+    // literal — backslashes doubled).
+    assert!(
+        out.contains("\\\\to") || out.contains("\\\\infty"),
+        "LaTeX backslashes must survive as escaped JS strings:\n{out}",
+    );
+}
+
+/// Block math survives the hast detour.
+#[test]
+fn block_math_survives_hast_detour() {
+    let out = emit_with_defaults("$$\n\\int_0^1 f(x)\\,dx\n$$\n");
+    assert!(
+        out.contains("language-math math-display"),
+        "block math must reach the JSX output:\n{out}",
+    );
+    assert!(
+        out.contains("\\\\int_0^1") || out.contains("\\\\int_"),
+        "LaTeX body must survive as escaped JS strings:\n{out}",
+    );
+}
+
 #[test]
 fn admonitions_directive_survives_with_hast_phase() {
     // mdast phase: AdmonitionsPlugin folds `:::note … :::` into a
