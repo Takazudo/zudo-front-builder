@@ -46,7 +46,7 @@ use std::sync::{Mutex, MutexGuard};
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
-use crate::pipeline::{Pipeline, PipelineError};
+use crate::pipeline::{mdast_to_hast, HastNode, Pipeline, PipelineError};
 use crate::plugins::heading_links::{next_slug, slugify};
 
 /// Options controlling the emitted JSX module.
@@ -92,20 +92,23 @@ pub fn mdx_to_jsx_module(input: &str, opts: MdxJsxOptions) -> Result<String, Pip
 }
 
 /// Compile an MDX source string into a JSX module string, running the
-/// supplied pipeline's mdast visitors against the parsed tree before
-/// JSX emission.
+/// supplied pipeline's mdast AND hast visitors against the parsed tree
+/// before JSX emission.
 ///
 /// Use this entry point when MDX content must be transformed by
-/// content-pipeline plugins (admonitions, CJK-friendly emphasis, etc.)
-/// before reaching the JSX emitter — typically by passing a
-/// [`Pipeline::with_defaults`] from the loader.
+/// content-pipeline plugins (admonitions, CJK-friendly emphasis,
+/// heading anchors, syntax highlighting, mermaid, image-enlarge,
+/// strip-md-ext, …) before reaching the JSX emitter — typically by
+/// passing a [`Pipeline::with_defaults`] from the loader.
 ///
-/// Hast visitors are intentionally NOT applied here: the JSX emit path
-/// goes mdast → JSX directly without building a hast tree, so the
-/// hast-phase plugins (heading-links, code-title, mermaid,
-/// image-enlarge, syntect, strip-md-ext) have no tree to walk on this
-/// path. They still run on the HTML serializer path
-/// ([`Pipeline::run`]).
+/// Implementation note (#121): the JSX path internally takes a hast
+/// detour — `mdast → mdast visitors → mdast_to_hast → hast visitors →
+/// hast→JSX walker` — so the same five hast plugins
+/// `Pipeline::with_defaults` ships (heading-links, code-title,
+/// image-enlarge, mermaid, syntect) plus the opt-in strip-md-ext fire
+/// on MDX content. Pre-#121 this entry point only applied mdast
+/// visitors; the HTML serializer path ([`Pipeline::run`]) already ran
+/// both phases. The two paths now exercise the same plugin chain.
 ///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
@@ -121,16 +124,22 @@ pub fn mdx_to_jsx_module_with_pipeline(
 }
 
 /// Internal core for [`mdx_to_jsx_module`] that optionally runs the
-/// supplied [`Pipeline`]'s mdast visitors against the parsed tree before
-/// JSX emission.
+/// supplied [`Pipeline`]'s mdast AND hast visitors against the parsed
+/// tree before JSX emission.
 ///
 /// When `pipeline` is `None`, this is byte-for-byte identical to the
-/// pre-Sub-46 behaviour: parse → match Root → emit. When `Some`, only
-/// the mdast visitor chain runs against the parsed mdast — hast
-/// visitors are intentionally NOT applied because the JSX emitter does
-/// not construct a hast tree (the JSX path goes mdast → JSX directly).
-/// Hast visitor execution remains the responsibility of the
-/// `serializer` / `Pipeline::run` HTML path.
+/// pre-Sub-46 behaviour: parse → match Root → emit straight from mdast.
+/// Existing zfb-content unit tests assert exact substrings of the
+/// no-pipeline output, so this path is preserved verbatim.
+///
+/// When `pipeline` is `Some`, the body takes a hast detour added in
+/// #121: mdast visitors run first, then `mdast_to_hast` builds a hast
+/// tree, then hast visitors run, then a hast→JSX walker emits the
+/// module body. This lets hast-phase plugins from
+/// [`Pipeline::with_defaults`] (heading-links, code-title,
+/// image-enlarge, mermaid, syntect) plus opt-in strip-md-ext fire on
+/// MDX content. The HTML serializer path ([`Pipeline::run`]) is
+/// unchanged.
 fn mdx_to_jsx_module_inner(
     input: &str,
     opts: MdxJsxOptions,
@@ -178,7 +187,12 @@ fn mdx_to_jsx_module_inner(
         PipelineError::Parse(format!("{}: {m}", opts.filename))
     })?;
 
-    if let Some(p) = pipeline {
+    // When a pipeline is supplied, run the mdast visitors and detour
+    // through hast (#121). Otherwise stay on the original mdast→JSX
+    // path so existing no-pipeline output stays byte-identical.
+    let mut pipeline_mut: Option<&mut Pipeline> = pipeline;
+    let take_hast_detour = pipeline_mut.is_some();
+    if let Some(p) = pipeline_mut.as_deref_mut() {
         p.apply_mdast_visitors(&mut root);
     }
 
@@ -189,10 +203,34 @@ fn mdx_to_jsx_module_inner(
         other => vec![other],
     };
 
-    let mut emitter = JsxEmitter::new();
-    let body = emitter.emit_children_block(&children);
-
+    // Heading metadata is collected from the post-mdast-visitor tree
+    // either way — hast plugins like `HeadingLinksPlugin` mutate the
+    // hast (slug → `id` attribute, anchor child) but the slug
+    // computation in `collect_headings` shares the same `next_slug`
+    // helper so the emitted `headings` array stays in lockstep with
+    // the rendered `<hN id="…">`.
     let headings = collect_headings(&children);
+
+    let (body, html_tags, component_names) = if take_hast_detour {
+        // Wrap children back into a Root so `mdast_to_hast` can recurse
+        // through them as a single node — its public signature takes
+        // `&MdastNode`.
+        let mdast_root = MdastNode::Root(markdown::mdast::Root {
+            children,
+            position: None,
+        });
+        let mut hast = mdast_to_hast(&mdast_root);
+        if let Some(p) = pipeline_mut {
+            p.apply_hast_visitors(&mut hast);
+        }
+        let mut bridge = HastJsxBridge::new();
+        let body = bridge.emit_root(&hast);
+        (body, bridge.html_tags, bridge.component_names)
+    } else {
+        let mut emitter = JsxEmitter::new();
+        let body = emitter.emit_children_block(&children);
+        (body, emitter.html_tags, emitter.component_names)
+    };
 
     let mut out = String::new();
     out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n");
@@ -203,7 +241,7 @@ fn mdx_to_jsx_module_inner(
 
     // Stable, alphabetised default-tag list so the output is
     // deterministic across runs.
-    let mut tags: Vec<&String> = emitter.html_tags.iter().collect();
+    let mut tags: Vec<&String> = html_tags.iter().collect();
     tags.sort();
     for tag in tags {
         out.push_str(&format!("    {tag}: \"{tag}\",\n"));
@@ -213,7 +251,7 @@ fn mdx_to_jsx_module_inner(
 
     // PascalCase identifiers — components the user must supply. Sorted
     // for deterministic output.
-    let mut comps: Vec<&String> = emitter.component_names.iter().collect();
+    let mut comps: Vec<&String> = component_names.iter().collect();
     comps.sort();
     for name in comps {
         out.push_str(&format!(
@@ -621,6 +659,252 @@ impl JsxEmitter {
         } else {
             format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
         }
+    }
+}
+
+/// Walks a [`HastNode`] tree and emits JSX source — the post-#121
+/// counterpart to [`JsxEmitter`].
+///
+/// The mdast→hast detour means hast plugins (heading-links, syntect,
+/// mermaid, image-enlarge, code-title, strip-md-ext) have already
+/// rewritten the tree by the time this bridge runs. The bridge keeps
+/// the same component-routing contract as [`JsxEmitter`]:
+///
+/// - Lowercase [`HastNode::Element`] tags → `<_components.<tag>>` so
+///   callers can override every default tag.
+/// - Plain text → JS string literal in braces (so JSX never sees raw
+///   `<` / `>` in content).
+/// - [`HastNode::Raw`] (HTML — produced by syntect, `MdastNode::Html`,
+///   etc.) → wrapped in a span with `dangerouslySetInnerHTML` so the
+///   DOM still receives the original markup. JSX cannot embed
+///   arbitrary HTML such as inline `<span style="...">` verbatim
+///   because the JSX transform would treat unknown attribute shapes as
+///   syntax errors.
+/// - [`HastNode::JsxRaw`] (MDX JSX, `{…}` expressions) → emitted
+///   verbatim so PascalCase component references and expression
+///   containers survive untouched. PascalCase identifiers in the
+///   payload are scanned and added to `component_names` so the module
+///   preamble emits the `const Name = _components.Name ?? components.Name`
+///   guard.
+/// - [`HastNode::Comment`] → JSX comment `{/* body */}`.
+struct HastJsxBridge {
+    html_tags: std::collections::BTreeSet<String>,
+    component_names: std::collections::BTreeSet<String>,
+}
+
+impl HastJsxBridge {
+    fn new() -> Self {
+        Self {
+            html_tags: std::collections::BTreeSet::new(),
+            component_names: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Emit the body of `<_Fragment>`. Each top-level child of `Root`
+    /// goes on its own line so the generated module stays readable.
+    fn emit_root(&mut self, node: &HastNode) -> String {
+        let HastNode::Root { children } = node else {
+            // Defensive: hast plugins should never replace Root with a
+            // non-Root, but if they did, fall back to single-node emit.
+            let mut out = String::new();
+            let rendered = self.emit_node(node);
+            if !rendered.trim().is_empty() {
+                out.push_str("      ");
+                out.push_str(&rendered);
+                out.push('\n');
+            }
+            return out;
+        };
+        let mut out = String::new();
+        for child in children {
+            let rendered = self.emit_node(child);
+            if rendered.trim().is_empty() {
+                continue;
+            }
+            out.push_str("      ");
+            out.push_str(&rendered);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Emit a single hast node as a JSX expression.
+    fn emit_node(&mut self, node: &HastNode) -> String {
+        match node {
+            HastNode::Root { children } => self.emit_inline_children(children),
+            HastNode::Element {
+                tag,
+                attrs,
+                children,
+                void,
+            } => self.emit_element(tag, attrs, children, *void),
+            HastNode::Text(s) => js_string_literal_in_braces(s),
+            // HTML passthrough — wrap in dangerouslySetInnerHTML so the
+            // browser receives the original markup untouched. JSX
+            // cannot inline arbitrary HTML safely.
+            HastNode::Raw(s) => {
+                if s.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "<span dangerouslySetInnerHTML={{{{__html: {}}}}} />",
+                        js_string_literal(s),
+                    )
+                }
+            }
+            // JSX-shaped passthrough (MDX components, `{…}` expressions)
+            // — embed verbatim, after recording any PascalCase
+            // identifiers so the module preamble can declare them.
+            HastNode::JsxRaw(s) => {
+                collect_jsx_component_names(s, &mut self.component_names);
+                s.clone()
+            }
+            HastNode::Comment(body) => format!("{{/* {} */}}", body.replace("*/", "* /")),
+        }
+    }
+
+    fn emit_inline_children(&mut self, children: &[HastNode]) -> String {
+        children
+            .iter()
+            .map(|c| self.emit_node(c))
+            .collect::<String>()
+    }
+
+    fn emit_element(
+        &mut self,
+        tag: &str,
+        attrs: &[(String, String)],
+        children: &[HastNode],
+        void: bool,
+    ) -> String {
+        // Some tags emitted by hast plugins (e.g. <svg>, <polygon>,
+        // <button>, <figure>) are not in the React-DOM "always
+        // override-able" set we expose by default, but the contract
+        // remains: route every lowercase tag through `_components.<tag>`
+        // so authors can override anything. Pascal-case tags do not
+        // appear in hast Element nodes (mdast emits them as JsxRaw).
+        self.html_tags.insert(tag.to_string());
+        let attrs_str = render_hast_attrs(attrs);
+        if void || is_void_html_tag(tag) {
+            return format!("<_components.{tag}{attrs_str} />");
+        }
+        if children.is_empty() {
+            return format!("<_components.{tag}{attrs_str}></_components.{tag}>");
+        }
+        let inner = self.emit_inline_children(children);
+        format!("<_components.{tag}{attrs_str}>{inner}</_components.{tag}>")
+    }
+}
+
+/// True for canonical HTML5 void elements (matched case-insensitively).
+///
+/// Mirrors `serializer::is_void_tag`'s list so the bridge self-closes
+/// the same set of tags the HTML serializer would.
+fn is_void_html_tag(tag: &str) -> bool {
+    matches!(
+        tag.to_ascii_lowercase().as_str(),
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+/// Render hast `(name, value)` attribute pairs as JSX attribute text.
+///
+/// The `class` attribute name is preserved verbatim — both Preact and
+/// React (via SWC's classic JSX transform) accept the HTML-style name.
+/// Attribute values are HTML-escaped to keep the JSX parser happy
+/// (mirrors `jsx_string_attr` in [`JsxEmitter`]).
+///
+/// Empty-valued attributes (e.g. `data-mermaid=""` synthesized by
+/// `MermaidPlugin`) emit as `attr=""` to keep the attribute present
+/// and serializable.
+fn render_hast_attrs(attrs: &[(String, String)]) -> String {
+    if attrs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (k, v) in attrs {
+        out.push(' ');
+        out.push_str(k);
+        out.push('=');
+        out.push_str(&jsx_string_attr(v));
+    }
+    out
+}
+
+/// Scan a JSX-shaped string for PascalCase opening-tag identifiers and
+/// add them to `out`. The bridge feeds [`HastNode::JsxRaw`] payloads
+/// here so the module preamble emits the
+/// `const Name = _components.Name ?? components.Name` guard for every
+/// referenced component, just like the mdast-only path does via
+/// `JsxEmitter::emit_jsx`.
+///
+/// We do NOT try to be a full JSX parser — the rule is:
+///   - find `<` not preceded by `<` (skips `<<` artefacts);
+///   - the next char must be ASCII uppercase;
+///   - subsequent chars are alphanumeric / `_` / `$` / `.` (dotted
+///     names like `<Foo.Bar>` are tracked under their head, which is
+///     all the preamble emits anyway);
+///   - skip closing tags (`</Name>`), they're picked up by the
+///     matching open.
+///
+/// The logic is intentionally permissive — false positives only mean
+/// the module declares a `const Name = …` it never uses, which is
+/// harmless dead code. False negatives (missing a real reference)
+/// would surface as a `ReferenceError` at runtime, which the existing
+/// `if (!Name) throw new Error(...)` preamble already converts into a
+/// readable diagnostic.
+fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<String>) {
+    let bytes = jsx.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        // Skip closing tag — its open-tag counterpart will already
+        // have been recorded.
+        if j < bytes.len() && bytes[j] == b'/' {
+            i = j + 1;
+            continue;
+        }
+        if j >= bytes.len() {
+            break;
+        }
+        let first = bytes[j];
+        if !first.is_ascii_uppercase() {
+            i = j;
+            continue;
+        }
+        let start = j;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'.' {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        let name = &jsx[start..j];
+        // Track only the head identifier — `Foo.Bar` registers as
+        // `Foo`, matching what the preamble actually declares.
+        let head = name.split('.').next().unwrap_or(name);
+        if !head.is_empty() {
+            out.insert(head.to_string());
+        }
+        i = j;
     }
 }
 
