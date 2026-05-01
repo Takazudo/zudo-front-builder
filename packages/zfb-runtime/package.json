@@ -29,9 +29,10 @@
     "@takazudo/zfb": "workspace:*"
   },
   "devDependencies": {
+    "@takazudo/zfb": "workspace:*",
     "@types/node": "^22.0.0",
+    "happy-dom": "^15.7.4",
     "typescript": "^5.9.0",
-    "vitest": "^2.1.9",
-    "@takazudo/zfb": "workspace:*"
+    "vitest": "^2.1.9"
   }
 }

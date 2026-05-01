@@ -26,3 +26,4 @@ export type {
 } from "./router.js";
 export type { FrameworkAdapter } from "./framework.js";
 export type { ContentSnapshot, EntrySnapshot } from "./snapshot.js";
+export { ViewTransitions, type ViewTransitionsElement } from "./view-transitions.js";
