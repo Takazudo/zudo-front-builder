@@ -271,8 +271,12 @@ impl FsResolver {
     /// Probe an installed package directory for the specifier's actual
     /// source entry point.
     ///
-    /// Subpath imports (`@scope/pkg/components/foo`) probe directly
-    /// against `<pkg_dir>/<subpath>` plus the standard extension list.
+    /// Subpath imports (`@scope/pkg/components/foo`) probe
+    /// `<pkg_dir>/<subpath>` exactly, with extensions appended, and
+    /// finally as a directory containing `index.<ext>` — same shape
+    /// the relative-path branch uses, so a workspace-package directory
+    /// import behaves the same as a project-internal one.
+    ///
     /// Bare-package imports (no subpath) read `package.json` and try
     /// `source` (the convention pnpm-workspace TypeScript packages use
     /// for un-built sources), then `module`, then `main`. If
@@ -280,10 +284,26 @@ impl FsResolver {
     /// fall back to probing `src/index.<ext>` and `index.<ext>` inside
     /// the package root — both common shapes for un-built workspace
     /// packages.
+    ///
+    /// All resolved paths are clamped to live inside `pkg_dir` (after
+    /// canonicalisation): a malicious `package.json` with
+    /// `"source": "../../etc/passwd"` cannot punch out of the package
+    /// directory.
     fn probe_package_entry(&self, pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+        // Canonicalise once for clamp comparisons; if the package dir
+        // can't be canonicalised (e.g. doesn't exist), fall back to the
+        // raw path — the probe's `is_file()` checks will then fail
+        // naturally on anything that doesn't actually live on disk.
+        let pkg_root = pkg_dir.canonicalize().unwrap_or_else(|_| pkg_dir.to_path_buf());
+
+        let probe_dir_or_file = |candidate: PathBuf| -> Option<PathBuf> {
+            self.probe_path_with_index(&candidate)
+                .filter(|found| Self::is_inside(&pkg_root, found))
+        };
+
         if !subpath.is_empty() {
             let candidate = pkg_dir.join(subpath);
-            return Self::probe_with_extensions(&candidate, &self.probe_exts);
+            return probe_dir_or_file(candidate);
         }
 
         // 1) package.json hints — read once, try fields in priority order.
@@ -293,8 +313,7 @@ impl FsResolver {
                 for field in ["source", "module", "main"] {
                     if let Some(rel) = value.get(field).and_then(|v| v.as_str()) {
                         let candidate = pkg_dir.join(rel);
-                        if let Some(found) = Self::probe_with_extensions(&candidate, &self.probe_exts)
-                        {
+                        if let Some(found) = probe_dir_or_file(candidate) {
                             return Some(found);
                         }
                     }
@@ -305,8 +324,27 @@ impl FsResolver {
         // 2) Conventional un-built workspace shapes.
         for prefix in ["src/index", "index"] {
             let candidate = pkg_dir.join(prefix);
-            if let Some(found) = Self::probe_with_extensions(&candidate, &self.probe_exts) {
+            if let Some(found) = probe_dir_or_file(candidate) {
                 return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Probe a candidate path the same way the relative-import branch
+    /// of [`Resolver::resolve`] does: try the path as a file, then with
+    /// each extension appended, and finally as a directory containing
+    /// `index.<ext>`. Returns the first regular file that exists.
+    fn probe_path_with_index(&self, candidate: &Path) -> Option<PathBuf> {
+        if let Some(found) = Self::probe_with_extensions(candidate, &self.probe_exts) {
+            return Some(found);
+        }
+        if candidate.is_dir() {
+            for ext in &self.probe_exts {
+                let probe = candidate.join(format!("index{ext}"));
+                if probe.is_file() {
+                    return Some(probe);
+                }
             }
         }
         None
@@ -331,6 +369,18 @@ impl FsResolver {
             }
         }
         None
+    }
+
+    /// Whether `path`, after canonicalisation, lives at or below
+    /// `root`. Used to clamp resolved package entries inside their
+    /// `node_modules/<pkg>/` directory so a hostile `package.json`
+    /// cannot redirect the scanner outside the package.
+    fn is_inside(root: &Path, path: &Path) -> bool {
+        let canon = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        canon.starts_with(root)
     }
 }
 
@@ -1360,6 +1410,125 @@ mod tests {
         let resolver = FsResolver::without_workspace_probe();
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
         assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// `package.json` `"source": "src"` (a bare directory, no
+    /// `index.tsx` file name in the field) must still resolve via the
+    /// directory `index.<ext>` probe — same shape as a relative
+    /// `import "./foo"` against a directory.
+    #[test]
+    fn fs_resolver_probes_directory_index_when_package_json_source_is_a_directory() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("node_modules").join("ws-pkg");
+        let pkg_src = pkg.join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "src" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+    }
+
+    /// Subpath specifiers that name a directory must also resolve via
+    /// the directory `index.<ext>` probe (`@scope/pkg/components`
+    /// pointing at `<pkg_dir>/components/index.tsx`).
+    #[test]
+    fn fs_resolver_probes_directory_index_for_subpath_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let components = dir
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands")
+            .join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands/components";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+    }
+
+    /// Hostile `package.json` `"source": "../../escape.tsx"` must NOT
+    /// resolve outside the package directory — the workspace probe
+    /// clamps every resolved path inside `node_modules/<pkg>/`.
+    #[test]
+    fn fs_resolver_rejects_package_json_source_that_escapes_pkg_dir() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg).unwrap();
+
+        // The escape target sits OUTSIDE node_modules/ws-pkg/, in the
+        // project root — it has "use client" so if the clamp ever
+        // failed, the scanner would surface it as an island.
+        fs::write(
+            dir.path().join("escape.tsx"),
+            r#""use client";
+            export function Pwn() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Pwn } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "../../escape.tsx" }"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "expected escape attempt to be clamped; got {islands:?}",
+        );
     }
 
     #[test]
