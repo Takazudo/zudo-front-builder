@@ -778,6 +778,82 @@ mod tests {
         assert!(found, "MdxFlowExpression payload must be untouched");
     }
 
+    #[test]
+    fn mdx_jsx_text_element_body_untouched() {
+        // Inline (`text`) MDX JSX element — single line, parses as
+        // MdxJsxTextElement (not MdxJsxFlowElement). Cover the inline
+        // form explicitly so both JSX node types in the no-rewrite list
+        // have a dedicated test.
+        let mut mdast = markdown::to_mdast(
+            "Outside <Inline>これは**重要。**テスト</Inline> after",
+            &markdown::ParseOptions::mdx(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut mdast);
+        // Walk to find an MdxJsxTextElement and assert its inner Text
+        // still contains the literal markers.
+        fn find_jsx_text(n: &MdastNode, found: &mut bool) {
+            if let MdastNode::MdxJsxTextElement(j) = n {
+                for c in &j.children {
+                    if let MdastNode::Text(t) = c {
+                        if t.value.contains("**重要。**") {
+                            *found = true;
+                        }
+                    }
+                }
+                return;
+            }
+            if let Some(children) = match n {
+                MdastNode::Root(r) => Some(&r.children),
+                MdastNode::Paragraph(p) => Some(&p.children),
+                _ => None,
+            } {
+                for c in children {
+                    find_jsx_text(c, found);
+                }
+            }
+        }
+        let mut found = false;
+        find_jsx_text(&mdast, &mut found);
+        assert!(
+            found,
+            "<Inline> body must keep literal `**重要。**`; got {mdast:#?}",
+        );
+    }
+
+    #[test]
+    fn mdx_inline_text_expression_untouched() {
+        // Inline `{...}` JS expression embedded in a paragraph — parses
+        // as MdxTextExpression (not MdxFlowExpression). Cover that path
+        // explicitly so both expression node types have a test.
+        let mut mdast = markdown::to_mdast(
+            "Before {\"これは**重要。**テスト\"} after",
+            &markdown::ParseOptions::mdx(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut mdast);
+        fn find_text_expr(n: &MdastNode, found: &mut bool) {
+            if let MdastNode::MdxTextExpression(e) = n {
+                if e.value.contains("**重要。**") {
+                    *found = true;
+                }
+                return;
+            }
+            if let Some(children) = match n {
+                MdastNode::Root(r) => Some(&r.children),
+                MdastNode::Paragraph(p) => Some(&p.children),
+                _ => None,
+            } {
+                for c in children {
+                    find_text_expr(c, found);
+                }
+            }
+        }
+        let mut found = false;
+        find_text_expr(&mdast, &mut found);
+        assert!(found, "MdxTextExpression payload must be untouched");
+    }
+
     // --- Escape protection: `\**` becomes literal `*`, which markdown-rs
     // surfaces as Text "*". The visitor must NOT produce a Strong from
     // the bare leftover stars.
