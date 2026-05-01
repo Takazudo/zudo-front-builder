@@ -78,11 +78,46 @@ impl MdxJsxOptions {
 /// The returned source is JSX text — feed it through SWC's TSX pass
 /// (e.g. `zfb-render::SwcPipeline`) to get executable ES module JS.
 ///
+/// This entry point does NOT run any pipeline visitors — it parses MDX
+/// and emits JSX directly. Callers that need directive-style admonitions
+/// (`:::note`), CJK-aware emphasis, or other mdast-phase plugins to fire
+/// against the MDX content should use
+/// [`mdx_to_jsx_module_with_pipeline`] instead. See zfb#116.
+///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
 /// The error message includes the line/column reported by markdown-rs.
 pub fn mdx_to_jsx_module(input: &str, opts: MdxJsxOptions) -> Result<String, PipelineError> {
     mdx_to_jsx_module_inner(input, opts, None)
+}
+
+/// Compile an MDX source string into a JSX module string, running the
+/// supplied pipeline's mdast visitors against the parsed tree before
+/// JSX emission.
+///
+/// Use this entry point when MDX content must be transformed by
+/// content-pipeline plugins (admonitions, CJK-friendly emphasis, etc.)
+/// before reaching the JSX emitter — typically by passing a
+/// [`Pipeline::with_defaults`] from the loader.
+///
+/// Hast visitors are intentionally NOT applied here: the JSX emit path
+/// goes mdast → JSX directly without building a hast tree, so the
+/// hast-phase plugins (heading-links, code-title, mermaid,
+/// image-enlarge, syntect, strip-md-ext) have no tree to walk on this
+/// path. They still run on the HTML serializer path
+/// ([`Pipeline::run`]).
+///
+/// # Errors
+/// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
+///
+/// [`Pipeline::with_defaults`]: crate::pipeline::Pipeline::with_defaults
+/// [`Pipeline::run`]: crate::pipeline::Pipeline::run
+pub fn mdx_to_jsx_module_with_pipeline(
+    input: &str,
+    opts: MdxJsxOptions,
+    pipeline: &mut Pipeline,
+) -> Result<String, PipelineError> {
+    mdx_to_jsx_module_inner(input, opts, Some(pipeline))
 }
 
 /// Internal core for [`mdx_to_jsx_module`] that optionally runs the

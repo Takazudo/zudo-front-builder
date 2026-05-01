@@ -54,7 +54,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use zfb_content::mdx_jsx_emit::{mdx_to_jsx_module, MdxJsxOptions};
+use zfb_content::mdx_jsx_emit::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
+use zfb_content::pipeline::Pipeline;
 
 use crate::error::{RenderError, Result};
 
@@ -165,6 +166,12 @@ pub struct ModuleLoader {
     cache: HashMap<Specifier, CompiledModule>,
     /// File extensions probed for relative imports without an extension.
     probe_exts: Vec<String>,
+    /// Content pipeline driving mdast-phase visitors on MDX input
+    /// (admonitions, CJK-friendly emphasis, etc.). Built once with the
+    /// project's default plugin chain and reused across every MDX
+    /// compile to avoid rebuilding the syntect highlighter and the
+    /// directive registry on each file. See zfb#116.
+    content_pipeline: Pipeline,
 }
 
 impl ModuleLoader {
@@ -180,6 +187,7 @@ impl ModuleLoader {
                 ".jsx".to_string(),
                 ".js".to_string(),
             ],
+            content_pipeline: Pipeline::with_defaults(),
         }
     }
 
@@ -318,16 +326,29 @@ impl ModuleLoader {
     /// If `specifier` looks like MDX, run the source through the MDX→JSX
     /// emitter; otherwise return `source` unchanged.
     ///
+    /// The cached [`Pipeline::with_defaults`] is threaded through so the
+    /// project's default mdast-phase plugins (admonitions / CJK-friendly
+    /// emphasis) fire against MDX content before JSX emission. Without
+    /// this, `:::note` directives, `<Note>` rewrites, and similar
+    /// transforms would never run on `.mdx` and `mdx://` sources reaching
+    /// the renderer. See zfb#116.
+    ///
+    /// Hast-phase plugins (heading-links, code-title, mermaid,
+    /// image-enlarge, syntect, strip-md-ext) are intentionally not
+    /// applied here — the JSX emit path bypasses hast entirely. Those
+    /// plugins continue to run on the HTML serializer path
+    /// ([`Pipeline::run`]).
+    ///
     /// Errors from `zfb-content` are wrapped as [`RenderError::Compile`]
     /// with `specifier` as the file location so the renderer's existing
     /// error formatting points editors at the original `.mdx` (or `mdx://`)
     /// source.
-    fn maybe_mdx_to_jsx(&self, specifier: &str, source: &str) -> Result<String> {
+    fn maybe_mdx_to_jsx(&mut self, specifier: &str, source: &str) -> Result<String> {
         if !is_mdx_specifier(specifier) {
             return Ok(source.to_string());
         }
         let opts = MdxJsxOptions::default().with_filename(specifier.to_string());
-        mdx_to_jsx_module(source, opts)
+        mdx_to_jsx_module_with_pipeline(source, opts, &mut self.content_pipeline)
             .map_err(|e| RenderError::compile(specifier.to_string(), e.to_string()))
     }
 

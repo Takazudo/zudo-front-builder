@@ -112,6 +112,48 @@ fn malformed_mdx_yields_compile_error_with_specifier_and_message() {
 }
 
 // ---------------------------------------------------------------------------
+// Regression: zfb#116 — the loader must thread the default content
+// pipeline through the MDX→JSX emitter so directive-style admonitions
+// (`:::note`) and other mdast-phase plugins fire on MDX content.
+// ---------------------------------------------------------------------------
+
+/// A `:::note … :::` block must be transformed by the admonitions
+/// plugin into a `<Note>` MDX JSX element before JSX emission. The
+/// emitter then declares `const Note = …` in the compiled module's
+/// preamble, so the `Note` identifier survives into the SWC-lowered
+/// JS. Pre-zfb#116 the loader passed no pipeline, the directive ran
+/// untouched, and `:::note` text leaked through verbatim as a plain
+/// paragraph.
+///
+/// The blank lines around `body` mirror the directive registry's
+/// expected shape — each `:::` opener / closer needs its own paragraph
+/// block at the mdast level.
+#[test]
+fn mdx_admonition_directive_runs_through_pipeline() {
+    let mut loader = ModuleLoader::new(JsxRuntime::Preact);
+
+    let src = ":::note\n\nbody text\n\n:::\n";
+    let compiled = loader
+        .load_source("post.mdx", src)
+        .expect("MDX with admonition should compile");
+
+    let js = &compiled.code;
+    // The literal directive markers must NOT survive — if they do,
+    // the admonitions plugin never ran.
+    assert!(
+        !js.contains(":::note"),
+        "literal `:::note` leaked into compiled output (pipeline not threaded?), got:\n{js}",
+    );
+    // The admonitions plugin emits a `<Note>` JSX element. The emitter
+    // synthesises `Note` references and a `throw new Error(...)` guard
+    // — both of which carry the literal identifier into the lowered JS.
+    assert!(
+        js.contains("Note"),
+        "expected `Note` component reference from admonitions plugin, got:\n{js}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Regression: non-MDX specifiers still go straight to SWC.
 // ---------------------------------------------------------------------------
 
