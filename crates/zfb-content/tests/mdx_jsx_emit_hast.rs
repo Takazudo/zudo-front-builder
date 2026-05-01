@@ -360,3 +360,84 @@ fn admonitions_directive_survives_with_hast_phase() {
         "Note preamble must be emitted from JsxRaw scan:\n{out}",
     );
 }
+
+/// Regression for codex-review #125: lowercase MDX JSX tags must
+/// route through `_components.<tag>` on the pipeline path so callers
+/// can override `<span>`/`<table>`/etc. via the `components` prop.
+/// Before the fix, `jsx_element_text` re-emitted lowercase tags
+/// verbatim, silently breaking authors who relied on
+/// `components={{span: ...}}` overrides for explicit MDX JSX.
+#[test]
+fn lowercase_mdx_jsx_tags_route_through_components() {
+    let out = emit_with_defaults("<span>foo</span>\n");
+    assert!(
+        out.contains("<_components.span>") && out.contains("</_components.span>"),
+        "lowercase MDX JSX must route through `_components.<tag>`:\n{out}",
+    );
+    // The preamble must register the tag so the default
+    // `_components` map has a fallback string for it (so the route
+    // works even without an explicit `components` prop override).
+    assert!(
+        out.contains("span: \"span\","),
+        "default `_components.span = \"span\"` fallback must be emitted:\n{out}",
+    );
+    // Sanity: the bare `<span>` form must NOT leak through alongside
+    // the `_components.span` form.
+    assert!(
+        !out.contains("<span>") && !out.contains("</span>"),
+        "bare `<span>` must not appear alongside the `_components.span` route:\n{out}",
+    );
+}
+
+/// Regression for codex-review #125: nested lowercase MDX JSX with
+/// attributes must also route through `_components.<tag>` and keep
+/// its attributes intact.
+#[test]
+fn lowercase_mdx_jsx_with_attrs_routes_through_components() {
+    let out = emit_with_defaults("<table className=\"x\"><tbody><tr><td>cell</td></tr></tbody></table>\n");
+    assert!(
+        out.contains("<_components.table"),
+        "<table> must route through `_components.table`:\n{out}",
+    );
+    // Attribute is preserved on the `_components.<tag>` form.
+    assert!(
+        out.contains("className=\"x\""),
+        "className must survive on the `_components.table` route:\n{out}",
+    );
+    // Each lowercase tag in the tree gets registered for the
+    // default `_components` map.
+    for tag in ["table", "tbody", "tr", "td"] {
+        let needle = format!("{tag}: \"{tag}\",");
+        assert!(
+            out.contains(&needle),
+            "`_components` default must register `{needle}`:\n{out}",
+        );
+    }
+}
+
+/// Regression for codex-review #125: an empty MDX fragment shorthand
+/// `<></>` must emit a valid JSX `_Fragment` rather than the
+/// invalid `< />` the previous emitter produced. SWC must accept
+/// the resulting module.
+#[test]
+fn empty_mdx_fragment_emits_valid_jsx() {
+    let out = emit_with_defaults("<>\n\nfoo\n\n</>\n");
+    // The fragment shorthand routes to `_Fragment` (already imported
+    // at the module top).
+    assert!(
+        out.contains("<_Fragment>") || out.contains("<_Fragment "),
+        "empty fragment shorthand must emit `_Fragment`:\n{out}",
+    );
+    // The bare invalid `< />` / `< >` forms must NOT appear.
+    assert!(
+        !out.contains("< />") && !out.contains("< >"),
+        "invalid bare fragment markers must not leak through:\n{out}",
+    );
+    // SWC must accept the result — this is the headline guarantee
+    // (the previous emitter produced JSX SWC rejected).
+    let opts = CompileOptions::default().with_filename("empty-fragment.tsx".to_string());
+    let pipeline_compile = SwcPipeline::new();
+    pipeline_compile
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected empty-fragment output: {e}\n--- src ---\n{out}"));
+}

@@ -765,9 +765,12 @@ impl HastJsxBridge {
             }
             // JSX-shaped passthrough (MDX components, `{…}` expressions)
             // — embed verbatim, after recording any PascalCase
-            // identifiers so the module preamble can declare them.
+            // identifiers so the module preamble can declare them and
+            // any `<_components.<tag>>` lowercase routes so the default
+            // `_components` map gets the fallback string for that tag.
             HastNode::JsxRaw(s) => {
                 collect_jsx_component_names(s, &mut self.component_names);
+                collect_components_tag_names(s, &mut self.html_tags);
                 s.clone()
             }
             HastNode::Comment(body) => format!("{{/* {} */}}", body.replace("*/", "* /")),
@@ -919,6 +922,43 @@ fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<S
     }
 }
 
+/// Scan a JSX-shaped string for `<_components.<tag>` opening-tag
+/// references and add the lowercase tag names to `out`. The
+/// JSX-text recursive renderer (`jsx_element_text`) routes lowercase
+/// MDX JSX tags through `_components.<tag>` so callers can override
+/// them, but because that emission happens inside a JsxRaw payload
+/// (the bridge cannot intercept it), the bridge has to harvest the
+/// tag set after the fact so the module preamble emits the matching
+/// default fallback (`tag: "tag"`) in the `_components` map.
+///
+/// We do not try to be a full JSX parser — the rule is:
+///   - find a `<_components.` prefix;
+///   - the next chars are alphanumeric / `_` / `$` (HTML tag names
+///     never contain `.`, so the head identifier ends at the first
+///     non-identifier character);
+///   - skip empty matches.
+fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<String>) {
+    const PREFIX: &str = "<_components.";
+    let bytes = jsx.as_bytes();
+    let mut i = 0;
+    while let Some(off) = jsx[i..].find(PREFIX) {
+        let start = i + off + PREFIX.len();
+        let mut j = start;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if j > start {
+            out.insert(jsx[start..j].to_string());
+        }
+        i = j.max(start + 1);
+    }
+}
+
 /// JSX-text recursive renderer plugged into `mdast_to_hast_with` via
 /// [`JsxEmitStrategy::JsxPath`]. Produces JSX-shaped source for the
 /// MDX JSX, MDX expression, and remark-math arms while preserving
@@ -953,13 +993,27 @@ fn jsx_element_text(
     attrs: &[AttributeContent],
     children: &[MdastNode],
 ) -> String {
-    let tag = name.unwrap_or("");
     let attrs_str = render_jsx_attrs(attrs);
+    // Choose the open/close JSX tag name. `name == None` is the MDX
+    // fragment shorthand `<></>` — emit `_Fragment` so the JSX parser
+    // accepts it (a bare `< />` is invalid). PascalCase names go through
+    // verbatim; lowercase HTML tags route through `_components.<tag>`
+    // so callers can override them via the `components` prop, matching
+    // `JsxEmitter::emit_jsx`'s contract on the non-pipeline path.
+    let (open_name, close_name) = match name {
+        None | Some("") => ("_Fragment".to_string(), "_Fragment".to_string()),
+        Some(n) if is_component_identifier(n) => (n.to_string(), n.to_string()),
+        Some(n) => (format!("_components.{n}"), format!("_components.{n}")),
+    };
     if children.is_empty() {
-        return format!("<{tag}{attrs_str} />");
+        // Self-close PascalCase / `_components.<tag>` and emit an
+        // explicit empty `_Fragment` body so SWC accepts the result —
+        // `<_Fragment />` is fine, but keeping the symmetric pattern
+        // matches `JsxEmitter::emit_jsx`'s output.
+        return format!("<{open_name}{attrs_str} />");
     }
     let inner: String = children.iter().map(jsx_render_child).collect();
-    format!("<{tag}{attrs_str}>{inner}</{tag}>")
+    format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
 }
 
 /// Recursively render an mdast child as JSX-shaped source.
