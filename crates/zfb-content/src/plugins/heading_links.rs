@@ -10,9 +10,11 @@
 //!   to repeated slugs (matching `github-slugger` behaviour).
 //! - Adds `id="<slug>"` to the heading element (or replaces an
 //!   existing `id` attribute).
-//! - Prepends an anchor element as the first child:
-//!   `<a href="#<slug>" class="heading-anchor"
-//!   aria-label="Permalink to this heading">#</a>`.
+//! - Appends an empty anchor element as the last child:
+//!   `<a href="#<slug>" class="hash-link"
+//!   aria-label="Direct link to {heading-text}"></a>`.
+//!   The `#` glyph is rendered via CSS `::after` so the anchor body
+//!   stays empty — keeping heading-text extraction (e.g. for TOC) clean.
 //!
 //! `<h1>` is intentionally left alone — page titles are typically
 //! emitted by the layout, not the markdown body.
@@ -74,24 +76,24 @@ impl Default for HeadingLinksPlugin {
 
 impl HastVisitor for HeadingLinksPlugin {
     fn visit(&mut self, node: &mut HastNode) {
-        // Compute slug first (immutable borrow only).
-        let mut slug_to_apply: Option<String> = None;
+        // Compute slug + heading text first (immutable borrow only).
+        let mut slug_and_text: Option<(String, String)> = None;
         if let HastNode::Element { tag, .. } = node {
             if is_target_heading(tag) {
                 let text = extract_text(node);
                 let base = slugify(&text);
                 if !base.is_empty() {
-                    slug_to_apply = Some(self.next_slug(&base));
+                    slug_and_text = Some((self.next_slug(&base), text));
                 }
             }
         }
-        if let Some(slug) = slug_to_apply {
+        if let Some((slug, text)) = slug_and_text {
             if let HastNode::Element {
                 attrs, children, ..
             } = node
             {
                 set_attr(attrs, "id", &slug);
-                children.insert(0, anchor(&slug));
+                children.push(anchor(&slug, &text));
             }
         }
 
@@ -110,18 +112,18 @@ fn is_target_heading(tag: &str) -> bool {
     matches!(tag, "h2" | "h3" | "h4" | "h5" | "h6")
 }
 
-fn anchor(slug: &str) -> HastNode {
+fn anchor(slug: &str, heading_text: &str) -> HastNode {
     HastNode::Element {
         tag: "a".to_string(),
         attrs: vec![
             ("href".to_string(), format!("#{slug}")),
-            ("class".to_string(), "heading-anchor".to_string()),
+            ("class".to_string(), "hash-link".to_string()),
             (
                 "aria-label".to_string(),
-                "Permalink to this heading".to_string(),
+                format!("Direct link to {heading_text}"),
             ),
         ],
-        children: vec![HastNode::Text("#".to_string())],
+        children: vec![],
         void: false,
     }
 }
@@ -202,12 +204,26 @@ mod tests {
         let HastNode::Element { children: hc, .. } = &children[0] else {
             unreachable!("expected HastNode::Element")
         };
-        let HastNode::Element { tag, attrs, .. } = &hc[0] else {
+        // Anchor is appended as the LAST child, after the heading text.
+        assert_eq!(hc.len(), 2);
+        assert_eq!(hc[0], HastNode::Text("Hello World".into()));
+        let HastNode::Element {
+            tag,
+            attrs,
+            children: anchor_children,
+            ..
+        } = &hc[1]
+        else {
             unreachable!("expected HastNode::Element")
         };
         assert_eq!(tag, "a");
+        assert!(anchor_children.is_empty(), "anchor body must be empty");
         assert!(attrs.contains(&("href".to_string(), "#hello-world".to_string())));
-        assert!(attrs.contains(&("class".to_string(), "heading-anchor".to_string())));
+        assert!(attrs.contains(&("class".to_string(), "hash-link".to_string())));
+        assert!(attrs.contains(&(
+            "aria-label".to_string(),
+            "Direct link to Hello World".to_string(),
+        )));
     }
 
     #[test]

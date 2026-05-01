@@ -1,4 +1,4 @@
-//! Wrap titled fenced code blocks in `<figure>` + `<figcaption>`.
+//! Wrap titled fenced code blocks in a titled container `<div>`.
 //!
 //! Rust port of zudo-doc's `rehypeCodeTitle`. Looks for
 //! `<pre><code data-meta="…">…</code></pre>` produced by Sub 3's
@@ -6,10 +6,10 @@
 //! `<pre>` is wrapped in:
 //!
 //! ```html
-//! <figure class="code-figure">
-//!   <figcaption>{title}</figcaption>
+//! <div class="code-block-container">
+//!   <div class="code-block-title">{title}</div>
 //!   <pre>…</pre>
-//! </figure>
+//! </div>
 //! ```
 //!
 //! No regex dependency: the meta string is scanned with simple
@@ -53,13 +53,13 @@ fn rewrite_children(children: &mut [HastNode]) {
             // child-recursion descent into the new <figure>) does not
             // re-wrap.
             strip_title_from_pre(&mut pre);
-            let figure = HastNode::Element {
-                tag: "figure".to_string(),
-                attrs: vec![("class".to_string(), "code-figure".to_string())],
+            let container = HastNode::Element {
+                tag: "div".to_string(),
+                attrs: vec![("class".to_string(), "code-block-container".to_string())],
                 children: vec![
                     HastNode::Element {
-                        tag: "figcaption".to_string(),
-                        attrs: vec![],
+                        tag: "div".to_string(),
+                        attrs: vec![("class".to_string(), "code-block-title".to_string())],
                         children: vec![HastNode::Text(title)],
                         void: false,
                     },
@@ -67,7 +67,7 @@ fn rewrite_children(children: &mut [HastNode]) {
                 ],
                 void: false,
             };
-            children[i] = figure;
+            children[i] = container;
         }
         i += 1;
     }
@@ -193,18 +193,20 @@ mod tests {
         else {
             unreachable!("unreachable in test")
         };
-        assert_eq!(tag, "figure");
-        assert!(attrs.contains(&("class".to_string(), "code-figure".to_string())));
+        assert_eq!(tag, "div");
+        assert!(attrs.contains(&("class".to_string(), "code-block-container".to_string())));
         let HastNode::Element {
-            tag: cap_tag,
-            children: cap_children,
+            tag: title_tag,
+            attrs: title_attrs,
+            children: title_children,
             ..
         } = &children[0]
         else {
             unreachable!("unreachable in test")
         };
-        assert_eq!(cap_tag, "figcaption");
-        assert_eq!(cap_children, &[HastNode::Text("main.rs".into())]);
+        assert_eq!(title_tag, "div");
+        assert!(title_attrs.contains(&("class".to_string(), "code-block-title".to_string())));
+        assert_eq!(title_children, &[HastNode::Text("main.rs".into())]);
         let HastNode::Element { tag: pre_tag, .. } = &children[1] else {
             unreachable!("expected HastNode::Element")
         };
@@ -234,9 +236,10 @@ mod tests {
         let HastNode::Root { children } = tree else {
             unreachable!("expected HastNode::Root")
         };
-        let HastNode::Element { tag, .. } = &children[0] else {
+        let HastNode::Element { tag, attrs, .. } = &children[0] else {
             unreachable!("expected HastNode::Element")
         };
-        assert_eq!(tag, "figure");
+        assert_eq!(tag, "div");
+        assert!(attrs.contains(&("class".to_string(), "code-block-container".to_string())));
     }
 }

@@ -1,7 +1,9 @@
-A bare markdown image (no width — should NOT be wrapped):
+Block-level images get wrapped in an enlargeable `<figure>`:
 
 ![bare](bare.png)
 
-A markdown image whose width is injected by a pre-ImageEnlarge visitor:
+A second block image — also wrapped:
 
 ![hero](pic.png)
+
+An inline image stays inline (mixed-content paragraph): see ![inline](inline.png) here.

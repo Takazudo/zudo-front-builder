@@ -1,15 +1,21 @@
-//! Mark mermaid code blocks for client-side rendering.
+//! Replace mermaid code blocks with a renderable `<div class="mermaid">`.
 //!
 //! Rust port of zudo-doc's `rehypeMermaid`. Looks for
-//! `<pre><code class="language-mermaid">…</code></pre>` and adds a
-//! `data-mermaid="true"` attribute to the `<pre>` so client-side JS
-//! can find and render it. We deliberately do NOT replace the body
-//! (that's the client's job), and we do NOT add a `data-mermaid`
-//! attribute that already exists (idempotent).
+//! `<pre><code class="language-mermaid">…</code></pre>` and replaces
+//! the entire `<pre>` with:
+//!
+//! ```html
+//! <div class="mermaid" data-mermaid>{body text}</div>
+//! ```
+//!
+//! The `<code>`'s text content is extracted recursively (using
+//! [`extract_text`]) so the unescaped diagram source — not HTML
+//! entities — reaches the client-side mermaid renderer.
 
 use crate::pipeline::{HastNode, HastVisitor};
+use crate::plugins::util::hast_text::extract_text;
 
-/// Visitor that flags mermaid `<pre>` blocks.
+/// Visitor that swaps mermaid `<pre>` blocks for `<div class="mermaid">`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MermaidPlugin;
 
@@ -23,22 +29,35 @@ impl MermaidPlugin {
 
 impl HastVisitor for MermaidPlugin {
     fn visit(&mut self, node: &mut HastNode) {
-        if is_mermaid_pre(node) {
-            if let HastNode::Element { attrs, .. } = node {
-                if !attrs.iter().any(|(k, _)| k == "data-mermaid") {
-                    attrs.push(("data-mermaid".to_string(), "true".to_string()));
-                }
-            }
-            // Don't recurse into a flagged mermaid block; its body is opaque.
-            return;
-        }
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
+                rewrite_children(children);
                 for c in children {
                     self.visit(c);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn rewrite_children(children: &mut [HastNode]) {
+    for child in children.iter_mut() {
+        if is_mermaid_pre(child) {
+            let body = extract_text(child);
+            *child = HastNode::Element {
+                tag: "div".to_string(),
+                attrs: vec![
+                    ("class".to_string(), "mermaid".to_string()),
+                    // JS shape uses bare `data-mermaid` (no value); we
+                    // emit it with an empty string so the serializer
+                    // produces `data-mermaid=""`, matching the
+                    // hast-util-to-html default for `data-mermaid: true`.
+                    ("data-mermaid".to_string(), String::new()),
+                ],
+                children: vec![HastNode::Text(body)],
+                void: false,
+            };
         }
     }
 }
@@ -94,58 +113,81 @@ mod tests {
         HastNode::Root { children }
     }
 
-    fn pre_attr(node: &HastNode, key: &str) -> Option<String> {
+    fn first_child_of_root(node: &HastNode) -> &HastNode {
         let HastNode::Root { children } = node else {
-            return None;
+            unreachable!("expected HastNode::Root")
         };
-        let HastNode::Element { attrs, .. } = &children[0] else {
-            return None;
-        };
-        attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        &children[0]
     }
 
     #[test]
-    fn flags_mermaid_block() {
+    fn replaces_pre_with_mermaid_div() {
         let mut tree = root(vec![pre_with_lang(Some("language-mermaid"))]);
         MermaidPlugin::new().visit(&mut tree);
-        assert_eq!(pre_attr(&tree, "data-mermaid"), Some("true".to_string()));
+        let HastNode::Element {
+            tag,
+            attrs,
+            children,
+            ..
+        } = first_child_of_root(&tree)
+        else {
+            unreachable!("expected element");
+        };
+        assert_eq!(tag, "div");
+        assert!(attrs.contains(&("class".to_string(), "mermaid".to_string())));
+        assert!(attrs.iter().any(|(k, _)| k == "data-mermaid"));
+        assert_eq!(children, &[HastNode::Text("graph TD;".into())]);
     }
 
     #[test]
     fn ignores_non_mermaid_block() {
         let mut tree = root(vec![pre_with_lang(Some("language-rust"))]);
+        let original = tree.clone();
         MermaidPlugin::new().visit(&mut tree);
-        assert_eq!(pre_attr(&tree, "data-mermaid"), None);
+        assert_eq!(tree, original);
     }
 
     #[test]
-    fn does_not_replace_content() {
-        let mut tree = root(vec![pre_with_lang(Some("language-mermaid"))]);
+    fn extracts_body_text_not_html_entities() {
+        // `A-->B` — the `>` would be escaped by an HTML serializer if
+        // we accidentally fed serialized text in. Our extractor walks
+        // hast Text nodes directly, so the angle bracket reaches the
+        // div unescaped.
+        let pre = HastNode::Element {
+            tag: "pre".to_string(),
+            attrs: vec![],
+            children: vec![HastNode::Element {
+                tag: "code".to_string(),
+                attrs: vec![("class".to_string(), "language-mermaid".to_string())],
+                children: vec![HastNode::Text("graph TD;\n  A-->B;".into())],
+                void: false,
+            }],
+            void: false,
+        };
+        let mut tree = root(vec![pre]);
         MermaidPlugin::new().visit(&mut tree);
-        let HastNode::Root { children } = tree else {
-            unreachable!("expected HastNode::Root")
+        let HastNode::Element { children, .. } = first_child_of_root(&tree) else {
+            unreachable!("expected element");
         };
-        let HastNode::Element { children: pc, .. } = &children[0] else {
-            unreachable!("expected HastNode::Element")
+        let HastNode::Text(body) = &children[0] else {
+            unreachable!("expected text body");
         };
-        let HastNode::Element { children: cc, .. } = &pc[0] else {
-            unreachable!("expected HastNode::Element")
-        };
-        assert_eq!(cc, &[HastNode::Text("graph TD;".into())]);
+        assert!(
+            body.contains("A-->B"),
+            "raw arrow must survive into mermaid body, got {body:?}",
+        );
+        assert!(!body.contains("&gt;"), "body must not be HTML-encoded");
     }
 
     #[test]
-    fn idempotent() {
+    fn idempotent_after_replacement() {
+        // After the first run, the node is a `<div class="mermaid">`,
+        // which the plugin no longer matches as a mermaid pre — so a
+        // second run is a no-op.
         let mut tree = root(vec![pre_with_lang(Some("language-mermaid"))]);
         MermaidPlugin::new().visit(&mut tree);
+        let after_first = tree.clone();
         MermaidPlugin::new().visit(&mut tree);
-        let HastNode::Root { children } = &tree else {
-            unreachable!("expected HastNode::Root")
-        };
-        let HastNode::Element { attrs, .. } = &children[0] else {
-            unreachable!("expected HastNode::Element")
-        };
-        let count = attrs.iter().filter(|(k, _)| k == "data-mermaid").count();
-        assert_eq!(count, 1);
+        assert_eq!(tree, after_first);
     }
 }
