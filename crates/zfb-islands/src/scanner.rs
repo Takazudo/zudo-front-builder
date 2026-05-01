@@ -178,10 +178,25 @@ pub fn is_bare_specifier(specifier: &str) -> bool {
 ///
 /// Probes the same extensions as `zfb_render`'s loader: `.tsx`, `.ts`,
 /// `.jsx`, `.js`, plus `index.<ext>` inside a directory.
+///
+/// In addition to relative-path resolution, this resolver understands
+/// pnpm-workspace consumer layouts: when handed a bare specifier (e.g.
+/// `@scope/pkg` or `pkg/sub`) it walks up from `importer_dir` looking
+/// for `node_modules/<specifier>` and probes the symlinked package's
+/// `package.json` (`source` → `module` → `main` → `index`) for a
+/// scannable `.tsx` / `.ts` entry. This is what lets a pnpm-workspace
+/// consumer's page module `import "@takazudo/zfb-blog-islands"` route
+/// the scanner into the workspace package's source `.tsx` files so any
+/// `"use client"` islands actually emit a production bundle.
 #[derive(Debug, Clone)]
 pub struct FsResolver {
     /// File extensions probed for relative imports without an extension.
     pub probe_exts: Vec<String>,
+    /// Whether bare specifiers are routed through the pnpm-workspace
+    /// `node_modules/<specifier>` probe. Defaults to `true`; tests that
+    /// want the legacy "skip every bare specifier" shape can flip it
+    /// off via [`FsResolver::without_workspace_probe`].
+    pub workspace_probe_enabled: bool,
 }
 
 impl Default for FsResolver {
@@ -193,29 +208,154 @@ impl Default for FsResolver {
                 ".jsx".to_string(),
                 ".js".to_string(),
             ],
+            workspace_probe_enabled: true,
         }
     }
 }
 
 impl FsResolver {
-    /// Construct with the default extension probe order.
+    /// Construct with the default extension probe order and
+    /// pnpm-workspace probe enabled.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct with the pnpm-workspace probe explicitly disabled —
+    /// matches the pre-#122 behaviour where bare specifiers always
+    /// resolved to `None`.
+    pub fn without_workspace_probe() -> Self {
+        Self {
+            workspace_probe_enabled: false,
+            ..Self::default()
+        }
+    }
+
+    /// Walk up from `start_dir` looking for the first ancestor that
+    /// contains `node_modules/<specifier>` and return that path. The
+    /// path is *not* canonicalised here — callers do that after
+    /// probing for an actual entry file inside.
+    fn locate_node_modules_pkg(start_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        let mut dir: Option<&Path> = Some(start_dir);
+        while let Some(d) = dir {
+            let candidate = d.join("node_modules").join(specifier);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
+    /// Split a bare specifier into `(package, subpath)` where the
+    /// package portion is the name pnpm resolves under `node_modules/`
+    /// (`pkg` or `@scope/pkg`) and the subpath is the rest of the
+    /// specifier (empty when none).
+    fn split_bare_specifier(specifier: &str) -> (String, String) {
+        if let Some(rest) = specifier.strip_prefix('@') {
+            // Scoped: @scope/pkg[/sub]
+            let mut parts = rest.splitn(3, '/');
+            let scope = parts.next().unwrap_or("");
+            let pkg = parts.next().unwrap_or("");
+            let pkg_name = format!("@{scope}/{pkg}");
+            let sub = parts.next().unwrap_or("");
+            (pkg_name, sub.to_string())
+        } else {
+            // Plain: pkg[/sub]
+            let mut parts = specifier.splitn(2, '/');
+            let pkg = parts.next().unwrap_or("").to_string();
+            let sub = parts.next().unwrap_or("").to_string();
+            (pkg, sub)
+        }
+    }
+
+    /// Probe an installed package directory for the specifier's actual
+    /// source entry point.
+    ///
+    /// Subpath imports (`@scope/pkg/components/foo`) probe directly
+    /// against `<pkg_dir>/<subpath>` plus the standard extension list.
+    /// Bare-package imports (no subpath) read `package.json` and try
+    /// `source` (the convention pnpm-workspace TypeScript packages use
+    /// for un-built sources), then `module`, then `main`. If
+    /// `package.json` is missing or doesn't point at a scannable file,
+    /// fall back to probing `src/index.<ext>` and `index.<ext>` inside
+    /// the package root — both common shapes for un-built workspace
+    /// packages.
+    fn probe_package_entry(&self, pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+        if !subpath.is_empty() {
+            let candidate = pkg_dir.join(subpath);
+            return Self::probe_with_extensions(&candidate, &self.probe_exts);
+        }
+
+        // 1) package.json hints — read once, try fields in priority order.
+        let pkg_json_path = pkg_dir.join("package.json");
+        if let Ok(text) = std::fs::read_to_string(&pkg_json_path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                for field in ["source", "module", "main"] {
+                    if let Some(rel) = value.get(field).and_then(|v| v.as_str()) {
+                        let candidate = pkg_dir.join(rel);
+                        if let Some(found) = Self::probe_with_extensions(&candidate, &self.probe_exts)
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2) Conventional un-built workspace shapes.
+        for prefix in ["src/index", "index"] {
+            let candidate = pkg_dir.join(prefix);
+            if let Some(found) = Self::probe_with_extensions(&candidate, &self.probe_exts) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Try `path` as-is, then with each extension appended; return
+    /// the first hit that is a regular file.
+    fn probe_with_extensions(path: &Path, exts: &[String]) -> Option<PathBuf> {
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+        for ext in exts {
+            let mut probe = path.to_path_buf();
+            let new_name = format!(
+                "{}{}",
+                probe.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                ext
+            );
+            probe.set_file_name(new_name);
+            if probe.is_file() {
+                return Some(probe);
+            }
+        }
+        None
     }
 }
 
 impl Resolver for FsResolver {
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
-        if is_bare_specifier(specifier) {
-            return None;
-        }
-        let candidate = importer_dir.join(specifier);
-
         // Helper: turn a found path into the canonical (symlink-resolved,
         // `..`-collapsed) form so the visited set and Island::source_path
         // are stable regardless of how many times the same file is reached
         // through different specifiers.
         let canonicalize = |p: PathBuf| p.canonicalize().unwrap_or(p);
+
+        if is_bare_specifier(specifier) {
+            if !self.workspace_probe_enabled {
+                return None;
+            }
+            // Ignore obviously-not-on-disk specifiers that surface in
+            // every project (the framework-provided ones zfb_render's
+            // loader fakes). Walking node_modules for these is wasted
+            // work; failing the probe also means we skip them silently.
+            let (pkg_name, subpath) = Self::split_bare_specifier(specifier);
+            let pkg_dir = Self::locate_node_modules_pkg(importer_dir, &pkg_name)?;
+            return self.probe_package_entry(&pkg_dir, &subpath).map(canonicalize);
+        }
+
+        let candidate = importer_dir.join(specifier);
 
         // 1) Exact match.
         if candidate.is_file() {
@@ -387,14 +527,20 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
         }
 
         // Walk imports → push resolved paths onto the stack.
+        //
+        // Bare specifiers are handed to the resolver too. Today's
+        // [`FsResolver`] uses them to walk `node_modules/` for
+        // pnpm-workspace consumer packages whose source `.tsx` files
+        // may carry `"use client"` islands; resolvers that don't care
+        // (e.g. [`InMemoryResolver`], or [`FsResolver`] with the
+        // workspace probe disabled) return `None` and the specifier is
+        // silently skipped, matching the pre-#122 behaviour for
+        // genuinely runtime-only specifiers like `preact/hooks`.
         let importer_dir = current
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         for specifier in collect_import_specifiers(&module) {
-            if is_bare_specifier(&specifier) {
-                continue;
-            }
             if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
                 if !visited.contains(&resolved) {
                     stack.push(resolved);
@@ -990,5 +1136,251 @@ mod tests {
         assert!(!is_bare_specifier("./layout"));
         assert!(!is_bare_specifier("../components/counter"));
         assert!(!is_bare_specifier("/abs/path"));
+    }
+
+    /// pnpm-workspace consumer shape (#122): a page imports a workspace
+    /// package by its scoped name. The package's source `.tsx` carries
+    /// `"use client"`. The fixture wires up the same shape pnpm
+    /// produces under `node_modules/@scope/pkg/` (a real directory in
+    /// the test rather than a symlink to keep the fixture portable).
+    /// FsResolver must walk node_modules + read package.json.source to
+    /// reach the island.
+    #[test]
+    fn fs_resolver_resolves_pnpm_workspace_scoped_package() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        let pkg = consumer
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        let pkg_src = pkg.join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-blog-islands", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = pkg_src.join("index.tsx").canonicalize().expect("canon");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// Same shape as above but with a subpath specifier
+    /// (`@scope/pkg/components/foo`). The `node_modules/@scope/pkg/`
+    /// directory hosts a `components/foo.tsx` that the resolver
+    /// reaches without consulting `package.json` exports.
+    #[test]
+    fn fs_resolver_resolves_pnpm_workspace_subpath_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        let components = consumer
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands")
+            .join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    /// Walks ancestors when `node_modules/<pkg>` lives several
+    /// directories above the importer (mirrors a deep page importer +
+    /// hoisted workspace package).
+    #[test]
+    fn fs_resolver_walks_ancestors_for_node_modules() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("apps/site/pages/blog");
+        let pkg = dir
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        let pkg_src = pkg.join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("post.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands";
+            export default function Post() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-blog-islands", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("post.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+    }
+
+    /// Falls back to `src/index.<ext>` when no package.json field
+    /// points at a real source file — common for un-built workspace
+    /// packages that don't bother with a manifest entry.
+    #[test]
+    fn fs_resolver_falls_back_to_src_index_without_package_json_hint() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("node_modules").join("ws-pkg");
+        let pkg_src = pkg.join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(pkg.join("package.json"), r#"{ "name": "ws-pkg" }"#).unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+    }
+
+    /// Bare specifier pointing at a package that does NOT exist on
+    /// disk (the framework-supplied case: `preact/hooks`, `zfb`, etc.)
+    /// must return `None` from the resolver — `scan_islands` then
+    /// silently skips it without erroring.
+    #[test]
+    fn fs_resolver_returns_none_for_unknown_bare_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { useState } from "preact/hooks";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// `FsResolver::without_workspace_probe()` opts out of the
+    /// pnpm-workspace probe — bare specifiers always return `None`,
+    /// matching the pre-#122 behaviour. Useful for the (unlikely) case
+    /// where a future caller wants to suppress the probe entirely.
+    #[test]
+    fn fs_resolver_without_workspace_probe_skips_node_modules_walk() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg_src = dir
+            .path()
+            .join("node_modules")
+            .join("ws-pkg")
+            .join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::without_workspace_probe();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    #[test]
+    fn split_bare_specifier_handles_scoped_and_unscoped() {
+        let scoped = FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands");
+        assert_eq!(scoped, ("@takazudo/zfb-blog-islands".to_string(), String::new()));
+
+        let scoped_sub =
+            FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands/components/foo");
+        assert_eq!(
+            scoped_sub,
+            (
+                "@takazudo/zfb-blog-islands".to_string(),
+                "components/foo".to_string()
+            )
+        );
+
+        let plain = FsResolver::split_bare_specifier("preact");
+        assert_eq!(plain, ("preact".to_string(), String::new()));
+
+        let plain_sub = FsResolver::split_bare_specifier("preact/hooks");
+        assert_eq!(plain_sub, ("preact".to_string(), "hooks".to_string()));
     }
 }
