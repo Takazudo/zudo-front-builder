@@ -224,6 +224,71 @@ fn fixture_root(name: &str) -> PathBuf {
     crate_dir.join("fixtures").join(name)
 }
 
+/// Regression for issue #122 / #117 — pnpm-workspace consumer shape.
+///
+/// Reproduces the bug where production builds of a pnpm-workspace
+/// consumer ship `data-zfb-island` markers but no client runtime: the
+/// scanner used to short-circuit on bare specifiers and `FsResolver`
+/// returned `None` for them, so workspace packages whose source `.tsx`
+/// carried `"use client"` never made it into the islands set.
+///
+/// The fixture lays out a consumer with:
+///
+/// - `pages/home.tsx` importing `@takazudo/zfb-blog-islands` by its
+///   scoped bare name.
+/// - `workspace/zfb-blog-islands/package.json` with a
+///   `"source": "src/index.tsx"` field (the convention pnpm-workspace
+///   TypeScript packages use for un-built sources).
+/// - `workspace/zfb-blog-islands/src/index.tsx` carrying
+///   `"use client"` and exporting two components.
+/// - `node_modules/@takazudo/zfb-blog-islands` is set up by the test
+///   as a symlink to the workspace package — the codex-review fix on
+///   PR #125 narrowed the bare-specifier probe to symlink-shaped
+///   `node_modules/<pkg>` entries (i.e. workspace packages), so this
+///   regression test mirrors what pnpm produces on disk.
+///
+/// `scan_islands` against this fixture must yield two islands —
+/// `Counter` and `ThemeToggle` — each pointing at the workspace
+/// package's source file.
+#[cfg(unix)]
+#[test]
+fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
+    let root = fixture_root("pnpm-workspace-consumer");
+    // Set up the workspace symlink pnpm would maintain at install time.
+    // We do this in the test (not as a checked-in symlink) because
+    // checked-in symlinks travel poorly across OSes / git settings.
+    let pkg = root.join("workspace/zfb-blog-islands");
+    let scope_dir = root.join("node_modules/@takazudo");
+    let pkg_link = scope_dir.join("zfb-blog-islands");
+    std::fs::create_dir_all(&scope_dir).expect("create node_modules scope dir");
+    // Leftover from a prior run? Remove and re-create.
+    let _ = std::fs::remove_file(&pkg_link);
+    let _ = std::fs::remove_dir_all(&pkg_link);
+    std::os::unix::fs::symlink(&pkg, &pkg_link).expect("symlink workspace pkg into node_modules");
+
+    let pages = vec![root.join("pages/home.tsx")];
+    let resolver = FsResolver::new();
+    let islands = scan_islands(&pages, &resolver).expect("scan");
+
+    let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
+    assert_eq!(
+        names,
+        vec!["Counter".to_string(), "ThemeToggle".to_string()],
+        "expected exactly Counter + ThemeToggle from workspace package; got {islands:?}",
+    );
+
+    // Both islands must point at the same workspace-package source file
+    // — proves the scanner walked node_modules and read package.json's
+    // `source` field rather than picking up a stray copy somewhere else.
+    let expected = pkg
+        .join("src/index.tsx")
+        .canonicalize()
+        .expect("canonicalize workspace island source");
+    for island in &islands {
+        assert_eq!(island.source_path, expected, "got: {island:?}");
+    }
+}
+
 #[test]
 fn two_islands_fixture_yields_two_entry_manifest() {
     let root = fixture_root("two-islands");

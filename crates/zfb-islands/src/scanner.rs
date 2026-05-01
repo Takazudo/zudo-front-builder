@@ -178,10 +178,25 @@ pub fn is_bare_specifier(specifier: &str) -> bool {
 ///
 /// Probes the same extensions as `zfb_render`'s loader: `.tsx`, `.ts`,
 /// `.jsx`, `.js`, plus `index.<ext>` inside a directory.
+///
+/// In addition to relative-path resolution, this resolver understands
+/// pnpm-workspace consumer layouts: when handed a bare specifier (e.g.
+/// `@scope/pkg` or `pkg/sub`) it walks up from `importer_dir` looking
+/// for `node_modules/<specifier>` and probes the symlinked package's
+/// `package.json` (`source` → `module` → `main` → `index`) for a
+/// scannable `.tsx` / `.ts` entry. This is what lets a pnpm-workspace
+/// consumer's page module `import "@takazudo/zfb-blog-islands"` route
+/// the scanner into the workspace package's source `.tsx` files so any
+/// `"use client"` islands actually emit a production bundle.
 #[derive(Debug, Clone)]
 pub struct FsResolver {
     /// File extensions probed for relative imports without an extension.
     pub probe_exts: Vec<String>,
+    /// Whether bare specifiers are routed through the pnpm-workspace
+    /// `node_modules/<specifier>` probe. Defaults to `true`; tests that
+    /// want the legacy "skip every bare specifier" shape can flip it
+    /// off via [`FsResolver::without_workspace_probe`].
+    pub workspace_probe_enabled: bool,
 }
 
 impl Default for FsResolver {
@@ -193,29 +208,264 @@ impl Default for FsResolver {
                 ".jsx".to_string(),
                 ".js".to_string(),
             ],
+            workspace_probe_enabled: true,
         }
     }
 }
 
 impl FsResolver {
-    /// Construct with the default extension probe order.
+    /// Construct with the default extension probe order and
+    /// pnpm-workspace probe enabled.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct with the pnpm-workspace probe explicitly disabled —
+    /// matches the pre-#122 behaviour where bare specifiers always
+    /// resolved to `None`.
+    pub fn without_workspace_probe() -> Self {
+        Self {
+            workspace_probe_enabled: false,
+            ..Self::default()
+        }
+    }
+
+    /// Walk up from `start_dir` looking for the first ancestor that
+    /// contains `node_modules/<specifier>` and return that path. The
+    /// path is *not* canonicalised here — callers do that after
+    /// probing for an actual entry file inside.
+    fn locate_node_modules_pkg(start_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        let mut dir: Option<&Path> = Some(start_dir);
+        while let Some(d) = dir {
+            let candidate = d.join("node_modules").join(specifier);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
+    /// True when `pkg_dir` (a `node_modules/<pkg>` entry) looks like a
+    /// pnpm-workspace package — i.e. the entry is a symlink whose
+    /// target lives OUTSIDE any `node_modules/` directory.
+    ///
+    /// pnpm's layout: workspace members are linked from
+    /// `node_modules/<pkg>` directly to the source directory in the
+    /// workspace tree (e.g. `packages/<pkg>/`). A regular installed
+    /// dependency is linked from `node_modules/<pkg>` into the pnpm
+    /// content-addressable store under `node_modules/.pnpm/<pkg>@<ver>/…`,
+    /// so its canonical path still contains a `node_modules/` segment.
+    ///
+    /// This heuristic is intentionally conservative: it only descends
+    /// into bare specifiers when there's clear evidence of a workspace
+    /// package, so framework imports like `preact/hooks` (real
+    /// `node_modules/preact/dist/preact.js` after canonicalisation)
+    /// stop at the resolver and never feed the scanner a transitive
+    /// node_modules walk on every build. See codex-review on PR #125.
+    fn is_workspace_package(pkg_dir: &Path) -> bool {
+        // Symlink check: pnpm always places workspace members behind a
+        // symlink at `node_modules/<pkg>`. A real `node_modules/<pkg>/`
+        // directory (npm/yarn classic, or a flat layout) is NOT a
+        // workspace package.
+        let meta = match std::fs::symlink_metadata(pkg_dir) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+        // Canonicalise the symlink target. If the canonical path
+        // contains any `node_modules/` segment, it's the regular
+        // dependency layout (`node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>`)
+        // — NOT a workspace package.
+        let canon = match pkg_dir.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        for comp in canon.components() {
+            if let Component::Normal(name) = comp {
+                if name == std::ffi::OsStr::new("node_modules") {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Split a bare specifier into `(package, subpath)` where the
+    /// package portion is the name pnpm resolves under `node_modules/`
+    /// (`pkg` or `@scope/pkg`) and the subpath is the rest of the
+    /// specifier (empty when none).
+    fn split_bare_specifier(specifier: &str) -> (String, String) {
+        if let Some(rest) = specifier.strip_prefix('@') {
+            // Scoped: @scope/pkg[/sub]
+            let mut parts = rest.splitn(3, '/');
+            let scope = parts.next().unwrap_or("");
+            let pkg = parts.next().unwrap_or("");
+            let pkg_name = format!("@{scope}/{pkg}");
+            let sub = parts.next().unwrap_or("");
+            (pkg_name, sub.to_string())
+        } else {
+            // Plain: pkg[/sub]
+            let mut parts = specifier.splitn(2, '/');
+            let pkg = parts.next().unwrap_or("").to_string();
+            let sub = parts.next().unwrap_or("").to_string();
+            (pkg, sub)
+        }
+    }
+
+    /// Probe an installed package directory for the specifier's actual
+    /// source entry point.
+    ///
+    /// Subpath imports (`@scope/pkg/components/foo`) probe
+    /// `<pkg_dir>/<subpath>` exactly, with extensions appended, and
+    /// finally as a directory containing `index.<ext>` — same shape
+    /// the relative-path branch uses, so a workspace-package directory
+    /// import behaves the same as a project-internal one.
+    ///
+    /// Bare-package imports (no subpath) read `package.json` and try
+    /// `source` (the convention pnpm-workspace TypeScript packages use
+    /// for un-built sources), then `module`, then `main`. If
+    /// `package.json` is missing or doesn't point at a scannable file,
+    /// fall back to probing `src/index.<ext>` and `index.<ext>` inside
+    /// the package root — both common shapes for un-built workspace
+    /// packages.
+    ///
+    /// All resolved paths are clamped to live inside `pkg_dir` (after
+    /// canonicalisation): a malicious `package.json` with
+    /// `"source": "../../etc/passwd"` cannot punch out of the package
+    /// directory.
+    fn probe_package_entry(&self, pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+        // Canonicalise once for clamp comparisons; if the package dir
+        // can't be canonicalised (e.g. doesn't exist), fall back to the
+        // raw path — the probe's `is_file()` checks will then fail
+        // naturally on anything that doesn't actually live on disk.
+        let pkg_root = pkg_dir.canonicalize().unwrap_or_else(|_| pkg_dir.to_path_buf());
+
+        let probe_dir_or_file = |candidate: PathBuf| -> Option<PathBuf> {
+            self.probe_path_with_index(&candidate)
+                .filter(|found| Self::is_inside(&pkg_root, found))
+        };
+
+        if !subpath.is_empty() {
+            let candidate = pkg_dir.join(subpath);
+            return probe_dir_or_file(candidate);
+        }
+
+        // 1) package.json hints — read once, try fields in priority order.
+        let pkg_json_path = pkg_dir.join("package.json");
+        if let Ok(text) = std::fs::read_to_string(&pkg_json_path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                for field in ["source", "module", "main"] {
+                    if let Some(rel) = value.get(field).and_then(|v| v.as_str()) {
+                        let candidate = pkg_dir.join(rel);
+                        if let Some(found) = probe_dir_or_file(candidate) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2) Conventional un-built workspace shapes.
+        for prefix in ["src/index", "index"] {
+            let candidate = pkg_dir.join(prefix);
+            if let Some(found) = probe_dir_or_file(candidate) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Probe a candidate path the same way the relative-import branch
+    /// of [`Resolver::resolve`] does: try the path as a file, then with
+    /// each extension appended, and finally as a directory containing
+    /// `index.<ext>`. Returns the first regular file that exists.
+    fn probe_path_with_index(&self, candidate: &Path) -> Option<PathBuf> {
+        if let Some(found) = Self::probe_with_extensions(candidate, &self.probe_exts) {
+            return Some(found);
+        }
+        if candidate.is_dir() {
+            for ext in &self.probe_exts {
+                let probe = candidate.join(format!("index{ext}"));
+                if probe.is_file() {
+                    return Some(probe);
+                }
+            }
+        }
+        None
+    }
+
+    /// Try `path` as-is, then with each extension appended; return
+    /// the first hit that is a regular file.
+    fn probe_with_extensions(path: &Path, exts: &[String]) -> Option<PathBuf> {
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+        for ext in exts {
+            let mut probe = path.to_path_buf();
+            let new_name = format!(
+                "{}{}",
+                probe.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                ext
+            );
+            probe.set_file_name(new_name);
+            if probe.is_file() {
+                return Some(probe);
+            }
+        }
+        None
+    }
+
+    /// Whether `path`, after canonicalisation, lives at or below
+    /// `root`. Used to clamp resolved package entries inside their
+    /// `node_modules/<pkg>/` directory so a hostile `package.json`
+    /// cannot redirect the scanner outside the package.
+    fn is_inside(root: &Path, path: &Path) -> bool {
+        let canon = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        canon.starts_with(root)
     }
 }
 
 impl Resolver for FsResolver {
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
-        if is_bare_specifier(specifier) {
-            return None;
-        }
-        let candidate = importer_dir.join(specifier);
-
         // Helper: turn a found path into the canonical (symlink-resolved,
         // `..`-collapsed) form so the visited set and Island::source_path
         // are stable regardless of how many times the same file is reached
         // through different specifiers.
         let canonicalize = |p: PathBuf| p.canonicalize().unwrap_or(p);
+
+        if is_bare_specifier(specifier) {
+            if !self.workspace_probe_enabled {
+                return None;
+            }
+            // Ignore obviously-not-on-disk specifiers that surface in
+            // every project (the framework-provided ones zfb_render's
+            // loader fakes). Walking node_modules for these is wasted
+            // work; failing the probe also means we skip them silently.
+            let (pkg_name, subpath) = Self::split_bare_specifier(specifier);
+            let pkg_dir = Self::locate_node_modules_pkg(importer_dir, &pkg_name)?;
+            // Only descend into bare specifiers that resolve to
+            // pnpm-workspace packages. Real installed dependencies
+            // (`preact`, `react`, `zfb-runtime`, …) live behind a
+            // symlink whose canonical target is itself inside
+            // `node_modules/.pnpm/`, so they fail this check and the
+            // scanner skips them silently — matching the pre-#122
+            // behaviour for non-workspace imports. See codex-review on
+            // PR #125: probing every bare specifier turned every
+            // `import "preact/hooks"` into a transitive scan of the
+            // installed framework on every build.
+            if !Self::is_workspace_package(&pkg_dir) {
+                return None;
+            }
+            return self.probe_package_entry(&pkg_dir, &subpath).map(canonicalize);
+        }
+
+        let candidate = importer_dir.join(specifier);
 
         // 1) Exact match.
         if candidate.is_file() {
@@ -387,14 +637,20 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
         }
 
         // Walk imports → push resolved paths onto the stack.
+        //
+        // Bare specifiers are handed to the resolver too. Today's
+        // [`FsResolver`] uses them to walk `node_modules/` for
+        // pnpm-workspace consumer packages whose source `.tsx` files
+        // may carry `"use client"` islands; resolvers that don't care
+        // (e.g. [`InMemoryResolver`], or [`FsResolver`] with the
+        // workspace probe disabled) return `None` and the specifier is
+        // silently skipped, matching the pre-#122 behaviour for
+        // genuinely runtime-only specifiers like `preact/hooks`.
         let importer_dir = current
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         for specifier in collect_import_specifiers(&module) {
-            if is_bare_specifier(&specifier) {
-                continue;
-            }
             if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
                 if !visited.contains(&resolved) {
                     stack.push(resolved);
@@ -564,6 +820,25 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Create a pnpm-workspace-style symlink at `link` pointing to
+    /// `target`. pnpm links workspace members into `node_modules/<pkg>`
+    /// as symlinks whose target lives in the workspace tree (outside
+    /// `node_modules/`); the scanner uses that symlink-vs-real-dir
+    /// distinction to tell workspace packages apart from regular npm
+    /// dependencies. Tests that exercise the workspace-probe path
+    /// must build the same shape so `is_workspace_package` returns
+    /// `true`.
+    ///
+    /// Unix-only (the suite already runs on Unix in CI; the workspace
+    /// symlink shape is what pnpm produces in real consumer projects).
+    #[cfg(unix)]
+    fn make_workspace_link(target: &Path, link: &Path) {
+        if let Some(parent) = link.parent() {
+            std::fs::create_dir_all(parent).expect("create link parent");
+        }
+        std::os::unix::fs::symlink(target, link).expect("symlink workspace package");
     }
 
     #[test]
@@ -990,5 +1265,494 @@ mod tests {
         assert!(!is_bare_specifier("./layout"));
         assert!(!is_bare_specifier("../components/counter"));
         assert!(!is_bare_specifier("/abs/path"));
+    }
+
+    /// pnpm-workspace consumer shape (#122): a page imports a workspace
+    /// package by its scoped name. The package's source `.tsx` carries
+    /// `"use client"`. The fixture mirrors pnpm's real layout: the
+    /// workspace package lives in the workspace tree (`workspace/pkg/`)
+    /// and `node_modules/@scope/pkg` is a symlink pointing at it. The
+    /// resolver only descends into bare specifiers when this symlink
+    /// shape is in place — see codex-review on PR #125.
+    /// FsResolver must walk node_modules + read package.json.source to
+    /// reach the island.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_resolves_pnpm_workspace_scoped_package() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        // Workspace tree (outside node_modules) — pnpm's symlink target.
+        let pkg = consumer.join("workspace").join("zfb-blog-islands");
+        let pkg_src = pkg.join("src");
+        // Symlink that pnpm would create under node_modules.
+        let pkg_link = consumer
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-blog-islands", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = pkg_src.join("index.tsx").canonicalize().expect("canon");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// Same shape as above but with a subpath specifier
+    /// (`@scope/pkg/components/foo`). The workspace package directory
+    /// hosts a `components/foo.tsx` that the resolver reaches without
+    /// consulting `package.json` exports.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_resolves_pnpm_workspace_subpath_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        // Workspace tree (outside node_modules) — pnpm's symlink target.
+        let pkg = consumer.join("workspace").join("zfb-blog-islands");
+        let components = pkg.join("components");
+        let pkg_link = consumer
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    /// Walks ancestors when `node_modules/<pkg>` lives several
+    /// directories above the importer (mirrors a deep page importer +
+    /// hoisted workspace package).
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_walks_ancestors_for_node_modules() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("apps/site/pages/blog");
+        // Workspace tree (outside node_modules) — pnpm's symlink target.
+        let pkg = dir.path().join("workspace").join("zfb-blog-islands");
+        let pkg_src = pkg.join("src");
+        let pkg_link = dir
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("post.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands";
+            export default function Post() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-blog-islands", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("post.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+    }
+
+    /// Falls back to `src/index.<ext>` when no package.json field
+    /// points at a real source file — common for un-built workspace
+    /// packages that don't bother with a manifest entry.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_falls_back_to_src_index_without_package_json_hint() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("workspace").join("ws-pkg");
+        let pkg_src = pkg.join("src");
+        let pkg_link = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(pkg.join("package.json"), r#"{ "name": "ws-pkg" }"#).unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+    }
+
+    /// Bare specifier pointing at a package that does NOT exist on
+    /// disk (the framework-supplied case: `preact/hooks`, `zfb`, etc.)
+    /// must return `None` from the resolver — `scan_islands` then
+    /// silently skips it without erroring.
+    #[test]
+    fn fs_resolver_returns_none_for_unknown_bare_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { useState } from "preact/hooks";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// `FsResolver::without_workspace_probe()` opts out of the
+    /// pnpm-workspace probe — bare specifiers always return `None`,
+    /// matching the pre-#122 behaviour. Useful for the (unlikely) case
+    /// where a future caller wants to suppress the probe entirely.
+    #[test]
+    fn fs_resolver_without_workspace_probe_skips_node_modules_walk() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg_src = dir
+            .path()
+            .join("node_modules")
+            .join("ws-pkg")
+            .join("src");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::without_workspace_probe();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// `package.json` `"source": "src"` (a bare directory, no
+    /// `index.tsx` file name in the field) must still resolve via the
+    /// directory `index.<ext>` probe — same shape as a relative
+    /// `import "./foo"` against a directory.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_probes_directory_index_when_package_json_source_is_a_directory() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("workspace").join("ws-pkg");
+        let pkg_src = pkg.join("src");
+        let pkg_link = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "src" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+    }
+
+    /// Subpath specifiers that name a directory must also resolve via
+    /// the directory `index.<ext>` probe (`@scope/pkg/components`
+    /// pointing at `<pkg_dir>/components/index.tsx`).
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_probes_directory_index_for_subpath_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("workspace").join("zfb-blog-islands");
+        let components = pkg.join("components");
+        let pkg_link = dir
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-blog-islands");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@takazudo/zfb-blog-islands/components";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("index.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+    }
+
+    /// Hostile `package.json` `"source": "../../escape.tsx"` must NOT
+    /// resolve outside the package directory — the workspace probe
+    /// clamps every resolved path inside `node_modules/<pkg>/`.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_rejects_package_json_source_that_escapes_pkg_dir() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("workspace").join("ws-pkg");
+        let pkg_link = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        // The escape target sits OUTSIDE the workspace package
+        // directory, in the project root — it has "use client" so if
+        // the clamp ever failed, the scanner would surface it as an
+        // island.
+        fs::write(
+            dir.path().join("escape.tsx"),
+            r#""use client";
+            export function Pwn() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Pwn } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "../../escape.tsx" }"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "expected escape attempt to be clamped; got {islands:?}",
+        );
+    }
+
+    #[test]
+    fn split_bare_specifier_handles_scoped_and_unscoped() {
+        let scoped = FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands");
+        assert_eq!(scoped, ("@takazudo/zfb-blog-islands".to_string(), String::new()));
+
+        let scoped_sub =
+            FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands/components/foo");
+        assert_eq!(
+            scoped_sub,
+            (
+                "@takazudo/zfb-blog-islands".to_string(),
+                "components/foo".to_string()
+            )
+        );
+
+        let plain = FsResolver::split_bare_specifier("preact");
+        assert_eq!(plain, ("preact".to_string(), String::new()));
+
+        let plain_sub = FsResolver::split_bare_specifier("preact/hooks");
+        assert_eq!(plain_sub, ("preact".to_string(), "hooks".to_string()));
+    }
+
+    /// Headline regression test for codex-review on PR #125: a project
+    /// with both a real `node_modules/preact` (a regular installed
+    /// dependency, NOT a symlink to a workspace) AND a workspace
+    /// package linked under `node_modules/@scope/pkg` must
+    /// (a) discover the workspace package's `"use client"` islands
+    ///     via the bare-specifier probe, and
+    /// (b) NOT descend into preact's transitive imports — every
+    ///     framework import (`preact`, `preact/hooks`, `react`, …)
+    ///     stops at the resolver and ships zero islands of its own.
+    ///
+    /// Before the fix, scan_islands probed every bare specifier, so
+    /// `import { useState } from "preact/hooks"` walked into
+    /// node_modules/preact on every build. The new check requires a
+    /// workspace symlink shape before descending.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_skips_real_node_modules_pkg_but_descends_into_workspace_link() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+
+        // (1) Real `node_modules/preact/` directory — NOT a symlink.
+        // Mimics a regular installed npm package.
+        let preact = dir.path().join("node_modules").join("preact");
+        let preact_dist = preact.join("dist");
+        fs::create_dir_all(&preact_dist).unwrap();
+        fs::write(
+            preact.join("package.json"),
+            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+        )
+        .unwrap();
+        // If the scanner ever descended into preact, this island
+        // would surface — the test asserts it does NOT.
+        fs::write(
+            preact_dist.join("preact.js"),
+            r#""use client";
+            export function PreactSneaksIn() {}
+            "#,
+        )
+        .unwrap();
+        // Add a `preact/hooks` subpath entry too — same shape: real
+        // directory, regular dependency. Must be skipped.
+        let preact_hooks = preact.join("hooks");
+        fs::create_dir_all(&preact_hooks).unwrap();
+        fs::write(
+            preact_hooks.join("index.js"),
+            r#""use client";
+            export function HooksSneakIn() {}
+            "#,
+        )
+        .unwrap();
+
+        // (2) Workspace package linked from node_modules/<pkg>.
+        let pkg = dir.path().join("workspace").join("ws-pkg");
+        let pkg_src = pkg.join("src");
+        let pkg_link = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pkg_src).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src.join("index.tsx"),
+            r#""use client";
+            export function WorkspaceCounter() {}
+            "#,
+        )
+        .unwrap();
+
+        // (3) Page imports both: a workspace island via its package
+        // name, AND framework hooks via `preact/hooks` (the case the
+        // codex-review finding was about).
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { useState } from "preact/hooks";
+            import { WorkspaceCounter } from "ws-pkg";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        // Only the workspace island surfaces — preact must NOT be
+        // descended into despite living on disk.
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["WorkspaceCounter"],
+            "expected only the workspace island; preact must be skipped: {islands:?}",
+        );
     }
 }

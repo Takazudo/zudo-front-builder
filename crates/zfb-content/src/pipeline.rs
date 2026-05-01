@@ -56,10 +56,30 @@ pub enum HastNode {
     },
     /// Plain text content (escaped on serialization).
     Text(String),
-    /// Raw HTML or JSX-component passthrough; the serializer emits this
-    /// verbatim without escaping. Used for embedded HTML and MDX/JSX
-    /// expressions and elements that downstream tooling will handle.
+    /// Raw HTML passthrough; the serializer emits this verbatim without
+    /// escaping. Produced by the mdast→hast conversion for
+    /// [`MdastNode::Html`](markdown::mdast::Node::Html), and by hast
+    /// plugins that synthesize complete HTML fragments (e.g. syntect).
+    ///
+    /// On the JSX-emit path (`mdx_jsx_emit::mdx_to_jsx_module_with_pipeline`),
+    /// `Raw` cannot be embedded verbatim — JSX does not understand
+    /// arbitrary HTML such as `class="…"` or inline `<span style="…">`.
+    /// The hast→JSX bridge wraps `Raw` content in a span with
+    /// `dangerouslySetInnerHTML` so the rendered DOM still receives the
+    /// original markup. See [`HastNode::JsxRaw`] for the JSX-shaped
+    /// counterpart that IS safe to inline.
     Raw(String),
+    /// JSX-shaped passthrough — MDX components (`<Note>…</Note>`),
+    /// flow / text expressions (`{1 + 1}`), and synthesized JSX
+    /// fragments. The serializer treats this identically to
+    /// [`HastNode::Raw`] (verbatim, no escaping); the JSX-emit path
+    /// embeds it verbatim into the output module so PascalCase
+    /// component references and `{…}` expression containers survive
+    /// untouched.
+    ///
+    /// Splitting JSX from HTML at the hast level lets the JSX bridge
+    /// pick the right embedding strategy without parsing the payload.
+    JsxRaw(String),
     /// HTML comment body (without the `<!--` / `-->` delimiters).
     Comment(String),
 }
@@ -262,6 +282,21 @@ impl Pipeline {
         }
     }
 
+    /// Run only the hast visitor chain against an externally-built
+    /// hast tree.
+    ///
+    /// Mirror of [`Pipeline::apply_mdast_visitors`], added for #121 so
+    /// the JSX emit path can detour through hast — `mdast → hast →
+    /// hast visitors → JSX emit` — and pick up the project's hast-phase
+    /// plugins (heading-links, code-title, image-enlarge, mermaid,
+    /// syntect, optional strip-md-ext) on MDX content. The HTML
+    /// serializer path keeps using [`Pipeline::run`] unchanged.
+    pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
+        for v in &mut self.hast_visitors {
+            v.visit(node);
+        }
+    }
+
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///
@@ -285,27 +320,89 @@ impl Pipeline {
     }
 }
 
+/// Strategy for emitting the JSX-shaped Raw payload of `MdxJsxFlow*`,
+/// `MdxJsxText*`, `MdxFlow/TextExpression`, and `Math`/`InlineMath`
+/// nodes during [`mdast_to_hast_with`].
+///
+/// The default strategy ([`JsxEmitStrategy::HtmlPath`]) preserves the
+/// pre-#121 HTML serializer behaviour: `reconstruct_jsx` falls back
+/// to `Node::to_string()` for non-text children (lossy in markdown
+/// formatting, but stable for the project's HTML snapshots).
+///
+/// The JSX-aware strategy ([`JsxEmitStrategy::JsxPath`]) is used by
+/// `mdx_jsx_emit::mdx_to_jsx_module_with_pipeline` to produce
+/// recursively-rendered JSX so markdown formatting INSIDE an MDX JSX
+/// body (`<Note>**bold**</Note>`) survives as `<strong>bold</strong>`.
+/// Users supply this strategy via the closure on the variant.
+pub enum JsxEmitStrategy<'a> {
+    /// HTML-path preserving strategy. Same as the pre-#121 behaviour.
+    HtmlPath,
+    /// JSX-path strategy. The closure receives an mdast node and
+    /// returns the JSX-shaped string the bridge should embed
+    /// verbatim.
+    JsxPath(&'a dyn Fn(&MdastNode) -> String),
+}
+
 /// Convert an mdast node into a hast node.
 ///
-/// See the module docs for the full coverage list. Unhandled node types
-/// degrade to [`HastNode::Raw("".into())`] so the pipeline never panics
-/// on novel input — Sub 4 / Sub 6 can extend handling later.
+/// Convenience wrapper over [`mdast_to_hast_with`] using
+/// [`JsxEmitStrategy::HtmlPath`] — i.e. the pre-#121 HTML-path
+/// behaviour. Existing callers (the HTML serializer path,
+/// `Pipeline::run`) keep their snapshot output unchanged.
+///
+/// See the module docs for the full coverage list. Unhandled node
+/// types degrade to [`HastNode::Raw("".into())`] so the pipeline
+/// never panics on novel input — Sub 4 / Sub 6 can extend handling
+/// later.
 #[must_use]
 pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
+    mdast_to_hast_with(node, &JsxEmitStrategy::HtmlPath)
+}
+
+/// Convert an mdast node into a hast node, using the supplied strategy
+/// for emitting the Raw / JsxRaw payload of MDX JSX, MDX expression,
+/// and remark-math nodes.
+///
+/// Added for #121 so the JSX-emit detour can swap in a recursive
+/// renderer for those arms without changing the HTML serializer
+/// output.
+#[must_use]
+pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> HastNode {
     match node {
         MdastNode::Root(r) => HastNode::Root {
-            children: convert_children(&r.children),
+            children: r
+                .children
+                .iter()
+                .map(|c| mdast_to_hast_with(c, strategy))
+                .collect(),
         },
-        MdastNode::Paragraph(p) => element("p", vec![], convert_children(&p.children)),
+        _ => mdast_to_hast_inner(node, strategy),
+    }
+}
+
+fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> HastNode {
+    match node {
+        MdastNode::Root(r) => HastNode::Root {
+            children: convert_children_with(&r.children, strategy),
+        },
+        MdastNode::Paragraph(p) => {
+            element("p", vec![], convert_children_with(&p.children, strategy))
+        }
         MdastNode::Heading(h) => {
             let depth = h.depth.clamp(1, 6);
             let tag = format!("h{depth}");
-            element(&tag, vec![], convert_children(&h.children))
+            element(&tag, vec![], convert_children_with(&h.children, strategy))
         }
         MdastNode::Text(t) => HastNode::Text(t.value.clone()),
-        MdastNode::Emphasis(e) => element("em", vec![], convert_children(&e.children)),
-        MdastNode::Strong(s) => element("strong", vec![], convert_children(&s.children)),
-        MdastNode::Delete(d) => element("del", vec![], convert_children(&d.children)),
+        MdastNode::Emphasis(e) => {
+            element("em", vec![], convert_children_with(&e.children, strategy))
+        }
+        MdastNode::Strong(s) => {
+            element("strong", vec![], convert_children_with(&s.children, strategy))
+        }
+        MdastNode::Delete(d) => {
+            element("del", vec![], convert_children_with(&d.children, strategy))
+        }
         MdastNode::InlineCode(c) => element("code", vec![], vec![HastNode::Text(c.value.clone())]),
         MdastNode::Code(c) => {
             // Fenced code block. Wrap raw text in <pre><code>; expose
@@ -332,7 +429,7 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
             if let Some(title) = &l.title {
                 attrs.push(("title".to_string(), title.clone()));
             }
-            element("a", attrs, convert_children(&l.children))
+            element("a", attrs, convert_children_with(&l.children, strategy))
         }
         MdastNode::Image(i) => {
             let mut attrs = vec![
@@ -359,10 +456,16 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
                     }
                 }
             }
-            element(tag, attrs, convert_children(&l.children))
+            element(tag, attrs, convert_children_with(&l.children, strategy))
         }
-        MdastNode::ListItem(li) => element("li", vec![], convert_children(&li.children)),
-        MdastNode::Blockquote(b) => element("blockquote", vec![], convert_children(&b.children)),
+        MdastNode::ListItem(li) => {
+            element("li", vec![], convert_children_with(&li.children, strategy))
+        }
+        MdastNode::Blockquote(b) => element(
+            "blockquote",
+            vec![],
+            convert_children_with(&b.children, strategy),
+        ),
         MdastNode::ThematicBreak(_) => HastNode::Element {
             tag: "hr".to_string(),
             attrs: vec![],
@@ -376,29 +479,97 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
             void: true,
         },
         MdastNode::Html(h) => HastNode::Raw(h.value.clone()),
-        MdastNode::MdxJsxFlowElement(j) => HastNode::Raw(reconstruct_jsx(
-            j.name.as_deref(),
-            &j.attributes,
-            &j.children,
-        )),
-        MdastNode::MdxJsxTextElement(j) => HastNode::Raw(reconstruct_jsx(
-            j.name.as_deref(),
-            &j.attributes,
-            &j.children,
-        )),
-        MdastNode::MdxFlowExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
-        MdastNode::MdxTextExpression(e) => HastNode::Raw(format!("{{{}}}", e.value)),
+        // MDX JSX / expression nodes carry JSX-shaped source. Mark them
+        // as `JsxRaw` so the JSX-emit bridge can inline them verbatim
+        // into the output module — wrapping these in
+        // `dangerouslySetInnerHTML` (the path `Raw` takes) would break
+        // PascalCase component references and `{…}` expression
+        // containers. The HTML serializer treats `JsxRaw` and `Raw`
+        // identically (verbatim passthrough), so this distinction is
+        // invisible on the HTML path. Strategy-aware: the JSX path
+        // uses a recursive renderer so markdown formatting INSIDE the
+        // JSX body survives.
+        MdastNode::MdxJsxFlowElement(_)
+        | MdastNode::MdxJsxTextElement(_)
+        | MdastNode::MdxFlowExpression(_)
+        | MdastNode::MdxTextExpression(_) => HastNode::JsxRaw(emit_jsx_raw(node, strategy)),
+        // remark-math `$$...$$` block. Mirror the shape markdown-rs's
+        // HTML serializer (`on_enter_raw_flow`) produces and what
+        // `mdx_jsx_emit::JsxEmitter` emits on the no-pipeline path:
+        // `<pre><code class="language-math math-display">…</code></pre>`.
+        // Routing through `<pre>`/`<code>` keeps the JSX bridge able
+        // to override both via `_components`, and matching the no-
+        // pipeline path means the hast detour does not regress
+        // pre-Sub-46 math handling. See zfb#93 / zfb#121.
+        MdastNode::Math(m) => element(
+            "pre",
+            vec![],
+            vec![HastNode::Element {
+                tag: "code".to_string(),
+                attrs: vec![(
+                    "class".to_string(),
+                    "language-math math-display".to_string(),
+                )],
+                children: vec![HastNode::Text(m.value.clone())],
+                void: false,
+            }],
+        ),
+        // remark-math `$...$` inline. Same shape as inline code with
+        // an added `language-math math-inline` class.
+        MdastNode::InlineMath(m) => HastNode::Element {
+            tag: "code".to_string(),
+            attrs: vec![(
+                "class".to_string(),
+                "language-math math-inline".to_string(),
+            )],
+            children: vec![HastNode::Text(m.value.clone())],
+            void: false,
+        },
         // Unhandled: degrade to empty Raw so we never crash on
-        // unsupported input. Tables, footnotes, definitions, math,
-        // reference links/images, ESM, frontmatter, etc. fall here. They
-        // become passthrough holes that Sub 4 plugins can later fill in.
+        // unsupported input. Tables, footnotes, definitions, reference
+        // links/images, ESM, frontmatter, etc. fall here. They become
+        // passthrough holes that Sub 4 plugins can later fill in.
         _ => HastNode::Raw(String::new()),
     }
 }
 
-/// Convert a slice of mdast children into a vec of hast children.
-fn convert_children(children: &[MdastNode]) -> Vec<HastNode> {
-    children.iter().map(mdast_to_hast).collect()
+/// Convert a slice of mdast children into a vec of hast children
+/// using the given strategy for the JSX-shaped arms.
+fn convert_children_with(
+    children: &[MdastNode],
+    strategy: &JsxEmitStrategy<'_>,
+) -> Vec<HastNode> {
+    children
+        .iter()
+        .map(|c| mdast_to_hast_inner(c, strategy))
+        .collect()
+}
+
+/// Pick the right JSX-text producer for the supplied strategy and
+/// invoke it. The HTML-path strategy uses the in-module
+/// `reconstruct_jsx` (lossy fallback for non-text children, preserves
+/// pre-#121 HTML snapshot output). The JSX-path strategy delegates to
+/// the user-supplied closure (typically the recursive renderer in
+/// `mdx_jsx_emit`).
+fn emit_jsx_raw(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> String {
+    if let JsxEmitStrategy::JsxPath(emit) = strategy {
+        return emit(node);
+    }
+    // HTML-path strategy: preserve pre-#121 behaviour exactly.
+    match node {
+        MdastNode::MdxJsxFlowElement(j) => {
+            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::MdxJsxTextElement(j) => {
+            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+        }
+        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        // Defensive: `mdast_to_hast_inner` only routes JSX-shaped arms
+        // through this helper, so any other variant is unreachable
+        // unless future arms are added.
+        _ => String::new(),
+    }
 }
 
 /// Build a non-void element.
@@ -418,6 +589,15 @@ fn element(tag: &str, attrs: Vec<(String, String)>, children: Vec<HastNode>) -> 
 /// can pass it through verbatim. Sub 4 plugins that synthesize JSX
 /// elements (e.g. `<Note>`) typically build the [`HastNode::Raw`]
 /// payload themselves and bypass this path.
+///
+/// **HTML-path-only behaviour.** This helper feeds the HTML serializer
+/// path (`Pipeline::run`); on the JSX-emit path (#121) the dedicated
+/// `mdx_jsx_emit::reconstruct_jsx_recursive` is used instead so
+/// markdown formatting inside MDX JSX bodies (`<Note>**bold**</Note>`)
+/// survives as proper JSX elements. Updating this fallback to recurse
+/// would change long-standing HTML snapshot output (admonition bodies
+/// would gain `<p>` wrappers), which the issue brief explicitly
+/// forbids ("Pipeline::run behaviour unchanged").
 fn reconstruct_jsx(
     name: Option<&str>,
     attrs: &[AttributeContent],
@@ -678,16 +858,17 @@ mod tests {
         );
     }
 
-    // 10. MDX JSX element passes through as Raw.
+    // 10. MDX JSX element passes through as JsxRaw.
     //
-    // Walk the hast tree and collect every [`HastNode::Raw`] payload —
-    // markdown-rs may parse JSX as either a flow element (top-level) or
-    // a text element (inside a paragraph) depending on surrounding
-    // whitespace. Either way the converter must produce Raw with the
-    // original-ish source so the serializer passes it through.
+    // Walk the hast tree and collect every [`HastNode::JsxRaw`] /
+    // [`HastNode::Raw`] payload — markdown-rs may parse JSX as either a
+    // flow element (top-level) or a text element (inside a paragraph)
+    // depending on surrounding whitespace. Either way the converter
+    // must produce JsxRaw with the original-ish source so the
+    // serializer passes it through.
     fn collect_raw(node: &HastNode, out: &mut Vec<String>) {
         match node {
-            HastNode::Raw(s) => out.push(s.clone()),
+            HastNode::Raw(s) | HastNode::JsxRaw(s) => out.push(s.clone()),
             HastNode::Root { children } => {
                 for c in children {
                     collect_raw(c, out);

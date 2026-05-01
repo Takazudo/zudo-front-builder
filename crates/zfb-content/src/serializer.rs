@@ -73,7 +73,11 @@ pub fn serialize_into(node: &HastNode, out: &mut String) {
             }
         }
         HastNode::Text(t) => push_text_escaped(t, out),
-        HastNode::Raw(s) => out.push_str(s),
+        // Both Raw flavours are emitted verbatim — the JSX-vs-HTML
+        // distinction matters only on the JSX emit path (#121); on the
+        // HTML path, Raw and JsxRaw both stand for "trust the producer,
+        // do not escape".
+        HastNode::Raw(s) | HastNode::JsxRaw(s) => out.push_str(s),
         HastNode::Comment(body) => {
             out.push_str("<!--");
             push_comment_sanitized(body, out);
