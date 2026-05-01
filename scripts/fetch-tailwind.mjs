@@ -14,7 +14,15 @@
 const TAILWIND_VERSION = "4.2.0";
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -83,6 +91,13 @@ async function main() {
       console.error(
         `ZFB_TAILWIND_BIN is set to ${overridePath} but the file does not exist. ` +
           `Either fix the path or unset the variable to fall back to the workspace fetch.`,
+      );
+      process.exit(1);
+    }
+    if (!statSync(overridePath).isFile()) {
+      console.error(
+        `ZFB_TAILWIND_BIN is set to ${overridePath} but it is not a regular file ` +
+          `(directory, device, or broken symlink). Point it at the tailwindcss binary itself.`,
       );
       process.exit(1);
     }
