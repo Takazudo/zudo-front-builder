@@ -165,6 +165,24 @@ pub struct BundleConfig {
     /// Public base URL prefix used by [`bundle_link_href`].
     /// Default: `"/"`.
     pub base_url: String,
+
+    /// JSX import source the esbuild subprocess should target via
+    /// `--jsx=automatic --jsx-import-source=<value>`. Mirrors
+    /// `zfb_render::adapters::Adapter::jsx_import_source()` and
+    /// `zfb_build::bundler::BundleConfig::jsx_import_source`.
+    ///
+    /// Why this matters: without `--jsx=automatic --jsx-import-source=…`
+    /// esbuild's default classic JSX transform emits bare
+    /// `React.createElement(…)` / `React.Fragment` references in the
+    /// bundled island code. When host components have been migrated to
+    /// `preact/compat` for hooks (no `React` namespace import), those
+    /// references are dangling and the bundle throws
+    /// `ReferenceError: React is not defined` at mount time
+    /// (issue #151 / zudolab/zudo-doc#1355 Wave 8). Setting this
+    /// field to `"preact"` (the default, matching
+    /// [`FrameworkKind::Preact`]) routes the JSX transform through
+    /// `preact/jsx-runtime` so no `React` symbol is ever emitted.
+    pub jsx_import_source: String,
 }
 
 impl Default for BundleConfig {
@@ -174,6 +192,7 @@ impl Default for BundleConfig {
             sourcemap: true,
             outdir: PathBuf::from("dist"),
             base_url: "/".to_string(),
+            jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
         }
     }
 }
@@ -214,6 +233,17 @@ impl BundleConfig {
     /// Toggle sourcemap emission (chainable).
     pub fn with_sourcemap(mut self, sourcemap: bool) -> Self {
         self.sourcemap = sourcemap;
+        self
+    }
+
+    /// Override the JSX import source the esbuild subprocess targets via
+    /// `--jsx-import-source=<value>` (chainable). Use the framework's
+    /// `jsx_import_source` accessor (e.g.
+    /// `FrameworkKind::Preact.jsx_import_source()`,
+    /// `zfb_render::adapters::Adapter::jsx_import_source()`) to derive
+    /// the value rather than hardcoding a literal at the call site.
+    pub fn with_jsx_import_source(mut self, jsx_import_source: impl Into<String>) -> Self {
+        self.jsx_import_source = jsx_import_source.into();
         self
     }
 }
@@ -322,6 +352,19 @@ pub enum FrameworkKind {
 impl FrameworkKind {
     /// Stable lowercase name. Mirrors `zfb_render::Adapter::name()`.
     pub fn name(self) -> &'static str {
+        match self {
+            FrameworkKind::Preact => "preact",
+            FrameworkKind::React => "react",
+        }
+    }
+
+    /// JSX import source for esbuild's automatic JSX transform.
+    /// Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
+    /// the bundler passes this to esbuild as
+    /// `--jsx-import-source=<value>` so the compiled output routes
+    /// through `<value>/jsx-runtime` instead of the classic
+    /// `React.createElement` shape.
+    pub fn jsx_import_source(self) -> &'static str {
         match self {
             FrameworkKind::Preact => "preact",
             FrameworkKind::React => "react",
@@ -493,6 +536,34 @@ mod tests {
         assert_eq!(cfg.base_url, "https://cdn.example.com/");
         assert!(!cfg.minify);
         assert!(cfg.sourcemap);
+    }
+
+    #[test]
+    fn bundle_config_default_jsx_import_source_is_preact() {
+        // Issue #151: the default JSX import source must match the
+        // default `FrameworkKind` (Preact) so esbuild's
+        // --jsx=automatic transform routes through `preact/jsx-runtime`
+        // instead of emitting bare `React.createElement` references.
+        assert_eq!(BundleConfig::default().jsx_import_source, "preact");
+        assert_eq!(BundleConfig::production().jsx_import_source, "preact");
+        assert_eq!(BundleConfig::dev().jsx_import_source, "preact");
+    }
+
+    #[test]
+    fn bundle_config_with_jsx_import_source_overrides() {
+        let cfg = BundleConfig::default().with_jsx_import_source("react");
+        assert_eq!(cfg.jsx_import_source, "react");
+    }
+
+    #[test]
+    fn framework_kind_jsx_import_source_matches_zfb_render_adapter_contract() {
+        // Mirrors `zfb_render::adapters::Adapter::jsx_import_source()` —
+        // the value the bundler hands to esbuild via
+        // `--jsx-import-source=<value>` must agree with what the
+        // renderer's SWC pipeline targets, otherwise the SSR'd HTML
+        // and the hydrated bundle disagree on how JSX compiles.
+        assert_eq!(FrameworkKind::Preact.jsx_import_source(), "preact");
+        assert_eq!(FrameworkKind::React.jsx_import_source(), "react");
     }
 
     #[test]
