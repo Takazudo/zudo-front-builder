@@ -191,6 +191,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
         content_collections: Vec::new(),
+        strip_md_ext: false,
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");
