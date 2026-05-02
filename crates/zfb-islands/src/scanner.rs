@@ -65,6 +65,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use swc_core::atoms::Wtf8Atom;
 use swc_core::common::sync::Lrc;
@@ -188,6 +189,18 @@ pub fn is_bare_specifier(specifier: &str) -> bool {
 /// consumer's page module `import "@takazudo/zfb-blog-islands"` route
 /// the scanner into the workspace package's source `.tsx` files so any
 /// `"use client"` islands actually emit a production bundle.
+///
+/// The resolver also honours TypeScript path aliases declared in the
+/// project's `tsconfig.json` (`compilerOptions.paths` +
+/// `compilerOptions.baseUrl`). The nearest `tsconfig.json` is
+/// auto-discovered by walking up from each importer's directory the
+/// first time it's seen; the parsed alias table is cached on the
+/// resolver so subsequent imports from the same project re-use it
+/// without re-reading disk. Wildcard patterns of the form
+/// `"@/*": ["src/*"]` are supported (the common case downstream
+/// projects use); literal patterns also work. Conditional priorities
+/// (`browser`, `node`, …) and the full Node.js `paths` spec are out of
+/// scope for now — see issue #139 for the upstream tracker.
 #[derive(Debug, Clone)]
 pub struct FsResolver {
     /// File extensions probed for relative imports without an extension.
@@ -197,6 +210,39 @@ pub struct FsResolver {
     /// want the legacy "skip every bare specifier" shape can flip it
     /// off via [`FsResolver::without_workspace_probe`].
     pub workspace_probe_enabled: bool,
+    /// Cache of `tsconfig_dir → parsed paths` for the nearest
+    /// `tsconfig.json` discovered above each importer. Populated on
+    /// first lookup; subsequent imports from the same project hit the
+    /// in-memory entry instead of re-reading disk. `Arc<Mutex<…>>` so
+    /// `Clone` is cheap and the cache is shared across clones (which
+    /// the scanner makes when running in parallel test harnesses).
+    tsconfig_cache: Arc<Mutex<HashMap<PathBuf, Option<TsConfigPaths>>>>,
+}
+
+/// Parsed `compilerOptions.paths` + `baseUrl` from a discovered
+/// `tsconfig.json`, normalised to absolute paths so wildcard
+/// substitution works without repeatedly re-resolving relative bits.
+#[derive(Debug, Clone)]
+struct TsConfigPaths {
+    /// Absolute base directory. `compilerOptions.baseUrl` is resolved
+    /// relative to the `tsconfig.json` directory; when `baseUrl` is
+    /// unset, this is the `tsconfig.json` directory itself (matching
+    /// TypeScript's documented default of "`.`").
+    base_dir: PathBuf,
+    /// Parsed alias entries, in `compilerOptions.paths` source order.
+    aliases: Vec<TsPathAlias>,
+}
+
+/// One entry from `compilerOptions.paths`.
+#[derive(Debug, Clone)]
+struct TsPathAlias {
+    /// Pattern as authored — e.g. `"@/*"` or `"~"`. The TypeScript
+    /// spec allows at most one `*` per pattern (the wildcard form).
+    pattern: String,
+    /// Substitution targets, in priority order. Each target is the
+    /// raw (post-baseUrl) string from `tsconfig.json`; substitution
+    /// joins it onto `base_dir` and probes the file system.
+    targets: Vec<String>,
 }
 
 impl Default for FsResolver {
@@ -209,6 +255,7 @@ impl Default for FsResolver {
                 ".js".to_string(),
             ],
             workspace_probe_enabled: true,
+            tsconfig_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -457,6 +504,294 @@ impl FsResolver {
         };
         canon.starts_with(root)
     }
+
+    /// Walk up from `start` looking for the nearest `tsconfig.json`.
+    /// Returns the directory containing it, not the file path itself
+    /// (callers join `tsconfig.json` themselves where needed). The
+    /// shape mirrors [`Self::locate_node_modules_pkg`] — same
+    /// "ancestor walk" pattern, no canonicalisation (callers handle
+    /// that on the resolved file).
+    fn locate_tsconfig_dir(start: &Path) -> Option<PathBuf> {
+        let mut dir: Option<&Path> = Some(start);
+        while let Some(d) = dir {
+            if d.join("tsconfig.json").is_file() {
+                return Some(d.to_path_buf());
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
+    /// Try to resolve `specifier` against `tsconfig.json`
+    /// `compilerOptions.paths`. Returns the first probe hit, or
+    /// `None` when:
+    ///
+    /// - There is no `tsconfig.json` above `importer_dir`.
+    /// - The tsconfig has no `compilerOptions.paths` entries.
+    /// - No alias pattern matches the specifier.
+    /// - A pattern matches but every substitution target's probe
+    ///   (extension + index walk) misses.
+    fn try_resolve_tsconfig_alias(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        let tsconfig_dir = Self::locate_tsconfig_dir(importer_dir)?;
+        let entry = self.load_tsconfig_paths(&tsconfig_dir)?;
+        for alias in &entry.aliases {
+            if let Some(rest) = match_alias_pattern(&alias.pattern, specifier) {
+                for target in &alias.targets {
+                    let substituted = substitute_alias_target(target, rest.as_deref());
+                    let candidate = entry.base_dir.join(&substituted);
+                    if let Some(found) = self.probe_path_with_index(&candidate) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Look up — and lazily populate — the parsed `paths` table for the
+    /// `tsconfig.json` at `tsconfig_dir`. Cached on the resolver so a
+    /// project's tsconfig is read at most once per resolver instance,
+    /// and shared across `Clone`s.
+    fn load_tsconfig_paths(&self, tsconfig_dir: &Path) -> Option<TsConfigPaths> {
+        let key = tsconfig_dir.to_path_buf();
+        // Check cache first.
+        {
+            let cache = self.tsconfig_cache.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "FsResolver::tsconfig_cache",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
+        // Cache miss — parse from disk.
+        let parsed = parse_tsconfig_paths(&key);
+        let mut cache = self.tsconfig_cache.lock().unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "FsResolver::tsconfig_cache",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        });
+        cache.insert(key, parsed.clone());
+        parsed
+    }
+}
+
+/// Parse the `compilerOptions.paths` + `baseUrl` declared by the
+/// `tsconfig.json` at `tsconfig_dir`, walking through any `extends`
+/// chain. Returns `None` when the file cannot be read, the JSON cannot
+/// be parsed, or no usable `paths` entry survives the merge.
+///
+/// Notes on the parser:
+///
+/// - We use `serde_json` rather than a JSONC parser. `tsconfig.json`
+///   files in the wild often contain trailing commas or `// comments`
+///   — a future hardening pass could swap in a JSONC parser, but the
+///   common case (Astro / Next.js scaffolds, including the downstream
+///   zudo-doc consumer that motivated this fix) is plain JSON.
+/// - `extends` is a single string today (Node-style). Arrays-of-extends
+///   landed in TS 5.0 but we only follow the first entry as a
+///   conservative default; the rest is documented as "out of scope" in
+///   the issue body.
+/// - The `extends` chain is followed up to a depth of 8 to defend
+///   against hand-rolled cycles.
+fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        // Carry the *highest-priority* (= most-overridden) values
+        // discovered so far. Earlier — i.e. the leaf tsconfig that
+        // started the walk — wins for both `baseUrl` and `paths` per
+        // TypeScript's documented semantics.
+        merged_base_dir: Option<PathBuf>,
+        merged_aliases: Option<Vec<TsPathAlias>>,
+    ) -> Option<(PathBuf, Vec<TsPathAlias>)> {
+        if depth > 8 {
+            return None;
+        }
+        let path = dir.join("tsconfig.json");
+        let text = std::fs::read_to_string(&path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+
+        let compiler_options = value.get("compilerOptions");
+
+        let local_base_dir = compiler_options
+            .and_then(|c| c.get("baseUrl"))
+            .and_then(|b| b.as_str())
+            .map(|raw| dir.join(raw));
+
+        let local_aliases = compiler_options
+            .and_then(|c| c.get("paths"))
+            .and_then(|p| p.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(pattern, targets_value)| {
+                        let targets = targets_value.as_array()?;
+                        let collected: Vec<String> = targets
+                            .iter()
+                            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                            .collect();
+                        if collected.is_empty() {
+                            None
+                        } else {
+                            Some(TsPathAlias {
+                                pattern: pattern.clone(),
+                                targets: collected,
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+        // Leaf-wins merge: only adopt the local fields when the caller
+        // hasn't already supplied a closer (= leaf-ier) override.
+        let next_base_dir = merged_base_dir.or(local_base_dir);
+        let next_aliases = merged_aliases.or(local_aliases);
+
+        // If we have everything, stop here — no need to walk extends
+        // when the leaf already declared baseUrl + paths.
+        if let (Some(b), Some(a)) = (&next_base_dir, &next_aliases) {
+            return Some((b.clone(), a.clone()));
+        }
+
+        // Follow `extends` if present.
+        if let Some(extends) = value.get("extends").and_then(|e| e.as_str()) {
+            if let Some(parent_dir) = resolve_extends_target(dir, extends) {
+                if let Some(found) = walk(
+                    &parent_dir,
+                    depth + 1,
+                    next_base_dir.clone(),
+                    next_aliases.clone(),
+                ) {
+                    return Some(found);
+                }
+            }
+        }
+
+        // No extends (or extends couldn't resolve): only return
+        // something if we ended up with a `paths` table — without
+        // patterns there is nothing to alias-match against.
+        let aliases = next_aliases?;
+        // Default `baseUrl` is the tsconfig directory itself (the
+        // directory whose `paths` entries we're returning) — this
+        // matches TypeScript's documented behaviour that `paths` is
+        // resolved relative to `baseUrl ?? "."` and that the `"."`
+        // default is interpreted relative to the tsconfig.
+        let base_dir = next_base_dir.unwrap_or_else(|| dir.to_path_buf());
+        Some((base_dir, aliases))
+    }
+
+    let (base_dir, aliases) = walk(tsconfig_dir, 0, None, None)?;
+    if aliases.is_empty() {
+        return None;
+    }
+    Some(TsConfigPaths { base_dir, aliases })
+}
+
+/// Resolve a `tsconfig.json` `extends` value to the directory
+/// containing the extended config.
+///
+/// Two shapes are supported:
+///
+/// 1. Relative path: `"./base.json"` or `"../shared/tsconfig.base.json"`.
+///    The path is resolved relative to the extending tsconfig's
+///    directory. The trailing filename is stripped — callers expect a
+///    directory containing `tsconfig.json`. (This implies the extends
+///    target must literally be named `tsconfig.json`; configs that
+///    extend `tsconfig.base.json` next to a tsconfig.json fall back to
+///    "extends couldn't resolve" and the leaf's own paths are used. A
+///    follow-up could probe the literal `extends` filename instead.)
+/// 2. Bare `node_modules` package: `"@scope/configs/tsconfig.base"` or
+///    `"shared-tsconfig"` — out of scope. Returns `None`.
+fn resolve_extends_target(extending_dir: &Path, extends: &str) -> Option<PathBuf> {
+    let is_relative =
+        extends.starts_with("./") || extends.starts_with("../") || extends.starts_with('/');
+    if !is_relative {
+        return None;
+    }
+    let raw = extending_dir.join(extends);
+    // The extends value may point at the directory or at a literal
+    // file. We need the *directory* the recursive walker can join
+    // `tsconfig.json` onto.
+    if raw.is_dir() {
+        return Some(raw);
+    }
+    // A file path that ends in `tsconfig.json` is canonical: the
+    // parent is the directory.
+    if raw.is_file() && raw.file_name().and_then(|n| n.to_str()) == Some("tsconfig.json") {
+        return raw.parent().map(|p| p.to_path_buf());
+    }
+    // Either a non-tsconfig.json file (e.g. `tsconfig.base.json`),
+    // doesn't exist, or some other shape we don't support yet.
+    None
+}
+
+/// Match `specifier` against an alias `pattern` from
+/// `compilerOptions.paths`.
+///
+/// Returns:
+///
+/// - `Some(None)` — pattern is a literal (no `*`) and matches the
+///   specifier exactly.
+/// - `Some(Some(rest))` — pattern is a wildcard (`prefix*` / `prefix*suffix`)
+///   and matches; `rest` is the substring that fills the `*`.
+/// - `None` — no match.
+///
+/// At most one `*` is honoured (the TypeScript spec). Patterns with
+/// multiple `*`s are skipped (`None`) rather than treated as literals
+/// — silently matching nothing is safer than half-supporting the
+/// shape.
+fn match_alias_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
+    let star_count = pattern.matches('*').count();
+    match star_count {
+        0 => {
+            if pattern == specifier {
+                Some(None)
+            } else {
+                None
+            }
+        }
+        1 => {
+            let star_idx = pattern.find('*')?;
+            let prefix = &pattern[..star_idx];
+            let suffix = &pattern[star_idx + 1..];
+            if specifier.starts_with(prefix) && specifier.ends_with(suffix) {
+                let captured =
+                    &specifier[prefix.len()..specifier.len().saturating_sub(suffix.len())];
+                Some(Some(captured.to_string()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Substitute the captured wildcard fragment back into a
+/// `compilerOptions.paths` target.
+///
+/// `target` mirrors the alias-pattern shape: zero `*` means the target
+/// is a literal substitution (used as-is); one `*` means we splice
+/// `rest` (the captured fragment from [`match_alias_pattern`]) into
+/// the wildcard slot. Unbalanced shapes (literal pattern paired with
+/// wildcard target, or vice versa) are tolerated by treating the
+/// missing `rest` as the empty string.
+fn substitute_alias_target(target: &str, rest: Option<&str>) -> String {
+    let captured = rest.unwrap_or("");
+    if let Some(star_idx) = target.find('*') {
+        let mut out = String::with_capacity(target.len() + captured.len().saturating_sub(1));
+        out.push_str(&target[..star_idx]);
+        out.push_str(captured);
+        out.push_str(&target[star_idx + 1..]);
+        out
+    } else {
+        target.to_string()
+    }
 }
 
 /// Look up `exports["./<subpath>"]` in a parsed `package.json` and
@@ -529,6 +864,18 @@ impl Resolver for FsResolver {
         let canonicalize = |p: PathBuf| p.canonicalize().unwrap_or(p);
 
         if is_bare_specifier(specifier) {
+            // 1) tsconfig path aliases (issue #139). Bare specifiers
+            //    like `@/components/foo` are not on the
+            //    relative-import path, so they would otherwise fall
+            //    through to the node_modules / workspace probe. Walk
+            //    up from the importer to find the nearest
+            //    `tsconfig.json`, parse `compilerOptions.paths`, and
+            //    if the specifier matches an alias, probe the
+            //    substitution targets like a relative path.
+            if let Some(found) = self.try_resolve_tsconfig_alias(importer_dir, specifier) {
+                return Some(canonicalize(found));
+            }
+
             if !self.workspace_probe_enabled {
                 return None;
             }
@@ -2180,5 +2527,446 @@ mod tests {
             vec!["WorkspaceCounter"],
             "expected only the workspace island; preact must be skipped: {islands:?}",
         );
+    }
+
+    // ---------------------------------------------------------------
+    // tsconfig.json `compilerOptions.paths` (issue #139)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn match_alias_pattern_literal_match() {
+        assert_eq!(match_alias_pattern("@foo/bar", "@foo/bar"), Some(None));
+    }
+
+    #[test]
+    fn match_alias_pattern_literal_no_match() {
+        assert_eq!(match_alias_pattern("@foo/bar", "@foo/baz"), None);
+    }
+
+    #[test]
+    fn match_alias_pattern_wildcard_captures_suffix() {
+        assert_eq!(
+            match_alias_pattern("@/*", "@/components/foo"),
+            Some(Some("components/foo".to_string()))
+        );
+    }
+
+    #[test]
+    fn match_alias_pattern_wildcard_must_match_prefix_and_suffix() {
+        assert_eq!(
+            match_alias_pattern("lib/*/index", "lib/foo/index"),
+            Some(Some("foo".to_string()))
+        );
+        // Suffix mismatch → no match.
+        assert_eq!(match_alias_pattern("lib/*/index", "lib/foo/other"), None);
+    }
+
+    #[test]
+    fn match_alias_pattern_rejects_multi_wildcards() {
+        // We don't support patterns with more than one `*`.
+        assert_eq!(match_alias_pattern("a/*/b/*", "a/x/b/y"), None);
+    }
+
+    #[test]
+    fn substitute_alias_target_wildcard_splices_captured_segment() {
+        assert_eq!(
+            substitute_alias_target("src/*", Some("components/foo")),
+            "src/components/foo"
+        );
+        assert_eq!(
+            substitute_alias_target("vendored/*/index.ts", Some("foo")),
+            "vendored/foo/index.ts"
+        );
+    }
+
+    #[test]
+    fn substitute_alias_target_literal_passes_through() {
+        assert_eq!(
+            substitute_alias_target("src/index.ts", None),
+            "src/index.ts"
+        );
+    }
+
+    /// End-to-end: a project with `"@/*": ["src/*"]` in tsconfig.json
+    /// imports `@/components/counter`. The resolver must discover
+    /// tsconfig, match the alias, substitute, probe the file system,
+    /// and return the resolved island file. This is the exact downstream
+    /// shape that motivated issue #139 (zudo-doc Wave 4).
+    #[test]
+    fn fs_resolver_resolves_tsconfig_path_alias_in_tempdir() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        let components = project.join("src").join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = components
+            .join("counter.tsx")
+            .canonicalize()
+            .expect("canon");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// `compilerOptions.baseUrl` shifts the substitution target:
+    /// `"baseUrl": "./src", "paths": { "@/*": ["./*"] }` resolves
+    /// `@/foo` to `<project>/src/foo`. Same end state as the
+    /// `["src/*"]` shape above; this exercises the explicit baseUrl
+    /// path so the join math stays right when `baseUrl` is non-default.
+    #[test]
+    fn fs_resolver_honours_explicit_base_url() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        let components = project.join("src").join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "./src",
+                "paths": {
+                  "@/*": ["./*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    /// Multiple substitution targets are tried in order. The first
+    /// hit wins; misses fall through. Mirrors the TypeScript spec's
+    /// "fallback list" behaviour.
+    #[test]
+    fn fs_resolver_falls_through_alias_targets_in_order() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        // First target points at a non-existent dir; second points at
+        // the real one. The resolver must skip the miss and try the
+        // next target rather than giving up after the first.
+        let components = project.join("real").join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["does-not-exist/*", "real/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "expected fallback target to win: {islands:?}"
+        );
+    }
+
+    /// A literal alias (no `*` in the pattern) maps the whole
+    /// specifier to a single file. Validates the non-wildcard branch
+    /// of `match_alias_pattern` end-to-end.
+    #[test]
+    fn fs_resolver_resolves_literal_alias_pattern() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        let lib = project.join("src").join("lib");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&lib).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "~theme": ["src/lib/theme.tsx"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Theme } from "~theme";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            lib.join("theme.tsx"),
+            r#""use client";
+            export function Theme() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Theme");
+    }
+
+    /// Tsconfig with no matching pattern → resolver falls through to
+    /// the existing bare-specifier / workspace-probe path. Specifier
+    /// resolves to nothing (no node_modules entry exists) and the
+    /// scanner skips it cleanly without panicking.
+    #[test]
+    fn fs_resolver_skips_specifier_when_no_alias_matches() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            // Bare specifier that is NOT covered by `@/*` — falls
+            // through to the bare-specifier branch, hits no
+            // node_modules entry, returns None.
+            r#"import { Foo } from "preact";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// Alias target whose substitution does not exist on disk → the
+    /// resolver returns `None` cleanly (no panic, no spurious island).
+    /// Mirrors the existing relative-import branch: the resolver does
+    /// not invent files, it only follows what's actually on disk.
+    /// (The `probe_package_entry` clamp inside `is_inside` only
+    /// applies to `node_modules/<pkg>` entries; alias resolution
+    /// inherits the relative-path branch's freedom to follow `..`,
+    /// just as a hand-written `import "../../something"` would.)
+    #[test]
+    fn fs_resolver_alias_substitution_miss_returns_no_island() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            // `@/components/missing` substitutes to
+            // `<project>/src/components/missing.{tsx,ts,…}` — no such
+            // file exists, so the resolver returns None and the
+            // scanner produces no islands for this specifier.
+            r#"import { Missing } from "@/components/missing";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "got {islands:?}");
+    }
+
+    /// `extends` chain is followed: the leaf has no `paths`, but its
+    /// `extends` parent does. Models the common Astro / Next.js
+    /// scaffold where a `tsconfig.json` extends a `tsconfig.base.json`
+    /// (same directory) only — note the extends-target file MUST be
+    /// named `tsconfig.json` for the current parser to follow it (see
+    /// `resolve_extends_target` doc).
+    #[test]
+    fn fs_resolver_follows_extends_chain_to_inherit_paths() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let base_dir = project.join("config");
+        let pages = project.join("pages");
+        let components = project.join("src").join("components");
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        // Base config in a sibling directory: it owns `paths`. The
+        // base's `compilerOptions.baseUrl` is the BASE's directory
+        // (`config/`), but absent here, so it defaults to that
+        // directory. To resolve `src/*` correctly the base also sets
+        // `baseUrl` two levels up via "../".
+        fs::write(
+            base_dir.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "..",
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        // Leaf config extends the base via a relative path.
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "extends": "./config/tsconfig.json"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    /// Cache hit: parsing the same tsconfig twice via `load_tsconfig_paths`
+    /// returns the same data, and the on-disk file change between the
+    /// two calls is NOT reflected (the cache is intentionally write-once
+    /// per resolver instance — the build is a single short-lived pass,
+    /// and we don't want IO churn).
+    #[test]
+    fn fs_resolver_caches_parsed_tsconfig() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": { "@/*": ["src/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let first = resolver.load_tsconfig_paths(project).expect("first load");
+        // Mutate the on-disk file so a re-read would change the
+        // result — and verify the cached entry is returned unchanged.
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": { "@/*": ["completely/different/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+        let second = resolver
+            .load_tsconfig_paths(project)
+            .expect("second load (cache hit)");
+        assert_eq!(first.aliases.len(), second.aliases.len());
+        assert_eq!(first.aliases[0].targets, second.aliases[0].targets);
     }
 }
