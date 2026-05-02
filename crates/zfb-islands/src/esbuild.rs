@@ -450,11 +450,43 @@ impl EsbuildSubprocessBundler {
 
         // Entry temp file (.tsx so esbuild's loader inference picks up
         // JSX automatically — the entry imports component .tsx files).
-        let entry_tmp = tempfile::Builder::new()
-            .prefix("zfb-esbuild-entry-")
-            .suffix(".tsx")
-            .tempfile()
-            .context("failed to allocate entry temp file")?;
+        //
+        // **Why we allocate inside `working_dir` rather than `$TMPDIR`**
+        //
+        // The synthesised entry's bare imports (`@takazudo/zfb/runtime`,
+        // `preact`) need to resolve against the project's
+        // `node_modules/`. esbuild walks UP from the entry file's
+        // directory looking for `node_modules`, **not** from process
+        // cwd. If the entry lives at `/tmp/zfb-esbuild-entry-XXXX.tsx`,
+        // esbuild walks `/tmp -> /` and never reaches the project, so
+        // both bare imports fail with `Could not resolve "preact"` /
+        // `Could not resolve "@takazudo/zfb/runtime"` (issue #147 /
+        // zudolab/zudo-doc#1355 Wave 6 follow-up). Allocating inside
+        // `working_dir` (= the consumer project root, set by
+        // `EsbuildSubprocessConfig::with_working_dir`) puts the temp
+        // file next to the project's `node_modules/` so esbuild's
+        // upward walk finds the runtime + preact on the first hop.
+        //
+        // We fall back to the system tempdir (the original behaviour)
+        // when `working_dir` does not exist on disk; that is the case
+        // for the `zfb-islands` unit tests that construct an
+        // `EsbuildSubprocessConfig::default()` from a repo whose
+        // working_dir was wherever the test binary was launched from
+        // (real builds always have an existing project root, so
+        // production never takes this branch).
+        let entry_tmp = if self.config.working_dir.is_dir() {
+            tempfile::Builder::new()
+                .prefix(".zfb-esbuild-entry-")
+                .suffix(".tsx")
+                .tempfile_in(&self.config.working_dir)
+                .context("failed to allocate entry temp file inside working_dir")?
+        } else {
+            tempfile::Builder::new()
+                .prefix("zfb-esbuild-entry-")
+                .suffix(".tsx")
+                .tempfile()
+                .context("failed to allocate entry temp file")?
+        };
         std::fs::write(entry_tmp.path(), entry_source.as_bytes())
             .context("failed to write entry temp file")?;
 
@@ -539,14 +571,35 @@ impl EsbuildSubprocessBundler {
 /// island source code in one HTTP request.
 ///
 /// The synthesised entry imports each island as a namespace and
-/// constructs an inline manifest of `componentName → { mount }`
-/// descriptors. The runtime's `mountIslands` accepts this object
-/// shape directly (no second dynamic import) — see the
-/// `IslandManifestValue` widening in `packages/zfb/src/runtime.ts`.
-/// Each `mount` is a thin Preact wrapper that mirrors
-/// `render_island_entry_source(Preact, …)`: it picks `ns[Name]` then
-/// `ns.default`, builds a vnode, and dispatches to `hydrate` /
-/// `render` based on the SSR / SSR-skip mode.
+/// **registers** it into a manifest at top-level using a
+/// `__zfb_register(ns, exportName, fallback)` helper: the helper picks
+/// the component (named export first, then `default`), reads its
+/// `displayName ?? name` to derive the **registered name** the SSR
+/// markers carry, and stashes a Preact-mount thunk under that key.
+///
+/// Why dynamic key derivation rather than a static literal?
+///
+/// The SSR side (`packages/zfb/src/island.ts::captureComponentName`)
+/// computes the marker value `data-zfb-island="…"` from the JSX
+/// child's runtime identity (`type.displayName ?? type.name`). For
+/// host-shape islands authored as
+/// `export default function SidebarToggle(...)`, the scanner records
+/// `Island::component_name = "default"` (the export-side name), while
+/// the SSR marker is `"SidebarToggle"` (the function-identifier
+/// name). Keying the manifest on `Island::component_name` straight
+/// from the bundler — which the original #146 fix did — collapses
+/// every host-shape island onto the literal `"default"` key, esbuild
+/// flags duplicate-key warnings and only the last survives, and at
+/// runtime no marker ever matches. Reading `displayName ?? name` off
+/// the component at module-init time mirrors the SSR derivation
+/// exactly so both sides of the boundary agree (issue #147 / Wave 6
+/// follow-up).
+///
+/// The runtime's `mountIslands` accepts this object shape directly
+/// (no second dynamic import) — see the `IslandManifestValue`
+/// widening in `packages/zfb/src/runtime.ts`. Each `mount` thunk
+/// mirrors `render_island_entry_source(Preact, …)`: build a vnode and
+/// dispatch to `hydrate` / `render` based on the SSR / SSR-skip mode.
 ///
 /// # Why namespace imports
 ///
@@ -559,9 +612,9 @@ impl EsbuildSubprocessBundler {
 /// side-effecting statement get **tree-shaken out** (issue #144 /
 /// zudolab/zudo-doc#1355 Wave 5). Namespace imports keep every export
 /// reachable by name, AND each namespace is referenced from the
-/// `mountIslands(MANIFEST)` argument — which is itself a top-level
-/// side effect esbuild MUST preserve. So tree-shaking remains
-/// defanged in the new shape too.
+/// `__zfb_register(...)` calls — which are themselves top-level side
+/// effects esbuild MUST preserve. So tree-shaking remains defanged in
+/// the new shape too.
 ///
 /// Sequential numeric identifiers avoid collision pitfalls when two
 /// islands share a base name (e.g. host `theme-toggle.tsx` and v2
@@ -604,36 +657,67 @@ pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
             json_string(&path)
         ));
     }
-    // Inline manifest. Each entry maps a `data-zfb-island` /
-    // `data-zfb-island-skip-ssr` attribute value to an `{ mount }`
-    // descriptor. The runtime's `mountIslands` recognises this object
-    // shape (vs. the per-island URL string) and calls `mount` directly
-    // without a second dynamic import.
+    // Manifest registration helpers.
     //
-    // The mount function picks the named export first, falling back to
-    // `default`, mirroring `render_island_entry_source`. This handles
-    // both host-shape `export default function ComponentName(...)`
-    // islands (where the namespace exposes only `default`) and the
-    // `export const Name = ...` / `displayName = ...` patterns used by
-    // `@zudo-doc/zudo-doc-v2` (where the named export is present).
+    // `__zfb_pick(ns, exportName)` returns the component value: it
+    // prefers a *truthy* named export under `exportName` (so that
+    // `ns.default = function Foo(){}` plus `ns.Foo = undefined` does
+    // not pick `undefined` and lose the component) and falls back to
+    // `ns.default`. That mirrors `render_island_entry_source` for the
+    // per-island path.
     //
-    // The argument to `mountIslands` is a top-level side effect esbuild
-    // MUST preserve, and references every namespace by identifier —
-    // tree-shaking therefore retains every island's exports just as the
-    // previous `(globalThis).__zfb_islands ??= [...]` anchor did.
-    out.push_str("mountIslands({\n");
+    // `__zfb_keyFor(C, fallback)` is the dynamic counterpart of the
+    // SSR side's `captureComponentName(child)` in
+    // `packages/zfb/src/island.ts` — it reads `displayName ?? name`
+    // off the component, falling back to `fallback` (the scanner's
+    // export-side name) when neither is present (e.g. anonymous
+    // components, minified output).
+    //
+    // `__zfb_register` finally writes a Preact mount thunk for the
+    // resolved component into the manifest under the derived key. The
+    // mount thunk picks `hydrate` vs `render` based on the SSR /
+    // SSR-skip mode the runtime supplies, mirroring the per-island
+    // entry script's behaviour exactly.
+    out.push_str(
+        "const __zfb_manifest = {};\n\
+function __zfb_pick(ns, exportName) {\n\
+  const named = ns[exportName];\n\
+  return (named !== undefined && named !== null) ? named : ns.default;\n\
+}\n\
+function __zfb_keyFor(C, fallback) {\n\
+  if (C && typeof C === \"object\") {\n\
+    if (typeof C.displayName === \"string\" && C.displayName) return C.displayName;\n\
+    if (typeof C.name === \"string\" && C.name) return C.name;\n\
+  }\n\
+  if (typeof C === \"function\") {\n\
+    if (typeof C.displayName === \"string\" && C.displayName) return C.displayName;\n\
+    if (typeof C.name === \"string\" && C.name) return C.name;\n\
+  }\n\
+  return fallback;\n\
+}\n\
+function __zfb_register(ns, exportName, fallback) {\n\
+  const C = __zfb_pick(ns, exportName);\n\
+  if (!C) return;\n\
+  const key = __zfb_keyFor(C, fallback);\n\
+  __zfb_manifest[key] = { mount: (props, element, mode) => {\n\
+    const v = h(C, props);\n\
+    if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
+  } };\n\
+}\n",
+    );
+    // One register call per island. The `__zfb_register(...)` calls
+    // are top-level side effects esbuild MUST preserve, and they
+    // reference each namespace identifier — so tree-shaking retains
+    // every island's exports just as the previous
+    // `(globalThis).__zfb_islands ??= [...]` anchor did (#144).
     for (i, island) in islands.iter().enumerate() {
-        let key = json_string(&island.component_name);
         let name_lit = json_string(&island.component_name);
+        let fallback_lit = json_string(&island.component_name);
         out.push_str(&format!(
-            "  {key}: {{ mount: (props, element, mode) => {{ \
-const C = __zfb_island_{i}[{name_lit}] ?? __zfb_island_{i}.default; \
-const v = h(C, props); \
-if (mode === \"hydrate\") {{ hydrate(v, element); }} else {{ render(v, element); }} \
-}} }},\n"
+            "__zfb_register(__zfb_island_{i}, {name_lit}, {fallback_lit});\n"
         ));
     }
-    out.push_str("});\n");
+    out.push_str("mountIslands(__zfb_manifest);\n");
     out
 }
 
@@ -1010,25 +1094,25 @@ mod tests {
         let i_modal = src.find("Modal.tsx").expect("modal present");
         assert!(i_counter < i_modal, "expected Counter before Modal");
         // The top-level `mountIslands(...)` invocation must reference
-        // every namespace, otherwise esbuild's tree-shaker would drop
-        // the namespace import as unused (the bug #144 fixes) AND the
-        // page would never call into the hydration runtime (the bug
-        // #146 fixes).
+        // every namespace (via `__zfb_register(...)` calls), otherwise
+        // esbuild's tree-shaker would drop the namespace imports as
+        // unused (the bug #144 fixes) AND the page would never call
+        // into the hydration runtime (the bug #146 fixes).
         assert!(
             src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#),
             "missing mountIslands import: {src}"
         );
         assert!(
-            src.contains("mountIslands({"),
+            src.contains("mountIslands(__zfb_manifest);"),
             "missing mountIslands call: {src}"
         );
         assert!(
-            src.contains("__zfb_island_0[\"Counter\"]"),
-            "expected Counter mount to reference its namespace: {src}"
+            src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"),
+            "expected register call for Counter: {src}"
         );
         assert!(
-            src.contains("__zfb_island_1[\"Modal\"]"),
-            "expected Modal mount to reference its namespace: {src}"
+            src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"),
+            "expected register call for Modal: {src}"
         );
     }
 
@@ -1084,11 +1168,11 @@ mod tests {
         assert!(src.contains("import * as __zfb_island_0 from "));
         assert!(src.contains("import * as __zfb_island_1 from "));
         assert!(src.contains("import * as __zfb_island_2 from "));
-        // Every namespace identifier must appear in the mount manifest
-        // so esbuild keeps each module's exports alive.
-        assert!(src.contains("__zfb_island_0[\"ThemeToggle\"]"));
-        assert!(src.contains("__zfb_island_1[\"ThemeToggle\"]"));
-        assert!(src.contains("__zfb_island_2[\"Sidebar\"]"));
+        // Every namespace identifier must appear in a `__zfb_register`
+        // call so esbuild keeps each module's exports alive.
+        assert!(src.contains("__zfb_register(__zfb_island_0, "));
+        assert!(src.contains("__zfb_register(__zfb_island_1, "));
+        assert!(src.contains("__zfb_register(__zfb_island_2, "));
     }
 
     #[test]
@@ -1116,22 +1200,66 @@ mod tests {
             "missing preact glue imports: {src}"
         );
 
-        // Manifest entry per island, mapping component name to an
-        // `{ mount }` descriptor that the runtime's mountIslands
-        // accepts inline (no second HTTP fetch).
-        assert!(src.contains("\"Counter\": { mount:"));
-        assert!(src.contains("\"Modal\": { mount:"));
-
-        // Each mount picks the named export first, then default —
-        // matching `render_island_entry_source` so host-shape
-        // `export default function ComponentName(...)` islands are
-        // hydrated correctly.
-        assert!(src.contains("__zfb_island_0[\"Counter\"] ?? __zfb_island_0.default"));
-        assert!(src.contains("__zfb_island_1[\"Modal\"] ?? __zfb_island_1.default"));
+        // Helper functions present, plus an `__zfb_register` call per
+        // island. The helper derives the manifest key dynamically from
+        // `displayName ?? name` so host-shape default-export islands
+        // (where the scanner records `component_name = "default"`) line
+        // up with the SSR-side
+        // `data-zfb-island="<function-name>"` markers — see
+        // `packages/zfb/src/island.ts::captureComponentName`.
+        assert!(src.contains("function __zfb_pick("));
+        assert!(src.contains("function __zfb_keyFor("));
+        assert!(src.contains("function __zfb_register("));
+        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
+        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
 
         // hydrate vs render branching mirrors render_island_entry_source.
         assert!(src.contains(r#"if (mode === "hydrate") { hydrate(v, element); }"#));
         assert!(src.contains("else { render(v, element); }"));
+
+        // Final invocation hands the populated manifest to the runtime.
+        assert!(src.contains("mountIslands(__zfb_manifest);"));
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_does_not_collide_on_default_export_only_islands() {
+        // Regression for issue #147 follow-up
+        // (zudolab/zudo-doc#1355 Wave 6 follow-up): host-shape islands
+        // authored as `export default function FooBar(...)` are
+        // recorded by the scanner with `component_name = "default"`
+        // (the export-side name). If the synthesised entry used that
+        // name as the manifest key directly, every host-shape island
+        // would collapse onto the literal `"default"` key, esbuild
+        // would emit `Duplicate key "default" in object literal`
+        // warnings, and only the last island would hydrate at runtime.
+        //
+        // The fix derives the key dynamically from the component's
+        // `displayName ?? name` at module-init time, mirroring the SSR
+        // side's `captureComponentName` derivation. The synthesised
+        // entry must therefore NEVER bake `"default"` as a static
+        // manifest key, even when every input island has
+        // `component_name = "default"`.
+        let islands = vec![
+            Island::new("default", "/abs/components/sidebar-toggle.tsx"),
+            Island::new("default", "/abs/components/theme-toggle.tsx"),
+            Island::new("default", "/abs/components/ai-chat-modal.tsx"),
+        ];
+        let src = render_shared_bundle_entry_source(&islands);
+
+        // No duplicate-key shape: the entry must not contain a literal
+        // object-literal `"default": ...` line that esbuild would flag.
+        assert!(
+            !src.contains("\"default\": {"),
+            "duplicate-key regression — entry must not bake \"default\" as a static key:\n{src}"
+        );
+
+        // Every island still gets a register call, in input order, with
+        // its scanner-side export name as the lookup AND as the
+        // ultimate fallback if the component lacks `displayName ?? name`
+        // (e.g. anonymous arrow fn under heavy minification).
+        assert!(src.contains("__zfb_register(__zfb_island_0, \"default\", \"default\");"));
+        assert!(src.contains("__zfb_register(__zfb_island_1, \"default\", \"default\");"));
+        assert!(src.contains("__zfb_register(__zfb_island_2, \"default\", \"default\");"));
     }
 
     /// Regression for issue #138.
@@ -1195,10 +1323,10 @@ mod tests {
             on_disk.contains(r#"import * as __zfb_island_2 from "/abs/components/Sidebar.tsx";"#)
         );
         assert!(on_disk.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
-        assert!(on_disk.contains("mountIslands({"));
-        assert!(on_disk.contains("\"Counter\": { mount:"));
-        assert!(on_disk.contains("\"Modal\": { mount:"));
-        assert!(on_disk.contains("\"Sidebar\": { mount:"));
+        assert!(on_disk.contains("mountIslands(__zfb_manifest);"));
+        assert!(on_disk.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
+        assert!(on_disk.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
+        assert!(on_disk.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\");"));
     }
 
     #[test]
