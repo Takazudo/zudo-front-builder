@@ -15,14 +15,14 @@ This crate invokes the **esbuild standalone CLI** as a subprocess.
 
 | Field                | Value                                                          |
 | -------------------- | -------------------------------------------------------------- |
-| Pinned version       | **`0.24.0`**                                                   |
-| Major line           | esbuild 0.24.x                                                 |
+| Pinned version       | **`0.25.12`**                                                  |
+| Major line           | esbuild 0.25.x                                                 |
 | Distribution         | Standalone CLI binary (Go-built; no Node.js required)          |
 | Expected binary path | `crates/zfb/binaries/esbuild` (in the release tarball)         |
 | Upstream             | <https://github.com/evanw/esbuild/releases>                    |
 
 > The pin **must be reviewed and refreshed before each `zfb` release**.
-> Bump `0.24.0` to whatever the latest stable esbuild 0.x is at
+> Bump `0.25.12` to whatever the latest stable esbuild 0.x is at
 > release-cut time, and re-run the release-engineering binary-fetch step
 > (future epic) to materialize the matching binary.
 

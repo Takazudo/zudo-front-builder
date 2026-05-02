@@ -35,7 +35,7 @@ use crate::bundler::{
 /// clear error if the reported version does not match. To bump, see
 /// the "External tool version pins" section in `CONTRIBUTING.md` at
 /// the workspace root.
-pub const EXPECTED_ESBUILD_VERSION: &str = "0.24.0";
+pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
 
 /// SHA-256 of the pinned esbuild binary, lowercase hex.
 ///

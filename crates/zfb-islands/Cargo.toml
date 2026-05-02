@@ -23,7 +23,7 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 #   3. Drop the new binary under crates/zfb/binaries/esbuild/esbuild in the
 #      release tarball.
 #
-#   pinned esbuild = 0.24.0
+#   pinned esbuild = 0.25.12
 # ---------------------------------------------------------------------------
 
 [lib]
