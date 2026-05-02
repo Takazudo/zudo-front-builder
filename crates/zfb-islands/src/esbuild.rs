@@ -375,6 +375,16 @@ impl EsbuildSubprocessBundler {
         std::fs::create_dir_all(&islands_dir)
             .with_context(|| format!("failed to create {}", islands_dir.display()))?;
 
+        // Per-island path always knows the framework explicitly (it is
+        // a separate parameter), so override `BundleConfig::jsx_import_source`
+        // with the framework's accessor before handing it down. This
+        // keeps `bundle_one_entry` reading the JSX import source from a
+        // single source of truth (the config) regardless of which
+        // entrypoint started the bundle.
+        let mut framework_cfg = config.clone();
+        framework_cfg.jsx_import_source = framework.jsx_import_source().to_string();
+        let config = &framework_cfg;
+
         let mut bundle_entries: Vec<IslandBundle> = Vec::with_capacity(islands.len());
         let mut manifest: Vec<(String, String)> = Vec::with_capacity(islands.len());
 
@@ -495,37 +505,17 @@ impl EsbuildSubprocessBundler {
             .tempfile()
             .context("failed to allocate out temp file")?;
 
+        let args = build_esbuild_args(
+            config,
+            &self.config.extra_args,
+            out_tmp.path(),
+            entry_tmp.path(),
+        );
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
-        cmd.arg("--bundle");
-        cmd.arg("--format=esm");
-        cmd.arg("--splitting=false");
-        cmd.arg("--tree-shaking=true");
-        // Per-island bundles ship to the browser. See `produce_bundle_js`
-        // for the full rationale; mirrored here so both the legacy
-        // shared-bundle and per-island paths stay aligned on platform
-        // target + node:* externalization.
-        cmd.arg("--platform=browser");
-        cmd.arg("--external:node:*");
-        if config.minify {
-            cmd.arg("--minify");
+        for arg in &args {
+            cmd.arg(arg);
         }
-        if config.sourcemap {
-            cmd.arg("--sourcemap=linked");
-        }
-        cmd.arg(format!("--outfile={}", out_tmp.path().display()));
-        // Inline NODE_ENV so React/Preact pick their production build
-        // when minifying. esbuild expects the define value to be a JS
-        // literal, hence the embedded quotes.
-        if config.minify {
-            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
-        } else {
-            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
-        }
-        for extra in &self.config.extra_args {
-            cmd.arg(extra);
-        }
-        cmd.arg(entry_tmp.path());
 
         let output = cmd
             .output()
@@ -543,6 +533,77 @@ impl EsbuildSubprocessBundler {
             std::fs::read_to_string(out_tmp.path()).context("failed to read esbuild output")?;
         Ok(js)
     }
+}
+
+/// Compose the esbuild CLI argument list for one entry-source bundle
+/// pass. Split out from `bundle_one_entry` so unit tests can assert
+/// against the flag list without spawning the subprocess.
+///
+/// The args mirror the historical `bundle_one_entry` shape verbatim
+/// **plus** the `--jsx=automatic --jsx-import-source=<value>` pair
+/// (issue #151). Without those two flags esbuild's default classic
+/// JSX transform emits bare `React.createElement(…)` references that
+/// throw `ReferenceError: React is not defined` at mount time when
+/// host components have been migrated to `preact/compat`.
+///
+/// Order is stable across calls so callers (and tests) can rely on a
+/// deterministic argv layout.
+pub(crate) fn build_esbuild_args(
+    config: &BundleConfig,
+    extra_args: &[OsString],
+    out_path: &Path,
+    entry_path: &Path,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    args.push(OsString::from("--bundle"));
+    args.push(OsString::from("--format=esm"));
+    args.push(OsString::from("--splitting=false"));
+    args.push(OsString::from("--tree-shaking=true"));
+    // Per-island bundles ship to the browser. See `produce_bundle_js`
+    // for the full rationale; mirrored here so both the legacy
+    // shared-bundle and per-island paths stay aligned on platform
+    // target + node:* externalization.
+    args.push(OsString::from("--platform=browser"));
+    args.push(OsString::from("--external:node:*"));
+    // Issue #151: route esbuild through the automatic JSX transform
+    // pointed at the host framework's import source (typically
+    // `"preact"`). Without these two flags esbuild defaults to the
+    // classic transform and emits bare `React.createElement` /
+    // `React.Fragment` references; islands using `preact/compat` for
+    // hooks have no `React` binding and crash at mount time
+    // (zudolab/zudo-doc#1355 Wave 8).
+    args.push(OsString::from("--jsx=automatic"));
+    args.push(OsString::from(format!(
+        "--jsx-import-source={}",
+        config.jsx_import_source
+    )));
+    if config.minify {
+        args.push(OsString::from("--minify"));
+    }
+    if config.sourcemap {
+        args.push(OsString::from("--sourcemap=linked"));
+    }
+    args.push(OsString::from(format!(
+        "--outfile={}",
+        out_path.display()
+    )));
+    // Inline NODE_ENV so React/Preact pick their production build
+    // when minifying. esbuild expects the define value to be a JS
+    // literal, hence the embedded quotes.
+    if config.minify {
+        args.push(OsString::from(
+            "--define:process.env.NODE_ENV=\"production\"",
+        ));
+    } else {
+        args.push(OsString::from(
+            "--define:process.env.NODE_ENV=\"development\"",
+        ));
+    }
+    for extra in extra_args {
+        args.push(extra.clone());
+    }
+    args.push(OsString::from(entry_path.as_os_str()));
+    args
 }
 
 /// Generate the synthetic single-entry source for the legacy shared
@@ -1398,6 +1459,81 @@ mod tests {
         assert_eq!(
             cfg.binary_path,
             PathBuf::from("crates/zfb/binaries/esbuild/esbuild")
+        );
+    }
+
+    /// Helper: collect the args produced by `build_esbuild_args` as
+    /// plain `String`s so test assertions can use `contains` / equality
+    /// without juggling `OsString` conversions.
+    fn args_as_strings(config: &BundleConfig) -> Vec<String> {
+        let entry = PathBuf::from("/tmp/entry.tsx");
+        let out = PathBuf::from("/tmp/out.js");
+        build_esbuild_args(config, &[], &out, &entry)
+            .into_iter()
+            .map(|os| os.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Regression for issue #151 (zudolab/zudo-doc#1355 Wave 8).
+    ///
+    /// The esbuild subprocess argument list MUST include
+    /// `--jsx=automatic` AND `--jsx-import-source=preact` (the default
+    /// framework). Without those two flags esbuild's classic JSX
+    /// transform emits bare `React.createElement` references that
+    /// throw `ReferenceError: React is not defined` at mount time when
+    /// host components have been migrated to `preact/compat` for
+    /// hooks.
+    #[test]
+    fn build_esbuild_args_includes_automatic_jsx_flags_for_preact_default() {
+        let cfg = BundleConfig::default();
+        let args = args_as_strings(&cfg);
+        assert!(
+            args.iter().any(|a| a == "--jsx=automatic"),
+            "missing --jsx=automatic in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--jsx-import-source=preact"),
+            "missing --jsx-import-source=preact in args: {args:?}"
+        );
+        // Both flags must appear before the entry path (which is
+        // always last) so esbuild parses them as flags rather than as
+        // additional inputs.
+        let entry_idx = args
+            .iter()
+            .position(|a| a.ends_with("entry.tsx"))
+            .expect("entry path present");
+        let jsx_idx = args
+            .iter()
+            .position(|a| a == "--jsx=automatic")
+            .expect("--jsx=automatic present");
+        let import_idx = args
+            .iter()
+            .position(|a| a == "--jsx-import-source=preact")
+            .expect("--jsx-import-source=preact present");
+        assert!(jsx_idx < entry_idx);
+        assert!(import_idx < entry_idx);
+    }
+
+    /// `BundleConfig::jsx_import_source` is honoured verbatim — the
+    /// helper does not hardcode `"preact"`, so callers that bundle for
+    /// React (or any future adapter) get the right
+    /// `--jsx-import-source=<value>` flag.
+    #[test]
+    fn build_esbuild_args_honours_custom_jsx_import_source() {
+        let cfg = BundleConfig::default().with_jsx_import_source("react");
+        let args = args_as_strings(&cfg);
+        assert!(
+            args.iter().any(|a| a == "--jsx=automatic"),
+            "missing --jsx=automatic in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--jsx-import-source=react"),
+            "missing --jsx-import-source=react in args: {args:?}"
+        );
+        // The Preact default must NOT leak when the caller overrode it.
+        assert!(
+            !args.iter().any(|a| a == "--jsx-import-source=preact"),
+            "stale --jsx-import-source=preact present: {args:?}"
         );
     }
 }
