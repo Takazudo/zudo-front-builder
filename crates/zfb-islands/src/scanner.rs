@@ -472,9 +472,31 @@ impl FsResolver {
         None
     }
 
-    /// Try `path` as-is, then with each extension appended; return
-    /// the first hit that is a regular file.
+    /// Try `path` as-is, then with TS-family swap candidates for any
+    /// `.js`/`.jsx`/`.mjs`/`.cjs` specifier (the
+    /// `moduleResolution: "Bundler"` / NodeNext convention where source
+    /// is authored as `.ts`/`.tsx` but imports use the post-emit
+    /// `.js`/`.jsx`/… extension), then with each `exts` entry appended.
+    /// Returns the first hit that is a regular file.
+    ///
+    /// The TS-swap pass exists because TypeScript with
+    /// `moduleResolution: "Bundler"` (or `"NodeNext"`) idiomatically has
+    /// source files write `import "./foo.js"` even though the file on
+    /// disk is `foo.tsx` — esbuild and tsc both transparently swap the
+    /// extension when resolving. The islands scanner needs to do the
+    /// same so it can follow imports through workspace TypeScript
+    /// packages that ship un-built source. See issue #143 (the symptom
+    /// was a downstream consumer with `*.tsx` workspace packages whose
+    /// `import "./foo.js"` chain stopped at the first such specifier,
+    /// missing every transitively-imported `"use client"` island).
     fn probe_with_extensions(path: &Path, exts: &[String]) -> Option<PathBuf> {
+        // TS-family swap runs first so a stale `.js` artifact next to the
+        // live `.tsx` doesn't shadow the source the bundler uses.
+        for swapped in ts_swap_candidates(path) {
+            if swapped.is_file() {
+                return Some(swapped);
+            }
+        }
         if path.is_file() {
             return Some(path.to_path_buf());
         }
@@ -928,6 +950,48 @@ fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Generate TS-family swap candidate paths for a candidate that uses
+/// a JS-family extension (`.js`, `.jsx`, `.mjs`, `.cjs`).
+///
+/// `moduleResolution: "Bundler"` and `"NodeNext"` accept import
+/// specifiers that name the post-emit JS file (`./foo.js`) even when
+/// the on-disk source is `./foo.tsx`. esbuild and `tsc` both swap the
+/// extension transparently; the islands scanner needs the same logic
+/// so it can follow imports through workspace TypeScript packages
+/// that ship un-built source.
+///
+/// Mapping (matches TypeScript's `getSuffixedSubstitutions` ordering):
+///
+/// - `.js`  → `.ts`,  `.tsx`
+/// - `.jsx` → `.tsx`
+/// - `.mjs` → `.mts`
+/// - `.cjs` → `.cts`
+///
+/// Returns an empty vector for any other extension (or no extension)
+/// so callers fall straight through to the legacy "append extension"
+/// probe loop. Match is ASCII-case-insensitive for filesystems that
+/// case-fold (macOS default, Windows).
+fn ts_swap_candidates(path: &Path) -> Vec<PathBuf> {
+    let Some(ext_os) = path.extension() else {
+        return Vec::new();
+    };
+    let Some(ext) = ext_os.to_str() else {
+        return Vec::new();
+    };
+    let lower = ext.to_ascii_lowercase();
+    let swaps: &[&str] = match lower.as_str() {
+        "js" => &["ts", "tsx"],
+        "jsx" => &["tsx"],
+        "mjs" => &["mts"],
+        "cjs" => &["cts"],
+        _ => return Vec::new(),
+    };
+    swaps
+        .iter()
+        .map(|new_ext| path.with_extension(new_ext))
+        .collect()
+}
+
 impl Resolver for FsResolver {
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
         // Helper: turn a found path into the canonical (symlink-resolved,
@@ -976,12 +1040,27 @@ impl Resolver for FsResolver {
 
         let candidate = importer_dir.join(specifier);
 
-        // 1) Exact match.
+        // 1) TS-family swap (`.js` → `.ts`/`.tsx`, `.jsx` → `.tsx`,
+        //    `.mjs` → `.mts`, `.cjs` → `.cts`) — the
+        //    `moduleResolution: "Bundler"` / NodeNext convention where
+        //    sources author `import "./foo.js"` against an on-disk
+        //    `foo.tsx`. The TS sibling wins over a same-named `.js` so a
+        //    stale build artifact next to live source can't shadow the
+        //    real source the bundler will use. See
+        //    [`Self::probe_with_extensions`] for the motivation and
+        //    issue reference.
+        for swapped in ts_swap_candidates(&candidate) {
+            if swapped.is_file() {
+                return Some(canonicalize(swapped));
+            }
+        }
+
+        // 2) Exact match.
         if candidate.is_file() {
             return Some(canonicalize(candidate));
         }
 
-        // 2) Probe extensions.
+        // 3) Probe extensions.
         for ext in &self.probe_exts {
             let mut probe = candidate.clone();
             let new_name = format!(
@@ -995,7 +1074,7 @@ impl Resolver for FsResolver {
             }
         }
 
-        // 3) `index.<ext>` inside a directory.
+        // 4) `index.<ext>` inside a directory.
         if candidate.is_dir() {
             for ext in &self.probe_exts {
                 let probe = candidate.join(format!("index{ext}"));
@@ -1066,6 +1145,14 @@ impl Resolver for InMemoryResolver {
         // Lexically normalise the candidate so `pages/../components/x`
         // matches the same key the test wrote with `components/x`.
         let candidate = normalize_path_lexical(&importer_dir.join(specifier));
+
+        // TS-family swap runs first so a stale `.js` doesn't shadow the
+        // live `.tsx`. See [`ts_swap_candidates`] for rationale.
+        for swapped in ts_swap_candidates(&candidate) {
+            if self.files.contains_key(&swapped) {
+                return Some(swapped);
+            }
+        }
 
         if self.files.contains_key(&candidate) {
             return Some(candidate);
@@ -1204,7 +1291,7 @@ fn is_scannable_source(path: &Path) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
     )
 }
 
@@ -1785,6 +1872,243 @@ mod tests {
             .canonicalize()
             .expect("canonicalize");
         assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// `moduleResolution: "Bundler"` / NodeNext shape: import specifier
+    /// uses `.js` even though the on-disk source is `.tsx`. Without the
+    /// TS-family swap the scanner stops at the first such hop and every
+    /// transitive `"use client"` island goes missing. See issue #143
+    /// (downstream zudo-doc#1355 wave 4).
+    #[test]
+    fn fs_resolver_swaps_js_specifier_to_tsx_source() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let layouts = dir.path().join("layouts");
+        let components = dir.path().join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&layouts).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        // Page → layout via `.js` specifier (file is `.tsx`).
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Layout } from "../layouts/main.js";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        // Layout → island via `.js` specifier (file is `.tsx`).
+        fs::write(
+            layouts.join("main.tsx"),
+            r#"import { Counter } from "../components/counter.js";
+            export function Layout() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {:?}", islands);
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = components
+            .join("counter.tsx")
+            .canonicalize()
+            .expect("canonicalize");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// Companion to the `.js` swap test above: the same TS-bundler shape
+    /// also writes `.jsx`, `.mjs`, `.cjs` specifiers against `.tsx` /
+    /// `.mts` / `.cts` sources. Cover each so a future refactor can't
+    /// silently regress one shape.
+    #[test]
+    fn fs_resolver_swaps_jsx_mjs_cjs_specifiers() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let comps = dir.path().join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&comps).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { A } from "../components/a.jsx";
+            import { B } from "../components/b.mjs";
+            import { C } from "../components/c.cjs";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            comps.join("a.tsx"),
+            r#""use client"; export function A() {}"#,
+        )
+        .unwrap();
+        fs::write(
+            comps.join("b.mts"),
+            r#""use client"; export function B() {}"#,
+        )
+        .unwrap();
+        fs::write(
+            comps.join("c.cts"),
+            r#""use client"; export function C() {}"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
+        assert_eq!(names, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    }
+
+    /// In-memory resolver mirror of [`fs_resolver_swaps_js_specifier_to_tsx_source`].
+    /// Without the swap, the layout hop returns `None` and the
+    /// transitive island is unreachable.
+    #[test]
+    fn in_memory_resolver_swaps_js_specifier_to_tsx_source() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Layout } from "../layouts/main.js";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("layouts/main.tsx"),
+                r#"import { Counter } from "../components/counter.js";
+                export function Layout() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            paths(&islands),
+            vec![(
+                "/proj/components/counter.tsx".to_string(),
+                "Counter".to_string()
+            )]
+        );
+    }
+
+    /// Specifier with a JS extension that does NOT have a TS sibling
+    /// must still resolve as the literal `.js` file when present, so the
+    /// swap pass cannot accidentally hide a real `.js` source.
+    #[test]
+    fn fs_resolver_keeps_literal_js_when_no_ts_sibling() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let comps = dir.path().join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&comps).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "../components/counter.js";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            comps.join("counter.js"),
+            r#""use client"; export function Counter() {}"#,
+        )
+        .unwrap();
+        // No counter.ts / counter.tsx — must fall back to the literal .js.
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = comps.join("counter.js").canonicalize().expect("canonicalize");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// TS sibling wins over an existing `.js` when both are present —
+    /// matches TypeScript's lookup order. Authoring scenario: a stale
+    /// build artifact left a `foo.js` next to the live `foo.tsx`; the
+    /// scanner must follow the source, not the artifact.
+    #[test]
+    fn fs_resolver_prefers_tsx_over_js_when_both_exist() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let comps = dir.path().join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&comps).unwrap();
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "../components/counter.js";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        // Both siblings exist; the .tsx is the live source.
+        fs::write(
+            comps.join("counter.tsx"),
+            r#""use client"; export function Counter() {}"#,
+        )
+        .unwrap();
+        fs::write(
+            comps.join("counter.js"),
+            // Stale artifact — no "use client", different export name.
+            r#"export function StaleArtifact() {}"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {:?}", islands);
+        assert_eq!(islands[0].component_name, "Counter");
+        let expected = comps.join("counter.tsx").canonicalize().expect("canonicalize");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    #[test]
+    fn ts_swap_candidates_only_swaps_js_family_extensions() {
+        // No extension → no swap.
+        assert!(ts_swap_candidates(Path::new("/x/foo")).is_empty());
+        // `.ts` / `.tsx` → no swap (already TS).
+        assert!(ts_swap_candidates(Path::new("/x/foo.ts")).is_empty());
+        assert!(ts_swap_candidates(Path::new("/x/foo.tsx")).is_empty());
+        // `.json` / `.css` → no swap.
+        assert!(ts_swap_candidates(Path::new("/x/foo.json")).is_empty());
+        assert!(ts_swap_candidates(Path::new("/x/foo.css")).is_empty());
+        // `.js` → `.ts`, `.tsx` (in that order, matching tsc).
+        assert_eq!(
+            ts_swap_candidates(Path::new("/x/foo.js")),
+            vec![PathBuf::from("/x/foo.ts"), PathBuf::from("/x/foo.tsx")]
+        );
+        // `.jsx` → `.tsx`.
+        assert_eq!(
+            ts_swap_candidates(Path::new("/x/foo.jsx")),
+            vec![PathBuf::from("/x/foo.tsx")]
+        );
+        // `.mjs` → `.mts`. Case-insensitive match on the input.
+        assert_eq!(
+            ts_swap_candidates(Path::new("/x/foo.MJS")),
+            vec![PathBuf::from("/x/foo.mts")]
+        );
+        // `.cjs` → `.cts`.
+        assert_eq!(
+            ts_swap_candidates(Path::new("/x/foo.cjs")),
+            vec![PathBuf::from("/x/foo.cts")]
+        );
     }
 
     #[test]
