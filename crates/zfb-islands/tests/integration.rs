@@ -43,15 +43,12 @@ fn subprocess_bundler_mock_short_circuits_command() {
     // Use the mock-output escape hatch so this test does not require the
     // esbuild binary to be present.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let cfg = EsbuildSubprocessConfig::default()
-        .with_mock_output("export const Counter = () => null;\n");
+    let cfg =
+        EsbuildSubprocessConfig::default().with_mock_output("export const Counter = () => null;\n");
     let bundler = EsbuildSubprocessBundler::new(cfg);
     let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
     let out: BundleOutput = bundler
-        .bundle(
-            &[island("Counter", "components/counter.tsx")],
-            &bundle_cfg,
-        )
+        .bundle(&[island("Counter", "components/counter.tsx")], &bundle_cfg)
         .expect("mock bundler should succeed");
     assert!(
         out.asset_path.starts_with(tmp.path()),
@@ -163,7 +160,10 @@ fn module_ids_list_preserves_island_order() {
             &bundle_cfg,
         )
         .expect("bundle");
-    assert_eq!(out.module_ids, vec!["Counter".to_string(), "Tabs".to_string()]);
+    assert_eq!(
+        out.module_ids,
+        vec!["Counter".to_string(), "Tabs".to_string()]
+    );
 }
 
 #[test]
@@ -208,6 +208,102 @@ fn subprocess_bundler_against_real_binary() {
         )
         .expect("real esbuild binary should produce a bundle");
     assert!(out.asset_path.exists());
+}
+
+/// Regression for issue #144 (zudolab/zudo-doc#1355 Wave 5).
+///
+/// Pre-#144, the production shared-bundle entry was N pure side-effect
+/// imports:
+///
+/// ```ignore
+/// import "/abs/.../host-island.tsx";
+/// ```
+///
+/// esbuild ran that with `--bundle --tree-shaking=true`. Modules whose
+/// body had no top-level side-effecting statement (the common case for
+/// `export default function ComponentName(...) { ... }` — including
+/// host-side islands like `SidebarToggle`, `ThemeToggle`, `SidebarTree`
+/// in the downstream zudo-doc consumer) got tree-shaken away in their
+/// entirety, so the on-disk `dist/assets/islands.js` did not contain
+/// the component code the runtime needed for `data-zfb-island="…"`
+/// hydration.
+///
+/// The fix changes the synthesis to namespace-import each island and
+/// reference the namespaces from a `globalThis.__zfb_islands ??= [...]`
+/// top-level assignment; the assignment is a side effect esbuild MUST
+/// preserve, and the namespace references keep every export of every
+/// island alive.
+///
+/// This test pins the contract end-to-end against the real esbuild
+/// binary: write two synthetic island modules — one with a top-level
+/// side effect (the v2 shape) and one without (the host shape) —
+/// bundle them, and assert BOTH module bodies survive tree-shaking.
+/// Pre-fix this test would have the second island missing from the
+/// bundle.
+#[test]
+#[ignore = "Requires the real esbuild binary at crates/zfb/binaries/esbuild/esbuild. \
+            Will be enabled in a release-engineering follow-up."]
+fn shared_bundle_keeps_islands_with_no_top_level_side_effect() {
+    let bundler = EsbuildSubprocessBundler::with_default_config();
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // Island A: v2 shape — a top-level `Inner.displayName = "Foo"`
+    // assignment. Pre-fix this survived tree-shaking and was the
+    // behaviour the regression hid behind.
+    let with_effect = tmp.path().join("with-effect.tsx");
+    std::fs::write(
+        &with_effect,
+        r#"
+export function WithEffectInner() { return null; }
+WithEffectInner.displayName = "WithEffect";
+export default WithEffectInner;
+"#,
+    )
+    .expect("write with-effect");
+
+    // Island B: host shape — bare `export default function Foo() {}`,
+    // no top-level side effect. Pre-fix esbuild dropped its body
+    // entirely from the bundle.
+    let no_effect = tmp.path().join("no-effect.tsx");
+    std::fs::write(
+        &no_effect,
+        r#"
+export default function NoEffectFn() { return null; }
+"#,
+    )
+    .expect("write no-effect");
+
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(tmp.path())
+        // Disable minification so we can grep the output by source-name
+        // identifiers rather than mangled symbols.
+        .with_minify(false);
+    let out = bundler
+        .bundle(
+            &[
+                Island {
+                    component_name: "WithEffect".into(),
+                    source_path: with_effect,
+                },
+                Island {
+                    component_name: "NoEffectFn".into(),
+                    source_path: no_effect,
+                },
+            ],
+            &bundle_cfg,
+        )
+        .expect("real esbuild bundle");
+    assert!(out.asset_path.exists());
+
+    let bundled = std::fs::read_to_string(&out.asset_path).expect("read bundle");
+    assert!(
+        bundled.contains("WithEffectInner"),
+        "v2-shape island lost from bundle (pre-existing regression?): {bundled}"
+    );
+    assert!(
+        bundled.contains("NoEffectFn"),
+        "host-shape island still tree-shaken — issue #144 fix did not land. Bundle:\n{bundled}"
+    );
 }
 
 // -----------------------------------------------------------------------------
