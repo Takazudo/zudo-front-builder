@@ -534,14 +534,33 @@ impl FsResolver {
     fn try_resolve_tsconfig_alias(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
         let tsconfig_dir = Self::locate_tsconfig_dir(importer_dir)?;
         let entry = self.load_tsconfig_paths(&tsconfig_dir)?;
-        for alias in &entry.aliases {
-            if let Some(rest) = match_alias_pattern(&alias.pattern, specifier) {
-                for target in &alias.targets {
-                    let substituted = substitute_alias_target(target, rest.as_deref());
-                    let candidate = entry.base_dir.join(&substituted);
-                    if let Some(found) = self.probe_path_with_index(&candidate) {
-                        return Some(found);
-                    }
+        // Collect every alias whose pattern matches the specifier,
+        // then iterate in TypeScript's documented priority order:
+        // most-specific (longest non-wildcard prefix) wins. With the
+        // overlapping shape `{"@/*": [...], "@/components/*": [...]}`,
+        // resolving `@/components/Button` must try `@/components/*`
+        // first; only fall through to `@/*` when the more-specific
+        // probe misses. Map order in the source `paths` object is
+        // **not** stable across JSON parsers, so we cannot rely on
+        // declaration order — we must rank by pattern shape.
+        let mut matches: Vec<(&TsPathAlias, Option<String>, usize)> = entry
+            .aliases
+            .iter()
+            .filter_map(|alias| {
+                let captured = match_alias_pattern(&alias.pattern, specifier)?;
+                Some((alias, captured, pattern_specificity(&alias.pattern)))
+            })
+            .collect();
+        // Higher specificity score first. `sort_by_key` is stable,
+        // so ties (e.g. two literal patterns of the same length)
+        // keep declaration order and remain deterministic.
+        matches.sort_by_key(|m| std::cmp::Reverse(m.2));
+        for (alias, captured, _score) in matches {
+            for target in &alias.targets {
+                let substituted = substitute_alias_target(target, captured.as_deref());
+                let candidate = entry.base_dir.join(&substituted);
+                if let Some(found) = self.probe_path_with_index(&candidate) {
+                    return Some(found);
                 }
             }
         }
@@ -601,16 +620,26 @@ impl FsResolver {
 /// - The `extends` chain is followed up to a depth of 8 to defend
 ///   against hand-rolled cycles.
 fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
-    fn walk(
-        dir: &Path,
-        depth: usize,
-        // Carry the *highest-priority* (= most-overridden) values
-        // discovered so far. Earlier — i.e. the leaf tsconfig that
-        // started the walk — wins for both `baseUrl` and `paths` per
-        // TypeScript's documented semantics.
-        merged_base_dir: Option<PathBuf>,
-        merged_aliases: Option<Vec<TsPathAlias>>,
-    ) -> Option<(PathBuf, Vec<TsPathAlias>)> {
+    /// State threaded through the walk:
+    ///
+    /// - `base_dir` — the resolved `compilerOptions.baseUrl` from the
+    ///   leafiest config that declared one. `None` until we hit a
+    ///   `baseUrl`.
+    /// - `aliases` — the leafiest `compilerOptions.paths` table
+    ///   encountered. `None` until we hit one.
+    /// - `paths_anchor` — the directory of the tsconfig that *declared*
+    ///   `aliases`. When `base_dir` is never explicitly set anywhere
+    ///   in the chain, TypeScript anchors `paths` resolution to **that
+    ///   config's directory**, not to the deepest extends parent. This
+    ///   field captures it at the moment we adopt `aliases` so the
+    ///   fallback at the end of the walk picks the right anchor.
+    struct WalkState {
+        base_dir: Option<PathBuf>,
+        aliases: Option<Vec<TsPathAlias>>,
+        paths_anchor: Option<PathBuf>,
+    }
+
+    fn walk(dir: &Path, depth: usize, mut state: WalkState) -> Option<(PathBuf, Vec<TsPathAlias>)> {
         if depth > 8 {
             return None;
         }
@@ -650,24 +679,35 @@ fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
 
         // Leaf-wins merge: only adopt the local fields when the caller
         // hasn't already supplied a closer (= leaf-ier) override.
-        let next_base_dir = merged_base_dir.or(local_base_dir);
-        let next_aliases = merged_aliases.or(local_aliases);
+        if state.base_dir.is_none() {
+            state.base_dir = local_base_dir;
+        }
+        if state.aliases.is_none() {
+            if let Some(local) = local_aliases {
+                state.aliases = Some(local);
+                // Capture *this* config's directory as the implicit
+                // baseUrl anchor for `paths` — TypeScript resolves
+                // `paths` against the config that declared them when
+                // no `baseUrl` is specified anywhere in the chain.
+                state.paths_anchor = Some(dir.to_path_buf());
+            }
+        }
 
         // If we have everything, stop here — no need to walk extends
         // when the leaf already declared baseUrl + paths.
-        if let (Some(b), Some(a)) = (&next_base_dir, &next_aliases) {
+        if let (Some(b), Some(a)) = (&state.base_dir, &state.aliases) {
             return Some((b.clone(), a.clone()));
         }
 
         // Follow `extends` if present.
         if let Some(extends) = value.get("extends").and_then(|e| e.as_str()) {
             if let Some(parent_dir) = resolve_extends_target(dir, extends) {
-                if let Some(found) = walk(
-                    &parent_dir,
-                    depth + 1,
-                    next_base_dir.clone(),
-                    next_aliases.clone(),
-                ) {
+                let recurse_state = WalkState {
+                    base_dir: state.base_dir.clone(),
+                    aliases: state.aliases.clone(),
+                    paths_anchor: state.paths_anchor.clone(),
+                };
+                if let Some(found) = walk(&parent_dir, depth + 1, recurse_state) {
                     return Some(found);
                 }
             }
@@ -676,17 +716,26 @@ fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         // No extends (or extends couldn't resolve): only return
         // something if we ended up with a `paths` table — without
         // patterns there is nothing to alias-match against.
-        let aliases = next_aliases?;
-        // Default `baseUrl` is the tsconfig directory itself (the
-        // directory whose `paths` entries we're returning) — this
-        // matches TypeScript's documented behaviour that `paths` is
-        // resolved relative to `baseUrl ?? "."` and that the `"."`
-        // default is interpreted relative to the tsconfig.
-        let base_dir = next_base_dir.unwrap_or_else(|| dir.to_path_buf());
+        let aliases = state.aliases?;
+        // Default `baseUrl` is the directory of the tsconfig that
+        // **declared** `paths` — captured in `paths_anchor` above.
+        // Falling back to whatever `dir` happens to be when the walker
+        // bottoms out (which can be a parent extends target) would
+        // anchor `paths` to the wrong directory in the common
+        // "leaf has paths, parent has neither" case (codex P2).
+        let base_dir = state.base_dir.or(state.paths_anchor).unwrap_or_else(|| dir.to_path_buf());
         Some((base_dir, aliases))
     }
 
-    let (base_dir, aliases) = walk(tsconfig_dir, 0, None, None)?;
+    let (base_dir, aliases) = walk(
+        tsconfig_dir,
+        0,
+        WalkState {
+            base_dir: None,
+            aliases: None,
+            paths_anchor: None,
+        },
+    )?;
     if aliases.is_empty() {
         return None;
     }
@@ -729,6 +778,30 @@ fn resolve_extends_target(extending_dir: &Path, extends: &str) -> Option<PathBuf
     // Either a non-tsconfig.json file (e.g. `tsconfig.base.json`),
     // doesn't exist, or some other shape we don't support yet.
     None
+}
+
+/// Score `pattern`'s specificity for the
+/// most-specific-pattern-wins rule TypeScript applies when more than
+/// one `compilerOptions.paths` key matches the specifier.
+///
+/// The score is the length of the longest non-wildcard run in the
+/// pattern. Literal patterns (no `*`) score their full length, so
+/// they always beat any wildcard form of the same prefix; wildcards
+/// score the longer of the prefix-before-`*` and suffix-after-`*`
+/// runs. Two patterns with identical scores keep their declaration
+/// order (the caller uses a stable sort).
+///
+/// This deliberately mirrors the TypeScript Compiler's own
+/// `getBestPathPattern` shape: the longest fixed prefix is the
+/// dominant tiebreaker; an exact match wins by sheer length.
+fn pattern_specificity(pattern: &str) -> usize {
+    if let Some(star_idx) = pattern.find('*') {
+        let prefix_len = star_idx;
+        let suffix_len = pattern.len().saturating_sub(star_idx + 1);
+        prefix_len.max(suffix_len)
+    } else {
+        pattern.len()
+    }
 }
 
 /// Match `specifier` against an alias `pattern` from
@@ -2927,6 +3000,165 @@ mod tests {
         let resolver = FsResolver::new();
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
         assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    #[test]
+    fn pattern_specificity_literal_beats_wildcard() {
+        // A literal pattern (no `*`) of length 12 outranks a wildcard
+        // whose longest fixed run is shorter. This is the dominant
+        // tiebreaker used by `try_resolve_tsconfig_alias`.
+        assert!(pattern_specificity("@theme/dark") > pattern_specificity("@theme/*"));
+    }
+
+    #[test]
+    fn pattern_specificity_longer_prefix_wins() {
+        // Both patterns end in `*`; the one with the longer fixed
+        // prefix is more specific. With the codex P1 finding's
+        // example, `@/components/*` (specificity 13) must outrank
+        // `@/*` (specificity 2).
+        assert!(pattern_specificity("@/components/*") > pattern_specificity("@/*"));
+    }
+
+    /// Codex P1 regression: with overlapping patterns, the more
+    /// specific one must win regardless of declaration order in the
+    /// tsconfig. A specifier of `@/components/Button` previously
+    /// resolved through the broader `@/*` rule because `try_resolve`
+    /// returned on first map-iteration hit; now it must consult the
+    /// narrower `@/components/*` rule first.
+    #[test]
+    fn fs_resolver_prefers_more_specific_alias_pattern() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        // The broader `@/*` rule's substitution exists on disk too
+        // (`src/components/Button.tsx`) and would yield a different
+        // island name without the specificity rule. The narrower
+        // `@/components/*` rule maps to `ui/Button.tsx`. The test
+        // asserts the narrower rule wins.
+        let src_components = project.join("src").join("components");
+        let ui = project.join("ui");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&src_components).unwrap();
+        fs::create_dir_all(&ui).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"],
+                  "@/components/*": ["ui/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Narrow } from "@/components/button";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        // Broader `@/*` substitutes to `src/components/button` —
+        // exists, but should NOT be the winner.
+        fs::write(
+            src_components.join("button.tsx"),
+            r#""use client";
+            export function Wide() {}
+            "#,
+        )
+        .unwrap();
+        // Narrower `@/components/*` substitutes to `ui/button` —
+        // this is what the resolver MUST pick.
+        fs::write(
+            ui.join("button.tsx"),
+            r#""use client";
+            export function Narrow() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        // The narrower rule picked ui/button.tsx → component Narrow.
+        // If the broader rule had won, `Wide` would be in the set
+        // instead.
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Narrow"],
+            "more-specific @/components/* must win over @/*: {islands:?}"
+        );
+    }
+
+    /// Codex P2 regression: leaf tsconfig declares `paths` but no
+    /// `baseUrl`; extends a parent that also lacks `baseUrl`. The
+    /// implicit baseUrl must anchor to the LEAF tsconfig's directory
+    /// (the one that declared `paths`), not the parent extends
+    /// target's directory. Before the fix, the walker fell through
+    /// to the parent's `dir` and resolved `@/*` against the wrong
+    /// project root.
+    #[test]
+    fn fs_resolver_extends_implicit_baseurl_anchors_to_leaf() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        // The parent base config lives in a sibling dir. It has NO
+        // `paths`, NO `baseUrl` — just unrelated compiler options.
+        let parent_config_dir = project.join("shared");
+        let pages = project.join("pages");
+        let leaf_components = project.join("src").join("components");
+        // Notably, `shared/src/components/` does NOT exist — if the
+        // walker mistakenly anchored to `shared/`, the probe would
+        // miss and the test would fail.
+        fs::create_dir_all(&parent_config_dir).unwrap();
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&leaf_components).unwrap();
+
+        fs::write(
+            parent_config_dir.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "strict": true
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              "extends": "./shared/tsconfig.json",
+              "compilerOptions": {
+                "paths": { "@/*": ["src/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            leaf_components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "leaf-anchored paths must resolve against the leaf tsconfig dir: {islands:?}"
+        );
         assert_eq!(islands[0].component_name, "Counter");
     }
 
