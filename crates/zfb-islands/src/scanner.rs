@@ -1129,6 +1129,16 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
             continue;
         }
 
+        // Skip files whose extension can't carry a `"use client"` directive
+        // the scanner needs to follow. After #139 the resolver follows
+        // tsconfig path aliases, so a specifier like `"#data"` can resolve
+        // to a `.json` (or `.css`, `.svg`, image/font binary, etc.) — none
+        // of those parse as TS/TSX. Treat them as terminal leaves; their
+        // imports are not walked further. See issue #141.
+        if !is_scannable_source(&current) {
+            continue;
+        }
+
         let source = resolver.read(&current).map_err(|message| ScanError::Resolver {
             path: current.clone(),
             message,
@@ -1169,6 +1179,25 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
     }
 
     Ok(found.into_values().collect())
+}
+
+/// Return `true` if `path` has an extension that can plausibly carry a
+/// `"use client"` directive that the scanner needs to follow.
+///
+/// Conservative whitelist: only TS/JS family source extensions. Anything
+/// else — `.json`, `.css`, `.svg`, image/font binaries, `.md`/`.mdx`, etc.
+/// — is a terminal leaf as far as the islands scanner is concerned, and
+/// must not be passed to SWC (which would parse it as TS and crash; see
+/// issue #141).
+///
+/// Files with no extension at all are also skipped: real source files in
+/// this codebase always carry an extension, and an unknown leaf is safer
+/// to skip than to feed to SWC.
+fn is_scannable_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+    )
 }
 
 /// Parse a single TS/TSX source string into an SWC [`Module`].
@@ -3200,5 +3229,171 @@ mod tests {
             .expect("second load (cache hit)");
         assert_eq!(first.aliases.len(), second.aliases.len());
         assert_eq!(first.aliases[0].targets, second.aliases[0].targets);
+    }
+
+    // -------------------------------------------------------------------
+    // Non-source extension gate (issue #141)
+    // -------------------------------------------------------------------
+
+    /// `is_scannable_source` accepts the TS/JS family extensions and
+    /// rejects everything else.
+    #[test]
+    fn is_scannable_source_accepts_ts_and_js_family() {
+        for ext in ["ts", "tsx", "js", "jsx", "mjs", "cjs"] {
+            let p = PathBuf::from(format!("/proj/foo.{ext}"));
+            assert!(
+                is_scannable_source(&p),
+                "expected source extension to be scannable: {p:?}"
+            );
+        }
+    }
+
+    /// Concrete extensions a tsconfig path alias can point at — none of
+    /// these can carry a `"use client"` directive, and (per #141) feeding
+    /// them to SWC crashes the scanner. The gate must skip them.
+    #[test]
+    fn is_scannable_source_rejects_non_source_extensions() {
+        for ext in [
+            "json", "css", "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "woff",
+            "woff2", "ttf", "eot", "mp4", "webm", "mp3", "wav", "txt", "md", "mdx",
+        ] {
+            let p = PathBuf::from(format!("/proj/foo.{ext}"));
+            assert!(
+                !is_scannable_source(&p),
+                "expected non-source extension to be rejected: {p:?}"
+            );
+        }
+    }
+
+    /// Files with no extension at all are skipped — the scanner has no
+    /// safe way to know what they are, and source files in this codebase
+    /// always carry an extension.
+    #[test]
+    fn is_scannable_source_rejects_extensionless_path() {
+        assert!(!is_scannable_source(&PathBuf::from("/proj/Makefile")));
+    }
+
+    /// Mirrors the downstream issue #141 repro at the in-memory scanner
+    /// level: a page imports `"#data"`; the resolver maps that to a
+    /// populated `.json` file (multiple keys — empty `{}` happens to
+    /// parse as a TS expression statement, masking the bug). Pre-fix the
+    /// scanner crashed with `ExpectedSemiForExprStmt` inside SWC. The gate
+    /// treats `.json` as a terminal leaf, so the scan completes and the
+    /// reachable `"use client"` island is still discovered.
+    #[test]
+    fn scan_islands_skips_json_file_resolved_via_alias() {
+        // A bespoke resolver that mimics a tsconfig path alias mapping
+        // `"#data"` → `data.json`. Not `is_bare_specifier`-restricted so
+        // the bare-looking specifier resolves successfully (matches what
+        // FsResolver does with `compilerOptions.paths` after #139).
+        struct AliasingResolver {
+            inner: InMemoryResolver,
+            json_path: PathBuf,
+        }
+        impl Resolver for AliasingResolver {
+            fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+                if specifier == "#data" {
+                    return Some(self.json_path.clone());
+                }
+                self.inner.resolve(importer_dir, specifier)
+            }
+            fn read(&self, path: &Path) -> std::result::Result<String, String> {
+                self.inner.read(path)
+            }
+        }
+
+        let json_path = root().join("data/payload.json");
+        let inner = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r##"import data from "#data";
+                import { Counter } from "../components/counter";
+                export default function Home() { return <Counter data={data}/>; }
+                "##,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            )
+            // Populated JSON (multiple keys). Empty `{}` parses as a
+            // legal TS expression statement and would mask the bug; with
+            // multiple keys SWC trips on the second key's colon. We add
+            // it to the resolver's file map so anything that does try to
+            // read it would succeed — proving the skip happens *before*
+            // parse, not via a lucky read failure.
+            .with_file(json_path.clone(), r#"{"a": 1, "b": 2, "c": 3}"#);
+        let resolver = AliasingResolver { inner, json_path };
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            paths(&islands),
+            vec![(
+                "/proj/components/counter.tsx".to_string(),
+                "Counter".to_string()
+            )],
+            "scan must skip the JSON leaf without aborting and still reach the island",
+        );
+    }
+
+    /// End-to-end via `FsResolver`: mirrors the exact downstream
+    /// `zudolab/zudo-doc#1355` Wave 4 shape — `tsconfig.json` declares
+    /// `"#doc-history-meta": [".zfb/doc-history-meta.json"]`, the page
+    /// imports it, and the scanner must not crash on the JSON.
+    #[test]
+    fn fs_resolver_skips_json_file_resolved_via_tsconfig_alias() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        let components = project.join("src").join("components");
+        let zfb_dir = project.join(".zfb");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        fs::create_dir_all(&zfb_dir).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r##"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"],
+                  "#doc-history-meta": [".zfb/doc-history-meta.json"]
+                }
+              }
+            }"##,
+        )
+        .unwrap();
+        // Populated JSON — empty `{}` happens to parse as a TS
+        // expression statement, masking the bug. Multiple keys trip
+        // SWC's parser at the second key's colon, which is the real
+        // crash the downstream hit.
+        fs::write(
+            zfb_dir.join("doc-history-meta.json"),
+            r#"{"docs/foo": {"sha": "abc"}, "docs/bar": {"sha": "def"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r##"import historyMeta from "#doc-history-meta";
+            import { Counter } from "@/components/counter";
+            export default function Home() { return <Counter meta={historyMeta}/>; }
+            "##,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands =
+            scan_islands(&[pages.join("home.tsx")], &resolver).expect("scan must not crash");
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
     }
 }
