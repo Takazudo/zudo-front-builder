@@ -1193,10 +1193,18 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
 /// Files with no extension at all are also skipped: real source files in
 /// this codebase always carry an extension, and an unknown leaf is safer
 /// to skip than to feed to SWC.
+///
+/// The match is ASCII-case-insensitive so that on case-insensitive
+/// filesystems (macOS default, Windows) a `Foo.TSX` file is still
+/// recognised — pre-#141 the scanner accepted any extension, so case
+/// folding here preserves parity for legitimate source files.
 fn is_scannable_source(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
     matches!(
-        path.extension().and_then(|s| s.to_str()),
-        Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+        ext.to_ascii_lowercase().as_str(),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
     )
 }
 
@@ -3271,6 +3279,22 @@ mod tests {
     #[test]
     fn is_scannable_source_rejects_extensionless_path() {
         assert!(!is_scannable_source(&PathBuf::from("/proj/Makefile")));
+    }
+
+    /// Case-insensitive extension match: case-insensitive filesystems
+    /// (macOS default, Windows) can produce `.TSX` / `.Js` etc. Pre-#141
+    /// the scanner accepted any extension, so the gate must keep
+    /// uppercase source extensions scannable to avoid regressing those
+    /// platforms.
+    #[test]
+    fn is_scannable_source_is_case_insensitive() {
+        for ext in ["TS", "Tsx", "JSX", "MJS", "Cjs", "tSx"] {
+            let p = PathBuf::from(format!("/proj/Foo.{ext}"));
+            assert!(
+                is_scannable_source(&p),
+                "expected case-insensitive accept: {p:?}"
+            );
+        }
     }
 
     /// Mirrors the downstream issue #141 repro at the in-memory scanner
