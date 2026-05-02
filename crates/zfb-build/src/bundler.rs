@@ -669,6 +669,18 @@ fn materialise_shadow(
         .map(|s| s == "pages")
         .unwrap_or(false);
 
+    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
+    // so the seven default plugins (admonitions, CJK-friendly emphasis,
+    // heading-links, code-title, image-enlarge, mermaid, syntect) all
+    // fire on every MDX file the walker visits. The dev loader at
+    // `crates/zfb-render/src/loader.rs` reuses one pipeline for the
+    // same reason — `Pipeline::with_defaults()` allocates a
+    // `Highlighter` and seven boxed visitors, so per-file construction
+    // would be wasteful. Borrow is linear (`&mut`), so a single hoisted
+    // pipeline can serve every MDX file in the walk sequentially. See
+    // zfb#127 / #128.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+
     for entry in WalkDir::new(src).follow_links(false) {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
@@ -701,7 +713,7 @@ fn materialise_shadow(
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
-            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, None)
+            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
@@ -883,6 +895,13 @@ fn materialise_collection(
     fs::create_dir_all(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
 
+    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
+    // so the seven default plugins fire on every collection MDX file.
+    // See `materialise_shadow` for the rationale; the same applies
+    // here. Two walks → two hoisted pipelines (one per walker), which
+    // is cheaper than one per file. See zfb#127 / #128.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+
     for entry in WalkDir::new(src).follow_links(false) {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
@@ -946,7 +965,7 @@ fn materialise_collection(
             // the bridge map. Mismatch here would make every bridge
             // lookup miss and silently fall back to the
             // raw-markdown <pre> block.
-            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, None)
+            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
