@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::collection::{walk_collection, CollectionError, Entry};
+use crate::pipeline::Pipeline;
 
 /// A single content entry, in the shape the JS bridge sees.
 ///
@@ -121,10 +122,22 @@ pub enum BridgeError {
 /// Build a deterministic [`ContentSnapshot`] from the configured
 /// collections.
 ///
-/// Walks each collection in `collections` via [`walk_collection`] (with
-/// `pipeline = None`), converts each entry into an [`EntrySnapshot`],
-/// and inserts the resulting `Vec` into a [`BTreeMap`] keyed by
-/// collection name.
+/// Walks each collection in `collections` via [`walk_collection`],
+/// driving the walker through a fresh-per-collection
+/// [`Pipeline::with_defaults()`] so the resulting JSX (and the
+/// [`module_specifier`](EntrySnapshot::module_specifier) hash baked from
+/// it) is **byte-identical** to what the bundler emits in
+/// `crates/zfb-build/src/bundler.rs`. Snapshot specifiers must agree
+/// with the bundler's bridge map keys byte-for-byte; otherwise every
+/// `globalThis.__zfb.content.get(specifier)` lookup misses and the page
+/// renders the raw-markdown `<pre data-zfb-content-fallback>` fallback.
+/// Driving both code paths through the same default pipeline shape —
+/// one pipeline per collection, reused across files within that
+/// collection — is what keeps the two hashes in lock-step
+/// (zfb #131 / #132).
+///
+/// Each entry is converted into an [`EntrySnapshot`] and the resulting
+/// `Vec` is inserted into a [`BTreeMap`] keyed by collection name.
 ///
 /// Sort order:
 /// - top-level: collection name ascending (free, courtesy of `BTreeMap`).
@@ -149,14 +162,36 @@ pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapsho
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
+        // Construct a fresh `Pipeline::with_defaults()` per collection,
+        // mirroring the bundler's two call sites at
+        // `crates/zfb-build/src/bundler.rs:734` and `:964` — each
+        // `materialise_*` call hoists its own pipeline outside the
+        // walk loop, so within one collection a single pipeline serves
+        // every entry sequentially while no state leaks across
+        // collection boundaries. Per-collection instantiation matters
+        // because some default plugins (notably `HeadingLinksPlugin`)
+        // carry per-document state (the slug-dedupe `seen` map):
+        // reusing one pipeline across collections would mean a heading
+        // like "Intro" in collection B would slugify to `intro-1` if
+        // collection A already used `intro`, leaking unrelated
+        // collections' headings into B's compiled JSX (and into the
+        // hash that drives `module_specifier`). The snapshot must
+        // agree byte-for-byte with the bundler's bridge map keys (see
+        // the doc comment on `build_snapshot`); the fastest way to
+        // hold that contract is to drive `walk_collection` with the
+        // same pipeline shape the bundler uses.
+        let mut pipeline = Pipeline::with_defaults();
+
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
         // why the parallel walker is implemented as a `T` substitution
         // rather than a duplicate FS traversal.
-        let entries: Vec<Entry<UntypedFrontmatter>> = walk_collection(&cfg.root, None)
-            .map_err(|source| BridgeError::Walk {
-                collection: cfg.name.clone(),
-                source,
+        let entries: Vec<Entry<UntypedFrontmatter>> =
+            walk_collection(&cfg.root, Some(&mut pipeline)).map_err(|source| {
+                BridgeError::Walk {
+                    collection: cfg.name.clone(),
+                    source,
+                }
             })?;
 
         let mut snapshots: Vec<EntrySnapshot> = entries
@@ -497,6 +532,121 @@ mod tests {
         for raw in ["", "0", "false", "no", "yes", "on", "off", "TRUE!"] {
             assert!(!parse_debug_truthy(raw), "{raw:?} should be falsy");
         }
+    }
+
+    #[test]
+    fn snapshot_specifier_matches_bridge_hash_for_pipeline_transformed_entry() {
+        // Regression guard for zfb #132: `build_snapshot` must drive
+        // `walk_collection` through the same default `Pipeline` the
+        // bundler uses, so the `module_specifier` baked into the
+        // snapshot agrees byte-for-byte with the bridge map key the
+        // bundler emits. Without the fix, `walk_collection` ran with
+        // `pipeline = None` (pre-pipeline JSX, pre-pipeline hash) while
+        // the bundler ran with `Some(&mut Pipeline::with_defaults())`
+        // (post-pipeline JSX, post-pipeline hash). Any page whose body
+        // the pipeline actually transformed — admonitions, mermaid,
+        // syntect-highlighted fences, image-enlarge, heading-links,
+        // CJK-friendly emphasis — produced two divergent specifiers,
+        // and `globalThis.__zfb.content.get(snapshot.module_specifier)`
+        // missed at render time → silent fallback render.
+        //
+        // We reproduce that hazard with the cheapest signal we have:
+        // a `:::note` admonition. `AdmonitionsPlugin` rewrites the
+        // mdast subtree into an `<MdxJsxFlowElement name="Note">`, so
+        // the post-pipeline JSX (and therefore its `content_hash`)
+        // differs from the pre-pipeline JSX. Asserting that the
+        // snapshot's hash component matches the hash an independent
+        // `compile_mdx_to_jsx_module_cached(... Some(&mut Pipeline::with_defaults()))`
+        // call produces is the explicit "snapshot hash matches bridge
+        // hash" guarantee.
+        use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, parse_mdx_specifier};
+
+        let tmp = TmpDir::new("snapshot-pipeline-hash");
+        // The `:::note` directive is the canonical pipeline-transformable
+        // signal — without the default pipeline it survives as raw text;
+        // with it, it becomes an `<MdxJsxFlowElement name="Note">`.
+        let mdx = "---\ntitle: \"Admon\"\n---\n\n:::note\nhi\n:::\n";
+        let path = tmp.write("docs/admon.mdx", mdx);
+
+        let snap = build_snapshot(&[CollectionConfig::new("docs", tmp.path.join("docs"))])
+            .expect("build_snapshot must succeed");
+        let docs = snap
+            .collections
+            .get("docs")
+            .expect("docs collection present");
+        let entry = docs
+            .iter()
+            .find(|e| e.slug == "admon")
+            .expect("admon entry");
+
+        // Independently compile the same body through the same default
+        // pipeline the bundler uses, then compare hash components.
+        let body = "\n:::note\nhi\n:::\n"; // post-frontmatter body, mirrors `walk_collection`'s split.
+        let mut pipeline = Pipeline::with_defaults();
+        let compiled = compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
+            .expect("independent compile must succeed");
+
+        let snap_spec = parse_mdx_specifier(&entry.module_specifier)
+            .expect("snapshot specifier parses as `mdx://...#hash`");
+        let bridge_spec = parse_mdx_specifier(&compiled.specifier)
+            .expect("bundler-style specifier parses as `mdx://...#hash`");
+
+        assert_eq!(
+            snap_spec.content_hash, bridge_spec.content_hash,
+            "snapshot module_specifier hash ({snap}) must equal the bundler's bridge key hash ({bridge}); a divergence here is the zfb #132 regression — the snapshot path is walking with `pipeline = None` while the bundler walks with `Some(&mut Pipeline::with_defaults())`, so transformed pages render the raw-markdown fallback",
+            snap = snap_spec.content_hash,
+            bridge = bridge_spec.content_hash,
+        );
+        // Sanity: collection + slug also agree.
+        assert_eq!(snap_spec.collection, bridge_spec.collection);
+        assert_eq!(snap_spec.slug, bridge_spec.slug);
+    }
+
+    #[test]
+    fn pipeline_state_does_not_leak_across_collections() {
+        // Companion guard for the per-collection pipeline shape:
+        // `HeadingLinksPlugin` carries a `seen: HashMap<String, usize>`
+        // slug-dedupe counter on the pipeline instance. If
+        // `build_snapshot` reused one `Pipeline::with_defaults()` across
+        // every collection in the for-loop, a heading like `## Intro`
+        // in collection B would emit `id="intro-1"` after collection A
+        // already consumed `intro` — and the snapshot bytes for B would
+        // depend on which other collections were configured alongside
+        // it. The bundler dodges this by hoisting one pipeline per
+        // `materialise_*` call (one per collection), and `build_snapshot`
+        // mirrors that shape for the same reason.
+        //
+        // We assert the contract by building the snapshot for two
+        // single-collection configs in isolation, then for the same two
+        // collections together, and proving the per-collection slice of
+        // the combined snapshot matches the isolated build byte-for-byte.
+        let tmp = TmpDir::new("collection-isolation");
+        // Both files have the same heading text — without per-collection
+        // pipelines the second one walked would slug to `intro-1`.
+        let mdx_with_h2 = "---\ntitle: \"X\"\n---\n\n## Intro\n\nbody\n";
+        tmp.write("a/page.mdx", mdx_with_h2);
+        tmp.write("b/page.mdx", mdx_with_h2);
+
+        let cfg_a = CollectionConfig::new("a", tmp.path.join("a"));
+        let cfg_b = CollectionConfig::new("b", tmp.path.join("b"));
+
+        let solo_a = build_snapshot(&[cfg_a.clone()]).expect("solo a");
+        let solo_b = build_snapshot(&[cfg_b.clone()]).expect("solo b");
+        let combined = build_snapshot(&[cfg_a, cfg_b]).expect("combined");
+
+        let combined_a = combined.collections.get("a").expect("combined a");
+        let combined_b = combined.collections.get("b").expect("combined b");
+        let solo_a_entries = solo_a.collections.get("a").expect("solo a entries");
+        let solo_b_entries = solo_b.collections.get("b").expect("solo b entries");
+
+        assert_eq!(
+            combined_a[0].module_specifier, solo_a_entries[0].module_specifier,
+            "collection a's specifier must not depend on whether collection b is also configured (heading-link state leak)",
+        );
+        assert_eq!(
+            combined_b[0].module_specifier, solo_b_entries[0].module_specifier,
+            "collection b's specifier must not depend on whether collection a is also configured (heading-link state leak)",
+        );
     }
 
     #[test]
