@@ -367,6 +367,81 @@ describe("scheduleHydrate", () => {
       await Promise.resolve();
       expect(def).toHaveBeenCalledTimes(1);
     });
+
+    // ---------------------------------------------------------------------
+    // Inline-module manifest shape (issue #146 / zudolab/zudo-doc#1355
+    // wave 6). The shared-bundle production path imports every island's
+    // source code into one bundle and hands `mountIslands` an object
+    // whose values are `IslandModule` descriptors instead of URL
+    // strings. The runtime must call those mount functions directly,
+    // skipping the dynamic import entirely.
+    // ---------------------------------------------------------------------
+    it("calls inline-module mount synchronously without dynamic import (SSR path)", () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{"start":7}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      // The importer must NOT be invoked when the manifest value is an
+      // inline module — the test fails the importer to make that loud.
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      mountIslands({ Counter: { mount } });
+
+      // Synchronous: no microtask flush required because we never went
+      // through `import()` for this entry.
+      expect(mount).toHaveBeenCalledTimes(1);
+      const args = mount.mock.calls[0]!;
+      expect(args[0]).toEqual({ start: 7 });
+      expect((args[1] as Element).getAttribute("data-zfb-island")).toBe("Counter");
+      expect(args[2]).toBe("hydrate");
+    });
+
+    it("calls inline-module mount with mode=render for SSR-skip islands", () => {
+      document.body.innerHTML = `
+        <div data-zfb-island-skip-ssr="Modal" data-props='{"open":true}' data-when="visible"></div>
+      `;
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      mountIslands({ Modal: { mount } });
+
+      // SSR-skip ignores data-when and mounts immediately.
+      expect(mount).toHaveBeenCalledTimes(1);
+      expect(mount.mock.calls[0]![2]).toBe("render");
+    });
+
+    it("falls back to default export on inline-module entry when mount is absent", () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const def = vi.fn();
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      mountIslands({ Counter: { default: def } });
+
+      expect(def).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not double-mount inline-module entries on repeat calls", () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      mountIslands({ Counter: { mount } });
+      mountIslands({ Counter: { mount } });
+
+      expect(mount).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("unknown when=", () => {

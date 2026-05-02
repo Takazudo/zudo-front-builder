@@ -526,48 +526,62 @@ impl EsbuildSubprocessBundler {
 /// multi-input-with-`--outfile` restriction (issue #138) without
 /// changing the public on-disk shape (`dist/assets/islands.js`).
 ///
-/// # Why namespace-import + `globalThis` assignment, not `import "<path>";`
+/// # Why we call `mountIslands` from the entry
+///
+/// Bundling every island's source is necessary but not sufficient:
+/// without a top-level call into the hydration runtime, the SSR'd
+/// `data-zfb-island` markers stay un-hydrated and interactivity never
+/// activates (issue #146 / zudolab/zudo-doc#1355 Wave 6). The
+/// per-island path emits `mountIslands(MANIFEST)` from
+/// `render_runtime_entry_source`; the shared-bundle path mirrors that
+/// here so the on-disk contract (`dist/assets/islands.js`) is the only
+/// script the page needs to load to get hydration glue **and** the
+/// island source code in one HTTP request.
+///
+/// The synthesised entry imports each island as a namespace and
+/// constructs an inline manifest of `componentName → { mount }`
+/// descriptors. The runtime's `mountIslands` accepts this object
+/// shape directly (no second dynamic import) — see the
+/// `IslandManifestValue` widening in `packages/zfb/src/runtime.ts`.
+/// Each `mount` is a thin Preact wrapper that mirrors
+/// `render_island_entry_source(Preact, …)`: it picks `ns[Name]` then
+/// `ns.default`, builds a vnode, and dispatches to `hydrate` /
+/// `render` based on the SSR / SSR-skip mode.
+///
+/// # Why namespace imports
 ///
 /// A naive `import "<path>";` shape (the original #138 fix) is a
 /// **side-effect-only import**. esbuild runs with
 /// `--bundle --tree-shaking=true`, which only retains code that
 /// produces a top-level side effect or that the entry references by
-/// name. Islands that include a top-level statement like
-/// `<ComponentInner>.displayName = "Component"` survive (this is the
-/// convention used by `@zudo-doc/zudo-doc-v2` islands). Islands
-/// authored as a bare `export default function ComponentName(...) {}`
-/// with no top-level side-effecting statement get **tree-shaken out**
-/// — esbuild drops the entire module body, so nothing is shipped for
-/// `data-zfb-island="ComponentName"` to find at hydration time
-/// (issue #144 / zudolab/zudo-doc#1355 Wave 5).
-///
-/// To force every island module's exports to survive tree-shaking we:
-///
-/// 1. Namespace-import each island under a unique sequential
-///    identifier (`__zfb_island_0`, `__zfb_island_1`, …). A namespace
-///    import keeps every export of the imported module reachable.
-/// 2. Reference each namespace from a top-level
-///    `globalThis.__zfb_islands ??= [...]` assignment. The assignment
-///    is a top-level side effect esbuild MUST preserve, and the array
-///    keeps every namespace alive — which transitively keeps every
-///    export of every island in the bundle.
-///
-/// `??=` is used (not `=`) so a hot-reload scenario where the entry
-/// runs twice does not clobber the first set of namespaces — the
-/// production runtime never reads `__zfb_islands` (it walks the DOM
-/// for `[data-zfb-island]` markers and relies on each island's
-/// component definition simply being **present** in the bundle), so
-/// the property is purely a tree-shaking anchor.
+/// name. Islands authored as a bare
+/// `export default function ComponentName(...) {}` with no top-level
+/// side-effecting statement get **tree-shaken out** (issue #144 /
+/// zudolab/zudo-doc#1355 Wave 5). Namespace imports keep every export
+/// reachable by name, AND each namespace is referenced from the
+/// `mountIslands(MANIFEST)` argument — which is itself a top-level
+/// side effect esbuild MUST preserve. So tree-shaking remains
+/// defanged in the new shape too.
 ///
 /// Sequential numeric identifiers avoid collision pitfalls when two
 /// islands share a base name (e.g. host `theme-toggle.tsx` and v2
 /// `theme/theme-toggle.tsx`) — every binding is unique by construction.
 ///
-/// Each island path is JSON-encoded to defang stray quotes / backslashes
-/// from absolute paths on Windows or arbitrary file names; the order
-/// follows the input slice so the resulting bytes are deterministic
-/// for a given `(islands, config)` pair (downstream tests rely on this
-/// for the bundle's content hash to be stable across runs).
+/// Each island path / component name is JSON-encoded to defang stray
+/// quotes / backslashes from absolute paths on Windows or arbitrary
+/// file names; the order follows the input slice so the resulting
+/// bytes are deterministic for a given `(islands, config)` pair
+/// (downstream tests rely on this for the bundle's content hash to be
+/// stable across runs).
+///
+/// # Framework
+///
+/// The synthesised wrapper uses bare `preact` imports — matching the
+/// per-island path's `FrameworkKind::Preact` branch in
+/// `render_island_entry_source`. Mixed-framework projects are not
+/// supported by the production shared-bundle path today (the
+/// per-island path is the right home for that, since it composes the
+/// framework glue per-island).
 pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
     let mut out =
         String::from("// Generated by zfb-islands::EsbuildSubprocessBundler::produce_bundle_js\n");
@@ -579,6 +593,10 @@ pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
         // generated array literal.
         return out;
     }
+    out.push_str(r#"import { mountIslands } from "@takazudo/zfb/runtime";"#);
+    out.push('\n');
+    out.push_str(r#"import { h, hydrate, render } from "preact";"#);
+    out.push('\n');
     for (i, island) in islands.iter().enumerate() {
         let path = island.source_path.to_string_lossy();
         out.push_str(&format!(
@@ -586,19 +604,36 @@ pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
             json_string(&path)
         ));
     }
-    // The `globalThis.__zfb_islands ??= [...]` assignment is the
-    // top-level side effect that anchors every namespace-imported
-    // island against tree-shaking. Without this anchor, esbuild would
-    // see "namespace import declared but unused" and drop every
-    // island whose body has no other top-level effect.
-    out.push_str("(globalThis).__zfb_islands ??= [");
-    for i in 0..islands.len() {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&format!("__zfb_island_{i}"));
+    // Inline manifest. Each entry maps a `data-zfb-island` /
+    // `data-zfb-island-skip-ssr` attribute value to an `{ mount }`
+    // descriptor. The runtime's `mountIslands` recognises this object
+    // shape (vs. the per-island URL string) and calls `mount` directly
+    // without a second dynamic import.
+    //
+    // The mount function picks the named export first, falling back to
+    // `default`, mirroring `render_island_entry_source`. This handles
+    // both host-shape `export default function ComponentName(...)`
+    // islands (where the namespace exposes only `default`) and the
+    // `export const Name = ...` / `displayName = ...` patterns used by
+    // `@zudo-doc/zudo-doc-v2` (where the named export is present).
+    //
+    // The argument to `mountIslands` is a top-level side effect esbuild
+    // MUST preserve, and references every namespace by identifier —
+    // tree-shaking therefore retains every island's exports just as the
+    // previous `(globalThis).__zfb_islands ??= [...]` anchor did.
+    out.push_str("mountIslands({\n");
+    for (i, island) in islands.iter().enumerate() {
+        let key = json_string(&island.component_name);
+        let name_lit = json_string(&island.component_name);
+        out.push_str(&format!(
+            "  {key}: {{ mount: (props, element, mode) => {{ \
+const C = __zfb_island_{i}[{name_lit}] ?? __zfb_island_{i}.default; \
+const v = h(C, props); \
+if (mode === \"hydrate\") {{ hydrate(v, element); }} else {{ render(v, element); }} \
+}} }},\n"
+        ));
     }
-    out.push_str("];\n");
+    out.push_str("});\n");
     out
 }
 
@@ -974,12 +1009,26 @@ mod tests {
         let i_counter = src.find("Counter.tsx").expect("counter present");
         let i_modal = src.find("Modal.tsx").expect("modal present");
         assert!(i_counter < i_modal, "expected Counter before Modal");
-        // The top-level side-effecting anchor must reference every
-        // namespace, otherwise esbuild's tree-shaker would drop the
-        // namespace import as unused (the bug #144 fixes).
+        // The top-level `mountIslands(...)` invocation must reference
+        // every namespace, otherwise esbuild's tree-shaker would drop
+        // the namespace import as unused (the bug #144 fixes) AND the
+        // page would never call into the hydration runtime (the bug
+        // #146 fixes).
         assert!(
-            src.contains("(globalThis).__zfb_islands ??= [__zfb_island_0, __zfb_island_1];"),
-            "missing tree-shaking anchor: {src}"
+            src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#),
+            "missing mountIslands import: {src}"
+        );
+        assert!(
+            src.contains("mountIslands({"),
+            "missing mountIslands call: {src}"
+        );
+        assert!(
+            src.contains("__zfb_island_0[\"Counter\"]"),
+            "expected Counter mount to reference its namespace: {src}"
+        );
+        assert!(
+            src.contains("__zfb_island_1[\"Modal\"]"),
+            "expected Modal mount to reference its namespace: {src}"
         );
     }
 
@@ -1001,15 +1050,14 @@ mod tests {
     #[test]
     fn render_shared_bundle_entry_source_handles_empty_islands_slice() {
         // Empty input emits a header-only entry (no `import` lines, no
-        // anchor assignment) — `build_production_islands_asset` already
+        // mountIslands call) — `build_production_islands_asset` already
         // short-circuits on an empty islands slice, so this code path
         // is mostly defensive, but we still want it to produce valid JS
-        // rather than panic or emit a `[]` literal that could shadow a
-        // pre-existing `globalThis.__zfb_islands` set up by another
-        // module on the page.
+        // rather than panic or emit a `mountIslands({})` call that
+        // would query the DOM for islands the page doesn't have.
         let src = render_shared_bundle_entry_source(&[]);
         assert!(!src.contains("import"));
-        assert!(!src.contains("__zfb_islands"));
+        assert!(!src.contains("mountIslands"));
         assert!(src.starts_with("// Generated"));
     }
 
@@ -1036,11 +1084,54 @@ mod tests {
         assert!(src.contains("import * as __zfb_island_0 from "));
         assert!(src.contains("import * as __zfb_island_1 from "));
         assert!(src.contains("import * as __zfb_island_2 from "));
-        // Every namespace identifier must appear in the anchor array so
-        // esbuild keeps each module's exports alive.
-        assert!(src.contains(
-            "(globalThis).__zfb_islands ??= [__zfb_island_0, __zfb_island_1, __zfb_island_2];"
-        ));
+        // Every namespace identifier must appear in the mount manifest
+        // so esbuild keeps each module's exports alive.
+        assert!(src.contains("__zfb_island_0[\"ThemeToggle\"]"));
+        assert!(src.contains("__zfb_island_1[\"ThemeToggle\"]"));
+        assert!(src.contains("__zfb_island_2[\"Sidebar\"]"));
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_calls_mount_islands() {
+        // Regression for issue #146 / zudolab/zudo-doc#1355 Wave 6:
+        // the shared-bundle production path must call `mountIslands` at
+        // top level so the SSR'd `data-zfb-island` markers actually get
+        // hydrated. Before the fix, the synthesised entry only anchored
+        // namespaces against tree-shaking via
+        // `(globalThis).__zfb_islands ??= [...]` — every island's
+        // source code shipped, but no code ran the hydration glue, so
+        // interactivity never activated.
+        let islands = vec![
+            Island::new("Counter", "/abs/components/Counter.tsx"),
+            Island::new("Modal", "/abs/components/Modal.tsx"),
+        ];
+        let src = render_shared_bundle_entry_source(&islands);
+
+        assert!(
+            src.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#),
+            "missing mountIslands import: {src}"
+        );
+        assert!(
+            src.contains(r#"import { h, hydrate, render } from "preact""#),
+            "missing preact glue imports: {src}"
+        );
+
+        // Manifest entry per island, mapping component name to an
+        // `{ mount }` descriptor that the runtime's mountIslands
+        // accepts inline (no second HTTP fetch).
+        assert!(src.contains("\"Counter\": { mount:"));
+        assert!(src.contains("\"Modal\": { mount:"));
+
+        // Each mount picks the named export first, then default —
+        // matching `render_island_entry_source` so host-shape
+        // `export default function ComponentName(...)` islands are
+        // hydrated correctly.
+        assert!(src.contains("__zfb_island_0[\"Counter\"] ?? __zfb_island_0.default"));
+        assert!(src.contains("__zfb_island_1[\"Modal\"] ?? __zfb_island_1.default"));
+
+        // hydrate vs render branching mirrors render_island_entry_source.
+        assert!(src.contains(r#"if (mode === "hydrate") { hydrate(v, element); }"#));
+        assert!(src.contains("else { render(v, element); }"));
     }
 
     /// Regression for issue #138.
@@ -1092,6 +1183,9 @@ mod tests {
         // namespace-import shape (issue #144 fix). The previous shape
         // (`import "<path>";` side-effect import) tree-shook every
         // island whose body had no top-level effect.
+        //
+        // The bytes also carry the `mountIslands(...)` invocation that
+        // the issue #146 fix added so the SSR'd markers hydrate.
         let on_disk = std::fs::read_to_string(&out.asset_path).expect("read asset");
         assert!(
             on_disk.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#)
@@ -1100,9 +1194,11 @@ mod tests {
         assert!(
             on_disk.contains(r#"import * as __zfb_island_2 from "/abs/components/Sidebar.tsx";"#)
         );
-        assert!(on_disk.contains(
-            "(globalThis).__zfb_islands ??= [__zfb_island_0, __zfb_island_1, __zfb_island_2];"
-        ));
+        assert!(on_disk.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
+        assert!(on_disk.contains("mountIslands({"));
+        assert!(on_disk.contains("\"Counter\": { mount:"));
+        assert!(on_disk.contains("\"Modal\": { mount:"));
+        assert!(on_disk.contains("\"Sidebar\": { mount:"));
     }
 
     #[test]

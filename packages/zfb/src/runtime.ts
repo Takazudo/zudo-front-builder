@@ -178,9 +178,6 @@ function scheduleVisible(target: Element, fire: () => void): () => void {
 // never mounted twice (e.g. on hot-reload / repeat-mount scenarios).
 // ---------------------------------------------------------------------------
 
-/** Map of `componentName → bundle URL` baked into the runtime entry. */
-export type IslandManifest = Readonly<Record<string, string>>;
-
 /**
  * The shape of the default export each per-island bundle ships.
  *
@@ -197,6 +194,29 @@ interface IslandModule {
   mount?: IslandMount;
   default?: IslandMount;
 }
+
+/**
+ * Map of `componentName → island descriptor` baked into the runtime entry.
+ *
+ * Two descriptor shapes are accepted so the same `mountIslands` runtime
+ * handles both bundling strategies the build emits:
+ *
+ *   1. `string` — a per-island bundle URL. The runtime fetches it via
+ *      dynamic `import()` and reads `mount` / `default` off the loaded
+ *      module. Used by the per-island bundling path
+ *      (`bundle_per_island` / `render_runtime_entry_source`).
+ *
+ *   2. `IslandModule` — an inline module-shaped object whose `mount` (or
+ *      `default`) is called directly. Used by the shared-bundle path
+ *      (`render_shared_bundle_entry_source`): every island's source code
+ *      is already in the same bundle, so the synthesised entry can hand
+ *      the runtime the constructed mount functions inline without a
+ *      second HTTP fetch. This preserves the one-request shared-bundle
+ *      contract while giving up nothing on hydration semantics
+ *      (zudolab/zudo-doc#1355 wave 6).
+ */
+export type IslandManifestValue = string | IslandModule;
+export type IslandManifest = Readonly<Record<string, IslandManifestValue>>;
 
 const mounted = new WeakSet<Element>();
 // Elements with an in-flight dynamic import that has not yet resolved.
@@ -251,12 +271,12 @@ function scheduleMount(
   // separate dynamic import for the same element.
   if (mounted.has(element) || pending.has(element)) return;
 
-  const url = manifest[componentName];
-  if (!url) {
+  const entry = manifest[componentName];
+  if (entry == null) {
     if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
       // eslint-disable-next-line no-console
       console.warn(
-        `[zfb] no island bundle URL for component "${componentName}" — ` +
+        `[zfb] no island manifest entry for component "${componentName}" — ` +
           `the runtime manifest is out of sync with the rendered HTML.`,
       );
     }
@@ -265,6 +285,21 @@ function scheduleMount(
 
   const props = readProps(element);
   const when = element.getAttribute("data-when") ?? undefined;
+
+  // Two manifest shapes:
+  //
+  //   - `string` (per-island bundle URL): fetch via dynamic `import()`
+  //     and call `mount` / `default` on the resolved module.
+  //   - `IslandModule` (inline descriptor): the shared-bundle path has
+  //     already imported every island's source into the same bundle and
+  //     constructed a mount function for it. Skip the dynamic import
+  //     and call the supplied function directly.
+  if (typeof entry !== "string") {
+    fireInlineMount(element, entry, props, mode);
+    return;
+  }
+
+  const url: string = entry;
 
   const fire = (): void => {
     // Re-check both guards in case `fire` is invoked from a deferred
@@ -335,6 +370,46 @@ function scheduleMount(
     return;
   }
 
+  scheduleHydrate(element, when, fire);
+}
+
+/**
+ * Run the mount step for the inline-module manifest shape used by the
+ * shared-bundle path. The module is already in memory (it was imported
+ * into the bundle at build time), so there is no async window to
+ * coordinate around — we just call `mount` / `default` directly,
+ * gated by the same `data-when` semantics as the URL path.
+ */
+function fireInlineMount(
+  element: Element,
+  mod: IslandModule,
+  props: Record<string, unknown>,
+  mode: "hydrate" | "render",
+): void {
+  const fn = mod.mount ?? mod.default;
+  if (typeof fn !== "function") {
+    if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn("[zfb] inline island manifest entry did not export mount() or default()");
+    }
+    return;
+  }
+
+  const fire = (): void => {
+    // Re-check the guard in case `fire` is invoked from a deferred
+    // scheduler (rIC/rAF/visibility) after a sibling caller already
+    // mounted this element.
+    if (mounted.has(element)) return;
+    mounted.add(element);
+    fn(props, element, mode);
+  };
+
+  if (mode === "render") {
+    fire();
+    return;
+  }
+
+  const when = element.getAttribute("data-when") ?? undefined;
   scheduleHydrate(element, when, fire);
 }
 
