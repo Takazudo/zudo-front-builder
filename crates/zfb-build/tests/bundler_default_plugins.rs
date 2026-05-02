@@ -200,12 +200,15 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     // reliable bundle-side proof that `<Note>` survived the hast
     // detour into the JSX output (see
     // `crates/zfb-content/tests/mdx_jsx_emit_hast.rs::mdx_component_passthrough_survives_hast_detour`).
-    // The exact source-form `_components.Note ?? components.Note`
-    // gets minified-friendly transformed by esbuild but the symbol
-    // `Note` survives in property-access form.
+    // The emitter source emits
+    // `const Note = _components.Note ?? components.Note;` —
+    // esbuild may rename the local through minification but the
+    // property-access `_components.Note` (or the destructure
+    // `Note: ` in the `_components` literal) survives.
     assert!(
-        body.contains("Note"),
-        "compiled bundle should reference the <Note> JSX component the admonition plugin emits"
+        body.contains("_components.Note") || body.contains("Note: ") || body.contains("Note:"),
+        "compiled bundle should reference the <Note> JSX component the admonition plugin emits (looked for `_components.Note` / `Note: ` / `Note:` in the bundle).\n--- bundle excerpt ---\n{}",
+        snippet(&body)
     );
 
     // ---- Mermaid (hast-phase plugin) ---------------------------------
