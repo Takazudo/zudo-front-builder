@@ -735,6 +735,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .iter()
         .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
         .collect();
+    // Thread the opt-in `stripMdExt` flag from `zfb.config.ts` into the
+    // bundler so the hoisted MDX pre-compile pipeline appends
+    // `StripMdExtensionPlugin`. Mirrored in `commands/dev.rs` so dev
+    // and build produce the same href shape (zfb#127 / #129).
+    bundler_input.strip_md_ext = config.strip_md_ext;
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;

@@ -179,7 +179,28 @@ pub struct ModuleLoader {
 
 impl ModuleLoader {
     /// Build a fresh loader with empty cache and the given default runtime.
+    ///
+    /// The internal MDX content pipeline is constructed via
+    /// [`Pipeline::with_defaults`]; the opt-in `StripMdExtensionPlugin`
+    /// is NOT appended here. Use [`ModuleLoader::with_strip_md_ext`]
+    /// when the project's `zfb.config.ts` enables `stripMdExt` so dev
+    /// rendering matches built dist.
     pub fn new(jsx_runtime: JsxRuntime) -> Self {
+        Self::with_strip_md_ext(jsx_runtime, false)
+    }
+
+    /// Build a fresh loader, optionally appending
+    /// [`Pipeline::add_strip_md_ext`] to the content pipeline.
+    ///
+    /// Mirrors [`zfb_build::BundlerInput::strip_md_ext`] (zfb#127 /
+    /// #129): when the bundler has the flag on, the dev loader must
+    /// honour it too or `pnpm dev` and `zfb build` produce different
+    /// href shapes for `[link](other.md)` style references.
+    pub fn with_strip_md_ext(jsx_runtime: JsxRuntime, strip_md_ext: bool) -> Self {
+        let mut content_pipeline = Pipeline::with_defaults();
+        if strip_md_ext {
+            content_pipeline.add_strip_md_ext();
+        }
         Self {
             pipeline: SwcPipeline::new(),
             jsx_runtime,
@@ -190,7 +211,7 @@ impl ModuleLoader {
                 ".jsx".to_string(),
                 ".js".to_string(),
             ],
-            content_pipeline: Pipeline::with_defaults(),
+            content_pipeline,
         }
     }
 
@@ -330,17 +351,21 @@ impl ModuleLoader {
     /// emitter; otherwise return `source` unchanged.
     ///
     /// The cached [`Pipeline::with_defaults`] is threaded through so the
-    /// project's default mdast-phase plugins (admonitions / CJK-friendly
-    /// emphasis) fire against MDX content before JSX emission. Without
-    /// this, `:::note` directives, `<Note>` rewrites, and similar
-    /// transforms would never run on `.mdx` and `mdx://` sources reaching
-    /// the renderer. See zfb#116.
+    /// project's default plugins fire against MDX content before JSX
+    /// emission. Both phases now run on the JSX emit path:
     ///
-    /// Hast-phase plugins (heading-links, code-title, mermaid,
-    /// image-enlarge, syntect, strip-md-ext) are intentionally not
-    /// applied here — the JSX emit path bypasses hast entirely. Those
-    /// plugins continue to run on the HTML serializer path
-    /// ([`Pipeline::run`]).
+    /// - **mdast-phase** plugins (admonitions / CJK-friendly emphasis)
+    ///   transform the parsed mdast tree before JSX synthesis, so
+    ///   `:::note` directives, `<Note>` rewrites, and similar
+    ///   structural changes happen in time. See zfb#116.
+    /// - **hast-phase** plugins (heading-links, code-title, mermaid,
+    ///   image-enlarge, syntect, strip-md-ext) also fire — since
+    ///   zfb#121 the JSX emit path detours through hast inside
+    ///   [`mdx_to_jsx_module_with_pipeline`], so the same plugin chain
+    ///   that runs on the HTML serializer path ([`Pipeline::run`])
+    ///   runs here too. The previous comment block claimed hast-phase
+    ///   plugins were skipped on the JSX path; that has been false
+    ///   since #121.
     ///
     /// Errors from `zfb-content` are wrapped as [`RenderError::Compile`]
     /// with `specifier` as the file location so the renderer's existing
@@ -397,5 +422,69 @@ mod tests {
             .load_source("page.tsx", "/* different source — should hit cache */")
             .expect("cache hit");
         assert_eq!(loader.cache_len(), 1);
+    }
+
+    /// Dev-loader counterpart to the bundler's
+    /// `strip_md_ext_on_rewrites_internal_md_hrefs_to_trailing_slash`
+    /// integration test (zfb#127 / #129). The dev loader must honour
+    /// the same `stripMdExt` flag the bundler does, otherwise
+    /// `pnpm dev` and `zfb build` produce diverging href shapes.
+    ///
+    /// Driving signal: the JSX text the loader feeds to SWC. When
+    /// `stripMdExt = true`, an MDX `[other](./other.md)` link must
+    /// emit a `href` JSX attribute equal to `./other/` after the
+    /// pipeline runs. With the flag off the original `./other.md`
+    /// survives.
+    #[test]
+    fn loader_with_strip_md_ext_rewrites_internal_md_hrefs() {
+        let source = "see [other](./other.md) and [guide](./guide.mdx).\n";
+
+        // Flag off — extensions survive verbatim in the compiled JSX.
+        let mut loader_off = ModuleLoader::new(JsxRuntime::Preact);
+        let compiled_off = loader_off
+            .load_source("./post.mdx", source)
+            .expect("mdx compile ok (off)");
+        assert!(
+            compiled_off.code.contains("./other.md"),
+            "stripMdExt=off must preserve `./other.md` in the loader's \
+             compiled output; got:\n{}",
+            compiled_off.code
+        );
+        assert!(
+            !compiled_off.code.contains("\"./other/\""),
+            "stripMdExt=off must NOT introduce the rewritten `./other/` \
+             form; got:\n{}",
+            compiled_off.code
+        );
+
+        // Flag on — extensions stripped + trailing slash appended.
+        let mut loader_on = ModuleLoader::with_strip_md_ext(JsxRuntime::Preact, true);
+        let compiled_on = loader_on
+            .load_source("./post.mdx", source)
+            .expect("mdx compile ok (on)");
+        assert!(
+            compiled_on.code.contains("./other/"),
+            "stripMdExt=on must rewrite `./other.md` to `./other/` in \
+             the loader's compiled output; got:\n{}",
+            compiled_on.code
+        );
+        assert!(
+            compiled_on.code.contains("./guide/"),
+            "stripMdExt=on must rewrite `./guide.mdx` to `./guide/`; \
+             got:\n{}",
+            compiled_on.code
+        );
+        assert!(
+            !compiled_on.code.contains("./other.md"),
+            "stripMdExt=on must consume the literal `./other.md` href; \
+             got:\n{}",
+            compiled_on.code
+        );
+        assert!(
+            !compiled_on.code.contains("./guide.mdx"),
+            "stripMdExt=on must consume the literal `./guide.mdx` href; \
+             got:\n{}",
+            compiled_on.code
+        );
     }
 }

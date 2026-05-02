@@ -294,6 +294,19 @@ pub struct BundlerInput {
     /// root, where transitive deps are NOT hoisted, and resolution
     /// fails.
     pub node_modules_preserve_symlinks: bool,
+
+    /// When `true`, append [`zfb_content::pipeline::Pipeline::add_strip_md_ext`]
+    /// to the hoisted MDX pre-compile pipeline at every call site so
+    /// internal `[link](other.md)` style hrefs are rewritten to
+    /// `other/` (with a trailing slash, matching the JS engine's
+    /// `rehypeStripMdExtension`). Mirrors [`zfb::config::Config::strip_md_ext`]
+    /// in `crates/zfb/src/config.rs` — the CLI threads the resolved
+    /// config flag here. Default: `false` (opt-in feature).
+    ///
+    /// The dev loader at `crates/zfb-render/src/loader.rs` honours the
+    /// same flag via [`zfb_render::loader::ModuleLoader::with_strip_md_ext`]
+    /// so `zfb dev` and `zfb build` produce the same href shape.
+    pub strip_md_ext: bool,
 }
 
 impl BundlerInput {
@@ -336,6 +349,7 @@ impl BundlerInput {
             content_snapshot_json,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
+            strip_md_ext: false,
         }
     }
 }
@@ -467,8 +481,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let shadow_layouts = shadow.join("layouts");
 
     let mut routes: Vec<RouteEntry> = Vec::new();
-    materialise_shadow(&pages_dir, &shadow_pages, &mut routes, &input.project_root)
-        .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
+    materialise_shadow(
+        &pages_dir,
+        &shadow_pages,
+        &mut routes,
+        &input.project_root,
+        input.strip_md_ext,
+    )
+    .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
 
     // Per-collection content materialisation (#506).
     //
@@ -487,43 +507,67 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         for col in &input.content_collections {
             let col_root = resolver.resolve(&col.root);
             let dest = shadow_content.join(&col.name);
-            materialise_collection(&col_root, &dest, &col.name, &mut content_imports)
-                .with_context(|| {
-                    format!(
-                        "bundler: failed materialising collection `{}` from {}",
-                        col.name,
-                        col_root.display()
-                    )
-                })?;
+            materialise_collection(
+                &col_root,
+                &dest,
+                &col.name,
+                &mut content_imports,
+                input.strip_md_ext,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising collection `{}` from {}",
+                    col.name,
+                    col_root.display()
+                )
+            })?;
         }
         // Deterministic ordering — keys are `(collection, rel_path)`
         // so the emitted import indices match the underlying file
         // tree on every build, regardless of WalkDir's per-OS order.
         content_imports.sort_by(|a, b| a.shadow_rel_path.cmp(&b.shadow_rel_path));
     } else {
-        materialise_shadow(&content_dir, &shadow_content, &mut Vec::new(), &input.project_root)
-            .with_context(|| {
-                format!(
-                    "bundler: failed materialising content from {}",
-                    content_dir.display()
-                )
-            })?;
+        materialise_shadow(
+            &content_dir,
+            &shadow_content,
+            &mut Vec::new(),
+            &input.project_root,
+            input.strip_md_ext,
+        )
+        .with_context(|| {
+            format!(
+                "bundler: failed materialising content from {}",
+                content_dir.display()
+            )
+        })?;
     }
 
-    materialise_shadow(&components_dir, &shadow_components, &mut Vec::new(), &input.project_root)
-        .with_context(|| {
-            format!(
-                "bundler: failed materialising components from {}",
-                components_dir.display()
-            )
-        })?;
-    materialise_shadow(&layouts_dir, &shadow_layouts, &mut Vec::new(), &input.project_root)
-        .with_context(|| {
-            format!(
-                "bundler: failed materialising layouts from {}",
-                layouts_dir.display()
-            )
-        })?;
+    materialise_shadow(
+        &components_dir,
+        &shadow_components,
+        &mut Vec::new(),
+        &input.project_root,
+        input.strip_md_ext,
+    )
+    .with_context(|| {
+        format!(
+            "bundler: failed materialising components from {}",
+            components_dir.display()
+        )
+    })?;
+    materialise_shadow(
+        &layouts_dir,
+        &shadow_layouts,
+        &mut Vec::new(),
+        &input.project_root,
+        input.strip_md_ext,
+    )
+    .with_context(|| {
+        format!(
+            "bundler: failed materialising layouts from {}",
+            layouts_dir.display()
+        )
+    })?;
 
     // 2b. Optional node_modules symlink into the shadow tree.
     //     When `BundlerInput::node_modules_dir` is set, create a
@@ -647,6 +691,7 @@ fn materialise_shadow(
     dest: &Path,
     routes: &mut Vec<RouteEntry>,
     project_root: &Path,
+    strip_md_ext: bool,
 ) -> Result<()> {
     if !src.exists() {
         // A missing source dir is non-fatal — not every project has e.g.
@@ -668,6 +713,28 @@ fn materialise_shadow(
         .file_name()
         .map(|s| s == "pages")
         .unwrap_or(false);
+
+    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
+    // so the seven default plugins (admonitions, CJK-friendly emphasis,
+    // heading-links, code-title, image-enlarge, mermaid, syntect) all
+    // fire on every MDX file the walker visits. The dev loader at
+    // `crates/zfb-render/src/loader.rs` reuses one pipeline for the
+    // same reason — `Pipeline::with_defaults()` allocates a
+    // `Highlighter` and seven boxed visitors, so per-file construction
+    // would be wasteful. Borrow is linear (`&mut`), so a single hoisted
+    // pipeline can serve every MDX file in the walk sequentially. See
+    // zfb#127 / #128.
+    //
+    // The opt-in `StripMdExtensionPlugin` is appended here when the
+    // user enabled `stripMdExt` in `zfb.config.ts` (zfb#127 / #129).
+    // The plugin is intentionally NOT in `with_defaults()` because it
+    // only makes sense for sites whose authors hand-write
+    // `[label](other.md)` style references. The dev loader honours the
+    // same flag so dev preview matches built dist.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    if strip_md_ext {
+        pipeline.add_strip_md_ext();
+    }
 
     for entry in WalkDir::new(src).follow_links(false) {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
@@ -701,7 +768,7 @@ fn materialise_shadow(
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
-            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, None)
+            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
@@ -876,12 +943,28 @@ fn materialise_collection(
     dest: &Path,
     collection_name: &str,
     imports: &mut Vec<ContentImport>,
+    strip_md_ext: bool,
 ) -> Result<()> {
     if !src.exists() {
         return Ok(());
     }
     fs::create_dir_all(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
+
+    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
+    // so the seven default plugins fire on every collection MDX file.
+    // See `materialise_shadow` for the rationale; the same applies
+    // here. Two walks → two hoisted pipelines (one per walker), which
+    // is cheaper than one per file. See zfb#127 / #128.
+    //
+    // The opt-in `StripMdExtensionPlugin` is appended when the user
+    // enabled `stripMdExt` (zfb#127 / #129). The flag is threaded in
+    // by the caller so the page walker and the collection walker
+    // honour the same setting.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    if strip_md_ext {
+        pipeline.add_strip_md_ext();
+    }
 
     for entry in WalkDir::new(src).follow_links(false) {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
@@ -946,7 +1029,7 @@ fn materialise_collection(
             // the bridge map. Mismatch here would make every bridge
             // lookup miss and silently fall back to the
             // raw-markdown <pre> block.
-            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, None)
+            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
@@ -1723,6 +1806,7 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
+            strip_md_ext: false,
         }
     }
 
@@ -1947,7 +2031,7 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("docs");
         let mut imports: Vec<ContentImport> = Vec::new();
-        materialise_collection(&src, &dest, "docs", &mut imports).unwrap();
+        materialise_collection(&src, &dest, "docs", &mut imports, false).unwrap();
 
         // Two MDX files → two ContentImport records, with stable
         // forward-slash shadow_rel_paths under `content/docs/...`.
@@ -2054,6 +2138,7 @@ mod tests {
             &dest,
             "ghost",
             &mut imports,
+            false,
         )
         .unwrap();
         assert!(imports.is_empty());
@@ -2220,6 +2305,7 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
+            strip_md_ext: false,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2328,7 +2414,7 @@ mod tests {
         let mut routes = Vec::new();
         // dest must be named "pages" for is_pages_dir detection in materialise_shadow
         let shadow_pages_dest = root.join("shadow").join("pages");
-        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root).unwrap();
+        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false).unwrap();
 
         // Map route → registration index.
         let order: BTreeMap<&str, usize> = routes

@@ -84,6 +84,20 @@ export type ZfbConfig = {
    * Mirrors `Config::adapter` in crates/zfb/src/config.rs.
    */
   adapter?: string;
+  /**
+   * Strip `.md` / `.mdx` from internal `<a href>` paths during MDX
+   * compilation, and append a trailing `/` so the resulting URL shape
+   * converges with the rest of the site (mirrors the JS engine's
+   * `rehypeStripMdExtension`). Default: `false`.
+   *
+   * Enable this when content authors hand-write `[label](other.md)`
+   * style references that should resolve to the rendered route URL
+   * (e.g. `other/`) instead of a literal file path. Built dist and
+   * `pnpm dev` honour the same flag, so previews match shipped output.
+   *
+   * Mirrors `Config::strip_md_ext` in crates/zfb/src/config.rs.
+   */
+  stripMdExt?: boolean;
 };
 
 /**
