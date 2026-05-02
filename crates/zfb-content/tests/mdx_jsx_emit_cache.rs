@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use zfb_content::pipeline::Pipeline;
 use zfb_content::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, parse_mdx_specifier,
     MdxModuleCache, MdxModuleSpecifier, SpecifierError,
@@ -157,6 +158,57 @@ fn cache_opt_out_recompiles_every_call() {
 
     assert_eq!(cached_first, uncached);
     assert_eq!(uncached, convenience);
+}
+
+#[test]
+fn cache_is_bypassed_when_pipeline_is_supplied() {
+    // Contract: when both `Some(&cache)` and `Some(&mut pipeline)` are
+    // passed to `compile_mdx_to_jsx_module_cached`, the cache MUST NOT
+    // grow. The simple `sha256(input)` cache key cannot distinguish
+    // identical inputs run through different pipelines, so the
+    // implementation deliberately bypasses the cache when a pipeline
+    // is supplied (see `crates/zfb-content/src/mdx_jsx_emit.rs`
+    // around the `cache_for_lookup` setup). This test pins that
+    // behaviour so a future refactor cannot silently start caching
+    // pipeline-transformed output keyed only on input.
+    //
+    // Source: zfb#128 acceptance criteria — "verify
+    // `Some(&cache) + Some(&mut pipeline)` does not grow the cache."
+    let cache = MdxModuleCache::new();
+    let mut pipeline = Pipeline::with_defaults();
+    assert!(cache.is_empty(), "precondition: empty cache");
+
+    let src = "# heading\n\nbody\n";
+    let path = fixture_path("with-pipeline");
+
+    let _ =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
+    assert_eq!(
+        cache.len(),
+        0,
+        "cache must NOT grow when a pipeline is supplied (was {})",
+        cache.len()
+    );
+
+    // Repeat: the second call also bypasses the cache.
+    let _ =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
+    assert_eq!(
+        cache.len(),
+        0,
+        "second call must also leave the cache untouched (was {})",
+        cache.len()
+    );
+
+    // Sanity: the same call WITHOUT a pipeline DOES grow the cache.
+    // This guards against a degenerate "cache never grows" failure
+    // mode where the assertion above passes for the wrong reason.
+    let _ = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
+    assert_eq!(
+        cache.len(),
+        1,
+        "control: dropping the pipeline must let the cache grow"
+    );
 }
 
 #[test]
