@@ -319,10 +319,17 @@ impl FsResolver {
     /// source entry point.
     ///
     /// Subpath imports (`@scope/pkg/components/foo`) probe
-    /// `<pkg_dir>/<subpath>` exactly, with extensions appended, and
-    /// finally as a directory containing `index.<ext>` — same shape
+    /// `<pkg_dir>/<subpath>` exactly first (with extensions appended,
+    /// and finally as a directory containing `index.<ext>` — same shape
     /// the relative-path branch uses, so a workspace-package directory
-    /// import behaves the same as a project-internal one.
+    /// import behaves the same as a project-internal one). When that
+    /// literal-subpath probe misses, fall back to `package.json`
+    /// `exports["./<subpath>"]` for packages that redirect subpath
+    /// imports into a different on-disk shape (e.g. `src/<sub>/index.ts`)
+    /// — the common pattern for un-built TypeScript workspace packages.
+    /// Conditional shapes (`{ "source": "...", "default": "..." }`) are
+    /// flattened in priority `source` → `default` → `import`; pattern
+    /// entries (`*` wildcards) are intentionally not handled here.
     ///
     /// Bare-package imports (no subpath) read `package.json` and try
     /// `source` (the convention pnpm-workspace TypeScript packages use
@@ -349,8 +356,29 @@ impl FsResolver {
         };
 
         if !subpath.is_empty() {
-            let candidate = pkg_dir.join(subpath);
-            return probe_dir_or_file(candidate);
+            // 1) Literal-subpath probe — preserved as the fallback for
+            //    the legacy package shape where on-disk layout matches
+            //    the import shape (`<pkg_dir>/<subpath>`).
+            let direct = pkg_dir.join(subpath);
+            if let Some(found) = probe_dir_or_file(direct) {
+                return Some(found);
+            }
+
+            // 2) `package.json` `exports["./<subpath>"]` — workspace
+            //    TypeScript packages overwhelmingly redirect subpath
+            //    imports into `src/<sub>/index.ts` via this map.
+            let pkg_json_path = pkg_dir.join("package.json");
+            if let Ok(text) = std::fs::read_to_string(&pkg_json_path) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(target) = resolve_exports_subpath(&value, subpath) {
+                        let candidate = pkg_dir.join(&target);
+                        if let Some(found) = probe_dir_or_file(candidate) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            return None;
         }
 
         // 1) package.json hints — read once, try fields in priority order.
@@ -428,6 +456,67 @@ impl FsResolver {
             Err(_) => return false,
         };
         canon.starts_with(root)
+    }
+}
+
+/// Look up `exports["./<subpath>"]` in a parsed `package.json` and
+/// return the redirected on-disk relative path, if any.
+///
+/// Supports the two shapes workspace TypeScript packages use:
+///
+/// - Single string: `"./sub": "./src/sub/index.ts"` — returned as-is.
+/// - Conditional object: `"./sub": { "source": "...", "default": "..." }`
+///   — flattened in priority `source` → `default` → `import` to prefer
+///   un-built source over compiled output.
+///
+/// **Out of scope** (intentional limits):
+///
+/// - Subpath patterns with `*` wildcards (`"./components/*": "..."`).
+///   The downstream consumers that motivated this fix all use literal
+///   keys; pattern support is left for a follow-up if needed.
+/// - Full Node.js conditional priority (`browser`, `node`, etc.). The
+///   `source` / `default` / `import` walk is intentionally minimal —
+///   workspace packages overwhelmingly use one of those three.
+/// - Top-level `exports` shorthand (a bare string or array at the root
+///   of `exports`, with no `./<sub>` keys). That shape is the
+///   "no-subpath" case which the bare-package branch already handles
+///   via `module` / `main`.
+fn resolve_exports_subpath(pkg_json: &serde_json::Value, subpath: &str) -> Option<String> {
+    let exports = pkg_json.get("exports")?;
+    let key = format!("./{subpath}");
+    let entry = exports.get(&key)?;
+    flatten_exports_entry(entry)
+}
+
+/// Recursively pick a target string out of an `exports` entry value.
+///
+/// Plain strings are returned verbatim; conditional objects are
+/// walked in priority `source` → `default` → `import`. The first key
+/// that resolves to a string (after recursion through nested
+/// conditional shapes) wins. Arrays of fallbacks (`["./a", "./b"]`)
+/// take the first string entry.
+fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(_) => {
+            for cond in ["source", "default", "import"] {
+                if let Some(inner) = value.get(cond) {
+                    if let Some(found) = flatten_exports_entry(inner) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => {
+            for inner in arr {
+                if let Some(found) = flatten_exports_entry(inner) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -1591,6 +1680,296 @@ mod tests {
         assert_eq!(islands.len(), 1, "got {islands:?}");
     }
 
+    /// `package.json` `exports["./<subpath>"]` redirects a subpath
+    /// import into a different on-disk shape (`src/<sub>/index.ts`) —
+    /// the common pattern for un-built TypeScript workspace packages
+    /// that keep source under `src/`. Without this branch the scanner
+    /// would silently miss every subpath island in such a package.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_honours_package_json_exports_for_subpath_specifier() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        // Workspace tree (outside node_modules) — pnpm's symlink target.
+        let pkg = consumer.join("workspace").join("zudo-doc-v2");
+        let pkg_src_doclayout = pkg.join("src").join("doclayout");
+        // Symlink that pnpm would create under node_modules.
+        let pkg_link = consumer
+            .join("node_modules")
+            .join("@zudo-doc")
+            .join("zudo-doc-v2");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src_doclayout).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        // Page imports the subpath the legacy literal probe would
+        // miss: there is no `<pkg_dir>/doclayout` on disk; the actual
+        // source lives under `<pkg_dir>/src/doclayout/index.ts` and
+        // is reachable only via the `exports` redirect.
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { DocLayoutWithDefaults } from "@zudo-doc/zudo-doc-v2/doclayout";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{
+              "name": "@zudo-doc/zudo-doc-v2",
+              "exports": {
+                "./doclayout": {
+                  "types": "./src/doclayout/index.ts",
+                  "default": "./src/doclayout/index.ts"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src_doclayout.join("index.ts"),
+            r#""use client";
+            export function DocLayoutWithDefaults() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "DocLayoutWithDefaults");
+        let expected = pkg_src_doclayout
+            .join("index.ts")
+            .canonicalize()
+            .expect("canon");
+        assert_eq!(islands[0].source_path, expected);
+    }
+
+    /// `exports["./<sub>"]` may also be a bare string (no conditional
+    /// shape). The flattener returns it verbatim and the resolver
+    /// reaches the redirected source.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_honours_package_json_exports_string_subpath() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        let pkg = consumer.join("workspace").join("ws-pkg");
+        let pkg_src_sub = pkg.join("src").join("sub");
+        let pkg_link = consumer.join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src_sub).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg/sub";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{
+              "name": "ws-pkg",
+              "exports": {
+                "./sub": "./src/sub/index.ts"
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_src_sub.join("index.ts"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    /// When a conditional `exports["./<sub>"]` entry has a `source`
+    /// alongside a `default`, the `source` un-built path is preferred
+    /// — workspace TypeScript packages keep that field for tools that
+    /// (like the islands scanner) must read raw `.ts`/`.tsx` rather
+    /// than compiled output.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_prefers_source_over_default_in_exports_conditions() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        let pkg = consumer.join("workspace").join("ws-pkg");
+        let pkg_src_sub = pkg.join("src").join("sub");
+        let pkg_dist_sub = pkg.join("dist").join("sub");
+        let pkg_link = consumer.join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg_src_sub).unwrap();
+        fs::create_dir_all(&pkg_dist_sub).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "ws-pkg/sub";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{
+              "name": "ws-pkg",
+              "exports": {
+                "./sub": {
+                  "source": "./src/sub/index.ts",
+                  "default": "./dist/sub/index.js"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        // Both targets exist on disk and both carry "use client" — if
+        // the resolver picked `default`, the test would still find an
+        // island, just at the wrong path. Assert the source path.
+        fs::write(
+            pkg_src_sub.join("index.ts"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_dist_sub.join("index.js"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        let expected = pkg_src_sub.join("index.ts").canonicalize().expect("canon");
+        assert_eq!(
+            islands[0].source_path, expected,
+            "expected src/ path (source condition), got {:?}",
+            islands[0].source_path,
+        );
+    }
+
+    /// The literal-subpath probe still wins when the on-disk shape
+    /// matches the import shape — the `exports` lookup is a fallback,
+    /// not a replacement for the legacy behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_subpath_literal_probe_wins_over_exports_when_both_resolve() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let consumer = dir.path().join("consumer");
+        let pages = consumer.join("pages");
+        let pkg = consumer.join("workspace").join("ws-pkg");
+        // Two candidate locations: `<pkg>/components/foo.tsx` (literal)
+        // and `<pkg>/src/components/foo.ts` (via exports). The literal
+        // probe runs first and must win.
+        let components = pkg.join("components");
+        let pkg_src_components = pkg.join("src").join("components");
+        let pkg_link = consumer.join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        fs::create_dir_all(&pkg_src_components).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Foo } from "ws-pkg/components/foo";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{
+              "name": "ws-pkg",
+              "exports": {
+                "./components/foo": "./src/components/foo.ts"
+              }
+            }"#,
+        )
+        .unwrap();
+        // Literal target — must be the one the scanner picks.
+        fs::write(
+            components.join("foo.tsx"),
+            r#""use client";
+            export function Foo() {}
+            "#,
+        )
+        .unwrap();
+        // Exports-redirected target — also has "use client", to make
+        // sure the assertion catches a regression where both surface.
+        fs::write(
+            pkg_src_components.join("foo.ts"),
+            r#""use client";
+            export function Foo() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "got {islands:?}");
+        let literal = components.join("foo.tsx").canonicalize().expect("canon");
+        assert_eq!(islands[0].source_path, literal);
+    }
+
+    #[test]
+    fn resolve_exports_subpath_handles_string_entry() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./sub": "./src/sub/index.ts" } }"#).unwrap();
+        assert_eq!(
+            resolve_exports_subpath(&json, "sub"),
+            Some("./src/sub/index.ts".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_subpath_prefers_source_then_default_then_import() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { "./a": { "source": "S", "default": "D", "import": "I" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("S".to_string()));
+
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./a": { "default": "D", "import": "I" } } }"#)
+                .unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("D".to_string()));
+
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./a": { "import": "I" } } }"#).unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("I".to_string()));
+    }
+
+    #[test]
+    fn resolve_exports_subpath_returns_none_when_key_missing() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./other": "./other.ts" } }"#).unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "missing"), None);
+    }
+
+    #[test]
+    fn resolve_exports_subpath_returns_none_when_no_exports_field() {
+        let json: serde_json::Value = serde_json::from_str(r#"{ "name": "foo" }"#).unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "anything"), None);
+    }
+
     /// Hostile `package.json` `"source": "../../escape.tsx"` must NOT
     /// resolve outside the package directory — the workspace probe
     /// clamps every resolved path inside `node_modules/<pkg>/`.
@@ -1635,6 +2014,53 @@ mod tests {
         assert!(
             islands.is_empty(),
             "expected escape attempt to be clamped; got {islands:?}",
+        );
+    }
+
+    /// Hostile `package.json` `exports["./<sub>"]` pointing outside
+    /// the package directory must NOT resolve — same `is_inside`
+    /// clamp the legacy `source`/`module`/`main` reads use applies to
+    /// the new exports path.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_rejects_package_json_exports_that_escapes_pkg_dir() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pages = dir.path().join("pages");
+        let pkg = dir.path().join("workspace").join("ws-pkg");
+        let pkg_link = dir.path().join("node_modules").join("ws-pkg");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&pkg).unwrap();
+        make_workspace_link(&pkg, &pkg_link);
+
+        fs::write(
+            dir.path().join("escape.tsx"),
+            r#""use client";
+            export function Pwn() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Pwn } from "ws-pkg/sub";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{
+              "name": "ws-pkg",
+              "exports": { "./sub": "../../escape.tsx" }
+            }"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "expected exports escape attempt to be clamped; got {islands:?}",
         );
     }
 
