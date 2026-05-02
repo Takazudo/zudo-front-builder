@@ -310,6 +310,7 @@ fn make_input(
             "posts",
             PathBuf::from("content/posts"),
         )],
+        strip_md_ext: false,
     }
 }
 

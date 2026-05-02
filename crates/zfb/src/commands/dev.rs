@@ -470,6 +470,12 @@ fn boot_dev_renderer(
         .iter()
         .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
         .collect();
+    // Thread the opt-in `stripMdExt` flag through so the dev-mode
+    // bundler (which feeds miniflare) honours the same setting as
+    // `zfb build`. The dev loader at `crates/zfb-render/src/loader.rs`
+    // also reads this flag for in-process MDX rendering, so dev preview
+    // matches built dist (zfb#127 / #129).
+    bundler_input.strip_md_ext = cfg.strip_md_ext;
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {

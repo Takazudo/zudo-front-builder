@@ -241,6 +241,22 @@ pub struct Config {
     /// the build orchestrator runs against this field.
     #[serde(default)]
     pub adapter: Option<String>,
+
+    /// Strip `.md` / `.mdx` from internal `<a href>` paths during MDX
+    /// compilation, and append a trailing `/` so the resulting URL shape
+    /// converges with the rest of the site (mirrors the JS engine's
+    /// `rehypeStripMdExtension`). Default: `false`.
+    ///
+    /// Opt-in for projects whose content authors hand-write
+    /// `[label](other.md)` style references that should resolve to the
+    /// rendered route URL (`other/`) rather than a literal file path.
+    /// Built dist (`zfb build`) and dev rendering (`zfb dev`) both honour
+    /// this flag so dev preview matches shipped output.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `stripMdExt` into this field.
+    #[serde(default)]
+    pub strip_md_ext: bool,
 }
 
 impl Default for Config {
@@ -255,6 +271,7 @@ impl Default for Config {
             tailwind: None,
             plugins: Vec::new(),
             adapter: None,
+            strip_md_ext: false,
         }
     }
 }
@@ -934,6 +951,41 @@ mod tests {
         assert!(cfg.collections.is_empty());
         assert!(cfg.tailwind.is_none());
         assert!(cfg.plugins.is_empty());
+        // `stripMdExt` is opt-in; absent / default = disabled. Mirrors
+        // the Sub 1 outcome byte-for-byte (zfb#127 / #129).
+        assert!(!cfg.strip_md_ext);
+    }
+
+    #[tokio::test]
+    async fn loads_strip_md_ext_from_camelcase_json() {
+        // The JSON / TS form spells the field `stripMdExt`
+        // (camelCase). The struct's `#[serde(rename_all = "camelCase")]`
+        // attr handles the rename, so a config with `stripMdExt: true`
+        // populates `Config::strip_md_ext`.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "stripMdExt": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(
+            cfg.strip_md_ext,
+            "stripMdExt: true must deserialise into strip_md_ext = true"
+        );
+    }
+
+    #[tokio::test]
+    async fn strip_md_ext_defaults_to_false_when_absent() {
+        // Acceptance criterion: default behaviour must be byte-for-byte
+        // identical to Sub 1's outcome — `stripMdExt` absent => false.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(!cfg.strip_md_ext);
     }
 
     #[tokio::test]

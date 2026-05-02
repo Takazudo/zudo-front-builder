@@ -48,9 +48,25 @@ pub struct Renderer<H: RenderHost> {
 
 impl<H: RenderHost> Renderer<H> {
     /// Build a renderer with the given host and JSX runtime preference.
+    ///
+    /// The opt-in `StripMdExtensionPlugin` is OFF — use
+    /// [`Renderer::with_strip_md_ext`] when the project enables
+    /// `stripMdExt` so dev rendering matches built dist.
     pub fn new(host: H, jsx_runtime: JsxRuntime) -> Self {
+        Self::with_strip_md_ext(host, jsx_runtime, false)
+    }
+
+    /// Build a renderer, optionally enabling the
+    /// [`StripMdExtensionPlugin`] in the loader's MDX content pipeline.
+    ///
+    /// Mirrors [`zfb_build::BundlerInput::strip_md_ext`] (zfb#127 /
+    /// #129); the build CLI threads `Config::strip_md_ext` here so
+    /// `zfb dev` and `zfb build` produce identical href shapes.
+    ///
+    /// [`StripMdExtensionPlugin`]: zfb_content::plugins::StripMdExtensionPlugin
+    pub fn with_strip_md_ext(host: H, jsx_runtime: JsxRuntime, strip_md_ext: bool) -> Self {
         Self {
-            loader: ModuleLoader::new(jsx_runtime),
+            loader: ModuleLoader::with_strip_md_ext(jsx_runtime, strip_md_ext),
             host,
         }
     }
