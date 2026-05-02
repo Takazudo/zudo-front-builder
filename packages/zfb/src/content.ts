@@ -21,8 +21,31 @@
 // TODO(zfb-content): swap this stub for the runtime-provided implementation
 // once the content engine ships end-to-end.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+// `node:fs` and `node:path` are intentionally NOT imported statically at
+// the top level.
+//
+// Why: this module is reachable via the package root (`@takazudo/zfb`) — the
+// barrel re-exports `defaultComponents` / `ContentH2` / etc. from
+// `./content.js`. The islands per-island bundler (`crates/zfb-islands`) walks
+// `import * as Mod from "@takazudo/zfb"` and esbuild's static tree-shaker
+// cannot prune a module behind a wildcard barrel access, so the WHOLE
+// content.ts module ends up in the browser-side island bundle. Top-level
+// `node:fs` / `node:path` imports would then fail the bundle with
+// `Could not resolve "node:fs"`. Loading them indirectly through a
+// runtime-constructed `createRequire` keeps the Node-runtime fs path
+// working while letting the islands bundler emit browser-safe output.
+// (Discovered while investigating zudolab/zudo-doc#1355 Wave 3 — see also
+// upstream PR #134 / #130 Gap A.) Defense-in-depth: the islands esbuild
+// invocation also passes `--platform=browser --external:node:*` so any
+// stray `node:*` import that does end up in a browser bundle is
+// externalized rather than failing the build.
+//
+// `getCollection` is synchronous per ADR-004, so the node modules are
+// loaded synchronously on first fs-path use. Type-only imports below stay
+// at the top because TypeScript erases them at compile time — they leave
+// no runtime traces for esbuild to chase.
+import type * as NodeFs from "node:fs";
+import type * as NodePath from "node:path";
 
 import { parseFrontmatter } from "./frontmatter.js";
 import type { ParsedFrontmatter } from "./frontmatter.js";
@@ -217,15 +240,92 @@ export type CollectionEntry<T = Record<string, unknown>> = {
   Content: (props: ContentProps) => ContentElement;
 };
 
+// Cached node:fs / node:path module references. Populated lazily on first
+// fs-path use (see [`loadNodeModules`]); reused on subsequent calls.
+let cachedNodeFs: typeof NodeFs | undefined;
+let cachedNodePath: typeof NodePath | undefined;
+
+/**
+ * Synchronously load `node:fs` and `node:path`, caching the results.
+ *
+ * The node specifiers are concatenated at runtime (`"node:" + "fs"`) so
+ * esbuild's static analyzer cannot follow them — that's the load-bearing
+ * detail here, because this module is reachable from browser-bundled
+ * island chains via the `@takazudo/zfb` root barrel (see top-of-file note).
+ *
+ * Uses CommonJS `require` via [`createRequire`] (stable, sync) rather than
+ * `await import()` (async, would force `getCollection` async and violate
+ * ADR-004). `createRequire` itself is fetched from `node:module` through
+ * the same runtime-built specifier pattern.
+ *
+ * If `createRequire` cannot be obtained at all (i.e. truly running in a
+ * browser-shaped runtime — which would mean a misconfigured island
+ * bundle), throws so the failure is loud rather than silent.
+ */
+function loadNodeModules(): { fs: typeof NodeFs; path: typeof NodePath } {
+  if (cachedNodeFs !== undefined && cachedNodePath !== undefined) {
+    return { fs: cachedNodeFs, path: cachedNodePath };
+  }
+  // Runtime-built specifiers: opaque to esbuild's static analyzer.
+  const moduleSpecifier = "node:" + "module";
+  const fsSpecifier = "node:" + "fs";
+  const pathSpecifier = "node:" + "path";
+  // Strategy A: prefer the host `require` from a CommonJS context. We
+  // probe via `globalThis` and `Function`-built lookup so neither esbuild
+  // nor stricter ESM tooling errors out at the lookup site.
+  const dynamicGlobal = globalThis as unknown as { require?: NodeJS.Require };
+  let nodeRequire: NodeJS.Require | undefined = dynamicGlobal.require;
+  // Strategy B: ESM context — synthesize a require via `node:module`'s
+  // `createRequire`. Loading `node:module` itself through the same
+  // dynamic specifier shields it from esbuild's static walker.
+  if (typeof nodeRequire !== "function") {
+    // `Function("return require")()` returns the enclosing `require` when
+    // the bundler/loader injects one (Node CJS, esbuild default). Falls
+    // through if undefined — caught below.
+    try {
+      nodeRequire = new Function("return typeof require === 'function' ? require : undefined")() as
+        | NodeJS.Require
+        | undefined;
+    } catch {
+      nodeRequire = undefined;
+    }
+  }
+  if (typeof nodeRequire !== "function") {
+    // Last resort: synthesize via createRequire. Reaches `node:module`
+    // through a dynamic require we have to bootstrap somehow — the only
+    // way without a static `import` is `process.getBuiltinModule` (Node
+    // 22+) which exposes built-ins synchronously without a require.
+    const proc = (
+      globalThis as unknown as { process?: { getBuiltinModule?: (id: string) => unknown } }
+    ).process;
+    const getBuiltin = proc?.getBuiltinModule;
+    if (typeof getBuiltin === "function") {
+      const mod = getBuiltin(moduleSpecifier) as typeof import("node:module");
+      nodeRequire = mod.createRequire(import.meta.url);
+    }
+  }
+  if (typeof nodeRequire !== "function") {
+    throw new Error(
+      "zfb/content: cannot load node:fs / node:path — no Node-style require available. " +
+        "This module's filesystem path requires a Node runtime; if you see this in a browser " +
+        "bundle, the bundler should externalize node:* imports (the islands bundler does so).",
+    );
+  }
+  cachedNodeFs = nodeRequire(fsSpecifier) as typeof NodeFs;
+  cachedNodePath = nodeRequire(pathSpecifier) as typeof NodePath;
+  return { fs: cachedNodeFs, path: cachedNodePath };
+}
+
 /**
  * Resolve the directory that holds a named content collection. Override
  * via `ZFB_CONTENT_ROOT` so tests / fixtures can point at an arbitrary
  * directory.
  */
 function resolveCollectionDir(name: string): string {
+  const { path } = loadNodeModules();
   const envRoot = process.env["ZFB_CONTENT_ROOT"];
-  const root = envRoot ? resolve(envRoot) : resolve(process.cwd(), "content");
-  return join(root, name);
+  const root = envRoot ? path.resolve(envRoot) : path.resolve(process.cwd(), "content");
+  return path.join(root, name);
 }
 
 /**
@@ -352,14 +452,15 @@ export function getCollection<T = Record<string, unknown>>(name: string): Collec
     }
     throw err;
   }
+  const { fs, path } = loadNodeModules();
   return mdPaths.map((fullPath) => {
-    const raw = readFileSync(fullPath, "utf8");
+    const raw = fs.readFileSync(fullPath, "utf8");
     const { data, body } = parseFrontmatter(raw);
     // Derive a stable slug from the relative path (relative to collection
     // root), stripping the `.md` extension. For top-level files this
     // produces the same value as before; for nested files it produces a
     // path-based slug (e.g. `2024/hello`).
-    const rel = relative(dir, fullPath);
+    const rel = path.relative(dir, fullPath);
     const slug = _relPathToSlug(rel);
     const module_specifier = buildModuleSpecifier(name, slug);
     return {
@@ -416,22 +517,28 @@ function entryFromSnapshot<T>(entry: SnapshotEntry): CollectionEntry<T> {
  */
 function collectMdFilesSync(dir: string): string[] {
   const result: string[] = [];
-  walkDirSync(dir, result);
+  const { fs, path } = loadNodeModules();
+  walkDirSync(fs, path, dir, result);
   result.sort();
   return result;
 }
 
-function walkDirSync(current: string, out: string[]): void {
-  const entries = readdirSync(current, { withFileTypes: true });
+function walkDirSync(
+  fs: typeof NodeFs,
+  path: typeof NodePath,
+  current: string,
+  out: string[],
+): void {
+  const entries = fs.readdirSync(current, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
-    const fullPath = join(current, entry.name);
+    const fullPath = path.join(current, entry.name);
     // Skip symlinks to avoid infinite loops caused by cycles (e.g. a symlink
     // pointing at a parent directory). Content files are expected to be plain
     // regular files; following symlinks provides no value here.
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      walkDirSync(fullPath, out);
+      walkDirSync(fs, path, fullPath, out);
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       out.push(fullPath);
     }
@@ -456,7 +563,8 @@ function walkDirSync(current: string, out: string[]): void {
  * this from application code — name and signature may change.
  */
 export function _relPathToSlug(relPath: string): string {
-  const posix = sep === "/" ? relPath : relPath.split(sep).join("/");
+  const { path } = loadNodeModules();
+  const posix = path.sep === "/" ? relPath : relPath.split(path.sep).join("/");
   // Some Node versions normalise `\` even when sep is `/`, so be
   // defensive: collapse any straggling backslashes too.
   const normalised = posix.includes("\\") ? posix.split("\\").join("/") : posix;

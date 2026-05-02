@@ -337,6 +337,16 @@ impl EsbuildSubprocessBundler {
         // Tree-shaking is on by default for ESM in esbuild; we set the
         // flag explicitly so the contract is visible at the call site.
         cmd.arg("--tree-shaking=true");
+        // Islands ship to the browser, so pin the platform target
+        // explicitly. Combined with `--external:node:*`, any `node:*`
+        // import that bleeds into a chain reachable from an island module
+        // (e.g. via a barrel re-export) is externalized — the runtime
+        // surfaces a clear "module not found" error in the browser
+        // instead of esbuild failing the build with "Could not resolve
+        // node:fs". (See packages/zfb/src/content.ts top-of-file note for
+        // the original symptom that motivated this defensive flagging.)
+        cmd.arg("--platform=browser");
+        cmd.arg("--external:node:*");
         if config.minify {
             cmd.arg("--minify");
         }
@@ -522,6 +532,12 @@ impl EsbuildSubprocessBundler {
         cmd.arg("--format=esm");
         cmd.arg("--splitting=false");
         cmd.arg("--tree-shaking=true");
+        // Per-island bundles ship to the browser. See `produce_bundle_js`
+        // for the full rationale; mirrored here so both the legacy
+        // shared-bundle and per-island paths stay aligned on platform
+        // target + node:* externalization.
+        cmd.arg("--platform=browser");
+        cmd.arg("--external:node:*");
         if config.minify {
             cmd.arg("--minify");
         }
