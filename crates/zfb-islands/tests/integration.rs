@@ -229,10 +229,14 @@ fn subprocess_bundler_against_real_binary() {
 /// hydration.
 ///
 /// The fix changes the synthesis to namespace-import each island and
-/// reference the namespaces from a `globalThis.__zfb_islands ??= [...]`
-/// top-level assignment; the assignment is a side effect esbuild MUST
-/// preserve, and the namespace references keep every export of every
-/// island alive.
+/// reference the namespaces from a top-level `mountIslands(...)`
+/// invocation; the call is a side effect esbuild MUST preserve, and
+/// the namespace references inside the manifest descriptors keep every
+/// export of every island alive. (Issue #146 / Wave 6 then leveraged
+/// the same anchor as the actual hydration entry-point so SSR'd
+/// markers get hydrated end-to-end — the previous
+/// `(globalThis).__zfb_islands ??= [...]` shape only kept code alive,
+/// it never ran the hydration glue.)
 ///
 /// This test pins the contract end-to-end against the real esbuild
 /// binary: write two synthetic island modules — one with a top-level
