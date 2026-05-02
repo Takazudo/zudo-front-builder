@@ -48,7 +48,11 @@ pub type ModuleId = String;
 ///
 /// Two islands are equal iff their `(source_path, component_name)` pair is
 /// equal — this is the stable component-name identity the scanner promises.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The newer [`marker_name`] field is metadata derived by the scanner from
+/// the same source file and is intentionally **excluded** from the
+/// equality / hashing contract so dedup behaviour is unchanged across
+/// scanner upgrades.
+#[derive(Debug, Clone)]
 pub struct Island {
     /// Exported component name from the source file. For default exports
     /// this is the literal string `"default"`.
@@ -57,20 +61,88 @@ pub struct Island {
     /// `"use client"` directive. Whatever form the scanner returned —
     /// typically the resolver's resolved-path representation.
     pub source_path: PathBuf,
+    /// SSR-marker name — the string the SSR side will write into the
+    /// `data-zfb-island` / `data-zfb-island-skip-ssr` attribute for this
+    /// island. The hydration manifest in the production shared bundle is
+    /// keyed on this name (NOT [`component_name`]), because the SSR side
+    /// derives the marker via `captureComponentName(child)` =
+    /// `child.type.displayName ?? child.type.name`, while the scanner
+    /// records [`component_name`] as the export-side name (which is
+    /// `"default"` for `export default function Foo()` and is mangled by
+    /// esbuild minification at runtime).
+    ///
+    /// Resolution rules in the scanner (issue #149):
+    ///
+    /// - `export default function Foo()` / `export default class Foo` →
+    ///   `marker_name = "Foo"` (the identifier name), NOT `"default"`.
+    /// - `export function Foo()` / `export class Foo` /
+    ///   `export const Foo = ...` → `marker_name = "Foo"`.
+    /// - When the body of an exported function calls
+    ///   `renderSsrSkipPlaceholder("X", ...)` (the host-side SSR-skip
+    ///   wrapper convention used by zudo-doc-v2's `*-island.tsx` shims),
+    ///   the literal first argument `"X"` overrides the rule above so the
+    ///   manifest key matches `data-zfb-island-skip-ssr="X"` rather than
+    ///   the wrapper's identifier name.
+    /// - Anonymous default expressions (`export default () => …`,
+    ///   `export default someFn(…)`) fall back to
+    ///   [`component_name`] verbatim (typically `"default"`).
+    pub marker_name: String,
 }
 
 impl Island {
-    /// Construct a new island.
+    /// Construct a new island. `marker_name` defaults to `component_name`.
     ///
     /// No path canonicalisation is done here; callers building islands by
     /// hand should pass the same path representation that the bundler's
     /// resolver expects so dedup keys line up with the rest of the
     /// pipeline.
     pub fn new(component_name: impl Into<String>, source_path: impl Into<PathBuf>) -> Self {
+        let component_name = component_name.into();
+        Self {
+            marker_name: component_name.clone(),
+            component_name,
+            source_path: source_path.into(),
+        }
+    }
+
+    /// Construct a new island with an explicit `marker_name` distinct
+    /// from `component_name`. Use this when the scanner determines the
+    /// SSR-marker name differs from the export-side name (default
+    /// exports of named functions, SSR-skip wrappers, etc.).
+    pub fn with_marker_name(
+        component_name: impl Into<String>,
+        source_path: impl Into<PathBuf>,
+        marker_name: impl Into<String>,
+    ) -> Self {
         Self {
             component_name: component_name.into(),
             source_path: source_path.into(),
+            marker_name: marker_name.into(),
         }
+    }
+}
+
+// Manually-implemented equality / hashing contract:
+//
+// Two islands are equal iff their `(source_path, component_name)` pair is
+// equal. `marker_name` is derived metadata — including it would mean a
+// scanner upgrade that refines the marker derivation (e.g. detecting a
+// new helper) would silently change the dedup behaviour for the same
+// source file. Excluding it keeps the contract stable across scanner
+// upgrades and matches the historical (`derive(PartialEq)`) shape from
+// before issue #149.
+impl PartialEq for Island {
+    fn eq(&self, other: &Self) -> bool {
+        self.component_name == other.component_name && self.source_path == other.source_path
+    }
+}
+
+impl Eq for Island {}
+
+impl std::hash::Hash for Island {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.component_name.hash(state);
+        self.source_path.hash(state);
     }
 }
 
@@ -538,8 +610,7 @@ mod tests {
         assert_eq!(asset.stable_url, zfb_types::STABLE_ISLANDS_URL);
         // Stable URL must NOT carry a hash — the pipeline owns hashing.
         assert!(
-            !asset.stable_url.contains('-')
-                || asset.stable_url == zfb_types::STABLE_ISLANDS_URL,
+            !asset.stable_url.contains('-') || asset.stable_url == zfb_types::STABLE_ISLANDS_URL,
             "adapter must emit the unhashed stable URL: got {}",
             asset.stable_url
         );

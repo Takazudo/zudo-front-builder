@@ -71,8 +71,8 @@ use swc_core::atoms::Wtf8Atom;
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap};
 use swc_core::ecma::ast::{
-    Decl, EsVersion, Expr, ExportSpecifier, Lit, Module, ModuleDecl, ModuleExportName, ModuleItem,
-    Pat, Stmt,
+    BlockStmt, Callee, Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr, Lit, Module,
+    ModuleDecl, ModuleExportName, ModuleItem, Pat, Stmt, VarDeclarator,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
@@ -395,7 +395,9 @@ impl FsResolver {
         // can't be canonicalised (e.g. doesn't exist), fall back to the
         // raw path — the probe's `is_file()` checks will then fail
         // naturally on anything that doesn't actually live on disk.
-        let pkg_root = pkg_dir.canonicalize().unwrap_or_else(|_| pkg_dir.to_path_buf());
+        let pkg_root = pkg_dir
+            .canonicalize()
+            .unwrap_or_else(|_| pkg_dir.to_path_buf());
 
         let probe_dir_or_file = |candidate: PathBuf| -> Option<PathBuf> {
             self.probe_path_with_index(&candidate)
@@ -745,7 +747,10 @@ fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         // bottoms out (which can be a parent extends target) would
         // anchor `paths` to the wrong directory in the common
         // "leaf has paths, parent has neither" case (codex P2).
-        let base_dir = state.base_dir.or(state.paths_anchor).unwrap_or_else(|| dir.to_path_buf());
+        let base_dir = state
+            .base_dir
+            .or(state.paths_anchor)
+            .unwrap_or_else(|| dir.to_path_buf());
         Some((base_dir, aliases))
     }
 
@@ -1035,7 +1040,9 @@ impl Resolver for FsResolver {
             if !Self::is_workspace_package(&pkg_dir) {
                 return None;
             }
-            return self.probe_package_entry(&pkg_dir, &subpath).map(canonicalize);
+            return self
+                .probe_package_entry(&pkg_dir, &subpath)
+                .map(canonicalize);
         }
 
         let candidate = importer_dir.join(specifier);
@@ -1226,19 +1233,22 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
             continue;
         }
 
-        let source = resolver.read(&current).map_err(|message| ScanError::Resolver {
-            path: current.clone(),
-            message,
-        })?;
+        let source = resolver
+            .read(&current)
+            .map_err(|message| ScanError::Resolver {
+                path: current.clone(),
+                message,
+            })?;
 
         let module = parse_module(&current, &source)?;
 
         if has_use_client_directive(&module) {
-            for name in exported_binding_names(&module) {
-                let key = (current.clone(), name.clone());
-                found
-                    .entry(key)
-                    .or_insert_with(|| Island::new(name, current.clone()));
+            for record in exported_island_records(&module) {
+                let key = (current.clone(), record.component_name.clone());
+                let path = current.clone();
+                found.entry(key).or_insert_with(|| {
+                    Island::with_marker_name(record.component_name, path, record.marker_name)
+                });
             }
         }
 
@@ -1384,48 +1394,187 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
     out
 }
 
-/// Collect the exported binding names produced by this module.
+/// One exported binding paired with its SSR-marker name.
 ///
-/// See the module-level "Component identity" docs for the full mapping.
-fn exported_binding_names(module: &Module) -> Vec<String> {
-    let mut out = Vec::new();
+/// Returned by [`exported_island_records`] so the scanner can hand the
+/// bundler both the export-side identity (`component_name`, used as the
+/// dedup key) and the SSR-side identity (`marker_name`, used as the
+/// hydration-manifest key in the production shared bundle).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IslandRecord {
+    component_name: String,
+    marker_name: String,
+}
+
+/// Walk the module's exports and pair each one with its SSR-marker name.
+///
+/// The marker name is what the SSR side will write into the
+/// `data-zfb-island` / `data-zfb-island-skip-ssr` attribute (see
+/// `packages/zfb/src/island.ts::captureComponentName`). The shared-bundle
+/// hydration manifest is keyed on this name; using the export-side name
+/// directly would mis-key every host-shape default-export island as
+/// `"default"` (issue #149 Gap B) and every SSR-skip wrapper as the
+/// wrapper's identifier instead of its placeholder marker (Gap A).
+///
+/// Resolution rules:
+///
+/// - `export default function Foo()` / `export default class Foo` →
+///   `component_name = "default"`, `marker_name = "Foo"` (the identifier
+///   name; matches `function.name` at SSR time before minification).
+/// - `export default function ()` / `export default <anon-expr>` →
+///   `component_name = "default"`, `marker_name = "default"` (no
+///   recoverable identity; the bundler still registers the entry, but
+///   the SSR side will need [`ANONYMOUS_COMPONENT_NAME`] to match).
+/// - `export function Foo()` / `export class Foo` /
+///   `export const Foo = …` → `component_name = "Foo"`,
+///   `marker_name = "Foo"`.
+/// - `export { A, B as C }` → `(A, A)`, `(C, C)` — re-exports don't
+///   carry an inline body, so the wrapper detection below does not apply.
+///
+/// Then each function body is scanned for a top-level
+/// `renderSsrSkipPlaceholder("X", …)` call (the host-side SSR-skip
+/// wrapper convention, see
+/// `packages/zudo-doc-v2/src/ssr-skip/types.ts::renderSsrSkipPlaceholder`).
+/// When found, the literal first-argument string overrides the
+/// rule-based `marker_name` so the manifest key matches
+/// `data-zfb-island-skip-ssr="X"` rather than the wrapper's identifier.
+fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
+    // 1. Build a side-table of `local_ident -> renderSsrSkipPlaceholder
+    //    first-arg literal` for every function/variable declaration in
+    //    the module body. Used below to override marker_name on the
+    //    matching exported declaration.
+    let body_markers = collect_body_markers(module);
+
+    let mut out: Vec<IslandRecord> = Vec::new();
     for item in &module.body {
         let ModuleItem::ModuleDecl(decl) = item else {
             continue;
         };
         match decl {
             ModuleDecl::ExportDecl(ed) => match &ed.decl {
-                Decl::Class(c) => out.push(c.ident.sym.to_string()),
-                Decl::Fn(f) => out.push(f.ident.sym.to_string()),
+                Decl::Class(c) => {
+                    let name = c.ident.sym.to_string();
+                    let marker = body_markers
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone());
+                    out.push(IslandRecord {
+                        component_name: name,
+                        marker_name: marker,
+                    });
+                }
+                Decl::Fn(f) => {
+                    let name = f.ident.sym.to_string();
+                    let marker_from_body = marker_from_function_body(f.function.body.as_ref());
+                    let marker = marker_from_body
+                        .or_else(|| body_markers.get(&name).cloned())
+                        .unwrap_or_else(|| name.clone());
+                    out.push(IslandRecord {
+                        component_name: name,
+                        marker_name: marker,
+                    });
+                }
                 Decl::Var(v) => {
                     for d in &v.decls {
                         if let Pat::Ident(bi) = &d.name {
-                            out.push(bi.id.sym.to_string());
+                            let name = bi.id.sym.to_string();
+                            let marker_from_init = marker_from_var_initialiser(d);
+                            let marker = marker_from_init
+                                .or_else(|| body_markers.get(&name).cloned())
+                                .unwrap_or_else(|| name.clone());
+                            out.push(IslandRecord {
+                                component_name: name,
+                                marker_name: marker,
+                            });
                         }
                     }
                 }
                 _ => {}
             },
-            ModuleDecl::ExportDefaultDecl(_) | ModuleDecl::ExportDefaultExpr(_) => {
-                out.push("default".to_string());
+            ModuleDecl::ExportDefaultDecl(ed) => match &ed.decl {
+                DefaultDecl::Fn(fexp) => {
+                    let ident_name = fexp.ident.as_ref().map(|i| i.sym.to_string());
+                    let marker = marker_from_function_body(fexp.function.body.as_ref())
+                        .or_else(|| ident_name.clone())
+                        .unwrap_or_else(|| "default".to_string());
+                    out.push(IslandRecord {
+                        component_name: "default".to_string(),
+                        marker_name: marker,
+                    });
+                }
+                DefaultDecl::Class(cexp) => {
+                    let ident_name = cexp.ident.as_ref().map(|i| i.sym.to_string());
+                    let marker = ident_name.unwrap_or_else(|| "default".to_string());
+                    out.push(IslandRecord {
+                        component_name: "default".to_string(),
+                        marker_name: marker,
+                    });
+                }
+                DefaultDecl::TsInterfaceDecl(_) => {
+                    // Type-only export — no runtime value, but keep the
+                    // historical "default" emission so dedup behaviour is
+                    // unchanged. The bundler will see no usable component
+                    // and skip it at register time.
+                    out.push(IslandRecord {
+                        component_name: "default".to_string(),
+                        marker_name: "default".to_string(),
+                    });
+                }
+            },
+            ModuleDecl::ExportDefaultExpr(ee) => {
+                // `export default <expr>` — try to recover an identifier
+                // from common shapes (`export default Foo`,
+                // `export default forwardRef(Foo)`). Otherwise fall back
+                // to "default".
+                let marker =
+                    marker_from_default_expr(&ee.expr).unwrap_or_else(|| "default".to_string());
+                out.push(IslandRecord {
+                    component_name: "default".to_string(),
+                    marker_name: marker,
+                });
             }
             ModuleDecl::ExportNamed(named) => {
                 for spec in &named.specifiers {
                     match spec {
                         ExportSpecifier::Named(n) => {
                             let pick = n.exported.as_ref().unwrap_or(&n.orig);
-                            match pick {
-                                ModuleExportName::Ident(id) => out.push(id.sym.to_string()),
-                                ModuleExportName::Str(s) => out.push(atom_to_string(&s.value)),
-                            }
+                            let name = match pick {
+                                ModuleExportName::Ident(id) => id.sym.to_string(),
+                                ModuleExportName::Str(s) => atom_to_string(&s.value),
+                            };
+                            // For named re-exports the local ident is
+                            // `n.orig` — that's what the body-marker
+                            // table is keyed on.
+                            let local = match &n.orig {
+                                ModuleExportName::Ident(id) => id.sym.to_string(),
+                                ModuleExportName::Str(s) => atom_to_string(&s.value),
+                            };
+                            let marker = body_markers
+                                .get(&local)
+                                .cloned()
+                                .unwrap_or_else(|| name.clone());
+                            out.push(IslandRecord {
+                                component_name: name,
+                                marker_name: marker,
+                            });
                         }
                         ExportSpecifier::Default(d) => {
-                            out.push(d.exported.sym.to_string());
+                            let name = d.exported.sym.to_string();
+                            out.push(IslandRecord {
+                                component_name: name.clone(),
+                                marker_name: name,
+                            });
                         }
-                        ExportSpecifier::Namespace(n) => match &n.name {
-                            ModuleExportName::Ident(id) => out.push(id.sym.to_string()),
-                            ModuleExportName::Str(s) => out.push(atom_to_string(&s.value)),
-                        },
+                        ExportSpecifier::Namespace(n) => {
+                            let name = match &n.name {
+                                ModuleExportName::Ident(id) => id.sym.to_string(),
+                                ModuleExportName::Str(s) => atom_to_string(&s.value),
+                            };
+                            out.push(IslandRecord {
+                                component_name: name.clone(),
+                                marker_name: name,
+                            });
+                        }
                     }
                 }
             }
@@ -1434,6 +1583,202 @@ fn exported_binding_names(module: &Module) -> Vec<String> {
     }
     out
 }
+
+/// Walk every top-level function and variable declaration in the module
+/// body and record the `renderSsrSkipPlaceholder("X", …)` literal each
+/// one carries (if any). Returned as `local_ident -> marker_name` so the
+/// caller can override the marker name on the matching exported
+/// declaration.
+///
+/// This catches the host-shape pattern where a wrapper is declared at
+/// module level and exported separately, e.g.
+///
+/// ```ignore
+/// function AiChatModalIsland(props) {
+///   return renderSsrSkipPlaceholder("AiChatModal", …);
+/// }
+/// export { AiChatModalIsland };
+/// ```
+///
+/// The inline-export case (`export function AiChatModalIsland(…) { … }`)
+/// is handled directly by [`exported_island_records`] reading the
+/// function body of the matched export.
+fn collect_body_markers(module: &Module) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    for item in &module.body {
+        match item {
+            ModuleItem::Stmt(Stmt::Decl(decl)) => match decl {
+                Decl::Fn(f) => {
+                    if let Some(marker) = marker_from_function_body(f.function.body.as_ref()) {
+                        out.insert(f.ident.sym.to_string(), marker);
+                    }
+                }
+                Decl::Var(v) => {
+                    for d in &v.decls {
+                        if let Pat::Ident(bi) = &d.name {
+                            if let Some(marker) = marker_from_var_initialiser(d) {
+                                out.insert(bi.id.sym.to_string(), marker);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ed)) => match &ed.decl {
+                // `export function Foo(…) { … }` declarations also
+                // populate the table so `Foo` resolves correctly when
+                // later re-exported via `export { Foo as default }`.
+                Decl::Fn(f) => {
+                    if let Some(marker) = marker_from_function_body(f.function.body.as_ref()) {
+                        out.insert(f.ident.sym.to_string(), marker);
+                    }
+                }
+                Decl::Var(v) => {
+                    for d in &v.decls {
+                        if let Pat::Ident(bi) = &d.name {
+                            if let Some(marker) = marker_from_var_initialiser(d) {
+                                out.insert(bi.id.sym.to_string(), marker);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    out
+}
+
+/// If `init` of a variable declarator is a function expression / arrow
+/// function whose body contains a top-level
+/// `renderSsrSkipPlaceholder("X", …)` call, return `"X"`.
+fn marker_from_var_initialiser(d: &VarDeclarator) -> Option<String> {
+    let init = d.init.as_ref()?;
+    match init.as_ref() {
+        Expr::Fn(f) => marker_from_function_body(f.function.body.as_ref()),
+        Expr::Arrow(a) => match &*a.body {
+            swc_core::ecma::ast::BlockStmtOrExpr::BlockStmt(b) => marker_from_block(b),
+            swc_core::ecma::ast::BlockStmtOrExpr::Expr(e) => marker_from_expr(e),
+        },
+        _ => None,
+    }
+}
+
+/// Pull a marker literal out of a function body if it contains a
+/// top-level `renderSsrSkipPlaceholder("X", …)` call.
+fn marker_from_function_body(body: Option<&BlockStmt>) -> Option<String> {
+    marker_from_block(body?)
+}
+
+/// Walk a `BlockStmt`'s top-level statements looking for a
+/// `return <expr>;` or `<expr>;` that is a
+/// `renderSsrSkipPlaceholder("X", …)` call; return `"X"`.
+fn marker_from_block(block: &BlockStmt) -> Option<String> {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Return(r) => {
+                if let Some(arg) = r.arg.as_ref() {
+                    if let Some(s) = marker_from_expr(arg) {
+                        return Some(s);
+                    }
+                }
+            }
+            Stmt::Expr(es) => {
+                if let Some(s) = marker_from_expr(&es.expr) {
+                    return Some(s);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// If `expr` is a `renderSsrSkipPlaceholder("X", …)` call (or a
+/// parenthesised / type-asserted version of one), return `"X"`.
+fn marker_from_expr(expr: &Expr) -> Option<String> {
+    let inner = unwrap_expr(expr);
+    let call = match inner {
+        Expr::Call(c) => c,
+        _ => return None,
+    };
+    let Callee::Expr(callee) = &call.callee else {
+        return None;
+    };
+    let callee_inner = unwrap_expr(callee);
+    let is_target = match callee_inner {
+        Expr::Ident(id) => id.sym == *RENDER_SSR_SKIP_PLACEHOLDER_NAME,
+        // Member expressions like `helpers.renderSsrSkipPlaceholder(…)` —
+        // unusual, but conservative to support.
+        Expr::Member(m) => match &m.prop {
+            swc_core::ecma::ast::MemberProp::Ident(id) => {
+                id.sym == *RENDER_SSR_SKIP_PLACEHOLDER_NAME
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if !is_target {
+        return None;
+    }
+    let first = call.args.first()?;
+    if first.spread.is_some() {
+        return None;
+    }
+    let lit_expr = unwrap_expr(&first.expr);
+    let Expr::Lit(Lit::Str(s)) = lit_expr else {
+        return None;
+    };
+    Some(atom_to_string(&s.value))
+}
+
+/// `export default <expr>` recovery. Handles `export default Foo` and
+/// `export default forwardRef(Foo)` shapes.
+fn marker_from_default_expr(expr: &Expr) -> Option<String> {
+    match unwrap_expr(expr) {
+        Expr::Ident(id) => Some(id.sym.to_string()),
+        Expr::Call(c) => {
+            // `forwardRef(Foo)` / `memo(Foo)` style — first ident arg.
+            for arg in &c.args {
+                if arg.spread.is_some() {
+                    continue;
+                }
+                if let Expr::Ident(id) = unwrap_expr(&arg.expr) {
+                    return Some(id.sym.to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Strip wrapping `(expr)` and TS `expr as T` / `<T>expr` /
+/// `expr satisfies T` so identifier matching is robust.
+fn unwrap_expr(expr: &Expr) -> &Expr {
+    let mut e = expr;
+    loop {
+        match e {
+            Expr::Paren(p) => e = &p.expr,
+            Expr::TsAs(a) => e = &a.expr,
+            Expr::TsTypeAssertion(a) => e = &a.expr,
+            Expr::TsConstAssertion(a) => e = &a.expr,
+            Expr::TsSatisfies(s) => e = &s.expr,
+            Expr::TsNonNull(n) => e = &n.expr,
+            _ => return e,
+        }
+    }
+}
+
+/// Name of the host-side SSR-skip placeholder helper that the scanner
+/// recognises as a marker-name source. See the doc on
+/// [`exported_island_records`] for the contract.
+///
+/// Defined as a `'static` slice so future scanner extensions can share
+/// the recognition table (e.g. accept additional names) without making
+/// each call-site re-spell the string.
+const RENDER_SSR_SKIP_PLACEHOLDER_NAME: &str = "renderSsrSkipPlaceholder";
 
 #[cfg(test)]
 mod tests {
@@ -1708,10 +2053,7 @@ mod tests {
         assert_eq!(
             paths(&islands),
             vec![
-                (
-                    "/proj/components/alpha.tsx".to_string(),
-                    "B".to_string()
-                ),
+                ("/proj/components/alpha.tsx".to_string(), "B".to_string()),
                 ("/proj/components/zeta.tsx".to_string(), "A".to_string()),
             ]
         );
@@ -1966,7 +2308,10 @@ mod tests {
         let resolver = FsResolver::new();
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
         let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
-        assert_eq!(names, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(
+            names,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
     }
 
     /// In-memory resolver mirror of [`fs_resolver_swaps_js_specifier_to_tsx_source`].
@@ -2034,7 +2379,10 @@ mod tests {
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
         assert_eq!(islands.len(), 1);
         assert_eq!(islands[0].component_name, "Counter");
-        let expected = comps.join("counter.js").canonicalize().expect("canonicalize");
+        let expected = comps
+            .join("counter.js")
+            .canonicalize()
+            .expect("canonicalize");
         assert_eq!(islands[0].source_path, expected);
     }
 
@@ -2075,7 +2423,10 @@ mod tests {
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
         assert_eq!(islands.len(), 1, "got {:?}", islands);
         assert_eq!(islands[0].component_name, "Counter");
-        let expected = comps.join("counter.tsx").canonicalize().expect("canonicalize");
+        let expected = comps
+            .join("counter.tsx")
+            .canonicalize()
+            .expect("canonicalize");
         assert_eq!(islands[0].source_path, expected);
     }
 
@@ -2351,11 +2702,7 @@ mod tests {
         use std::fs;
         let dir = tempfile::tempdir().expect("tempdir");
         let pages = dir.path().join("pages");
-        let pkg_src = dir
-            .path()
-            .join("node_modules")
-            .join("ws-pkg")
-            .join("src");
+        let pkg_src = dir.path().join("node_modules").join("ws-pkg").join("src");
         fs::create_dir_all(&pages).unwrap();
         fs::create_dir_all(&pkg_src).unwrap();
 
@@ -2848,7 +3195,10 @@ mod tests {
     #[test]
     fn split_bare_specifier_handles_scoped_and_unscoped() {
         let scoped = FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands");
-        assert_eq!(scoped, ("@takazudo/zfb-blog-islands".to_string(), String::new()));
+        assert_eq!(
+            scoped,
+            ("@takazudo/zfb-blog-islands".to_string(), String::new())
+        );
 
         let scoped_sub =
             FsResolver::split_bare_specifier("@takazudo/zfb-blog-islands/components/foo");
@@ -3743,5 +4093,298 @@ mod tests {
             scan_islands(&[pages.join("home.tsx")], &resolver).expect("scan must not crash");
         assert_eq!(islands.len(), 1, "got {islands:?}");
         assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #149 — SSR-marker name extraction
+    //
+    // The shared-bundle hydration manifest is keyed on the SSR-marker
+    // name (`Island::marker_name`), which the scanner derives from the
+    // island's source file. The bundler bakes the marker name as a
+    // static literal in the synthesised entry's `__zfb_register(...)`
+    // call, bypassing runtime `displayName ?? name` introspection (which
+    // esbuild minification breaks).
+    //
+    // The tests below pin the marker-name derivation rules end-to-end
+    // through `scan_islands`.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn marker_name_for_named_function_export_matches_export_name() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() { return null; }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "Counter");
+        assert_eq!(islands[0].marker_name, "Counter");
+    }
+
+    #[test]
+    fn marker_name_for_named_const_export_matches_export_name() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Toggle } from "../components/toggle";
+                export default function Home() { return <Toggle/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/toggle.tsx"),
+                r#""use client";
+                export const Toggle = () => null;
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "Toggle");
+        assert_eq!(islands[0].marker_name, "Toggle");
+    }
+
+    #[test]
+    fn marker_name_for_default_export_named_function_uses_function_identifier() {
+        // Issue #149 Gap B: host-shape `export default function FooBar()`
+        // — the export-side name is "default" but the SSR-marker name is
+        // "FooBar" (the function identifier). The scanner must record
+        // that gap so the bundler can bake a static literal manifest
+        // key that survives esbuild minification.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import SidebarToggle from "../components/sidebar-toggle";
+                export default function Home() { return <SidebarToggle/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/sidebar-toggle.tsx"),
+                r#""use client";
+                export default function SidebarToggle() { return null; }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(
+            islands[0].marker_name, "SidebarToggle",
+            "issue #149 Gap B: marker name must match the function identifier"
+        );
+    }
+
+    #[test]
+    fn marker_name_for_default_export_named_class_uses_class_identifier() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import Counter from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export default class Counter { render() { return null; } }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(islands[0].marker_name, "Counter");
+    }
+
+    #[test]
+    fn marker_name_for_anonymous_default_export_falls_back_to_default() {
+        // `export default function () {}` has no identifier — there is
+        // no recoverable SSR-marker name. The bundler will register the
+        // entry under "default" and the SSR side will need to use
+        // ANONYMOUS_COMPONENT_NAME for the `data-zfb-island=""` marker;
+        // either way the scanner cannot do better here, so it just
+        // mirrors `component_name`.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import Anon from "../components/anon";
+                export default function Home() { return <Anon/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/anon.tsx"),
+                r#""use client";
+                export default function () { return null; }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(islands[0].marker_name, "default");
+    }
+
+    #[test]
+    fn marker_name_extracts_render_ssr_skip_placeholder_first_arg_inline_export() {
+        // Issue #149 Gap A: SSR-skip wrapper functions (the
+        // `*-island.tsx` shims under `packages/zudo-doc-v2/src/ssr-skip/`)
+        // are exported under their wrapper name (e.g. AiChatModalIsland)
+        // but emit `data-zfb-island-skip-ssr="AiChatModal"` via
+        // `renderSsrSkipPlaceholder("AiChatModal", …)`. The scanner must
+        // extract the literal first argument so the bundle's manifest
+        // key matches the SSR-side marker, NOT the wrapper's identifier.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { AiChatModalIsland } from "../components/ai-chat-modal-island";
+                export default function Home() { return <AiChatModalIsland/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/ai-chat-modal-island.tsx"),
+                r#""use client";
+                import { renderSsrSkipPlaceholder } from "./helpers";
+                export function AiChatModalIsland(props) {
+                    return renderSsrSkipPlaceholder("AiChatModal", "load", null, props);
+                }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "AiChatModalIsland");
+        assert_eq!(
+            islands[0].marker_name, "AiChatModal",
+            "issue #149 Gap A: marker name must come from \
+             renderSsrSkipPlaceholder's first arg literal"
+        );
+    }
+
+    #[test]
+    fn marker_name_extracts_render_ssr_skip_placeholder_first_arg_re_export() {
+        // Variant of the previous test where the wrapper is declared
+        // at module level and re-exported via `export { Foo }` rather
+        // than as an inline `export function Foo()`. The scanner's
+        // body-scan path covers this case via `collect_body_markers`.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ImageEnlargeIsland } from "../components/image-enlarge-island";
+                export default function Home() { return <ImageEnlargeIsland/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/image-enlarge-island.tsx"),
+                r#""use client";
+                import { renderSsrSkipPlaceholder } from "./helpers";
+                function ImageEnlargeIsland(props) {
+                    return renderSsrSkipPlaceholder("ImageEnlarge", "visible", null, props);
+                }
+                export { ImageEnlargeIsland };
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "ImageEnlargeIsland");
+        assert_eq!(islands[0].marker_name, "ImageEnlarge");
+    }
+
+    #[test]
+    fn marker_name_extracts_render_ssr_skip_placeholder_for_arrow_function_const() {
+        // Variant: wrapper authored as `export const Foo = (...) => …`
+        // with the helper call as the arrow-function body. The scanner
+        // covers this via `marker_from_var_initialiser`.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { MockInitIsland } from "../components/mock-init-island";
+                export default function Home() { return <MockInitIsland/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/mock-init-island.tsx"),
+                r#""use client";
+                import { renderSsrSkipPlaceholder } from "./helpers";
+                export const MockInitIsland = (props) =>
+                    renderSsrSkipPlaceholder("MockInit", "load", null, props);
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "MockInitIsland");
+        assert_eq!(islands[0].marker_name, "MockInit");
+    }
+
+    #[test]
+    fn marker_name_render_ssr_skip_placeholder_overrides_default_export_function_name() {
+        // Edge case: a default export whose body calls
+        // `renderSsrSkipPlaceholder`. The helper-call extraction wins
+        // over the function identifier (because the helper call is the
+        // direct authority on the marker name).
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import DesignTokenTweakPanelIsland from "../components/design-token-tweak-panel-island";
+                export default function Home() { return <DesignTokenTweakPanelIsland/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/design-token-tweak-panel-island.tsx"),
+                r#""use client";
+                import { renderSsrSkipPlaceholder } from "./helpers";
+                export default function DesignTokenTweakPanelIsland(props) {
+                    return renderSsrSkipPlaceholder("DesignTokenTweakPanel", "idle", null, props);
+                }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(islands[0].marker_name, "DesignTokenTweakPanel");
+    }
+
+    #[test]
+    fn marker_name_ignores_unrelated_string_literals_in_function_body() {
+        // The scanner must only react to `renderSsrSkipPlaceholder("X", …)`,
+        // not to any other top-level call with a string-literal first arg.
+        // Otherwise it would mis-derive the marker for arbitrary
+        // user-written components.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { NotAWrapper } from "../components/not-a-wrapper";
+                export default function Home() { return <NotAWrapper/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/not-a-wrapper.tsx"),
+                r#""use client";
+                import { someUnrelatedHelper } from "./helpers";
+                export function NotAWrapper(props) {
+                    return someUnrelatedHelper("looks-like-a-marker", props);
+                }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "NotAWrapper");
+        assert_eq!(
+            islands[0].marker_name, "NotAWrapper",
+            "marker_name must default to the export name when no \
+             renderSsrSkipPlaceholder call is present"
+        );
     }
 }
