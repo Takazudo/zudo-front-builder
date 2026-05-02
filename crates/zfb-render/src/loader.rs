@@ -330,17 +330,21 @@ impl ModuleLoader {
     /// emitter; otherwise return `source` unchanged.
     ///
     /// The cached [`Pipeline::with_defaults`] is threaded through so the
-    /// project's default mdast-phase plugins (admonitions / CJK-friendly
-    /// emphasis) fire against MDX content before JSX emission. Without
-    /// this, `:::note` directives, `<Note>` rewrites, and similar
-    /// transforms would never run on `.mdx` and `mdx://` sources reaching
-    /// the renderer. See zfb#116.
+    /// project's default plugins fire against MDX content before JSX
+    /// emission. Both phases now run on the JSX emit path:
     ///
-    /// Hast-phase plugins (heading-links, code-title, mermaid,
-    /// image-enlarge, syntect, strip-md-ext) are intentionally not
-    /// applied here — the JSX emit path bypasses hast entirely. Those
-    /// plugins continue to run on the HTML serializer path
-    /// ([`Pipeline::run`]).
+    /// - **mdast-phase** plugins (admonitions / CJK-friendly emphasis)
+    ///   transform the parsed mdast tree before JSX synthesis, so
+    ///   `:::note` directives, `<Note>` rewrites, and similar
+    ///   structural changes happen in time. See zfb#116.
+    /// - **hast-phase** plugins (heading-links, code-title, mermaid,
+    ///   image-enlarge, syntect, strip-md-ext) also fire — since
+    ///   zfb#121 the JSX emit path detours through hast inside
+    ///   [`mdx_to_jsx_module_with_pipeline`], so the same plugin chain
+    ///   that runs on the HTML serializer path ([`Pipeline::run`])
+    ///   runs here too. The previous comment block claimed hast-phase
+    ///   plugins were skipped on the JSX path; that has been false
+    ///   since #121.
     ///
     /// Errors from `zfb-content` are wrapped as [`RenderError::Compile`]
     /// with `specifier` as the file location so the renderer's existing
