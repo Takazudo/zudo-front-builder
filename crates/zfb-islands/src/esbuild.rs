@@ -313,78 +313,18 @@ impl EsbuildSubprocessBundler {
     /// Internal: produce the JS payload for the given islands. Split out so
     /// tests can drive it directly without going through `bundle`'s
     /// asset-write step.
+    ///
+    /// Implementation: synthesizes a single-entry source that imports
+    /// every island module by absolute path, then routes through
+    /// [`Self::bundle_one_entry`] (single input + `--outfile`). This
+    /// keeps the on-disk contract for the shared bundle
+    /// (`dist/assets/islands.js`) stable while sidestepping esbuild's
+    /// "Must use \"outdir\" when there are multiple input files" rule
+    /// (issue #138): passing N island `source_path`s as N separate
+    /// inputs trips it for any N >= 2.
     fn produce_bundle_js(&self, islands: &[Island], config: &BundleConfig) -> Result<String> {
-        if self.config.mock_subprocess {
-            return Ok(self.config.mock_output.clone());
-        }
-
-        ensure_binary_verified(&self.config.binary_path, false)?;
-
-        // Allocate a temp file in this engine's working dir so esbuild's
-        // `--outfile` can be a relative path resolvable from the subprocess
-        // cwd. Drop happens when we return — file vanishes after read.
-        let tmp = tempfile::Builder::new()
-            .prefix("zfb-esbuild-")
-            .suffix(".js")
-            .tempfile()
-            .context("failed to allocate temp file for esbuild output")?;
-
-        let mut cmd = Command::new(&self.config.binary_path);
-        cmd.current_dir(&self.config.working_dir);
-        cmd.arg("--bundle");
-        cmd.arg("--format=esm");
-        cmd.arg("--splitting=false");
-        // Tree-shaking is on by default for ESM in esbuild; we set the
-        // flag explicitly so the contract is visible at the call site.
-        cmd.arg("--tree-shaking=true");
-        // Islands ship to the browser, so pin the platform target
-        // explicitly. Combined with `--external:node:*`, any `node:*`
-        // import that bleeds into a chain reachable from an island module
-        // (e.g. via a barrel re-export) is externalized — the runtime
-        // surfaces a clear "module not found" error in the browser
-        // instead of esbuild failing the build with "Could not resolve
-        // node:fs". (See packages/zfb/src/content.ts top-of-file note for
-        // the original symptom that motivated this defensive flagging.)
-        cmd.arg("--platform=browser");
-        cmd.arg("--external:node:*");
-        if config.minify {
-            cmd.arg("--minify");
-        }
-        if config.sourcemap {
-            cmd.arg("--sourcemap=linked");
-        }
-        cmd.arg(format!("--outfile={}", tmp.path().display()));
-        // Inline NODE_ENV so the React/Preact build picks the
-        // production flavour. Without this, prod islands ship the dev
-        // builds (extra warnings + larger bytes). esbuild expects the
-        // value to be a JS literal, hence the embedded quotes.
-        if config.minify {
-            cmd.arg("--define:process.env.NODE_ENV=\"production\"");
-        } else {
-            cmd.arg("--define:process.env.NODE_ENV=\"development\"");
-        }
-        for extra in &self.config.extra_args {
-            cmd.arg(extra);
-        }
-        for island in islands {
-            cmd.arg(&island.source_path);
-        }
-
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!(
-                "esbuild exited with status {}: {}",
-                output.status,
-                stderr.trim()
-            ));
-        }
-
-        let js =
-            std::fs::read_to_string(tmp.path()).context("failed to read esbuild output file")?;
-        Ok(js)
+        let entry_source = render_shared_bundle_entry_source(islands);
+        self.bundle_one_entry(&entry_source, config)
     }
 
     /// Per-island bundle pass.
@@ -574,6 +514,34 @@ impl EsbuildSubprocessBundler {
             std::fs::read_to_string(out_tmp.path()).context("failed to read esbuild output")?;
         Ok(js)
     }
+}
+
+/// Generate the synthetic single-entry source for the legacy shared
+/// bundle.
+///
+/// The shared bundle's contract is "all island modules' side-effects
+/// run when the script tag is evaluated" — exactly what an entry that
+/// does `import "<path>";` for every island achieves once esbuild
+/// resolves & inlines the chain. Producing one synthetic entry
+/// sidesteps esbuild's multi-input + `--outfile` restriction (issue
+/// #138) without changing the public on-disk shape
+/// (`dist/assets/islands.js`).
+///
+/// Each island path is JSON-encoded to defang stray quotes / backslashes
+/// from absolute paths on Windows or arbitrary file names; the order
+/// follows the input slice so the resulting bytes are deterministic
+/// for a given `(islands, config)` pair (downstream tests rely on this
+/// for the bundle's content hash to be stable across runs).
+pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
+    let mut out =
+        String::from("// Generated by zfb-islands::EsbuildSubprocessBundler::produce_bundle_js\n");
+    for island in islands {
+        let path = island.source_path.to_string_lossy();
+        out.push_str("import ");
+        out.push_str(&json_string(&path));
+        out.push_str(";\n");
+    }
+    out
 }
 
 /// Generate the per-island entry script for `framework`.
@@ -874,11 +842,7 @@ mod tests {
             assert!(entry.asset_path.starts_with(dir.path().join("islands")));
             let expected_filename = format!("{}.js", entry.component_name);
             assert_eq!(
-                entry
-                    .asset_path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy(),
+                entry.asset_path.file_name().unwrap().to_string_lossy(),
                 expected_filename,
             );
             // Public URL is the stable `/islands/<Component>.js`.
@@ -921,6 +885,108 @@ mod tests {
         assert_eq!(a.islands[0].hash, b.islands[0].hash);
         assert_eq!(a.islands[0].asset_url, b.islands[0].asset_url);
         assert_eq!(a.runtime_asset_url, b.runtime_asset_url);
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_imports_each_island_in_order() {
+        // The shared-bundle entry source must reference every island's
+        // resolved `source_path` as an `import "<path>";` so esbuild's
+        // single-input + `--outfile` invocation pulls them all into one
+        // bundled output (issue #138 fix). Order follows the input slice
+        // so the resulting bytes are deterministic across runs.
+        let islands = vec![
+            Island::new("Counter", "/abs/components/Counter.tsx"),
+            Island::new("Modal", "/abs/components/Modal.tsx"),
+        ];
+        let src = render_shared_bundle_entry_source(&islands);
+        assert!(
+            src.contains(r#"import "/abs/components/Counter.tsx";"#),
+            "missing Counter import: {src}"
+        );
+        assert!(
+            src.contains(r#"import "/abs/components/Modal.tsx";"#),
+            "missing Modal import: {src}"
+        );
+        // Order check — Counter must appear before Modal.
+        let i_counter = src.find("Counter.tsx").expect("counter present");
+        let i_modal = src.find("Modal.tsx").expect("modal present");
+        assert!(i_counter < i_modal, "expected Counter before Modal");
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_escapes_quotes_in_paths() {
+        // Path containing a literal double-quote (rare but legal on
+        // macOS / Linux) must not break the synthesized JS — it gets
+        // JSON-escaped just like component names.
+        let islands = vec![Island::new("Weird", "/abs/components/has\"quote/Weird.tsx")];
+        let src = render_shared_bundle_entry_source(&islands);
+        assert!(
+            src.contains(r#"import "/abs/components/has\"quote/Weird.tsx";"#),
+            "expected escaped quote in path: {src}"
+        );
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_handles_empty_islands_slice() {
+        // Empty input emits a header-only entry (no `import` lines) —
+        // `build_production_islands_asset` already short-circuits on an
+        // empty islands slice, so this code path is mostly defensive,
+        // but we still want it to produce valid JS rather than panic.
+        let src = render_shared_bundle_entry_source(&[]);
+        assert!(!src.contains("import"));
+        assert!(src.starts_with("// Generated"));
+    }
+
+    /// Regression for issue #138.
+    ///
+    /// Before the fix, `produce_bundle_js` passed N island
+    /// `source_path`s as N separate inputs to esbuild plus a single
+    /// `--outfile`, and esbuild bailed with "Must use \"outdir\" when
+    /// there are multiple input files" for any N >= 2. The fix
+    /// synthesizes a single-entry source via
+    /// [`render_shared_bundle_entry_source`] and routes through
+    /// [`EsbuildSubprocessBundler::bundle_one_entry`] so esbuild always
+    /// sees exactly one input.
+    ///
+    /// We exercise the mock path with an empty `mock_output` so
+    /// `bundle_one_entry` echoes the synthesized entry source back; the
+    /// test then asserts the echoed string contains the multi-island
+    /// import shape (which is what would have made esbuild fail with
+    /// the old multi-input code path).
+    #[test]
+    fn bundle_handles_multiple_islands_via_synthetic_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            // Empty mock_output → bundle_one_entry returns the entry
+            // source verbatim. That lets us assert against the
+            // synthesized shape end-to-end.
+            ..EsbuildSubprocessConfig::default()
+        });
+        let islands = vec![
+            Island::new("Counter", "/abs/components/Counter.tsx"),
+            Island::new("Modal", "/abs/components/Modal.tsx"),
+            Island::new("Sidebar", "/abs/components/Sidebar.tsx"),
+        ];
+        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+
+        let out = bundler.bundle(&islands, &cfg).expect("multi-island bundle");
+
+        // Stable filename + URL — the multi-input fix must NOT change
+        // the on-disk shape (the legacy contract S0 / S4 depend on).
+        assert_eq!(out.asset_url, "/assets/islands.js");
+        assert_eq!(out.asset_path, dir.path().join("assets").join("islands.js"));
+        assert!(out.asset_path.exists());
+
+        // Module IDs preserve input order.
+        assert_eq!(out.module_ids, vec!["Counter", "Modal", "Sidebar"]);
+
+        // The bytes on disk are the synthesized entry source (echoed by
+        // mock mode) — verify each island path appears in it.
+        let on_disk = std::fs::read_to_string(&out.asset_path).expect("read asset");
+        assert!(on_disk.contains(r#"import "/abs/components/Counter.tsx";"#));
+        assert!(on_disk.contains(r#"import "/abs/components/Modal.tsx";"#));
+        assert!(on_disk.contains(r#"import "/abs/components/Sidebar.tsx";"#));
     }
 
     #[test]

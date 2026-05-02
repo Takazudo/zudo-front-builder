@@ -42,8 +42,9 @@ pub use bundler::{
     ProductionIslandsAsset,
 };
 pub use esbuild::{
-    hash_8, render_island_entry_source, render_runtime_entry_source, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+    hash_8, render_island_entry_source, render_runtime_entry_source,
+    render_shared_bundle_entry_source, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
+    EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
