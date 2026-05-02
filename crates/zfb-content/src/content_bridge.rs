@@ -123,7 +123,7 @@ pub enum BridgeError {
 /// collections.
 ///
 /// Walks each collection in `collections` via [`walk_collection`],
-/// driving the walker through a single hoisted
+/// driving the walker through a fresh-per-collection
 /// [`Pipeline::with_defaults()`] so the resulting JSX (and the
 /// [`module_specifier`](EntrySnapshot::module_specifier) hash baked from
 /// it) is **byte-identical** to what the bundler emits in
@@ -131,8 +131,10 @@ pub enum BridgeError {
 /// with the bundler's bridge map keys byte-for-byte; otherwise every
 /// `globalThis.__zfb.content.get(specifier)` lookup misses and the page
 /// renders the raw-markdown `<pre data-zfb-content-fallback>` fallback.
-/// Driving both code paths through the same default pipeline is what
-/// keeps the two hashes in lock-step (zfb #131 / #132).
+/// Driving both code paths through the same default pipeline shape —
+/// one pipeline per collection, reused across files within that
+/// collection — is what keeps the two hashes in lock-step
+/// (zfb #131 / #132).
 ///
 /// Each entry is converted into an [`EntrySnapshot`] and the resulting
 /// `Vec` is inserted into a [`BTreeMap`] keyed by collection name.
@@ -159,19 +161,27 @@ pub enum BridgeError {
 pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapshot, BridgeError> {
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
-    // Hoist a single `Pipeline::with_defaults()` outside the loop so
-    // the seven default plugins (admonitions, CJK-friendly emphasis,
-    // heading-links, code-title, image-enlarge, mermaid, syntect) all
-    // run on every MDX entry, exactly mirroring the bundler's pattern
-    // at `crates/zfb-build/src/bundler.rs:734` and `:964`. This is what
-    // keeps the snapshot's `module_specifier` hash in lock-step with
-    // the bundler's bridge map keys (see the doc comment on
-    // `build_snapshot`). Borrow is linear (`&mut`), so a single
-    // hoisted pipeline serves every entry across every collection
-    // sequentially.
-    let mut pipeline = Pipeline::with_defaults();
-
     for cfg in collections {
+        // Construct a fresh `Pipeline::with_defaults()` per collection,
+        // mirroring the bundler's two call sites at
+        // `crates/zfb-build/src/bundler.rs:734` and `:964` — each
+        // `materialise_*` call hoists its own pipeline outside the
+        // walk loop, so within one collection a single pipeline serves
+        // every entry sequentially while no state leaks across
+        // collection boundaries. Per-collection instantiation matters
+        // because some default plugins (notably `HeadingLinksPlugin`)
+        // carry per-document state (the slug-dedupe `seen` map):
+        // reusing one pipeline across collections would mean a heading
+        // like "Intro" in collection B would slugify to `intro-1` if
+        // collection A already used `intro`, leaking unrelated
+        // collections' headings into B's compiled JSX (and into the
+        // hash that drives `module_specifier`). The snapshot must
+        // agree byte-for-byte with the bundler's bridge map keys (see
+        // the doc comment on `build_snapshot`); the fastest way to
+        // hold that contract is to drive `walk_collection` with the
+        // same pipeline shape the bundler uses.
+        let mut pipeline = Pipeline::with_defaults();
+
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
         // why the parallel walker is implemented as a `T` substitution
@@ -590,6 +600,53 @@ mod tests {
         // Sanity: collection + slug also agree.
         assert_eq!(snap_spec.collection, bridge_spec.collection);
         assert_eq!(snap_spec.slug, bridge_spec.slug);
+    }
+
+    #[test]
+    fn pipeline_state_does_not_leak_across_collections() {
+        // Companion guard for the per-collection pipeline shape:
+        // `HeadingLinksPlugin` carries a `seen: HashMap<String, usize>`
+        // slug-dedupe counter on the pipeline instance. If
+        // `build_snapshot` reused one `Pipeline::with_defaults()` across
+        // every collection in the for-loop, a heading like `## Intro`
+        // in collection B would emit `id="intro-1"` after collection A
+        // already consumed `intro` — and the snapshot bytes for B would
+        // depend on which other collections were configured alongside
+        // it. The bundler dodges this by hoisting one pipeline per
+        // `materialise_*` call (one per collection), and `build_snapshot`
+        // mirrors that shape for the same reason.
+        //
+        // We assert the contract by building the snapshot for two
+        // single-collection configs in isolation, then for the same two
+        // collections together, and proving the per-collection slice of
+        // the combined snapshot matches the isolated build byte-for-byte.
+        let tmp = TmpDir::new("collection-isolation");
+        // Both files have the same heading text — without per-collection
+        // pipelines the second one walked would slug to `intro-1`.
+        let mdx_with_h2 = "---\ntitle: \"X\"\n---\n\n## Intro\n\nbody\n";
+        tmp.write("a/page.mdx", mdx_with_h2);
+        tmp.write("b/page.mdx", mdx_with_h2);
+
+        let cfg_a = CollectionConfig::new("a", tmp.path.join("a"));
+        let cfg_b = CollectionConfig::new("b", tmp.path.join("b"));
+
+        let solo_a = build_snapshot(&[cfg_a.clone()]).expect("solo a");
+        let solo_b = build_snapshot(&[cfg_b.clone()]).expect("solo b");
+        let combined = build_snapshot(&[cfg_a, cfg_b]).expect("combined");
+
+        let combined_a = combined.collections.get("a").expect("combined a");
+        let combined_b = combined.collections.get("b").expect("combined b");
+        let solo_a_entries = solo_a.collections.get("a").expect("solo a entries");
+        let solo_b_entries = solo_b.collections.get("b").expect("solo b entries");
+
+        assert_eq!(
+            combined_a[0].module_specifier, solo_a_entries[0].module_specifier,
+            "collection a's specifier must not depend on whether collection b is also configured (heading-link state leak)",
+        );
+        assert_eq!(
+            combined_b[0].module_specifier, solo_b_entries[0].module_specifier,
+            "collection b's specifier must not depend on whether collection a is also configured (heading-link state leak)",
+        );
     }
 
     #[test]
