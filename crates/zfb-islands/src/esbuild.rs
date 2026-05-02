@@ -282,10 +282,7 @@ impl EsbuildSubprocessConfig {
 /// use std::path::PathBuf;
 ///
 /// let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default());
-/// let islands = vec![Island {
-///     component_name: "Counter".into(),
-///     source_path: PathBuf::from("components/counter.tsx"),
-/// }];
+/// let islands = vec![Island::new("Counter", PathBuf::from("components/counter.tsx"))];
 /// let out = bundler.bundle(&islands, &BundleConfig::production()).unwrap();
 /// assert_eq!(out.asset_url, "/assets/islands.js");
 /// ```
@@ -657,7 +654,7 @@ pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
             json_string(&path)
         ));
     }
-    // Manifest registration helpers.
+    // Manifest registration helper.
     //
     // `__zfb_pick(ns, exportName)` returns the component value: it
     // prefers a *truthy* named export under `exportName` (so that
@@ -666,16 +663,16 @@ pub fn render_shared_bundle_entry_source(islands: &[Island]) -> String {
     // `ns.default`. That mirrors `render_island_entry_source` for the
     // per-island path.
     //
-    // `__zfb_keyFor(C, fallback)` is the dynamic counterpart of the
-    // SSR side's `captureComponentName(child)` in
-    // `packages/zfb/src/island.ts` — it reads `displayName ?? name`
-    // off the component, falling back to `fallback` (the scanner's
-    // export-side name) when neither is present (e.g. anonymous
-    // components, minified output).
+    // `__zfb_register(ns, exportName, markerName)` writes a Preact
+    // mount thunk for the resolved component under the **static
+    // marker name** the scanner discovered for this island (issue
+    // #149). The marker name is a JSON-encoded literal in the
+    // generated source, NOT a runtime introspection of
+    // `displayName ?? name` — that's the lesson from the previous
+    // round (PR #148): esbuild minification renames functions, so
+    // `function.name` is unstable and unsafe to key the manifest on.
     //
-    // `__zfb_register` finally writes a Preact mount thunk for the
-    // resolved component into the manifest under the derived key. The
-    // mount thunk picks `hydrate` vs `render` based on the SSR /
+    // The mount thunk picks `hydrate` vs `render` based on the SSR /
     // SSR-skip mode the runtime supplies, mirroring the per-island
     // entry script's behaviour exactly.
     out.push_str(
@@ -684,22 +681,10 @@ function __zfb_pick(ns, exportName) {\n\
   const named = ns[exportName];\n\
   return (named !== undefined && named !== null) ? named : ns.default;\n\
 }\n\
-function __zfb_keyFor(C, fallback) {\n\
-  if (C && typeof C === \"object\") {\n\
-    if (typeof C.displayName === \"string\" && C.displayName) return C.displayName;\n\
-    if (typeof C.name === \"string\" && C.name) return C.name;\n\
-  }\n\
-  if (typeof C === \"function\") {\n\
-    if (typeof C.displayName === \"string\" && C.displayName) return C.displayName;\n\
-    if (typeof C.name === \"string\" && C.name) return C.name;\n\
-  }\n\
-  return fallback;\n\
-}\n\
-function __zfb_register(ns, exportName, fallback) {\n\
+function __zfb_register(ns, exportName, markerName) {\n\
   const C = __zfb_pick(ns, exportName);\n\
   if (!C) return;\n\
-  const key = __zfb_keyFor(C, fallback);\n\
-  __zfb_manifest[key] = { mount: (props, element, mode) => {\n\
+  __zfb_manifest[markerName] = { mount: (props, element, mode) => {\n\
     const v = h(C, props);\n\
     if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
   } };\n\
@@ -710,11 +695,20 @@ function __zfb_register(ns, exportName, fallback) {\n\
     // reference each namespace identifier — so tree-shaking retains
     // every island's exports just as the previous
     // `(globalThis).__zfb_islands ??= [...]` anchor did (#144).
+    //
+    // The third argument is the **scanner-derived SSR-marker name**
+    // (`Island::marker_name`), which matches the value the SSR side
+    // writes into `data-zfb-island` / `data-zfb-island-skip-ssr`. For
+    // host-shape default-export islands the scanner uses the function
+    // identifier name (`export default function FooBar()` →
+    // `"FooBar"`); for SSR-skip wrappers it uses the literal first
+    // argument of `renderSsrSkipPlaceholder("X", …)` — see
+    // `crates/zfb-islands/src/scanner.rs::exported_island_records`.
     for (i, island) in islands.iter().enumerate() {
         let name_lit = json_string(&island.component_name);
-        let fallback_lit = json_string(&island.component_name);
+        let marker_lit = json_string(&island.marker_name);
         out.push_str(&format!(
-            "__zfb_register(__zfb_island_{i}, {name_lit}, {fallback_lit});\n"
+            "__zfb_register(__zfb_island_{i}, {name_lit}, {marker_lit});\n"
         ));
     }
     out.push_str("mountIslands(__zfb_manifest);\n");
@@ -1201,15 +1195,17 @@ mod tests {
         );
 
         // Helper functions present, plus an `__zfb_register` call per
-        // island. The helper derives the manifest key dynamically from
-        // `displayName ?? name` so host-shape default-export islands
-        // (where the scanner records `component_name = "default"`) line
-        // up with the SSR-side
-        // `data-zfb-island="<function-name>"` markers — see
-        // `packages/zfb/src/island.ts::captureComponentName`.
+        // island. Issue #149: the manifest key (third arg) is now a
+        // **static literal** — the scanner-derived `marker_name`. No
+        // runtime `displayName ?? name` introspection: that path was
+        // broken by esbuild minification (function names become single
+        // letters in production bundles).
         assert!(src.contains("function __zfb_pick("));
-        assert!(src.contains("function __zfb_keyFor("));
         assert!(src.contains("function __zfb_register("));
+        assert!(
+            !src.contains("function __zfb_keyFor("),
+            "issue #149: runtime introspection helper must be gone:\n{src}"
+        );
         assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
         assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
 
@@ -1222,44 +1218,92 @@ mod tests {
     }
 
     #[test]
-    fn render_shared_bundle_entry_source_does_not_collide_on_default_export_only_islands() {
-        // Regression for issue #147 follow-up
-        // (zudolab/zudo-doc#1355 Wave 6 follow-up): host-shape islands
-        // authored as `export default function FooBar(...)` are
-        // recorded by the scanner with `component_name = "default"`
-        // (the export-side name). If the synthesised entry used that
-        // name as the manifest key directly, every host-shape island
-        // would collapse onto the literal `"default"` key, esbuild
-        // would emit `Duplicate key "default" in object literal`
-        // warnings, and only the last island would hydrate at runtime.
+    fn render_shared_bundle_entry_source_uses_marker_name_for_default_export_islands() {
+        // Regression for issue #149 (zudolab/zudo-doc#1355 Wave 7):
+        // host-shape islands authored as
+        // `export default function FooBar(...)` are recorded by the
+        // scanner with `component_name = "default"` AND
+        // `marker_name = "FooBar"` (the function identifier name, which
+        // matches what `function.name` produces at SSR time).
         //
-        // The fix derives the key dynamically from the component's
-        // `displayName ?? name` at module-init time, mirroring the SSR
-        // side's `captureComponentName` derivation. The synthesised
-        // entry must therefore NEVER bake `"default"` as a static
-        // manifest key, even when every input island has
-        // `component_name = "default"`.
+        // The synthesised bundle entry must register the manifest entry
+        // under `marker_name`, NOT `component_name`. Before this fix
+        // (issue #149 Gap B), every host-shape default-export island
+        // collided on the literal `"default"` slot because esbuild
+        // minification renamed the actual functions and broke runtime
+        // `displayName ?? name` introspection.
         let islands = vec![
-            Island::new("default", "/abs/components/sidebar-toggle.tsx"),
-            Island::new("default", "/abs/components/theme-toggle.tsx"),
-            Island::new("default", "/abs/components/ai-chat-modal.tsx"),
+            Island::with_marker_name(
+                "default",
+                "/abs/components/sidebar-toggle.tsx",
+                "SidebarToggle",
+            ),
+            Island::with_marker_name("default", "/abs/components/theme-toggle.tsx", "ThemeToggle"),
+            Island::with_marker_name(
+                "default",
+                "/abs/components/ai-chat-modal.tsx",
+                "AiChatModal",
+            ),
         ];
         let src = render_shared_bundle_entry_source(&islands);
 
-        // No duplicate-key shape: the entry must not contain a literal
-        // object-literal `"default": ...` line that esbuild would flag.
+        // The third argument is the SSR-marker name, distinct from the
+        // export-side `component_name = "default"`. Static literal —
+        // not derived at runtime.
         assert!(
-            !src.contains("\"default\": {"),
-            "duplicate-key regression — entry must not bake \"default\" as a static key:\n{src}"
+            src.contains("__zfb_register(__zfb_island_0, \"default\", \"SidebarToggle\");"),
+            "expected SidebarToggle marker:\n{src}"
+        );
+        assert!(
+            src.contains("__zfb_register(__zfb_island_1, \"default\", \"ThemeToggle\");"),
+            "expected ThemeToggle marker:\n{src}"
+        );
+        assert!(
+            src.contains("__zfb_register(__zfb_island_2, \"default\", \"AiChatModal\");"),
+            "expected AiChatModal marker:\n{src}"
         );
 
-        // Every island still gets a register call, in input order, with
-        // its scanner-side export name as the lookup AND as the
-        // ultimate fallback if the component lacks `displayName ?? name`
-        // (e.g. anonymous arrow fn under heavy minification).
-        assert!(src.contains("__zfb_register(__zfb_island_0, \"default\", \"default\");"));
-        assert!(src.contains("__zfb_register(__zfb_island_1, \"default\", \"default\");"));
-        assert!(src.contains("__zfb_register(__zfb_island_2, \"default\", \"default\");"));
+        // Marker names must be all distinct so no two islands collide
+        // on the same manifest slot.
+        assert!(src.contains("\"SidebarToggle\""));
+        assert!(src.contains("\"ThemeToggle\""));
+        assert!(src.contains("\"AiChatModal\""));
+    }
+
+    #[test]
+    fn render_shared_bundle_entry_source_uses_marker_name_for_ssr_skip_wrappers() {
+        // Regression for issue #149 Gap A: SSR-skip wrappers like
+        // `AiChatModalIsland` are exported under their wrapper name but
+        // emit `data-zfb-island-skip-ssr="AiChatModal"` (no "Island"
+        // suffix) via `renderSsrSkipPlaceholder("AiChatModal", …)`. The
+        // bundle's manifest must therefore key on "AiChatModal", not
+        // "AiChatModalIsland".
+        //
+        // The scanner extracts the literal first argument from the
+        // helper call and stores it as `marker_name`. The bundler then
+        // bakes that as the static third arg of `__zfb_register`.
+        let islands = vec![
+            Island::with_marker_name(
+                "AiChatModalIsland",
+                "/abs/components/ai-chat-modal-island.tsx",
+                "AiChatModal",
+            ),
+            Island::with_marker_name(
+                "ImageEnlargeIsland",
+                "/abs/components/image-enlarge-island.tsx",
+                "ImageEnlarge",
+            ),
+        ];
+        let src = render_shared_bundle_entry_source(&islands);
+
+        // Lookup uses the wrapper export name (so the import * as ns
+        // round-trip lands on the wrapper component). The manifest key
+        // is the SSR marker name.
+        assert!(
+            src.contains("__zfb_register(__zfb_island_0, \"AiChatModalIsland\", \"AiChatModal\");")
+        );
+        assert!(src
+            .contains("__zfb_register(__zfb_island_1, \"ImageEnlargeIsland\", \"ImageEnlarge\");"));
     }
 
     /// Regression for issue #138.

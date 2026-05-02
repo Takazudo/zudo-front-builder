@@ -16,10 +16,7 @@ use zfb_islands::{
 };
 
 fn island(name: &str, path: &str) -> Island {
-    Island {
-        component_name: name.to_string(),
-        source_path: PathBuf::from(path),
-    }
+    Island::new(name, PathBuf::from(path))
 }
 
 #[test]
@@ -199,13 +196,7 @@ fn subprocess_bundler_against_real_binary() {
 
     let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
     let out = bundler
-        .bundle(
-            &[Island {
-                component_name: "Counter".into(),
-                source_path: entry,
-            }],
-            &bundle_cfg,
-        )
+        .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
     assert!(out.asset_path.exists());
 }
@@ -285,14 +276,8 @@ export default function NoEffectFn() { return null; }
     let out = bundler
         .bundle(
             &[
-                Island {
-                    component_name: "WithEffect".into(),
-                    source_path: with_effect,
-                },
-                Island {
-                    component_name: "NoEffectFn".into(),
-                    source_path: no_effect,
-                },
+                Island::new("WithEffect", with_effect),
+                Island::new("NoEffectFn", no_effect),
             ],
             &bundle_cfg,
         )
