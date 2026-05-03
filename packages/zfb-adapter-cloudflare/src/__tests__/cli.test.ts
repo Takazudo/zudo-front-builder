@@ -142,8 +142,11 @@ export default {
       },
       passThroughOnException: () => undefined,
     };
+    // Use a POST so the wrapper bypasses the ASSETS probe and goes
+    // straight to the inner bundle (the dispatch order is "ASSETS first
+    // for GET/HEAD; inner first for everything else").
     const env = { ANTHROPIC_API_KEY: "sk-test-1234" };
-    const request = new Request("https://worker.test/api/foo");
+    const request = new Request("https://worker.test/api/foo", { method: "POST" });
 
     const response = await worker.default.fetch(request, env, ctx);
     expect(response.status).toBe(200);
@@ -163,22 +166,25 @@ export default {
     expect(waitUntilCalled).toBe(0);
   });
 
-  it("falls through to env.ASSETS when the inner bundle returns 404", async () => {
-    // CF Pages advanced-mode contract: when _worker.js is present, every
-    // request hits the worker. Static assets (search-index.json,
-    // post-build llms.txt, generated SSG HTML at canonical trailing-slash
-    // URLs) are NOT served unless the worker explicitly delegates.
-    // The wrapper must fall through to env.ASSETS on 404 so those keep
-    // working in production.
+  it("serves static assets via env.ASSETS for GET requests (head-injected SSG HTML wins over dynamic SSR)", async () => {
+    // Wave 10 / zudo-doc#1355 fix: GET requests probe env.ASSETS FIRST.
+    // CF Pages' asset server resolves no-trailing-slash URLs to their
+    // canonical /index.html form (e.g. "/docs/foo" → "/docs/foo/" via
+    // 308, then to dist/docs/foo/index.html). The static HTML carries
+    // build-time head-injection (<link rel="stylesheet">, <script
+    // type="module" src="/assets/islands-…">) that the dynamic-SSR
+    // path produced by the inner Hono router does NOT carry — so we
+    // must hit ASSETS first, not the inner.
     const dir = await scratch();
     const inputPath = join(dir, "inner.mjs");
-    // Inner bundle that always 404s — simulates a request whose URL
-    // matches no SSR route.
+    // Inner bundle that, if reached, would 200 with a body that lacks
+    // the head injection. The test asserts the wrapper does NOT reach
+    // the inner when ASSETS resolves the URL.
     await writeFile(
       inputPath,
       `export default {
   async fetch() {
-    return new Response("inner says 404", { status: 404 });
+    return new Response("dynamic SSR (should not be visible)", { status: 200 });
   },
 };
 `,
@@ -195,43 +201,148 @@ export default {
       };
     };
 
-    const ctx = {
-      waitUntil: () => undefined,
-      passThroughOnException: () => undefined,
-    };
-
     let assetsCalls = 0;
     const env = {
       ASSETS: {
         fetch: async (req: Request) => {
           assetsCalls += 1;
-          return new Response(`asset for ${new URL(req.url).pathname}`, {
-            status: 200,
-            headers: { "content-type": "text/plain" },
-          });
+          // Simulate the SSG output for /docs/getting-started/.
+          return new Response(
+            '<!doctype html><html><head><link rel="stylesheet" href="/assets/styles.css"><script type="module" src="/assets/islands-abc.js"></script></head><body>static</body></html>',
+            { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+          );
         },
       },
     };
-    const request = new Request("https://worker.test/search-index.json");
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
 
+    const request = new Request("https://worker.test/docs/getting-started");
     const response = await worker.default.fetch(request, env, ctx);
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("asset for /search-index.json");
+    const body = await response.text();
+    // ASSETS was hit (not the inner).
+    expect(assetsCalls).toBe(1);
+    // Static-SSG body, including the build-time head injection.
+    expect(body).toContain("static");
+    expect(body).toContain('rel="stylesheet"');
+    expect(body).toContain("/assets/islands-abc.js");
+    expect(body).not.toContain("dynamic SSR (should not be visible)");
+  });
+
+  it("falls through to the inner bundle when env.ASSETS returns 404 (genuinely dynamic routes)", async () => {
+    // Mirror of the SSG path: when ASSETS does not resolve the URL,
+    // hand it to the inner zfb worker. This is the path that handles
+    // \`pages/api/*.tsx\` and other \`prerender = false\` routes.
+    const dir = await scratch();
+    const inputPath = join(dir, "inner.mjs");
+    await writeFile(
+      inputPath,
+      `export default {
+  async fetch(request) {
+    return new Response("dynamic: " + new URL(request.url).pathname, {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+  },
+};
+`,
+      "utf8",
+    );
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+    });
+    const worker = (await import(pathToFileURL(out.workerPath).href)) as {
+      default: {
+        fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+      };
+    };
+
+    let assetsCalls = 0;
+    const env = {
+      ASSETS: {
+        fetch: async () => {
+          assetsCalls += 1;
+          return new Response("not found", { status: 404 });
+        },
+      },
+    };
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
+    const request = new Request("https://worker.test/api/ai-chat");
+    const response = await worker.default.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("dynamic: /api/ai-chat");
     expect(assetsCalls).toBe(1);
   });
 
-  it("does NOT fall through to env.ASSETS when the inner returns a non-404", async () => {
-    // Guards against the wrapper accidentally re-routing legitimate
-    // dynamic responses (200, 4xx other than 404, 5xx, etc.) to the
-    // static asset server.
+  it("returns the asset response unchanged when ASSETS issues a 308 redirect (CF Pages trailing-slash canonicalisation)", async () => {
+    // CF Pages' asset server returns 308 to canonicalise no-trailing-
+    // slash URLs to their /index.html form. The wrapper must propagate
+    // that 308 verbatim so the browser follows it to the SSG output.
     const dir = await scratch();
     const inputPath = join(dir, "inner.mjs");
     await writeFile(
       inputPath,
       `export default {
   async fetch() {
-    return new Response('{"error":"bad request"}', {
-      status: 400,
+    return new Response("should not be called", { status: 200 });
+  },
+};
+`,
+      "utf8",
+    );
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+    });
+    const worker = (await import(pathToFileURL(out.workerPath).href)) as {
+      default: {
+        fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+      };
+    };
+
+    const env = {
+      ASSETS: {
+        fetch: async (req: Request) => {
+          // CF Pages emits 308 with Location: <path>/.
+          const url = new URL(req.url);
+          return new Response(null, {
+            status: 308,
+            headers: { location: url.pathname + "/" },
+          });
+        },
+      },
+    };
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
+    const request = new Request("https://worker.test/docs/getting-started");
+    const response = await worker.default.fetch(request, env, ctx);
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/getting-started/");
+  });
+
+  it("skips the ASSETS probe for non-GET/HEAD methods", async () => {
+    // POSTs to an API route must not be probed against the read-only
+    // asset server — they go straight to the inner SSR worker so the
+    // page-side handler can read the request body and respond.
+    const dir = await scratch();
+    const inputPath = join(dir, "inner.mjs");
+    await writeFile(
+      inputPath,
+      `export default {
+  async fetch(request) {
+    return new Response(JSON.stringify({ method: request.method }), {
+      status: 200,
       headers: { "content-type": "application/json" },
     });
   },
@@ -263,11 +374,49 @@ export default {
       waitUntil: () => undefined,
       passThroughOnException: () => undefined,
     };
-    const request = new Request("https://worker.test/api/foo", { method: "POST" });
-
+    const request = new Request("https://worker.test/api/ai-chat", { method: "POST" });
     const response = await worker.default.fetch(request, env, ctx);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "bad request" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ method: "POST" });
+    // ASSETS was NOT hit — POST goes straight to the inner.
     expect(assetsCalls).toBe(0);
+  });
+
+  it("works without env.ASSETS bound (e.g. the legacy single-bundle mode)", async () => {
+    // Defensive: if env.ASSETS is absent (e.g. a custom deploy not
+    // using CF Pages), the wrapper must still dispatch GETs to the
+    // inner without crashing.
+    const dir = await scratch();
+    const inputPath = join(dir, "inner.mjs");
+    await writeFile(
+      inputPath,
+      `export default {
+  async fetch() {
+    return new Response("inner only", { status: 200 });
+  },
+};
+`,
+      "utf8",
+    );
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir: join(dir, "dist"),
+    });
+    const worker = (await import(pathToFileURL(out.workerPath).href)) as {
+      default: {
+        fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+      };
+    };
+
+    const env = {}; // no ASSETS binding
+    const ctx = {
+      waitUntil: () => undefined,
+      passThroughOnException: () => undefined,
+    };
+    const request = new Request("https://worker.test/some/path");
+    const response = await worker.default.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("inner only");
   });
 });
