@@ -38,7 +38,7 @@
 //! handling, `✓ N pages built in X.XXs` summary) is unchanged.
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -403,9 +403,20 @@ fn build_default_css_payload(
     // location. Tailwind v4's entry CSS prepends our `@source`
     // directives to whatever the user wrote there, so the user's
     // `@theme`, `@import` of vendor CSS, etc. continue to work.
-    let global_css = project_root.join("styles").join("global.css");
-    if global_css.is_file() {
-        tw_cfg = tw_cfg.with_input_css(global_css);
+    //
+    // Probe two layouts in order, first match wins:
+    //   1. `<root>/styles/global.css`     — zfb's original convention
+    //   2. `<root>/src/styles/global.css` — Vite/Astro/Next-style src/ layout
+    //
+    // The two-path probe matters because real-world consumers
+    // (e.g. zudo-doc, see zudolab/zudo-doc#1355 wave 13) keep their
+    // authored `@theme` tokens under `src/styles/` to share the src
+    // tree with components and TS sources. Without this fallback the
+    // Tailwind run misses the host's `@theme` block entirely and
+    // utility classes like `bg-zd-bg` plus host-defined custom
+    // properties go unstyled.
+    if let Some(path) = resolve_input_global_css(project_root) {
+        tw_cfg = tw_cfg.with_input_css(path);
     }
 
     let engine = TailwindSubprocessEngine::new(tw_cfg);
@@ -433,6 +444,43 @@ fn build_default_css_payload(
         relative_path: css_relative_path(),
         stable_url: emitter_out.stable_url,
     }))
+}
+
+/// Locate the project's authored global Tailwind input CSS file.
+///
+/// Probes the two conventional layouts in order and returns the first
+/// match. Returns `None` when neither file exists, in which case the
+/// CSS pipeline emits Tailwind preflight + scanned utilities only
+/// (no `@theme` tokens, no user `@import` of vendor CSS).
+///
+/// Probe order:
+///
+/// 1. `<root>/styles/global.css`     — zfb's original convention.
+/// 2. `<root>/src/styles/global.css` — Vite/Astro/Next-style `src/`
+///    layout used by real-world consumers (e.g. zudo-doc; see
+///    zudolab/zudo-doc#1355 wave 13). The `src/styles` fallback
+///    closes the upstream gap that previously dropped the host's
+///    authored `@theme` block on the floor whenever the project
+///    organised its sources under `src/`.
+///
+/// Order is deterministic. If both files exist the legacy
+/// `<root>/styles/global.css` wins so existing projects on the
+/// original convention see no behaviour change.
+fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
+    const CANDIDATES: &[&[&str]] = &[
+        &["styles", "global.css"],
+        &["src", "styles", "global.css"],
+    ];
+    for parts in CANDIDATES {
+        let mut candidate = project_root.to_path_buf();
+        for seg in *parts {
+            candidate.push(seg);
+        }
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Walk the conventional CSS-content roots (`pages/`, `components/`,
@@ -2252,6 +2300,72 @@ mod tests {
             !html.contains("<script type=\"module\""),
             "no islands script should appear without emitter bytes: {html}",
         );
+    }
+
+    /// `resolve_input_global_css` honours the legacy
+    /// `<root>/styles/global.css` location.
+    #[test]
+    fn resolve_input_global_css_legacy_root_styles() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        let target = project_root.join("styles/global.css");
+        std::fs::write(&target, ":root{}\n").unwrap();
+        assert_eq!(
+            resolve_input_global_css(project_root),
+            Some(target),
+            "legacy <root>/styles/global.css should resolve",
+        );
+    }
+
+    /// `resolve_input_global_css` falls back to
+    /// `<root>/src/styles/global.css` when the legacy location is
+    /// absent. This is the conventional `src/`-rooted layout used by
+    /// real-world consumers (e.g. zudo-doc; zudolab/zudo-doc#1355
+    /// wave 13). Pre-fix the upstream probe missed this file
+    /// entirely and dropped the host's `@theme` block on the floor.
+    #[test]
+    fn resolve_input_global_css_src_styles_fallback() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("src/styles")).unwrap();
+        let target = project_root.join("src/styles/global.css");
+        std::fs::write(&target, ":root{}\n").unwrap();
+        assert_eq!(
+            resolve_input_global_css(project_root),
+            Some(target),
+            "src/styles/global.css fallback should resolve when legacy is absent",
+        );
+    }
+
+    /// Legacy `<root>/styles/global.css` wins when both layouts are
+    /// present, so existing projects on the original convention see
+    /// no behaviour change.
+    #[test]
+    fn resolve_input_global_css_prefers_legacy_when_both_exist() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::create_dir_all(project_root.join("src/styles")).unwrap();
+        let legacy = project_root.join("styles/global.css");
+        let src = project_root.join("src/styles/global.css");
+        std::fs::write(&legacy, ":root{ /* legacy */ }\n").unwrap();
+        std::fs::write(&src, ":root{ /* src */ }\n").unwrap();
+        assert_eq!(
+            resolve_input_global_css(project_root),
+            Some(legacy),
+            "legacy convention should win when both files exist",
+        );
+    }
+
+    /// Neither file present => `None`. The CSS emitter still runs
+    /// (preflight + scanned utilities) but the user's `@theme` is
+    /// simply not contributed.
+    #[test]
+    fn resolve_input_global_css_none_when_neither_exists() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        assert_eq!(resolve_input_global_css(project_root), None);
     }
 
     /// Tailwind disabled in config => CSS emitter slot is `None`.
