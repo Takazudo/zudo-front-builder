@@ -98,6 +98,36 @@ export type ZfbConfig = {
    * Mirrors `Config::strip_md_ext` in crates/zfb/src/config.rs.
    */
   stripMdExt?: boolean;
+
+  /**
+   * Public URL prefix mounted in front of every absolute HTML asset
+   * URL the build emits — `<link rel="stylesheet">`, `<script type="module">`,
+   * and any other `/assets/...`-prefixed reference rewritten by the
+   * production asset pipeline.
+   *
+   * Use this when the site is deployed under a sub-path (e.g.
+   * `https://example.com/pj/zudo-doc/`) instead of the domain root.
+   * With `base: "/pj/zudo-doc/"` the dist HTML emits
+   * `<link rel="stylesheet" href="/pj/zudo-doc/assets/styles-<hash>.css">`
+   * instead of the unprefixed `/assets/styles-<hash>.css`.
+   *
+   * Accepted shapes (all normalised to a single canonical form
+   * internally):
+   *
+   * - omitted / `undefined` / `""` / `"/"` — no prefix; behaviour is
+   *   byte-identical to the pre-`base` build (root-mounted site).
+   * - leading-and-trailing-slash path like `"/pj/zudo-doc/"` — prefix
+   *   that path onto every asset URL.
+   * - absolute URL like `"https://cdn.example.com/"` — emit absolute
+   *   URLs (CDN-hosted assets).
+   *
+   * Inputs missing a leading or trailing `/` are normalised at config-
+   * load time (paths) or asset-emit time (URL prefixes); callers do
+   * not have to pre-trim.
+   *
+   * Mirrors `Config::base` in crates/zfb/src/config.rs.
+   */
+  base?: string;
 };
 
 /**
