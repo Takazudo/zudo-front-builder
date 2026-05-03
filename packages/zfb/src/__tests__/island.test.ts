@@ -4,8 +4,10 @@ import {
   ANONYMOUS_COMPONENT_NAME,
   HYDRATE_MARKER_ATTR,
   Island,
+  PROPS_DATA_ATTR,
   SKIP_SSR_MARKER_ATTR,
   captureComponentName,
+  captureSerializableProps,
   resolveWhen,
 } from "../island.js";
 import { DEFAULT_WHEN, isWhen, WHEN_VALUES } from "../types.js";
@@ -155,6 +157,127 @@ describe("captureComponentName", () => {
     const anon = (() => null) as (...args: unknown[]) => unknown;
     Object.defineProperty(anon, "name", { value: "" });
     expect(captureComponentName(vnode(anon))).toBe(ANONYMOUS_COMPONENT_NAME);
+  });
+});
+
+describe("captureSerializableProps", () => {
+  it("returns undefined for non-element values", () => {
+    expect(captureSerializableProps(undefined)).toBeUndefined();
+    expect(captureSerializableProps(null)).toBeUndefined();
+    expect(captureSerializableProps(0)).toBeUndefined();
+    expect(captureSerializableProps("text")).toBeUndefined();
+    expect(captureSerializableProps(true)).toBeUndefined();
+  });
+
+  it("returns undefined when child has no own props", () => {
+    expect(captureSerializableProps(vnode(NamedFn))).toBeUndefined();
+  });
+
+  it("returns undefined when child only has `children` (the hydration target)", () => {
+    expect(captureSerializableProps(vnode(NamedFn, { children: vnode("p") }))).toBeUndefined();
+  });
+
+  it("serialises a primitive prop bag to JSON", () => {
+    expect(captureSerializableProps(vnode(NamedFn, { count: 3, label: "hi" }))).toBe(
+      '{"count":3,"label":"hi"}',
+    );
+  });
+
+  it("serialises nested arrays/objects (e.g. heading lists)", () => {
+    const headings = [
+      { text: "Intro", slug: "intro", depth: 2 },
+      { text: "Setup", slug: "setup", depth: 2 },
+    ];
+    const json = captureSerializableProps(vnode(NamedFn, { headings, title: "On this page" }));
+    expect(json).toBeDefined();
+    const parsed = JSON.parse(json as string) as Record<string, unknown>;
+    expect(parsed["headings"]).toEqual(headings);
+    expect(parsed["title"]).toBe("On this page");
+  });
+
+  it("strips `children` from the serialised payload (DOM is the source of truth at hydrate time)", () => {
+    const json = captureSerializableProps(
+      vnode(NamedFn, { count: 3, children: vnode("p", { children: "ignore me" }) }),
+    );
+    expect(json).toBeDefined();
+    expect(json).not.toContain("children");
+    expect(json).not.toContain("ignore me");
+    expect(JSON.parse(json as string)).toEqual({ count: 3 });
+  });
+
+  it("silently drops function-valued props (JSON.stringify behaviour)", () => {
+    const json = captureSerializableProps(vnode(NamedFn, { count: 3, onClick: () => {} }));
+    expect(json).toBe('{"count":3}');
+  });
+
+  it("returns undefined when every own prop is non-serialisable", () => {
+    expect(
+      captureSerializableProps(vnode(NamedFn, { onClick: () => {}, sym: Symbol("x") })),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for circular structures rather than throwing", () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular["self"] = circular;
+    expect(captureSerializableProps(vnode(NamedFn, circular))).toBeUndefined();
+  });
+
+  it("returns undefined when props itself is an array (malformed input)", () => {
+    const malformed: VNodeObject = {
+      type: NamedFn,
+      props: [] as unknown as Record<string, unknown>,
+      key: null,
+    };
+    expect(captureSerializableProps(malformed)).toBeUndefined();
+  });
+
+  it("uses the first child whose props serialise when given an array", () => {
+    const childA = vnode(NamedFn); // no props → undefined
+    const childB = vnode(NamedFn, { count: 7 }); // serialisable
+    expect(captureSerializableProps([childA, childB])).toBe('{"count":7}');
+  });
+});
+
+describe("Island JSX wrapper — data-props serialisation", () => {
+  it("emits data-props when the wrapped child has own props (default mode)", () => {
+    const child = vnode(NamedFn, { count: 3, label: "hi" });
+    const node = Island({ children: child });
+    expect(node.props[PROPS_DATA_ATTR]).toBe('{"count":3,"label":"hi"}');
+    // The hydrate marker stays present alongside data-props.
+    expect(node.props[HYDRATE_MARKER_ATTR]).toBe("NamedFn");
+    expect(node.props["data-when"]).toBe("load");
+  });
+
+  it("omits data-props when the wrapped child has no own props (default mode)", () => {
+    const node = Island({ children: vnode(NamedFn) });
+    expect(node.props[PROPS_DATA_ATTR]).toBeUndefined();
+    expect(node.props[HYDRATE_MARKER_ATTR]).toBe("NamedFn");
+  });
+
+  it("emits data-props in SSR-skip mode reading from `children` (not ssrFallback)", () => {
+    // `ssrFallback` is just placeholder markup — the hydrated component is
+    // still `children`, so its props are what mount() needs at hydrate.
+    const heavy = vnode(NamedFn, { open: true });
+    const fallback = vnode("div", { children: "Loading…" });
+    const node = Island({ ssrFallback: fallback, children: heavy });
+    expect(node.props[PROPS_DATA_ATTR]).toBe('{"open":true}');
+    expect(node.props[SKIP_SSR_MARKER_ATTR]).toBe("NamedFn");
+    // The rendered children must still be the fallback, not the heavy.
+    expect(node.props.children).toBe(fallback);
+  });
+
+  it("omits data-props in SSR-skip mode when the heavy child has no own props", () => {
+    const fallback = vnode("div", { children: "Loading…" });
+    const node = Island({ ssrFallback: fallback, children: vnode(NamedFn) });
+    expect(node.props[PROPS_DATA_ATTR]).toBeUndefined();
+    expect(node.props[SKIP_SSR_MARKER_ATTR]).toBe("NamedFn");
+  });
+
+  it("preserves children verbatim alongside data-props (default mode)", () => {
+    const child = vnode(NamedFn, { count: 3 });
+    const node = Island({ when: "idle", children: child });
+    expect(node.props.children).toBe(child);
+    expect(node.props[PROPS_DATA_ATTR]).toBe('{"count":3}');
   });
 });
 
