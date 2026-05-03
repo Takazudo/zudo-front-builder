@@ -257,6 +257,31 @@ pub struct Config {
     /// the JSON / TS form `stripMdExt` into this field.
     #[serde(default)]
     pub strip_md_ext: bool,
+
+    /// Public URL prefix mounted in front of every absolute HTML asset
+    /// URL the build emits (`<link rel="stylesheet">`,
+    /// `<script type="module">`, and any other `/assets/...`-prefixed
+    /// reference the production asset pipeline rewrites).
+    ///
+    /// Use this when the site is deployed under a sub-path
+    /// (`https://example.com/pj/zudo-doc/`). With `base = "/pj/zudo-doc/"`
+    /// the dist HTML emits
+    /// `<link rel="stylesheet" href="/pj/zudo-doc/assets/styles-<hash>.css">`
+    /// instead of the unprefixed `/assets/styles-<hash>.css`.
+    ///
+    /// Accepted shapes:
+    ///
+    /// - `None`, omitted, `""`, `"/"` — no prefix; behaviour matches
+    ///   the pre-`base` build byte-for-byte.
+    /// - leading-and-trailing-slash path like `"/pj/zudo-doc/"`.
+    /// - absolute URL like `"https://cdn.example.com/"`.
+    ///
+    /// Normalisation lives at the asset-URL emission boundary
+    /// ([`asset_url_base_prefix`]) — the field stores the value as
+    /// authored. `#[serde(rename_all = "camelCase")]` on this struct
+    /// deserialises the JSON / TS form `base` 1:1.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 impl Default for Config {
@@ -272,6 +297,7 @@ impl Default for Config {
             plugins: Vec::new(),
             adapter: None,
             strip_md_ext: false,
+            base: None,
         }
     }
 }
@@ -343,6 +369,48 @@ pub struct PluginConfig {
     /// for JSON-only configs and synthetic test configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_module: Option<String>,
+}
+
+// --- helpers ----------------------------------------------------------------
+
+/// Normalise a `base` config value into the prefix string the build
+/// concatenates onto the leading `/` of an asset URL like
+/// `/assets/styles.css`.
+///
+/// The contract: `format!("{prefix}{stable_url}")` must produce a
+/// well-formed URL where:
+///
+/// - the joined URL has exactly one `/` between the prefix and the
+///   `/assets/...` portion (no doubled slashes, no missing slash).
+/// - omitted / empty / `"/"` bases yield an empty prefix, so the
+///   pre-`base` build path is byte-identical.
+///
+/// Accepted authoring shapes (all mapped to a canonical prefix):
+///
+/// | author wrote          | prefix returned        |
+/// |-----------------------|------------------------|
+/// | `None` / `""` / `"/"` | `""`                   |
+/// | `"/pj/zudo-doc/"`     | `"/pj/zudo-doc"`       |
+/// | `"/pj/zudo-doc"`      | `"/pj/zudo-doc"`       |
+/// | `"https://cdn.example.com/"` | `"https://cdn.example.com"` |
+/// | `"https://cdn.example.com"`  | `"https://cdn.example.com"` |
+///
+/// We trim trailing slashes (any number of them) so concatenating
+/// `prefix + "/assets/..."` always produces a single delimiter. The
+/// caller is responsible for ensuring the stable URL it concatenates
+/// onto already starts with `/` — the asset-URL constants in
+/// `zfb_types::asset_urls` satisfy this by construction.
+pub fn asset_url_base_prefix(base: Option<&str>) -> String {
+    let Some(raw) = base else {
+        return String::new();
+    };
+    let trimmed = raw.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // Either `""` or `"/"` (or `"//"`, …) — none of these mount the
+        // site under a sub-path.
+        return String::new();
+    }
+    trimmed.to_string()
 }
 
 // --- defaults --------------------------------------------------------------
@@ -954,6 +1022,113 @@ mod tests {
         // `stripMdExt` is opt-in; absent / default = disabled. Mirrors
         // the Sub 1 outcome byte-for-byte (zfb#127 / #129).
         assert!(!cfg.strip_md_ext);
+        // `base` is opt-in; absent => no asset-URL prefix.
+        assert_eq!(cfg.base, None);
+    }
+
+    // --- base / asset_url_base_prefix tests ----------------------------------
+
+    #[test]
+    fn asset_url_base_prefix_none_returns_empty() {
+        assert_eq!(asset_url_base_prefix(None), "");
+    }
+
+    #[test]
+    fn asset_url_base_prefix_empty_string_returns_empty() {
+        assert_eq!(asset_url_base_prefix(Some("")), "");
+    }
+
+    #[test]
+    fn asset_url_base_prefix_root_slash_returns_empty() {
+        // `"/"` is the documented shape for "site mounted at the
+        // domain root" — the build behaviour must be byte-identical
+        // to the no-`base` case.
+        assert_eq!(asset_url_base_prefix(Some("/")), "");
+    }
+
+    #[test]
+    fn asset_url_base_prefix_subpath_strips_trailing_slash() {
+        // The PR #1361 acceptance case: `/pj/zudo-doc/` ⇒
+        // `/pj/zudo-doc` so concatenation with `/assets/...` produces
+        // a single delimiter.
+        assert_eq!(
+            asset_url_base_prefix(Some("/pj/zudo-doc/")),
+            "/pj/zudo-doc"
+        );
+    }
+
+    #[test]
+    fn asset_url_base_prefix_subpath_without_trailing_slash_is_idempotent() {
+        // Authors who omit the trailing slash get the same prefix as
+        // those who include it.
+        assert_eq!(
+            asset_url_base_prefix(Some("/pj/zudo-doc")),
+            "/pj/zudo-doc"
+        );
+    }
+
+    #[test]
+    fn asset_url_base_prefix_absolute_url_strips_trailing_slash() {
+        // CDN-hosted assets: an absolute URL is mounted onto the
+        // asset path. Trailing slash is normalised away so the join
+        // is `https://cdn.example.com` + `/assets/...` ⇒ one
+        // delimiter, not two.
+        assert_eq!(
+            asset_url_base_prefix(Some("https://cdn.example.com/")),
+            "https://cdn.example.com"
+        );
+        assert_eq!(
+            asset_url_base_prefix(Some("https://cdn.example.com")),
+            "https://cdn.example.com"
+        );
+    }
+
+    #[test]
+    fn asset_url_base_prefix_join_produces_well_formed_assets_url() {
+        // End-to-end check: the prefix + the authoritative stable URL
+        // constant should produce exactly one `/` between them.
+        let prefix = asset_url_base_prefix(Some("/pj/zudo-doc/"));
+        let joined = format!("{prefix}/assets/styles.css");
+        assert_eq!(joined, "/pj/zudo-doc/assets/styles.css");
+
+        let prefix = asset_url_base_prefix(None);
+        let joined = format!("{prefix}/assets/styles.css");
+        assert_eq!(joined, "/assets/styles.css");
+
+        let prefix = asset_url_base_prefix(Some("/"));
+        let joined = format!("{prefix}/assets/styles.css");
+        assert_eq!(joined, "/assets/styles.css");
+
+        let prefix = asset_url_base_prefix(Some("https://cdn.example.com/"));
+        let joined = format!("{prefix}/assets/styles.css");
+        assert_eq!(joined, "https://cdn.example.com/assets/styles.css");
+    }
+
+    #[tokio::test]
+    async fn loads_base_from_camelcase_json() {
+        // The JSON / TS form spells the field `base` (already camel)
+        // — confirm round-trip into `Config::base`.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "base": "/pj/zudo-doc/" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.base.as_deref(), Some("/pj/zudo-doc/"));
+    }
+
+    #[tokio::test]
+    async fn base_defaults_to_none_when_absent() {
+        // Acceptance criterion: with `base` absent the build must
+        // behave byte-for-byte the same as the pre-`base` engine.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.base, None);
     }
 
     #[tokio::test]

@@ -776,9 +776,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //      never written would leak the unhashed `/assets/styles.css`
     //      URL into shipped HTML (the prod pipeline only rewrites
     //      stable→hashed for slots it actually emits).
-    let prod_asset_inputs = runner
+    let mut prod_asset_inputs = runner
         .emit_prod_assets(project_root, outdir, config)
         .context("production asset emitters failed")?;
+    apply_asset_url_base(&mut prod_asset_inputs, config.base.as_deref());
     let prod_head_assets = derive_prod_head_assets(&prod_asset_inputs);
 
     // Snapshot the route universe *before* moving it into RendererInput
@@ -876,6 +877,35 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     Ok(render_out.ssg_files_written.len())
 }
 
+/// Mount each emitter's `stable_url` under the project's configured
+/// `base` prefix.
+///
+/// Both halves of the prod asset rewrite — the URL spliced into the
+/// rendered `<head>` AND the stable→hashed mapping
+/// `ProductionAssetPipeline` applies — read off
+/// [`AssetEmitterPayload::stable_url`]. Mutating the payload in one
+/// place therefore keeps the renderer-emitted reference and the
+/// rewrite key in sync; if we prefixed only the head injection, the
+/// `boundary_replace` rewrite would never match and the unhashed
+/// `/assets/...` URL would leak into shipped HTML.
+///
+/// `None` / empty / `"/"` bases are no-ops (see
+/// [`crate::config::asset_url_base_prefix`] for the canonical
+/// normalisation rules), so projects that do not deploy under a
+/// sub-path see byte-identical output to the pre-`base` build.
+fn apply_asset_url_base(inputs: &mut ProdAssetEmitterInputs, base: Option<&str>) {
+    let prefix = crate::config::asset_url_base_prefix(base);
+    if prefix.is_empty() {
+        return;
+    }
+    if let Some(css) = inputs.css.as_mut() {
+        css.stable_url = format!("{prefix}{}", css.stable_url);
+    }
+    if let Some(islands) = inputs.islands.as_mut() {
+        islands.stable_url = format!("{prefix}{}", islands.stable_url);
+    }
+}
+
 /// Derive the [`ProdHeadAssets`] payload for [`RendererInput`] from
 /// the bytes-only emitter inputs. Returns `None` when no slot has
 /// bytes — the renderer then ships HTML untouched (matching today's
@@ -884,8 +914,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 /// The stable URLs come straight from
 /// [`zfb_build::pipeline::AssetEmitterPayload::stable_url`] (which the
 /// CSS / islands adapters seed from `zfb_types::asset_urls`
-/// constants). This lets a future caller mount assets at a non-default
-/// URL prefix without rewriting this function.
+/// constants, optionally re-prefixed by [`apply_asset_url_base`] when
+/// the project mounts under a sub-path). This lets a caller mount
+/// assets at a non-default URL prefix without rewriting this
+/// function.
 fn derive_prod_head_assets(inputs: &ProdAssetEmitterInputs) -> Option<ProdHeadAssets> {
     let css_url = inputs.css.as_ref().map(|p| p.stable_url.clone());
     let mut island_module_urls: Vec<String> = Vec::new();
@@ -1878,6 +1910,178 @@ mod tests {
             .expect("prod build must populate prod_head_assets when emitter has bytes");
         assert_eq!(prod_assets.css_url.as_deref(), Some("/assets/styles.css"));
         assert!(prod_assets.island_module_urls.is_empty());
+    }
+
+    /// `apply_asset_url_base` mounts each emitter slot's `stable_url`
+    /// under the configured `base` prefix. None / empty / "/" bases
+    /// are pure no-ops (byte-identical to the pre-`base` engine).
+    /// Subpath and absolute-URL bases prefix every populated slot.
+    /// The function only mutates populated slots — `None` slots stay
+    /// `None`.
+    #[test]
+    fn apply_asset_url_base_prefixes_populated_slots() {
+        fn fixture() -> ProdAssetEmitterInputs {
+            ProdAssetEmitterInputs {
+                css: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b".x{}".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    stable_url: "/assets/styles.css".to_string(),
+                }),
+                islands: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// js".to_vec(),
+                    relative_path: PathBuf::from("assets/islands.js"),
+                    stable_url: "/assets/islands.js".to_string(),
+                }),
+            }
+        }
+
+        // None ⇒ no mutation.
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, None);
+        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
+        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+
+        // "" ⇒ no mutation.
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, Some(""));
+        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
+        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+
+        // "/" ⇒ no mutation (root-mounted site).
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, Some("/"));
+        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
+        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+
+        // "/pj/zudo-doc/" ⇒ subpath prefix.
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, Some("/pj/zudo-doc/"));
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "/pj/zudo-doc/assets/styles.css"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().stable_url,
+            "/pj/zudo-doc/assets/islands.js"
+        );
+
+        // "/pj/zudo-doc" (no trailing slash) ⇒ same prefix.
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, Some("/pj/zudo-doc"));
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "/pj/zudo-doc/assets/styles.css"
+        );
+
+        // CDN-hosted absolute URL ⇒ absolute prefix.
+        let mut inputs = fixture();
+        apply_asset_url_base(&mut inputs, Some("https://cdn.example.com/"));
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "https://cdn.example.com/assets/styles.css"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().stable_url,
+            "https://cdn.example.com/assets/islands.js"
+        );
+
+        // None slots stay None.
+        let mut inputs = ProdAssetEmitterInputs {
+            css: None,
+            islands: None,
+        };
+        apply_asset_url_base(&mut inputs, Some("/pj/zudo-doc/"));
+        assert!(inputs.css.is_none());
+        assert!(inputs.islands.is_none());
+    }
+
+    /// End-to-end: with `config.base = "/pj/zudo-doc/"` set, the
+    /// hashed asset URL the rewrite pass injects into HTML is
+    /// `/pj/zudo-doc/assets/styles-<hash>.css` — NOT
+    /// `/assets/styles-<hash>.css`. This is the PR #1361 acceptance
+    /// case the upstream PR is opened against.
+    ///
+    /// The pairing matters: the renderer-emitted reference and the
+    /// `boundary_replace` rewrite key must both see the prefixed
+    /// stable_url, otherwise the rewrite never fires and the
+    /// unprefixed URL leaks through.
+    #[test]
+    fn run_build_with_base_emits_prefixed_hashed_css_url_in_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b".btn{color:red}".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    // The CSS emitter seeds this from
+                    // `zfb_types::STABLE_CSS_URL`; the build path
+                    // re-prefixes with `config.base` before handing
+                    // it to the renderer.
+                    stable_url: "/assets/styles.css".to_string(),
+                }),
+                islands: None,
+            });
+        let mut cfg = Config::default();
+        cfg.base = Some("/pj/zudo-doc/".to_string());
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // (a) The hashed asset still lands at dist/assets/styles-<8hex>.css
+        // — `base` only affects the public URL, not the on-disk layout.
+        let assets_entries: Vec<String> = std::fs::read_dir(outdir.join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(assets_entries.len(), 1);
+        let name = &assets_entries[0];
+        assert!(
+            name.starts_with("styles-") && name.ends_with(".css"),
+            "expected styles-<hash>.css; got {name}",
+        );
+
+        // (b) The HTML carries the PREFIXED hashed URL.
+        let prefixed_hashed = format!("/pj/zudo-doc/assets/{name}");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains(&prefixed_hashed),
+            "prefixed hashed URL {prefixed_hashed} missing from HTML: {html}",
+        );
+
+        // (c) Neither the unprefixed stable URL nor the unprefixed
+        // hashed URL leaked through the rewrite.
+        assert!(
+            !html.contains("\"/assets/styles.css\""),
+            "stable URL leaked: {html}",
+        );
+        let unprefixed_hashed = format!("\"/assets/{name}\"");
+        assert!(
+            !html.contains(&unprefixed_hashed),
+            "unprefixed hashed URL leaked: {html}",
+        );
+
+        // (d) The renderer was handed the PREFIXED stable URL — the
+        // load-bearing wiring this PR adds.
+        let render_calls = runner.render_calls.borrow();
+        let prod_assets = render_calls[0]
+            .prod_head_assets
+            .as_ref()
+            .expect("prod_head_assets must be populated");
+        assert_eq!(
+            prod_assets.css_url.as_deref(),
+            Some("/pj/zudo-doc/assets/styles.css"),
+        );
     }
 
     /// Dev-no-regression assertion (S4 spec): with no emitter bytes
