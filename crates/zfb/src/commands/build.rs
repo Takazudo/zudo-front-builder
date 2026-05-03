@@ -2084,6 +2084,117 @@ mod tests {
         );
     }
 
+    /// End-to-end (islands variant): with `config.base = "/pj/zudo-doc/"`
+    /// AND both CSS + islands emitters populated, the rendered HTML
+    /// must carry the prefix on BOTH the `<link rel="stylesheet">`
+    /// href AND the `<script type="module">` src. The companion test
+    /// `run_build_with_base_emits_prefixed_hashed_css_url_in_html`
+    /// only populates the CSS slot, so the islands path was untested
+    /// against the prefix-rewrite contract before this test landed.
+    ///
+    /// Specifically asserts the renderer-emission contract (FakeRunner
+    /// splices the stable URL it receives, then `boundary_replace`
+    /// rewrites stable→hashed in-place): if `apply_asset_url_base`
+    /// fails to prefix the islands `stable_url`, the rendered HTML
+    /// would carry an unprefixed `/assets/islands-<hash>.js` and the
+    /// assertion below catches it.
+    #[test]
+    fn run_build_with_base_emits_prefixed_hashed_islands_url_in_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b".btn{color:red}".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    stable_url: "/assets/styles.css".to_string(),
+                }),
+                islands: Some(zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"globalThis.__zfb_islands??=[];".to_vec(),
+                    relative_path: PathBuf::from("assets/islands.js"),
+                    stable_url: "/assets/islands.js".to_string(),
+                }),
+            });
+        let mut cfg = Config::default();
+        cfg.base = Some("/pj/zudo-doc/".to_string());
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // (a) Both hashed assets land at dist/assets/<name>-<8hex>.<ext>.
+        let mut assets_entries: Vec<String> = std::fs::read_dir(outdir.join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assets_entries.sort();
+        assert_eq!(assets_entries.len(), 2, "expected both hashed assets; got {assets_entries:?}");
+        let css_name = assets_entries
+            .iter()
+            .find(|n| n.starts_with("styles-") && n.ends_with(".css"))
+            .expect("hashed CSS asset missing")
+            .clone();
+        let js_name = assets_entries
+            .iter()
+            .find(|n| n.starts_with("islands-") && n.ends_with(".js"))
+            .expect("hashed islands asset missing")
+            .clone();
+
+        // (b) The HTML carries the PREFIXED hashed URLs for BOTH
+        // the stylesheet link AND the islands script.
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        let prefixed_css = format!("/pj/zudo-doc/assets/{css_name}");
+        let prefixed_js = format!("/pj/zudo-doc/assets/{js_name}");
+        assert!(
+            html.contains(&prefixed_css),
+            "prefixed hashed CSS URL {prefixed_css} missing from HTML: {html}",
+        );
+        assert!(
+            html.contains(&prefixed_js),
+            "prefixed hashed islands URL {prefixed_js} missing from HTML: {html}",
+        );
+
+        // (c) No unprefixed asset URL — neither the stable nor the
+        // hashed shape — leaked through the rewrite for either slot.
+        for leaked in [
+            "\"/assets/styles.css\"",
+            "\"/assets/islands.js\"",
+            &format!("\"/assets/{css_name}\""),
+            &format!("\"/assets/{js_name}\""),
+        ] {
+            assert!(
+                !html.contains(leaked),
+                "unprefixed asset URL leaked into HTML ({leaked}): {html}",
+            );
+        }
+
+        // (d) The renderer was handed PREFIXED stable URLs for both
+        // slots — the `apply_asset_url_base` wiring covers islands
+        // too, not just CSS.
+        let render_calls = runner.render_calls.borrow();
+        let prod_assets = render_calls[0]
+            .prod_head_assets
+            .as_ref()
+            .expect("prod_head_assets must be populated");
+        assert_eq!(
+            prod_assets.css_url.as_deref(),
+            Some("/pj/zudo-doc/assets/styles.css"),
+        );
+        assert_eq!(
+            prod_assets.island_module_urls,
+            vec!["/pj/zudo-doc/assets/islands.js".to_string()],
+        );
+    }
+
     /// Dev-no-regression assertion (S4 spec): with no emitter bytes
     /// (the production path users have today, before S5/S6 wires real
     /// CSS/islands), the renderer is handed `prod_head_assets: None`,
