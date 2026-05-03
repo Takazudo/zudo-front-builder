@@ -68,6 +68,19 @@ export const SKIP_SSR_MARKER_ATTR = "data-zfb-island-skip-ssr";
 /** Fallback name surfaced when child identity cannot be determined. */
 export const ANONYMOUS_COMPONENT_NAME = "Anonymous";
 
+/**
+ * Attribute the SSR wrapper writes to ferry the wrapped component's props
+ * across the SSR → hydrate boundary. The hydration runtime parses this
+ * with `JSON.parse` and forwards the result to the per-island `mount()`
+ * call so the hydrated component sees the same props the SSR pass did.
+ *
+ * Omitted entirely when the wrapped child has no own data props (other
+ * than `children`) — `readProps` already falls back to `{}` when the
+ * attribute is missing, and emitting `data-props=""` would just bloat
+ * the SSR markup.
+ */
+export const PROPS_DATA_ATTR = "data-props";
+
 /** Props for `<Island>`. */
 export interface IslandProps {
   /** Hydration scheduling strategy. Defaults to `"load"`. */
@@ -126,26 +139,35 @@ export function Island(props: IslandProps): IslandElement {
   const when = resolveWhen(props.when);
   const componentName = captureComponentName(props.children);
   const isSkipSsr = props.ssrFallback !== undefined;
+  // Always source props from `props.children` (the heavy component VNode),
+  // never from `ssrFallback` — the fallback is just SSR placeholder markup;
+  // the hydrated component is the child, so its props are what `mount()`
+  // needs at hydrate time. (Same rationale as `captureComponentName`.)
+  const dataProps = captureSerializableProps(props.children);
 
   if (isSkipSsr) {
+    const skipSsrProps: Record<string, unknown> = {
+      [SKIP_SSR_MARKER_ATTR]: componentName,
+      "data-when": when,
+      children: props.ssrFallback ?? null,
+    };
+    if (dataProps !== undefined) skipSsrProps[PROPS_DATA_ATTR] = dataProps;
     return makeVNode({
       type: "div",
-      props: {
-        [SKIP_SSR_MARKER_ATTR]: componentName,
-        "data-when": when,
-        children: props.ssrFallback ?? null,
-      },
+      props: skipSsrProps,
       key: null,
     });
   }
 
+  const hydrateProps: Record<string, unknown> = {
+    [HYDRATE_MARKER_ATTR]: componentName,
+    "data-when": when,
+    children: props.children,
+  };
+  if (dataProps !== undefined) hydrateProps[PROPS_DATA_ATTR] = dataProps;
   return makeVNode({
     type: "div",
-    props: {
-      [HYDRATE_MARKER_ATTR]: componentName,
-      "data-when": when,
-      children: props.children,
-    },
+    props: hydrateProps,
     key: null,
   });
 }
@@ -213,4 +235,80 @@ function nameFromSingle(child: unknown): string {
   }
   if (typeof t === "string" && t) return t;
   return "";
+}
+
+/**
+ * Serialize the wrapped child's data props as a JSON string the runtime
+ * can parse out of the `data-props` attribute on the Island marker div.
+ *
+ * Mirrors [`captureComponentName`]'s array handling: when `children` is
+ * an array (multiple JSX siblings), the first child whose own props
+ * yield a non-empty serialization wins. This keeps the "first
+ * identifiable child" contract consistent across both attributes —
+ * whatever the marker name points at is what the data-props payload
+ * describes.
+ *
+ * Returns `undefined` (not `"{}"` and not `""`) when no usable props
+ * exist. The runtime's `readProps` already maps a missing attribute to
+ * `{}`, so omitting the attribute keeps the SSR markup smaller and
+ * preserves the invariant that the attribute, when present, always
+ * parses to a non-empty record.
+ *
+ * Exported for tests; not re-exported from `index.ts`.
+ */
+export function captureSerializableProps(children: unknown): string | undefined {
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const json = propsFromSingle(child);
+      if (json !== undefined) return json;
+    }
+    return undefined;
+  }
+  return propsFromSingle(children);
+}
+
+function propsFromSingle(child: unknown): string | undefined {
+  if (!child || typeof child !== "object") return undefined;
+  const c = child as { props?: unknown };
+  const raw = c.props;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+
+  // Exclude `children` from the serialized payload: the SSR pass already
+  // emitted the rendered children into the DOM (the hydration target),
+  // and JSX child nodes are typically VNode trees with non-serializable
+  // shapes (functions, circular refs) that would either bloat the
+  // payload or throw inside JSON.stringify. The hydration runtime
+  // re-renders into the existing DOM, so it does not need the JSX
+  // children replayed through props.
+  //
+  // Note: JSON.stringify already silently drops function / symbol /
+  // undefined values from the output, so those don't need explicit
+  // pre-filtering here.
+  const propsRecord = raw as Record<string, unknown>;
+  let hasOwn = false;
+  const filtered: Record<string, unknown> = {};
+  for (const key of Object.keys(propsRecord)) {
+    if (key === "children") continue;
+    filtered[key] = propsRecord[key];
+    hasOwn = true;
+  }
+  if (!hasOwn) return undefined;
+
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(filtered);
+  } catch {
+    // Circular references, BigInt, or any other non-serializable input
+    // — silently fall through (no `data-props`) rather than ship a
+    // partial payload. The runtime already handles the missing-attribute
+    // case by returning `{}` from `readProps`.
+    return undefined;
+  }
+
+  // JSON.stringify can also return `undefined` (when the top-level value
+  // serializes to nothing) or `"{}"` (when every key was a function /
+  // symbol / undefined and got dropped). Treat both as "nothing useful
+  // to ship" so the marker stays clean.
+  if (json === undefined || json === "{}") return undefined;
+  return json;
 }
