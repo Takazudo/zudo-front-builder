@@ -367,6 +367,12 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     drop(guard);
 
     if let Some(err) = last_err {
+        // Surface miniflare stderr so the operator can see what workerd
+        // printed before the 500. Without this, the logs are discarded
+        // and the user sees only "Internal Server Error" with no context.
+        if !logs.trim().is_empty() {
+            eprintln!("[zfb] miniflare logs at render failure:\n{logs}");
+        }
         return Err(err);
     }
 

@@ -283,10 +283,11 @@ describe("createPageRouter", () => {
     expect(items[0]?.data).toEqual({});
   });
 
-  it("passes { params, props } to the default component when paths() finds a match", async () => {
+  it("spreads paths() props to top-level when paths() finds a match", async () => {
     // Capture whatever the router invokes default() with so the
     // assertion can verify the input shape matches the
-    // ADR-002 / Astro paths() contract.
+    // ADR-002 / Astro paths() contract: props are spread at top level
+    // alongside `params`, not nested under a `props` key.
     let received: unknown = null;
     const dynamicPage: PageModule & { paths: () => unknown[] } = {
       default: (input) => {
@@ -308,11 +309,14 @@ describe("createPageRouter", () => {
     expect(res.status).toBe(200);
     expect(received).toEqual({
       params: { slug: "hello" },
-      props: { title: "Hello" },
+      title: "Hello",
     });
   });
 
-  it("passes an empty props object when paths() finds a match without props", async () => {
+  it("passes only params when paths() finds a match without props", async () => {
+    // When paths() returns an entry with no `props`, the component receives
+    // only `{ params }` — no `props` key — because spreading an empty/absent
+    // props object adds nothing. Components destructure params directly.
     let received: unknown = null;
     const dynamicPage: PageModule & { paths: () => unknown[] } = {
       default: (input) => {
@@ -331,7 +335,6 @@ describe("createPageRouter", () => {
     expect(res.status).toBe(200);
     expect(received).toEqual({
       params: { slug: "hello" },
-      props: {},
     });
   });
 

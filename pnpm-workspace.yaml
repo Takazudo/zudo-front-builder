@@ -7,3 +7,7 @@ packages:
   # also publishes a tiny npm package for JS-side helpers). None exist today; the
   # glob is reserved so adding one later requires no workspace-config change.
   - "crates/*/npm"
+  # examples/* — dogfood / smoke-test sites. Added so workspace-local packages
+  # (@takazudo/zfb-runtime, @takazudo/zfb, etc.) resolve for `cargo run -p zfb -- build`
+  # without requiring a published npm release.
+  - "examples/*"

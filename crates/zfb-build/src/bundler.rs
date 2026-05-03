@@ -569,6 +569,57 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         )
     })?;
 
+    // 2a-extra. Materialise any *other* directories at the project root
+    // that the bundler does not own (e.g. `styles/`, `lib/`, `utils/`).
+    // Layout and component files often import relative paths like
+    // `"../styles/global.css"` — those paths need to resolve to something
+    // in the shadow tree even though the bundler treats CSS as empty
+    // (`--loader:.css=empty`). esbuild's resolution step runs before the
+    // loader, so a missing file causes a hard error regardless of the loader.
+    //
+    // Directories already materialised above (pages, content, components,
+    // layouts) and infrastructure directories (node_modules, dist, .git,
+    // hidden dirs, zfb output dirs) are skipped.
+    {
+        let known: &[&str] = &["pages", "content", "components", "layouts", "node_modules",
+                                "dist", ".git", "target", ".turbo", ".next", ".vercel"];
+        if let Ok(rd) = fs::read_dir(&input.project_root) {
+            for entry in rd.flatten() {
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Skip hidden dirs and known/infrastructure dirs.
+                if name_str.starts_with('.') {
+                    continue;
+                }
+                if known.iter().any(|k| name_str == *k) {
+                    continue;
+                }
+                let src_dir = input.project_root.join(&name);
+                let dst_dir = shadow.join(&name);
+                materialise_shadow(
+                    &src_dir,
+                    &dst_dir,
+                    &mut Vec::new(),
+                    &input.project_root,
+                    input.strip_md_ext,
+                )
+                .with_context(|| {
+                    format!(
+                        "bundler: failed materialising extra dir {} into shadow",
+                        src_dir.display()
+                    )
+                })?;
+            }
+        }
+    }
+
     // 2b. Optional node_modules symlink into the shadow tree.
     //     When `BundlerInput::node_modules_dir` is set, create a
     //     symlink `<shadow>/node_modules → <path>` so esbuild can
