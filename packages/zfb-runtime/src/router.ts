@@ -60,9 +60,10 @@ export interface PageHeading {
 /**
  * The shape every page module must export.
  *
- * - `default`: the JSX page component. Called with no props (today —
- *   wave 2 will extend this for `paths()` dynamic routes). The return
- *   value is fed straight to the framework adapter's `renderToString`.
+ * - `default`: the JSX page component. Called with the props returned by
+ *   `getStaticProps` (if exported) or the `props` from the matching
+ *   `paths()` entry (for dynamic routes). The return value is fed straight
+ *   to the framework adapter's `renderToString`.
  * - `prerender`: literal `false` opts a route OUT of build-time SSG (T5
  *   contract). The page router still serves it under miniflare so dev
  *   mode behaves identically; SSG callers filter the route list before
@@ -76,6 +77,10 @@ export interface PageHeading {
  *   for this route template. May be async. Returns an array of
  *   `{ params, props? }` objects identical in shape to the Astro/zfb
  *   `paths()` contract.
+ * - `getStaticProps`: optional async function for static routes that need
+ *   to fetch data at build/render time. Called once per request (before
+ *   `default`). Must return `{ props: Record<string, unknown> }`. The
+ *   returned `props` are spread into the `default` component's props.
  */
 export interface PageModule {
   readonly default: (props: Record<string, unknown>) => unknown;
@@ -83,6 +88,7 @@ export interface PageModule {
   readonly contentType?: string;
   readonly headings?: readonly PageHeading[];
   readonly paths?: () => unknown[] | Promise<unknown[]>;
+  readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>;
 }
 
 /**
@@ -332,10 +338,41 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
           return c.notFound();
         }
 
+        // Pass the paths() entry's props directly as component props
+        // (spread to top level, matching the Astro/zfb convention).
+        // Also include `params` so components can access URL params if
+        // needed, but individual prop keys from `props` win on collision.
         componentInput = {
           params: match.params,
-          props: match.props ?? {},
+          ...(match.props ?? {}),
         };
+      } else if (!hasDynamicParams && typeof mod.getStaticProps === "function") {
+        // Static route with `getStaticProps`: call it to fetch build-time
+        // data and pass the returned props to the default component. This
+        // supports the `export async function getStaticProps()` pattern
+        // used by static pages that need to query content collections (e.g.
+        // a homepage listing all blog posts via `getCollection("blog")`).
+        let staticPropsResult: unknown;
+        try {
+          staticPropsResult = await mod.getStaticProps();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return c.body(`[zfb-runtime] getStaticProps() threw for "${page.route}": ${msg}`, 500, {
+            "Content-Type": "text/plain; charset=utf-8",
+          });
+        }
+        if (
+          typeof staticPropsResult !== "object" ||
+          staticPropsResult === null ||
+          !("props" in staticPropsResult)
+        ) {
+          return c.body(
+            `[zfb-runtime] getStaticProps() for "${page.route}" must return { props: {...} }`,
+            500,
+            { "Content-Type": "text/plain; charset=utf-8" },
+          );
+        }
+        componentInput = (staticPropsResult as { props: Record<string, unknown> }).props;
       }
 
       // `await` so async page modules (e.g. API routes typed as

@@ -434,10 +434,10 @@ fn default_true() -> bool {
 /// don't have to ship a sidecar file at runtime.
 const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 
-/// Stub for the `zfb/config` import that user TS configs reach for. We
-/// alias `zfb/config` → this stub at esbuild time so the user's project
-/// does not need the `zfb` npm package installed locally just to be
-/// parsed.
+/// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
+/// TS configs reach for. We alias both the unscoped bare form (`zfb/config`)
+/// and the full npm-package form (`@takazudo/zfb/config`) to this stub at
+/// esbuild time so either spelling works without installing the npm package.
 const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
 
 /// Default location of the staged esbuild CLI, mirroring
@@ -650,7 +650,14 @@ async fn load_ts_via_subprocess(
     // 1. Bundle the user's TS file. Run with `dir` as cwd so any
     //    relative imports the user wrote (e.g. `./constants`) resolve
     //    against the project root.
+    //
+    // Alias both the bare `zfb/config` form (the documented convention in
+    // the zfb docs) and the full npm-package form `@takazudo/zfb/config`
+    // (what users naturally write when they know the package is published
+    // as `@takazudo/zfb`). Both spellings must work because the canonical
+    // example (examples/basic-blog/zfb.config.ts) uses the scoped form.
     let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
+    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
     let outfile_arg = format!("--outfile={}", bundle_path.display());
     let mut cmd = Command::new(&esbuild);
     cmd.current_dir(dir);
@@ -660,6 +667,7 @@ async fn load_ts_via_subprocess(
     cmd.arg("--target=esnext");
     cmd.arg("--log-level=warning");
     cmd.arg(&alias_arg);
+    cmd.arg(&alias_scoped_arg);
     cmd.arg(&outfile_arg);
     cmd.arg(ts_path);
 
