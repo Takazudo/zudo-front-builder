@@ -1,10 +1,23 @@
 # ADR-005: SSG-first via miniflare subprocess + Hono-style adapter pattern
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-007](./adr-007-embedded-v8.md)
 - **Date:** 2026-04-28
 - **Owners:** Epic 6 (zfb-ssg-render — SSG-first execution model)
 - **Supersedes:** [ADR-001](./adr-001-js-runtime.md) (deno_core / V8-in-binary
   JS runtime).
+
+## Superseded
+
+This ADR is superseded by [ADR-007: Embedded V8 (`deno_core`) replaces
+miniflare subprocess for build-time SSG](./adr-007-embedded-v8.md).
+
+The Tauri distribution goal — shipping a single CLI binary that end users can
+run without Node.js installed — makes miniflare untenable as a build-time host.
+ADR-007 re-embeds `deno_core`, accepts the binary-size and first-build-time
+costs this ADR cited as the reasons to avoid it, and preserves ADR-005's core
+insight that the _bundle shape_ (`export default { fetch }`) is the stable
+production contract. The workerd-shape bundle still deploys to Cloudflare
+Workers unchanged; only the build-time host swaps.
 
 ## Decision (one sentence)
 

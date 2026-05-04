@@ -1,28 +1,36 @@
 # ADR-001: JS runtime for zfb's SSR pipeline
 
-- **Status:** Superseded by [ADR-005](./adr-005-ssg-first.md)
-- **Date:** 2026-04-26 (accepted), 2026-04-28 (superseded)
+- **Status:** Superseded by [ADR-005](./adr-005-ssg-first.md), which is itself
+  superseded by [ADR-007](./adr-007-embedded-v8.md)
+- **Date:** 2026-04-26 (accepted), 2026-04-28 (superseded by ADR-005),
+  2026-05-04 (ADR-007 re-adopts `deno_core`)
 - **Owners:** Sub 1 (Epic 3 — File-based router + JSX rendering)
 - **Locks:** runtime choice for `zfb-render` and all dependents (Subs 3, 4, 5, 6).
   Future revisions require a follow-on ADR.
 
-## Superseded
+## Superseded — and then re-adopted
 
-This ADR is superseded by [ADR-005: SSG-first via miniflare subprocess +
-Hono-style adapter pattern](./adr-005-ssg-first.md).
+This ADR was superseded by [ADR-005: SSG-first via miniflare subprocess +
+Hono-style adapter pattern](./adr-005-ssg-first.md) in April 2026.
 
-The reason is twofold. First, embedding `deno_core` in the zfb CLI binary
-carries a memory and binary-size footprint that is hard to justify for a
-build-time tool — a 40-50 MB binary plus 25-40 MB RSS per isolate, paid by
-every contributor and every CI run, in exchange for keeping the JS host
-in-process. Second, zfb's deployment target is Cloudflare Workers (workerd),
-and running build-time SSG through a different JS runtime than the runtime
-SSR target invites quiet behavioural drift between local builds and
-production. miniflare runs workerd locally as a short-lived npm subprocess,
-gives us byte-for-byte parity with the production JS runtime, and keeps the
-Rust binary small. The `RenderHost` trait survives the change and remains the
-abstraction seam in `zfb-render`; what changes is the concrete host — from a
-deno_core in-process isolate to a miniflare subprocess client.
+ADR-005's reasoning: embedding `deno_core` carries a binary-size and
+first-build-time cost hard to justify for a build-time tool; running build-time
+SSG through `deno_core` rather than workerd invites quiet behavioural drift
+from the Cloudflare Workers production target.
+
+[ADR-007: Embedded V8 (`deno_core`) replaces miniflare subprocess for
+build-time SSG](./adr-007-embedded-v8.md) then superseded ADR-005. ADR-007
+re-adopts `deno_core` as the concrete build-time host. The key insight: the
+stable production contract is the _bundle shape_ (`export default { fetch }`),
+not the build-time engine. workerd can always execute that bundle in
+production; what engine compiled it at build time is irrelevant. The Tauri
+distribution goal (end users run `zfb build` with no Node installed) makes
+the miniflare subprocess approach untenable.
+
+The `RenderHost` trait survives both transitions and remains the abstraction
+seam in `zfb-render`. The concrete host is now a `deno_core` in-process
+isolate — the same choice this ADR originally ratified, taken for reasons that
+this ADR's "Swap-in path for v1.1+" section explicitly anticipated.
 
 ## Decision (one sentence)
 
