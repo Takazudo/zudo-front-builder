@@ -7,6 +7,55 @@ Thanks for your interest in `zudo-front-builder`. The project is past initial sc
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
 - **Node / pnpm**: pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically.
 
+## First build expectation
+
+The first `cargo build --workspace` on a clean machine takes **15–30 minutes**. The bottleneck is V8 — the JavaScript engine pulled in by the `zfb-render` crate via `deno_core`. This is unavoidable on a cold cache but is a one-time cost.
+
+To minimise the wait on your first checkout:
+
+```sh
+# Compile workspace crates + test harnesses, skip recompiling
+# third-party deps that haven't changed.
+cargo build --workspace --tests --no-deps
+```
+
+After this, incremental rebuilds and `cargo test` runs are fast.
+
+### Cargo feature gate — `embed_v8`
+
+The V8 engine is gated behind a **default-on** cargo feature called `embed_v8` on the `zfb-render` crate. Crates that do not need JavaScript rendering (e.g. `zfb-content`, utility crates) do not depend on `zfb-render` and therefore never compile V8 unless they explicitly ask for it. This means:
+
+- `cargo test -p zfb-content` compiles in seconds — no V8.
+- `cargo build --workspace` compiles everything including V8 exactly once and caches the result.
+- If you want to build or test workspace members that don't touch rendering, use `-p <crate>` to avoid pulling in the V8 dependency graph unnecessarily.
+
+### Speeding up local builds with sccache
+
+[sccache](https://github.com/mozilla/sccache) is a compiler cache that wraps `rustc` and stores compilation artefacts in a local (or remote S3/GCS) cache. For zfb development its biggest win is the V8 layer: once V8 is in the sccache store, switching branches or cleaning `target/` no longer triggers a V8 recompile.
+
+```sh
+# Install
+cargo install sccache
+
+# Enable for the current shell session
+export RUSTC_WRAPPER=sccache
+
+# Optional: point at a larger on-disk cache (default is ~/.cache/sccache)
+export SCCACHE_DIR=/path/to/large/drive/.sccache
+export SCCACHE_CACHE_SIZE=20G
+```
+
+Add the exports to your shell profile to persist them.
+
+### Faster test runs with cargo-nextest
+
+If the workspace test suite becomes slow, [cargo-nextest](https://nexte.st/) is a drop-in replacement for `cargo test` that runs tests in parallel and streams output efficiently:
+
+```sh
+cargo install cargo-nextest
+cargo nextest run --workspace
+```
+
 ## Workspace layout
 
 This is a Cargo workspace. Crates live under `crates/`. The placeholder bin crate is `crates/zfb/`.
