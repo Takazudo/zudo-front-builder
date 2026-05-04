@@ -362,30 +362,24 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // Group 3 — EmbeddedV8 render path (requires sub-162)
 // ---------------------------------------------------------------------------
 
-/// End-to-end render test: build a bundle with `Backend::EmbeddedV8` and
-/// render a page that calls `getCollection("blog")`. The HTML response must
-/// contain titles from the snapshot.
-///
-/// # IMPORTANT — this test requires sub-162 (EmbeddedV8RenderHost).
-///
-/// `Backend::EmbeddedV8` is added by sub-162 in a parallel worktree.
-/// Until that sub is merged onto `base/embed-v8` this test does NOT
-/// compile. The manager re-runs it after merging sub-162.
-///
-/// When sub-162 is merged, un-comment the `#[ignore]` attribute and
-/// add the import for `Backend` at the top of this file.
-///
-/// ## What it will assert
-///
-/// 1. `bundle()` builds a bundle that embeds the snapshot literal.
-/// 2. `render_all()` with `Backend::EmbeddedV8` dispatches a page request.
-/// 3. The rendered HTML for the homepage contains blog post titles sourced
-///    from the snapshot — confirming that `getCollection("blog")` inside
-///    `getStaticProps()` resolves from the embedded snapshot rather than
-///    attempting a `node:fs` read.
-///
-/// This test is left as a compile-time stub (commented body) so the test
-/// file compiles in the current worktree while making the intent clear.
+// End-to-end render test: build a bundle with `Backend::EmbeddedV8` and
+// render a page that calls `getCollection("blog")`. The HTML response must
+// contain titles from the snapshot.
+//
+// IMPORTANT — this test requires sub-162 (EmbeddedV8RenderHost), which is
+// now merged on base/embed-v8. The body is a compile-time stub so the file
+// compiles; un-comment + replace `todo!()` with the real assertions when
+// the integration wiring is finalised. Kept `#[ignore]` so cargo test
+// --workspace doesn't panic on the stub.
+//
+// ## What it will assert
+//
+// 1. bundle() builds a bundle that embeds the snapshot literal.
+// 2. render_all() with Backend::EmbeddedV8 dispatches a page request.
+// 3. The rendered HTML for the homepage contains blog post titles sourced
+//    from the snapshot — confirming that getCollection("blog") inside
+//    getStaticProps() resolves from the embedded snapshot rather than
+//    attempting a node:fs read.
 // #[test]
 // #[ignore = "requires sub-162 (Backend::EmbeddedV8) — un-ignore after merge"]
 // fn embedded_v8_renders_page_with_snapshot_data() {
