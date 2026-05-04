@@ -43,10 +43,12 @@ struct DispatchRequest {
 /// V8 host on a dedicated OS thread. Drop automatically shuts the thread
 /// down.
 pub struct ThreadedV8Host {
-    /// Sender half of the request channel.
-    tx: mpsc::SyncSender<DispatchRequest>,
-    /// Join handle so we wait for a clean shutdown on drop.
-    _thread: Option<thread::JoinHandle<()>>,
+    /// Sender half of the request channel. Wrapped in `Option` so `Drop`
+    /// can `take()` it (move it out of `self`) to close the channel
+    /// before joining the thread.
+    tx: Option<mpsc::SyncSender<DispatchRequest>>,
+    /// Join handle for clean shutdown on drop.
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 // SAFETY: `ThreadedV8Host` contains only a `SyncSender` (inherently `Send`)
@@ -54,6 +56,22 @@ pub struct ThreadedV8Host {
 // dedicated thread and is never exposed to other threads. The channel ensures
 // strict single-caller access to the isolate.
 unsafe impl Send for ThreadedV8Host {}
+
+impl Drop for ThreadedV8Host {
+    /// Close the request channel first (so the V8 thread's receive loop
+    /// exits), then join the thread to guarantee a clean shutdown with no
+    /// leaks.
+    fn drop(&mut self) {
+        // Drop the sender; the V8 thread's `for req in rx` loop will see
+        // the channel closed and exit its async block.
+        drop(self.tx.take());
+        if let Some(handle) = self.thread.take() {
+            // Best-effort join: if the thread panicked, the panic has already
+            // been propagated to the caller via the reply channel; swallow it.
+            let _ = handle.join();
+        }
+    }
+}
 
 impl ThreadedV8Host {
     /// Create a new host adapter for the bundle at `bundle_path`.
@@ -176,21 +194,24 @@ impl ThreadedV8Host {
         }
 
         Ok(Box::new(ThreadedV8Host {
-            tx,
-            _thread: Some(thread_handle),
+            tx: Some(tx),
+            thread: Some(thread_handle),
         }))
     }
 }
 
 impl EmbeddedV8Host for ThreadedV8Host {
     fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError> {
+        let tx = self.tx.as_ref().ok_or_else(|| {
+            RendererError::EmbeddedV8("V8 host has already been shut down".into())
+        })?;
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let req = DispatchRequest {
             url_path: url_path.to_string(),
             reply: reply_tx,
         };
         // Send the request; if the channel is broken the thread died.
-        self.tx.send(req).map_err(|_| {
+        tx.send(req).map_err(|_| {
             RendererError::EmbeddedV8("V8 host thread has exited unexpectedly".into())
         })?;
         // Block until the reply arrives.
