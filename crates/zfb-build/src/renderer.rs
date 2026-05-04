@@ -141,11 +141,13 @@ pub struct HttpResponseLike {
 /// this crate; the full `RenderHost` trait lives in `zfb-render` for
 /// the higher-level render orchestration.
 ///
-/// The trait is `!Send + !Sync` (matching `zfb_render::RenderHost`'s
-/// invariant: a V8 isolate must live on a single thread). Callers that
-/// need to cross thread boundaries wrap the host on a dedicated thread
-/// and communicate via channels.
-pub trait EmbeddedV8Host {
+/// The trait requires `Send` (but not `Sync`): a V8 isolate must not be
+/// called from multiple threads simultaneously (`!Sync`), but ownership
+/// can be transferred between threads. In dev mode the host is wrapped
+/// in `Mutex<Option<RendererState>>` — the lock provides the single-
+/// thread access guarantee; `Send` is needed for the `Mutex` guard
+/// to cross the `PageRenderer` closure's `Send` bound.
+pub trait EmbeddedV8Host: Send {
     /// Dispatch a synthetic HTTP GET for `url_path` against the loaded
     /// bundle and return the response.
     ///
