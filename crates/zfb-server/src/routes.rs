@@ -32,6 +32,7 @@
 //! served page wires itself up to the live-reload SSE stream.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, State};
@@ -299,6 +300,10 @@ pub struct AppState {
     /// Optional plugin dev-middleware set. `None` when no user plugins
     /// declared a `devMiddleware` hook.
     pub plugins: Option<DevMiddlewareSet>,
+    /// Build output directory, used as a disk fallback when a page is
+    /// not yet in the in-memory cache. `serve_page` reads
+    /// `<dist_root>/<path>/index.html` when the cache misses.
+    pub dist_root: std::path::PathBuf,
 }
 
 /// Build the axum router for the dev server.
@@ -307,12 +312,8 @@ pub struct AppState {
 /// `public_root` is the project's static assets directory (used for
 /// `/public/*`). Both are served via [`ServeDir`]; missing files fall
 /// back to a plain 404.
-pub fn build_router(
-    state: AppState,
-    dist_root: std::path::PathBuf,
-    public_root: std::path::PathBuf,
-) -> Router {
-    let assets_dir = dist_root.join("assets");
+pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router {
+    let assets_dir = state.dist_root.join("assets");
     let assets_service = ServeDir::new(&assets_dir);
     let public_service = ServeDir::new(&public_root);
 
@@ -401,11 +402,18 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
             //   because the matched key reflects what the renderer
             //   actually emitted (e.g. `/sitemap.xml`).
             let content_type = resolve_content_type(&entry, key);
-            let is_html = content_type
-                .to_ascii_lowercase()
-                .starts_with("text/html");
+            let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
             return page_response_bytes(StatusCode::OK, entry.body, &content_type, is_html);
         }
+    }
+
+    // In-memory cache miss: fall back to reading from the dist directory
+    // on disk. The dev pipeline writes rendered HTML there after each
+    // watcher tick; serving from disk means the browser always sees the
+    // latest output even when the in-memory cache hasn't been populated
+    // (e.g. on cold start before the first watcher tick fires).
+    if let Some(bytes) = read_from_dist(&state.dist_root, trimmed) {
+        return page_response_bytes(StatusCode::OK, bytes, "text/html; charset=utf-8", true);
     }
 
     // 404 is always the dev HTML body so the page is replaced once
@@ -416,6 +424,24 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
         "text/html; charset=utf-8",
         true,
     )
+}
+
+/// Try to read a page from the dist directory on disk.
+///
+/// Probes `<dist_root>/<trimmed>/index.html` and then
+/// `<dist_root>/<trimmed>` (for pages served at their exact path like
+/// `sitemap.xml`). Returns `None` on any read failure.
+fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+    let candidates: [PathBuf; 2] = [
+        dist_root.join(trimmed).join("index.html"),
+        dist_root.join(trimmed),
+    ];
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// Result of a plugin dev-middleware dispatch attempt. The dev server
@@ -607,6 +633,7 @@ mod tests {
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
         }
     }
 
@@ -615,11 +642,7 @@ mod tests {
         // is fine: these tests don't exercise asset routing (Sub 6
         // covers integration with a real fixture project).
         let tmp = std::env::temp_dir();
-        build_router(
-            state,
-            tmp.join("zfb-test-dist"),
-            tmp.join("zfb-test-public"),
-        )
+        build_router(state, tmp.join("zfb-test-public"))
     }
 
     async fn body_string(resp: Response) -> String {
@@ -804,11 +827,17 @@ mod tests {
 
     #[test]
     fn content_type_for_extension_known() {
-        assert_eq!(content_type_for_extension("html"), "text/html; charset=utf-8");
+        assert_eq!(
+            content_type_for_extension("html"),
+            "text/html; charset=utf-8"
+        );
         assert_eq!(content_type_for_extension("xml"), "application/xml");
         assert_eq!(content_type_for_extension("rss"), "application/rss+xml");
         assert_eq!(content_type_for_extension("json"), "application/json");
-        assert_eq!(content_type_for_extension("txt"), "text/plain; charset=utf-8");
+        assert_eq!(
+            content_type_for_extension("txt"),
+            "text/plain; charset=utf-8"
+        );
     }
 
     #[test]
@@ -838,7 +867,10 @@ mod tests {
         };
         // URL says `.xml`, but the override (`application/rss+xml`)
         // wins per the precedence rule.
-        assert_eq!(resolve_content_type(&entry, "/feed.xml"), "application/rss+xml");
+        assert_eq!(
+            resolve_content_type(&entry, "/feed.xml"),
+            "application/rss+xml"
+        );
     }
 
     #[test]
@@ -847,8 +879,14 @@ mod tests {
             body: b"<urlset/>".to_vec(),
             content_type: None,
         };
-        assert_eq!(resolve_content_type(&entry, "/sitemap.xml"), "application/xml");
-        assert_eq!(resolve_content_type(&entry, "/llms.txt"), "text/plain; charset=utf-8");
+        assert_eq!(
+            resolve_content_type(&entry, "/sitemap.xml"),
+            "application/xml"
+        );
+        assert_eq!(
+            resolve_content_type(&entry, "/llms.txt"),
+            "text/plain; charset=utf-8"
+        );
     }
 
     #[test]
@@ -858,8 +896,14 @@ mod tests {
             content_type: None,
         };
         // No extension on the URL → HTML default.
-        assert_eq!(resolve_content_type(&entry, "/about"), "text/html; charset=utf-8");
-        assert_eq!(resolve_content_type(&entry, "/"), "text/html; charset=utf-8");
+        assert_eq!(
+            resolve_content_type(&entry, "/about"),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            resolve_content_type(&entry, "/"),
+            "text/html; charset=utf-8"
+        );
     }
 
     #[tokio::test]
@@ -936,7 +980,10 @@ mod tests {
     #[tokio::test]
     async fn html_pages_still_get_livereload_injected() {
         let state = test_state();
-        state.pages.insert("/about", "<html><body>x</body></html>").await;
+        state
+            .pages
+            .insert("/about", "<html><body>x</body></html>")
+            .await;
         let router = test_router(state);
 
         let resp = router

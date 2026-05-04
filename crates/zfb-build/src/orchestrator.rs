@@ -150,7 +150,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // our purposes. Surface the recovery via warn so the operator
         // notices the upstream panic instead of silently absorbing it.
         let graph = self.graph.lock().unwrap_or_else(|p| {
-            warn!(site = "plan_for_changes", "graph mutex poisoned, recovering");
+            warn!(
+                site = "plan_for_changes",
+                "graph mutex poisoned, recovering"
+            );
             p.into_inner()
         });
 
@@ -186,7 +189,20 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
-                    plan.mark_pages(dirty);
+                    // If the graph returned no dirty pages (empty specific set),
+                    // fall back to rebuilding all pages. This handles two cases:
+                    //   1. Cold start: graph seeded with page nodes but has no
+                    //      reverse edges yet (content→page deps not resolved).
+                    //   2. Untracked file: file genuinely isn't in the graph;
+                    //      rebuild everything conservatively.
+                    // `PageSelection::All` is safe here — `resolve_all` will
+                    // expand it to the known page list before the pipeline runs.
+                    let effective = if dirty.is_empty() {
+                        PageSelection::All
+                    } else {
+                        dirty
+                    };
+                    plan.mark_pages(effective);
 
                     // Modules under an islands root re-bundle islands.
                     if matches!(class, PathClass::Module)
@@ -344,11 +360,17 @@ mod tests {
         let mut g = DependencyGraph::new();
         g.upsert(PageDeps::new(
             pid("/proj/pages/a.tsx"),
-            vec![(PathBuf::from("/proj/components/Header.tsx"), DepKind::Module)],
+            vec![(
+                PathBuf::from("/proj/components/Header.tsx"),
+                DepKind::Module,
+            )],
         ));
         g.upsert(PageDeps::new(
             pid("/proj/pages/b.tsx"),
-            vec![(PathBuf::from("/proj/components/Header.tsx"), DepKind::Module)],
+            vec![(
+                PathBuf::from("/proj/components/Header.tsx"),
+                DepKind::Module,
+            )],
         ));
         g.upsert(PageDeps::new(
             pid("/proj/pages/c.tsx"),

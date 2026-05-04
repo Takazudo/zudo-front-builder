@@ -75,7 +75,7 @@ use zfb_build::{
     PageRenderer, RelDistPath, RenderedPage,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
-use zfb_graph::{DependencyGraph, PageId};
+use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
 
 use crate::cli::DevArgs;
@@ -184,7 +184,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // cache miss we construct a known-empty graph. Default was removed
     // from DependencyGraph to prevent silent empty-graph construction
     // elsewhere.
-    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_else(DependencyGraph::new)));
+    let graph = Arc::new(Mutex::new(
+        initial_graph.unwrap_or_else(DependencyGraph::new),
+    ));
+
+    // Seed the graph with all page source paths from the router scan so
+    // `plan_for_changes` can resolve `PageSelection::All` to a concrete
+    // page list even before the first file-change tick. Without this
+    // seeding the graph is empty, `resolve_all` produces an empty page
+    // set, and every watcher tick is a no-op (zfb#N / cold-start bug).
+    if let Some(ref session) = dev_session {
+        if let Ok(mut g) = graph.lock() {
+            for page_id in session.page_ids() {
+                g.upsert(PageDeps::new(page_id, vec![]));
+            }
+        }
+    }
+
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
@@ -285,10 +301,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 /// denied while walking sources). On `None` the caller should bypass
 /// the persistence layer entirely — never falsely reuse a stale
 /// graph.
-fn compute_manifest_digest(
-    project_root: &Path,
-    watch_roots: &[PathBuf],
-) -> Option<ManifestDigest> {
+fn compute_manifest_digest(project_root: &Path, watch_roots: &[PathBuf]) -> Option<ManifestDigest> {
     // Config files that, when changed, must invalidate the graph
     // even though they live next to (not under) the watched roots.
     // Both JSON and TS are listed; missing ones are silently
@@ -385,6 +398,17 @@ impl DevRenderSession {
             html,
             content_type: None,
         }))
+    }
+
+    /// Return all known page IDs (source paths) from the router scan.
+    /// Used to seed the dependency graph so incremental rebuilds have a
+    /// non-empty page set to resolve against.
+    fn page_ids(&self) -> Vec<PageId> {
+        self.inner
+            .routes_by_source
+            .keys()
+            .map(|p| PageId::new(p.clone()))
+            .collect()
     }
 
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
