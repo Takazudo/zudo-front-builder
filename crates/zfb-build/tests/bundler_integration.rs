@@ -16,7 +16,7 @@
 //!   client bundle is `zfb-islands`' job).
 //!
 //! Assertions are deliberately syntactic — the test does **not** spin
-//! up miniflare, does **not** load the bundle into V8, and does **not**
+//! up the embedded V8 host, does **not** load the bundle into V8, and does **not**
 //! perform any port-binding work. It only verifies the resulting ESM
 //! file is well-formed (parseable as a JS module by a separate
 //! esbuild-syntax-check pass) and that the build-time substitutions

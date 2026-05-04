@@ -4,7 +4,7 @@
 // The canonical shape lives in Rust at `crates/zfb-content/src/content_bridge.rs`
 // (see `ContentSnapshot` and `EntrySnapshot`). The build-time pipeline
 // constructs the snapshot, serializes it to JSON, and embeds it in the
-// Worker bundle that miniflare loads. At Worker boot the embedded value
+// Worker bundle that the embedded V8 host loads. At Worker boot the embedded value
 // is handed to [`createPageRouter`] (re-exported from the package root),
 // which registers it with the `zfb/content` module so user pages calling
 // `getCollection("blog")` resolve from memory rather than from the

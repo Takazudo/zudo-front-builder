@@ -103,7 +103,7 @@ impl AssetPipeline for DevAssetPipeline {
         };
 
         if !pages.is_empty() {
-            // Reload the SSR renderer (miniflare worker) before rendering
+            // Reload the SSR renderer (embedded V8 host) before rendering
             // pages whenever the dirty set is non-empty. Errors abort the
             // tick — the watcher stays alive and the previous renderer
             // state is preserved by the orchestrator.

@@ -11,9 +11,9 @@
 //!   pattern). It does not walk a project root, resolve layouts, or run
 //!   `paths()`.
 //! - `zfb_build::renderer::render_all` — the production end-to-end
-//!   pipeline, which spawns a long-lived miniflare subprocess and
-//!   serves a pre-bundled Worker entry. That orchestrator is exercised
-//!   by `zfb-build`'s own test suite, not from inside `zfb-render`.
+//!   pipeline, which drives the embedded V8 host and serves a
+//!   pre-bundled Worker entry. That orchestrator is exercised by
+//!   `zfb-build`'s own test suite, not from inside `zfb-render`.
 //!
 //! Neither matches the in-process, fixture-walking, dual-framework
 //! harness the parked test was sketching. Building that harness is a

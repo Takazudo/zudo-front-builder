@@ -459,7 +459,7 @@ describe("defaultComponents (htmlOverrides convention)", () => {
 //
 // When a snapshot is installed via `setContentSnapshot`, `getCollection`
 // resolves from memory rather than touching `fs`. This is the production
-// path under miniflare / Cloudflare Workers, which have no filesystem.
+// path under the embedded V8 host / Cloudflare Workers, which have no filesystem.
 // The fs path remains the v0 fallback for unit tests and direct Node
 // invocations outside the Worker bundle.
 // ---------------------------------------------------------------------------

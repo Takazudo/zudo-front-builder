@@ -4,8 +4,8 @@
 - **Date:** 2026-04-27
 - **Owners:** Sub 50 (Engine Primitives — engine-vs-framework boundary)
 - **Related:** ADR-001 (JS runtime selection — superseded by ADR-005;
-  the `deno_core` implementation it gated has been replaced with a
-  Node-hosted miniflare worker), ADR-002 (framework adapter contract
+  the `deno_core` implementation it gated has been replaced with the
+  embedded V8 host — see ADR-005 and ADR-007), ADR-002 (framework adapter contract
   for Preact / React), ADR-004 (content bridge contract — the Rust↔JS
   surface for `getCollection` / `getEntry`), Epic #42 (Engine
   Primitives)

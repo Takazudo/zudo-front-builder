@@ -17,7 +17,7 @@ crates. They're injected as callback functions on a `BuildContext` so:
 
 - the orchestrator's surface stays free of heavyweight transitive
   dependencies (the SWC pipeline in `zfb-render`, and the
-  miniflare / esbuild npm subprocess wrappers in `zfb-css` /
+  esbuild npm subprocess wrappers in `zfb-css` /
   `zfb-islands`), and
 - tests can plug in fakes that count invocations without spawning
   Tailwind / esbuild subprocesses.

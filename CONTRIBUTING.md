@@ -59,7 +59,7 @@ The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the 
 
 ## External tool version pins
 
-zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/miniflare/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
+zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
 
 The pin lives in two places that **must move together**:
 
@@ -70,14 +70,13 @@ The pin lives in two places that **must move together**:
 | ----------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------- |
 | esbuild     | `EXPECTED_ESBUILD_VERSION`, `EXPECTED_ESBUILD_SHA256`                                               | `crates/zfb-islands/src/esbuild.rs`            | (binary; populated by release engineering into `crates/zfb/binaries/esbuild/esbuild`) |
 | wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb/src/commands/preview.rs`           | `wrangler` in `package.json`          |
-| miniflare   | `EXPECTED_MINIFLARE_VERSION` (informational; not gated at runtime — wrangler owns the subprocess)   | `crates/zfb/src/commands/preview.rs`           | `miniflare` in `package.json`         |
-| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via miniflare → `pnpm-lock.yaml`)    | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
+| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via wrangler → `pnpm-lock.yaml`)     | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
 
-### Bumping wrangler / miniflare / workerd
+### Bumping wrangler / workerd
 
-1. Pick the new versions you want (typically a coordinated wrangler + miniflare + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
-2. Edit the `wrangler` and `miniflare` entries in `package.json` to the new exact versions.
-3. Edit `EXPECTED_WRANGLER_VERSION`, `EXPECTED_MINIFLARE_VERSION`, and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
+1. Pick the new versions you want (typically a coordinated wrangler + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
+2. Edit the `wrangler` entry in `package.json` to the new exact version.
+3. Edit `EXPECTED_WRANGLER_VERSION` and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
 4. Run `pnpm install` to refresh `pnpm-lock.yaml`. Confirm the resolved `workerd` version in the lockfile matches the constant you just set.
 5. Run `cargo test -p zfb` to make sure the version-gate tests still pass.
 6. Commit `package.json`, `pnpm-lock.yaml`, and the constants change in one commit so the pin moves atomically.

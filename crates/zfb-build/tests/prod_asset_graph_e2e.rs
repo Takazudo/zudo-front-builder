@@ -24,7 +24,7 @@
 //! ## Subprocess vs. in-process
 //!
 //! Subprocess (`cargo run --bin zfb -- build`) is the most authentic
-//! e2e shape but compounds Rust + esbuild + node + miniflare +
+//! e2e shape but compounds Rust + esbuild + node + embedded-V8 +
 //! Tailwind cost into a single test, which busts the ~30s budget for
 //! the day-to-day `cargo test` loop. We instead drive the
 //! orchestration entry point directly:

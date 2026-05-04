@@ -35,10 +35,10 @@ node --test crates/zfb-render/runtime/__tests__/zfb-sdk.test.mjs
 ```
 
 Use Node 20+ (the project's engines pin a newer Node toolchain). Per
-ADR-005 the production execution path runs the SDK through a miniflare
-(workerd) subprocess driven by `@takazudo/zfb-runtime`; the Node tests
-here stay as the fast feedback loop for SDK-only changes and do not
-exercise the subprocess boundary.
+ADR-007 the production execution path runs the SDK through the embedded
+V8 host driven by `@takazudo/zfb-runtime`; the Node tests here stay as
+the fast feedback loop for SDK-only changes and do not exercise the host
+boundary.
 
 ## Coordination notes
 

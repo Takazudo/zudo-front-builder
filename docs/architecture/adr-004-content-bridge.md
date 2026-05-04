@@ -4,8 +4,8 @@
 - **Date:** 2026-04-27
 - **Owners:** Sub 48 (Engine Primitives — content query contract)
 - **Related:** ADR-001 (JS runtime selection — superseded by ADR-005;
-  the `deno_core` implementation has been replaced with a Node-hosted
-  miniflare worker), Epic #42 (Engine Primitives)
+  the `deno_core` implementation has been replaced with the embedded V8
+  host — see ADR-005 and ADR-007), Epic #42 (Engine Primitives)
 
 ## Context
 

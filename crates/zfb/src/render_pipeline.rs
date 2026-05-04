@@ -2,7 +2,7 @@
 //! (`zfb_build::bundler` + `zfb_build::renderer`) into the `zfb build`
 //! and `zfb dev` commands.
 //!
-//! This module deliberately does **not** spawn miniflare or call
+//! This module deliberately does **not** start the embedded V8 host or call
 //! [`zfb_build::renderer::render_all`] directly. It owns the pure /
 //! testable pieces of the wiring:
 //!
@@ -48,8 +48,8 @@
 //!    not `default { fetch }`, while
 //!    [`zfb_build::renderer::render_all`] expects a Worker-shaped
 //!    bundle. Wrapping is its own sub-task; today the renderer call
-//!    will fail at miniflare spawn time with a workerd-side error
-//!    message that names the missing `default` export. The CLI
+//!    will fail at embedded V8 host boot time with an error message
+//!    that names the missing `default` export. The CLI
 //!    surfaces that error verbatim instead of swallowing it.
 
 use std::collections::BTreeMap;
@@ -364,7 +364,7 @@ fn format_paths_error(e: &PathsError) -> String {
 /// synthetic `/__paths__/<encoded-route-key>` endpoint.
 ///
 /// The endpoint is provided by `@takazudo/zfb-runtime`'s `createPageRouter`
-/// when the bundle is loaded under miniflare. For each
+/// when the bundle is loaded by the embedded V8 host. For each
 /// [`DeferredDynamicRoute`] in `deferred`, this function:
 ///
 /// 1. Percent-encodes the route key so it is safe as a URL path segment.
@@ -375,10 +375,9 @@ fn format_paths_error(e: &PathsError) -> String {
 ///    [`DynamicExpansion::resolved`]; failures go into
 ///    [`DynamicExpansion::deferred`].
 ///
-/// `base_url` is the URL printed by the miniflare bootstrap (e.g.
-/// `http://127.0.0.1:54321/`). Call [`zfb_build::renderer::start`] with
-/// [`zfb_build::renderer::Backend::SpawnMiniflare`] before this function
-/// and pass `state.base_url()`.
+/// `base_url` is the base URL of the running embedded V8 host (e.g.
+/// `http://127.0.0.1:54321/`). Call [`zfb_build::renderer::start`] before
+/// this function and pass `state.base_url()`.
 ///
 /// The timeout applies per-request. A generous default (30 s) is used
 /// because `paths()` may run a content-collection query.
@@ -607,7 +606,7 @@ pub fn build_prerender_map(
 /// Verify that `@takazudo/zfb-runtime` is resolvable from `project_root`
 /// (i.e. a `node_modules/@takazudo/zfb-runtime` exists somewhere up the
 /// directory tree). The bundle the renderer drives imports the runtime
-/// at module load time; without it, miniflare boots and immediately
+/// at module load time; without it, the embedded V8 host boots and immediately
 /// throws a module-resolution error that's harder for users to map back
 /// to a fixable action.
 ///
@@ -631,7 +630,7 @@ pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
     Err(anyhow::anyhow!(
         "could not find `node_modules/@takazudo/zfb-runtime` under {} or any parent. \
          Run `pnpm install` (or your package manager's equivalent) in the project root \
-         so the SSG-render bundle can resolve `@takazudo/zfb-runtime` at miniflare load time.",
+         so the SSG-render bundle can resolve `@takazudo/zfb-runtime` at embedded V8 host load time.",
         project_root.display()
     ))
     .context("zfb runtime resolution check failed")
@@ -1071,8 +1070,8 @@ mod tests {
     /// then walk through `build_route_universe` →
     /// `expand_dynamic_routes` and assert the combined renderer-shaped
     /// route list. This is the closest we can get to end-to-end without
-    /// booting miniflare (which is gated by the sibling worker-entry
-    /// topic).
+    /// booting the embedded V8 host (which is gated by the sibling
+    /// worker-entry topic).
     #[test]
     fn build_then_expand_combined_route_universe() {
         let dir = tempdir().unwrap();

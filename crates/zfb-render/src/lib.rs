@@ -2,9 +2,8 @@
 //! render orchestrator.
 //!
 //! Module slots:
-//! - [`render_host`] — `RenderHost` trait (abstraction seam; per ADR-005 the
-//!   production host is a miniflare subprocess client wired in by the build
-//!   orchestrator).
+//! - [`render_host`] — `RenderHost` trait (abstraction seam; per ADR-007 the
+//!   production host is an embedded V8 host wired in by the build orchestrator).
 //! - [`swc_pipeline`] — SWC parse + transform (TS strip + JSX) into ES module JS.
 //! - [`loader`] — module resolver (compiles + caches imported modules).
 //! - [`render`] — `Renderer` orchestrator: compile → load → execute → render.

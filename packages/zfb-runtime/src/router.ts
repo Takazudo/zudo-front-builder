@@ -1,11 +1,11 @@
 // `@takazudo/zfb-runtime` — Hono-based page router.
 //
-// `createPageRouter` is the JS-side entry point for ADR-005's SSG-first
+// `createPageRouter` is the JS-side entry point for ADR-007's SSG-first
 // architecture. The pipeline goes:
 //
 //   user pages/ + content/ + layouts/ + components/
 //     → esbuild bundle (T3)            // single ESM file
-//     → miniflare subprocess (T6)      // workerd; same runtime as CF Workers
+//     → embedded V8 host (T6)          // same WinterCG surface as CF Workers
 //     → createPageRouter({ pages, contentSnapshot, framework })
 //     → (request) => Promise<Response>
 //
@@ -24,8 +24,8 @@
 //
 // The Rust build pipeline needs to evaluate non-literal `paths()` exports
 // (e.g. those that `await import("@takazudo/zfb/content")` and call `getCollection`)
-// at runtime against the running worker. To avoid a second miniflare
-// subprocess, the router exposes a synthetic internal endpoint:
+// at runtime against the running embedded host. The router exposes a
+// synthetic internal endpoint:
 //
 //   GET /__paths__/<percent-encoded-route-key>
 //
@@ -65,8 +65,8 @@ export interface PageHeading {
  *   `paths()` entry (for dynamic routes). The return value is fed straight
  *   to the framework adapter's `renderToString`.
  * - `prerender`: literal `false` opts a route OUT of build-time SSG (T5
- *   contract). The page router still serves it under miniflare so dev
- *   mode behaves identically; SSG callers filter the route list before
+ *   contract). The page router still serves it under the embedded V8 host
+ *   so dev mode behaves identically; SSG callers filter the route list before
  *   driving the renderer.
  * - `contentType`: optional override for non-HTML routes (e.g.
  *   `application/xml` for `rss.xml.tsx`). Default is
@@ -134,7 +134,7 @@ export type PageRouter = (request: Request) => Promise<Response>;
  *
  * Aligned with #49's per-page `contentType` convention: the default
  * served for HTML pages is `text/html; charset=utf-8`. Tests pin this
- * verbatim because miniflare/workerd does NOT auto-set a charset.
+ * verbatim because the embedded V8 host does NOT auto-set a charset.
  */
 const DEFAULT_CONTENT_TYPE = "text/html; charset=utf-8";
 
@@ -176,7 +176,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // ship a page that conflicts with the build pipeline's wire format.
   for (const page of opts.pages) {
     if (routeShadowsPathsEndpoint(page.route)) {
-      // Use console.warn so the message reaches miniflare's tail logs
+      // Use console.warn so the message reaches the host's tail logs
       // without bringing down the worker. The build pipeline's
       // /__paths__ requests still resolve correctly because the
       // synthetic handler is registered first.
@@ -256,8 +256,8 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       const mod = await page.module();
       if (typeof mod.default !== "function") {
         // Surface as a 500 with a well-known message rather than letting
-        // Hono swallow the error into a generic body. T6's miniflare
-        // log-tail / source-map plumbing is what eventually projects
+        // Hono swallow the error into a generic body. T6's embedded V8
+        // host log-tail / source-map plumbing is what eventually projects
         // page-side errors back to the user's TSX line; until then the
         // pinned message is the contract this layer ships.
         return c.body(
