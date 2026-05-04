@@ -1,0 +1,135 @@
+---
+title: Incremental rebuild
+description: "How zfb's dependency graph limits each rebuild to the pages actually affected by a file change."
+sidebar_position: 7
+category: Concepts
+---
+
+Edit one file, rebuild only the pages that depend on it. This page explains how that guarantee works, what the graph tracks, where the wins are real, and where the current costs live.
+
+## The promise
+
+When you save `content/blog/post-3.md` during `zfb dev`, zfb does not rebuild every page on your site. It asks the dependency graph which pages imported that file, and re-renders only those — typically one or two pages in a content-heavy blog.
+
+A concrete example: a 500-page site with a blog index (`pages/blog/index.tsx`) and per-post pages (`pages/blog/[slug].tsx`) consuming a `blog` collection. Saving `content/blog/post-3.md` dirties `pages/blog/index.tsx` (lists all posts) and the single post page that renders that slug — two pages, not five hundred.
+
+The graph makes this precise. It is not a heuristic or a cache invalidation timeout — each page is rebuilt if and only if a recorded dependency changed.
+
+## What zfb-graph tracks
+
+`crates/zfb-graph` maintains two layers of dependency information.
+
+**Source-level deps (per-page):**
+
+Each page is assigned a `PageId` (its source `.tsx` path). The graph records every file that page depends on, tagged with a `DepKind`:
+
+| Kind | Examples |
+|---|---|
+| `Module` | TSX/TS layouts, components, lib files |
+| `Content` | Markdown/MDX entries via content collections |
+| `Style` | CSS sources, CSS modules |
+| `Data` | JSON/TOML/YAML data modules |
+| `Asset` | Static files under `public/` |
+
+The reverse index maps every dependency path back to the set of pages that consume it. This is the index that `dirty_pages()` queries.
+
+**Asset-level deps (per-page):**
+
+Alongside the source graph, each page also carries an `AssetDeps` record:
+
+- `islands` — the stable component identifiers of every `"use client"` island the page hydrates.
+- `css_modules` — the CSS-Modules source paths the page imports.
+
+This second layer answers a different question: not "which pages re-render?" but "which asset bundles re-emit?" A change to a `"use client"` component tells the graph which page-scoped islands bundles to invalidate without re-rendering every page that ships JS.
+
+The graph updates both layers after every successful render, so the next query always has a current picture.
+
+## DirtySet
+
+When a file changes, the build orchestrator calls `DependencyGraph::dirty_pages(path)` (or the batch variant `dirty_pages_batch` for bursts of changes). The return type is `DirtySet`:
+
+```rust
+pub enum DirtySet {
+    /// Rebuild every page. Triggered by global files like zfb.config.ts.
+    All,
+    /// Rebuild exactly this set of pages. May be empty.
+    Specific(BTreeSet<PageId>),
+}
+```
+
+**`DirtySet::Specific`** is the common case. The graph performs a reverse-index lookup in O(consumers) time and returns only the pages that imported the changed path.
+
+**`DirtySet::All`** is the nuclear option. Files registered via `DependencyGraph::mark_global()` always return `All` regardless of recorded edges. `zfb.config.ts` is globally registered by default. Other candidates include top-level `_app.tsx` or `_document.tsx` — anything whose change semantically affects every page.
+
+Unknown paths (a file the graph has never seen as a dependency) return an empty `DirtySet::Specific`. Nothing to rebuild, nothing happens.
+
+## What the dev pipeline does with the dirty set
+
+The orchestrator (`crates/zfb-build`) receives the `DirtySet` and feeds it into the dev pipeline (`DevAssetPipeline`):
+
+1. **Re-render dirty pages only.** The pipeline calls the renderer for the pages in `DirtySet::Specific`. Pages not in the set are untouched.
+2. **Skip writes when HTML is byte-identical.** After rendering, each page's new HTML is compared to the last-known bytes. If the bytes match, the file is not written and the page is not included in the reload signal. A pure refactor that produces no semantic HTML change produces no browser reload.
+3. **Re-bundle islands only when consuming pages changed.** The islands sub-pipeline runs only when the plan's `rerun_islands` flag is set — which the orchestrator sets only when a changed file is inside an islands root (e.g. `components/`). A content-only change does not trigger an islands re-bundle.
+4. **Keep filenames stable.** Dev-mode output files use stable names (no content hashes). The browser cache contract does not change between watcher ticks. Content hashing is the production pipeline's job.
+
+The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages.
+
+For a deeper look at the orchestrator design, see [Build engine](/docs/architecture/build-engine).
+
+## Comparison to Astro's dev model
+
+Astro uses Vite under the hood. Vite's hot module replacement (HMR) invalidates modules, walks the module import graph to find affected ESM boundaries, and pushes updates to the browser over a WebSocket. The centralized Content Layer caches parsed content in a SQLite store and reloads on collection changes.
+
+zfb's model differs in granularity level:
+
+- **Astro's unit of invalidation is an ES module.** A change invalidates the module and the bundler decides which chunks to re-emit based on the module graph.
+- **zfb's unit of invalidation is a page.** The dependency graph is keyed on rendered output, not on modules, so a shared component change dirties exactly the pages that produce HTML — not the full import closure.
+
+For a content-heavy site the distinction matters: editing one MDX file in Astro can trigger a Content Layer reload that re-parses every collection entry before the page re-renders. zfb routes the change through the graph, finds the two pages that consume that entry, and renders only those without touching the snapshot for other entries.
+
+For the broader architecture picture, see [Architecture overview](/docs/concepts/engine-vs-framework).
+
+## Honest current bottlenecks
+
+The dependency graph is not the bottleneck. Even with a perfect dirty set (one page to rebuild), two costs are paid on every dev-mode rebuild:
+
+**1. Per-rebuild engine boot.**
+
+zfb renders pages by loading a worker bundle into an embedded V8 host (Node + miniflare + workerd). Each rebuild reloads the renderer — that means a cold Node process start, miniflare initialisation, and workerd spin-up. This overhead is constant regardless of how many pages are dirty. The graph saves you from rendering 500 pages, but it cannot save you from the ~N ms of engine boot that happens before any page renders.
+
+This is not a graph problem. It is a separate optimization axis — keeping the worker hot between ticks, or switching to a persistent renderer host — that is not in scope today.
+
+**2. Worker bundle rebuild on content changes.**
+
+The `ContentSnapshot` (all content collection entries, serialized to JSON) is embedded directly into the worker bundle that the V8 host loads. A content change today triggers a full bundle rebuild, even if only one entry changed. Bundle rebuild time is O(snapshot size), not O(changed entries).
+
+For the project sizes zfb targets — hundreds of MDX files, typical documentation sites — this fits comfortably. Very large content sets will push rebuild time up linearly. The planned mitigations (snapshot patching so only the changed entry is re-serialized, per-collection sharding so each bundle covers one collection) are tracked as future roadmap but are not implemented today.
+
+To measure the snapshot footprint of a build, set `ZFB_DEBUG_SNAPSHOT=1`:
+
+```sh
+ZFB_DEBUG_SNAPSHOT=1 pnpm exec zfb build
+```
+
+This prints a line to stderr like:
+
+```
+content snapshot: 187 entries / 412 KB
+```
+
+See the [README's snapshot section](https://github.com/Takazudo/zudo-front-builder#limits) for the full measurement guide and the planned sharding work.
+
+## Scaling sweet spot
+
+The table below gives a rough feel for where the current architecture is comfortable and where it hurts. Numbers are order-of-magnitude estimates — actual times depend on hardware, content entry sizes, and component depth.
+
+| Site size | Cold-start boot | Graph lookup | Pages re-rendered | Overall feel |
+|---|---|---|---|---|
+| ~100 pages, ~100 content entries | Fast | Instant | 1–3 | Instant save-to-reload |
+| ~1 000 pages, ~1 000 entries | Fast | Instant | 1–5 | Snappy; snapshot size still small |
+| ~10 000 pages, ~5 000 entries | Fast | Instant | 1–10 | Noticeable; snapshot rebuild is the cost |
+| ~100 000+ pages | Fast | Instant | 1–many | Linear pain; consider split builds or per-collection sharding |
+
+The graph lookup and page-render columns do not change much with site size — that is the win. The snapshot rebuild column grows with content set size and is the current ceiling. Engine boot is constant overhead that matters most when the dirty set is tiny (one page to render, but still paying the same boot cost).
+
+For sites above the ~10 k line, the advice today is: monitor snapshot size with `ZFB_DEBUG_SNAPSHOT`, keep content entries short, and plan for per-collection sharding when the roadmap delivers it.
