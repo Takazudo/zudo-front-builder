@@ -72,7 +72,7 @@ use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
     eval_deferred_paths_via_worker, expand_dynamic_routes, DeferredDynamicRoute,
-    RouteUniversePlan,
+    RouteUniversePlan, WorkerDispatch,
 };
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
@@ -303,8 +303,15 @@ impl BuildRunner for DefaultRunner {
             request_timeout: None,
         })
         .context("could not start miniflare for runtime paths() evaluation")?;
-        let base_url = state.base_url().to_string();
-        let expansion = eval_deferred_paths_via_worker(deferred, &base_url, cache, None);
+        // `base_url()` returns `Some(url)` for the SpawnMiniflare/Existing
+        // HTTP backends; the unwrap is safe here because we just started with
+        // `Backend::SpawnMiniflare`.
+        let base_url = state
+            .base_url()
+            .expect("RendererState started with SpawnMiniflare must have a base_url")
+            .to_string();
+        let mut dispatch = WorkerDispatch::Http { base_url: base_url.clone() };
+        let expansion = eval_deferred_paths_via_worker(deferred, &mut dispatch, cache, None);
         // Return the `RendererState` wrapped in a `WorkerHandle` so the
         // miniflare process stays alive through `render_all`, then is
         // killed when the caller drops the handle.

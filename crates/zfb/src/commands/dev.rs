@@ -363,12 +363,12 @@ impl DevRenderSession {
             Some(e) => e.clone(),
             None => return Ok(None),
         };
-        let lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+        let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
             tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
             p.into_inner()
         });
         let state = lock
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
         let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
         let html = std::fs::read_to_string(&written)
