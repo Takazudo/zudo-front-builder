@@ -365,23 +365,22 @@ fn format_paths_error(e: &PathsError) -> String {
 ///
 /// Abstracts over the two ways the worker can be reached:
 ///
-/// - `Http { base_url }` — the miniflare subprocess's base URL (e.g.
+/// - `Http { base_url }` — base URL of a pre-running HTTP server (e.g.
 ///   `http://127.0.0.1:54321/`). Requests go through `reqwest::blocking`.
-///   Use this when `Backend::SpawnMiniflare` or `Backend::Existing` is
-///   active; pass `state.base_url().unwrap()` from the [`RendererState`].
+///   Use this when `Backend::Existing` is active; pass
+///   `state.base_url().unwrap()` from the [`RendererState`].
 ///
-/// - `EmbeddedV8 { host }` — in-process V8 host (Sub 2 —
-///   `EmbeddedV8RenderHost`). Requests call `host.dispatch_fetch` directly
-///   without a TCP hop. Pass a mutable reference to the host extracted from
-///   the active [`RendererState`] (via `state.embedded_v8_host_mut()` once
-///   that accessor is added in Sub 6). The host is `!Send + !Sync`; the
-///   caller must ensure this function runs on the same thread as the host.
+/// - `EmbeddedV8 { host }` — in-process V8 host. Requests call
+///   `host.dispatch_fetch` directly without a TCP hop. Pass a mutable
+///   reference to the host extracted from the active [`RendererState`]
+///   via `state.embedded_v8_host_mut()`. The adapter is `Send` via
+///   [`crate::v8_host_adapter::ThreadedV8Host`].
 ///
 /// The `__paths__` bundle registration in
 /// `packages/zfb-runtime/src/router.ts` is unchanged — only the Rust
 /// dispatch mechanism differs.
 pub enum WorkerDispatch<'h> {
-    /// HTTP path: miniflare subprocess or `Backend::Existing`.
+    /// HTTP path: `Backend::Existing` (pre-running server).
     Http {
         /// Base URL of the running worker (e.g. `http://127.0.0.1:54321/`).
         base_url: String,
@@ -412,13 +411,12 @@ pub enum WorkerDispatch<'h> {
 ///    [`DynamicExpansion::resolved`]; failures go into
 ///    [`DynamicExpansion::deferred`].
 ///
-/// **Dispatch dual-path (post-merge sub-162 + sub-164 + sub-167):** the
-/// production embedded V8 path uses `WorkerDispatch::EmbeddedV8 { host: ... }`
-/// to call the host's `dispatch_fetch` directly. `WorkerDispatch::Http` is
-/// kept for `Backend::Existing` callers (e.g. test fixtures that hand the
-/// renderer a pre-running URL). Real production code post-Sub-167 uses
-/// neither miniflare nor an HTTP base_url for the embedded path; the host
-/// is in-process.
+/// **Dispatch dual-path:** the production embedded V8 path uses
+/// `WorkerDispatch::EmbeddedV8 { host: ... }` to call the host's
+/// `dispatch_fetch` directly. `WorkerDispatch::Http` is kept for
+/// `Backend::Existing` callers (e.g. test fixtures that hand the renderer a
+/// pre-running URL). Production code uses the in-process embedded V8 host;
+/// there is no HTTP server or base_url on the SSG path.
 ///
 /// The timeout applies per-request (HTTP path only). A generous default (30 s)
 /// is used because `paths()` may run a content-collection query. For the V8
