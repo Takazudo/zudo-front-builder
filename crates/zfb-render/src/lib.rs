@@ -3,8 +3,9 @@
 //!
 //! Module slots:
 //! - [`render_host`] — `RenderHost` trait (abstraction seam; per ADR-005 the
-//!   production host is a miniflare subprocess client wired in by the build
-//!   orchestrator).
+//!   production host historically was a miniflare subprocess client; ADR-007
+//!   re-introduces an in-process embedded V8 host as the default).
+//! - [`embedded_v8`] — in-process V8 host (`embed_v8` cargo feature, default-on).
 //! - [`swc_pipeline`] — SWC parse + transform (TS strip + JSX) into ES module JS.
 //! - [`loader`] — module resolver (compiles + caches imported modules).
 //! - [`render`] — `Renderer` orchestrator: compile → load → execute → render.
@@ -26,6 +27,12 @@ pub mod render;
 pub mod render_host;
 pub mod sourcemap;
 pub mod swc_pipeline;
+
+#[cfg(feature = "embed_v8")]
+pub mod embedded_v8;
+
+#[cfg(feature = "embed_v8")]
+pub use embedded_v8::{EmbeddedV8RenderHost, HttpRequestLike, HttpResponseLike};
 
 pub use error::{RenderError, Result};
 pub use loader::{read_to_string, ResolverError};
