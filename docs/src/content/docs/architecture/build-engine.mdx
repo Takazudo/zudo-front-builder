@@ -4,7 +4,9 @@ description: "How zfb's crates fit together, why the rebuild is per-page, and wh
 sidebar_position: 1
 ---
 
-This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/docs/concepts/build-pipeline); this page explains why the story is shaped this way.
+This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/concepts/build-pipeline); this page explains why the story is shaped this way.
+
+See also: [Architecture overview](/concepts/architecture-overview) · [Islands](/concepts/islands) · [Incremental rebuild](/concepts/incremental-rebuild)
 
 ## The crate split
 
@@ -30,13 +32,39 @@ When a file changes, `zfb-watcher` emits a `Change`, the orchestrator asks `zfb-
 
 The win is granularity. A 2,000-page site rebuilds the affected pages in milliseconds when a shared header changes. The cost is that the graph must be honest — `zfb-graph` is updated as part of every successful render so the next query has a current picture.
 
-<Info title="v0 status">
+<Info title="Current status">
 
-  Most pieces of the engine are wired and unit-tested. The full
-  end-to-end render flow — TSX → JS → HTML — is gated on ADR-001's
-  runtime decision; see [JS runtime](/docs/architecture/js-runtime).
+  The orchestrator, dependency graph, watcher, atomic writes, and CSS
+  pipeline are wired and unit-tested. The full end-to-end render flow
+  — TSX → JS → HTML — runs through the embedded V8 host chosen by
+  [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md);
+  see [JS runtime](/architecture/js-runtime) for the historical
+  evaluation and [ADR-005](/architecture/js-runtime) for the
+  settled decision.
 
 </Info>
+
+## Tools the engine uses (and why they're swappable)
+
+zfb is the orchestrator. It owns the dependency graph, the per-page rebuild contract, and the data flowing between crates. The external tools it calls are an implementation detail — each sits behind a Rust trait, so a future ADR can replace any one of them without touching the rest of the pipeline.
+
+| Tool | Role | Trait boundary |
+| --- | --- | --- |
+| **esbuild** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the per-island client bundles (`zfb-islands`). Fast, handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
+| **workerd / miniflare** | The JS runtime that executes the server-side worker bundle for SSR and the dev preview server. Chosen by [ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md). | `RenderHost` (in `zfb-render`) |
+| **SWC** | Compiles TSX source to JavaScript before handing it off to esbuild or the render host. Lives inside `zfb-render`. | Internal to `zfb-render`; swappable by replacing that crate's transform step |
+| **lol_html** | Streaming HTML rewriter used to inject hydration entry-point `<script>` tags and island mount markers into the rendered HTML without a full parse. | Used inside `zfb-build/head_inject.rs`; no public trait needed — it is a low-level utility |
+
+### How the layering works
+
+zfb owns orchestration, the dependency graph, and the per-page contract. The tools each appear in exactly one layer:
+
+- **esbuild** is called in two places: `zfb-build` (server worker bundle) and `zfb-islands` (per-island client bundles). Both use it for bundling TypeScript/JSX source trees; neither exposes it to the crates above.
+- **workerd / miniflare** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host boots a miniflare worker. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
+- **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before esbuild sees the source. Either way it is invisible to the orchestrator.
+- **lol_html** runs after the render host returns HTML, inside `zfb-build/head_inject.rs`. The orchestrator sees plain strings in and plain strings out.
+
+This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/concepts/incremental-rebuild) for how the dependency graph feeds the per-page policy.
 
 ## Atomic writes
 

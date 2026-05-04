@@ -1,0 +1,135 @@
+---
+title: "Future directions: JS runtime exploration"
+description: "A thinking-out-loud sketch of alternative JS-runtime hosts for zfb's build-time render step. Exploration only — ADR-007 stands."
+sidebar_position: 5
+---
+
+<Warning title="Exploration, not a committed direction">
+
+This page is thinking-out-loud. It captures the reasoning behind architectural
+exploration of alternative JS-runtime hosts so that future contributors (and AI
+agents) understand the design space without mistaking the discussion for a
+ratified decision. **ADR-007 is the accepted decision.** If and when any
+alternative is adopted, a new ADR will record it formally.
+
+</Warning>
+
+## What we have today
+
+`@takazudo/zfb-runtime` is a Hono-style page router that runs inside an
+in-process V8 isolate via `deno_core` at build time. The bundle is shaped as a
+Cloudflare-Workers-compatible `export default { fetch }` module, per
+[ADR-007](/architecture/js-runtime). The same bundle deploys unchanged to
+Cloudflare Workers for runtime SSR via `packages/zfb-adapter-cloudflare`. The
+`RenderHost` trait in `crates/zfb-render` is the Rust abstraction that wraps
+the host — the renderer never names the concrete implementation. Today's
+concrete implementation is `DenoCoreHost`.
+
+## The implementation / contract distinction
+
+The design space splits into two layers, and the distinction matters:
+
+**The bundle contract is locked.** `@takazudo/zfb-runtime` exports
+`export default { fetch }` — the workerd shape. That contract is what
+Cloudflare Workers loads in production. It does not change regardless of which
+engine runs it at build time. Hono's routing core, the page-render path, and
+`getCollection` all live above this boundary. So does `packages/zfb-adapter-cloudflare`.
+
+**The execution host is implementation.** `deno_core` is what runs the bundle
+during `zfb build`. Nothing in the bundle itself knows or cares which engine is
+executing it — it sees Web APIs (`fetch`, `Request`, `Response`, `URL`) and a
+module loader. Any host that provides those APIs and can load an ESM bundle
+satisfies the contract.
+
+Other hosts that could, in principle, satisfy the contract:
+
+- **workerd as a sidecar binary** — run workerd as a subprocess, just like
+  miniflare did (the ADR-005 era), but using the upstream workerd binary
+  directly rather than the Node-hosted miniflare wrapper.
+- **Bun** — Bun ships a built-in JS runtime with Web APIs and ESM support.
+- **Deno** — the Deno CLI could be invoked as a subprocess much like miniflare.
+- **deno_core embedded V8** — the current choice: V8 in-process via the
+  `deno_core` Rust crate, with `deno_fetch` / `deno_web` / `deno_url` for Web
+  API coverage.
+
+None of the first three are currently supported. This section is conceptual.
+
+## Trade-off sketch
+
+The table covers the candidates that have come up in architectural discussion.
+"Current" is `deno_core` (ADR-007).
+
+| Host | What it solves | What it costs | What it forecloses |
+|------|---------------|---------------|-------------------|
+| **deno_core** *(current)* | No Node required; in-process; ~30–40 MB binary growth; source-accurate errors | 15–30 min first compile; V8 recompile on crate bumps | Ship a `zfb-lean` binary without V8 |
+| **workerd sidecar** | True workerd parity at build time; no V8 in Rust binary | ~50–100 MB sidecar binary; subprocess latency; still not Node-free (miniflare was Node; bare workerd is C++ so Node-free, but adds a second binary to distribute) | In-process render speed |
+| **Bun subprocess** | Very fast cold start; single binary; Node-free | Bun's `fetch` semantics differ subtly from workerd's; subprocess boundary; Bun version pinning | Full Web API parity without shims |
+| **Deno subprocess** | Deno's `fetch` closely tracks the spec; Node-free | Deno version pinning; subprocess IPC overhead | In-process render speed |
+
+The workerd-sidecar path is the most faithful to the "same engine at build and
+deploy time" principle that ADR-005 argued for. The cost is distribution
+complexity: shipping a C++ binary alongside the Rust CLI.
+
+The embedded `deno_core` path (the current choice) wins on distribution
+simplicity and in-process speed at the expense of build-time compile cost and
+approximate (rather than exact) Web API parity with workerd.
+
+## Tauri / desktop angle
+
+The primary reason this exploration exists is the Tauri distribution goal. If
+and when zfb ships as a desktop app, the zfb binary must run on end-user
+machines without Node.js installed. See the [desktop deployment
+guide](/guides/desktop-deployment) for the current facts: `zfb build`
+outputs plain HTML that a Tauri app can serve as static assets without any JS
+runtime on the user's machine. The constraint is the _build_ step, not the
+_output_.
+
+ADR-007 resolved this constraint by re-embedding `deno_core`, dropping the
+Node requirement from build time. Any future exploration of alternative hosts
+would face the same constraint: the host must either be embeddable in the Rust
+binary or distributable as a sidecar without requiring Node (or any separately-
+installed JS runtime) on the user's machine.
+
+For a deeper look at the overall runtime stack, see [architecture
+overview](/concepts/architecture-overview).
+
+## What would need to change for a host swap
+
+The `RenderHost` trait is already the abstraction seam. Swapping the host
+implementation would touch:
+
+1. **`crates/zfb-render` — new `RenderHost` impl.** Add a new concrete struct
+   (e.g. `WorkerdSidecarHost`, `BunHost`) that satisfies the three trait
+   methods: `execute_module`, `call_default`, `get_export`. The rest of the
+   renderer is unaffected.
+2. **Web API shim layer.** `deno_core` provides Web APIs via extension crates
+   (`deno_fetch`, `deno_web`, `deno_url`, `deno_console`). An alternative
+   embedded host would need an equivalent set of shims so the bundle's
+   `new Request(...)` and `new URL(...)` calls succeed. A subprocess host
+   (workerd sidecar, Bun, Deno) gets this for free from the subprocess runtime.
+3. **ESM module loader.** The host must resolve `import` specifiers and load
+   the `@takazudo/zfb-runtime` bundle. `deno_core` ships a built-in ESM loader.
+   An embedded alternative would need to replicate this. A subprocess host
+   handles it natively.
+4. **Snapshot / isolate injection.** `deno_core` supports V8 snapshots to
+   pre-initialize the isolate and speed up cold starts. An alternative host
+   would have its own equivalent (or none). The `__zfb.content` global
+   (content-bridge data, per ADR-004) is injected into `globalThis` before each
+   render; the injection mechanism is host-specific.
+5. **IPC contract (subprocess hosts only).** If the host runs out-of-process,
+   the wire format between Rust and the subprocess must be agreed on. ADR-005
+   explored newline-delimited JSON over stdio and HTTP loopback; either could
+   work. The IPC boundary adds error-surfacing complexity — stack traces from
+   inside the subprocess must cross the boundary without truncation.
+6. **Cargo feature flag / build configuration.** The binary-size consequence
+   of embedding V8 is significant. If a future non-V8 host is considered, the
+   `deno_core_host` feature flag pattern from ADR-001/ADR-007 could re-emerge
+   to make V8 embedding opt-in for contributors who do not need it.
+
+## Explicit non-commitment
+
+This page is thinking-out-loud. ADR-007 stands. If and when we revisit the
+decision, a new ADR (ADR-008, or a revision of ADR-007) will capture the
+analysis formally — with a measured spike, real performance numbers, and a
+documented rationale. Until that ADR exists, `deno_core` is the build-time
+host.

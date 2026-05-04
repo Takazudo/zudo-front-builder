@@ -10,6 +10,10 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 - **Preact** — for interactive islands only (with compat mode for React API)
 - **Shiki** — built-in code highlighting
 
+## Setup
+
+- **zfb-wisdom Claude Code skill** — run `bash docs/scripts/setup-zfb-wisdom.sh` once to give AI agents lookup access to this documentation tree (see `src/content/docs/claude-skills/zfb-wisdom.mdx`)
+
 ## Commands
 
 - `pnpm dev` — Astro dev server (port 4321)

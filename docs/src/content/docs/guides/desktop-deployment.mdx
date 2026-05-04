@@ -1,0 +1,125 @@
+---
+title: Desktop Deployment
+description: How to ship a zfb-built site inside a Tauri, Electron, or similar desktop application.
+sidebar_position: 6
+---
+
+This guide covers what is realistic today when you want to embed a zfb site
+inside a desktop app. The short answer is: **the `dist/` output requires no
+Node.js at runtime**, so shipping a pre-built site is straightforward. Enabling
+live content edits inside the app is a different, harder problem.
+
+## The simple case: ship the static output
+
+`zfb build` produces a fully static site in `dist/` — HTML, CSS, and JavaScript
+files with no server-side dependency at runtime. A desktop app can serve that
+directory directly using the framework's built-in asset server.
+
+For **Tauri**, the relevant `tauri.conf.json` keys are:
+
+```json
+{
+  "build": {
+    "distDir": "../dist",
+    "devPath": "http://localhost:4321"
+  }
+}
+```
+
+Point `distDir` at your `dist/` folder (adjust the relative path to match your
+project layout). Tauri's built-in static file server handles the rest. There is
+no Node.js process, no miniflare worker, and no HTTP server required in the
+packaged app — just files on disk.
+
+This is the **recommended approach** for documentation apps, help systems, and
+any desktop app where the content is authored at build time and bundled with the
+release:
+
+1. Run `zfb build` on the developer machine (or in CI).
+2. Include the resulting `dist/` in your Tauri app bundle.
+3. Ship it. Done.
+
+See the [Tauri `tauri.conf.json` reference](https://tauri.app/v1/api/config/) for
+the full set of asset-serving options, including custom protocols and security
+policies.
+
+## The harder case: rebuild content inside the app
+
+Some desktop apps want to let users edit Markdown files locally and see a live
+preview inside the app — essentially running `zfb dev` from within a packaged
+Tauri or Electron window.
+
+This is where the current constraint surfaces: **zfb's build and dev tooling
+requires Node.js**. The dev server spins up a miniflare worker to evaluate your
+TSX page modules. Miniflare is a Node.js process; it cannot run without one.
+
+If you need in-app rebuilds today, the realistic options are:
+
+**Bundle Node.js with the app.** Tauri does not officially support shipping a
+Node.js sidecar, but Electron does — the entire framework runs on Node.js, so
+`zfb dev` runs naturally inside an Electron process. The cost is a significant
+binary size increase and a more complex packaging story.
+
+**Ship `workerd` as a Tauri sidecar.** `workerd` (Cloudflare's open-source
+Workers runtime, the engine behind miniflare) is a standalone C++ binary with no
+Node dependency. Tauri's sidecar mechanism can launch and manage it. This is
+architecturally cleaner than bundling Node.js, but it requires writing a custom
+bridge between `workerd` and zfb's build pipeline — that integration does not
+exist out of the box today.
+
+**Pre-build on the developer machine; embed the result.** Rather than rebuilding
+inside the app, keep the rebuild workflow on developer machines and ship only
+the `dist/` artifacts. The packaged app delivers a snapshot; users who need
+updated content get a new app release. This is the most conservative option and
+the easiest to reason about.
+
+The core invariant to keep in mind:
+
+> **Build time = Node.js required. Runtime = no Node.js, ever.**
+
+zfb's static output is deliberately runtime-agnostic. The build tooling is not.
+Plan your architecture around that boundary rather than against it.
+
+## What about Electron, Wails, or other desktop frameworks?
+
+The story is the same regardless of which desktop framework you use.
+
+- **Electron** — `dist/` works as a static asset directory (use
+  `loadFile()` or a `file://` protocol handler). Running `zfb dev` inside the
+  main process is possible because Electron embeds Node.js, but it means
+  shipping the full zfb build toolchain with your app.
+- **Wails** — embeds a WebView and serves assets from an embedded Go server.
+  Point it at the `dist/` directory. The build-time Node.js requirement is the
+  same as above.
+- **Neutralino, Tauri, or any other framework** with a built-in static file
+  server — ship `dist/`, no runtime dependency on Node.
+
+The `dist/` output is just files. Any framework that can serve files from disk
+works.
+
+## Tauri-specific tips
+
+A few practical notes for Tauri integrations:
+
+**`dist/` as the asset source.** Set `distDir` to point at the `dist/`
+directory zfb produces. During development, set `devPath` to
+`http://localhost:4321` (the default `zfb dev` port) so Tauri loads from the
+live dev server rather than a stale snapshot.
+
+**Content Security Policy.** Tauri's default CSP may block inline scripts. zfb's
+island hydration uses inline `<script type="module">` tags. Relax or extend the
+CSP policy in `tauri.conf.json` if you use islands in your app.
+
+**File paths.** `zfb build` generates absolute-root-relative paths by default
+(`/assets/main.css`). Tauri's custom protocol rewrites these correctly when you
+use the `tauri://` protocol. If you use `file://` directly, you may need to set
+`base` in `zfb.config.ts` to a relative path.
+
+## See also
+
+- [Build pipeline](/concepts/build-pipeline) — how `zfb build` produces `dist/`
+  and what each crate contributes to the output.
+- [Architecture: build engine](/architecture/build-engine) — the crate split and
+  why `dist/` writes are atomic.
+- [Installation](/getting-started/installation) — the Node.js requirement for
+  build and dev tooling is documented here.

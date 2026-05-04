@@ -5,24 +5,18 @@ sidebar_position: 5
 category: Concepts
 ---
 
-<Warning title="v0 status">
-
-The `"use client"` detection and the island bundler are sketched in `crates/zfb-islands` but are not wired into the build output yet. The blocker is the same as the renderer (ADR-001 — the JS runtime decision). See /architecture/js-runtime for the deeper discussion.
-
-</Warning>
-
 zfb pages render to static HTML by default. **Islands** are the escape hatch — small components that ship JavaScript to the browser and hydrate on the client, while the rest of the page stays as plain HTML.
 
-The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a modal trigger — are islands embedded inside that document, each loaded and hydrated independently.
+The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a theme toggle — are islands embedded inside that document, each loaded and hydrated independently.
 
-## Marking a component as an island
+## What an island is
 
 Add the `"use client"` directive at the top of a `.tsx` file:
 
 ```tsx
 "use client";
 
-import { useState } from "react";
+import { useState } from "preact/hooks";
 
 export default function Counter() {
   const [count, setCount] = useState(0);
@@ -36,38 +30,163 @@ export default function Counter() {
 
 That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
 
-The default template's `components/counter.tsx` is the canonical example to look at when you start.
-
-## Using an island in a page
-
-Import the island and use it like any other component:
+The `examples/basic-blog/components/theme-toggle.tsx` component is the canonical real-world example: it reads `localStorage` and `matchMedia`, manages its own state, and mirrors the active theme to `document.documentElement.dataset.theme`. The key pattern is that it renders a deterministic SSR-safe default on first paint, then syncs to the user preference inside `useEffect`:
 
 ```tsx
-import Counter from "../components/counter";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "preact/hooks";
+
+type Theme = "light" | "dark";
+
+export default function ThemeToggle() {
+  // Deterministic SSR-safe default. Real preference is applied in useEffect.
+  const [theme, setTheme] = useState<Theme>("light");
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") setTheme(saved);
+  }, []);
+
+  const next: Theme = theme === "dark" ? "light" : "dark";
   return (
-    <main>
-      <h1>Welcome</h1>
-      <p>This paragraph is static HTML.</p>
-      <Counter />
-    </main>
+    <button
+      type="button"
+      aria-pressed={theme === "dark"}
+      onClick={() => setTheme(next)}
+    >
+      {theme === "dark" ? "Light mode" : "Dark mode"}
+    </button>
   );
 }
 ```
 
-The page renders to HTML at build time. The `<Counter />` portion gets a marker in the output that the client bootstrap uses to find and hydrate the island.
+## What esbuild produces for N islands
 
-## How it will work end-to-end
+For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **four files**:
 
-When the renderer is live, the pipeline for islands looks like this:
+```
+dist/islands/Counter.js
+dist/islands/ThemeToggle.js
+dist/islands/SearchBox.js
+dist/islands/islands-runtime.js
+```
 
-1. **Detection.** During page render, the renderer notes every `"use client"` import as an island reference.
-2. **Bundling.** The build pipeline (`crates/zfb-islands`) compiles each island as a separate ESM bundle via esbuild — one file per island, so a page that uses three islands ships three small bundles instead of one large one.
-3. **Hydration.** The page HTML includes a small inline bootstrap that imports each island bundle and hydrates it when its DOM marker enters view (or immediately, if you opt in with `client:load`).
+Three per-island bundles — one per component — plus a single shared runtime bundle that drives hydration. Each per-island file is a self-contained ESM module: it imports the component and the framework-specific hydration glue (e.g. Preact's `hydrate`) and exports nothing. Sharing between islands happens at the esbuild level within each bundle; the runtime itself is a separate bundle.
 
-The result is that each page only ships the JavaScript for the islands it actually uses, and only when those islands are needed. A page with no islands ships zero bytes of JS.
+**Filenames are stable** — no content hash in the name. The `ProductionAssetPipeline` is the single source of truth for hashing and handles URL rewrites in the emitted HTML; the bundler writes predictable paths so nothing downstream has to guess.
 
-## Today vs. soon
+## How islands are loaded
 
-The `"use client"` convention is real and the bundler is sketched out, but the wiring from page render → island detection → bundle output is part of the ADR-001 work. You can author islands now and they will start hydrating once the runtime lands.
+After render, each island's server-rendered HTML is wrapped in a `<div>` that carries metadata:
+
+```html
+<div data-zfb-island="ThemeToggle"
+     data-props="{}"
+     data-when="load">
+  <!-- server-rendered island HTML -->
+  <button type="button" aria-pressed="false">Dark mode</button>
+</div>
+```
+
+On pages that have at least one island, **one `<script>` tag** is injected into `<head>`:
+
+```html
+<script type="module" src="/islands/islands-runtime.js"></script>
+```
+
+The runtime (`islands-runtime.js`) walks all `[data-zfb-island]` elements on the page. For each element it finds, it `dynamic-import()`s the matching per-island bundle — `/islands/ThemeToggle.js` for `data-zfb-island="ThemeToggle"` — reads the serialised `data-props`, and calls `hydrate()` on the existing server-rendered DOM.
+
+## Consequences of the dynamic-import design
+
+Because the runtime resolves islands lazily via `import()`:
+
+- **Only the islands a page actually uses are fetched.** A page that uses `ThemeToggle` never downloads `Counter.js` or `SearchBox.js`.
+- **Pages with no islands get no runtime.** If a page's render tree contains no `"use client"` components, the build pipeline skips the `<script>` injection entirely. Zero bytes of JavaScript land on a fully static page.
+- **Adding a new island to one page does not affect other pages.** Because each page's HTML is independent and islands are fetched by name, adding `SearchBox` to the home page leaves every other page's HTML and network traffic unchanged.
+
+The stable filenames reinforce this: a CI deploy adds `SearchBox.js` to the `dist/islands/` directory; all existing `*.js` files stay byte-identical and remain cache-valid in the browser.
+
+## Framework choices
+
+zfb supports two frameworks for islands:
+
+| Config value | Runtime |
+|---|---|
+| `"preact"` (default) | Preact + `preact/jsx-runtime` |
+| `"react"` | React 18 + `react-dom/client` |
+
+Set it once in `zfb.config.ts`:
+
+```ts
+export default {
+  framework: "preact", // or "react"
+};
+```
+
+This is a **project-wide setting** — one framework per project. The bundler (`FrameworkKind` enum in `crates/zfb-islands`) threads the choice through JSX transform options (`--jsx-import-source`) and the hydration glue that wraps each per-island entry. You cannot mix Preact islands and React islands in the same project.
+
+zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentionally a two-variant enum, not a plugin point. If you need a different framework, the escape hatches below cover the common cases.
+
+For a deeper look at how the two adapters work, see [Framework adapters](/architecture/framework-adapters).
+
+## Escape hatches for non-island client JS
+
+Islands cover stateful UI components. For other client-side JavaScript needs, use the standard HTML mechanisms directly.
+
+**Inline scripts** — write a `<script>` tag directly in your page TSX or layout:
+
+```tsx
+export default function Layout({ children }) {
+  return (
+    <html>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`,
+          }}
+        />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+This is the right tool for synchronous pre-hydration work that must run before the stylesheet parses (FOUC prevention, theme init, analytics setup).
+
+**External scripts** — reference any `.js` file from `public/` or a CDN:
+
+```tsx
+<script src="/scripts/analytics.js" defer />
+<script src="https://cdn.example.com/lib.js" defer />
+```
+
+**Custom build steps** — if you need to bundle additional TypeScript modules, add a separate esbuild or Rollup step to your build pipeline and reference the output from a `<script src>`. zfb does not auto-bundle arbitrary non-`"use client"` modules — only the islands pipeline runs automatically.
+
+What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. Modules without the directive are server-only — SWC compiles and evaluates them at build time, and none of their bytes are included in the output.
+
+## When not to use islands
+
+Islands ship JavaScript. That has a cost. Before adding one, ask whether you can solve the problem without it.
+
+**DOM class-swap toggles** — accordions, disclosure menus, show/hide panels — are often solved with a few lines of plain CSS or a small inline `<script>`. The native `<details>` / `<summary>` element handles accordion behaviour with no JavaScript at all:
+
+```html
+<details>
+  <summary>Frequently asked question</summary>
+  <p>The answer goes here.</p>
+</details>
+```
+
+CSS-only approaches (`:target`, `:checked` + `<label>`, `@starting-style`) handle many interactive patterns that previously required JavaScript.
+
+**Islands are the right tool when:**
+
+- The component has state that must survive beyond a single interaction (e.g., a cart, a user session, a multi-step form).
+- The component relies on browser APIs not available at build time (`canvas`, `WebGL`, `getUserMedia`, real-time data).
+- You would otherwise write the component twice — once for the server render, once for the client — and keep them in sync manually.
+
+If the honest answer is "I just want a class toggled on click", reach for CSS or a tiny inline script first. Islands for "stateful UI you'd build twice" is the right heuristic.
+
+For more on the pipeline shape, see [Build pipeline](/concepts/build-pipeline) and [Build engine](/architecture/build-engine).
