@@ -1,0 +1,79 @@
+---
+title: zfb-wisdom skill
+description: Give Claude Code lookup access to the zfb documentation so AI agents can answer questions about routing, build pipeline, content collections, and architecture without leaving the editor.
+sidebar_position: 1
+---
+
+<Info>
+
+AI agents working on zfb — writing features, debugging, or updating docs —
+benefit from having this skill installed. It lets Claude Code read the
+project's documentation directly without switching context or searching the
+web.
+
+</Info>
+
+## What it does
+
+`/zfb-wisdom` is a Claude Code skill that gives any AI agent instant,
+lookup-only access to the zfb documentation tree. When installed, the agent
+can browse `docs/src/content/docs/` and `docs/architecture/` directly from
+within a Claude Code session — no browser, no copy-paste.
+
+Typical use cases:
+
+- "How does zfb's routing work?" — agent reads `concepts/routing.mdx`
+- "What did ADR-003 decide?" — agent reads `architecture/adr-003-*.md`
+- "Show me the build pipeline overview" — agent reads `concepts/build-pipeline.mdx`
+
+The skill also has an **update mode** (`-u`) for adding or editing
+documentation from within Claude Code.
+
+## Setup
+
+Run the setup script once from the repo root:
+
+```bash
+bash docs/scripts/setup-zfb-wisdom.sh
+```
+
+The script:
+
+1. Creates `docs/.claude/skills/zfb-wisdom/` with a generated `SKILL.md`
+2. Symlinks `docs/src/content/docs/` → `skill/docs/`
+3. Symlinks `docs/src/content/docs-ja/` → `skill/docs-ja/` (Japanese content)
+4. Symlinks `docs/architecture/` → `skill/architecture/` (ADR files)
+5. Symlinks the skill directory into `~/.claude/skills/zfb-wisdom` so it is
+   available globally in all Claude Code sessions
+
+The script is **idempotent** — safe to re-run after pulling new commits.
+
+## Invocation
+
+```
+/zfb-wisdom <topic>
+```
+
+Examples:
+
+```
+/zfb-wisdom routing
+/zfb-wisdom build-pipeline
+/zfb-wisdom content-collections
+/zfb-wisdom adr-003
+/zfb-wisdom -u new-feature-name
+```
+
+Pass `-u` or `--update` as the first token to enter update mode, which
+writes or edits a documentation article instead of just reading one.
+
+## What gets indexed
+
+| Symlink in skill dir | Points to |
+|---|---|
+| `docs/` | `docs/src/content/docs/` |
+| `docs-ja/` | `docs/src/content/docs-ja/` |
+| `architecture/` | `docs/architecture/` |
+
+The skill reads live files through symlinks — no copy step, always
+up-to-date with the working tree.
