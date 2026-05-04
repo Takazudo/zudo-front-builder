@@ -4,7 +4,7 @@
 //! build into the JS runtime so TSX page modules can call
 //! `getCollection("docs")` and `getEntry("docs", "slug")` synchronously
 //! during SSR. The actual JS-side wiring (embedding the snapshot into
-//! `globalThis.__zfb.content` via the miniflare runtime per ADR-005)
+//! `globalThis.__zfb.content` via the embedded V8 host per ADR-007)
 //! lands in a follow-up epic — this sub delivers ONLY the Rust contract
 //! and the TypeScript surface.
 //!
@@ -225,7 +225,7 @@ pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapsho
 /// or unrecognized) is a no-op.
 ///
 /// Used to monitor V8 RAM pressure: zfb embeds the full content
-/// snapshot in the miniflare worker at build time, so the byte size
+/// snapshot in the embedded V8 host at build time, so the byte size
 /// reported here is roughly what gets held in V8 during render. See
 /// the "Limits" section of the project README.
 ///

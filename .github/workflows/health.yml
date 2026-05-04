@@ -17,7 +17,9 @@ concurrency:
 jobs:
   health:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # V8 first compile costs 15-30 min; subsequent runs hit the Swatinem cache
+    # and typically complete well within this budget.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +31,16 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # Cache compiled Rust artifacts across runs. The cache key encodes the
+      # OS, Rust toolchain, and a hash of every Cargo.toml/Cargo.lock in the
+      # workspace so the cache is invalidated cleanly when any member's
+      # dependency set changes (including when deno_core / V8 is added by
+      # Sub 2).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Prefix so future workspace-member additions don't share a stale cache.
+          prefix-key: "v1-zfb"
 
       - run: pnpm install --frozen-lockfile
 

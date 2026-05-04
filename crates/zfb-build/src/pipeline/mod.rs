@@ -36,8 +36,8 @@
 //! The orchestrator deliberately doesn't depend on `zfb-render`,
 //! `zfb-css`, or `zfb-islands` directly:
 //!
-//! - `zfb-render` carries the SWC TSX→JS pipeline and (per ADR-005) the
-//!   miniflare-subprocess render host. Keeping that out of the
+//! - `zfb-render` carries the SWC TSX→JS pipeline and (per ADR-007) the
+//!   embedded V8 render host. Keeping that out of the
 //!   orchestrator's surface lets `zfb-build` compile cheaply for tests
 //!   and for callers that only need orchestration types.
 //! - The CSS / islands crates ship trait-based plug points
@@ -300,8 +300,8 @@ pub type IslandsRunner =
 /// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
 /// layout edit, or exported-handler change).
 ///
-/// Implementations typically rebuild the worker bundle and respawn the
-/// miniflare subprocess via [`crate::renderer::reload`]. Failure
+/// Implementations typically rebuild the worker bundle and reload the
+/// embedded V8 host via [`crate::renderer::reload`]. Failure
 /// surfaces as a regular tick error — the watcher stays alive and the
 /// dev server keeps the previous state.
 ///
@@ -351,8 +351,8 @@ pub struct BuildContext {
 
     /// Renderer-reload hook invoked once per tick when pages need
     /// re-rendering. See [`RendererReloader`] for the contract.
-    /// Optional: tests and one-off callers that don't own a miniflare
-    /// subprocess pass `None`. Consumed by [`DevAssetPipeline`] only.
+    /// Optional: tests and one-off callers that don't own a renderer
+    /// session pass `None`. Consumed by [`DevAssetPipeline`] only.
     pub reload_renderer: Option<RendererReloader>,
 }
 
@@ -397,7 +397,7 @@ pub struct DevBuildContext {
     /// Islands bundler callback. `None` = skip islands reruns.
     pub run_islands: Option<IslandsRunner>,
 
-    /// Renderer-reload hook. `None` = no-op (e.g. no miniflare session
+    /// Renderer-reload hook. `None` = no-op (e.g. no renderer session
     /// active in tests).
     pub reload_renderer: Option<RendererReloader>,
 }

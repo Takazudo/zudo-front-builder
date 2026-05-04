@@ -13,8 +13,7 @@
 //
 //   export default { fetch: router };
 //
-// The README documents the bundle shape T6 (miniflare orchestration)
-// consumes.
+// The README documents the bundle shape T6 (embedded V8 host) consumes.
 
 export { createPageRouter } from "./router.js";
 export type {

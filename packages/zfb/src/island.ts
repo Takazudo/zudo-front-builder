@@ -6,7 +6,7 @@
 // jsx-runtime accept when the JSX transform turns the call site into a
 // jsx(Island, props) invocation.
 //
-// At build time, running through the SSR renderer (miniflare host):
+// At build time, running through the SSR renderer (embedded V8 host):
 //
 //   <Island when="visible"><Counter /></Island>
 //

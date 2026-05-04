@@ -18,33 +18,30 @@
 //!    prerender map. SSR-only routes are collected into [`SsrManifest`]
 //!    and **not** rendered now — they are handed back to the caller
 //!    (T7) for use at runtime.
-//! 2. Spawns ONE long-lived miniflare subprocess (pool-of-1) that
-//!    serves the entire build. Per-route forks would dominate build
-//!    time; one subprocess reuses workerd's hot caches across every
-//!    request.
-//! 3. Polls the subprocess's stdout for a JSON ready-handshake line
-//!    so the renderer never sleep-races: the request loop only starts
-//!    once miniflare prints its bound URL.
-//! 4. For each SSG route, `GET`s the worker with [`reqwest::blocking`]
-//!    and writes the response body to its dist destination. Non-2xx
-//!    responses are surfaced as [`RendererError::RenderFailed`] with
-//!    a re-projected source location (see step 5).
+//! 2. Constructs the embedded V8 host (in-process) from the bundle
+//!    path. The host is long-lived across the entire build so V8's
+//!    module parse cost is paid once.
+//! 3. For each SSG route, dispatches the request directly to the
+//!    in-process host without a TCP hop. Non-2xx responses are
+//!    surfaced as [`RendererError::RenderFailed`] with a re-projected
+//!    source location (see step 5).
+//! 4. For HTTP backends ([`Backend::Existing`]): `GET`s the worker via
+//!    `reqwest::blocking` against the supplied base URL instead.
 //! 5. On any worker-thrown error containing a JS stack pointing at the
 //!    bundle, the [`sourcemap`] crate walks the bundle's `.map` and
 //!    re-projects each frame to the user's `.tsx` / `.mdx` source
 //!    location. The error message names the user file so the operator
-//!    can fix the page directly without grepping minified bundle
-//!    output.
+//!    can fix the page directly without grepping minified bundle output.
 //!
 //! ### Dev mode (T7 will consume this)
 //!
-//! `zfb dev` cannot afford to start a fresh miniflare per file save.
+//! `zfb dev` cannot afford to start a fresh host per file save.
 //! [`start`] returns a [`RendererState`] that owns the long-lived
-//! subprocess; [`render_one`] drives a single route against it; and
-//! [`shutdown`] tears the process down on dev-server exit. The same
-//! subprocess and source-map are reused across rebuilds — when the
-//! bundle changes on disk, T7 swaps the [`RendererState`] for a new
-//! one rather than mutating the old one in-place.
+//! embedded V8 host; [`render_one`] drives a single route against it;
+//! and [`shutdown`] tears the host down on dev-server exit. The same
+//! host and source-map are reused across renders — when the bundle
+//! changes on disk, T7 swaps the [`RendererState`] for a new one via
+//! [`reload`] rather than mutating the old one in-place.
 //!
 //! ### What this module is NOT responsible for
 //!
@@ -65,21 +62,16 @@
 //!
 //! ### Test surface
 //!
-//! The bulk of the test suite uses the [`Backend::Existing`] mode to
-//! point the renderer at a small in-process fake HTTP server. Spawning
-//! real miniflare is reserved for one `#[ignore]`-gated end-to-end
-//! test that holds a `flock` on `/tmp/x-wt-teams-zfb-locks/port-<N>.lock`
-//! to serialise across parallel worktrees. See the test module at the
+//! The bulk of the test suite uses [`Backend::Stub`] to answer requests
+//! from a closure — no HTTP client, no subprocess, no V8. This eliminates
+//! the TCP round-trip overhead from unit tests. See the test module at the
 //! bottom of the file.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -114,22 +106,219 @@ pub struct RouteUniverseEntry {
     pub route_key: String,
 }
 
-/// The renderer's HTTP backend.
+/// The HTTP-like response returned by [`EmbeddedV8Host::dispatch_fetch`]
+/// and by the [`Backend::Stub`] handler closure.
 ///
-/// Production builds always use [`Backend::SpawnMiniflare`]. Tests use
-/// [`Backend::Existing`] to skip the subprocess and aim the request
-/// loop at a fake HTTP server bound to a random port.
-#[derive(Debug, Clone, Default)]
+/// Carries the minimal surface the renderer needs: body bytes, HTTP
+/// status code, and content-type header. The `content_type` field is
+/// informational only — the renderer does not parse or branch on it
+/// beyond HEAD injection (which reads for `</head>`).
+#[derive(Debug, Clone)]
+pub struct HttpResponseLike {
+    /// HTTP status code (e.g. 200, 404, 500).
+    pub status: u16,
+    /// Value of the `Content-Type` response header, or an empty string
+    /// when absent.
+    pub content_type: String,
+    /// Full response body bytes.
+    pub body: Vec<u8>,
+}
+
+/// Trait object boundary for the in-process V8 render host.
+///
+/// Sub-162 (`EmbeddedV8RenderHost`) is the sole production impl. The
+/// trait is intentionally thin — only `dispatch_fetch` is needed by
+/// this crate; the full `RenderHost` trait lives in `zfb-render` for
+/// the higher-level render orchestration.
+///
+/// The trait requires `Send` (but not `Sync`): a V8 isolate must not be
+/// called from multiple threads simultaneously (`!Sync`), but ownership
+/// can be transferred between threads. In dev mode the host is wrapped
+/// in `Mutex<Option<RendererState>>` — the lock provides the single-
+/// thread access guarantee; `Send` is needed for the `Mutex` guard
+/// to cross the `PageRenderer` closure's `Send` bound.
+pub trait EmbeddedV8Host: Send {
+    /// Dispatch a synthetic HTTP GET for `url_path` against the loaded
+    /// bundle and return the response.
+    ///
+    /// `url_path` is the URL path component only (e.g. `/about`,
+    /// `/blog/hello-world`). The host constructs a full request URL by
+    /// prepending a synthetic origin (e.g. `http://localhost`).
+    ///
+    /// Errors are surfaced as `RendererError::EmbeddedV8` — the caller
+    /// does NOT see HTTP errors here; a non-2xx from the bundle handler
+    /// is still returned as `Ok(HttpResponseLike { status: 500, … })`.
+    /// Only infrastructure-level failures (isolate crash, OOM, etc.)
+    /// return `Err`.
+    fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError>;
+}
+
+/// Factory type for constructing an [`EmbeddedV8Host`] from a bundle path.
+///
+/// Wrapping in `Arc` lets [`Backend`] remain `Clone` while still
+/// carrying an `Fn` closure with non-Clone captures. The factory is
+/// called once per `launch()` / `start()` invocation (i.e. once per
+/// build or once per dev-mode `reload()`). The returned host is
+/// `Box<dyn EmbeddedV8Host>` so the factory itself does not need to
+/// know the concrete type at the call site.
+///
+/// The factory receives the resolved `bundle_path` (absolute) so
+/// callers can pass compat-flags, module-resolver overrides, or other
+/// construction-time concerns without plumbing them through the renderer.
+pub type EmbeddedV8HostFactory =
+    Arc<dyn Fn(&Path) -> Result<Box<dyn EmbeddedV8Host>, RendererError> + Send + Sync>;
+
+/// The renderer's backend selector.
+///
+/// `Existing` stays for side-by-side testing against a pre-running HTTP
+/// server. `EmbeddedV8` is the production path (in-process V8 isolate).
+/// `Stub` is the unit-test surface.
+///
+/// Default (via manual impl) is `EmbeddedV8` with a no-op factory stub
+/// that returns an error — callers must supply a real factory before
+/// invoking [`render_all`] or [`start`].
+#[derive(Clone)]
 pub enum Backend {
-    /// Spawn `node js/miniflare-bootstrap.mjs --bundle <bundle_path>`
-    /// from the workspace root, parse the ready-handshake from its
-    /// stdout, and use the resolved URL.
-    #[default]
-    SpawnMiniflare,
-    /// Skip the subprocess and use this base URL (e.g.
+    /// Skip host construction and use this base URL (e.g.
     /// `http://127.0.0.1:54321/`). The renderer still does the GET
-    /// loop, dist write, and source-map error re-projection.
+    /// loop, dist write, and source-map error re-projection. Useful for
+    /// testing against a pre-running HTTP server without spawning a new host.
     Existing { base_url: String },
+    /// In-process V8 isolate (via `EmbeddedV8RenderHost`).
+    ///
+    /// `host_factory` is called once per build/reload to construct the
+    /// host from the bundle path. The factory typically instantiates
+    /// `EmbeddedV8RenderHost::new(bundle_path)`. Wrapping in `Arc`
+    /// keeps `Backend` cheaply clone-able even though the factory is
+    /// a closure.
+    EmbeddedV8 { host_factory: EmbeddedV8HostFactory },
+    /// In-process stub handler for unit tests.
+    ///
+    /// The closure receives the URL path (e.g. `/about`) and returns an
+    /// [`HttpResponseLike`]. No HTTP client is created; no subprocess is
+    /// spawned. This replaces the old `Backend::Existing`-against-a-fake-
+    /// HTTP-server pattern so renderer logic is testable without a real
+    /// TCP server.
+    ///
+    /// The closure is wrapped in `Arc` so `Backend` remains `Clone`.
+    Stub {
+        handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
+    },
+}
+
+impl std::fmt::Debug for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::Existing { base_url } => {
+                write!(f, "Backend::Existing {{ base_url: {base_url:?} }}")
+            }
+            Backend::EmbeddedV8 { .. } => write!(f, "Backend::EmbeddedV8 {{ .. }}"),
+            Backend::Stub { .. } => write!(f, "Backend::Stub {{ .. }}"),
+        }
+    }
+}
+
+impl Default for Backend {
+    /// Default is `Existing { base_url: String::new() }`. Callers that
+    /// actually dispatch requests should replace this with a meaningful
+    /// backend before calling [`render_all`] or [`start`]. The default
+    /// is provided so builders / test harnesses can use `..Default::default()`
+    /// in struct literals without specifying every field.
+    fn default() -> Self {
+        Backend::Existing { base_url: String::new() }
+    }
+}
+
+/// A live backend ready to dispatch render requests.
+///
+/// Returned by [`launch`] and owned by both the one-shot [`render_all`]
+/// path and the long-lived [`RendererState`] path.
+///
+/// Variants map to the corresponding [`Backend`] variants:
+/// - `Http` — existing HTTP server. Requests go through
+///   `reqwest::blocking::Client` against `base_url`.
+/// - `EmbeddedV8` — in-process V8 host. Requests are dispatched
+///   directly without a TCP hop. The `guard` owns the `Box<dyn
+///   EmbeddedV8Host>` so the drop contract (isolate destroy on panic)
+///   is enforced even if `terminate()` is never called explicitly.
+/// - `Stub` — unit-test closure. Requests are answered in-process by
+///   the handler without any I/O.
+enum BackendHandle {
+    /// HTTP path: `Backend::Existing` (pre-running server).
+    Http {
+        base_url: String,
+        client: reqwest::blocking::Client,
+    },
+    /// In-process V8 isolate (`EmbeddedV8RenderHost`).
+    ///
+    /// `guard` owns the host (`guard.host: Option<Box<dyn EmbeddedV8Host>>`).
+    /// Dispatch calls `guard.host.as_mut().unwrap().dispatch_fetch(…)`.
+    /// `terminate()` calls `guard.terminate()` which drops the host (and
+    /// thus the V8 isolate) synchronously.
+    EmbeddedV8 {
+        guard: EmbeddedV8Guard,
+    },
+    /// Unit-test stub: answers requests with a closure.
+    Stub {
+        handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
+    },
+}
+
+impl BackendHandle {
+    fn dispatch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError> {
+        match self {
+            BackendHandle::Http { base_url, client } => {
+                let url = join_url(base_url, url_path);
+                let resp = client
+                    .get(&url)
+                    .send()
+                    .map_err(|e| RendererError::Http {
+                        url: url.clone(),
+                        source: e,
+                    })?;
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let body = resp
+                    .bytes()
+                    .map_err(|e| RendererError::Http {
+                        url: url.clone(),
+                        source: e,
+                    })?
+                    .to_vec();
+                Ok(HttpResponseLike { status, content_type, body })
+            }
+            BackendHandle::EmbeddedV8 { guard } => {
+                let host = guard.host.as_mut().expect(
+                    "EmbeddedV8 host has been terminated; dispatch called after shutdown"
+                );
+                host.dispatch_fetch(url_path)
+            }
+            BackendHandle::Stub { handler } => {
+                Ok(handler(url_path))
+            }
+        }
+    }
+
+    fn collect_logs(&self) -> String {
+        match self {
+            BackendHandle::Http { .. } => String::new(),
+            BackendHandle::EmbeddedV8 { guard } => guard.collect_logs(),
+            BackendHandle::Stub { .. } => String::new(),
+        }
+    }
+
+    fn terminate(&mut self) {
+        match self {
+            BackendHandle::Http { .. } => {}
+            BackendHandle::EmbeddedV8 { guard } => guard.terminate(),
+            BackendHandle::Stub { .. } => {}
+        }
+    }
 }
 
 /// Inputs to [`render_all`].
@@ -152,7 +341,7 @@ pub struct RendererInput {
     /// diagnostics only — the canonical list of *what to render* is
     /// `route_universe`. In a future iteration the renderer may
     /// cross-check that every prerendered URL maps to a declared route
-    /// and produce a clearer error than miniflare's own 404; that's
+    /// and produce a clearer error than a generic 404; that's
     /// out of scope for T6.
     pub manifest: BundleManifest,
     /// Where to write the SSG output. Created if missing.
@@ -220,11 +409,9 @@ pub struct RendererOutput {
     /// T7 hands this to the runtime SSR adapter so a deployed worker
     /// knows which URLs to serve dynamically.
     pub ssr_manifest: SsrManifest,
-    /// Captured stderr from the miniflare subprocess (or the empty
-    /// string when running against [`Backend::Existing`]). Useful
-    /// for surfacing `console.warn` from the user's worker code in
-    /// the build log.
-    pub miniflare_logs: String,
+    /// Diagnostic output from the embedded V8 host (console output
+    /// captured during rendering). Empty when there was no output.
+    pub runtime_logs: String,
 }
 
 /// Routes the build deliberately did NOT prerender.
@@ -256,7 +443,7 @@ pub struct SsrRouteEntry {
 ///
 /// Variants are deliberately narrow so T7 can pattern-match on
 /// `RenderFailed` (the most common operator-facing variant) versus
-/// infrastructure errors (`Io`, `MiniflareSpawn`, …).
+/// infrastructure errors (`Io`, `EmbeddedV8`, …).
 #[derive(Debug, Error)]
 pub enum RendererError {
     /// I/O error around dist write or bundle read.
@@ -266,10 +453,6 @@ pub enum RendererError {
         #[source]
         source: std::io::Error,
     },
-    /// Miniflare subprocess failed to start, never sent the
-    /// ready-handshake before the timeout, or crashed mid-build.
-    #[error("miniflare subprocess error: {0}")]
-    MiniflareSpawn(String),
     /// HTTP layer (reqwest) failure independent of the worker — DNS,
     /// connection refused, etc.
     #[error("http request to {url} failed: {source}")]
@@ -292,6 +475,12 @@ pub enum RendererError {
         /// was readable, or no frame in the body matched the bundle.
         user_location: Option<String>,
     },
+    /// The in-process V8 host encountered an infrastructure-level error
+    /// (isolate crash, OOM, module load failure, etc.). Non-2xx responses
+    /// from the bundle's `fetch` handler are surfaced as
+    /// [`RendererError::RenderFailed`], not as this variant.
+    #[error("embedded V8 host error: {0}")]
+    EmbeddedV8(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -300,9 +489,9 @@ pub enum RendererError {
 
 /// Render the entire SSG portion of `route_universe` to disk.
 ///
-/// Spawns miniflare, drives the request loop, writes files, tears the
-/// subprocess down. Always cleans up on error or panic via the
-/// [`MiniflareGuard`] drop impl.
+/// Constructs the embedded V8 host (or uses the supplied HTTP base URL),
+/// drives the request loop, writes files, tears the backend down. Always
+/// cleans up on error or panic via the guard's drop impl.
 pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError> {
     let RendererInput {
         bundle_path,
@@ -339,17 +528,15 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         }
     }
 
-    let (base_url, guard) = launch(&backend, &bundle_path)?;
     let timeout = request_timeout.unwrap_or(Duration::from_secs(60));
-    let client = build_client(timeout)?;
+    let mut handle = launch(&backend, &bundle_path, timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
 
     let mut written: Vec<PathBuf> = Vec::with_capacity(ssg_routes.len());
     let mut last_err: Option<RendererError> = None;
     for entry in &ssg_routes {
         match render_one_inner(
-            &client,
-            &base_url,
+            &mut handle,
             entry,
             &dist_dir,
             sourcemap.as_ref(),
@@ -363,15 +550,17 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         }
     }
 
-    let logs = guard.collect_logs();
-    drop(guard);
+    let logs = handle.collect_logs();
+    handle.terminate();
+    drop(handle);
 
     if let Some(err) = last_err {
-        // Surface miniflare stderr so the operator can see what workerd
-        // printed before the 500. Without this, the logs are discarded
-        // and the user sees only "Internal Server Error" with no context.
+        // Surface embedded V8 host logs so the operator can see what
+        // the worker printed before the 500. Without this, the logs
+        // are discarded and the user sees only "Internal Server Error"
+        // with no context.
         if !logs.trim().is_empty() {
-            eprintln!("[zfb] miniflare logs at render failure:\n{logs}");
+            eprintln!("[zfb] backend logs at render failure:\n{logs}");
         }
         return Err(err);
     }
@@ -379,40 +568,68 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     Ok(RendererOutput {
         ssg_files_written: written,
         ssr_manifest: SsrManifest { routes: ssr_routes },
-        miniflare_logs: logs,
+        runtime_logs: logs,
     })
 }
 
 /// Long-lived dev-mode renderer state.
 ///
-/// Owns the miniflare subprocess and the parsed sourcemap. Use [`start`]
-/// to construct, [`render_one`] to drive a single route, [`shutdown`]
-/// to tear down cleanly. Drop also tears down (idempotent) so a
-/// panicking dev loop still kills the worker.
+/// Owns the backend handle (embedded V8 host or existing HTTP server)
+/// and the parsed sourcemap. Use [`start`] to construct, [`render_one`]
+/// to drive a single route, [`shutdown`] to tear down cleanly. Drop
+/// also tears down (idempotent) so a panicking dev loop still cleans up.
 pub struct RendererState {
-    base_url: String,
-    client: reqwest::blocking::Client,
     sourcemap: Option<sourcemap::SourceMap>,
-    guard: MiniflareGuard,
+    handle: BackendHandle,
 }
 
 impl std::fmt::Debug for RendererState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RendererState")
-            .field("base_url", &self.base_url)
             .field("has_sourcemap", &self.sourcemap.is_some())
+            .field("handle", &self.handle)
             .finish()
     }
 }
 
+impl std::fmt::Debug for BackendHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendHandle::Http { base_url, .. } => {
+                write!(f, "BackendHandle::Http {{ base_url: {base_url:?} }}")
+            }
+            BackendHandle::EmbeddedV8 { .. } => write!(f, "BackendHandle::EmbeddedV8 {{ .. }}"),
+            BackendHandle::Stub { .. } => write!(f, "BackendHandle::Stub {{ .. }}"),
+        }
+    }
+}
+
 impl RendererState {
-    /// The base URL of the running miniflare subprocess (e.g.
-    /// `http://127.0.0.1:54321/`). Use this with
-    /// [`Backend::Existing`] to reuse the same subprocess for a
-    /// subsequent [`render_all`] call so you only pay the miniflare
-    /// startup cost once.
-    pub fn base_url(&self) -> &str {
-        &self.base_url
+    /// The base URL of the running HTTP server (e.g.
+    /// `http://127.0.0.1:54321/`). Returns `None` for
+    /// `Backend::EmbeddedV8` and `Backend::Stub`, where there is no
+    /// HTTP server. Use this with [`Backend::Existing`] to reuse the
+    /// same server for a subsequent [`render_all`] call.
+    pub fn base_url(&self) -> Option<&str> {
+        match &self.handle {
+            BackendHandle::Http { base_url, .. } => Some(base_url),
+            _ => None,
+        }
+    }
+
+    /// Borrow the embedded V8 host mutably so callers can dispatch
+    /// fetch requests directly (e.g. from `eval_deferred_paths`).
+    ///
+    /// Returns `None` when the backend is not `EmbeddedV8` (i.e. when
+    /// it is `Http` or `Stub`), or when the host has already been
+    /// terminated via [`shutdown`].
+    pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
+        match &mut self.handle {
+            BackendHandle::EmbeddedV8 { guard } => {
+                guard.host.as_deref_mut().map(|h| h as &mut dyn EmbeddedV8Host)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -424,21 +641,19 @@ pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> 
         backend,
         request_timeout,
     } = input;
-    let (base_url, guard) = launch(&backend, &bundle_path)?;
-    let client = build_client(request_timeout.unwrap_or(Duration::from_secs(30)))?;
+    let timeout = request_timeout.unwrap_or(Duration::from_secs(30));
+    let handle = launch(&backend, &bundle_path, timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
     Ok(RendererState {
-        base_url,
-        client,
         sourcemap,
-        guard,
+        handle,
     })
 }
 
 /// Drive one route against an existing dev-mode state and write it to
 /// disk under `dist_dir`.
 pub fn render_one(
-    state: &RendererState,
+    state: &mut RendererState,
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
 ) -> Result<PathBuf, RendererError> {
@@ -447,8 +662,7 @@ pub fn render_one(
         source: e,
     })?;
     render_one_inner(
-        &state.client,
-        &state.base_url,
+        &mut state.handle,
         entry,
         dist_dir,
         state.sourcemap.as_ref(),
@@ -461,42 +675,46 @@ pub fn render_one(
 /// Tear the dev-mode renderer down. Idempotent — calling on an
 /// already-shut-down state is a no-op.
 pub fn shutdown(state: RendererState) -> Result<(), RendererError> {
-    let RendererState { mut guard, .. } = state;
-    guard.terminate();
+    let RendererState { mut handle, .. } = state;
+    handle.terminate();
     Ok(())
 }
 
 /// Reload the dev-mode renderer against a (possibly new) bundle.
 ///
-/// Module-level reload across miniflare's worker boundary is fragile —
-/// workerd loads its bundle once at boot and does not expose an
-/// in-process "swap module" hook. So this implementation goes for the
-/// safe-and-simple path: tear the existing subprocess down (via the
-/// existing [`shutdown`]) and respawn one against the new bundle path.
-/// Callers should invoke this whenever a TSX page edit, a layout edit,
-/// or an exported handler change has rebuilt the worker bundle on disk
-/// — typically driven from the dev pipeline's reload-renderer hook
-/// (see [`crate::pipeline::BuildContext::reload_renderer`]).
+/// The old embedded V8 isolate is dropped (destroyed) and a new one is
+/// created from the new bundle path. The "destroy + recreate" pattern is
+/// the simplest correct approach; module-re-evaluation as a hot-reload
+/// optimisation is out of scope for this epic.
 ///
-/// The returned [`RendererState`] takes ownership of the new
-/// subprocess. The previous state is consumed by value to make the
-/// "old subprocess is gone" invariant statically obvious.
+/// **Reload latency expectation:** the embedded V8 host destroy + recreate
+/// is expected to take 200–800 ms per bundle because every reload
+/// re-parses the bundle. This is accepted for v1 per ADR-007's documented
+/// consequences.
 ///
-/// `request_timeout` defaults to 30s when `None` (same as
-/// [`start`]).
+/// Callers should invoke this whenever a TSX page edit, a layout edit, or
+/// an exported handler change has rebuilt the worker bundle on disk —
+/// typically driven from the dev pipeline's reload-renderer hook (see
+/// [`crate::pipeline::BuildContext::reload_renderer`]).
+///
+/// The returned [`RendererState`] takes ownership of the new backend. The
+/// previous state is consumed by value to make the "old backend is gone"
+/// invariant statically obvious.
+///
+/// `request_timeout` defaults to 30s when `None` (same as [`start`]).
 ///
 /// On `Backend::Existing`, this is effectively a no-op restart: it
-/// rebuilds the [`reqwest`] client and re-reads the source map, but
-/// no subprocess is killed/spawned. That keeps the dev pipeline's
-/// "always reload before render" code path correct under both real
-/// miniflare and the in-process fake server tests use.
+/// rebuilds the [`reqwest`] client and re-reads the source map without
+/// touching any host. That keeps the dev pipeline's "always reload before
+/// render" code path correct under the `Backend::Stub` test path too.
 pub fn reload(
     previous: RendererState,
     input: RendererStartInput,
 ) -> Result<RendererState, RendererError> {
-    // Dropping the previous state via `shutdown` happens first so the
-    // old subprocess is fully gone before we spawn the new one. With
-    // `Backend::Existing` the call is a cheap no-op.
+    // Dropping the previous state via `shutdown` happens first so the old
+    // backend is fully torn down before we construct the new one. With
+    // `Backend::Existing` the call is a cheap no-op. With `Backend::EmbeddedV8`
+    // it drops the V8 isolate synchronously before the new one is created.
     shutdown(previous)?;
     start(input)
 }
@@ -505,7 +723,7 @@ pub fn reload(
 // Internals — request loop
 // ---------------------------------------------------------------------------
 
-fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client, RendererError> {
+fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, RendererError> {
     // `reqwest::blocking::Client::builder().build()` spins up its own
     // dedicated tokio runtime under the hood and synchronously waits
     // on it. When the surrounding code is itself running inside an
@@ -533,33 +751,31 @@ fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client, Renderer
     })
 }
 
+/// Dispatch one route request through `handle` and write the result to
+/// disk. Works uniformly across HTTP (existing server), embedded V8,
+/// and stub backends.
 fn render_one_inner(
-    client: &reqwest::blocking::Client,
-    base_url: &str,
+    handle: &mut BackendHandle,
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
     sourcemap: Option<&sourcemap::SourceMap>,
     prod_head_assets: Option<&crate::head_inject::ProdHeadAssets>,
 ) -> Result<PathBuf, RendererError> {
-    let url = join_url(base_url, &entry.url_path);
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| RendererError::Http {
-            url: url.clone(),
-            source: e,
-        })?;
-    let status = resp.status();
-    let body = resp.bytes().map_err(|e| RendererError::Http {
-        url: url.clone(),
-        source: e,
-    })?;
-    if !status.is_success() {
+    let resp = handle.dispatch(&entry.url_path)?;
+    let status = resp.status;
+    let body = resp.body;
+
+    // The URL used in error messages is the rendered path. For HTTP
+    // backends the full URL is available inside `BackendHandle::Http`;
+    // for EmbeddedV8 / Stub we synthesise one for readability.
+    let url_for_err = entry.url_path.clone();
+
+    if !(200..300).contains(&status) {
         let body_str = String::from_utf8_lossy(&body).into_owned();
         let user_location = sourcemap.and_then(|sm| reproject_first_frame(&body_str, sm));
         return Err(RendererError::RenderFailed {
-            url,
-            status: status.as_u16(),
+            url: url_for_err,
+            status,
             body: body_str,
             user_location,
         });
@@ -616,409 +832,93 @@ fn join_url(base: &str, path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Internals — miniflare subprocess
+// Internals — embedded V8 guard
 // ---------------------------------------------------------------------------
 
-const BOOTSTRAP_JS: &str = include_str!("../js/miniflare-bootstrap.mjs");
-
-/// JSON shape of the bootstrap's stdout handshake line.
-#[derive(Debug, Deserialize)]
-struct ReadyHandshake {
-    event: String,
-    url: String,
+/// RAII guard for an in-process V8 host.
+///
+/// Dropping the `Box<dyn EmbeddedV8Host>` destroys the V8 isolate
+/// synchronously. The guard's sole responsibility is ensuring the host
+/// is dropped (and thus the isolate destroyed) even on panic.
+///
+/// `terminate()` is idempotent — calling it after the host has already
+/// been taken out is a no-op.
+struct EmbeddedV8Guard {
+    host: Option<Box<dyn EmbeddedV8Host>>,
 }
 
-/// RAII guard that owns the subprocess and the stderr-capture thread.
-///
-/// On Unix, the subprocess is launched in its own process group
-/// (`setsid`) so that SIGTERM sent to the **process group** (negative
-/// pgid) reaches workerd's worker children even if node itself is
-/// already dead. On panic the Drop impl calls `terminate`, so the
-/// long-lived miniflare subprocess is never orphaned.
-///
-/// Sequence: SIGTERM → 2 s grace period → SIGKILL.
-struct MiniflareGuard {
-    child: Option<Child>,
-    log_buf: Arc<Mutex<String>>,
-    log_thread: Option<thread::JoinHandle<()>>,
-    /// Holds the `NamedTempFile` that backs the bootstrap script.
-    /// Held for its drop side-effect (the file is unlinked on drop);
-    /// never read directly.
-    #[allow(dead_code)]
-    bootstrap_keepalive: Option<tempfile::NamedTempFile>,
-}
-
-impl MiniflareGuard {
-    fn empty() -> Self {
-        Self {
-            child: None,
-            log_buf: Arc::new(Mutex::new(String::new())),
-            log_thread: None,
-            bootstrap_keepalive: None,
-        }
-    }
-
-    fn collect_logs(&self) -> String {
-        self.log_buf.lock().map(|s| s.clone()).unwrap_or_default()
+impl EmbeddedV8Guard {
+    fn new(host: Box<dyn EmbeddedV8Host>) -> Self {
+        Self { host: Some(host) }
     }
 
     fn terminate(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        // On Unix: SIGTERM the entire process group so workerd
-        // child-processes (which miniflare/node spawns) are also
-        // signalled. The group is set up by the `pre_exec` setsid()
-        // call in `spawn_miniflare_once`. Using the negated PID as the
-        // process-group ID works because setsid() makes the node
-        // process the group leader, so pgid == pid.
-        //
-        // On Windows: no process groups; fall back to kill().
-        #[cfg(unix)]
-        {
-            // SAFETY: child PID is valid until we wait()/kill().
-            let pid = child.id() as i32;
-            unsafe {
-                // Negative first arg → kill the entire process group.
-                libc_kill(-pid, SIGTERM);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill();
-        }
+        // Drops the V8 isolate synchronously. Subsequent dispatch calls
+        // through BackendHandle::EmbeddedV8 will find `guard.host = None`
+        // and panic — that is intentional: terminate() is only called at
+        // shutdown, never during active rendering.
+        self.host.take();
+    }
 
-        // Bounded wait for graceful exit.
-        let deadline = Instant::now() + Duration::from_millis(2_000);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        // Grace period expired: SIGKILL the process
-                        // group so workerd sub-processes are also torn
-                        // down before we return from terminate().
-                        #[cfg(unix)]
-                        {
-                            let pid = child.id() as i32;
-                            unsafe {
-                                libc_kill(-pid, SIGKILL);
-                            }
-                        }
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break;
-                }
-            }
-        }
-
-        if let Some(handle) = self.log_thread.take() {
-            let _ = handle.join();
-        }
+    /// Collect diagnostic output from the host. The embedded V8 host
+    /// captures console output internally; this surfaces it as a string
+    /// for inclusion in error messages. Returns an empty string when the
+    /// host has already been terminated or when it produced no output.
+    fn collect_logs(&self) -> String {
+        // The embedded host captures console output through the V8
+        // console extension. Sub 2 decides the exact retrieval API;
+        // for now we return an empty string. When Sub 2 exposes a
+        // `drain_console_logs() -> String` method on the trait, add it
+        // to `EmbeddedV8Host` and call it here.
+        String::new()
     }
 }
 
-impl Drop for MiniflareGuard {
+impl Drop for EmbeddedV8Guard {
     fn drop(&mut self) {
         self.terminate();
     }
 }
 
-#[cfg(unix)]
-const SIGTERM: i32 = 15;
-#[cfg(unix)]
-const SIGKILL: i32 = 9;
-
-#[cfg(unix)]
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn setsid() -> i32;
-}
-
-#[cfg(unix)]
-unsafe fn libc_kill(pid: i32, sig: i32) {
-    kill(pid, sig);
-}
-
-/// Call setsid() in the child process (via pre_exec) to place it in a
-/// new process group. This makes `-pgid` kills reach all descendants.
-#[cfg(unix)]
-unsafe fn libc_setsid() {
-    setsid();
-}
-
-/// Resolve the directory the miniflare subprocess should run in. We
-/// need `node_modules/miniflare` to be resolvable from `cwd`, so we
-/// walk up from `bundle_path` until we hit a directory that contains
-/// `node_modules/miniflare`. As a final fallback, use the workspace
-/// root located via `CARGO_MANIFEST_DIR/../..`.
-fn resolve_subprocess_cwd(bundle_path: &Path) -> Result<PathBuf, RendererError> {
-    let start = bundle_path.parent().unwrap_or_else(|| Path::new("."));
-    let mut cur: Option<&Path> = Some(start);
-    while let Some(p) = cur {
-        if p.join("node_modules").join("miniflare").exists() {
-            return Ok(p.to_path_buf());
-        }
-        cur = p.parent();
-    }
-    // Last resort: workspace root inferred from CARGO_MANIFEST_DIR
-    // (`crates/zfb-build`). This is the path real production builds
-    // hit, since pnpm hoists `miniflare` to the workspace root.
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-        if workspace.join("node_modules").join("miniflare").exists() {
-            return Ok(workspace.to_path_buf());
-        }
-    }
-    Err(RendererError::MiniflareSpawn(format!(
-        "could not locate node_modules/miniflare relative to bundle path {} or workspace root",
-        bundle_path.display()
-    )))
-}
-
-/// Spawn (or do not) the backend. Returns the resolved base URL and a
-/// guard that owns any spawned subprocess.
-fn launch(backend: &Backend, bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    match backend {
-        Backend::Existing { base_url } => Ok((base_url.clone(), MiniflareGuard::empty())),
-        Backend::SpawnMiniflare => spawn_miniflare(bundle_path),
-    }
-}
-
-/// Number of spawn attempts before giving up.
-const SPAWN_MAX_ATTEMPTS: u32 = 5;
-/// Initial delay between attempts (doubles on each retry).
-const SPAWN_INITIAL_BACKOFF_MS: u64 = 200;
-
-/// Outer retry wrapper for `spawn_miniflare_once`.
+/// Construct the active [`BackendHandle`] for this render job.
 ///
-/// Retries up to [`SPAWN_MAX_ATTEMPTS`] times with exponential backoff
-/// starting at [`SPAWN_INITIAL_BACKOFF_MS`] ms. A transient port-bind
-/// collision (zombie port from a previous run, concurrent CI job, etc.)
-/// resolves within a few hundred ms; the retry loop handles that without
-/// operator intervention. The final error message includes the last
-/// failure reason.
-fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    let mut errors: Vec<String> = Vec::new();
-    let mut backoff_ms = SPAWN_INITIAL_BACKOFF_MS;
-    for attempt in 1..=SPAWN_MAX_ATTEMPTS {
-        match spawn_miniflare_once(bundle_path) {
-            Ok(result) => return Ok(result),
-            Err(RendererError::MiniflareSpawn(msg)) => {
-                errors.push(format!("attempt {attempt}: {msg}"));
-                if attempt < SPAWN_MAX_ATTEMPTS {
-                    thread::sleep(Duration::from_millis(backoff_ms));
-                    backoff_ms = (backoff_ms * 2).min(3_000);
-                }
-            }
-            Err(other) => return Err(other),
-        }
-    }
-    let summary = errors.join("\n  ");
-    Err(RendererError::MiniflareSpawn(format!(
-        "miniflare failed to start after {SPAWN_MAX_ATTEMPTS} attempts:\n  {summary}"
-    )))
-}
-
-fn spawn_miniflare_once(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    let bundle_path = if bundle_path.is_absolute() {
-        bundle_path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| RendererError::Io {
-                path: bundle_path.to_path_buf(),
-                source: e,
-            })?
-            .join(bundle_path)
-    };
-    if !bundle_path.exists() {
-        return Err(RendererError::MiniflareSpawn(format!(
-            "bundle does not exist: {}",
-            bundle_path.display()
-        )));
-    }
-
-    let cwd = resolve_subprocess_cwd(&bundle_path)?;
-
-    // Materialise the bootstrap script INSIDE the resolved cwd (which
-    // is guaranteed to contain `node_modules/miniflare`) so Node's
-    // ESM resolver finds the `miniflare` package without needing
-    // `NODE_PATH` or experimental flags. We can't drop it in a random
-    // /tmp dir: Node walks up *the file's* directory tree, not the
-    // cwd, looking for `node_modules`, and a /tmp dir has none in its
-    // ancestry.
-    //
-    // `NamedTempFile` gives us a unique random name + automatic
-    // cleanup on drop, so two parallel renderer instances never
-    // collide and a panicking caller never leaves a stray file in
-    // the user's working tree.
-    let bootstrap_named = tempfile::Builder::new()
-        .prefix("zfb-renderer-bootstrap-")
-        .suffix(".mjs")
-        .tempfile_in(&cwd)
-        .map_err(|e| RendererError::Io {
-            path: cwd.clone(),
-            source: e,
-        })?;
-    fs::write(bootstrap_named.path(), BOOTSTRAP_JS).map_err(|e| RendererError::Io {
-        path: bootstrap_named.path().to_path_buf(),
-        source: e,
-    })?;
-    let bootstrap_path = bootstrap_named.path().to_path_buf();
-
-    let mut cmd = Command::new("node");
-    cmd.current_dir(&cwd);
-    cmd.arg(&bootstrap_path);
-    cmd.arg("--bundle");
-    cmd.arg(&bundle_path);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    // On Unix: place node (and all its descendants — workerd, etc.) in a
-    // new process group via setsid(). terminate() then sends SIGTERM/SIGKILL
-    // to `-pgid` (the whole group) so workerd child-processes are killed
-    // reliably even on parent panic. This is the smallest safe change:
-    // setsid() detaches the process from the terminal and creates a fresh
-    // process group where node is the leader (pgid == pid).
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt as _;
-        cmd.pre_exec(|| {
-            libc_setsid();
-            Ok(())
-        });
-    }
-
-    let mut child = cmd.spawn().map_err(|e| {
-        RendererError::MiniflareSpawn(format!(
-            "failed to spawn `node {}`: {}",
-            bootstrap_path.display(),
-            e
-        ))
-    })?;
-
-    // Capture stderr in a background thread.
-    let log_buf = Arc::new(Mutex::new(String::new()));
-    let log_thread = if let Some(stderr) = child.stderr.take() {
-        let buf = log_buf.clone();
-        Some(thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
-                if let Ok(mut g) = buf.lock() {
-                    g.push_str(&line);
-                    g.push('\n');
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Read the ready-handshake from stdout (one line of JSON). On
-    // failure, drain stderr so the error message tells the operator
-    // why workerd refused to start.
-    let stdout = child.stdout.take().ok_or_else(|| {
-        RendererError::MiniflareSpawn("subprocess stdout pipe missing".into())
-    })?;
-    let ready_url = match read_ready_handshake(stdout, Duration::from_secs(30)) {
-        Ok(u) => u,
-        Err(RendererError::MiniflareSpawn(msg)) => {
-            // Drain stderr to surface workerd's diagnostic.
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Some(handle) = log_thread {
-                let _ = handle.join();
-            }
-            let logs = log_buf.lock().map(|s| s.clone()).unwrap_or_default();
-            let snippet = if logs.len() > 4096 {
-                format!("{}…(truncated)", &logs[..4096])
-            } else {
-                logs
-            };
-            return Err(RendererError::MiniflareSpawn(format!(
-                "{msg}\n--- miniflare stderr ---\n{snippet}"
-            )));
-        }
-        Err(other) => return Err(other),
-    };
-
-    let guard = MiniflareGuard {
-        child: Some(child),
-        log_buf,
-        log_thread,
-        bootstrap_keepalive: Some(bootstrap_named),
-    };
-    Ok((ready_url, guard))
-}
-
-/// Read the bootstrap's stdout one line at a time, parsing JSON until
-/// we see `{"event":"ready", ...}`. Other JSON shapes are ignored;
-/// non-JSON lines are silently dropped (workerd occasionally writes
-/// `[mf:inf]` style lines on stdout depending on the version).
-///
-/// The read happens on a dedicated thread so that a blocking
-/// `lines.next()` call can never outlive the `timeout`. The calling
-/// thread waits on a channel with a deadline; if the channel times out,
-/// `MiniflareSpawn` is returned and the caller kills the subprocess.
-///
-/// Accepts any `Read + Send + 'static` so tests can inject a pipe or
-/// in-memory reader without needing a real subprocess.
-fn read_ready_handshake(
-    stdout: impl std::io::Read + Send + 'static,
+/// For `Backend::Existing` this creates the reqwest client only.
+/// For `EmbeddedV8` it calls the user-supplied factory to construct the
+/// in-process V8 host. For `Stub` it simply wraps the closure.
+fn launch(
+    backend: &Backend,
+    bundle_path: &Path,
     timeout: Duration,
-) -> Result<String, RendererError> {
-    // Spawn a reader thread that sends parsed URLs or errors over a
-    // channel. This is the only reliable way to impose a wall-clock
-    // deadline on a blocking BufRead::lines() iterator.
-    let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    let trimmed = line.trim().to_string();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(parsed) = serde_json::from_str::<ReadyHandshake>(&trimmed) {
-                        if parsed.event == "ready" {
-                            let _ = tx.send(Ok(parsed.url));
-                            return;
-                        }
-                    }
-                    // Non-ready JSON or non-JSON line: keep reading.
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(format!("stdout read error: {e}")));
-                    return;
-                }
-            }
+) -> Result<BackendHandle, RendererError> {
+    match backend {
+        Backend::Existing { base_url } => {
+            let client = build_http_client(timeout)?;
+            Ok(BackendHandle::Http {
+                base_url: base_url.clone(),
+                client,
+            })
         }
-        // EOF before ready handshake.
-        let _ = tx.send(Err(
-            "subprocess closed stdout before ready handshake".into(),
-        ));
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(url)) => Ok(url),
-        Ok(Err(msg)) => Err(RendererError::MiniflareSpawn(msg)),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(RendererError::MiniflareSpawn(format!(
-            "subprocess did not emit ready handshake within {timeout:?}",
-        ))),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RendererError::MiniflareSpawn(
-            "subprocess stdout reader thread terminated unexpectedly".into(),
-        )),
+        Backend::EmbeddedV8 { host_factory } => {
+            // Resolve the bundle path to an absolute path before calling
+            // the factory, so the factory impl never needs to handle
+            // relative paths.
+            let abs_bundle = if bundle_path.is_absolute() {
+                bundle_path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| RendererError::Io {
+                        path: bundle_path.to_path_buf(),
+                        source: e,
+                    })?
+                    .join(bundle_path)
+            };
+            let host = host_factory(&abs_bundle)?;
+            let guard = EmbeddedV8Guard::new(host);
+            Ok(BackendHandle::EmbeddedV8 { guard })
+        }
+        Backend::Stub { handler } => Ok(BackendHandle::Stub {
+            handler: handler.clone(),
+        }),
     }
 }
 
@@ -1122,93 +1022,24 @@ fn find_frame_candidates(body: &str) -> Vec<FrameCandidate> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Tiny single-threaded HTTP server for tests. Handles one or more
-    /// connections, replies with whatever the route table says, and
-    /// shuts down when the [`StopFlag`] flips.
-    struct FakeServer {
-        port: u16,
-        stop: Arc<AtomicBool>,
-        handle: Option<thread::JoinHandle<()>>,
-    }
-
-    /// (status, content-type, body). Boxed so closures with different
-    /// captures can be plugged into the fake server.
-    type FakeResponse = (u16, &'static str, Vec<u8>);
-    type Handler = Arc<dyn Fn(&str) -> FakeResponse + Send + Sync>;
-
-    impl FakeServer {
-        fn start(handler: Handler) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let stop = Arc::new(AtomicBool::new(false));
-            let stop_clone = stop.clone();
-            let handle = thread::spawn(move || {
-                while !stop_clone.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            let h = handler.clone();
-                            thread::spawn(move || handle_conn(&mut stream, &*h));
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-            FakeServer {
-                port,
-                stop,
-                handle: Some(handle),
-            }
-        }
-
-        fn base_url(&self) -> String {
-            format!("http://127.0.0.1:{}/", self.port)
+    /// Build a [`Backend::Stub`] from a closure that maps URL path → response.
+    /// The closure signature mirrors the public [`HttpResponseLike`] shape.
+    fn stub_backend(
+        f: impl Fn(&str) -> HttpResponseLike + Send + Sync + 'static,
+    ) -> Backend {
+        Backend::Stub {
+            handler: Arc::new(f),
         }
     }
 
-    impl Drop for FakeServer {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(h) = self.handle.take() {
-                let _ = h.join();
-            }
+    /// Build a stub response with status 200 and `text/html` content type.
+    fn html_ok(body: &'static str) -> HttpResponseLike {
+        HttpResponseLike {
+            status: 200,
+            content_type: "text/html; charset=utf-8".into(),
+            body: body.as_bytes().to_vec(),
         }
-    }
-
-    fn handle_conn(stream: &mut TcpStream, handler: &dyn Fn(&str) -> FakeResponse) {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .ok();
-        let mut buf = [0u8; 4096];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
-        // Parse request line `GET /path HTTP/1.1`.
-        let path = req
-            .split_whitespace()
-            .nth(1)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "/".to_string());
-        let (status, ctype, body) = handler(&path);
-        let status_line = match status {
-            200 => "200 OK",
-            404 => "404 Not Found",
-            500 => "500 Internal Server Error",
-            _ => "500 Internal Server Error",
-        };
-        let resp = format!(
-            "HTTP/1.1 {status_line}\r\nContent-Type: {ctype}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
-            len = body.len()
-        );
-        let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.write_all(&body);
-        let _ = stream.shutdown(Shutdown::Both);
     }
 
     fn dummy_manifest() -> BundleManifest {
@@ -1223,21 +1054,28 @@ mod tests {
 
     #[test]
     fn render_all_partitions_ssg_vs_ssr_and_writes_files() {
-        let handler: Handler = Arc::new(|path: &str| match path {
-            "/" => (
-                200,
-                "text/html; charset=utf-8",
-                b"<html><body><h1>Home</h1></body></html>".to_vec(),
-            ),
-            "/about" => (
-                200,
-                "text/html; charset=utf-8",
-                b"<html><body>About</body></html>".to_vec(),
-            ),
-            "/feed.xml" => (200, "application/xml", b"<rss/>".to_vec()),
-            _ => (404, "text/plain", b"nope".to_vec()),
+        let backend = stub_backend(|path| match path {
+            "/" => HttpResponseLike {
+                status: 200,
+                content_type: "text/html; charset=utf-8".into(),
+                body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
+            },
+            "/about" => HttpResponseLike {
+                status: 200,
+                content_type: "text/html; charset=utf-8".into(),
+                body: b"<html><body>About</body></html>".to_vec(),
+            },
+            "/feed.xml" => HttpResponseLike {
+                status: 200,
+                content_type: "application/xml".into(),
+                body: b"<rss/>".to_vec(),
+            },
+            _ => HttpResponseLike {
+                status: 404,
+                content_type: "text/plain".into(),
+                body: b"nope".to_vec(),
+            },
         });
-        let srv = FakeServer::start(handler);
 
         let dist = tempfile::tempdir().unwrap();
         let mut prerender_map = BTreeMap::new();
@@ -1277,10 +1115,8 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map,
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
-            },
-            request_timeout: Some(Duration::from_secs(5)),
+            backend,
+            request_timeout: None,
             prod_head_assets: None,
         })
         .expect("render_all");
@@ -1309,10 +1145,6 @@ mod tests {
 
     #[test]
     fn missing_prerender_entry_defaults_to_ssg() {
-        let handler: Handler = Arc::new(|_| {
-            (200, "text/html", b"<html>ok</html>".to_vec())
-        });
-        let srv = FakeServer::start(handler);
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/".into(),
@@ -1326,10 +1158,8 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
-            },
-            request_timeout: Some(Duration::from_secs(5)),
+            backend: stub_backend(|_| html_ok("<html>ok</html>")),
+            request_timeout: None,
             prod_head_assets: None,
         })
         .unwrap();
@@ -1339,14 +1169,6 @@ mod tests {
 
     #[test]
     fn non_2xx_response_surfaces_render_failed_with_body() {
-        let handler: Handler = Arc::new(|_| {
-            (
-                500,
-                "text/plain",
-                b"Error: boom\n  at fetch (bundle.mjs:42:7)\n".to_vec(),
-            )
-        });
-        let srv = FakeServer::start(handler);
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/error".into(),
@@ -1360,10 +1182,12 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
-            },
-            request_timeout: Some(Duration::from_secs(5)),
+            backend: stub_backend(|_| HttpResponseLike {
+                status: 500,
+                content_type: "text/plain".into(),
+                body: b"Error: boom\n  at fetch (bundle.mjs:42:7)\n".to_vec(),
+            }),
+            request_timeout: None,
             prod_head_assets: None,
         })
         .unwrap_err();
@@ -1384,10 +1208,6 @@ mod tests {
         // injects (e.g. a default-Some) would trip this.
         let raw_html = b"<!doctype html><html><head><title>T</title></head><body>x</body></html>";
         let raw_html_owned = raw_html.to_vec();
-        let handler: Handler = Arc::new(move |_| {
-            (200, "text/html; charset=utf-8", raw_html_owned.clone())
-        });
-        let srv = FakeServer::start(handler);
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/".into(),
@@ -1401,10 +1221,14 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
+            backend: Backend::Stub {
+                handler: Arc::new(move |_| HttpResponseLike {
+                    status: 200,
+                    content_type: "text/html; charset=utf-8".into(),
+                    body: raw_html_owned.clone(),
+                }),
             },
-            request_timeout: Some(Duration::from_secs(5)),
+            request_timeout: None,
             prod_head_assets: None,
         })
         .expect("render_all");
@@ -1416,10 +1240,6 @@ mod tests {
     fn render_all_with_prod_head_assets_injects_link_and_script() {
         let raw_html = b"<!doctype html><html><head><title>T</title></head><body>x</body></html>";
         let raw_html_owned = raw_html.to_vec();
-        let handler: Handler = Arc::new(move |_| {
-            (200, "text/html; charset=utf-8", raw_html_owned.clone())
-        });
-        let srv = FakeServer::start(handler);
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/".into(),
@@ -1437,10 +1257,14 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
+            backend: Backend::Stub {
+                handler: Arc::new(move |_| HttpResponseLike {
+                    status: 200,
+                    content_type: "text/html; charset=utf-8".into(),
+                    body: raw_html_owned.clone(),
+                }),
             },
-            request_timeout: Some(Duration::from_secs(5)),
+            request_timeout: None,
             prod_head_assets: Some(assets),
         })
         .expect("render_all");
@@ -1461,10 +1285,6 @@ mod tests {
         // universe in real builds mixes HTML and non-HTML outputs.
         let xml_body = b"<?xml version=\"1.0\"?><rss/>";
         let xml_owned = xml_body.to_vec();
-        let handler: Handler = Arc::new(move |_| {
-            (200, "application/xml", xml_owned.clone())
-        });
-        let srv = FakeServer::start(handler);
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/feed.xml".into(),
@@ -1482,10 +1302,14 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
+            backend: Backend::Stub {
+                handler: Arc::new(move |_| HttpResponseLike {
+                    status: 200,
+                    content_type: "application/xml".into(),
+                    body: xml_owned.clone(),
+                }),
             },
-            request_timeout: Some(Duration::from_secs(5)),
+            request_timeout: None,
             prod_head_assets: Some(assets),
         })
         .expect("render_all");
@@ -1556,15 +1380,10 @@ mod tests {
         builder.into_sourcemap().to_writer(&mut buf).unwrap();
         fs::write(&map_path, &buf).unwrap();
 
-        // Fake server: emit a fake stack trace pointing at bundle.mjs:1:1.
-        let handler: Handler = Arc::new(|_| {
-            (
-                500,
-                "text/plain",
-                b"Error: explode\n  at fetch (bundle.mjs:1:1)\n".to_vec(),
-            )
-        });
-        let srv = FakeServer::start(handler);
+        // Backend::Stub simulates a bundle-thrown error with a stack frame
+        // pointing at bundle.mjs:1:1. This is the key acceptance criterion
+        // for this sub: renderer logic stays testable without booting a real
+        // V8 isolate.
         let dist = tempfile::tempdir().unwrap();
         let universe = vec![RouteUniverseEntry {
             url_path: "/".into(),
@@ -1579,10 +1398,12 @@ mod tests {
             dist_dir: dist.path().to_path_buf(),
             route_universe: universe,
             prerender_map: BTreeMap::new(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
-            },
-            request_timeout: Some(Duration::from_secs(5)),
+            backend: stub_backend(|_| HttpResponseLike {
+                status: 500,
+                content_type: "text/plain".into(),
+                body: b"Error: explode\n  at fetch (bundle.mjs:1:1)\n".to_vec(),
+            }),
+            request_timeout: None,
             prod_head_assets: None,
         })
         .unwrap_err();
@@ -1599,16 +1420,67 @@ mod tests {
         }
     }
 
+    /// Key acceptance criterion from the spec: `Backend::Stub` simulates a
+    /// non-2xx response carrying a `bundle.mjs:line:col` frame and the
+    /// renderer asserts `user_location: Some("pages/foo.tsx:42:10")`
+    /// re-projection. Tests renderer logic end-to-end without V8.
     #[test]
-    fn reload_swaps_renderer_state_against_existing_backend() {
-        // Sub 10: when the SSR bundle changes, callers swap the
-        // `RendererState` for a fresh one. Under `Backend::Existing`
-        // this is effectively "tear down + start" — no subprocess is
-        // killed/spawned, but the new state's HTTP client is wired
-        // up and ready.
-        let handler: Handler = Arc::new(|_| (200, "text/html", b"<p>after</p>".to_vec()));
-        let srv = FakeServer::start(handler);
+    fn stub_backend_sourcemap_reprojection_user_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let map_path = tmp.path().join("bundle.mjs.map");
 
+        // Map bundle line 42 col 10 → pages/foo.tsx line 42 col 10.
+        // (Builder uses 0-based; user-visible is 1-based.)
+        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        let src_id = builder.add_source("pages/foo.tsx");
+        builder.set_source_contents(src_id, Some("// foo"));
+        // bundle dst line 41 col 9 (0-based) → pages/foo.tsx line 41 col 9
+        builder.add_raw(41, 9, 41, 9, Some(src_id), None, false);
+        let mut buf = Vec::new();
+        builder.into_sourcemap().to_writer(&mut buf).unwrap();
+        fs::write(&map_path, &buf).unwrap();
+
+        let dist = tempfile::tempdir().unwrap();
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/foo".into(),
+            output_path: PathBuf::from("foo/index.html"),
+            route_key: "/foo".into(),
+        }];
+
+        let err = render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: map_path,
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: stub_backend(|_| HttpResponseLike {
+                status: 500,
+                content_type: "text/plain".into(),
+                body: b"RenderError: oops\n  at render (bundle.mjs:42:10)\n".to_vec(),
+            }),
+            request_timeout: None,
+            prod_head_assets: None,
+        })
+        .unwrap_err();
+
+        match err {
+            RendererError::RenderFailed { user_location, .. } => {
+                let loc = user_location.expect("user_location must be set");
+                assert!(
+                    loc.starts_with("pages/foo.tsx:42:"),
+                    "expected pages/foo.tsx:42:* got {loc}"
+                );
+            }
+            other => unreachable!("expected RenderFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reload_swaps_renderer_state_via_stub_backend() {
+        // Reload semantics: destroy old backend, construct new one.
+        // Under Backend::Stub this is zero-cost (no subprocess) but
+        // confirms the sequence: start → reload → render_one → shutdown.
         let tmp = tempfile::tempdir().unwrap();
         let bundle_path = tmp.path().join("bundle.mjs");
         fs::write(&bundle_path, "// dev bundle\n").unwrap();
@@ -1617,25 +1489,21 @@ mod tests {
         let state = start(RendererStartInput {
             bundle_path: bundle_path.clone(),
             sourcemap_path: map_path.clone(),
-            backend: Backend::Existing {
-                base_url: srv.base_url(),
-            },
-            request_timeout: Some(Duration::from_secs(5)),
+            backend: stub_backend(|_| html_ok("<p>before</p>")),
+            request_timeout: None,
         })
         .expect("initial start");
 
-        // The reload consumes the previous state and returns a fresh
-        // one. We then drive a single render_one against the new
-        // state to confirm it's wired up to the live fake server.
-        let reloaded = reload(
+        // The reload consumes the previous state and returns a fresh one.
+        // We then drive render_one against the new state to confirm it's
+        // wired up to the (different) stub.
+        let mut reloaded = reload(
             state,
             RendererStartInput {
                 bundle_path,
                 sourcemap_path: map_path,
-                backend: Backend::Existing {
-                    base_url: srv.base_url(),
-                },
-                request_timeout: Some(Duration::from_secs(5)),
+                backend: stub_backend(|_| html_ok("<p>after</p>")),
+                request_timeout: None,
             },
         )
         .expect("reload");
@@ -1646,9 +1514,9 @@ mod tests {
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
         };
-        let written = render_one(&reloaded, &entry, dist.path()).expect("render_one");
+        let written = render_one(&mut reloaded, &entry, dist.path()).expect("render_one");
         let body = fs::read_to_string(written).unwrap();
-        assert!(body.contains("after"));
+        assert!(body.contains("after"), "expected 'after' body, got: {body}");
 
         // Idempotent shutdown still works after reload.
         shutdown(reloaded).expect("shutdown");
@@ -1663,210 +1531,4 @@ mod tests {
         assert_eq!(cands[0].col, 7);
     }
 
-    // -------------------------------------------------------------------------
-    // Handshake timeout tests (issue #57, item 3)
-    //
-    // `read_ready_handshake` now accepts `impl Read + Send + 'static` so
-    // we can inject an in-memory cursor instead of a real subprocess pipe.
-    // -------------------------------------------------------------------------
-
-    /// `read_ready_handshake` returns the URL when the reader contains a
-    /// well-formed ready handshake line.
-    #[test]
-    fn handshake_ok_returns_url() {
-        let data = b"{\"event\":\"ready\",\"url\":\"http://127.0.0.1:9999/\"}\n";
-        let cursor = std::io::Cursor::new(data.as_slice());
-        let result = read_ready_handshake(cursor, Duration::from_secs(5));
-        assert_eq!(result.unwrap(), "http://127.0.0.1:9999/");
-    }
-
-    /// `read_ready_handshake` returns `MiniflareSpawn` when the reader
-    /// reaches EOF before the ready handshake (subprocess crash path).
-    #[test]
-    fn handshake_eof_before_ready_returns_error() {
-        // Empty reader → immediate EOF.
-        let cursor = std::io::Cursor::new(b"".as_slice());
-        let err = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap_err();
-        match err {
-            RendererError::MiniflareSpawn(msg) => {
-                assert!(
-                    msg.contains("closed stdout before ready"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected MiniflareSpawn, got {other:?}"),
-        }
-    }
-
-    /// `read_ready_handshake` returns `MiniflareSpawn` (timeout) when the
-    /// reader blocks indefinitely without producing any data.
-    #[test]
-    fn handshake_timeout_returns_error() {
-        // A reader that blocks until its internal flag is set. We park the
-        // thread for 10 s in each read() call, which is far longer than the
-        // 100 ms timeout used below — simulating a subprocess that hangs
-        // before printing anything.
-        struct BlockingReader;
-        impl std::io::Read for BlockingReader {
-            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                // Sleep long enough that the channel timeout (100 ms
-                // below) fires first, but short enough that the
-                // background thread is done quickly after the test
-                // asserts. The thread cannot be interrupted once
-                // started; keeping the sleep short minimises the gap
-                // between test assertion and thread exit.
-                thread::sleep(Duration::from_millis(500));
-                Ok(0)
-            }
-        }
-
-        let err = read_ready_handshake(BlockingReader, Duration::from_millis(100)).unwrap_err();
-        match err {
-            RendererError::MiniflareSpawn(msg) => {
-                assert!(
-                    msg.contains("did not emit ready handshake"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected MiniflareSpawn, got {other:?}"),
-        }
-    }
-
-    /// `read_ready_handshake` skips non-ready JSON lines and non-JSON
-    /// lines before accepting the ready handshake.
-    #[test]
-    fn handshake_skips_non_ready_lines() {
-        let data = b"[mf:inf] server starting\n\
-                     {\"event\":\"listening\",\"url\":\"x\"}\n\
-                     {\"event\":\"ready\",\"url\":\"http://127.0.0.1:8888/\"}\n";
-        let cursor = std::io::Cursor::new(data.as_slice());
-        let url = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap();
-        assert_eq!(url, "http://127.0.0.1:8888/");
-    }
-
-    /// Real-miniflare end-to-end test. Heavy: spawns Node, binds an
-    /// ephemeral port, drives one HTTP request. Gated under
-    /// `#[ignore]` so it does not run by default. Kick it on with:
-    ///
-    ///     cargo test --package zfb-build -- --include-ignored \
-    ///         renderer::tests::end_to_end_spawn_miniflare_renders_route
-    ///
-    /// Uses the project-wide flock pattern at
-    /// `/tmp/x-wt-teams-zfb-locks/port-1.lock` so parallel worktrees
-    /// do not race.
-    #[test]
-    #[ignore = "spawns miniflare; run with --include-ignored"]
-    fn end_to_end_spawn_miniflare_renders_route() {
-        use fs2::FileExt as _;
-
-        // Resolve the workspace root via CARGO_MANIFEST_DIR so the
-        // test works regardless of pwd. miniflare is hoisted there.
-        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace = here.parent().unwrap().parent().unwrap().to_path_buf();
-        let modules = workspace.join("node_modules/miniflare");
-        if !modules.exists() {
-            eprintln!(
-                "[end_to_end_spawn_miniflare_renders_route] {} missing; \
-                 run `pnpm install` from the workspace root to enable.",
-                modules.display()
-            );
-            return;
-        }
-
-        // Cross-worktree port lock.
-        let lock_dir = Path::new("/tmp/x-wt-teams-zfb-locks");
-        let _ = fs::create_dir_all(lock_dir);
-        let lock_path = lock_dir.join("port-1.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("open port lock");
-        lock_file.lock_exclusive().expect("acquire port lock");
-
-        // Self-contained worker bundle: serves /, /feed.xml, throws
-        // for /error so we can poke the sourcemap path. The bundle is
-        // hand-rolled because we do NOT want to drag esbuild into
-        // this test — that's bundler_integration.rs's job.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let bundle_path = tmp.path().join("bundle.mjs");
-        fs::write(
-            &bundle_path,
-            r#"
-                export default {
-                  async fetch(request) {
-                    const url = new URL(request.url);
-                    if (url.pathname === "/") {
-                      return new Response("<html><body><h1>Home</h1></body></html>", {
-                        headers: { "Content-Type": "text/html; charset=utf-8" },
-                      });
-                    }
-                    if (url.pathname === "/feed.xml") {
-                      return new Response("<rss/>", {
-                        headers: { "Content-Type": "application/xml" },
-                      });
-                    }
-                    if (url.pathname === "/error") {
-                      throw new Error("boom from bundle");
-                    }
-                    return new Response("not found", { status: 404 });
-                  },
-                };
-            "#,
-        )
-        .unwrap();
-
-        // Stage a node_modules/miniflare symlink next to the bundle so
-        // resolve_subprocess_cwd picks it up. Saves having to walk to
-        // the workspace root in tests.
-        let bundle_node_modules = tmp.path().join("node_modules");
-        fs::create_dir_all(&bundle_node_modules).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            workspace.join("node_modules/miniflare"),
-            bundle_node_modules.join("miniflare"),
-        )
-        .expect("symlink miniflare");
-
-        let dist = tempfile::tempdir().unwrap();
-        let universe = vec![
-            RouteUniverseEntry {
-                url_path: "/".into(),
-                output_path: PathBuf::from("index.html"),
-                route_key: "/".into(),
-            },
-            RouteUniverseEntry {
-                url_path: "/feed.xml".into(),
-                output_path: PathBuf::from("feed.xml"),
-                route_key: "/feed.xml".into(),
-            },
-        ];
-
-        let started = Instant::now();
-        let out = render_all(RendererInput {
-            bundle_path: bundle_path.clone(),
-            sourcemap_path: tmp.path().join("bundle.mjs.map"),
-            manifest: dummy_manifest(),
-            dist_dir: dist.path().to_path_buf(),
-            route_universe: universe,
-            prerender_map: BTreeMap::new(),
-            backend: Backend::SpawnMiniflare,
-            request_timeout: Some(Duration::from_secs(15)),
-            prod_head_assets: None,
-        })
-        .expect("render_all against real miniflare");
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(30),
-            "miniflare e2e took too long: {elapsed:?}"
-        );
-
-        assert_eq!(out.ssg_files_written.len(), 2);
-        let index = fs::read_to_string(dist.path().join("index.html")).unwrap();
-        assert!(index.contains("Home"));
-        let feed = fs::read_to_string(dist.path().join("feed.xml")).unwrap();
-        assert_eq!(feed.trim(), "<rss/>");
-    }
 }

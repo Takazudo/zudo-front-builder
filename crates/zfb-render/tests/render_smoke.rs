@@ -2,8 +2,8 @@
 //!
 //! These exercise the SWC pipeline end-to-end and prove the `Renderer`
 //! orchestration plumbs everything correctly. We swap in a `TestHost` for
-//! the JS runtime side because the production host (per ADR-005, a
-//! miniflare subprocess client wired in by the build orchestrator in T6)
+//! the JS runtime side because the production host (per ADR-007, the
+//! embedded V8 host wired in by the build orchestrator in T6)
 //! is not in-process and would needlessly slow these unit-shape tests.
 //!
 //! The test host inspects the compiled JS that SWC produced, confirms the

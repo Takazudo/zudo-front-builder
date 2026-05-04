@@ -7,6 +7,55 @@ Thanks for your interest in `zudo-front-builder`. The project is past initial sc
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
 - **Node / pnpm**: pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically.
 
+## First build expectation
+
+The first `cargo build --workspace` on a clean machine takes **15–30 minutes**. The bottleneck is V8 — the JavaScript engine pulled in by the `zfb-render` crate via `deno_core`. This is unavoidable on a cold cache but is a one-time cost.
+
+To minimise the wait on your first checkout:
+
+```sh
+# Compile workspace crates + test harnesses, skip recompiling
+# third-party deps that haven't changed.
+cargo build --workspace --tests --no-deps
+```
+
+After this, incremental rebuilds and `cargo test` runs are fast.
+
+### Cargo feature gate — `embed_v8`
+
+The V8 engine is gated behind a **default-on** cargo feature called `embed_v8` on the `zfb-render` crate. Crates that do not need JavaScript rendering (e.g. `zfb-content`, utility crates) do not depend on `zfb-render` and therefore never compile V8 unless they explicitly ask for it. This means:
+
+- `cargo test -p zfb-content` compiles in seconds — no V8.
+- `cargo build --workspace` compiles everything including V8 exactly once and caches the result.
+- If you want to build or test workspace members that don't touch rendering, use `-p <crate>` to avoid pulling in the V8 dependency graph unnecessarily.
+
+### Speeding up local builds with sccache
+
+[sccache](https://github.com/mozilla/sccache) is a compiler cache that wraps `rustc` and stores compilation artefacts in a local (or remote S3/GCS) cache. For zfb development its biggest win is the V8 layer: once V8 is in the sccache store, switching branches or cleaning `target/` no longer triggers a V8 recompile.
+
+```sh
+# Install
+cargo install sccache
+
+# Enable for the current shell session
+export RUSTC_WRAPPER=sccache
+
+# Optional: point at a larger on-disk cache (default is ~/.cache/sccache)
+export SCCACHE_DIR=/path/to/large/drive/.sccache
+export SCCACHE_CACHE_SIZE=20G
+```
+
+Add the exports to your shell profile to persist them.
+
+### Faster test runs with cargo-nextest
+
+If the workspace test suite becomes slow, [cargo-nextest](https://nexte.st/) is a drop-in replacement for `cargo test` that runs tests in parallel and streams output efficiently:
+
+```sh
+cargo install cargo-nextest
+cargo nextest run --workspace
+```
+
 ## Workspace layout
 
 This is a Cargo workspace. Crates live under `crates/`. The placeholder bin crate is `crates/zfb/`.
@@ -59,7 +108,7 @@ The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the 
 
 ## External tool version pins
 
-zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/miniflare/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
+zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
 
 The pin lives in two places that **must move together**:
 
@@ -70,14 +119,13 @@ The pin lives in two places that **must move together**:
 | ----------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------- |
 | esbuild     | `EXPECTED_ESBUILD_VERSION`, `EXPECTED_ESBUILD_SHA256`                                               | `crates/zfb-islands/src/esbuild.rs`            | (binary; populated by release engineering into `crates/zfb/binaries/esbuild/esbuild`) |
 | wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb/src/commands/preview.rs`           | `wrangler` in `package.json`          |
-| miniflare   | `EXPECTED_MINIFLARE_VERSION` (informational; not gated at runtime — wrangler owns the subprocess)   | `crates/zfb/src/commands/preview.rs`           | `miniflare` in `package.json`         |
-| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via miniflare → `pnpm-lock.yaml`)    | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
+| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via wrangler → `pnpm-lock.yaml`)     | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
 
-### Bumping wrangler / miniflare / workerd
+### Bumping wrangler / workerd
 
-1. Pick the new versions you want (typically a coordinated wrangler + miniflare + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
-2. Edit the `wrangler` and `miniflare` entries in `package.json` to the new exact versions.
-3. Edit `EXPECTED_WRANGLER_VERSION`, `EXPECTED_MINIFLARE_VERSION`, and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
+1. Pick the new versions you want (typically a coordinated wrangler + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
+2. Edit the `wrangler` entry in `package.json` to the new exact version.
+3. Edit `EXPECTED_WRANGLER_VERSION` and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
 4. Run `pnpm install` to refresh `pnpm-lock.yaml`. Confirm the resolved `workerd` version in the lockfile matches the constant you just set.
 5. Run `cargo test -p zfb` to make sure the version-gate tests still pass.
 6. Commit `package.json`, `pnpm-lock.yaml`, and the constants change in one commit so the pin moves atomically.

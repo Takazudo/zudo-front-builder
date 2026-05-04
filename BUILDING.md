@@ -12,6 +12,20 @@ This document covers the toolchain and one-time setup needed to build, test, and
 
 CI uses Node 20 and Rust stable on `ubuntu-latest`.
 
+## First build is slow
+
+The first `cargo build --workspace` on a clean machine takes **15–30 minutes**. The dominant cost is compiling the V8 JavaScript engine (pulled in via `deno_core` by the `zfb-render` crate). This is a one-time cost: subsequent incremental builds are fast because Cargo only recompiles changed crates.
+
+To make the wait productive, start with:
+
+```sh
+cargo build --workspace --tests --no-deps
+```
+
+`--no-deps` skips recompiling external dependencies (useful when you only changed workspace crate code). `--tests` also compiles test harnesses so the first `cargo test` run is faster.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for tips on speeding up local Rust compilation with `sccache`.
+
 ## Initial setup
 
 ```sh
@@ -22,7 +36,7 @@ pnpm install --frozen-lockfile
 #    crates/zfb/binaries/tailwindcss-v4 (idempotent — fast no-op on re-run)
 pnpm fetch:tailwind
 
-# 3. Build the Rust workspace
+# 3. Build the Rust workspace (first run: 15-30 min; subsequent runs: fast)
 cargo build --workspace
 ```
 

@@ -1,25 +1,24 @@
 //! `RenderHost` trait — the abstraction boundary between the renderer and the
 //! underlying JS runtime.
 //!
-//! ADR-005 supersedes ADR-001: zfb no longer embeds a JS runtime in the Rust
-//! binary. Build-time TSX→HTML rendering is delegated to a short-lived
-//! miniflare (workerd) subprocess driven by `@takazudo/zfb-runtime`. The Rust
-//! side talks to that subprocess over an IPC boundary; the `RenderHost` trait
-//! is preserved as the abstraction seam so caller code in this crate can be
-//! aimed at whatever concrete host the orchestrator wires up.
+//! ADR-007 describes the production path: build-time TSX→HTML rendering is
+//! delegated to an embedded V8 host (`deno_core` in-process) driven by
+//! `@takazudo/zfb-runtime`. The concrete host implementation lives in
+//! [`crate::embedded_v8`]. The Rust side communicates with the host via the
+//! `RenderHost` trait, which is the abstraction seam so caller code in this
+//! crate can be aimed at whatever concrete host the orchestrator wires up.
 //!
-//! No in-process JS host implementation lives here at the moment. The
-//! production host (a miniflare subprocess client) lands in T6 (build-time
-//! render orchestration). Tests in this crate use lightweight in-process fakes
-//! that satisfy `RenderHost`.
+//! In-crate tests use lightweight in-process fakes that satisfy `RenderHost`
+//! directly; integration tests against the real `embedded_v8` module live in
+//! `tests/embedded_v8_*.rs`.
 //!
 //! ## Async design
 //!
-//! All three operations on `RenderHost` are `async`. The production miniflare
-//! subprocess client drives I/O over stdin/stdout; giving those calls an
-//! async signature lets the future orchestrator schedule other work while a
-//! request is in flight. In-process test fakes implement the trait methods
-//! as trivially-ready futures (just `async { ... }`).
+//! All three operations on `RenderHost` are `async`. The embedded V8 host
+//! drives `deno_core::JsRuntime::run_event_loop`; giving those calls an async
+//! signature lets the orchestrator schedule other work while a request is in
+//! flight. In-process test fakes implement the trait methods as trivially-
+//! ready futures (just `async { ... }`).
 //!
 //! `#[async_trait]` is used for dyn-compatibility: Rust stable does not yet
 //! support `dyn Trait` with `async fn` methods without boxing. The macro
@@ -53,19 +52,18 @@ impl ModuleHandle {
 
 /// Abstraction over the JS runtime.
 ///
-/// Production target (per ADR-005) is a thin client over a miniflare
-/// subprocess; tests in this crate use in-process fakes. Add a new impl by
-/// satisfying these three operations.
+/// Production target (per ADR-007) is the embedded V8 host
+/// ([`crate::embedded_v8::EmbeddedV8RenderHost`]); tests in this crate use
+/// in-process fakes. Add a new impl by satisfying these three operations.
 ///
-/// The trait is intentionally **not** `Send` / `Sync`: subprocess clients
-/// typically own a stdio handle that must be driven from a single thread, and
-/// any future in-process JS isolate would carry the same invariant. Hosts
-/// that span threads do so by parking the host on a dedicated thread and
-/// exchanging messages over a channel.
+/// The trait is intentionally **not** `Send` / `Sync`: the embedded V8 isolate
+/// is pinned to the thread that creates it. Hosts that span threads do so by
+/// parking the host on a dedicated thread and exchanging messages over a
+/// channel.
 ///
-/// All methods are `async` so implementations that need I/O (e.g. the
-/// miniflare subprocess client that writes to stdin and reads from stdout)
-/// can do so without blocking the caller's thread.
+/// All methods are `async` so implementations that need I/O (V8 microtask
+/// draining, top-level await on module evaluate) can do so without blocking
+/// the caller's thread.
 #[async_trait(?Send)]
 pub trait RenderHost {
     /// Load `source` as an ES module under the display `name`. Subsequent

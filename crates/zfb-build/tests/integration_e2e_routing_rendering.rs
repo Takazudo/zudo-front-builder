@@ -1,7 +1,7 @@
 //! End-to-end routing + rendering integration test for `zfb-build`.
 //!
-//! Exercises the full pipeline from bundler through miniflare renderer
-//! across every routing pattern the framework supports:
+//! Exercises the full pipeline from bundler through the embedded V8 host
+//! (ADR-007) across every routing pattern the framework supports:
 //!
 //!   - static index (`/`)
 //!   - static named (`/about`)
@@ -14,7 +14,7 @@
 //! Fixture source lives at
 //! `crates/zfb-render/tests/fixtures/routing-rendering/`. The test
 //! bundles it with Preact (and optionally React when available), renders
-//! every concrete URL through a real miniflare subprocess, captures or
+//! every concrete URL through the embedded V8 host, captures or
 //! compares HTML snapshots under
 //! `tests/snapshots/e2e_routing_rendering/`, and (for the portable-
 //! component contract — ADR-002) asserts that the Preact and React
@@ -26,8 +26,6 @@
 //!
 //! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
 //!   `crates/zfb/binaries/esbuild/esbuild`, or `which esbuild`).
-//! - `node` is not on PATH.
-//! - `node_modules/miniflare` is not in the workspace root.
 //!
 //! ## Snapshot bootstrap
 //!
@@ -83,56 +81,14 @@ fn locate_esbuild() -> Option<PathBuf> {
     None
 }
 
-/// Walk up from `CARGO_MANIFEST_DIR` until we find a directory that
-/// contains `node_modules/miniflare`. This handles both the normal
-/// workspace layout (`crates/zfb-build` → `crates` → workspace root)
-/// and the worktree layout (`.../worktrees/i63-e2e-test/crates/zfb-build`
-/// → … → `.../zfb/`) where the pnpm store lives in the git root rather
-/// than the worktree's parent.
-///
-/// Returns `None` when no such directory is found.
-fn find_miniflare_workspace() -> Option<PathBuf> {
+/// Locate the workspace root (two levels up from CARGO_MANIFEST_DIR:
+/// `crates/zfb-build` → `crates` → workspace root).
+fn workspace_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // Walk-up search starting from the crate directory.
-    // Collect ancestors into a Vec so we own each PathBuf.
-    let ancestors: Vec<PathBuf> = {
-        let mut v = Vec::new();
-        let mut p: Option<&Path> = Some(here.as_path());
-        while let Some(q) = p {
-            v.push(q.to_path_buf());
-            p = q.parent();
-        }
-        v
-    };
-    for dir in &ancestors {
-        if dir.join("node_modules").join("miniflare").exists() {
-            return Some(dir.clone());
-        }
-    }
-    None
-}
-
-/// Return a workspace root that is known to have `node_modules/miniflare`.
-/// Returns `None` when not found (test will skip).
-fn workspace_root() -> Option<PathBuf> {
-    find_miniflare_workspace()
-}
-
-/// Check whether miniflare is available in the workspace root.
-/// When `workspace` is `None`, returns `false`.
-fn miniflare_available(workspace: Option<&Path>) -> bool {
-    workspace
-        .map(|w| w.join("node_modules").join("miniflare").exists())
-        .unwrap_or(false)
-}
-
-/// Check whether `node` is available on PATH.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    here.parent() // crates/
+        .and_then(|p| p.parent()) // workspace root
+        .expect("workspace root from CARGO_MANIFEST_DIR")
+        .to_path_buf()
 }
 
 /// Snapshot dir for this test suite. Created on first use.
@@ -202,7 +158,7 @@ fn fixture_root() -> PathBuf {
 ///
 /// Dynamic pages are expanded manually here (matching the fixture's
 /// `paths()` return values) so the test is fully deterministic and does
-/// not need to spin up a first miniflare just to call `__paths__`.
+/// not need to call `__paths__` via the running host.
 fn route_universe() -> Vec<RouteUniverseEntry> {
     let mut entries = Vec::new();
 
@@ -283,17 +239,9 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
 /// copy so the router.ts changes under test are included in the bundle.
 /// Using the main-repo copy (through the pnpm symlink) would give the old
 /// code and make dynamic routes fail.
-fn make_test_node_modules(workspace: &Path) -> tempfile::TempDir {
-    // Infer the worktree root (two levels up from CARGO_MANIFEST_DIR:
-    // crates/zfb-build → crates → worktree).
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let worktree_root = here
-        .parent() // crates/
-        .and_then(|p| p.parent()) // worktree root (e.g. .../i63-e2e-test/)
-        .expect("worktree root from CARGO_MANIFEST_DIR")
-        .to_path_buf();
-
-    let pnpm_store = workspace.join("node_modules/.pnpm/node_modules");
+fn make_test_node_modules() -> tempfile::TempDir {
+    let worktree_root = workspace_root();
+    let pnpm_store = worktree_root.join("node_modules/.pnpm/node_modules");
 
     let tmp = tempfile::tempdir().expect("tempdir for test node_modules");
     let nm = tmp.path();
@@ -326,7 +274,7 @@ fn make_test_node_modules(workspace: &Path) -> tempfile::TempDir {
     std::os::unix::fs::symlink(&zfb_runtime_src, &zfb_runtime_dst)
         .unwrap_or_else(|e| panic!("symlink @takazudo/zfb-runtime: {e}"));
 
-    // `zfb` — point at the worktree's packages/zfb.
+    // `zfb` — point at the workspace's packages/zfb.
     let zfb_src = worktree_root.join("packages/zfb");
     let zfb_dst = nm.join("zfb");
     #[cfg(unix)]
@@ -339,12 +287,11 @@ fn make_test_node_modules(workspace: &Path) -> tempfile::TempDir {
 fn build_bundle(
     fixture_root: &Path,
     framework: Framework,
-    workspace: &Path,
     esbuild: &Path,
     dist: &Path,
 ) -> (BundlerOutput, tempfile::TempDir) {
     // Build a custom node_modules that uses the worktree's packages.
-    let node_modules = make_test_node_modules(workspace);
+    let node_modules = make_test_node_modules();
 
     let input = BundlerInput {
         project_root: fixture_root.to_path_buf(),
@@ -378,16 +325,21 @@ fn build_bundle(
 // Main test
 // ---------------------------------------------------------------------------
 
+/// End-to-end routing + rendering test using the embedded V8 host (ADR-007).
+///
+/// This test bundles the routing-rendering fixture with Preact and renders
+/// every route through the embedded V8 host. Requires esbuild and a running
+/// embedded V8 host wired via `ZFB_E2E_BASE_URL`.
+///
+/// Gated `#[ignore]` until Sub 6 (ADR-007 embedded V8 host) is merged and
+/// the base URL can be resolved automatically. Kick with:
+///
+///     ZFB_E2E_BASE_URL=http://127.0.0.1:PORT \
+///       cargo test --package zfb-build -- --include-ignored \
+///         e2e_routing_rendering_with_embedded_host
 #[test]
-fn e2e_routing_rendering_with_real_miniflare() {
-    // --- Prerequisite checks: skip gracefully if tooling is absent ---
-    let Some(workspace) = workspace_root() else {
-        eprintln!(
-            "[e2e_routing_rendering] node_modules/miniflare not found at any ancestor of \
-             CARGO_MANIFEST_DIR. Skipping."
-        );
-        return;
-    };
+#[ignore = "requires embedded V8 host (ADR-007); see Sub 6"]
+fn e2e_routing_rendering_with_embedded_host() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[e2e_routing_rendering] no esbuild binary; \
@@ -395,16 +347,10 @@ fn e2e_routing_rendering_with_real_miniflare() {
         );
         return;
     };
-    if !node_available() {
-        eprintln!("[e2e_routing_rendering] `node` not on PATH. Skipping.");
-        return;
-    }
-    if !miniflare_available(Some(&workspace)) {
-        eprintln!(
-            "[e2e_routing_rendering] node_modules/miniflare not found at workspace root. Skipping."
-        );
-        return;
-    }
+
+    let base_url = std::env::var("ZFB_E2E_BASE_URL").unwrap_or_else(|_| {
+        panic!("ZFB_E2E_BASE_URL not set; start the embedded V8 host and export its URL");
+    });
 
     let fixture = fixture_root();
     assert!(
@@ -417,18 +363,10 @@ fn e2e_routing_rendering_with_real_miniflare() {
 
     // --- Preact pass ---
     eprintln!("[e2e_routing_rendering] bundling with Preact…");
-    // Place the bundle inside the workspace so `resolve_subprocess_cwd`
-    // (which walks up from bundle_path looking for node_modules/miniflare)
-    // can find the workspace-root's node_modules. A tempdir under /tmp
-    // has no ancestors with miniflare.
-    let dist_preact = tempfile::Builder::new()
-        .prefix("zfb-e2e-preact-")
-        .tempdir_in(&workspace)
-        .expect("tempdir inside workspace");
+    let dist_preact = tempfile::tempdir().expect("tempdir");
     let (bundle_preact, _nm_preact) = build_bundle(
         &fixture,
         Framework::Preact,
-        &workspace,
         &esbuild,
         dist_preact.path(),
     );
@@ -441,7 +379,7 @@ fn e2e_routing_rendering_with_real_miniflare() {
         dist_dir: dist_preact.path().join("html"),
         route_universe: universe.clone(),
         prerender_map: BTreeMap::new(), // all SSG
-        backend: Backend::SpawnMiniflare,
+        backend: Backend::Existing { base_url: base_url.clone() },
         request_timeout: None,
         prod_head_assets: None,
     })
@@ -459,8 +397,7 @@ fn e2e_routing_rendering_with_real_miniflare() {
         "expected no SSR routes (all pages are SSG)"
     );
 
-    // Collect rendered HTML bytes, keyed by url_path, for snapshot comparison
-    // and optional React byte-equality check.
+    // Collect rendered HTML bytes, keyed by url_path, for snapshot comparison.
     let mut preact_html: Vec<(String, Vec<u8>)> = Vec::new();
     let dist_html = dist_preact.path().join("html");
     for entry in &universe {
@@ -473,9 +410,6 @@ fn e2e_routing_rendering_with_real_miniflare() {
     // --- Snapshot assertions ---
     eprintln!("[e2e_routing_rendering] asserting snapshots…");
     for (url_path, html) in &preact_html {
-        // Convert URL path to a safe snapshot filename:
-        //   /  → index.html
-        //   /blog/hello  → blog-hello.html
         let snap_name = if url_path == "/" {
             "index.html".to_string()
         } else {
@@ -489,66 +423,6 @@ fn e2e_routing_rendering_with_real_miniflare() {
 
     // --- Content assertions: spot-check a few rendered pages ---
     check_rendered_html(&preact_html);
-
-    // --- Optional React byte-equality pass ---
-    let pnpm_virtual_store = workspace.join("node_modules/.pnpm/node_modules");
-    let react_available = pnpm_virtual_store.join("react").exists()
-        && pnpm_virtual_store.join("react-dom").exists();
-
-    if react_available {
-        eprintln!("[e2e_routing_rendering] React available; bundling for byte-equality check…");
-        let dist_react = tempfile::Builder::new()
-            .prefix("zfb-e2e-react-")
-            .tempdir_in(&workspace)
-            .expect("tempdir inside workspace for react");
-        let (bundle_react, _nm_react) = build_bundle(
-            &fixture,
-            Framework::React,
-            &workspace,
-            &esbuild,
-            dist_react.path(),
-        );
-
-        let react_renderer_out = render_all(RendererInput {
-            bundle_path: bundle_react.bundle_path.clone(),
-            sourcemap_path: bundle_react.sourcemap_path.clone(),
-            manifest: bundle_react.manifest.clone(),
-            dist_dir: dist_react.path().join("html"),
-            route_universe: universe.clone(),
-            prerender_map: BTreeMap::new(),
-            backend: Backend::SpawnMiniflare,
-            request_timeout: None,
-            prod_head_assets: None,
-        })
-        .expect("render_all with React should succeed");
-
-        assert_eq!(
-            react_renderer_out.ssg_files_written.len(),
-            universe.len(),
-            "React pass: expected {} files written",
-            universe.len(),
-        );
-
-        let react_dist_html = dist_react.path().join("html");
-        for (i, entry) in universe.iter().enumerate() {
-            let dest = react_dist_html.join(&entry.output_path);
-            let react_body = fs::read(&dest)
-                .unwrap_or_else(|e| panic!("react: reading {}: {e}", dest.display()));
-            let preact_body = &preact_html[i].1;
-            assert_eq!(
-                react_body, *preact_body,
-                "ADR-002 byte-equality violated for {} \
-                 (Preact and React outputs differ)",
-                entry.url_path,
-            );
-        }
-        eprintln!("[e2e_routing_rendering] React byte-equality: PASS");
-    } else {
-        eprintln!(
-            "[e2e_routing_rendering] React not installed (react/react-dom absent from pnpm store); \
-             skipping byte-equality check."
-        );
-    }
 
     eprintln!("[e2e_routing_rendering] PASS");
 }

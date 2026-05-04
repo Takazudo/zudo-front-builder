@@ -11,10 +11,10 @@
 //!      non-noop tick into reload events via
 //!      [`zfb_server::outcome_to_events`] and broadcasts them.
 //! 4. A long-lived [`zfb_build::renderer::RendererState`] (T7) that
-//!    owns the miniflare subprocess. The asset pipeline's
+//!    owns the embedded V8 host. The asset pipeline's
 //!    [`PageRenderer`] callback drives [`zfb_build::renderer::render_one`]
 //!    against this state per affected route, so a single edit triggers
-//!    one HTTP round-trip — not a fresh miniflare boot.
+//!    one in-process render — not a fresh host boot.
 //!
 //! Then it binds the address from `args.host:args.port`, prints the
 //! ready banner via [`crate::output::ready`], and runs the axum server
@@ -25,8 +25,8 @@
 //! `start(...)` is called once at boot. The returned
 //! [`zfb_build::renderer::RendererState`] is wrapped in a [`Drop`]
 //! guard so panics, Ctrl-C, or any other early-exit path tears the
-//! miniflare subprocess down cleanly. Without that guard a panicking
-//! dev loop would orphan workerd.
+//! embedded V8 host down cleanly. Without that guard a panicking
+//! dev loop would leak the host resources.
 //!
 //! ## Configuration
 //!
@@ -200,7 +200,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css: None,
         run_islands: None,
-        // The bundle-rebuild + miniflare-respawn wiring (Sub 10) lands
+        // The bundle-rebuild + renderer-reload wiring (Sub 10) lands
         // here once the dev-mode bundler is available on a per-tick
         // basis; for now leave the hook empty so existing behaviour
         // is preserved (the renderer state stays bound to the
@@ -363,12 +363,12 @@ impl DevRenderSession {
             Some(e) => e.clone(),
             None => return Ok(None),
         };
-        let lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+        let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
             tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
             p.into_inner()
         });
         let state = lock
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
         let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
         let html = std::fs::read_to_string(&written)
@@ -471,7 +471,7 @@ fn boot_dev_renderer(
         .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
         .collect();
     // Thread the opt-in `stripMdExt` flag through so the dev-mode
-    // bundler (which feeds miniflare) honours the same setting as
+    // bundler (which feeds the embedded V8 host) honours the same setting as
     // `zfb build`. The dev loader at `crates/zfb-render/src/loader.rs`
     // also reads this flag for in-process MDX rendering, so dev preview
     // matches built dist (zfb#127 / #129).
@@ -481,7 +481,9 @@ fn boot_dev_renderer(
     let state = start(RendererStartInput {
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
-        backend: Backend::SpawnMiniflare,
+        backend: Backend::EmbeddedV8 {
+            host_factory: crate::v8_host_adapter::make_v8_host_factory(),
+        },
         request_timeout: None,
     })
     .map_err(anyhow::Error::from)

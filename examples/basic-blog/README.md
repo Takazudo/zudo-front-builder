@@ -97,7 +97,7 @@ The TS loader bundles `zfb.config.ts` with the staged esbuild binary
 (`crates/zfb/binaries/esbuild/esbuild`, overridable via
 `ZFB_ESBUILD_BIN`), then evaluates it with `node` to pull the default
 export back as JSON. **zfb requires `node` in `PATH`** — true since v0
-because the production renderer spawns miniflare, and the TS loader
+because the production renderer drives the embedded V8 host, and the TS loader
 piggybacks on the same toolchain. The user's `import { defineConfig }
 from "zfb/config"` is satisfied by an internal stub at parse time, so
 the project does not need the `zfb` npm package installed locally just

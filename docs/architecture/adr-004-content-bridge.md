@@ -3,9 +3,10 @@
 - **Status:** Accepted (Rust + d.ts side; JS-runtime wiring deferred)
 - **Date:** 2026-04-27
 - **Owners:** Sub 48 (Engine Primitives — content query contract)
-- **Related:** ADR-001 (JS runtime selection — superseded by ADR-005;
-  the `deno_core` implementation has been replaced with a Node-hosted
-  miniflare worker), Epic #42 (Engine Primitives)
+- **Related:** ADR-001 (JS runtime selection — superseded by ADR-005, then
+  re-adopted by ADR-007; the active build-time host is a `deno_core` in-process
+  V8 isolate — see [ADR-007](./adr-007-embedded-v8.md) for the current
+  decision), Epic #42 (Engine Primitives)
 
 ## Context
 
