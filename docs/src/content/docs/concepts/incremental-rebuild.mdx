@@ -74,7 +74,7 @@ The orchestrator (`crates/zfb-build`) receives the `DirtySet` and feeds it into 
 
 The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages.
 
-For a deeper look at the orchestrator design, see [Build engine](/docs/architecture/build-engine).
+For a deeper look at the orchestrator design, see [Build engine](/architecture/build-engine).
 
 ## Comparison to Astro's dev model
 
@@ -87,7 +87,7 @@ zfb's model differs in granularity level:
 
 For a content-heavy site the distinction matters: editing one MDX file in Astro can trigger a Content Layer reload that re-parses every collection entry before the page re-renders. zfb routes the change through the graph, finds the two pages that consume that entry, and renders only those without touching the snapshot for other entries.
 
-For the broader architecture picture, see [Architecture overview](/docs/concepts/engine-vs-framework).
+For the broader architecture picture, see [Architecture overview](/concepts/architecture-overview).
 
 ## Honest current bottlenecks
 

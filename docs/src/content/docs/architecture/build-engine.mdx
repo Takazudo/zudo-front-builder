@@ -4,9 +4,9 @@ description: "How zfb's crates fit together, why the rebuild is per-page, and wh
 sidebar_position: 1
 ---
 
-This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/docs/concepts/build-pipeline); this page explains why the story is shaped this way.
+This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/concepts/build-pipeline); this page explains why the story is shaped this way.
 
-See also: [Architecture overview](/docs/architecture/architecture-overview) · [Islands](/docs/concepts/islands) · [Incremental rebuild](/docs/architecture/incremental-rebuild)
+See also: [Architecture overview](/concepts/architecture-overview) · [Islands](/concepts/islands) · [Incremental rebuild](/concepts/incremental-rebuild)
 
 ## The crate split
 
@@ -38,8 +38,8 @@ The win is granularity. A 2,000-page site rebuilds the affected pages in millise
   pipeline are wired and unit-tested. The full end-to-end render flow
   — TSX → JS → HTML — runs through the embedded V8 host chosen by
   [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md);
-  see [JS runtime](/docs/architecture/js-runtime) for the historical
-  evaluation and [ADR-005](/docs/architecture/js-runtime) for the
+  see [JS runtime](/architecture/js-runtime) for the historical
+  evaluation and [ADR-005](/architecture/js-runtime) for the
   settled decision.
 
 </Info>
@@ -64,7 +64,7 @@ zfb owns orchestration, the dependency graph, and the per-page contract. The too
 - **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before esbuild sees the source. Either way it is invisible to the orchestrator.
 - **lol_html** runs after the render host returns HTML, inside `zfb-build/head_inject.rs`. The orchestrator sees plain strings in and plain strings out.
 
-This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/docs/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/docs/architecture/incremental-rebuild) for how the dependency graph feeds the per-page policy.
+This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/concepts/incremental-rebuild) for how the dependency graph feeds the per-page policy.
 
 ## Atomic writes
 

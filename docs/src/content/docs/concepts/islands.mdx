@@ -128,7 +128,7 @@ This is a **project-wide setting** — one framework per project. The bundler (`
 
 zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentionally a two-variant enum, not a plugin point. If you need a different framework, the escape hatches below cover the common cases.
 
-For a deeper look at how the two adapters work, see [Framework adapters](/docs/architecture/framework-adapters).
+For a deeper look at how the two adapters work, see [Framework adapters](/architecture/framework-adapters).
 
 ## Escape hatches for non-island client JS
 
@@ -189,4 +189,4 @@ CSS-only approaches (`:target`, `:checked` + `<label>`, `@starting-style`) handl
 
 If the honest answer is "I just want a class toggled on click", reach for CSS or a tiny inline script first. Islands for "stateful UI you'd build twice" is the right heuristic.
 
-For more on the pipeline shape, see [Build pipeline](/docs/concepts/build-pipeline) and [Build engine](/docs/architecture/build-engine).
+For more on the pipeline shape, see [Build pipeline](/concepts/build-pipeline) and [Build engine](/architecture/build-engine).

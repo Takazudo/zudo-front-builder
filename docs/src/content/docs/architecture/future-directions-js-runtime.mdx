@@ -19,7 +19,7 @@ alternative is adopted, a new ADR will record it formally.
 `@takazudo/zfb-runtime` is a Hono-style page router that runs inside an
 in-process V8 isolate via `deno_core` at build time. The bundle is shaped as a
 Cloudflare-Workers-compatible `export default { fetch }` module, per
-[ADR-007](/docs/architecture/js-runtime). The same bundle deploys unchanged to
+[ADR-007](/architecture/js-runtime). The same bundle deploys unchanged to
 Cloudflare Workers for runtime SSR via `packages/zfb-adapter-cloudflare`. The
 `RenderHost` trait in `crates/zfb-render` is the Rust abstraction that wraps
 the host — the renderer never names the concrete implementation. Today's
@@ -79,7 +79,7 @@ approximate (rather than exact) Web API parity with workerd.
 The primary reason this exploration exists is the Tauri distribution goal. If
 and when zfb ships as a desktop app, the zfb binary must run on end-user
 machines without Node.js installed. See the [desktop deployment
-guide](/docs/guides/desktop-deployment) for the current facts: `zfb build`
+guide](/guides/desktop-deployment) for the current facts: `zfb build`
 outputs plain HTML that a Tauri app can serve as static assets without any JS
 runtime on the user's machine. The constraint is the _build_ step, not the
 _output_.
@@ -91,7 +91,7 @@ binary or distributable as a sidecar without requiring Node (or any separately-
 installed JS runtime) on the user's machine.
 
 For a deeper look at the overall runtime stack, see [architecture
-overview](/docs/concepts/architecture-overview).
+overview](/concepts/architecture-overview).
 
 ## What would need to change for a host swap
 
