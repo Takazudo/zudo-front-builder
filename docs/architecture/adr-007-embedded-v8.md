@@ -141,7 +141,7 @@ call time:
 
 ```
 throw new Error(
-  "node:fs is not available under the zfb SSG runtime. " +
+  `${specifier} is not available under the zfb SSG runtime. ` +
   "Guard your import with a build-time check or move the call to Rust."
 );
 ```
@@ -378,7 +378,7 @@ regress substantially compared to native.
 - Sub 7 (miniflare cleanup + docstring updates): #167
 - Source conversation transcript: `/mnt/c/Users/takaz/Dropbox/screenshots/20260504_183426-conversation.md`
 - Big-plan log: `/home/takazudo/cclogs/zfb/20260504_184222-big-plan-embed-v8.md`
-- ADR-001 (superseded by ADR-005; cross-ref updated): `docs/architecture/adr-001-js-runtime.md`
+- ADR-001 (superseded by ADR-005, then ADR-007 re-adopts deno_core; cross-ref updated): `docs/architecture/adr-001-js-runtime.md`
 - ADR-005 (superseded by this ADR): `docs/architecture/adr-005-ssg-first.md`
 - `RenderHost` trait: `crates/zfb-render/src/render_host.rs`
 - Source-map decoder: `crates/zfb-render/src/sourcemap.rs`
