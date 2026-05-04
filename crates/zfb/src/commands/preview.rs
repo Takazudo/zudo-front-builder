@@ -60,9 +60,7 @@ use crate::output;
 
 // Re-export from the canonical source so callers that already reference
 // `zfb::commands::preview::EXPECTED_WRANGLER_VERSION` keep compiling.
-pub use zfb_toolchain_pins::{
-    EXPECTED_MINIFLARE_VERSION, EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION,
-};
+pub use zfb_toolchain_pins::{EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION};
 
 /// Built-in default port for `zfb preview` when neither the CLI nor the
 /// project config supplies one. 4321 keeps `dev` (3000) and `preview`

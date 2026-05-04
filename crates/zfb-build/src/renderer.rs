@@ -18,18 +18,13 @@
 //!    prerender map. SSR-only routes are collected into [`SsrManifest`]
 //!    and **not** rendered now — they are handed back to the caller
 //!    (T7) for use at runtime.
-//! 2. Spawns ONE long-lived miniflare subprocess (pool-of-1) that
-//!    serves the entire build. Per-route forks would dominate build
-//!    time; one subprocess reuses workerd's hot caches across every
-//!    request.
-//! 3. Polls the subprocess's stdout for a JSON ready-handshake line
-//!    so the renderer never sleep-races: the request loop only starts
-//!    once miniflare prints its bound URL.
-//! 4. For each SSG route, `GET`s the worker with [`reqwest::blocking`]
+//! 2. Resolves the HTTP backend (embedded V8 host per ADR-007, or the
+//!    `Backend::Existing` test stub) and obtains the base URL.
+//! 3. For each SSG route, `GET`s the worker with [`reqwest::blocking`]
 //!    and writes the response body to its dist destination. Non-2xx
 //!    responses are surfaced as [`RendererError::RenderFailed`] with
-//!    a re-projected source location (see step 5).
-//! 5. On any worker-thrown error containing a JS stack pointing at the
+//!    a re-projected source location (see step 4).
+//! 4. On any worker-thrown error containing a JS stack pointing at the
 //!    bundle, the [`sourcemap`] crate walks the bundle's `.map` and
 //!    re-projects each frame to the user's `.tsx` / `.mdx` source
 //!    location. The error message names the user file so the operator
@@ -38,13 +33,13 @@
 //!
 //! ### Dev mode (T7 will consume this)
 //!
-//! `zfb dev` cannot afford to start a fresh miniflare per file save.
-//! [`start`] returns a [`RendererState`] that owns the long-lived
-//! subprocess; [`render_one`] drives a single route against it; and
-//! [`shutdown`] tears the process down on dev-server exit. The same
-//! subprocess and source-map are reused across rebuilds — when the
-//! bundle changes on disk, T7 swaps the [`RendererState`] for a new
-//! one rather than mutating the old one in-place.
+//! `zfb dev` cannot afford to start a fresh embedded V8 host per file
+//! save. [`start`] returns a [`RendererState`] that owns the long-lived
+//! host state; [`render_one`] drives a single route against it; and
+//! [`shutdown`] tears the host down on dev-server exit. The same host
+//! and source-map are reused across rebuilds — when the bundle changes
+//! on disk, T7 swaps the [`RendererState`] for a new one rather than
+//! mutating the old one in-place.
 //!
 //! ### What this module is NOT responsible for
 //!
@@ -66,20 +61,13 @@
 //! ### Test surface
 //!
 //! The bulk of the test suite uses the [`Backend::Existing`] mode to
-//! point the renderer at a small in-process fake HTTP server. Spawning
-//! real miniflare is reserved for one `#[ignore]`-gated end-to-end
-//! test that holds a `flock` on `/tmp/x-wt-teams-zfb-locks/port-<N>.lock`
-//! to serialise across parallel worktrees. See the test module at the
-//! bottom of the file.
+//! point the renderer at a small in-process fake HTTP server. See the
+//! test module at the bottom of the file.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -116,19 +104,16 @@ pub struct RouteUniverseEntry {
 
 /// The renderer's HTTP backend.
 ///
-/// Production builds always use [`Backend::SpawnMiniflare`]. Tests use
-/// [`Backend::Existing`] to skip the subprocess and aim the request
-/// loop at a fake HTTP server bound to a random port.
+/// Production builds use the embedded V8 host (ADR-007). Tests use
+/// [`Backend::Existing`] to skip the host and aim the request loop at
+/// a fake HTTP server bound to a random port.
 #[derive(Debug, Clone, Default)]
 pub enum Backend {
-    /// Spawn `node js/miniflare-bootstrap.mjs --bundle <bundle_path>`
-    /// from the workspace root, parse the ready-handshake from its
-    /// stdout, and use the resolved URL.
+    /// Use this base URL directly (e.g. `http://127.0.0.1:54321/`).
+    /// The renderer still does the GET loop, dist write, and source-map
+    /// error re-projection. Used by tests and by callers that manage
+    /// the embedded V8 host externally.
     #[default]
-    SpawnMiniflare,
-    /// Skip the subprocess and use this base URL (e.g.
-    /// `http://127.0.0.1:54321/`). The renderer still does the GET
-    /// loop, dist write, and source-map error re-projection.
     Existing { base_url: String },
 }
 
@@ -152,8 +137,7 @@ pub struct RendererInput {
     /// diagnostics only — the canonical list of *what to render* is
     /// `route_universe`. In a future iteration the renderer may
     /// cross-check that every prerendered URL maps to a declared route
-    /// and produce a clearer error than miniflare's own 404; that's
-    /// out of scope for T6.
+    /// and produce a clearer 404 error; that's out of scope for T6.
     pub manifest: BundleManifest,
     /// Where to write the SSG output. Created if missing.
     pub dist_dir: PathBuf,
@@ -220,11 +204,10 @@ pub struct RendererOutput {
     /// T7 hands this to the runtime SSR adapter so a deployed worker
     /// knows which URLs to serve dynamically.
     pub ssr_manifest: SsrManifest,
-    /// Captured stderr from the miniflare subprocess (or the empty
-    /// string when running against [`Backend::Existing`]). Useful
-    /// for surfacing `console.warn` from the user's worker code in
-    /// the build log.
-    pub miniflare_logs: String,
+    /// Diagnostic logs captured from the embedded V8 runtime host
+    /// during the build. Useful for surfacing `console.warn` from the
+    /// user's worker code in the build log.
+    pub runtime_logs: String,
 }
 
 /// Routes the build deliberately did NOT prerender.
@@ -256,7 +239,7 @@ pub struct SsrRouteEntry {
 ///
 /// Variants are deliberately narrow so T7 can pattern-match on
 /// `RenderFailed` (the most common operator-facing variant) versus
-/// infrastructure errors (`Io`, `MiniflareSpawn`, …).
+/// infrastructure errors (`Io`, `Http`, …).
 #[derive(Debug, Error)]
 pub enum RendererError {
     /// I/O error around dist write or bundle read.
@@ -266,10 +249,6 @@ pub enum RendererError {
         #[source]
         source: std::io::Error,
     },
-    /// Miniflare subprocess failed to start, never sent the
-    /// ready-handshake before the timeout, or crashed mid-build.
-    #[error("miniflare subprocess error: {0}")]
-    MiniflareSpawn(String),
     /// HTTP layer (reqwest) failure independent of the worker — DNS,
     /// connection refused, etc.
     #[error("http request to {url} failed: {source}")]
@@ -300,9 +279,8 @@ pub enum RendererError {
 
 /// Render the entire SSG portion of `route_universe` to disk.
 ///
-/// Spawns miniflare, drives the request loop, writes files, tears the
-/// subprocess down. Always cleans up on error or panic via the
-/// [`MiniflareGuard`] drop impl.
+/// Resolves the HTTP backend, drives the request loop, and writes the
+/// output files.
 pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError> {
     let RendererInput {
         bundle_path,
@@ -339,7 +317,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         }
     }
 
-    let (base_url, guard) = launch(&backend, &bundle_path)?;
+    let base_url = resolve_base_url(&backend);
     let timeout = request_timeout.unwrap_or(Duration::from_secs(60));
     let client = build_client(timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
@@ -363,37 +341,26 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         }
     }
 
-    let logs = guard.collect_logs();
-    drop(guard);
-
     if let Some(err) = last_err {
-        // Surface miniflare stderr so the operator can see what workerd
-        // printed before the 500. Without this, the logs are discarded
-        // and the user sees only "Internal Server Error" with no context.
-        if !logs.trim().is_empty() {
-            eprintln!("[zfb] miniflare logs at render failure:\n{logs}");
-        }
         return Err(err);
     }
 
     Ok(RendererOutput {
         ssg_files_written: written,
         ssr_manifest: SsrManifest { routes: ssr_routes },
-        miniflare_logs: logs,
+        runtime_logs: String::new(),
     })
 }
 
 /// Long-lived dev-mode renderer state.
 ///
-/// Owns the miniflare subprocess and the parsed sourcemap. Use [`start`]
-/// to construct, [`render_one`] to drive a single route, [`shutdown`]
-/// to tear down cleanly. Drop also tears down (idempotent) so a
-/// panicking dev loop still kills the worker.
+/// Holds the base URL and parsed sourcemap. Use [`start`] to construct,
+/// [`render_one`] to drive a single route, and [`shutdown`] to release
+/// resources on dev-server exit.
 pub struct RendererState {
     base_url: String,
     client: reqwest::blocking::Client,
     sourcemap: Option<sourcemap::SourceMap>,
-    guard: MiniflareGuard,
 }
 
 impl std::fmt::Debug for RendererState {
@@ -406,11 +373,9 @@ impl std::fmt::Debug for RendererState {
 }
 
 impl RendererState {
-    /// The base URL of the running miniflare subprocess (e.g.
-    /// `http://127.0.0.1:54321/`). Use this with
-    /// [`Backend::Existing`] to reuse the same subprocess for a
-    /// subsequent [`render_all`] call so you only pay the miniflare
-    /// startup cost once.
+    /// The base URL of the running embedded V8 host (e.g.
+    /// `http://127.0.0.1:54321/`). Use this with [`Backend::Existing`]
+    /// to reuse the same host for a subsequent [`render_all`] call.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -419,19 +384,18 @@ impl RendererState {
 /// Start the dev-mode renderer.
 pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> {
     let RendererStartInput {
-        bundle_path,
+        bundle_path: _bundle_path,
         sourcemap_path,
         backend,
         request_timeout,
     } = input;
-    let (base_url, guard) = launch(&backend, &bundle_path)?;
+    let base_url = resolve_base_url(&backend);
     let client = build_client(request_timeout.unwrap_or(Duration::from_secs(30)))?;
     let sourcemap = load_sourcemap(&sourcemap_path);
     Ok(RendererState {
         base_url,
         client,
         sourcemap,
-        guard,
     })
 }
 
@@ -458,45 +422,29 @@ pub fn render_one(
     )
 }
 
-/// Tear the dev-mode renderer down. Idempotent — calling on an
-/// already-shut-down state is a no-op.
-pub fn shutdown(state: RendererState) -> Result<(), RendererError> {
-    let RendererState { mut guard, .. } = state;
-    guard.terminate();
+/// Tear the dev-mode renderer down. Idempotent.
+pub fn shutdown(_state: RendererState) -> Result<(), RendererError> {
     Ok(())
 }
 
 /// Reload the dev-mode renderer against a (possibly new) bundle.
 ///
-/// Module-level reload across miniflare's worker boundary is fragile —
-/// workerd loads its bundle once at boot and does not expose an
-/// in-process "swap module" hook. So this implementation goes for the
-/// safe-and-simple path: tear the existing subprocess down (via the
-/// existing [`shutdown`]) and respawn one against the new bundle path.
-/// Callers should invoke this whenever a TSX page edit, a layout edit,
-/// or an exported handler change has rebuilt the worker bundle on disk
-/// — typically driven from the dev pipeline's reload-renderer hook
-/// (see [`crate::pipeline::BuildContext::reload_renderer`]).
+/// Tears down the previous state and starts fresh against the new
+/// bundle path. Callers should invoke this whenever a TSX page edit,
+/// a layout edit, or an exported handler change has rebuilt the worker
+/// bundle on disk — typically driven from the dev pipeline's
+/// reload-renderer hook (see
+/// [`crate::pipeline::BuildContext::reload_renderer`]).
 ///
-/// The returned [`RendererState`] takes ownership of the new
-/// subprocess. The previous state is consumed by value to make the
-/// "old subprocess is gone" invariant statically obvious.
+/// The returned [`RendererState`] takes ownership of the new state.
+/// The previous state is consumed by value.
 ///
-/// `request_timeout` defaults to 30s when `None` (same as
-/// [`start`]).
-///
-/// On `Backend::Existing`, this is effectively a no-op restart: it
-/// rebuilds the [`reqwest`] client and re-reads the source map, but
-/// no subprocess is killed/spawned. That keeps the dev pipeline's
-/// "always reload before render" code path correct under both real
-/// miniflare and the in-process fake server tests use.
+/// `request_timeout` defaults to 30s when `None` (same as [`start`]).
 pub fn reload(
     previous: RendererState,
     input: RendererStartInput,
 ) -> Result<RendererState, RendererError> {
-    // Dropping the previous state via `shutdown` happens first so the
-    // old subprocess is fully gone before we spawn the new one. With
-    // `Backend::Existing` the call is a cheap no-op.
+    // Shut down the previous state before starting the new one.
     shutdown(previous)?;
     start(input)
 }
@@ -616,409 +564,13 @@ fn join_url(base: &str, path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Internals — miniflare subprocess
+// Internals — backend resolution
 // ---------------------------------------------------------------------------
 
-const BOOTSTRAP_JS: &str = include_str!("../js/miniflare-bootstrap.mjs");
-
-/// JSON shape of the bootstrap's stdout handshake line.
-#[derive(Debug, Deserialize)]
-struct ReadyHandshake {
-    event: String,
-    url: String,
-}
-
-/// RAII guard that owns the subprocess and the stderr-capture thread.
-///
-/// On Unix, the subprocess is launched in its own process group
-/// (`setsid`) so that SIGTERM sent to the **process group** (negative
-/// pgid) reaches workerd's worker children even if node itself is
-/// already dead. On panic the Drop impl calls `terminate`, so the
-/// long-lived miniflare subprocess is never orphaned.
-///
-/// Sequence: SIGTERM → 2 s grace period → SIGKILL.
-struct MiniflareGuard {
-    child: Option<Child>,
-    log_buf: Arc<Mutex<String>>,
-    log_thread: Option<thread::JoinHandle<()>>,
-    /// Holds the `NamedTempFile` that backs the bootstrap script.
-    /// Held for its drop side-effect (the file is unlinked on drop);
-    /// never read directly.
-    #[allow(dead_code)]
-    bootstrap_keepalive: Option<tempfile::NamedTempFile>,
-}
-
-impl MiniflareGuard {
-    fn empty() -> Self {
-        Self {
-            child: None,
-            log_buf: Arc::new(Mutex::new(String::new())),
-            log_thread: None,
-            bootstrap_keepalive: None,
-        }
-    }
-
-    fn collect_logs(&self) -> String {
-        self.log_buf.lock().map(|s| s.clone()).unwrap_or_default()
-    }
-
-    fn terminate(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        // On Unix: SIGTERM the entire process group so workerd
-        // child-processes (which miniflare/node spawns) are also
-        // signalled. The group is set up by the `pre_exec` setsid()
-        // call in `spawn_miniflare_once`. Using the negated PID as the
-        // process-group ID works because setsid() makes the node
-        // process the group leader, so pgid == pid.
-        //
-        // On Windows: no process groups; fall back to kill().
-        #[cfg(unix)]
-        {
-            // SAFETY: child PID is valid until we wait()/kill().
-            let pid = child.id() as i32;
-            unsafe {
-                // Negative first arg → kill the entire process group.
-                libc_kill(-pid, SIGTERM);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill();
-        }
-
-        // Bounded wait for graceful exit.
-        let deadline = Instant::now() + Duration::from_millis(2_000);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        // Grace period expired: SIGKILL the process
-                        // group so workerd sub-processes are also torn
-                        // down before we return from terminate().
-                        #[cfg(unix)]
-                        {
-                            let pid = child.id() as i32;
-                            unsafe {
-                                libc_kill(-pid, SIGKILL);
-                            }
-                        }
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break;
-                }
-            }
-        }
-
-        if let Some(handle) = self.log_thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for MiniflareGuard {
-    fn drop(&mut self) {
-        self.terminate();
-    }
-}
-
-#[cfg(unix)]
-const SIGTERM: i32 = 15;
-#[cfg(unix)]
-const SIGKILL: i32 = 9;
-
-#[cfg(unix)]
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn setsid() -> i32;
-}
-
-#[cfg(unix)]
-unsafe fn libc_kill(pid: i32, sig: i32) {
-    kill(pid, sig);
-}
-
-/// Call setsid() in the child process (via pre_exec) to place it in a
-/// new process group. This makes `-pgid` kills reach all descendants.
-#[cfg(unix)]
-unsafe fn libc_setsid() {
-    setsid();
-}
-
-/// Resolve the directory the miniflare subprocess should run in. We
-/// need `node_modules/miniflare` to be resolvable from `cwd`, so we
-/// walk up from `bundle_path` until we hit a directory that contains
-/// `node_modules/miniflare`. As a final fallback, use the workspace
-/// root located via `CARGO_MANIFEST_DIR/../..`.
-fn resolve_subprocess_cwd(bundle_path: &Path) -> Result<PathBuf, RendererError> {
-    let start = bundle_path.parent().unwrap_or_else(|| Path::new("."));
-    let mut cur: Option<&Path> = Some(start);
-    while let Some(p) = cur {
-        if p.join("node_modules").join("miniflare").exists() {
-            return Ok(p.to_path_buf());
-        }
-        cur = p.parent();
-    }
-    // Last resort: workspace root inferred from CARGO_MANIFEST_DIR
-    // (`crates/zfb-build`). This is the path real production builds
-    // hit, since pnpm hoists `miniflare` to the workspace root.
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-        if workspace.join("node_modules").join("miniflare").exists() {
-            return Ok(workspace.to_path_buf());
-        }
-    }
-    Err(RendererError::MiniflareSpawn(format!(
-        "could not locate node_modules/miniflare relative to bundle path {} or workspace root",
-        bundle_path.display()
-    )))
-}
-
-/// Spawn (or do not) the backend. Returns the resolved base URL and a
-/// guard that owns any spawned subprocess.
-fn launch(backend: &Backend, bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
+/// Extract the base URL from the backend configuration.
+fn resolve_base_url(backend: &Backend) -> String {
     match backend {
-        Backend::Existing { base_url } => Ok((base_url.clone(), MiniflareGuard::empty())),
-        Backend::SpawnMiniflare => spawn_miniflare(bundle_path),
-    }
-}
-
-/// Number of spawn attempts before giving up.
-const SPAWN_MAX_ATTEMPTS: u32 = 5;
-/// Initial delay between attempts (doubles on each retry).
-const SPAWN_INITIAL_BACKOFF_MS: u64 = 200;
-
-/// Outer retry wrapper for `spawn_miniflare_once`.
-///
-/// Retries up to [`SPAWN_MAX_ATTEMPTS`] times with exponential backoff
-/// starting at [`SPAWN_INITIAL_BACKOFF_MS`] ms. A transient port-bind
-/// collision (zombie port from a previous run, concurrent CI job, etc.)
-/// resolves within a few hundred ms; the retry loop handles that without
-/// operator intervention. The final error message includes the last
-/// failure reason.
-fn spawn_miniflare(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    let mut errors: Vec<String> = Vec::new();
-    let mut backoff_ms = SPAWN_INITIAL_BACKOFF_MS;
-    for attempt in 1..=SPAWN_MAX_ATTEMPTS {
-        match spawn_miniflare_once(bundle_path) {
-            Ok(result) => return Ok(result),
-            Err(RendererError::MiniflareSpawn(msg)) => {
-                errors.push(format!("attempt {attempt}: {msg}"));
-                if attempt < SPAWN_MAX_ATTEMPTS {
-                    thread::sleep(Duration::from_millis(backoff_ms));
-                    backoff_ms = (backoff_ms * 2).min(3_000);
-                }
-            }
-            Err(other) => return Err(other),
-        }
-    }
-    let summary = errors.join("\n  ");
-    Err(RendererError::MiniflareSpawn(format!(
-        "miniflare failed to start after {SPAWN_MAX_ATTEMPTS} attempts:\n  {summary}"
-    )))
-}
-
-fn spawn_miniflare_once(bundle_path: &Path) -> Result<(String, MiniflareGuard), RendererError> {
-    let bundle_path = if bundle_path.is_absolute() {
-        bundle_path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| RendererError::Io {
-                path: bundle_path.to_path_buf(),
-                source: e,
-            })?
-            .join(bundle_path)
-    };
-    if !bundle_path.exists() {
-        return Err(RendererError::MiniflareSpawn(format!(
-            "bundle does not exist: {}",
-            bundle_path.display()
-        )));
-    }
-
-    let cwd = resolve_subprocess_cwd(&bundle_path)?;
-
-    // Materialise the bootstrap script INSIDE the resolved cwd (which
-    // is guaranteed to contain `node_modules/miniflare`) so Node's
-    // ESM resolver finds the `miniflare` package without needing
-    // `NODE_PATH` or experimental flags. We can't drop it in a random
-    // /tmp dir: Node walks up *the file's* directory tree, not the
-    // cwd, looking for `node_modules`, and a /tmp dir has none in its
-    // ancestry.
-    //
-    // `NamedTempFile` gives us a unique random name + automatic
-    // cleanup on drop, so two parallel renderer instances never
-    // collide and a panicking caller never leaves a stray file in
-    // the user's working tree.
-    let bootstrap_named = tempfile::Builder::new()
-        .prefix("zfb-renderer-bootstrap-")
-        .suffix(".mjs")
-        .tempfile_in(&cwd)
-        .map_err(|e| RendererError::Io {
-            path: cwd.clone(),
-            source: e,
-        })?;
-    fs::write(bootstrap_named.path(), BOOTSTRAP_JS).map_err(|e| RendererError::Io {
-        path: bootstrap_named.path().to_path_buf(),
-        source: e,
-    })?;
-    let bootstrap_path = bootstrap_named.path().to_path_buf();
-
-    let mut cmd = Command::new("node");
-    cmd.current_dir(&cwd);
-    cmd.arg(&bootstrap_path);
-    cmd.arg("--bundle");
-    cmd.arg(&bundle_path);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    // On Unix: place node (and all its descendants — workerd, etc.) in a
-    // new process group via setsid(). terminate() then sends SIGTERM/SIGKILL
-    // to `-pgid` (the whole group) so workerd child-processes are killed
-    // reliably even on parent panic. This is the smallest safe change:
-    // setsid() detaches the process from the terminal and creates a fresh
-    // process group where node is the leader (pgid == pid).
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt as _;
-        cmd.pre_exec(|| {
-            libc_setsid();
-            Ok(())
-        });
-    }
-
-    let mut child = cmd.spawn().map_err(|e| {
-        RendererError::MiniflareSpawn(format!(
-            "failed to spawn `node {}`: {}",
-            bootstrap_path.display(),
-            e
-        ))
-    })?;
-
-    // Capture stderr in a background thread.
-    let log_buf = Arc::new(Mutex::new(String::new()));
-    let log_thread = if let Some(stderr) = child.stderr.take() {
-        let buf = log_buf.clone();
-        Some(thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
-                if let Ok(mut g) = buf.lock() {
-                    g.push_str(&line);
-                    g.push('\n');
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Read the ready-handshake from stdout (one line of JSON). On
-    // failure, drain stderr so the error message tells the operator
-    // why workerd refused to start.
-    let stdout = child.stdout.take().ok_or_else(|| {
-        RendererError::MiniflareSpawn("subprocess stdout pipe missing".into())
-    })?;
-    let ready_url = match read_ready_handshake(stdout, Duration::from_secs(30)) {
-        Ok(u) => u,
-        Err(RendererError::MiniflareSpawn(msg)) => {
-            // Drain stderr to surface workerd's diagnostic.
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Some(handle) = log_thread {
-                let _ = handle.join();
-            }
-            let logs = log_buf.lock().map(|s| s.clone()).unwrap_or_default();
-            let snippet = if logs.len() > 4096 {
-                format!("{}…(truncated)", &logs[..4096])
-            } else {
-                logs
-            };
-            return Err(RendererError::MiniflareSpawn(format!(
-                "{msg}\n--- miniflare stderr ---\n{snippet}"
-            )));
-        }
-        Err(other) => return Err(other),
-    };
-
-    let guard = MiniflareGuard {
-        child: Some(child),
-        log_buf,
-        log_thread,
-        bootstrap_keepalive: Some(bootstrap_named),
-    };
-    Ok((ready_url, guard))
-}
-
-/// Read the bootstrap's stdout one line at a time, parsing JSON until
-/// we see `{"event":"ready", ...}`. Other JSON shapes are ignored;
-/// non-JSON lines are silently dropped (workerd occasionally writes
-/// `[mf:inf]` style lines on stdout depending on the version).
-///
-/// The read happens on a dedicated thread so that a blocking
-/// `lines.next()` call can never outlive the `timeout`. The calling
-/// thread waits on a channel with a deadline; if the channel times out,
-/// `MiniflareSpawn` is returned and the caller kills the subprocess.
-///
-/// Accepts any `Read + Send + 'static` so tests can inject a pipe or
-/// in-memory reader without needing a real subprocess.
-fn read_ready_handshake(
-    stdout: impl std::io::Read + Send + 'static,
-    timeout: Duration,
-) -> Result<String, RendererError> {
-    // Spawn a reader thread that sends parsed URLs or errors over a
-    // channel. This is the only reliable way to impose a wall-clock
-    // deadline on a blocking BufRead::lines() iterator.
-    let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    let trimmed = line.trim().to_string();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(parsed) = serde_json::from_str::<ReadyHandshake>(&trimmed) {
-                        if parsed.event == "ready" {
-                            let _ = tx.send(Ok(parsed.url));
-                            return;
-                        }
-                    }
-                    // Non-ready JSON or non-JSON line: keep reading.
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(format!("stdout read error: {e}")));
-                    return;
-                }
-            }
-        }
-        // EOF before ready handshake.
-        let _ = tx.send(Err(
-            "subprocess closed stdout before ready handshake".into(),
-        ));
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(url)) => Ok(url),
-        Ok(Err(msg)) => Err(RendererError::MiniflareSpawn(msg)),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(RendererError::MiniflareSpawn(format!(
-            "subprocess did not emit ready handshake within {timeout:?}",
-        ))),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(RendererError::MiniflareSpawn(
-            "subprocess stdout reader thread terminated unexpectedly".into(),
-        )),
+        Backend::Existing { base_url } => base_url.clone(),
     }
 }
 
@@ -1124,7 +676,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::thread;
 
     /// Tiny single-threaded HTTP server for tests. Handles one or more
     /// connections, replies with whatever the route table says, and
@@ -1663,210 +1216,4 @@ mod tests {
         assert_eq!(cands[0].col, 7);
     }
 
-    // -------------------------------------------------------------------------
-    // Handshake timeout tests (issue #57, item 3)
-    //
-    // `read_ready_handshake` now accepts `impl Read + Send + 'static` so
-    // we can inject an in-memory cursor instead of a real subprocess pipe.
-    // -------------------------------------------------------------------------
-
-    /// `read_ready_handshake` returns the URL when the reader contains a
-    /// well-formed ready handshake line.
-    #[test]
-    fn handshake_ok_returns_url() {
-        let data = b"{\"event\":\"ready\",\"url\":\"http://127.0.0.1:9999/\"}\n";
-        let cursor = std::io::Cursor::new(data.as_slice());
-        let result = read_ready_handshake(cursor, Duration::from_secs(5));
-        assert_eq!(result.unwrap(), "http://127.0.0.1:9999/");
-    }
-
-    /// `read_ready_handshake` returns `MiniflareSpawn` when the reader
-    /// reaches EOF before the ready handshake (subprocess crash path).
-    #[test]
-    fn handshake_eof_before_ready_returns_error() {
-        // Empty reader → immediate EOF.
-        let cursor = std::io::Cursor::new(b"".as_slice());
-        let err = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap_err();
-        match err {
-            RendererError::MiniflareSpawn(msg) => {
-                assert!(
-                    msg.contains("closed stdout before ready"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected MiniflareSpawn, got {other:?}"),
-        }
-    }
-
-    /// `read_ready_handshake` returns `MiniflareSpawn` (timeout) when the
-    /// reader blocks indefinitely without producing any data.
-    #[test]
-    fn handshake_timeout_returns_error() {
-        // A reader that blocks until its internal flag is set. We park the
-        // thread for 10 s in each read() call, which is far longer than the
-        // 100 ms timeout used below — simulating a subprocess that hangs
-        // before printing anything.
-        struct BlockingReader;
-        impl std::io::Read for BlockingReader {
-            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                // Sleep long enough that the channel timeout (100 ms
-                // below) fires first, but short enough that the
-                // background thread is done quickly after the test
-                // asserts. The thread cannot be interrupted once
-                // started; keeping the sleep short minimises the gap
-                // between test assertion and thread exit.
-                thread::sleep(Duration::from_millis(500));
-                Ok(0)
-            }
-        }
-
-        let err = read_ready_handshake(BlockingReader, Duration::from_millis(100)).unwrap_err();
-        match err {
-            RendererError::MiniflareSpawn(msg) => {
-                assert!(
-                    msg.contains("did not emit ready handshake"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected MiniflareSpawn, got {other:?}"),
-        }
-    }
-
-    /// `read_ready_handshake` skips non-ready JSON lines and non-JSON
-    /// lines before accepting the ready handshake.
-    #[test]
-    fn handshake_skips_non_ready_lines() {
-        let data = b"[mf:inf] server starting\n\
-                     {\"event\":\"listening\",\"url\":\"x\"}\n\
-                     {\"event\":\"ready\",\"url\":\"http://127.0.0.1:8888/\"}\n";
-        let cursor = std::io::Cursor::new(data.as_slice());
-        let url = read_ready_handshake(cursor, Duration::from_secs(5)).unwrap();
-        assert_eq!(url, "http://127.0.0.1:8888/");
-    }
-
-    /// Real-miniflare end-to-end test. Heavy: spawns Node, binds an
-    /// ephemeral port, drives one HTTP request. Gated under
-    /// `#[ignore]` so it does not run by default. Kick it on with:
-    ///
-    ///     cargo test --package zfb-build -- --include-ignored \
-    ///         renderer::tests::end_to_end_spawn_miniflare_renders_route
-    ///
-    /// Uses the project-wide flock pattern at
-    /// `/tmp/x-wt-teams-zfb-locks/port-1.lock` so parallel worktrees
-    /// do not race.
-    #[test]
-    #[ignore = "spawns miniflare; run with --include-ignored"]
-    fn end_to_end_spawn_miniflare_renders_route() {
-        use fs2::FileExt as _;
-
-        // Resolve the workspace root via CARGO_MANIFEST_DIR so the
-        // test works regardless of pwd. miniflare is hoisted there.
-        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace = here.parent().unwrap().parent().unwrap().to_path_buf();
-        let modules = workspace.join("node_modules/miniflare");
-        if !modules.exists() {
-            eprintln!(
-                "[end_to_end_spawn_miniflare_renders_route] {} missing; \
-                 run `pnpm install` from the workspace root to enable.",
-                modules.display()
-            );
-            return;
-        }
-
-        // Cross-worktree port lock.
-        let lock_dir = Path::new("/tmp/x-wt-teams-zfb-locks");
-        let _ = fs::create_dir_all(lock_dir);
-        let lock_path = lock_dir.join("port-1.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("open port lock");
-        lock_file.lock_exclusive().expect("acquire port lock");
-
-        // Self-contained worker bundle: serves /, /feed.xml, throws
-        // for /error so we can poke the sourcemap path. The bundle is
-        // hand-rolled because we do NOT want to drag esbuild into
-        // this test — that's bundler_integration.rs's job.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let bundle_path = tmp.path().join("bundle.mjs");
-        fs::write(
-            &bundle_path,
-            r#"
-                export default {
-                  async fetch(request) {
-                    const url = new URL(request.url);
-                    if (url.pathname === "/") {
-                      return new Response("<html><body><h1>Home</h1></body></html>", {
-                        headers: { "Content-Type": "text/html; charset=utf-8" },
-                      });
-                    }
-                    if (url.pathname === "/feed.xml") {
-                      return new Response("<rss/>", {
-                        headers: { "Content-Type": "application/xml" },
-                      });
-                    }
-                    if (url.pathname === "/error") {
-                      throw new Error("boom from bundle");
-                    }
-                    return new Response("not found", { status: 404 });
-                  },
-                };
-            "#,
-        )
-        .unwrap();
-
-        // Stage a node_modules/miniflare symlink next to the bundle so
-        // resolve_subprocess_cwd picks it up. Saves having to walk to
-        // the workspace root in tests.
-        let bundle_node_modules = tmp.path().join("node_modules");
-        fs::create_dir_all(&bundle_node_modules).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            workspace.join("node_modules/miniflare"),
-            bundle_node_modules.join("miniflare"),
-        )
-        .expect("symlink miniflare");
-
-        let dist = tempfile::tempdir().unwrap();
-        let universe = vec![
-            RouteUniverseEntry {
-                url_path: "/".into(),
-                output_path: PathBuf::from("index.html"),
-                route_key: "/".into(),
-            },
-            RouteUniverseEntry {
-                url_path: "/feed.xml".into(),
-                output_path: PathBuf::from("feed.xml"),
-                route_key: "/feed.xml".into(),
-            },
-        ];
-
-        let started = Instant::now();
-        let out = render_all(RendererInput {
-            bundle_path: bundle_path.clone(),
-            sourcemap_path: tmp.path().join("bundle.mjs.map"),
-            manifest: dummy_manifest(),
-            dist_dir: dist.path().to_path_buf(),
-            route_universe: universe,
-            prerender_map: BTreeMap::new(),
-            backend: Backend::SpawnMiniflare,
-            request_timeout: Some(Duration::from_secs(15)),
-            prod_head_assets: None,
-        })
-        .expect("render_all against real miniflare");
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(30),
-            "miniflare e2e took too long: {elapsed:?}"
-        );
-
-        assert_eq!(out.ssg_files_written.len(), 2);
-        let index = fs::read_to_string(dist.path().join("index.html")).unwrap();
-        assert!(index.contains("Home"));
-        let feed = fs::read_to_string(dist.path().join("feed.xml")).unwrap();
-        assert_eq!(feed.trim(), "<rss/>");
-    }
 }

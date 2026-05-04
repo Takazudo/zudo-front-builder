@@ -16,9 +16,9 @@
 //!    skip the build-time render.
 //! 3. [`zfb_build::bundle`] produces the ESM worker bundle for
 //!    every page module and content collection in scope.
-//! 4. [`zfb_build::renderer::render_all`] (T6) spawns one long-lived
-//!    miniflare subprocess, drives a `GET` per concrete URL, and writes
-//!    the response body to `<outdir>/<url>/index.html`.
+//! 4. [`zfb_build::renderer::render_all`] (T6) uses the embedded V8 host,
+//!    drives a `GET` per concrete URL, and writes the response body to
+//!    `<outdir>/<url>/index.html`.
 //!
 //! ### Dynamic-route handling
 //!
@@ -119,7 +119,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
     let routes = router.routes();
 
-    // The build pipeline (bundler subprocess, miniflare boot, all
+    // The build pipeline (bundler subprocess, embedded V8 host boot, all
     // SSG `reqwest::blocking` calls) is fundamentally synchronous,
     // but `#[tokio::main]` keeps a multi-thread runtime live in the
     // background. Without `block_in_place` the inner blocking
@@ -201,21 +201,21 @@ trait BuildRunner {
     ) -> Result<BundlerOutput>;
 
     /// Evaluate deferred dynamic routes whose `paths()` couldn't be
-    /// statically extracted. The production runner starts miniflare
-    /// against the bundle, queries `/__paths__/<route>` for each
-    /// deferred route, and returns:
+    /// statically extracted. The production runner starts the embedded
+    /// V8 host against the bundle, queries `/__paths__/<route>` for
+    /// each deferred route, and returns:
     ///
     /// - the expanded route entries (resolved) + still-deferred entries,
     /// - the [`Backend`] to pass to the subsequent `render_all` call
-    ///   (either `SpawnMiniflare` when miniflare was not started here, or
-    ///   `Existing { base_url }` to reuse the already-running process),
+    ///   (either an `Existing` backend stub when no paths() evaluation was
+    ///   needed, or `Existing { base_url }` to reuse the already-running
+    ///   embedded V8 host),
     /// - an opaque cleanup handle — **the caller MUST drop it after
-    ///   calling `render_all`**. Dropping it kills the miniflare process.
-    ///   When no subprocess was started (fake runner, or no deferred
-    ///   routes), the handle is a no-op.
+    ///   calling `render_all`**. When no host was started (fake runner, or
+    ///   no deferred routes), the handle is a no-op.
     ///
-    /// Fake runners return an empty expansion and `SpawnMiniflare` (the
-    /// fake `render_all` ignores the backend).
+    /// Fake runners return an empty expansion and a stub `Existing` backend
+    /// (the fake `render_all` ignores the backend).
     fn eval_deferred_paths(
         &self,
         deferred: &[DeferredDynamicRoute],
@@ -255,10 +255,10 @@ trait BuildRunner {
     ) -> Result<ProdAssetEmitterInputs>;
 }
 
-/// Opaque handle that keeps a background miniflare subprocess alive.
+/// Opaque handle that keeps the background embedded V8 host alive.
 ///
-/// Dropping this handle terminates the process (via
-/// [`zfb_build::renderer::shutdown`]). When no subprocess is running,
+/// Dropping this handle tears down the host (via
+/// [`zfb_build::renderer::shutdown`]). When no host is running,
 /// the inner `Option` is `None` and the drop is a no-op.
 struct WorkerHandle(Option<zfb_build::renderer::RendererState>);
 impl Drop for WorkerHandle {
@@ -289,25 +289,33 @@ impl BuildRunner for DefaultRunner {
         cache: &mut PathsCache,
     ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
         if deferred.is_empty() {
+            // No deferred routes — no host needed. Supply a stub base URL;
+            // the caller will use Backend::Existing but never issue requests.
             return Ok((
                 crate::render_pipeline::DynamicExpansion::default(),
-                Backend::SpawnMiniflare,
+                Backend::Existing {
+                    base_url: String::new(),
+                },
                 WorkerHandle(None),
             ));
         }
-        // Start miniflare against the bundle to evaluate runtime paths().
+        // Start the embedded V8 host against the bundle to evaluate runtime paths().
+        // The base URL is wired in by Sub 6 (ADR-007); for now start() accepts
+        // an Existing backend that callers supply.
         let state = zfb_build::renderer::start(zfb_build::renderer::RendererStartInput {
             bundle_path: bundle_out.bundle_path.clone(),
             sourcemap_path: bundle_out.sourcemap_path.clone(),
-            backend: Backend::SpawnMiniflare,
+            backend: Backend::Existing {
+                base_url: String::new(),
+            },
             request_timeout: None,
         })
-        .context("could not start miniflare for runtime paths() evaluation")?;
+        .context("could not start embedded V8 host for runtime paths() evaluation")?;
         let base_url = state.base_url().to_string();
         let expansion = eval_deferred_paths_via_worker(deferred, &base_url, cache, None);
         // Return the `RendererState` wrapped in a `WorkerHandle` so the
-        // miniflare process stays alive through `render_all`, then is
-        // killed when the caller drops the handle.
+        // embedded V8 host stays alive through `render_all`, then is
+        // released when the caller drops the handle.
         Ok((
             expansion,
             Backend::Existing { base_url },
@@ -719,7 +727,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // file — it needs the runtime SSR adapter to produce a deploy-
     // shaped wrapper. If the user has SSR routes but no adapter
     // configured, fail fast HERE (before the expensive bundle +
-    // miniflare spin-up) with a pointer at the offending route.
+    // embedded V8 host boot) with a pointer at the offending route.
     let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
         .iter()
         .filter(|entry| {
@@ -735,9 +743,9 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .collect();
     ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
 
-    // Fail fast if the runtime npm package isn't on disk — miniflare
-    // will fail later anyway, but we can give the user an actionable
-    // hint right at build start.
+    // Fail fast if the runtime npm package isn't on disk — the embedded
+    // V8 host will fail later anyway, but we can give the user an
+    // actionable hint right at build start.
     check_runtime_installed(project_root)?;
 
     // ZFB_DEBUG_SNAPSHOT telemetry probe.
@@ -795,13 +803,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // 2. Phase 3 — runtime paths() evaluation.
     //
     // For any dynamic routes whose `paths()` couldn't be statically
-    // extracted (Phase 1), start miniflare against the freshly-bundled
-    // worker and query the `/__paths__/<route>` endpoint for each. The
-    // running worker is reused for SSG rendering in step 3 (via
-    // `Backend::Existing`) so we only pay the miniflare startup cost once.
-    // `_worker_handle` deliberately keeps miniflare alive through the
-    // subsequent `render_all` call: dropping it earlier would kill the
-    // subprocess before rendering completes. The `_` prefix suppresses
+    // extracted (Phase 1), start the embedded V8 host against the freshly-
+    // bundled worker and query the `/__paths__/<route>` endpoint for each.
+    // The running host is reused for SSG rendering in step 3 (via
+    // `Backend::Existing`) so we only pay the host startup cost once.
+    // `_worker_handle` deliberately keeps the embedded V8 host alive
+    // through the subsequent `render_all` call: dropping it earlier would
+    // tear down the host before rendering completes. The `_` prefix suppresses
     // the unused-variable warning without triggering immediate drop
     // (only `_` alone drops immediately; `_name` lives to end of scope).
     let (runtime_expansion, backend, _worker_handle) = runner
@@ -876,12 +884,12 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             .context("production asset pipeline (hash + URL rewrite) failed")?;
     }
 
-    // Surface miniflare's stderr (workerd/console.warn lines) so the
-    // user sees them even on a green build — they are often informative
-    // about deprecations or routing oddities.
-    if !render_out.miniflare_logs.trim().is_empty() {
-        output::info("miniflare logs:");
-        for line in render_out.miniflare_logs.lines() {
+    // Surface runtime logs (console.warn lines from the embedded V8 host)
+    // so the user sees them even on a green build — they are often
+    // informative about deprecations or routing oddities.
+    if !render_out.runtime_logs.trim().is_empty() {
+        output::info("runtime logs:");
+        for line in render_out.runtime_logs.lines() {
             output::info(format!("  {line}"));
         }
     }
@@ -1309,15 +1317,17 @@ mod tests {
             _bundle_out: &BundlerOutput,
             _cache: &mut PathsCache,
         ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
-            // The fake runner doesn't spawn miniflare; return all deferred
-            // routes unchanged (still deferred), and SpawnMiniflare (the
-            // fake render_all ignores the backend).
+            // The fake runner doesn't start a host; return all deferred
+            // routes unchanged (still deferred) and a stub Existing backend
+            // (the fake render_all ignores the backend).
             Ok((
                 crate::render_pipeline::DynamicExpansion {
                     resolved: Vec::new(),
                     deferred: deferred.to_vec(),
                 },
-                Backend::SpawnMiniflare,
+                Backend::Existing {
+                    base_url: String::new(),
+                },
                 WorkerHandle(None),
             ))
         }
@@ -1368,7 +1378,7 @@ mod tests {
             Ok(RendererOutput {
                 ssg_files_written: written,
                 ssr_manifest: SsrManifest::default(),
-                miniflare_logs: String::new(),
+                runtime_logs: String::new(),
             })
         }
 
@@ -1604,7 +1614,7 @@ mod tests {
         make_runtime(project_root);
         // pages/[slug].tsx doesn't exist on disk; static expansion
         // defers it, and the FakeRunner's eval_deferred_paths returns
-        // empty (no runtime miniflare in unit tests).
+        // empty (no embedded V8 host in unit tests).
         let routes = vec![dynamic_route("slug", "pages/[slug].tsx")];
         let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
@@ -1656,7 +1666,9 @@ mod tests {
                         resolved: Vec::new(),
                         deferred: deferred.to_vec(),
                     },
-                    Backend::SpawnMiniflare,
+                    Backend::Existing {
+                        base_url: String::new(),
+                    },
                     WorkerHandle(None),
                 ))
             }
@@ -2483,8 +2495,8 @@ mod tests {
     /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on
     /// `examples/basic-blog` and asserts the post pages, paginated
     /// indexes, and tag pages exist with non-empty `<main>`. Heavy:
-    /// shells out to cargo + esbuild + node (miniflare). Gated behind
-    /// `--ignored` so day-to-day `cargo test` stays fast.
+    /// shells out to cargo + esbuild and the embedded V8 host. Gated
+    /// behind `--ignored` so day-to-day `cargo test` stays fast.
     ///
     /// Status: the renderer call will fail today because the bundler
     /// emits a bundle WITHOUT a `default { fetch }` Worker entry — the
@@ -2492,7 +2504,7 @@ mod tests {
     /// build-command module docs. The test stays here so once that
     /// sibling lands, flipping the gate is a one-line change.
     #[test]
-    #[ignore = "spawns esbuild + miniflare; run with --include-ignored once worker wrapping lands"]
+    #[ignore = "spawns esbuild + embedded V8 host; run with --include-ignored once worker wrapping lands"]
     fn end_to_end_basic_blog_build() {
         // Intentionally minimal — the assertions are described in the
         // doc-comment above; the test body is sketched so the
