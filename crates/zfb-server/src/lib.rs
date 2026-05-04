@@ -163,8 +163,9 @@ where
         pages: opts.pages,
         broadcast: opts.broadcast,
         plugins: opts.plugins,
+        dist_root: opts.dist_root.clone(),
     };
-    let router = build_router(state, opts.dist_root.clone(), opts.public_root.clone());
+    let router = build_router(state, opts.public_root.clone());
 
     let actual = listener.local_addr().unwrap_or(opts.addr);
     info!(
