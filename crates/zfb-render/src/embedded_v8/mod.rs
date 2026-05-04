@@ -583,15 +583,44 @@ fn local_to_string_if_string(
 /// Turn a display name (e.g. `pages/index.tsx`) into a stable
 /// `file:///zfb/<name>` URL the V8 stack-trace formatter is happy to
 /// print. The loader registers in-memory source against this URL.
+///
+/// We percent-encode any byte that would otherwise break URL parsing
+/// (space, control chars, non-ASCII high bytes, plus the URL-reserved
+/// `?`, `#`, `%` set). Slash separators are preserved so the
+/// resulting URL retains its path segment shape — this is what the
+/// V8 stack-trace formatter prints back, and operators want
+/// `pages/blog/[slug].tsx` not the same string with `/` encoded.
 fn synthesise_specifier(name: &str) -> String {
     if name.starts_with("file://") {
         return name.to_string();
     }
-    // URL-percent-encode any space / non-ASCII characters so the URL
-    // parses; we don't need a full encoder because the input is
-    // typically just a relative path.
     let trimmed = name.trim_start_matches('/');
-    format!("file:///zfb/{trimmed}")
+    let mut out = String::from("file:///zfb/");
+    for byte in trimmed.bytes() {
+        match byte {
+            // Preserve path-shape characters and most ASCII safe
+            // characters. The unreserved set per RFC 3986 plus a
+            // couple of pragmatic additions (`/` for path
+            // segments, `[`/`]` so `pages/blog/[slug].tsx` lands
+            // verbatim — square brackets are technically reserved
+            // but the URL parser tolerates them in path).
+            b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'['
+            | b']' => out.push(byte as char),
+            other => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", other));
+            }
+        }
+    }
+    out
 }
 
 /// Build the deno_core extension list. We currently ship NO extra
