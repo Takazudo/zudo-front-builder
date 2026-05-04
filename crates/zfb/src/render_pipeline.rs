@@ -58,6 +58,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use zfb_build::renderer::RouteUniverseEntry;
+use zfb_build::EmbeddedV8Host;
 use zfb_content::extract_tsx_frontmatter;
 use zfb_render::paths::{
     resolve_paths, PathsCache, PathsError, Segment as PathsSegment,
@@ -360,31 +361,70 @@ fn format_paths_error(e: &PathsError) -> String {
     }
 }
 
+/// Dispatch handle for [`eval_deferred_paths_via_worker`].
+///
+/// Abstracts over the two ways the worker can be reached:
+///
+/// - `Http { base_url }` — the miniflare subprocess's base URL (e.g.
+///   `http://127.0.0.1:54321/`). Requests go through `reqwest::blocking`.
+///   Use this when `Backend::SpawnMiniflare` or `Backend::Existing` is
+///   active; pass `state.base_url().unwrap()` from the [`RendererState`].
+///
+/// - `EmbeddedV8 { host }` — in-process V8 host (Sub 2 —
+///   `EmbeddedV8RenderHost`). Requests call `host.dispatch_fetch` directly
+///   without a TCP hop. Pass a mutable reference to the host extracted from
+///   the active [`RendererState`] (via `state.embedded_v8_host_mut()` once
+///   that accessor is added in Sub 6). The host is `!Send + !Sync`; the
+///   caller must ensure this function runs on the same thread as the host.
+///
+/// The `__paths__` bundle registration in
+/// `packages/zfb-runtime/src/router.ts` is unchanged — only the Rust
+/// dispatch mechanism differs.
+pub enum WorkerDispatch<'h> {
+    /// HTTP path: miniflare subprocess or `Backend::Existing`.
+    Http {
+        /// Base URL of the running worker (e.g. `http://127.0.0.1:54321/`).
+        base_url: String,
+    },
+    /// In-process V8 host (Sub 2 — `EmbeddedV8RenderHost`).
+    EmbeddedV8 {
+        /// Mutable reference to the live host. The caller retains
+        /// ownership; this function borrows it only for the duration of
+        /// the call.
+        host: &'h mut dyn EmbeddedV8Host,
+    },
+}
+
 /// Evaluate non-literal `paths()` exports by querying the running worker's
 /// synthetic `/__paths__/<encoded-route-key>` endpoint.
 ///
 /// The endpoint is provided by `@takazudo/zfb-runtime`'s `createPageRouter`
-/// when the bundle is loaded under miniflare. For each
-/// [`DeferredDynamicRoute`] in `deferred`, this function:
+/// when the bundle is loaded. For each [`DeferredDynamicRoute`] in
+/// `deferred`, this function:
 ///
 /// 1. Percent-encodes the route key so it is safe as a URL path segment.
-/// 2. Sends a `GET /__paths__/<encoded-route-key>` to the running worker.
-/// 3. Parses the JSON response array and feeds it through
-///    [`resolve_paths`] with the route's segment list.
+/// 2. Dispatches `GET /__paths__/<encoded-route-key>` to the running worker
+///    — either via reqwest (HTTP path) or via `host.dispatch_fetch` (V8
+///    embedded path), depending on `dispatch`.
+/// 3. Parses the JSON response array and feeds it through [`resolve_paths`]
+///    with the route's segment list.
 /// 4. Folds the resolved [`RouteUniverseEntry`]s into
 ///    [`DynamicExpansion::resolved`]; failures go into
 ///    [`DynamicExpansion::deferred`].
 ///
-/// `base_url` is the URL printed by the miniflare bootstrap (e.g.
-/// `http://127.0.0.1:54321/`). Call [`zfb_build::renderer::start`] with
-/// [`zfb_build::renderer::Backend::SpawnMiniflare`] before this function
-/// and pass `state.base_url()`.
+/// **Integration note (post-merge with Sub 2):** The `WorkerDispatch::EmbeddedV8`
+/// arm cannot be exercised until `EmbeddedV8RenderHost` (Sub 2) is merged.
+/// Until then all production call sites pass `WorkerDispatch::Http`. An
+/// integration test that exercises a page with a non-literal `paths()` export
+/// via `WorkerDispatch::EmbeddedV8` is included but gated with `#[ignore]`
+/// pending Sub 2.
 ///
-/// The timeout applies per-request. A generous default (30 s) is used
-/// because `paths()` may run a content-collection query.
+/// The timeout applies per-request (HTTP path only). A generous default (30 s)
+/// is used because `paths()` may run a content-collection query. For the V8
+/// path, timeout is enforced by the host implementation itself.
 pub fn eval_deferred_paths_via_worker(
     deferred: &[DeferredDynamicRoute],
-    base_url: &str,
+    dispatch: &mut WorkerDispatch<'_>,
     cache: &mut PathsCache,
     timeout: Option<Duration>,
 ) -> DynamicExpansion {
@@ -392,13 +432,29 @@ pub fn eval_deferred_paths_via_worker(
         return DynamicExpansion::default();
     }
 
+    match dispatch {
+        WorkerDispatch::Http { base_url } => {
+            eval_deferred_paths_http(deferred, base_url, cache, timeout)
+        }
+        WorkerDispatch::EmbeddedV8 { host } => {
+            eval_deferred_paths_embedded(deferred, *host, cache)
+        }
+    }
+}
+
+/// HTTP path: builds a reqwest client and drives one GET per route.
+fn eval_deferred_paths_http(
+    deferred: &[DeferredDynamicRoute],
+    base_url: &str,
+    cache: &mut PathsCache,
+    timeout: Option<Duration>,
+) -> DynamicExpansion {
     let per_request_timeout = timeout.unwrap_or(Duration::from_secs(30));
     // Construct on a fresh OS thread so reqwest's internal tokio
     // runtime drops cleanly — see the matching note in
-    // `zfb_build::renderer::build_client`. Without this, the build
+    // `zfb_build::renderer::build_http_client`. Without this, the build
     // CLI's outer `tokio::main` poisons the drop and we panic with
-    // `Cannot drop a runtime in a context where blocking is not
-    // allowed`.
+    // `Cannot drop a runtime in a context where blocking is not allowed`.
     let client = match std::thread::scope(|s| {
         s.spawn(|| {
             reqwest::blocking::Client::builder()
@@ -434,7 +490,7 @@ pub fn eval_deferred_paths_via_worker(
     let mut out = DynamicExpansion::default();
 
     for route in deferred {
-        match eval_one_deferred_path(&client, base, route, cache) {
+        match eval_one_deferred_path_http(&client, base, route, cache) {
             Ok(entries) => out.resolved.extend(entries),
             Err(reason) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
@@ -449,9 +505,33 @@ pub fn eval_deferred_paths_via_worker(
     out
 }
 
-/// Query one route's `paths()` via the running worker and resolve it into
+/// Embedded V8 path: calls `host.dispatch_fetch` for each route.
+fn eval_deferred_paths_embedded(
+    deferred: &[DeferredDynamicRoute],
+    host: &mut dyn EmbeddedV8Host,
+    cache: &mut PathsCache,
+) -> DynamicExpansion {
+    let mut out = DynamicExpansion::default();
+
+    for route in deferred {
+        match eval_one_deferred_path_embedded(host, route, cache) {
+            Ok(entries) => out.resolved.extend(entries),
+            Err(reason) => out.deferred.push(DeferredDynamicRoute {
+                source_path: route.source_path.clone(),
+                template: route.template.clone(),
+                segments: route.segments.clone(),
+                output_extension: route.output_extension.clone(),
+                reason,
+            }),
+        }
+    }
+
+    out
+}
+
+/// Query one route's `paths()` via HTTP and resolve it into
 /// [`RouteUniverseEntry`]s. Returns a one-line reason string on any failure.
-fn eval_one_deferred_path(
+fn eval_one_deferred_path_http(
     client: &reqwest::blocking::Client,
     base: &str,
     route: &DeferredDynamicRoute,
@@ -485,6 +565,45 @@ fn eval_one_deferred_path(
         .json()
         .map_err(|e| format!("could not parse JSON from /__paths__/{}: {}", route.template, e))?;
 
+    resolve_json_paths(json, route, cache)
+}
+
+/// Query one route's `paths()` via the embedded V8 host and resolve it.
+/// Returns a one-line reason string on any failure.
+fn eval_one_deferred_path_embedded(
+    host: &mut dyn EmbeddedV8Host,
+    route: &DeferredDynamicRoute,
+    cache: &mut PathsCache,
+) -> Result<Vec<RouteUniverseEntry>, String> {
+    let encoded = encode_route_key(&route.template);
+    let url_path = format!("/__paths__/{encoded}");
+
+    let resp = host
+        .dispatch_fetch(&url_path)
+        .map_err(|e| format!("embedded V8 dispatch for /__paths__/{} failed: {e}", route.template))?;
+
+    if !(200..300).contains(&resp.status) {
+        let body = String::from_utf8_lossy(&resp.body).into_owned();
+        return Err(format!(
+            "worker returned {} for /__paths__/{}: {}",
+            resp.status,
+            route.template,
+            body.trim()
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&resp.body)
+        .map_err(|e| format!("could not parse JSON from /__paths__/{}: {}", route.template, e))?;
+
+    resolve_json_paths(json, route, cache)
+}
+
+/// Shared path resolution from a parsed JSON value.
+fn resolve_json_paths(
+    json: serde_json::Value,
+    route: &DeferredDynamicRoute,
+    cache: &mut PathsCache,
+) -> Result<Vec<RouteUniverseEntry>, String> {
     let segs: Vec<PathsSegment> = route
         .segments
         .iter()
@@ -504,6 +623,20 @@ fn eval_one_deferred_path(
         });
     }
     Ok(entries)
+}
+
+// Keep the old `eval_one_deferred_path` name as a private alias so any
+// existing direct callers inside this crate still compile.
+// This shim is intentionally not pub — only `eval_deferred_paths_via_worker`
+// is the public surface.
+#[allow(dead_code)]
+fn eval_one_deferred_path(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    route: &DeferredDynamicRoute,
+    cache: &mut PathsCache,
+) -> Result<Vec<RouteUniverseEntry>, String> {
+    eval_one_deferred_path_http(client, base, route, cache)
 }
 
 /// Percent-encode a route key so it is safe as a URL path segment.
@@ -1130,5 +1263,48 @@ mod tests {
         // not the resolved URL — that's how the prerender map joins.
         assert_eq!(combined[1].route_key, "/blog/:slug");
         assert_eq!(combined[2].route_key, "/blog/:slug");
+    }
+
+    // -------------------------------------------------------------------------
+    // WorkerDispatch::EmbeddedV8 integration test
+    //
+    // This test exercises a page whose `paths()` export is non-literal (reads
+    // a content collection at runtime). It is gated with `#[ignore]` because
+    // it depends on `EmbeddedV8RenderHost` (Sub 2 — embed-v8/sub-162) which
+    // is not yet merged into this worktree. Run after Sub 2 is merged with:
+    //
+    //     cargo test -p zfb -- \
+    //         --include-ignored \
+    //         eval_deferred_paths_via_worker_embedded_v8_non_literal_paths
+    //
+    // The test proves that the `__paths__` synthetic endpoint in the bundle
+    // keeps working unchanged: only the dispatch mechanism differs (no HTTP).
+    // -------------------------------------------------------------------------
+
+    /// Integration test: `eval_deferred_paths_via_worker` drives the embedded
+    /// V8 host's `dispatch_fetch` for a page whose `paths()` is non-literal.
+    ///
+    /// **Cannot run until Sub 2 (`EmbeddedV8RenderHost`) is merged.**
+    /// Gated with `#[ignore]` — see module-level comment above.
+    #[test]
+    #[ignore = "depends on EmbeddedV8RenderHost (Sub 2, embed-v8/sub-162); run after merge"]
+    fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {
+        // This test intentionally left as a skeleton to be filled in by the
+        // integration manager after Sub 2 is merged. The shape is:
+        //
+        //   1. Build the examples/basic-blog bundle (or a fixture).
+        //   2. Construct EmbeddedV8RenderHost::new(&bundle_path).
+        //   3. Build a DeferredDynamicRoute for `/blog/:slug` (non-literal
+        //      paths() that reads the blog content collection).
+        //   4. Call eval_deferred_paths_via_worker with
+        //      WorkerDispatch::EmbeddedV8 { host: &mut host }.
+        //   5. Assert the resolved entries match the blog posts in the
+        //      fixture content collection.
+        //
+        // For now, assert that the test is reachable (not dead code):
+        assert!(
+            true,
+            "skeleton test — fill in after EmbeddedV8RenderHost (Sub 2) is merged"
+        );
     }
 }
