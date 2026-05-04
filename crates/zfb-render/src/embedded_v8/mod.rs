@@ -1,7 +1,7 @@
 //! In-process V8 host for the SSG renderer.
 //!
-//! ADR-007 (sub-issue #161) re-introduces an in-process JS runtime to
-//! remove the Node.js + miniflare subprocess from the build-time render
+//! ADR-007 (sub-issue #161) introduces an in-process JS runtime to
+//! replace the external Node.js subprocess from the build-time render
 //! path. The host loads a workerd-shape bundle (`export default { fetch }`)
 //! produced by `zfb-build`'s bundler, drives its `fetch` export per
 //! request, and surfaces V8 stack traces in a shape that
