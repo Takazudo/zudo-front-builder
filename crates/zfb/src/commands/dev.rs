@@ -11,10 +11,10 @@
 //!      non-noop tick into reload events via
 //!      [`zfb_server::outcome_to_events`] and broadcasts them.
 //! 4. A long-lived [`zfb_build::renderer::RendererState`] (T7) that
-//!    owns the miniflare subprocess. The asset pipeline's
+//!    owns the embedded V8 host. The asset pipeline's
 //!    [`PageRenderer`] callback drives [`zfb_build::renderer::render_one`]
 //!    against this state per affected route, so a single edit triggers
-//!    one HTTP round-trip — not a fresh miniflare boot.
+//!    one in-process render — not a fresh host boot.
 //!
 //! Then it binds the address from `args.host:args.port`, prints the
 //! ready banner via [`crate::output::ready`], and runs the axum server
@@ -25,8 +25,8 @@
 //! `start(...)` is called once at boot. The returned
 //! [`zfb_build::renderer::RendererState`] is wrapped in a [`Drop`]
 //! guard so panics, Ctrl-C, or any other early-exit path tears the
-//! miniflare subprocess down cleanly. Without that guard a panicking
-//! dev loop would orphan workerd.
+//! embedded V8 host down cleanly. Without that guard a panicking
+//! dev loop would leak the host resources.
 //!
 //! ## Configuration
 //!
@@ -481,7 +481,7 @@ fn boot_dev_renderer(
     let state = start(RendererStartInput {
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
-        backend: Backend::SpawnMiniflare,
+        backend: Backend::EmbeddedV8,
         request_timeout: None,
     })
     .map_err(anyhow::Error::from)

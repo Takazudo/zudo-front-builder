@@ -201,17 +201,17 @@ trait BuildRunner {
     ) -> Result<BundlerOutput>;
 
     /// Evaluate deferred dynamic routes whose `paths()` couldn't be
-    /// statically extracted. The production runner starts miniflare
-    /// against the bundle, queries `/__paths__/<route>` for each
+    /// statically extracted. The production runner starts the embedded V8
+    /// host against the bundle, queries `/__paths__/<route>` for each
     /// deferred route, and returns:
     ///
     /// - the expanded route entries (resolved) + still-deferred entries,
     /// - the [`Backend`] to pass to the subsequent `render_all` call
-    ///   (either `SpawnMiniflare` when miniflare was not started here, or
+    ///   (either `EmbeddedV8` when no host was started here, or
     ///   `Existing { base_url }` to reuse the already-running process),
     /// - an opaque cleanup handle — **the caller MUST drop it after
-    ///   calling `render_all`**. Dropping it kills the miniflare process.
-    ///   When no subprocess was started (fake runner, or no deferred
+    ///   calling `render_all`**. Dropping it shuts the host down.
+    ///   When no host was started (fake runner, or no deferred
     ///   routes), the handle is a no-op.
     ///
     /// Fake runners return an empty expansion and `SpawnMiniflare` (the
@@ -291,18 +291,18 @@ impl BuildRunner for DefaultRunner {
         if deferred.is_empty() {
             return Ok((
                 crate::render_pipeline::DynamicExpansion::default(),
-                Backend::SpawnMiniflare,
+                Backend::EmbeddedV8,
                 WorkerHandle(None),
             ));
         }
-        // Start miniflare against the bundle to evaluate runtime paths().
+        // Start the embedded V8 host against the bundle to evaluate runtime paths().
         let state = zfb_build::renderer::start(zfb_build::renderer::RendererStartInput {
             bundle_path: bundle_out.bundle_path.clone(),
             sourcemap_path: bundle_out.sourcemap_path.clone(),
-            backend: Backend::SpawnMiniflare,
+            backend: Backend::EmbeddedV8,
             request_timeout: None,
         })
-        .context("could not start miniflare for runtime paths() evaluation")?;
+        .context("could not start embedded V8 host for runtime paths() evaluation")?;
         let base_url = state.base_url().to_string();
         let expansion = eval_deferred_paths_via_worker(deferred, &base_url, cache, None);
         // Return the `RendererState` wrapped in a `WorkerHandle` so the
@@ -795,13 +795,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // 2. Phase 3 — runtime paths() evaluation.
     //
     // For any dynamic routes whose `paths()` couldn't be statically
-    // extracted (Phase 1), start miniflare against the freshly-bundled
-    // worker and query the `/__paths__/<route>` endpoint for each. The
-    // running worker is reused for SSG rendering in step 3 (via
-    // `Backend::Existing`) so we only pay the miniflare startup cost once.
-    // `_worker_handle` deliberately keeps miniflare alive through the
-    // subsequent `render_all` call: dropping it earlier would kill the
-    // subprocess before rendering completes. The `_` prefix suppresses
+    // extracted (Phase 1), start the embedded V8 host against the freshly-
+    // bundled worker and query the `/__paths__/<route>` endpoint for each.
+    // The running host is reused for SSG rendering in step 3 (via
+    // `Backend::Existing`) so we only pay the host startup cost once.
+    // `_worker_handle` deliberately keeps the host alive through the
+    // subsequent `render_all` call: dropping it earlier would shut the host
+    // down before rendering completes. The `_` prefix suppresses
     // the unused-variable warning without triggering immediate drop
     // (only `_` alone drops immediately; `_name` lives to end of scope).
     let (runtime_expansion, backend, _worker_handle) = runner
