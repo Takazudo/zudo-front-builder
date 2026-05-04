@@ -28,9 +28,7 @@ globalThis.__zfb = {
   },
   async dispatch(urlStr, method, headersObj, bodyU8) {
     if (!__zfb_state.bundle || typeof __zfb_state.bundle.fetch !== "function") {
-      throw new Error(
-        "embedded V8 host: bundle has no callable `default.fetch`"
-      );
+      throw new Error("embedded V8 host: bundle has no callable `default.fetch`");
     }
     const init = { method };
     if (headersObj) {

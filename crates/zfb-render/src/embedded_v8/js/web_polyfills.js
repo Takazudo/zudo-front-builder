@@ -181,10 +181,7 @@
     }
     toString() {
       return this._pairs
-        .map(
-          ([k, v]) =>
-            encodeURIComponent(k) + "=" + encodeURIComponent(v)
-        )
+        .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
         .join("&");
     }
   }
@@ -214,32 +211,20 @@
         if (input.startsWith("//")) {
           resolved = baseUrl.protocol + input;
         } else if (input.startsWith("/")) {
-          resolved =
-            baseUrl.protocol + "//" + baseUrl.host + input;
+          resolved = baseUrl.protocol + "//" + baseUrl.host + input;
         } else if (input.startsWith("?") || input.startsWith("#")) {
-          resolved =
-            baseUrl.protocol +
-            "//" +
-            baseUrl.host +
-            baseUrl.pathname +
-            input;
+          resolved = baseUrl.protocol + "//" + baseUrl.host + baseUrl.pathname + input;
         } else {
           // Drop last path segment of base.
           const lastSlash = baseUrl.pathname.lastIndexOf("/");
-          const dir =
-            lastSlash >= 0
-              ? baseUrl.pathname.slice(0, lastSlash + 1)
-              : "/";
-          resolved =
-            baseUrl.protocol + "//" + baseUrl.host + dir + input;
+          const dir = lastSlash >= 0 ? baseUrl.pathname.slice(0, lastSlash + 1) : "/";
+          resolved = baseUrl.protocol + "//" + baseUrl.host + dir + input;
         }
       } else {
         resolved = String(input);
       }
       // Parse: scheme://host:port/path?query#fragment
-      const schemeMatch = /^([a-z][a-z0-9+\-.]*:)(\/\/)?/i.exec(
-        resolved
-      );
+      const schemeMatch = /^([a-z][a-z0-9+\-.]*:)(\/\/)?/i.exec(resolved);
       if (!schemeMatch) {
         throw new TypeError("Invalid URL: " + resolved);
       }
@@ -356,10 +341,7 @@
     }
     decode(input) {
       if (input == null) return "";
-      const bytes =
-        input instanceof Uint8Array
-          ? input
-          : new Uint8Array(input.buffer || input);
+      const bytes = input instanceof Uint8Array ? input : new Uint8Array(input.buffer || input);
       let out = "";
       let i = 0;
       while (i < bytes.length) {
@@ -376,8 +358,7 @@
             out += "�";
             break;
           }
-          const c =
-            ((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f);
+          const c = ((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f);
           out += String.fromCharCode(c);
           i += 2;
         } else if (b < 0xf0) {
@@ -385,10 +366,7 @@
             out += "�";
             break;
           }
-          const c =
-            ((b & 0x0f) << 12) |
-            ((bytes[i + 1] & 0x3f) << 6) |
-            (bytes[i + 2] & 0x3f);
+          const c = ((b & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f);
           out += String.fromCharCode(c);
           i += 3;
         } else {
@@ -402,10 +380,7 @@
             ((bytes[i + 2] & 0x3f) << 6) |
             (bytes[i + 3] & 0x3f);
           c -= 0x10000;
-          out += String.fromCharCode(
-            0xd800 + (c >> 10),
-            0xdc00 + (c & 0x3ff)
-          );
+          out += String.fromCharCode(0xd800 + (c >> 10), 0xdc00 + (c & 0x3ff));
           i += 4;
         }
       }
@@ -425,16 +400,8 @@
     if (typeof input === "string") {
       return new TextEncoder().encode(input);
     }
-    if (
-      input &&
-      typeof input.byteLength === "number" &&
-      input.buffer instanceof ArrayBuffer
-    ) {
-      return new Uint8Array(
-        input.buffer,
-        input.byteOffset || 0,
-        input.byteLength
-      );
+    if (input && typeof input.byteLength === "number" && input.buffer instanceof ArrayBuffer) {
+      return new Uint8Array(input.buffer, input.byteOffset || 0, input.byteLength);
     }
     // Anything else — coerce to string and encode.
     return new TextEncoder().encode(String(input));
@@ -452,7 +419,7 @@
       this.bodyUsed = true;
       return this._bodyBytes.buffer.slice(
         this._bodyBytes.byteOffset,
-        this._bodyBytes.byteOffset + this._bodyBytes.byteLength
+        this._bodyBytes.byteOffset + this._bodyBytes.byteLength,
       );
     }
     async text() {
@@ -494,9 +461,7 @@
       this.url = url;
       this.method = (finalInit.method || "GET").toUpperCase();
       this.headers =
-        finalInit.headers instanceof Headers
-          ? finalInit.headers
-          : new Headers(finalInit.headers);
+        finalInit.headers instanceof Headers ? finalInit.headers : new Headers(finalInit.headers);
       this.signal = finalInit.signal || null;
       this.cache = finalInit.cache || "default";
       this.credentials = finalInit.credentials || "same-origin";
@@ -522,10 +487,7 @@
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
       this.ok = this.status >= 200 && this.status < 300;
-      this.headers =
-        i.headers instanceof Headers
-          ? i.headers
-          : new Headers(i.headers);
+      this.headers = i.headers instanceof Headers ? i.headers : new Headers(i.headers);
       this.type = "default";
       this.url = i.url || "";
       this.redirected = false;
@@ -589,8 +551,8 @@
       new Error(
         "fetch() called from SSG runtime (url=" +
           url +
-          "). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
-      )
+          "). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+      ),
     );
   }
 
@@ -598,8 +560,7 @@
   //
   // Standard base64. Only ASCII inputs to btoa, only ASCII outputs
   // from atob — matches the WHATWG spec.
-  const B64_CHARS =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   function btoa(input) {
     const str = String(input);
     let out = "";
@@ -609,16 +570,11 @@
       const c2 = i < str.length ? str.charCodeAt(i++) : NaN;
       const c3 = i < str.length ? str.charCodeAt(i++) : NaN;
       if (c1 > 0xff || (i > 1 && c2 > 0xff) || (i > 2 && c3 > 0xff)) {
-        throw new Error(
-          "btoa: input contains characters outside Latin-1"
-        );
+        throw new Error("btoa: input contains characters outside Latin-1");
       }
       const b1 = c1 >> 2;
       const b2 = ((c1 & 0x3) << 4) | (isNaN(c2) ? 0 : c2 >> 4);
-      const b3 =
-        isNaN(c2)
-          ? 64
-          : ((c2 & 0xf) << 2) | (isNaN(c3) ? 0 : c3 >> 6);
+      const b3 = isNaN(c2) ? 64 : ((c2 & 0xf) << 2) | (isNaN(c3) ? 0 : c3 >> 6);
       const b4 = isNaN(c3) ? 64 : c3 & 0x3f;
       out +=
         B64_CHARS[b1] +
@@ -711,9 +667,7 @@
       // pure-JS sha256 implementation (~80 lines).
       digest() {
         return Promise.reject(
-          new Error(
-            "crypto.subtle.digest is not implemented in the SSG runtime"
-          )
+          new Error("crypto.subtle.digest is not implemented in the SSG runtime"),
         );
       },
     },
