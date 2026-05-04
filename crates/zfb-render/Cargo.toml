@@ -7,9 +7,60 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 
 [lib]
 
+# Sub 3 / sub-issue #163 records the cargo-feature-gate decision: the
+# in-process V8 host is opt-in via the `embed_v8` feature, default-on
+# so the typical workspace `cargo build`/`cargo test` exercises it, but
+# downstream tooling that wants a deno-free build (e.g. CI image that
+# only runs the SWC pipeline) can opt out with
+# `--no-default-features`.
+[features]
+default = ["embed_v8"]
+embed_v8 = ["dep:deno_core", "dep:tokio"]
+
 [dependencies]
 # Canonical shared types (Segment, etc.).
 zfb-types = { path = "../zfb-types" }
+
+# === In-process V8 host (feature `embed_v8`) ===
+#
+# Versions are PINNED and act as the `compatibilityDate` replacement
+# per ADR-007 (Sub 1, sub-issue #161). Bumping is a coordinated change
+# — see ADR-007's "version bump procedure" section.
+#
+# Selection rationale (state at the time of writing):
+# - `deno_core 0.399`: the latest line that builds on the workspace's
+#   stable Rust toolchain pin (`rust-toolchain.toml`). The 0.400 line
+#   shipped concurrently and pulls a slightly newer V8 build; we hold
+#   on 0.399 until the toolchain bump happens in lock-step.
+#
+# We deliberately do NOT depend on `deno_fetch` / `deno_web` /
+# `deno_url` / `deno_console` here, even though the sub-162 spec
+# mentions them. Reasons documented in `embedded_v8/mod.rs` "Why a
+# polyfill instead of deno_fetch/deno_web" section:
+# 1. Those crates ship Request/Response/URL/etc. as
+#    `lazy_loaded_esm` — exposing them as globals requires a
+#    bootstrap script identical to Deno's runtime, which is a
+#    non-trivial dependency surface.
+# 2. `deno_url` and `deno_console` were upstream-deprecated and
+#    folded into `deno_web`; the spec list is historical.
+# 3. The SSG path never makes outgoing network requests, so
+#    `deno_fetch`'s hyper / rustls / tower / h2 stack is dead
+#    weight — and ADR-001 documented the 15-30 minute first-build
+#    cost it imposes.
+# 4. A pure-JS polyfill of Request/Response/Headers/URL/fetch/
+#    TextEncoder/TextDecoder/atob/btoa/structuredClone/crypto.subtle
+#    is ~250 lines and lives in `embedded_v8/js/web_polyfills.js`,
+#    making the dep graph explicit and the host hermetic.
+#
+# This is reversible: the polyfill module is self-contained, and a
+# future change can swap in `deno_web` / `deno_fetch` by editing
+# `embedded_v8::build_extensions` and removing the polyfill from
+# `embedded_v8::HOST_GLOBALS_SHIM_SRC`.
+deno_core = { version = "=0.399.0", optional = true }
+# Tokio is needed for `deno_core`'s event loop. We use the `rt` +
+# `macros` features only (no multi-thread runtime — the host is
+# single-threaded by design, see module docstring).
+tokio = { version = "1", features = ["rt", "macros", "sync"], optional = true }
 
 # Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
 # `mdx://` specifiers through `mdx_to_jsx_module` before handing the
@@ -43,6 +94,8 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 # Async test runtime for `#[tokio::test]` on async render-host tests.
+# `rt-multi-thread` is intentionally absent — the V8 host is
+# `!Send + !Sync` and runs on the current-thread runtime only.
 tokio = { version = "1", features = ["rt", "macros"] }
 # Used by tests/integration_routing_rendering.rs to scan the routing
 # fixtures into a `Route` table. Lives in dev-deps because zfb-render
