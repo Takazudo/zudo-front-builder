@@ -25,6 +25,8 @@
 //! - `node:path`
 //! - `node:url`
 //! - `node:buffer`
+//! - `node:async_hooks` (added: zudo-doc consumer uses @takazudo/zfb-adapter-cloudflare
+//!   which imports AsyncLocalStorage from node:async_hooks at the top level)
 //!
 //! Wave 3 expansion is allowed — add a specifier here when real
 //! user code surfaces a gap.
@@ -54,6 +56,14 @@ pub const NODE_URL_SRC: &str = include_str!("js/node_url.js");
 /// `node:buffer` stub source.
 pub const NODE_BUFFER_SRC: &str = include_str!("js/node_buffer.js");
 
+/// `node:async_hooks` stub source. Provides throwing-proxy stubs for
+/// `AsyncLocalStorage`, `AsyncResource`, and other exports. Needed so
+/// consumer bundles that import `@takazudo/zfb-adapter-cloudflare` (which
+/// does `import { AsyncLocalStorage } from "node:async_hooks"` at the top
+/// level) can evaluate during the SSG paths() step without crashing at
+/// module-load time.
+pub const NODE_ASYNC_HOOKS_SRC: &str = include_str!("js/node_async_hooks.js");
+
 /// Host-bridge JS source. Installs `globalThis.__zfb` with
 /// `setBundle(defaultExport)` and
 /// `dispatch(urlStr, method, headersObj, bodyU8)`. Executed once at
@@ -79,6 +89,7 @@ pub const NODE_STUB_SPECIFIERS: &[&str] = &[
     "node:path",
     "node:url",
     "node:buffer",
+    "node:async_hooks",
 ];
 
 /// Lookup the synthetic source for a `node:*` specifier. Returns
@@ -91,6 +102,7 @@ pub fn node_stub_source(specifier: &str) -> Option<&'static str> {
         "node:path" => Some(NODE_PATH_SRC),
         "node:url" => Some(NODE_URL_SRC),
         "node:buffer" => Some(NODE_BUFFER_SRC),
+        "node:async_hooks" => Some(NODE_ASYNC_HOOKS_SRC),
         _ => None,
     }
 }
