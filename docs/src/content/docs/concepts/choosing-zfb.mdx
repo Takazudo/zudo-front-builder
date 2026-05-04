@@ -1,0 +1,148 @@
+---
+title: Choosing zfb
+description: When zfb fits your project, when it does not, and where the scaling sweet spot is.
+sidebar_position: -1
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+Whether zfb is the right tool for your project — including an honest
+look at what it is not good at. Cross-linked to the
+[architecture overview](/architecture/build-engine), the
+[getting-started guide](/getting-started), and the scaling note in the
+[README](https://github.com/Takazudo/zudo-front-builder#limits).
+
+</Info>
+
+zfb is a focused tool. It solves a specific problem well, and it
+deliberately leaves other problems to other tools. This page maps that
+out so you can make the call before you invest time.
+
+## When zfb fits well
+
+zfb is a strong match if most of the following describe your project:
+
+**Content-heavy, statically generated site.** Your source of truth is
+Markdown or MDX files in a repository. You want a build step that turns
+those files into static HTML, and you want that build to be fast and
+deterministic. zfb's entire architecture is shaped around this case.
+
+**Per-page dependency graph.** You have hundreds of pages and you do
+not want a full rebuild on every edit. zfb tracks which source files
+each page depends on and rebuilds only the affected pages when
+something changes. The dependency graph (`crates/zfb-graph`) is a
+first-class part of the engine, not a bolt-on.
+
+**Workerd-shaped output bundle.** Your target is Cloudflare Workers or
+Pages. zfb's build-time JS host is V8-based (via embedded V8), the
+same engine family as workerd. The content snapshot and island bundles
+are sized for that environment. If you deploy to Workers, you get a
+bundle shape that actually fits.
+
+**Cloudflare Pages–friendly deployment.** Static output from
+`zfb build` drops directly into a Pages deployment. There is no server
+runtime to manage, no serverless function to configure, and no adapter
+layer. The built `dist/` is the deployment artifact.
+
+**Light interactive islands.** Your pages are mostly static documents
+with a small number of interactive components — a search box, a
+counter, a modal trigger. zfb's islands model (`"use client"`) ships
+exactly the JS for the islands each page uses and nothing else. A page
+with no islands ships zero bytes of client JS.
+
+## Comparison
+
+| | **zfb** | **Astro** | **Next.js** |
+|---|---|---|---|
+| CLI language | Rust | Node.js | Node.js |
+| TSX compile | SWC (embedded) | Vite/Rollup | SWC/Webpack |
+| Bundler | esbuild (islands) | Vite | Webpack/Turbopack |
+| Build-time JS host | Embedded V8 | Node.js | Node.js |
+| Client framework | Any TSX (`"use client"`) | Any (adapters) | React |
+
+The most meaningful difference is the **build-time JS host**. zfb uses
+embedded V8 directly — the same engine family as Cloudflare's workerd.
+Astro and Next.js both build in a full Node.js process. For
+Workers-targeted deployments, zfb's host is closer to the target
+runtime, which means fewer surprises around global availability and
+module resolution.
+
+## When to pick something else
+
+zfb is the wrong choice in several cases — be honest with yourself
+before committing.
+
+**Your site is primarily server-rendered or driven by dynamic data.**
+zfb is an SSG engine. Every page is computed at build time and written
+to `dist/` as static HTML. There is no per-request rendering, no API
+routes, and no database-query layer. If your pages change per-user or
+on every request, you need a full SSR framework.
+
+**You need broad multi-framework support.** Astro's adapter ecosystem
+lets you swap between React, Vue, Svelte, Solid, and others inside the
+same site. zfb's client side is TSX (React or Preact). If your team
+owns components in multiple frameworks and you want them all in one
+site, zfb is not the right host.
+
+**You have 100 000+ pages.** zfb builds an in-memory content snapshot
+and embeds it into the V8 host for the duration of the render pass.
+For hundreds or low thousands of MDX files this fits comfortably in
+default workerd memory. For very large corpora — tens of thousands of
+entries, or entries with multi-megabyte bodies — V8 RSS grows linearly
+with snapshot size. At that scale the snapshot design needs rethinking
+(see the [Scaling sweet spot](#scaling-sweet-spot) section below), and
+zfb does not solve that problem today.
+
+**You want a stable, production-hardened tool right now.** zfb is in
+v0. The core primitives work, but the rendering pipeline, islands
+wiring, and CSS extraction are still being connected. If you need a
+proven, documented, community-backed SSG today,
+[Astro](https://astro.build) is the right answer. Come back to zfb
+when it hits v1.
+
+## Scaling sweet spot
+
+The engine is designed for **hundreds to low thousands of MDX pages**.
+That covers:
+
+- A typical documentation site (50–500 pages)
+- A developer blog with a years-long archive (100–2000 posts)
+- A `zudo-doc`-scale content set
+
+At those sizes the content snapshot is small, cold-start build time
+is measured in seconds, and the dependency graph keeps incremental
+rebuilds fast regardless of total page count.
+
+**Beyond roughly 10 000 pages**, the snapshot-in-memory approach
+becomes the bottleneck. The right answer at that scale is not to build
+a larger monolith — it is to shard the content into multiple zfb
+projects (one per section, one per locale, one per content type) and
+compose them at the CDN layer. That composition story is on the roadmap
+but is not implemented today.
+
+To inspect the actual snapshot footprint of your build:
+
+```sh
+ZFB_DEBUG_SNAPSHOT=1 pnpm exec zfb build
+```
+
+This prints a single line to stderr:
+
+```
+content snapshot: 187 entries / 412 KB
+```
+
+`KB` here is the byte size of the deterministic JSON serialization —
+a reliable proxy for V8 heap cost. Watch this number as your content
+grows. If it climbs past a few hundred megabytes, you are approaching
+the edge of the sweet spot. The full explanation of the memory model
+lives in the [README scaling note](https://github.com/Takazudo/zudo-front-builder#limits).
+
+## Where to go next
+
+- [Getting started](/getting-started) — scaffold your first site.
+- [Architecture: Build engine](/architecture/build-engine) — how the
+  Rust crates, the JS host, and the snapshot fit together.
+- [Engine vs Framework](/concepts/engine-vs-framework) — the six
+  primitives zfb commits to, and what lives outside the engine.
