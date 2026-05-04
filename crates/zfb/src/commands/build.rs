@@ -1266,7 +1266,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
-    use zfb_build::renderer::{RendererOutput, SsrManifest};
+    use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
 
     /// Fake [`BuildRunner`] that records the inputs it received and
