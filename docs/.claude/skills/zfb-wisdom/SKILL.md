@@ -63,7 +63,9 @@ The documentation is organized in MDX files under `docs/`:
 - api/
 - architecture/
 - changelog/
+- claude-md/
 - claude-skills/
+- claude/
 - concepts/
 - dogfood/
 - getting-started/
