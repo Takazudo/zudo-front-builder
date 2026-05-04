@@ -1,6 +1,6 @@
 # @takazudo/zfb-runtime
 
-JS-side runtime for [zfb][zfb-repo]'s SSG-first build pipeline (ADR-005).
+JS-side runtime for [zfb][zfb-repo]'s SSG-first build pipeline (ADR-007).
 
 [zfb-repo]: https://github.com/Takazudo/zudo-front-builder
 
@@ -19,7 +19,7 @@ zfb's render pipeline goes:
 ```
 user pages/ + content/ + layouts/ + components/
   → esbuild bundle (T3, wave 2)        // single ESM file, Worker entry
-  → miniflare subprocess (T6, wave 2)  // workerd runtime, same as CF Workers
+  → embedded V8 host (T6, wave 2)      // same WinterCG surface as CF Workers
   → @takazudo/zfb-runtime               // <-- this package
   → (request) => Promise<Response>      // Worker fetch handler
 ```
@@ -145,9 +145,9 @@ preserves the order the bundle delivers, so the determinism story is
 "identical Rust input → identical bundle bytes → identical render
 output" without an extra sort step.
 
-## Bundle shape consumed by T6 (miniflare orchestration)
+## Bundle shape consumed by T6 (embedded V8 host)
 
-T6's miniflare subprocess loads a single ESM Worker bundle produced by
+T6's embedded V8 host loads a single ESM Worker bundle produced by
 T3's esbuild step. The bundle's entry point must look like this:
 
 ```ts
@@ -212,10 +212,10 @@ natively). The framework adapter is stubbed so tests do not pull in
 preact-render-to-string. Determinism is asserted by rendering twice
 from independently-constructed routers and comparing byte-equal.
 
-Miniflare itself is **not** spawned from this package's tests — that
-integration belongs to T6 (wave 2). The miniflare-targeting acceptance
-criteria from the epic ("Worker bundle returns correct HTML for each
-route") will land in T6 once the bundler step (T3) ships.
+The embedded V8 host is **not** booted from this package's tests — that
+integration belongs to T6 (wave 2). The end-to-end acceptance criteria
+("Worker bundle returns correct HTML for each route") will land in T6
+once the bundler step (T3) ships.
 
 ## Why a peer dependency on `zfb`
 

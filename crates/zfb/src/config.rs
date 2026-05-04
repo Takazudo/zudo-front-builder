@@ -29,8 +29,8 @@
 //! TS support requires `node` in `PATH` and the staged esbuild binary at
 //! `crates/zfb/binaries/esbuild/esbuild` (or the path pointed at by the
 //! `ZFB_ESBUILD_BIN` environment variable). `node` was already a hard
-//! requirement of `zfb` because the production renderer spawns miniflare;
-//! this module surfaces a clean error if it is missing.
+//! this module surfaces a clean error if `node` is missing (still needed
+//! for esbuild, prettier, and other JS tooling).
 //!
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.
@@ -707,8 +707,8 @@ async fn load_ts_via_subprocess(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
                 "config loader: `{}` was not found in PATH. zfb requires \
-                 Node.js to load `zfb.config.ts` (and to run the production \
-                 renderer via miniflare). Install Node.js — https://nodejs.org/ \
+                 Node.js to load `zfb.config.ts` (and to run esbuild / prettier). \
+                 Install Node.js — https://nodejs.org/ \
                  — or point zfb at a node binary by setting the `ZFB_NODE_BIN` \
                  env var on a future zfb release.",
                 node_bin.to_string_lossy()

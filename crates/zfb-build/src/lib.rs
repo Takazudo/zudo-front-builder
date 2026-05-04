@@ -17,7 +17,7 @@
 //!
 //! - the orchestrator's surface stays free of heavyweight transitive
 //!   dependencies (SWC's TSX→JS pipeline in `zfb-render`, and the
-//!   miniflare/esbuild npm subprocess wrappers in `zfb-css` /
+//!   esbuild npm subprocess wrappers in `zfb-css` /
 //!   `zfb-islands`), and
 //! - tests can plug in fakes that count invocations rather than spinning
 //!   up Tailwind/esbuild subprocesses.

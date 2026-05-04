@@ -200,7 +200,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css: None,
         run_islands: None,
-        // The bundle-rebuild + miniflare-respawn wiring (Sub 10) lands
+        // The bundle-rebuild + renderer-reload wiring (Sub 10) lands
         // here once the dev-mode bundler is available on a per-tick
         // basis; for now leave the hook empty so existing behaviour
         // is preserved (the renderer state stays bound to the
@@ -471,7 +471,7 @@ fn boot_dev_renderer(
         .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
         .collect();
     // Thread the opt-in `stripMdExt` flag through so the dev-mode
-    // bundler (which feeds miniflare) honours the same setting as
+    // bundler (which feeds the embedded V8 host) honours the same setting as
     // `zfb build`. The dev loader at `crates/zfb-render/src/loader.rs`
     // also reads this flag for in-process MDX rendering, so dev preview
     // matches built dist (zfb#127 / #129).

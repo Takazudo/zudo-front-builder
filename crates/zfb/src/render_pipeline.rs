@@ -2,7 +2,7 @@
 //! (`zfb_build::bundler` + `zfb_build::renderer`) into the `zfb build`
 //! and `zfb dev` commands.
 //!
-//! This module deliberately does **not** spawn miniflare or call
+//! This module deliberately does **not** start the embedded V8 host or call
 //! [`zfb_build::renderer::render_all`] directly. It owns the pure /
 //! testable pieces of the wiring:
 //!
@@ -48,8 +48,8 @@
 //!    not `default { fetch }`, while
 //!    [`zfb_build::renderer::render_all`] expects a Worker-shaped
 //!    bundle. Wrapping is its own sub-task; today the renderer call
-//!    will fail at miniflare spawn time with a workerd-side error
-//!    message that names the missing `default` export. The CLI
+//!    will fail at embedded V8 host boot time with an error message
+//!    that names the missing `default` export. The CLI
 //!    surfaces that error verbatim instead of swallowing it.
 
 use std::collections::BTreeMap;
@@ -399,8 +399,8 @@ pub enum WorkerDispatch<'h> {
 /// synthetic `/__paths__/<encoded-route-key>` endpoint.
 ///
 /// The endpoint is provided by `@takazudo/zfb-runtime`'s `createPageRouter`
-/// when the bundle is loaded. For each [`DeferredDynamicRoute`] in
-/// `deferred`, this function:
+/// when the bundle is loaded by the embedded V8 host. For each
+/// [`DeferredDynamicRoute`] in `deferred`, this function:
 ///
 /// 1. Percent-encodes the route key so it is safe as a URL path segment.
 /// 2. Dispatches `GET /__paths__/<encoded-route-key>` to the running worker
@@ -412,12 +412,13 @@ pub enum WorkerDispatch<'h> {
 ///    [`DynamicExpansion::resolved`]; failures go into
 ///    [`DynamicExpansion::deferred`].
 ///
-/// **Integration note (post-merge with Sub 2):** The `WorkerDispatch::EmbeddedV8`
-/// arm cannot be exercised until `EmbeddedV8RenderHost` (Sub 2) is merged.
-/// Until then all production call sites pass `WorkerDispatch::Http`. An
-/// integration test that exercises a page with a non-literal `paths()` export
-/// via `WorkerDispatch::EmbeddedV8` is included but gated with `#[ignore]`
-/// pending Sub 2.
+/// **Dispatch dual-path (post-merge sub-162 + sub-164 + sub-167):** the
+/// production embedded V8 path uses `WorkerDispatch::EmbeddedV8 { host: ... }`
+/// to call the host's `dispatch_fetch` directly. `WorkerDispatch::Http` is
+/// kept for `Backend::Existing` callers (e.g. test fixtures that hand the
+/// renderer a pre-running URL). Real production code post-Sub-167 uses
+/// neither miniflare nor an HTTP base_url for the embedded path; the host
+/// is in-process.
 ///
 /// The timeout applies per-request (HTTP path only). A generous default (30 s)
 /// is used because `paths()` may run a content-collection query. For the V8
@@ -740,7 +741,7 @@ pub fn build_prerender_map(
 /// Verify that `@takazudo/zfb-runtime` is resolvable from `project_root`
 /// (i.e. a `node_modules/@takazudo/zfb-runtime` exists somewhere up the
 /// directory tree). The bundle the renderer drives imports the runtime
-/// at module load time; without it, miniflare boots and immediately
+/// at module load time; without it, the embedded V8 host boots and immediately
 /// throws a module-resolution error that's harder for users to map back
 /// to a fixable action.
 ///
@@ -764,7 +765,7 @@ pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
     Err(anyhow::anyhow!(
         "could not find `node_modules/@takazudo/zfb-runtime` under {} or any parent. \
          Run `pnpm install` (or your package manager's equivalent) in the project root \
-         so the SSG-render bundle can resolve `@takazudo/zfb-runtime` at miniflare load time.",
+         so the SSG-render bundle can resolve `@takazudo/zfb-runtime` at embedded V8 host load time.",
         project_root.display()
     ))
     .context("zfb runtime resolution check failed")
@@ -1204,8 +1205,8 @@ mod tests {
     /// then walk through `build_route_universe` →
     /// `expand_dynamic_routes` and assert the combined renderer-shaped
     /// route list. This is the closest we can get to end-to-end without
-    /// booting miniflare (which is gated by the sibling worker-entry
-    /// topic).
+    /// booting the embedded V8 host (which is gated by the sibling
+    /// worker-entry topic).
     #[test]
     fn build_then_expand_combined_route_universe() {
         let dir = tempdir().unwrap();

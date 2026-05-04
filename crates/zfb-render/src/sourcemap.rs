@@ -2,8 +2,7 @@
 //! bundled SSR worker back to the original `.tsx` location.
 //!
 //! Why a hand-rolled decoder rather than the `sourcemap` crate: the
-//! workspace already has SWC and miniflare in its build graph and we
-//! want to keep this crate's runtime-side dep surface tight. Decoding
+//! we want to keep this crate's runtime-side dep surface tight. Decoding
 //! the `mappings` field is ~80 lines of VLQ + state machine — small
 //! enough to own.
 //!

@@ -40,7 +40,7 @@
 //! still useful right now because:
 //!
 //! 1. It unblocks unit tests of the route-enumeration plumbing without
-//!    needing miniflare.
+//!    needing the embedded V8 host.
 //! 2. It mirrors the literal-only extraction pattern already used by
 //!    [`zfb_content::tsx_frontmatter`] for `frontmatter` / `prerender`,
 //!    so page authors already understand the constraint.

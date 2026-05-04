@@ -35,7 +35,7 @@ pnpm docs:check          # astro check (type/content validation)
 `zfb build` reads every configured content collection, builds an
 in-memory `ContentSnapshot` (one entry per `.md` / `.mdx` / `.tsx`
 under each collection root), and embeds it into the worker bundle that
-miniflare loads at build time. The full snapshot lives in V8 RAM for
+the embedded V8 host loads at build time. The full snapshot lives in V8 RAM for
 the duration of the render pass — there is no streaming or sharding
 today.
 
@@ -64,7 +64,7 @@ content snapshot: 187 entries / 412 KB
 `entries` is the total number of content entries across all
 collections. `KB` is the byte size of the deterministic JSON
 serialization of the snapshot — a useful proxy for the V8 heap cost,
-since that is the shape miniflare receives. Any other value (`0`,
+since that is the shape the embedded V8 host receives. Any other value (`0`,
 unset, `yes`, etc.) leaves the build silent so a stray export does
 not change CI output.
 

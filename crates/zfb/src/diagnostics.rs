@@ -22,7 +22,7 @@
 //!    file and locating the `paths` export ident; if recovery fails we
 //!    still frame the file with `line: 1, col: 1`, never silently lose
 //!    the message.
-//! 4. JS runtime errors thrown under miniflare — the host receives a
+//! 4. JS runtime errors thrown by the embedded V8 host — the host returns a
 //!    stack frame inside the bundled SSR worker; we map the bundled
 //!    `(line, col)` back to the original `.tsx` via
 //!    [`zfb_render::sourcemap::decode_position`] and frame against the

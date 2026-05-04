@@ -421,7 +421,7 @@ const FALLBACK_MARKER = "[zfb fallback render]";
 export function getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[] {
   // Snapshot path: installed by `@takazudo/zfb-runtime`'s
   // `createPageRouter` at Worker boot. Worker runtimes have no `fs`, so
-  // this branch is the production path under miniflare.
+  // this branch is the production path under the embedded V8 host.
   if (installedSnapshot !== undefined) {
     const list = installedSnapshot.collections[name] ?? [];
     return list.map((entry) => entryFromSnapshot<T>(entry));
