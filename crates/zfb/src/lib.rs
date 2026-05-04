@@ -9,6 +9,7 @@ pub mod config;
 pub mod diagnostics;
 pub(crate) mod output;
 pub mod render_pipeline;
+pub(crate) mod v8_host_adapter;
 
 // Re-export the public dynamic-route planning types so adapter authors can
 // build on them without pulling in the `render_pipeline` module directly.

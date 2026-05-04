@@ -481,7 +481,9 @@ fn boot_dev_renderer(
     let state = start(RendererStartInput {
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
-        backend: Backend::EmbeddedV8,
+        backend: Backend::EmbeddedV8 {
+            host_factory: crate::v8_host_adapter::make_v8_host_factory(),
+        },
         request_timeout: None,
     })
     .map_err(anyhow::Error::from)
