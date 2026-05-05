@@ -37,15 +37,53 @@ use crate::bundler::{
 /// the workspace root.
 pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
 
-/// SHA-256 of the pinned esbuild binary, lowercase hex.
+/// SHA-256 of the pinned esbuild binary for the current platform,
+/// lowercase hex.
 ///
-/// Set to the empty string when release engineering has not yet
-/// populated the slot — in that case the checksum verification is
-/// skipped (with a clear log line) and only the `--version` check is
-/// enforced. Once populated, the checksum verification runs on first
-/// subprocess invocation and any mismatch aborts with a clear error
-/// pointing at the bump procedure in `CONTRIBUTING.md`.
-pub const EXPECTED_ESBUILD_SHA256: &str = "";
+/// The constant is resolved at compile time using `cfg!()` so the
+/// correct hash is embedded for every supported platform without
+/// runtime branching.  Platforms outside the supported set compile to
+/// the empty string `""`, which skips the checksum gate with a warning
+/// (the `--version` gate still runs).
+///
+/// These digests are the SHA-256 of the *extracted* binary inside the
+/// platform-specific npm package (e.g. `@esbuild/linux-x64`), **not**
+/// of the .tgz itself.  They must be bumped in lock-step with
+/// `EXPECTED_ESBUILD_VERSION` and with the matching constants in
+/// `crates/zfb/build.rs` whenever the esbuild pin is updated.
+///
+/// Verified on 2026-05-05 against npm registry v0.25.12.
+pub const EXPECTED_ESBUILD_SHA256: &str = {
+    // Linux x86_64
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    { "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014" }
+
+    // Linux aarch64
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    { "840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449" }
+
+    // macOS aarch64 (Apple Silicon)
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    { "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5" }
+
+    // macOS x86_64 (Intel)
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    { "bd09e65a6a1a903c40269d3a4ae23ffc6139f691703728c1faf25f62e48baa40" }
+
+    // Windows x86_64
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    { "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0" }
+
+    // Fallback for unsupported platforms: skip checksum gate.
+    #[cfg(not(any(
+        all(target_os = "linux",   target_arch = "x86_64"),
+        all(target_os = "linux",   target_arch = "aarch64"),
+        all(target_os = "macos",   target_arch = "aarch64"),
+        all(target_os = "macos",   target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+    )))]
+    { "" }
+};
 
 /// One-time cache of `(binary_path → outcome)` for the version + checksum
 /// verification. The first invocation of an `EsbuildSubprocessBundler`

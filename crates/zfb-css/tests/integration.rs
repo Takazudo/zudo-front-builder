@@ -408,6 +408,71 @@ fn synthesised_entry_drops_duplicate_tailwind_import_from_user_css() {
     assert!(out.contains("@source \"pages/**/*.tsx\""));
 }
 
+// ----------------------------------------------------------------------
+// Split-import fixture (Sub 1 of issue #159 / sub-issue #191):
+//
+// When user CSS uses the split-import pattern
+// (`@import "tailwindcss/preflight"; @import "tailwindcss/utilities";`)
+// instead of the full bundle `@import "tailwindcss";`, the synthesised
+// entry CSS must NOT prepend the full bundle import. Without this guard
+// zfb would emit `@import "tailwindcss";` on top, which loads the full
+// default theme and leaks default palette tokens (--color-*, --spacing,
+// etc.) into the compiled @theme output even though the user deliberately
+// chose split imports to avoid them.
+// ----------------------------------------------------------------------
+
+#[test]
+fn synthesised_entry_omits_full_import_when_user_css_has_split_import() {
+    let cfg = TailwindSubprocessConfig::default()
+        .with_content_globs(vec!["pages/**/*.tsx"]);
+
+    // User CSS uses split imports — the deliberate way to opt out of the
+    // full default Tailwind theme.
+    let user = "@import \"tailwindcss/preflight\";\n@import \"tailwindcss/utilities\";\n.foo { color: red; }\n";
+    let out = build_synthesised_entry_css(&cfg, Some(user));
+
+    // The full-bundle import must NOT be prepended.
+    assert!(
+        !out.starts_with("@import \"tailwindcss\";"),
+        "full bundle import must not be prepended when user CSS has split imports; got:\n{out}"
+    );
+    // More specifically, it must not appear at all as a standalone line
+    // (the user's sub-path imports are still present and that's fine).
+    let has_full_bundle = out.lines().any(|l| {
+        let t = l.trim();
+        t == "@import \"tailwindcss\";" || t == "@import 'tailwindcss';"
+    });
+    assert!(
+        !has_full_bundle,
+        "full @import \"tailwindcss\"; must not appear when user CSS has split imports; got:\n{out}"
+    );
+
+    // The user's original content is preserved.
+    assert!(out.contains("@import \"tailwindcss/preflight\""));
+    assert!(out.contains("@import \"tailwindcss/utilities\""));
+    assert!(out.contains(".foo"));
+
+    // The @source directive for the content glob is still emitted.
+    assert!(out.contains("@source \"pages/**/*.tsx\""));
+}
+
+#[test]
+fn synthesised_entry_omits_full_import_for_single_quoted_split_import() {
+    let cfg = TailwindSubprocessConfig::default();
+    // Single-quoted variant of split import.
+    let user = "@import 'tailwindcss/preflight';\n@import 'tailwindcss/utilities';\n";
+    let out = build_synthesised_entry_css(&cfg, Some(user));
+
+    let has_full_bundle = out.lines().any(|l| {
+        let t = l.trim();
+        t == "@import \"tailwindcss\";" || t == "@import 'tailwindcss';"
+    });
+    assert!(
+        !has_full_bundle,
+        "full bundle import must not appear for single-quoted split imports; got:\n{out}"
+    );
+}
+
 #[test]
 fn scanner_finds_module_imports_in_real_tsx_file() {
     let tmp = tempfile::tempdir().unwrap();

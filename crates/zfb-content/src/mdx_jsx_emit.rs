@@ -16,7 +16,9 @@
 //!
 //! - Block: paragraph, heading (h1-h6), blockquote, list (ul/ol with
 //!   optional `start`), list item, fenced code (with `lang` + `meta`),
-//!   thematic break (hr), HTML literal (passed through).
+//!   thematic break (hr), HTML literal (passed through), GFM pipe-table
+//!   (`<table><thead>…</thead><tbody>…</tbody></table>` with per-column
+//!   `style="text-align: …"` from the alignment array).
 //! - Inline: text, emphasis (em), strong, delete (del), inline code,
 //!   link (with optional title), image (with alt + optional title),
 //!   line break (br).
@@ -43,7 +45,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
+use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
 use crate::pipeline::{
@@ -177,6 +179,10 @@ fn mdx_to_jsx_module_inner(
         constructs: markdown::Constructs {
             math_flow: true,
             math_text: true,
+            // GFM pipe-table syntax: `| Key | Value |`. Not part of
+            // Constructs::mdx() by default; enabled so MdastNode::Table
+            // reaches the emitter (see zfb#136).
+            gfm_table: true,
             ..markdown::Constructs::mdx()
         },
         mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
@@ -604,7 +610,17 @@ impl JsxEmitter {
                     js_string_literal_in_braces(&m.value),
                 )
             }
-            // Unhandled node kinds (tables, footnotes, definitions,
+            // GFM pipe-table: map first row to <thead><tr><th>…</th></tr></thead>
+            // and remaining rows to <tbody><tr><td>…</td></tr></tbody>.
+            // Per-column alignment from `align[]` is applied as
+            // `style="text-align: left|right|center"` on each th/td.
+            MdastNode::Table(t) => {
+                for tag in ["table", "thead", "tbody", "tr", "th", "td"] {
+                    self.html_tags.insert(tag.to_string());
+                }
+                emit_table_jsx(self, &t.children, &t.align)
+            }
+            // Unhandled node kinds (footnotes, definitions,
             // references, ESM, frontmatter, …) emit nothing rather
             // than panicking. Sub 4+ can broaden coverage.
             _ => String::new(),
@@ -671,6 +687,94 @@ impl JsxEmitter {
             format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
         }
     }
+}
+
+/// Map a [`markdown::mdast::AlignKind`] to the CSS `text-align` value
+/// string, or `None` when the column has no alignment hint.
+fn align_style(align: &AlignKind) -> Option<&'static str> {
+    match align {
+        AlignKind::Left => Some("left"),
+        AlignKind::Right => Some("right"),
+        AlignKind::Center => Some("center"),
+        AlignKind::None => None,
+    }
+}
+
+/// Emit a GFM pipe-table as nested `_components.*` JSX elements.
+///
+/// Shape emitted:
+/// ```text
+/// <_components.table>
+///   <_components.thead><_components.tr>
+///     <_components.th style="text-align: left">…</_components.th>
+///   </_components.tr></_components.thead>
+///   <_components.tbody>
+///     <_components.tr>
+///       <_components.td>…</_components.td>
+///     </_components.tr>
+///   </_components.tbody>
+/// </_components.table>
+/// ```
+///
+/// Matches the canonical shape from zfb#136 / issue #193.
+fn emit_table_jsx(
+    emitter: &mut JsxEmitter,
+    rows: &[MdastNode],
+    align: &[AlignKind],
+) -> String {
+    let mut out = String::new();
+
+    // Build a style attr string for column index `col`.
+    let style_attr = |col: usize| -> String {
+        align
+            .get(col)
+            .and_then(align_style)
+            .map(|v| format!(" style=\"text-align: {v}\""))
+            .unwrap_or_default()
+    };
+
+    // Emit a single row as <tr><th|td …>…</th|td></tr>.
+    let emit_row = |emitter: &mut JsxEmitter, row: &MdastNode, cell_tag: &str| -> String {
+        let MdastNode::TableRow(tr) = row else {
+            return String::new();
+        };
+        let mut row_out = String::new();
+        row_out.push_str("<_components.tr>");
+        for (col, cell) in tr.children.iter().enumerate() {
+            let MdastNode::TableCell(tc) = cell else {
+                continue;
+            };
+            let style = style_attr(col);
+            let inner = emitter.emit_inline_children(&tc.children);
+            row_out.push_str(&format!(
+                "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
+            ));
+        }
+        row_out.push_str("</_components.tr>");
+        row_out
+    };
+
+    out.push_str("<_components.table>");
+
+    // First row → <thead>.
+    if let Some(head_row) = rows.first() {
+        out.push_str("<_components.thead>");
+        out.push_str(&emit_row(emitter, head_row, "th"));
+        out.push_str("</_components.thead>");
+    }
+
+    // Remaining rows → <tbody>.
+    let body_rows = if rows.len() > 1 { &rows[1..] } else { &[] };
+    if !body_rows.is_empty() {
+        out.push_str("<_components.tbody>");
+        for row in body_rows {
+            out.push_str(&emit_row(emitter, row, "td"));
+        }
+        out.push_str("</_components.tbody>");
+    }
+
+    out.push_str("</_components.table>");
+    out
 }
 
 /// Walks a [`HastNode`] tree and emits JSX source — the post-#121
@@ -1104,10 +1208,67 @@ fn jsx_render_child(node: &MdastNode) -> String {
             jsx_text_escape(&m.value),
         ),
         MdastNode::Root(r) => r.children.iter().map(jsx_render_child).collect(),
-        // Tables, footnotes, references, ESM, frontmatter, etc. drop
-        // silently here — better than leaking a `Debug` repr.
+        // GFM pipe-table inside MDX JSX body — emit plain HTML table tags
+        // (no _components routing here; jsx_render_child produces JsxRaw
+        // payloads that the bridge embeds verbatim, so plain HTML tags work).
+        MdastNode::Table(t) => jsx_render_table(t),
+        // Footnotes, references, ESM, frontmatter, etc. drop silently here
+        // — better than leaking a `Debug` repr.
         _ => String::new(),
     }
+}
+
+/// Render a GFM pipe-table as plain HTML inside a JSX-shaped string.
+///
+/// Used by [`jsx_render_child`] for tables that appear inside MDX JSX
+/// element bodies (where `_components.*` routing is not available).
+/// The resulting string is embedded as a [`HastNode::JsxRaw`] payload.
+fn jsx_render_table(t: &markdown::mdast::Table) -> String {
+    let style_attr = |col: usize| -> String {
+        t.align
+            .get(col)
+            .and_then(align_style)
+            .map(|v| format!(" style=\"text-align: {v}\""))
+            .unwrap_or_default()
+    };
+
+    let emit_row = |row: &MdastNode, cell_tag: &str| -> String {
+        let MdastNode::TableRow(tr) = row else {
+            return String::new();
+        };
+        let mut out = String::from("<tr>");
+        for (col, cell) in tr.children.iter().enumerate() {
+            let MdastNode::TableCell(tc) = cell else {
+                continue;
+            };
+            let style = style_attr(col);
+            let inner: String = tc.children.iter().map(jsx_render_child).collect();
+            out.push_str(&format!("<{cell_tag}{style}>{inner}</{cell_tag}>"));
+        }
+        out.push_str("</tr>");
+        out
+    };
+
+    let mut out = String::from("<table>");
+    if let Some(head_row) = t.children.first() {
+        out.push_str("<thead>");
+        out.push_str(&emit_row(head_row, "th"));
+        out.push_str("</thead>");
+    }
+    let body_rows = if t.children.len() > 1 {
+        &t.children[1..]
+    } else {
+        &[]
+    };
+    if !body_rows.is_empty() {
+        out.push_str("<tbody>");
+        for row in body_rows {
+            out.push_str(&emit_row(row, "td"));
+        }
+        out.push_str("</tbody>");
+    }
+    out.push_str("</table>");
+    out
 }
 
 fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode]) -> String {
@@ -1818,5 +1979,104 @@ mod tests {
             out.contains("text: \"Limit as x \\\\to \\\\infty\""),
             "expected LaTeX in heading text projection: {out}"
         );
+    }
+
+    /// GFM pipe-table renders as `<table><thead>…</thead><tbody>…</tbody></table>`,
+    /// matching the canonical shape from zfb#136 / issue #193.
+    ///
+    /// Input:
+    /// ```text
+    /// | Key | URL |
+    /// | --- | --- |
+    /// | docs | https://example.com/some/path.html |
+    /// | api  | https://api.example.com/v1/endpoint.json |
+    /// ```
+    ///
+    /// Expected structure mirrors what Docusaurus/Astro MDX would emit.
+    #[test]
+    fn pipe_table_emits_thead_tbody_structure() {
+        let src = "| Key | URL |\n| --- | --- |\n| docs | https://example.com/some/path.html |\n| api  | https://api.example.com/v1/endpoint.json |\n";
+        let out = emit(src);
+
+        // All table-related tags registered in _components map.
+        assert!(out.contains("table: \"table\","), "table tag missing: {out}");
+        assert!(out.contains("thead: \"thead\","), "thead tag missing: {out}");
+        assert!(out.contains("tbody: \"tbody\","), "tbody tag missing: {out}");
+        assert!(out.contains("tr: \"tr\","), "tr tag missing: {out}");
+        assert!(out.contains("th: \"th\","), "th tag missing: {out}");
+        assert!(out.contains("td: \"td\","), "td tag missing: {out}");
+
+        // Outer table element.
+        assert!(
+            out.contains("<_components.table>"),
+            "missing <table>: {out}"
+        );
+
+        // Header row with <th> cells.
+        assert!(
+            out.contains("<_components.thead>"),
+            "missing <thead>: {out}"
+        );
+        assert!(
+            out.contains("<_components.th>"),
+            "missing <th>: {out}"
+        );
+        assert!(
+            out.contains("{\"Key\"}"),
+            "header cell 'Key' missing: {out}"
+        );
+        assert!(
+            out.contains("{\"URL\"}"),
+            "header cell 'URL' missing: {out}"
+        );
+
+        // Body rows with <td> cells.
+        assert!(
+            out.contains("<_components.tbody>"),
+            "missing <tbody>: {out}"
+        );
+        assert!(
+            out.contains("<_components.td>"),
+            "missing <td>: {out}"
+        );
+        assert!(
+            out.contains("{\"docs\"}"),
+            "body cell 'docs' missing: {out}"
+        );
+        assert!(
+            out.contains("example.com/some/path.html"),
+            "body cell URL missing: {out}"
+        );
+    }
+
+    /// Per-column alignment is emitted as `style="text-align: …"` on
+    /// `<th>` and `<td>` elements. `:---` = left, `---:` = right,
+    /// `:---:` = center.
+    #[test]
+    fn pipe_table_alignment_emits_style_attr() {
+        // Columns: left | right | center | none
+        let src = "| A | B | C | D |\n| :--- | ---: | :---: | --- |\n| a | b | c | d |\n";
+        let out = emit(src);
+
+        // Header cells carry the alignment.
+        assert!(
+            out.contains("style=\"text-align: left\""),
+            "left alignment missing: {out}"
+        );
+        assert!(
+            out.contains("style=\"text-align: right\""),
+            "right alignment missing: {out}"
+        );
+        assert!(
+            out.contains("style=\"text-align: center\""),
+            "center alignment missing: {out}"
+        );
+        // The fourth column has no alignment → no style attr on that cell.
+        // A loose check: the output must not have a 4th `style=` that
+        // would indicate the None column sprouted one.
+        let style_count = out.matches("style=\"text-align:").count();
+        // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
+        // have alignment → 3 × 2 = 6 `style=` occurrences.
+        assert_eq!(style_count, 6, "expected 6 style attrs (3 cols × 2 rows): {out}");
     }
 }

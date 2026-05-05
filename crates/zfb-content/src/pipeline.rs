@@ -24,8 +24,9 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
-    AdmonitionsPlugin, CjkFriendlyPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin,
-    MermaidPlugin, StripMdExtensionPlugin, SyntectPlugin,
+    AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
+    HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin, ResolveLinksPlugin,
+    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -100,6 +101,18 @@ pub trait MdastVisitor {
 pub trait HastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut HastNode);
+
+    /// Reset any per-document state accumulated during [`Self::visit`].
+    ///
+    /// Called by [`Pipeline::reset_per_entry`] between documents so
+    /// cross-document state (e.g. duplicate-slug counters in
+    /// [`HeadingLinksPlugin`]) cannot leak from one entry to the next.
+    /// The default implementation is a no-op, which is correct for
+    /// stateless visitors. Stateful visitors (currently only
+    /// [`HeadingLinksPlugin`]) override this method.
+    ///
+    /// [`HeadingLinksPlugin`]: crate::plugins::HeadingLinksPlugin
+    fn reset(&mut self) {}
 }
 
 /// Pipeline error type.
@@ -122,6 +135,16 @@ pub struct Pipeline {
     /// relative href that lacks one). Defaults to `true` to match the
     /// JS engine and converge URL shape with `ResolveLinksPlugin`.
     add_trailing_slash: bool,
+    /// Optional `ResolveLinksPlugin` wired by the orchestrator when the
+    /// consumer enabled `resolveMarkdownLinks` in `zfb.config.ts`.
+    ///
+    /// Stored as a named field (not a generic boxed visitor) so the
+    /// orchestrator can call `set_resolve_links_source_dir` per-file
+    /// and `take_broken_links` to drain diagnostics. Applied in
+    /// `apply_mdast_visitors` AFTER all generic mdast visitors (i.e.
+    /// after `AdmonitionsPlugin`) so link rewriting sees finalized
+    /// mdast link nodes.
+    resolve_links: Option<ResolveLinksPlugin>,
 }
 
 impl Default for Pipeline {
@@ -147,6 +170,7 @@ impl Pipeline {
             hast_visitors: Vec::new(),
             parse_options: markdown::ParseOptions::mdx(),
             add_trailing_slash: true,
+            resolve_links: None,
         }
     }
 
@@ -167,6 +191,51 @@ impl Pipeline {
         };
         self.add_hast_visitor(Box::new(plugin));
         self
+    }
+
+    /// Wire a [`ResolveLinksPlugin`] into the pipeline's mdast phase.
+    ///
+    /// The plugin is applied before the generic mdast visitors so it
+    /// runs on the raw mdast before `AdmonitionsPlugin` transforms
+    /// directives. The `source_dir` slot is empty until the caller
+    /// calls [`Pipeline::set_resolve_links_source_dir`] per file.
+    ///
+    /// Call at most once per pipeline instance — a second call
+    /// replaces the previous plugin.
+    pub fn add_resolve_links(
+        &mut self,
+        source_map: std::collections::HashMap<std::path::PathBuf, String>,
+    ) -> &mut Self {
+        self.resolve_links = Some(ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map,
+            source_dir: None,
+        }));
+        self
+    }
+
+    /// Update the per-file source directory used by the wired
+    /// [`ResolveLinksPlugin`] to resolve relative link targets.
+    ///
+    /// Call once per MDX file, before `apply_mdast_visitors`, so
+    /// `./other.mdx` links are resolved against the correct directory.
+    /// No-op when [`add_resolve_links`](Pipeline::add_resolve_links)
+    /// was not called.
+    pub fn set_resolve_links_source_dir(&mut self, dir: std::path::PathBuf) {
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.set_source_dir(dir);
+        }
+    }
+
+    /// Drain broken-link diagnostics from the wired [`ResolveLinksPlugin`].
+    ///
+    /// Returns diagnostics accumulated since the last call (or since the
+    /// plugin was wired). Returns an empty vec when no plugin is wired.
+    /// Mirrors `DirectiveRegistry::take_diagnostics`.
+    pub fn take_broken_links(&mut self) -> Vec<BrokenLinkDiagnostic> {
+        self.resolve_links
+            .as_mut()
+            .map(|p| p.take_broken_links())
+            .unwrap_or_default()
     }
 
     /// New pipeline preloaded with the project's default plugin chain.
@@ -241,6 +310,28 @@ impl Pipeline {
     /// [`MdxJsxFlowElement`]: markdown::mdast::MdxJsxFlowElement
     #[must_use]
     pub fn with_defaults() -> Self {
+        Self::with_defaults_and_theme(None)
+    }
+
+    /// New pipeline preloaded with the default plugin chain, optionally
+    /// overriding the syntect highlight theme.
+    ///
+    /// When `theme` is `Some`, the [`SyntectPlugin`] is constructed via
+    /// [`SyntectPlugin::with_theme`] so every fenced code block in this
+    /// pipeline uses the named built-in syntect theme instead of the
+    /// `Highlighter` default (`base16-ocean.dark`).
+    ///
+    /// Theme names are syntect's built-in set (e.g. `"InspiredGitHub"`,
+    /// `"Solarized (light)"`). Shiki names like `"dracula"` are **not**
+    /// part of the bundled set and will produce an `unknown theme` error
+    /// at render time. See
+    /// [`zfb_content::syntect_highlight::Highlighter::theme_names`] for
+    /// the full list.
+    ///
+    /// `None` falls back to [`Pipeline::with_defaults`] behaviour
+    /// (theme = `base16-ocean.dark`).
+    #[must_use]
+    pub fn with_defaults_and_theme(theme: Option<&str>) -> Self {
         let highlighter = Arc::new(Highlighter::new());
         let mut p = Self::with_mdx();
         // mdast phase.
@@ -251,7 +342,12 @@ impl Pipeline {
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
         p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
         p.add_hast_visitor(Box::new(MermaidPlugin::new()));
-        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+        let syntect = if let Some(t) = theme {
+            SyntectPlugin::new(highlighter).with_theme(t)
+        } else {
+            SyntectPlugin::new(highlighter)
+        };
+        p.add_hast_visitor(Box::new(syntect));
         p
     }
 
@@ -276,9 +372,19 @@ impl Pipeline {
     /// [`Pipeline::run`] (which would also build a hast tree the JSX
     /// emitter does not consume). Hast visitors stay untouched here —
     /// they are applied by [`Pipeline::run`] only.
+    ///
+    /// The optional `resolve_links` plugin (wired via
+    /// [`Pipeline::add_resolve_links`]) is applied AFTER the generic
+    /// mdast visitors (i.e. after `AdmonitionsPlugin`) so the source
+    /// map lookup sees the final mdast link nodes.
     pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
         for v in &mut self.mdast_visitors {
             v.visit(node);
+        }
+        // Apply ResolveLinksPlugin last in the mdast phase (after
+        // AdmonitionsPlugin) when wired. See field doc.
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(node);
         }
     }
 
@@ -294,6 +400,28 @@ impl Pipeline {
     pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
         for v in &mut self.hast_visitors {
             v.visit(node);
+        }
+    }
+
+    /// Reset per-document state in every hast visitor.
+    ///
+    /// Call this **before processing each new document** when a single
+    /// `Pipeline` instance is reused across multiple entries (e.g. the
+    /// bundler's walk loop). Without this, stateful visitors such as
+    /// [`HeadingLinksPlugin`] accumulate slug counters across files —
+    /// the same heading text can resolve to `basic-usage` in one
+    /// document and `basic-usage-7` in another, producing a different
+    /// `content_hash` and breaking the `mdx://<collection>/<slug>#<hash>`
+    /// bridge lookup (zfb#187).
+    ///
+    /// Stateless visitors (code-title, image-enlarge, mermaid, syntect,
+    /// strip-md-ext) provide the default no-op implementation of
+    /// [`HastVisitor::reset`], so calling this unconditionally is safe.
+    ///
+    /// [`HeadingLinksPlugin`]: crate::plugins::HeadingLinksPlugin
+    pub fn reset_per_entry(&mut self) {
+        for v in &mut self.hast_visitors {
+            v.reset();
         }
     }
 
@@ -525,8 +653,57 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             children: vec![HastNode::Text(m.value.clone())],
             void: false,
         },
+        // GFM pipe-table → <table><thead>...</thead><tbody>...</tbody></table>
+        // with per-column `style="text-align: ..."` on each th/td. Mirrors
+        // emit_table_jsx in mdx_jsx_emit.rs for the no-pipeline path.
+        MdastNode::Table(t) => {
+            let align = &t.align;
+            let style_attr = |col: usize| -> Option<(String, String)> {
+                let kind = align.get(col).copied().unwrap_or(markdown::mdast::AlignKind::None);
+                let s = match kind {
+                    markdown::mdast::AlignKind::Left => Some("left"),
+                    markdown::mdast::AlignKind::Right => Some("right"),
+                    markdown::mdast::AlignKind::Center => Some("center"),
+                    markdown::mdast::AlignKind::None => None,
+                };
+                s.map(|v| ("style".to_string(), format!("text-align: {v}")))
+            };
+
+            let row_to_cells = |row: &MdastNode, tag: &str| -> Vec<HastNode> {
+                let MdastNode::TableRow(tr) = row else { return Vec::new(); };
+                tr.children.iter().enumerate().filter_map(|(col, cell)| {
+                    let MdastNode::TableCell(tc) = cell else { return None; };
+                    let mut attrs: Vec<(String, String)> = Vec::new();
+                    if let Some(s) = style_attr(col) { attrs.push(s); }
+                    Some(element(tag, attrs, convert_children_with(&tc.children, strategy)))
+                }).collect()
+            };
+
+            let mut thead_children: Vec<HastNode> = Vec::new();
+            let mut tbody_children: Vec<HastNode> = Vec::new();
+
+            if let Some((first, rest)) = t.children.split_first() {
+                thead_children.push(element("tr", vec![], row_to_cells(first, "th")));
+                for row in rest {
+                    tbody_children.push(element("tr", vec![], row_to_cells(row, "td")));
+                }
+            }
+
+            let mut table_children: Vec<HastNode> = Vec::new();
+            if !thead_children.is_empty() {
+                table_children.push(element("thead", vec![], thead_children));
+            }
+            if !tbody_children.is_empty() {
+                table_children.push(element("tbody", vec![], tbody_children));
+            }
+            element("table", vec![], table_children)
+        }
+        // TableRow / TableCell are consumed by the Table arm above; if
+        // they appear standalone (malformed input) emit nothing rather
+        // than panicking.
+        MdastNode::TableRow(_) | MdastNode::TableCell(_) => HastNode::Raw(String::new()),
         // Unhandled: degrade to empty Raw so we never crash on
-        // unsupported input. Tables, footnotes, definitions, reference
+        // unsupported input. Footnotes, definitions, reference
         // links/images, ESM, frontmatter, etc. fall here. They become
         // passthrough holes that Sub 4 plugins can later fill in.
         _ => HastNode::Raw(String::new()),
@@ -1031,5 +1208,72 @@ mod tests {
                 unreachable!("expected element, got {c:?}");
             }
         }
+    }
+
+    // 16. with_defaults_and_theme — non-default theme produces different
+    //     syntect class slug compared to the default pipeline.
+    //
+    // The default pipeline uses `base16-ocean.dark`, which yields
+    // `class="syntect-base16-ocean-dark"` on the `<pre>` wrapper.
+    // `InspiredGitHub` yields `class="syntect-inspiredgithub"`.
+    // Asserting that both class slugs differ is sufficient to prove that
+    // the theme is being threaded through end-to-end: the same Rust code
+    // path, with two different built-in theme names, emits distinct HTML.
+    #[test]
+    fn with_defaults_and_theme_changes_highlight_class_slug() {
+        let mdx = "```rust\nfn main() {}\n```\n";
+
+        // Default pipeline — base16-ocean.dark.
+        let mut default_pipeline = Pipeline::with_defaults();
+        let default_hast = default_pipeline.run(mdx).expect("default pipeline ok");
+        let default_html = crate::serializer::serialize(&default_hast);
+
+        // Non-default theme pipeline — InspiredGitHub.
+        let mut themed_pipeline =
+            Pipeline::with_defaults_and_theme(Some("InspiredGitHub"));
+        let themed_hast = themed_pipeline.run(mdx).expect("themed pipeline ok");
+        let themed_html = crate::serializer::serialize(&themed_hast);
+
+        // Both must emit highlighted output (not the plain fallback).
+        assert!(
+            default_html.contains("syntect-"),
+            "default pipeline must emit syntect-highlighted HTML, got: {default_html}"
+        );
+        assert!(
+            themed_html.contains("syntect-"),
+            "themed pipeline must emit syntect-highlighted HTML, got: {themed_html}"
+        );
+
+        // The class slugs must differ — proving the theme was applied.
+        assert!(
+            default_html.contains("syntect-base16-ocean-dark"),
+            "default pipeline must produce base16-ocean-dark slug, got: {default_html}"
+        );
+        assert!(
+            themed_html.contains("syntect-inspiredgithub"),
+            "InspiredGitHub pipeline must produce inspiredgithub slug, got: {themed_html}"
+        );
+        assert_ne!(
+            default_html, themed_html,
+            "different themes must produce different highlighted HTML"
+        );
+    }
+
+    // 17. with_defaults() and with_defaults_and_theme(None) are identical.
+    #[test]
+    fn with_defaults_and_theme_none_matches_with_defaults() {
+        let mdx = "```rust\nlet x = 1;\n```\n";
+        let mut p1 = Pipeline::with_defaults();
+        let h1 = p1.run(mdx).expect("ok");
+        let html1 = crate::serializer::serialize(&h1);
+
+        let mut p2 = Pipeline::with_defaults_and_theme(None);
+        let h2 = p2.run(mdx).expect("ok");
+        let html2 = crate::serializer::serialize(&h2);
+
+        assert_eq!(
+            html1, html2,
+            "with_defaults() and with_defaults_and_theme(None) must produce identical output"
+        );
     }
 }

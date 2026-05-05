@@ -112,6 +112,9 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use zfb_content::compile_mdx_to_jsx_module_cached;
 use zfb_content::frontmatter as zfb_frontmatter;
+use zfb_content::plugins::util::source_map::{
+    CollectionRoute, DocsSourceMapOptions, build_docs_source_map,
+};
 use zfb_render::adapters::{make_adapter, Framework};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -164,6 +167,40 @@ impl ContentCollectionSpec {
             root: root.into(),
         }
     }
+}
+
+/// What to do when a `.md`/`.mdx` link cannot be resolved during a build.
+///
+/// Mirrors `zfb::config::OnBrokenLinks` — re-declared here so the bundler
+/// has no dependency on the `zfb` config crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnBrokenLinks {
+    /// Emit a warning to stderr but continue. Default.
+    #[default]
+    Warn,
+    /// Return an error after the walk completes (all broken links reported).
+    Error,
+    /// Silently ignore broken links.
+    Ignore,
+}
+
+/// Options for the `ResolveLinksPlugin` in the bundler pipeline.
+///
+/// When present on [`BundlerInput`], the bundler builds a
+/// `path → URL` source map from `docs_dir`, appends
+/// [`zfb_content::plugins::ResolveLinksPlugin`] to the mdast pipeline of
+/// every materialisation call, and handles broken links according to
+/// `on_broken_links` after the walk completes.
+#[derive(Debug, Clone)]
+pub struct ResolveMarkdownLinksSpec {
+    /// Directory (absolute or project-relative) whose `.md`/`.mdx` files
+    /// are scanned to build the source map.
+    pub docs_dir: PathBuf,
+    /// Route prefix applied to every slug when building the source map
+    /// (e.g. `"/docs/"`). Must include the trailing slash.
+    pub route_prefix: String,
+    /// What to do with unresolved `.md`/`.mdx` links.
+    pub on_broken_links: OnBrokenLinks,
 }
 
 /// All the inputs the bundler needs.
@@ -307,6 +344,28 @@ pub struct BundlerInput {
     /// same flag via [`zfb_render::loader::ModuleLoader::with_strip_md_ext`]
     /// so `zfb dev` and `zfb build` produce the same href shape.
     pub strip_md_ext: bool,
+
+    /// Optional syntect highlight theme name.  When `Some`, the hoisted
+    /// MDX pre-compile pipeline uses
+    /// [`zfb_content::pipeline::Pipeline::with_defaults_and_theme`] so
+    /// every fenced code block is highlighted with the named built-in
+    /// syntect theme instead of the default `base16-ocean.dark`.
+    ///
+    /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
+    /// `"Solarized (light)"`, etc.). Shiki names like `"dracula"` are
+    /// NOT part of the bundled set and will produce an `unknown theme`
+    /// error at render time. Mirrors
+    /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
+    pub code_highlight_theme: Option<String>,
+
+    /// Optional markdown link resolver. When `Some`, the bundler builds a
+    /// source map from [`ResolveMarkdownLinksSpec::docs_dir`], appends
+    /// [`zfb_content::plugins::ResolveLinksPlugin`] to the MDX pipeline,
+    /// and handles broken links per [`ResolveMarkdownLinksSpec::on_broken_links`].
+    ///
+    /// Mirrors `zfb::config::Config::resolve_markdown_links`. Default: `None`
+    /// (pass-through — links are not rewritten).
+    pub resolve_markdown_links: Option<ResolveMarkdownLinksSpec>,
 }
 
 impl BundlerInput {
@@ -350,6 +409,8 @@ impl BundlerInput {
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
+            resolve_markdown_links: None,
         }
     }
 }
@@ -468,6 +529,32 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 
     let adapter = make_adapter(input.framework);
 
+    // 1b. Build the resolve-links source map when the feature is enabled.
+    //
+    // The map is built once here (before the shadow walk) from the
+    // configured `docs_dir` and shared across all materialise calls via
+    // a reference. An empty map is used when the feature is disabled so
+    // the materialise helpers can always receive a reference without
+    // conditional logic at each call site.
+    let resolve_source_map: HashMap<std::path::PathBuf, String> =
+        if let Some(spec) = &input.resolve_markdown_links {
+            let docs_dir = resolver.resolve(&spec.docs_dir);
+            build_docs_source_map(DocsSourceMapOptions {
+                collections: vec![CollectionRoute {
+                    name: "docs".to_string(),
+                    dir: docs_dir,
+                    route_prefix: spec.route_prefix.clone(),
+                }],
+            })
+        } else {
+            HashMap::new()
+        };
+    let resolve_links_enabled = input.resolve_markdown_links.is_some();
+
+    // Accumulated broken links across all materialise calls.
+    // After the walk completes, handled according to `on_broken_links`.
+    let mut all_broken_links: Vec<(String, String)> = Vec::new(); // (file_path, url)
+
     // 2. Materialise the shadow tree.
     let work = tempfile::Builder::new()
         .prefix("zfb-bundler-")
@@ -481,14 +568,21 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let shadow_layouts = shadow.join("layouts");
 
     let mut routes: Vec<RouteEntry> = Vec::new();
-    materialise_shadow(
-        &pages_dir,
-        &shadow_pages,
-        &mut routes,
-        &input.project_root,
-        input.strip_md_ext,
-    )
-    .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
+    {
+        let mut broken = Vec::new();
+        materialise_shadow(
+            &pages_dir,
+            &shadow_pages,
+            &mut routes,
+            &input.project_root,
+            input.strip_md_ext,
+            input.code_highlight_theme.as_deref(),
+            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            &mut broken,
+        )
+        .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
+        all_broken_links.extend(broken);
+    }
 
     // Per-collection content materialisation (#506).
     //
@@ -507,12 +601,16 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         for col in &input.content_collections {
             let col_root = resolver.resolve(&col.root);
             let dest = shadow_content.join(&col.name);
+            let mut broken = Vec::new();
             materialise_collection(
                 &col_root,
                 &dest,
                 &col.name,
                 &mut content_imports,
                 input.strip_md_ext,
+                input.code_highlight_theme.as_deref(),
+                if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                &mut broken,
             )
             .with_context(|| {
                 format!(
@@ -521,18 +619,23 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     col_root.display()
                 )
             })?;
+            all_broken_links.extend(broken);
         }
         // Deterministic ordering — keys are `(collection, rel_path)`
         // so the emitted import indices match the underlying file
         // tree on every build, regardless of WalkDir's per-OS order.
         content_imports.sort_by(|a, b| a.shadow_rel_path.cmp(&b.shadow_rel_path));
     } else {
+        let mut broken = Vec::new();
         materialise_shadow(
             &content_dir,
             &shadow_content,
             &mut Vec::new(),
             &input.project_root,
             input.strip_md_ext,
+            input.code_highlight_theme.as_deref(),
+            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            &mut broken,
         )
         .with_context(|| {
             format!(
@@ -540,34 +643,49 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 content_dir.display()
             )
         })?;
+        all_broken_links.extend(broken);
     }
 
-    materialise_shadow(
-        &components_dir,
-        &shadow_components,
-        &mut Vec::new(),
-        &input.project_root,
-        input.strip_md_ext,
-    )
-    .with_context(|| {
-        format!(
-            "bundler: failed materialising components from {}",
-            components_dir.display()
+    {
+        let mut broken = Vec::new();
+        materialise_shadow(
+            &components_dir,
+            &shadow_components,
+            &mut Vec::new(),
+            &input.project_root,
+            input.strip_md_ext,
+            input.code_highlight_theme.as_deref(),
+            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            &mut broken,
         )
-    })?;
-    materialise_shadow(
-        &layouts_dir,
-        &shadow_layouts,
-        &mut Vec::new(),
-        &input.project_root,
-        input.strip_md_ext,
-    )
-    .with_context(|| {
-        format!(
-            "bundler: failed materialising layouts from {}",
-            layouts_dir.display()
+        .with_context(|| {
+            format!(
+                "bundler: failed materialising components from {}",
+                components_dir.display()
+            )
+        })?;
+        all_broken_links.extend(broken);
+    }
+    {
+        let mut broken = Vec::new();
+        materialise_shadow(
+            &layouts_dir,
+            &shadow_layouts,
+            &mut Vec::new(),
+            &input.project_root,
+            input.strip_md_ext,
+            input.code_highlight_theme.as_deref(),
+            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            &mut broken,
         )
-    })?;
+        .with_context(|| {
+            format!(
+                "bundler: failed materialising layouts from {}",
+                layouts_dir.display()
+            )
+        })?;
+        all_broken_links.extend(broken);
+    }
 
     // 2a-extra. Materialise any *other* directories at the project root
     // that the bundler does not own (e.g. `styles/`, `lib/`, `utils/`).
@@ -603,12 +721,16 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 }
                 let src_dir = input.project_root.join(&name);
                 let dst_dir = shadow.join(&name);
+                let mut broken = Vec::new();
                 materialise_shadow(
                     &src_dir,
                     &dst_dir,
                     &mut Vec::new(),
                     &input.project_root,
                     input.strip_md_ext,
+                    input.code_highlight_theme.as_deref(),
+                    if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                    &mut broken,
                 )
                 .with_context(|| {
                     format!(
@@ -616,6 +738,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                         src_dir.display()
                     )
                 })?;
+                all_broken_links.extend(broken);
             }
         }
     }
@@ -641,6 +764,45 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             fs::create_dir_all(&shadow_nm).with_context(|| {
                 format!("bundler: failed to create node_modules dir in shadow tree")
             })?;
+        }
+    }
+
+    // 2c. Handle broken links collected across all materialise calls.
+    //
+    // All calls ran to completion first so the full set of broken links is
+    // reported in one pass (consistent with the `onBrokenLinks: 'error'`
+    // contract in the issue spec). Warnings are emitted to stderr so they
+    // are visible to both the CLI user and CI log scanners.
+    if !all_broken_links.is_empty() {
+        let on_broken = input
+            .resolve_markdown_links
+            .as_ref()
+            .map(|s| s.on_broken_links)
+            .unwrap_or(OnBrokenLinks::Warn);
+        match on_broken {
+            OnBrokenLinks::Ignore => {}
+            OnBrokenLinks::Warn => {
+                for (file, url) in &all_broken_links {
+                    eprintln!(
+                        "zfb warn: broken markdown link in {file}: \
+                         {url} could not be resolved to a known doc URL"
+                    );
+                }
+            }
+            OnBrokenLinks::Error => {
+                let mut msg = format!(
+                    "bundler: {} broken markdown link(s) found:\n",
+                    all_broken_links.len()
+                );
+                for (file, url) in &all_broken_links {
+                    msg.push_str(&format!("  {file}: {url}\n"));
+                }
+                msg.push_str(
+                    "Fix the links or set onBrokenLinks: 'warn' / 'ignore' \
+                     in resolveMarkdownLinks config to suppress this error.",
+                );
+                bail!("{}", msg);
+            }
         }
     }
 
@@ -743,6 +905,9 @@ fn materialise_shadow(
     routes: &mut Vec<RouteEntry>,
     project_root: &Path,
     strip_md_ext: bool,
+    code_highlight_theme: Option<&str>,
+    resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
+    broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
         // A missing source dir is non-fatal — not every project has e.g.
@@ -765,16 +930,15 @@ fn materialise_shadow(
         .map(|s| s == "pages")
         .unwrap_or(false);
 
-    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
-    // so the seven default plugins (admonitions, CJK-friendly emphasis,
-    // heading-links, code-title, image-enlarge, mermaid, syntect) all
-    // fire on every MDX file the walker visits. The dev loader at
-    // `crates/zfb-render/src/loader.rs` reuses one pipeline for the
-    // same reason — `Pipeline::with_defaults()` allocates a
-    // `Highlighter` and seven boxed visitors, so per-file construction
-    // would be wasteful. Borrow is linear (`&mut`), so a single hoisted
-    // pipeline can serve every MDX file in the walk sequentially. See
-    // zfb#127 / #128.
+    // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
+    // walk loop so the seven default plugins (admonitions, CJK-friendly
+    // emphasis, heading-links, code-title, image-enlarge, mermaid,
+    // syntect) all fire on every MDX file the walker visits. The dev
+    // loader at `crates/zfb-render/src/loader.rs` reuses one pipeline
+    // for the same reason — constructing a `Highlighter` and seven boxed
+    // visitors per file would be wasteful. Borrow is linear (`&mut`), so
+    // a single hoisted pipeline serves every MDX file sequentially.
+    // See zfb#127 / #128.
     //
     // The opt-in `StripMdExtensionPlugin` is appended here when the
     // user enabled `stripMdExt` in `zfb.config.ts` (zfb#127 / #129).
@@ -782,12 +946,28 @@ fn materialise_shadow(
     // only makes sense for sites whose authors hand-write
     // `[label](other.md)` style references. The dev loader honours the
     // same flag so dev preview matches built dist.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    //
+    // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
+    // also wired into the mdast phase after `AdmonitionsPlugin` so
+    // author-written `[label](./other.mdx)` links rewrite to the
+    // rendered route URL. The `source_dir` is updated per-file below.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
+    if let Some(map) = resolve_source_map {
+        pipeline.add_resolve_links(map.clone());
+    }
 
-    for entry in WalkDir::new(src).follow_links(false) {
+    // sort_by_file_name() gives lexicographic order within each directory
+    // level, matching walk_collection's explicit files.sort() contract so
+    // the two walks feed entries to their respective Pipeline instances in
+    // the same order.  Without sorting the OS-supplied readdir order is
+    // non-deterministic and HeadingLinksPlugin's slug counter can assign
+    // "basic-usage-7" in one walk and "basic-usage" in the other,
+    // producing different content_hash values and breaking the
+    // mdx://<collection>/<slug>#<hash> bridge lookup (zfb#187).
+    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         // WalkDir always yields paths under `src`, so `strip_prefix`
@@ -816,11 +996,26 @@ fn materialise_shadow(
         // Pre-compile MDX, leaving the .mdx extension in place.
         let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
         if is_mdx {
+            // Reset per-document state (e.g. HeadingLinksPlugin's slug
+            // counter) before each new MDX file so cross-document state
+            // cannot leak and alter content_hash (zfb#187).
+            pipeline.reset_per_entry();
+            // Update per-file source_dir for ResolveLinksPlugin so
+            // relative links like `./other.mdx` resolve correctly.
+            if resolve_source_map.is_some() {
+                if let Some(parent) = from.parent() {
+                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
+                }
+            }
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
             let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Drain broken-link diagnostics and record them with the file path.
+            for diag in pipeline.take_broken_links() {
+                broken_links_out.push((from.display().to_string(), diag.url));
+            }
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
         } else {
@@ -995,6 +1190,9 @@ fn materialise_collection(
     collection_name: &str,
     imports: &mut Vec<ContentImport>,
     strip_md_ext: bool,
+    code_highlight_theme: Option<&str>,
+    resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
+    broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -1002,22 +1200,33 @@ fn materialise_collection(
     fs::create_dir_all(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
 
-    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
-    // so the seven default plugins fire on every collection MDX file.
-    // See `materialise_shadow` for the rationale; the same applies
-    // here. Two walks → two hoisted pipelines (one per walker), which
-    // is cheaper than one per file. See zfb#127 / #128.
+    // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
+    // walk loop so the seven default plugins fire on every collection
+    // MDX file. See `materialise_shadow` for the rationale; the same
+    // applies here. Two walks → two hoisted pipelines (one per walker),
+    // which is cheaper than one per file. See zfb#127 / #128.
     //
     // The opt-in `StripMdExtensionPlugin` is appended when the user
     // enabled `stripMdExt` (zfb#127 / #129). The flag is threaded in
     // by the caller so the page walker and the collection walker
     // honour the same setting.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    //
+    // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
+    // also wired after `AdmonitionsPlugin` in the mdast phase. The
+    // `source_dir` is updated per-file inside the walk loop.
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
+    if let Some(map) = resolve_source_map {
+        pipeline.add_resolve_links(map.clone());
+    }
 
-    for entry in WalkDir::new(src).follow_links(false) {
+    // sort_by_file_name() gives lexicographic order within each directory
+    // level, matching walk_collection's explicit files.sort() contract so
+    // the two walks feed entries to their respective Pipeline instances in
+    // the same order (zfb#187).
+    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         let rel = from.strip_prefix(src).map_err(|_| {
@@ -1040,6 +1249,15 @@ fn materialise_collection(
 
         let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
         if is_mdx {
+            // Reset per-document state (e.g. HeadingLinksPlugin's slug
+            // counter) before each new MDX file (zfb#187).
+            pipeline.reset_per_entry();
+            // Update per-file source_dir for ResolveLinksPlugin.
+            if resolve_source_map.is_some() {
+                if let Some(parent) = from.parent() {
+                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
+                }
+            }
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             // Use `zfb_content::frontmatter::extract` rather than the
@@ -1082,6 +1300,10 @@ fn materialise_collection(
             // raw-markdown <pre> block.
             let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Drain broken-link diagnostics and record them with the file path.
+            for diag in pipeline.take_broken_links() {
+                broken_links_out.push((from.display().to_string(), diag.url));
+            }
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
 
@@ -1858,6 +2080,8 @@ mod tests {
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
+            resolve_markdown_links: None,
         }
     }
 
@@ -2082,7 +2306,7 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("docs");
         let mut imports: Vec<ContentImport> = Vec::new();
-        materialise_collection(&src, &dest, "docs", &mut imports, false).unwrap();
+        materialise_collection(&src, &dest, "docs", &mut imports, false, None, None, &mut Vec::new()).unwrap();
 
         // Two MDX files → two ContentImport records, with stable
         // forward-slash shadow_rel_paths under `content/docs/...`.
@@ -2190,6 +2414,9 @@ mod tests {
             "ghost",
             &mut imports,
             false,
+            None,
+            None,
+            &mut Vec::new(),
         )
         .unwrap();
         assert!(imports.is_empty());
@@ -2337,6 +2564,39 @@ mod tests {
             "this-must-not-appear-in-the-bundle".into(),
         );
 
+        // Locate workspace node_modules so esbuild can resolve
+        // @takazudo/zfb-runtime + preact-render-to-string. Pre-#197 this test
+        // was silently skipped because no esbuild was downloaded; now that
+        // build.rs always populates the binary slot, the test runs and needs
+        // real dependency resolution. In pnpm hoisted layouts these packages
+        // live under .pnpm/, not at the top level, so check the realistic
+        // location and skip if not present (CI / first-run after fresh clone).
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .expect("workspace root from CARGO_MANIFEST_DIR");
+        let workspace_node_modules = workspace_root.join("node_modules");
+        let zfb_pkg_node_modules = workspace_root.join("packages/zfb/node_modules");
+        // Use packages/zfb/node_modules where pnpm symlinks the runtime deps;
+        // fall back to root node_modules if that path doesn't exist.
+        let nm_dir = if zfb_pkg_node_modules
+            .join("@takazudo/zfb-runtime")
+            .exists()
+        {
+            Some(zfb_pkg_node_modules)
+        } else if workspace_node_modules
+            .join("@takazudo/zfb-runtime")
+            .exists()
+        {
+            Some(workspace_node_modules)
+        } else {
+            eprintln!(
+                "[server_secrets_are_not_bundled] @takazudo/zfb-runtime not found in workspace node_modules; skipping (run pnpm install first)"
+            );
+            return;
+        };
+
         let input = BundlerInput {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
@@ -2354,9 +2614,11 @@ mod tests {
             esbuild_binary: Some(bin),
             mock_subprocess_output: None,
             content_snapshot_json: None,
-            node_modules_dir: None,
+            node_modules_dir: nm_dir,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
+            resolve_markdown_links: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2465,7 +2727,7 @@ mod tests {
         let mut routes = Vec::new();
         // dest must be named "pages" for is_pages_dir detection in materialise_shadow
         let shadow_pages_dest = root.join("shadow").join("pages");
-        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false).unwrap();
+        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false, None, None, &mut Vec::new()).unwrap();
 
         // Map route → registration index.
         let order: BTreeMap<&str, usize> = routes

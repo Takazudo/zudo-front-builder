@@ -258,6 +258,25 @@ pub struct Config {
     #[serde(default)]
     pub strip_md_ext: bool,
 
+    /// Syntect code-highlight options; absent = default theme
+    /// (`base16-ocean.dark`). See [`CodeHighlightConfig`] for accepted
+    /// theme names and the built-in set.
+    #[serde(default)]
+    pub code_highlight: Option<CodeHighlightConfig>,
+
+    /// Markdown link resolver (port of `remarkResolveMarkdownLinks`).
+    ///
+    /// When `Some` and `enabled: true`, the build appends
+    /// [`ResolveLinksPlugin`](zfb_content::plugins::ResolveLinksPlugin) to
+    /// the mdast pipeline after `AdmonitionsPlugin` so author-written
+    /// `[label](./other.mdx)` links rewrite to the rendered route URL.
+    /// Absent / `None` / `enabled: false` preserves current pass-through.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON/TS form `resolveMarkdownLinks` into this field.
+    #[serde(default)]
+    pub resolve_markdown_links: Option<ResolveMarkdownLinksConfig>,
+
     /// Public URL prefix mounted in front of every absolute HTML asset
     /// URL the build emits (`<link rel="stylesheet">`,
     /// `<script type="module">`, and any other `/assets/...`-prefixed
@@ -298,6 +317,8 @@ impl Default for Config {
             adapter: None,
             strip_md_ext: false,
             base: None,
+            code_highlight: None,
+            resolve_markdown_links: None,
         }
     }
 }
@@ -335,6 +356,78 @@ pub struct CollectionDef {
 pub struct TailwindConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// Syntect-based code-highlight options.
+///
+/// Controls the built-in syntax-highlight theme applied to fenced code
+/// blocks in MDX content. Theme names are syntect's built-in set:
+/// `"base16-ocean.dark"` (default), `"base16-ocean.light"`,
+/// `"InspiredGitHub"`, `"Solarized (dark)"`, `"Solarized (light)"`.
+///
+/// **Note:** These are NOT Shiki theme names. Names like `"dracula"` or
+/// `"github-dark"` are not part of syntect's bundled set and will
+/// produce an `unknown theme` error at build time.
+///
+/// Unknown theme names are rejected with a clear error rather than
+/// silently falling back — this matches the behaviour of
+/// [`zfb_content::syntect_highlight::Highlighter::set_default_theme`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeHighlightConfig {
+    /// Syntect built-in theme name.  When absent the pipeline defaults to
+    /// `"base16-ocean.dark"`.
+    #[serde(default)]
+    pub theme: Option<String>,
+}
+
+/// What to do when a `.md`/`.mdx` link cannot be found in the source map.
+///
+/// Mirrors the JS engine's `onBrokenLinks` option:
+/// - `"warn"` — emit a warning to stderr but continue the build.
+/// - `"error"` — accumulate all broken links then return an error after
+///   the walk completes (so every broken link is reported in one pass).
+/// - `"ignore"` — silently ignore broken links (no warnings, no errors).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum OnBrokenLinks {
+    /// Emit a warning to stderr but continue. This is the default.
+    #[default]
+    Warn,
+    /// Return an error after the walk completes (all broken links reported).
+    Error,
+    /// Silently ignore broken links.
+    Ignore,
+}
+
+/// Config for the `ResolveLinksPlugin` (port of `remarkResolveMarkdownLinks`).
+///
+/// When `enabled` is `true`, the build appends `ResolveLinksPlugin` to the
+/// mdast pipeline after `AdmonitionsPlugin` so author-written
+/// `[label](./other.mdx)` links are rewritten to the corresponding rendered
+/// route URL (e.g. `/docs/other/`). The `docs_dir` field points at the
+/// directory whose `.md`/`.mdx` files are scanned to build the source map.
+///
+/// Default (absent / `enabled: false`) preserves the current pass-through
+/// behavior — links are not rewritten.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveMarkdownLinksConfig {
+    /// Whether to enable link resolution. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory (relative to project root) whose `.md`/`.mdx` files are
+    /// scanned to build the `path → URL` source map. Typically the same
+    /// directory as the content collection's `path`.
+    ///
+    /// `docs_dir` is interpreted relative to the project root the same
+    /// way `CollectionDef::path` is — it must be relative and must not
+    /// escape the root via `..`.
+    #[serde(default)]
+    pub docs_dir: PathBuf,
+    /// What to do when a `.md`/`.mdx` link cannot be resolved. Default: `"warn"`.
+    #[serde(default)]
+    pub on_broken_links: OnBrokenLinks,
 }
 
 impl Default for TailwindConfig {
@@ -1032,6 +1125,8 @@ mod tests {
         assert!(!cfg.strip_md_ext);
         // `base` is opt-in; absent => no asset-URL prefix.
         assert_eq!(cfg.base, None);
+        // `codeHighlight` is opt-in; absent => default syntect theme.
+        assert_eq!(cfg.code_highlight, None);
     }
 
     // --- base / asset_url_base_prefix tests ----------------------------------
@@ -1125,6 +1220,30 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg.base.as_deref(), Some("/pj/zudo-doc/"));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_theme_loads_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "theme": "InspiredGitHub" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme.as_deref(), Some("InspiredGitHub"));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_defaults_to_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.code_highlight, None);
     }
 
     #[tokio::test]
