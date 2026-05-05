@@ -100,6 +100,18 @@ pub trait MdastVisitor {
 pub trait HastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut HastNode);
+
+    /// Reset any per-document state accumulated during [`Self::visit`].
+    ///
+    /// Called by [`Pipeline::reset_per_entry`] between documents so
+    /// cross-document state (e.g. duplicate-slug counters in
+    /// [`HeadingLinksPlugin`]) cannot leak from one entry to the next.
+    /// The default implementation is a no-op, which is correct for
+    /// stateless visitors. Stateful visitors (currently only
+    /// [`HeadingLinksPlugin`]) override this method.
+    ///
+    /// [`HeadingLinksPlugin`]: crate::plugins::HeadingLinksPlugin
+    fn reset(&mut self) {}
 }
 
 /// Pipeline error type.
@@ -294,6 +306,28 @@ impl Pipeline {
     pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
         for v in &mut self.hast_visitors {
             v.visit(node);
+        }
+    }
+
+    /// Reset per-document state in every hast visitor.
+    ///
+    /// Call this **before processing each new document** when a single
+    /// `Pipeline` instance is reused across multiple entries (e.g. the
+    /// bundler's walk loop). Without this, stateful visitors such as
+    /// [`HeadingLinksPlugin`] accumulate slug counters across files —
+    /// the same heading text can resolve to `basic-usage` in one
+    /// document and `basic-usage-7` in another, producing a different
+    /// `content_hash` and breaking the `mdx://<collection>/<slug>#<hash>`
+    /// bridge lookup (zfb#187).
+    ///
+    /// Stateless visitors (code-title, image-enlarge, mermaid, syntect,
+    /// strip-md-ext) provide the default no-op implementation of
+    /// [`HastVisitor::reset`], so calling this unconditionally is safe.
+    ///
+    /// [`HeadingLinksPlugin`]: crate::plugins::HeadingLinksPlugin
+    pub fn reset_per_entry(&mut self) {
+        for v in &mut self.hast_visitors {
+            v.reset();
         }
     }
 

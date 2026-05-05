@@ -787,7 +787,15 @@ fn materialise_shadow(
         pipeline.add_strip_md_ext();
     }
 
-    for entry in WalkDir::new(src).follow_links(false) {
+    // sort_by_file_name() gives lexicographic order within each directory
+    // level, matching walk_collection's explicit files.sort() contract so
+    // the two walks feed entries to their respective Pipeline instances in
+    // the same order.  Without sorting the OS-supplied readdir order is
+    // non-deterministic and HeadingLinksPlugin's slug counter can assign
+    // "basic-usage-7" in one walk and "basic-usage" in the other,
+    // producing different content_hash values and breaking the
+    // mdx://<collection>/<slug>#<hash> bridge lookup (zfb#187).
+    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         // WalkDir always yields paths under `src`, so `strip_prefix`
@@ -816,6 +824,10 @@ fn materialise_shadow(
         // Pre-compile MDX, leaving the .mdx extension in place.
         let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
         if is_mdx {
+            // Reset per-document state (e.g. HeadingLinksPlugin's slug
+            // counter) before each new MDX file so cross-document state
+            // cannot leak and alter content_hash (zfb#187).
+            pipeline.reset_per_entry();
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
@@ -1017,7 +1029,11 @@ fn materialise_collection(
         pipeline.add_strip_md_ext();
     }
 
-    for entry in WalkDir::new(src).follow_links(false) {
+    // sort_by_file_name() gives lexicographic order within each directory
+    // level, matching walk_collection's explicit files.sort() contract so
+    // the two walks feed entries to their respective Pipeline instances in
+    // the same order (zfb#187).
+    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         let rel = from.strip_prefix(src).map_err(|_| {
@@ -1040,6 +1056,9 @@ fn materialise_collection(
 
         let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
         if is_mdx {
+            // Reset per-document state (e.g. HeadingLinksPlugin's slug
+            // counter) before each new MDX file (zfb#187).
+            pipeline.reset_per_entry();
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read mdx {}", from.display()))?;
             // Use `zfb_content::frontmatter::extract` rather than the
