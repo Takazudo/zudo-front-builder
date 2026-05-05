@@ -26,6 +26,6 @@ pub use directives::{DirectiveDef, DirectiveDiagnostic, DirectiveKind, Directive
 pub use heading_links::HeadingLinksPlugin;
 pub use image_enlarge::ImageEnlargePlugin;
 pub use mermaid::MermaidPlugin;
-pub use resolve_links::{ResolveLinksPlugin, ResolveMarkdownLinksOptions};
+pub use resolve_links::{BrokenLinkDiagnostic, ResolveLinksPlugin, ResolveMarkdownLinksOptions};
 pub use strip_md_ext::StripMdExtensionPlugin;
 pub use syntect_plugin::SyntectPlugin;

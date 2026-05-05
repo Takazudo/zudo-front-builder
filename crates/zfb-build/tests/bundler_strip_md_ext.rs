@@ -128,6 +128,8 @@ fn make_input(
             PathBuf::from("content/posts"),
         )],
         strip_md_ext,
+        code_highlight_theme: None,
+        resolve_markdown_links: None,
     }
 }
 

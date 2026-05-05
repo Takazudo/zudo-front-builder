@@ -264,6 +264,19 @@ pub struct Config {
     #[serde(default)]
     pub code_highlight: Option<CodeHighlightConfig>,
 
+    /// Markdown link resolver (port of `remarkResolveMarkdownLinks`).
+    ///
+    /// When `Some` and `enabled: true`, the build appends
+    /// [`ResolveLinksPlugin`](zfb_content::plugins::ResolveLinksPlugin) to
+    /// the mdast pipeline after `AdmonitionsPlugin` so author-written
+    /// `[label](./other.mdx)` links rewrite to the rendered route URL.
+    /// Absent / `None` / `enabled: false` preserves current pass-through.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON/TS form `resolveMarkdownLinks` into this field.
+    #[serde(default)]
+    pub resolve_markdown_links: Option<ResolveMarkdownLinksConfig>,
+
     /// Public URL prefix mounted in front of every absolute HTML asset
     /// URL the build emits (`<link rel="stylesheet">`,
     /// `<script type="module">`, and any other `/assets/...`-prefixed
@@ -305,6 +318,7 @@ impl Default for Config {
             strip_md_ext: false,
             base: None,
             code_highlight: None,
+            resolve_markdown_links: None,
         }
     }
 }
@@ -365,6 +379,55 @@ pub struct CodeHighlightConfig {
     /// `"base16-ocean.dark"`.
     #[serde(default)]
     pub theme: Option<String>,
+}
+
+/// What to do when a `.md`/`.mdx` link cannot be found in the source map.
+///
+/// Mirrors the JS engine's `onBrokenLinks` option:
+/// - `"warn"` — emit a warning to stderr but continue the build.
+/// - `"error"` — accumulate all broken links then return an error after
+///   the walk completes (so every broken link is reported in one pass).
+/// - `"ignore"` — silently ignore broken links (no warnings, no errors).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum OnBrokenLinks {
+    /// Emit a warning to stderr but continue. This is the default.
+    #[default]
+    Warn,
+    /// Return an error after the walk completes (all broken links reported).
+    Error,
+    /// Silently ignore broken links.
+    Ignore,
+}
+
+/// Config for the `ResolveLinksPlugin` (port of `remarkResolveMarkdownLinks`).
+///
+/// When `enabled` is `true`, the build appends `ResolveLinksPlugin` to the
+/// mdast pipeline after `AdmonitionsPlugin` so author-written
+/// `[label](./other.mdx)` links are rewritten to the corresponding rendered
+/// route URL (e.g. `/docs/other/`). The `docs_dir` field points at the
+/// directory whose `.md`/`.mdx` files are scanned to build the source map.
+///
+/// Default (absent / `enabled: false`) preserves the current pass-through
+/// behavior — links are not rewritten.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveMarkdownLinksConfig {
+    /// Whether to enable link resolution. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory (relative to project root) whose `.md`/`.mdx` files are
+    /// scanned to build the `path → URL` source map. Typically the same
+    /// directory as the content collection's `path`.
+    ///
+    /// `docs_dir` is interpreted relative to the project root the same
+    /// way `CollectionDef::path` is — it must be relative and must not
+    /// escape the root via `..`.
+    #[serde(default)]
+    pub docs_dir: PathBuf,
+    /// What to do when a `.md`/`.mdx` link cannot be resolved. Default: `"warn"`.
+    #[serde(default)]
+    pub on_broken_links: OnBrokenLinks,
 }
 
 impl Default for TailwindConfig {

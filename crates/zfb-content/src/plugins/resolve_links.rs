@@ -41,27 +41,74 @@ pub struct ResolveMarkdownLinksOptions {
     pub source_dir: Option<PathBuf>,
 }
 
+/// A broken `.md`/`.mdx` link that could not be resolved via the source map.
+///
+/// Produced by [`ResolveLinksPlugin`] when a link target that ends in
+/// `.md`/`.mdx` is not found in the source map. Callers drain these via
+/// [`ResolveLinksPlugin::take_broken_links`] after each file's pipeline run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrokenLinkDiagnostic {
+    /// The original (unresolved) link URL, as written by the author.
+    pub url: String,
+}
+
 /// Visitor that rewrites `.md` / `.mdx` link URLs.
+///
+/// After each file's pipeline run, call [`ResolveLinksPlugin::take_broken_links`]
+/// to drain any broken-link diagnostics accumulated during the visit. A
+/// broken link is any `.md`/`.mdx` href (or extensionless href candidate) that
+/// was not found in the source map. Non-md links and successfully-resolved
+/// links do not produce diagnostics.
 #[derive(Debug, Clone)]
 pub struct ResolveLinksPlugin {
     options: ResolveMarkdownLinksOptions,
+    /// Broken links accumulated since the last [`take_broken_links`] call.
+    broken_links: Vec<BrokenLinkDiagnostic>,
 }
 
 impl ResolveLinksPlugin {
     /// Construct with the prebuilt `source_map`.
     #[must_use]
     pub fn new(options: ResolveMarkdownLinksOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            broken_links: Vec::new(),
+        }
     }
 
-    fn resolve(&self, url: &str) -> Option<String> {
+    /// Drain accumulated broken-link diagnostics. Call this after each
+    /// file's pipeline run to collect any unresolved `.md`/`.mdx` links.
+    /// The internal buffer is cleared; subsequent calls return an empty vec
+    /// until the next pipeline run accumulates new diagnostics.
+    pub fn take_broken_links(&mut self) -> Vec<BrokenLinkDiagnostic> {
+        std::mem::take(&mut self.broken_links)
+    }
+
+    /// Update the per-file source directory used to resolve relative link
+    /// targets (e.g. `./other.mdx`). Call once per MDX file before the
+    /// pipeline's mdast visitors run.
+    pub fn set_source_dir(&mut self, dir: PathBuf) {
+        self.options.source_dir = Some(dir);
+    }
+
+    /// Resolve a link URL against the source map.
+    ///
+    /// Returns `Ok(Some(rewritten))` when the URL resolved successfully,
+    /// `Ok(None)` for URLs that are not md/mdx (nothing to resolve),
+    /// and `Err(())` when the URL is an `.md`/`.mdx` href that failed
+    /// to resolve (caller should record a [`BrokenLinkDiagnostic`]).
+    fn resolve(&self, url: &str) -> Result<Option<String>, ()> {
         // Split off optional ?query and #fragment so we only resolve
         // the path part and stitch them back on.
         let (path_part, suffix) = split_suffix(url);
 
         if ends_with_md(path_part) {
             // Explicit .md/.mdx path: try direct and source_dir-relative lookups.
-            return self.lookup_path(path_part, suffix);
+            return match self.lookup_path(path_part, suffix) {
+                Some(rewritten) => Ok(Some(rewritten)),
+                // Link has a .md/.mdx extension but is not in the map → broken.
+                None => Err(()),
+            };
         }
 
         // Extensionless path: skip anything that looks like an external URL
@@ -70,16 +117,18 @@ impl ResolveLinksPlugin {
         // extensionless) so we don't accidentally probe "foo.html" as if it
         // were "foo.html.mdx".
         if has_non_md_extension(path_part) {
-            return None;
+            return Ok(None);
         }
 
         // Probe the 4 candidates in precedence order.
         for candidate in extensionless_candidates(path_part) {
             if let Some(result) = self.lookup_path(&candidate, suffix) {
-                return Some(result);
+                return Ok(Some(result));
             }
         }
-        None
+        // No candidate matched — leave extensionless links unchanged (they
+        // might be intentional cross-origin or non-doc references).
+        Ok(None)
     }
 
     /// Try the given `path_str` against the source map directly, then
@@ -107,8 +156,15 @@ impl ResolveLinksPlugin {
 impl MdastVisitor for ResolveLinksPlugin {
     fn visit(&mut self, node: &mut MdastNode) {
         if let MdastNode::Link(l) = node {
-            if let Some(rewritten) = self.resolve(&l.url) {
-                l.url = rewritten;
+            match self.resolve(&l.url) {
+                Ok(Some(rewritten)) => l.url = rewritten,
+                Err(()) => {
+                    // .md/.mdx link that is not in the source map → broken.
+                    self.broken_links.push(BrokenLinkDiagnostic {
+                        url: l.url.clone(),
+                    });
+                }
+                Ok(None) => {}
             }
         }
         if let Some(children) = node.children_mut() {
