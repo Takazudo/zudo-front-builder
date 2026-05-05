@@ -526,9 +526,11 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             void: false,
         },
         // Unhandled: degrade to empty Raw so we never crash on
-        // unsupported input. Tables, footnotes, definitions, reference
+        // unsupported input. Footnotes, definitions, reference
         // links/images, ESM, frontmatter, etc. fall here. They become
         // passthrough holes that Sub 4 plugins can later fill in.
+        // Note: GFM pipe-tables are handled by mdx_jsx_emit.rs directly
+        // (emit_table_jsx) rather than going through mdast_to_hast.
         _ => HastNode::Raw(String::new()),
     }
 }
