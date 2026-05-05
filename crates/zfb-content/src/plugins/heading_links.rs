@@ -75,6 +75,16 @@ impl Default for HeadingLinksPlugin {
 }
 
 impl HastVisitor for HeadingLinksPlugin {
+    /// Reset the per-document slug counter.
+    ///
+    /// Called by [`Pipeline::reset_per_entry`] between documents so the
+    /// same `## Basic Usage` heading always produces `basic-usage` in each
+    /// file rather than `basic-usage-7` when the pipeline is reused across
+    /// multiple entries (zfb#187).
+    fn reset(&mut self) {
+        self.seen.clear();
+    }
+
     fn visit(&mut self, node: &mut HastNode) {
         // Compute slug + heading text first (immutable borrow only).
         let mut slug_and_text: Option<(String, String)> = None;

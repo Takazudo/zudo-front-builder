@@ -44,3 +44,6 @@ swc_core = { workspace = true, features = [
 # assert it parses as valid JS. Pure dev-only — keeps zfb-content's
 # runtime dependency surface minimal.
 zfb-render = { path = "../zfb-render" }
+# Used by tests/walk_order_determinism.rs to create temp directories
+# for fake MDX file paths.
+tempfile = { workspace = true }
