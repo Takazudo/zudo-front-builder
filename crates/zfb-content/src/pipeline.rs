@@ -253,6 +253,28 @@ impl Pipeline {
     /// [`MdxJsxFlowElement`]: markdown::mdast::MdxJsxFlowElement
     #[must_use]
     pub fn with_defaults() -> Self {
+        Self::with_defaults_and_theme(None)
+    }
+
+    /// New pipeline preloaded with the default plugin chain, optionally
+    /// overriding the syntect highlight theme.
+    ///
+    /// When `theme` is `Some`, the [`SyntectPlugin`] is constructed via
+    /// [`SyntectPlugin::with_theme`] so every fenced code block in this
+    /// pipeline uses the named built-in syntect theme instead of the
+    /// `Highlighter` default (`base16-ocean.dark`).
+    ///
+    /// Theme names are syntect's built-in set (e.g. `"InspiredGitHub"`,
+    /// `"Solarized (light)"`). Shiki names like `"dracula"` are **not**
+    /// part of the bundled set and will produce an `unknown theme` error
+    /// at render time. See
+    /// [`zfb_content::syntect_highlight::Highlighter::theme_names`] for
+    /// the full list.
+    ///
+    /// `None` falls back to [`Pipeline::with_defaults`] behaviour
+    /// (theme = `base16-ocean.dark`).
+    #[must_use]
+    pub fn with_defaults_and_theme(theme: Option<&str>) -> Self {
         let highlighter = Arc::new(Highlighter::new());
         let mut p = Self::with_mdx();
         // mdast phase.
@@ -263,7 +285,12 @@ impl Pipeline {
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
         p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
         p.add_hast_visitor(Box::new(MermaidPlugin::new()));
-        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+        let syntect = if let Some(t) = theme {
+            SyntectPlugin::new(highlighter).with_theme(t)
+        } else {
+            SyntectPlugin::new(highlighter)
+        };
+        p.add_hast_visitor(Box::new(syntect));
         p
     }
 
@@ -1067,5 +1094,72 @@ mod tests {
                 unreachable!("expected element, got {c:?}");
             }
         }
+    }
+
+    // 16. with_defaults_and_theme — non-default theme produces different
+    //     syntect class slug compared to the default pipeline.
+    //
+    // The default pipeline uses `base16-ocean.dark`, which yields
+    // `class="syntect-base16-ocean-dark"` on the `<pre>` wrapper.
+    // `InspiredGitHub` yields `class="syntect-inspiredgithub"`.
+    // Asserting that both class slugs differ is sufficient to prove that
+    // the theme is being threaded through end-to-end: the same Rust code
+    // path, with two different built-in theme names, emits distinct HTML.
+    #[test]
+    fn with_defaults_and_theme_changes_highlight_class_slug() {
+        let mdx = "```rust\nfn main() {}\n```\n";
+
+        // Default pipeline — base16-ocean.dark.
+        let mut default_pipeline = Pipeline::with_defaults();
+        let default_hast = default_pipeline.run(mdx).expect("default pipeline ok");
+        let default_html = crate::serializer::serialize(&default_hast);
+
+        // Non-default theme pipeline — InspiredGitHub.
+        let mut themed_pipeline =
+            Pipeline::with_defaults_and_theme(Some("InspiredGitHub"));
+        let themed_hast = themed_pipeline.run(mdx).expect("themed pipeline ok");
+        let themed_html = crate::serializer::serialize(&themed_hast);
+
+        // Both must emit highlighted output (not the plain fallback).
+        assert!(
+            default_html.contains("syntect-"),
+            "default pipeline must emit syntect-highlighted HTML, got: {default_html}"
+        );
+        assert!(
+            themed_html.contains("syntect-"),
+            "themed pipeline must emit syntect-highlighted HTML, got: {themed_html}"
+        );
+
+        // The class slugs must differ — proving the theme was applied.
+        assert!(
+            default_html.contains("syntect-base16-ocean-dark"),
+            "default pipeline must produce base16-ocean-dark slug, got: {default_html}"
+        );
+        assert!(
+            themed_html.contains("syntect-inspiredgithub"),
+            "InspiredGitHub pipeline must produce inspiredgithub slug, got: {themed_html}"
+        );
+        assert_ne!(
+            default_html, themed_html,
+            "different themes must produce different highlighted HTML"
+        );
+    }
+
+    // 17. with_defaults() and with_defaults_and_theme(None) are identical.
+    #[test]
+    fn with_defaults_and_theme_none_matches_with_defaults() {
+        let mdx = "```rust\nlet x = 1;\n```\n";
+        let mut p1 = Pipeline::with_defaults();
+        let h1 = p1.run(mdx).expect("ok");
+        let html1 = crate::serializer::serialize(&h1);
+
+        let mut p2 = Pipeline::with_defaults_and_theme(None);
+        let h2 = p2.run(mdx).expect("ok");
+        let html2 = crate::serializer::serialize(&h2);
+
+        assert_eq!(
+            html1, html2,
+            "with_defaults() and with_defaults_and_theme(None) must produce identical output"
+        );
     }
 }

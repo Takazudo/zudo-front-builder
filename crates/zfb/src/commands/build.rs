@@ -807,6 +807,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `StripMdExtensionPlugin`. Mirrored in `commands/dev.rs` so dev
     // and build produce the same href shape (zfb#127 / #129).
     bundler_input.strip_md_ext = config.strip_md_ext;
+    // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
+    // so the hoisted MDX pre-compile pipeline uses the configured
+    // syntect theme instead of the default `base16-ocean.dark`.
+    bundler_input.code_highlight_theme = config
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.theme.clone());
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
