@@ -941,6 +941,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         }
     }
 
+    // 4. Copy public/ into out_dir (under the base segment when cfg.base is set).
+    //
+    // Static assets in public/ must land in dist/ so they are served
+    // verbatim in production. When the project mounts under a sub-path
+    // (cfg.base = "/pj/test/"), files must arrive at
+    // <out_dir>/<base-segment>/... so URLs emitted via withBase()
+    // resolve under the sub-path mount. Missing public/ is silently
+    // ignored — not every project has one.
+    copy_public_dir(project_root, outdir, &config.public_dir, config.base.as_deref())
+        .context("public dir copy step failed")?;
+
     Ok(render_out.ssg_files_written.len())
 }
 
@@ -1256,6 +1267,80 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
     if let Err(err) = zfb_content::build_snapshot(&collections) {
         output::warn(format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"));
     }
+}
+
+/// Copy `<project_root>/<public_dir>` recursively into
+/// `<outdir>/<base-segment>/`.
+///
+/// - `public_dir` is the configured public directory (default `public/`).
+/// - `base` is the optional sub-path mount from `cfg.base` (e.g.
+///   `"/pj/test/"`). Leading and trailing slashes are stripped to produce
+///   the on-disk segment (`"pj/test"`). `None`, `""`, or `"/"` mean no
+///   sub-path — files copy directly under `outdir`.
+/// - A missing or empty `public_dir` is treated as a no-op (no error).
+///
+/// Files inside `public/` are placed at `<outdir>/<base-segment>/<rel>`,
+/// matching the URL space that `withBase()` produces in the rendered HTML.
+fn copy_public_dir(
+    project_root: &Path,
+    outdir: &Path,
+    public_dir: &std::path::Path,
+    base: Option<&str>,
+) -> Result<()> {
+    let src = if public_dir.is_absolute() {
+        public_dir.to_path_buf()
+    } else {
+        project_root.join(public_dir)
+    };
+
+    if !src.is_dir() {
+        // Missing public/ is a no-op — not every project has one.
+        return Ok(());
+    }
+
+    // Strip leading/trailing slashes from the base to get the segment,
+    // e.g. "/pj/test/" → "pj/test", "/" → "", None → "".
+    let base_segment = base
+        .map(|b| b.trim_matches('/'))
+        .unwrap_or("")
+        .to_string();
+
+    let dest_root = if base_segment.is_empty() {
+        outdir.to_path_buf()
+    } else {
+        outdir.join(&base_segment)
+    };
+
+    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|r| r.ok()) {
+        let rel = entry
+            .path()
+            .strip_prefix(&src)
+            .expect("walkdir entry is always under src");
+        if rel.as_os_str().is_empty() {
+            // Skip the root entry itself.
+            continue;
+        }
+        let dest = dest_root.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("public dir copy: create dir {}", dest.display()))?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("public dir copy: create parent dir {}", parent.display())
+                })?;
+            }
+            std::fs::copy(entry.path(), &dest).with_context(|| {
+                format!(
+                    "public dir copy: copy {} → {}",
+                    entry.path().display(),
+                    dest.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2531,5 +2616,158 @@ mod tests {
         // scratch.
         let _ = BTreeMap::<String, bool>::new(); // keep the import live
         eprintln!("[end_to_end_basic_blog_build] gated; see doc-comment.");
+    }
+
+    // -------------------------------------------------------------------------
+    // copy_public_dir unit tests
+    // -------------------------------------------------------------------------
+
+    /// Missing public/ directory is silently ignored (no error).
+    #[test]
+    fn copy_public_dir_missing_source_is_noop() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(&outdir).unwrap();
+        // No public/ staged — must succeed without creating anything.
+        copy_public_dir(project_root, &outdir, std::path::Path::new("public"), None)
+            .expect("missing public/ must not error");
+        // dist/ contains nothing (no phantom files).
+        let entries: Vec<_> = std::fs::read_dir(&outdir).unwrap().collect();
+        assert!(entries.is_empty(), "dist/ must stay empty when public/ is absent");
+    }
+
+    /// Without base, files copy directly under out_dir.
+    #[test]
+    fn copy_public_dir_no_base_copies_under_outdir() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public/img")).unwrap();
+        std::fs::write(
+            project_root.join("public/img/logo.svg"),
+            b"<svg/>",
+        )
+        .unwrap();
+        copy_public_dir(project_root, &outdir, std::path::Path::new("public"), None)
+            .expect("copy must succeed");
+        let dest = outdir.join("img/logo.svg");
+        assert!(dest.is_file(), "public/img/logo.svg must land at dist/img/logo.svg");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"<svg/>");
+    }
+
+    /// With base = "/pj/test/", files land under out_dir/pj/test/.
+    #[test]
+    fn copy_public_dir_with_base_copies_under_base_segment() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public/img")).unwrap();
+        let logo_content = b"<svg id=\"logo\"/>";
+        std::fs::write(
+            project_root.join("public/img/logo.svg"),
+            logo_content,
+        )
+        .unwrap();
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("public"),
+            Some("/pj/test/"),
+        )
+        .expect("copy must succeed");
+        // Files land under the base segment.
+        let dest = outdir.join("pj/test/img/logo.svg");
+        assert!(
+            dest.is_file(),
+            "public/img/logo.svg must land at dist/pj/test/img/logo.svg; path: {}",
+            dest.display()
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            logo_content,
+            "file content must be preserved",
+        );
+    }
+
+    /// Base with no trailing slash is normalised identically.
+    #[test]
+    fn copy_public_dir_base_without_trailing_slash() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/favicon.ico"), b"\x00").unwrap();
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("public"),
+            Some("/pj/test"),
+        )
+        .expect("copy must succeed");
+        assert!(outdir.join("pj/test/favicon.ico").is_file());
+    }
+
+    /// Base = "/" is treated as no prefix.
+    #[test]
+    fn copy_public_dir_base_root_slash_is_noop_prefix() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/favicon.ico"), b"\x00").unwrap();
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("public"),
+            Some("/"),
+        )
+        .expect("copy must succeed");
+        assert!(outdir.join("favicon.ico").is_file(), "base='/' must copy under root, not under '/'");
+    }
+
+    /// Full run_build integration: public/img/logo.svg + base = "/pj/test/"
+    /// results in dist/pj/test/img/logo.svg with correct content.
+    /// Fixture: issue #192 acceptance criterion.
+    #[test]
+    fn run_build_copies_public_dir_under_base_segment() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+
+        // Stage public/img/logo.svg.
+        std::fs::create_dir_all(project_root.join("public/img")).unwrap();
+        let logo_content = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><text>logo</text></svg>";
+        std::fs::write(project_root.join("public/img/logo.svg"), logo_content).unwrap();
+
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.base = Some("/pj/test/".to_string());
+        let fake_adapter = FakeAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // Acceptance: file must exist at out_dir/pj/test/img/logo.svg.
+        let dest = outdir.join("pj/test/img/logo.svg");
+        assert!(
+            dest.is_file(),
+            "public/img/logo.svg must be copied to dist/pj/test/img/logo.svg; not found at {}",
+            dest.display()
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            logo_content,
+            "file content must match the source",
+        );
     }
 }
