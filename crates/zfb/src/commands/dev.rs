@@ -84,6 +84,7 @@ use crate::config;
 use crate::output;
 use crate::render_pipeline::{
     build_route_universe, cfg_framework_to_render, check_runtime_installed,
+    embedded_takazudo_node_modules,
 };
 
 /// Default source directories the watcher follows.
@@ -482,8 +483,28 @@ fn boot_dev_renderer(
     // bundler so esbuild can resolve user-installed packages and TS
     // path aliases. Helpers live in `commands/build.rs`; they are
     // intentionally re-used so dev and prod stay in lockstep.
+    //
+    // When the project has no node_modules (cargo-install scenario), fall
+    // back to the binary-embedded @takazudo packages. The `_embedded_nm_handle`
+    // keeps the tempdir alive for the duration of the bundle step.
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
     if let Some(nm) = crate::commands::build::detect_project_node_modules(project_root) {
         bundler_input.node_modules_dir = Some(nm);
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_takazudo_node_modules() {
+            Ok((handle, nm_path)) => {
+                bundler_input.node_modules_dir = Some(nm_path);
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                crate::output::warn(format!(
+                    "could not extract embedded @takazudo packages ({e}); \
+                     falling back to node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
     }
     bundler_input.tsconfig_paths = crate::commands::build::read_tsconfig_paths(project_root);
     // Per-collection content materialisation so dev-mode SSR also
