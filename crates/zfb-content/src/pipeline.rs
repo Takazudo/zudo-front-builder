@@ -653,12 +653,59 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             children: vec![HastNode::Text(m.value.clone())],
             void: false,
         },
+        // GFM pipe-table → <table><thead>...</thead><tbody>...</tbody></table>
+        // with per-column `style="text-align: ..."` on each th/td. Mirrors
+        // emit_table_jsx in mdx_jsx_emit.rs for the no-pipeline path.
+        MdastNode::Table(t) => {
+            let align = &t.align;
+            let style_attr = |col: usize| -> Option<(String, String)> {
+                let kind = align.get(col).copied().unwrap_or(markdown::mdast::AlignKind::None);
+                let s = match kind {
+                    markdown::mdast::AlignKind::Left => Some("left"),
+                    markdown::mdast::AlignKind::Right => Some("right"),
+                    markdown::mdast::AlignKind::Center => Some("center"),
+                    markdown::mdast::AlignKind::None => None,
+                };
+                s.map(|v| ("style".to_string(), format!("text-align: {v}")))
+            };
+
+            let row_to_cells = |row: &MdastNode, tag: &str| -> Vec<HastNode> {
+                let MdastNode::TableRow(tr) = row else { return Vec::new(); };
+                tr.children.iter().enumerate().filter_map(|(col, cell)| {
+                    let MdastNode::TableCell(tc) = cell else { return None; };
+                    let mut attrs: Vec<(String, String)> = Vec::new();
+                    if let Some(s) = style_attr(col) { attrs.push(s); }
+                    Some(element(tag, attrs, convert_children_with(&tc.children, strategy)))
+                }).collect()
+            };
+
+            let mut thead_children: Vec<HastNode> = Vec::new();
+            let mut tbody_children: Vec<HastNode> = Vec::new();
+
+            if let Some((first, rest)) = t.children.split_first() {
+                thead_children.push(element("tr", vec![], row_to_cells(first, "th")));
+                for row in rest {
+                    tbody_children.push(element("tr", vec![], row_to_cells(row, "td")));
+                }
+            }
+
+            let mut table_children: Vec<HastNode> = Vec::new();
+            if !thead_children.is_empty() {
+                table_children.push(element("thead", vec![], thead_children));
+            }
+            if !tbody_children.is_empty() {
+                table_children.push(element("tbody", vec![], tbody_children));
+            }
+            element("table", vec![], table_children)
+        }
+        // TableRow / TableCell are consumed by the Table arm above; if
+        // they appear standalone (malformed input) emit nothing rather
+        // than panicking.
+        MdastNode::TableRow(_) | MdastNode::TableCell(_) => HastNode::Raw(String::new()),
         // Unhandled: degrade to empty Raw so we never crash on
         // unsupported input. Footnotes, definitions, reference
         // links/images, ESM, frontmatter, etc. fall here. They become
         // passthrough holes that Sub 4 plugins can later fill in.
-        // Note: GFM pipe-tables are handled by mdx_jsx_emit.rs directly
-        // (emit_table_jsx) rather than going through mdast_to_hast.
         _ => HastNode::Raw(String::new()),
     }
 }

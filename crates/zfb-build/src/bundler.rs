@@ -2564,6 +2564,39 @@ mod tests {
             "this-must-not-appear-in-the-bundle".into(),
         );
 
+        // Locate workspace node_modules so esbuild can resolve
+        // @takazudo/zfb-runtime + preact-render-to-string. Pre-#197 this test
+        // was silently skipped because no esbuild was downloaded; now that
+        // build.rs always populates the binary slot, the test runs and needs
+        // real dependency resolution. In pnpm hoisted layouts these packages
+        // live under .pnpm/, not at the top level, so check the realistic
+        // location and skip if not present (CI / first-run after fresh clone).
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .expect("workspace root from CARGO_MANIFEST_DIR");
+        let workspace_node_modules = workspace_root.join("node_modules");
+        let zfb_pkg_node_modules = workspace_root.join("packages/zfb/node_modules");
+        // Use packages/zfb/node_modules where pnpm symlinks the runtime deps;
+        // fall back to root node_modules if that path doesn't exist.
+        let nm_dir = if zfb_pkg_node_modules
+            .join("@takazudo/zfb-runtime")
+            .exists()
+        {
+            Some(zfb_pkg_node_modules)
+        } else if workspace_node_modules
+            .join("@takazudo/zfb-runtime")
+            .exists()
+        {
+            Some(workspace_node_modules)
+        } else {
+            eprintln!(
+                "[server_secrets_are_not_bundled] @takazudo/zfb-runtime not found in workspace node_modules; skipping (run pnpm install first)"
+            );
+            return;
+        };
+
         let input = BundlerInput {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
@@ -2581,7 +2614,7 @@ mod tests {
             esbuild_binary: Some(bin),
             mock_subprocess_output: None,
             content_snapshot_json: None,
-            node_modules_dir: None,
+            node_modules_dir: nm_dir,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
