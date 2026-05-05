@@ -500,6 +500,13 @@ fn boot_dev_renderer(
     // also reads this flag for in-process MDX rendering, so dev preview
     // matches built dist (zfb#127 / #129).
     bundler_input.strip_md_ext = cfg.strip_md_ext;
+    // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
+    // so the hoisted MDX pre-compile pipeline uses the configured
+    // syntect theme. Mirrors the `commands/build.rs` wiring.
+    bundler_input.code_highlight_theme = cfg
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.theme.clone());
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {

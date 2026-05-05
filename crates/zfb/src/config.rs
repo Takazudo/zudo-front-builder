@@ -258,6 +258,12 @@ pub struct Config {
     #[serde(default)]
     pub strip_md_ext: bool,
 
+    /// Syntect code-highlight options; absent = default theme
+    /// (`base16-ocean.dark`). See [`CodeHighlightConfig`] for accepted
+    /// theme names and the built-in set.
+    #[serde(default)]
+    pub code_highlight: Option<CodeHighlightConfig>,
+
     /// Public URL prefix mounted in front of every absolute HTML asset
     /// URL the build emits (`<link rel="stylesheet">`,
     /// `<script type="module">`, and any other `/assets/...`-prefixed
@@ -298,6 +304,7 @@ impl Default for Config {
             adapter: None,
             strip_md_ext: false,
             base: None,
+            code_highlight: None,
         }
     }
 }
@@ -335,6 +342,29 @@ pub struct CollectionDef {
 pub struct TailwindConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// Syntect-based code-highlight options.
+///
+/// Controls the built-in syntax-highlight theme applied to fenced code
+/// blocks in MDX content. Theme names are syntect's built-in set:
+/// `"base16-ocean.dark"` (default), `"base16-ocean.light"`,
+/// `"InspiredGitHub"`, `"Solarized (dark)"`, `"Solarized (light)"`.
+///
+/// **Note:** These are NOT Shiki theme names. Names like `"dracula"` or
+/// `"github-dark"` are not part of syntect's bundled set and will
+/// produce an `unknown theme` error at build time.
+///
+/// Unknown theme names are rejected with a clear error rather than
+/// silently falling back — this matches the behaviour of
+/// [`zfb_content::syntect_highlight::Highlighter::set_default_theme`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeHighlightConfig {
+    /// Syntect built-in theme name.  When absent the pipeline defaults to
+    /// `"base16-ocean.dark"`.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 impl Default for TailwindConfig {
@@ -1032,6 +1062,8 @@ mod tests {
         assert!(!cfg.strip_md_ext);
         // `base` is opt-in; absent => no asset-URL prefix.
         assert_eq!(cfg.base, None);
+        // `codeHighlight` is opt-in; absent => default syntect theme.
+        assert_eq!(cfg.code_highlight, None);
     }
 
     // --- base / asset_url_base_prefix tests ----------------------------------
@@ -1125,6 +1157,30 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg.base.as_deref(), Some("/pj/zudo-doc/"));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_theme_loads_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "theme": "InspiredGitHub" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme.as_deref(), Some("InspiredGitHub"));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_defaults_to_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.code_highlight, None);
     }
 
     #[tokio::test]

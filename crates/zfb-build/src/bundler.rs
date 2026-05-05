@@ -307,6 +307,19 @@ pub struct BundlerInput {
     /// same flag via [`zfb_render::loader::ModuleLoader::with_strip_md_ext`]
     /// so `zfb dev` and `zfb build` produce the same href shape.
     pub strip_md_ext: bool,
+
+    /// Optional syntect highlight theme name.  When `Some`, the hoisted
+    /// MDX pre-compile pipeline uses
+    /// [`zfb_content::pipeline::Pipeline::with_defaults_and_theme`] so
+    /// every fenced code block is highlighted with the named built-in
+    /// syntect theme instead of the default `base16-ocean.dark`.
+    ///
+    /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
+    /// `"Solarized (light)"`, etc.). Shiki names like `"dracula"` are
+    /// NOT part of the bundled set and will produce an `unknown theme`
+    /// error at render time. Mirrors
+    /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
+    pub code_highlight_theme: Option<String>,
 }
 
 impl BundlerInput {
@@ -350,6 +363,7 @@ impl BundlerInput {
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
         }
     }
 }
@@ -487,6 +501,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         &mut routes,
         &input.project_root,
         input.strip_md_ext,
+        input.code_highlight_theme.as_deref(),
     )
     .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
 
@@ -513,6 +528,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &col.name,
                 &mut content_imports,
                 input.strip_md_ext,
+                input.code_highlight_theme.as_deref(),
             )
             .with_context(|| {
                 format!(
@@ -533,6 +549,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &mut Vec::new(),
             &input.project_root,
             input.strip_md_ext,
+            input.code_highlight_theme.as_deref(),
         )
         .with_context(|| {
             format!(
@@ -548,6 +565,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         &mut Vec::new(),
         &input.project_root,
         input.strip_md_ext,
+        input.code_highlight_theme.as_deref(),
     )
     .with_context(|| {
         format!(
@@ -561,6 +579,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         &mut Vec::new(),
         &input.project_root,
         input.strip_md_ext,
+        input.code_highlight_theme.as_deref(),
     )
     .with_context(|| {
         format!(
@@ -609,6 +628,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     &mut Vec::new(),
                     &input.project_root,
                     input.strip_md_ext,
+                    input.code_highlight_theme.as_deref(),
                 )
                 .with_context(|| {
                     format!(
@@ -743,6 +763,7 @@ fn materialise_shadow(
     routes: &mut Vec<RouteEntry>,
     project_root: &Path,
     strip_md_ext: bool,
+    code_highlight_theme: Option<&str>,
 ) -> Result<()> {
     if !src.exists() {
         // A missing source dir is non-fatal — not every project has e.g.
@@ -765,16 +786,15 @@ fn materialise_shadow(
         .map(|s| s == "pages")
         .unwrap_or(false);
 
-    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
-    // so the seven default plugins (admonitions, CJK-friendly emphasis,
-    // heading-links, code-title, image-enlarge, mermaid, syntect) all
-    // fire on every MDX file the walker visits. The dev loader at
-    // `crates/zfb-render/src/loader.rs` reuses one pipeline for the
-    // same reason — `Pipeline::with_defaults()` allocates a
-    // `Highlighter` and seven boxed visitors, so per-file construction
-    // would be wasteful. Borrow is linear (`&mut`), so a single hoisted
-    // pipeline can serve every MDX file in the walk sequentially. See
-    // zfb#127 / #128.
+    // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
+    // walk loop so the seven default plugins (admonitions, CJK-friendly
+    // emphasis, heading-links, code-title, image-enlarge, mermaid,
+    // syntect) all fire on every MDX file the walker visits. The dev
+    // loader at `crates/zfb-render/src/loader.rs` reuses one pipeline
+    // for the same reason — constructing a `Highlighter` and seven boxed
+    // visitors per file would be wasteful. Borrow is linear (`&mut`), so
+    // a single hoisted pipeline serves every MDX file sequentially.
+    // See zfb#127 / #128.
     //
     // The opt-in `StripMdExtensionPlugin` is appended here when the
     // user enabled `stripMdExt` in `zfb.config.ts` (zfb#127 / #129).
@@ -782,7 +802,7 @@ fn materialise_shadow(
     // only makes sense for sites whose authors hand-write
     // `[label](other.md)` style references. The dev loader honours the
     // same flag so dev preview matches built dist.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -995,6 +1015,7 @@ fn materialise_collection(
     collection_name: &str,
     imports: &mut Vec<ContentImport>,
     strip_md_ext: bool,
+    code_highlight_theme: Option<&str>,
 ) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -1002,17 +1023,17 @@ fn materialise_collection(
     fs::create_dir_all(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
 
-    // Hoist a single `Pipeline::with_defaults()` outside the walk loop
-    // so the seven default plugins fire on every collection MDX file.
-    // See `materialise_shadow` for the rationale; the same applies
-    // here. Two walks → two hoisted pipelines (one per walker), which
-    // is cheaper than one per file. See zfb#127 / #128.
+    // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
+    // walk loop so the seven default plugins fire on every collection
+    // MDX file. See `materialise_shadow` for the rationale; the same
+    // applies here. Two walks → two hoisted pipelines (one per walker),
+    // which is cheaper than one per file. See zfb#127 / #128.
     //
     // The opt-in `StripMdExtensionPlugin` is appended when the user
     // enabled `stripMdExt` (zfb#127 / #129). The flag is threaded in
     // by the caller so the page walker and the collection walker
     // honour the same setting.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults();
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -1858,6 +1879,7 @@ mod tests {
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
         }
     }
 
@@ -2082,7 +2104,7 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("docs");
         let mut imports: Vec<ContentImport> = Vec::new();
-        materialise_collection(&src, &dest, "docs", &mut imports, false).unwrap();
+        materialise_collection(&src, &dest, "docs", &mut imports, false, None).unwrap();
 
         // Two MDX files → two ContentImport records, with stable
         // forward-slash shadow_rel_paths under `content/docs/...`.
@@ -2190,6 +2212,7 @@ mod tests {
             "ghost",
             &mut imports,
             false,
+            None,
         )
         .unwrap();
         assert!(imports.is_empty());
@@ -2357,6 +2380,7 @@ mod tests {
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
+            code_highlight_theme: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2465,7 +2489,7 @@ mod tests {
         let mut routes = Vec::new();
         // dest must be named "pages" for is_pages_dir detection in materialise_shadow
         let shadow_pages_dest = root.join("shadow").join("pages");
-        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false).unwrap();
+        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false, None).unwrap();
 
         // Map route → registration index.
         let order: BTreeMap<&str, usize> = routes
