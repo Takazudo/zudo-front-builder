@@ -245,6 +245,27 @@ impl DirectiveRegistry {
                             i += 1;
                             continue;
                         }
+                        // A registered container name was found but no
+                        // separate closing `:::` paragraph exists.  Check
+                        // whether the opener and body were merged into a
+                        // single paragraph because the author forgot the
+                        // surrounding blank lines and emit a helpful
+                        // diagnostic.
+                        if paragraph_text_looks_merged(&children[i]) {
+                            let (line, column) = paragraph_line_col(&children[i]);
+                            self.diagnostics.push(DirectiveDiagnostic {
+                                message: format!(
+                                    "admonition `:::{}` looks like it is missing blank lines \
+                                     around the fences — the opening `:::{name}` and closing \
+                                     `:::` must each be on their own paragraph (separated by \
+                                     blank lines) for the directive to be recognised",
+                                    parsed.name,
+                                    name = parsed.name,
+                                ),
+                                line,
+                                column,
+                            });
+                        }
                     }
                 } else {
                     // Looks like a container, but the name is not
@@ -663,6 +684,30 @@ fn paragraph_line_col(node: &MdastNode) -> (Option<usize>, Option<usize>) {
     (None, None)
 }
 
+/// Returns true when `node` is a paragraph whose text begins with a
+/// `:::name` directive opener AND contains a newline — indicating that
+/// the opener, body, and (optional) closing `:::` all collapsed into a
+/// single paragraph because blank lines were omitted.  This is the
+/// primary signal for the blank-line diagnostic.
+///
+/// Only inspects the first Text child; non-Text paragraphs return false
+/// so that arbitrary rich paragraphs are not misidentified.
+fn paragraph_text_looks_merged(node: &MdastNode) -> bool {
+    let MdastNode::Paragraph(p) = node else {
+        return false;
+    };
+    let Some(MdastNode::Text(t)) = p.children.first() else {
+        return false;
+    };
+    // Must have a newline (i.e. multi-line → merged).
+    if !t.value.contains('\n') {
+        return false;
+    }
+    // First line must look like a container opener (`:::[a-z]…`).
+    let first = first_line(&t.value).trim_end();
+    parse_directive_line(first, 3).is_some()
+}
+
 // -- JSX construction ---------------------------------------------------
 
 /// Build a flow JSX element for a Container directive.
@@ -757,7 +802,7 @@ fn build_attributes(def: &DirectiveDef, parsed: &ParsedDirective) -> Vec<Attribu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use markdown::mdast::{Heading, Paragraph, Root};
+    use markdown::mdast::{Code, Heading, Paragraph, Root};
 
     /// Build a paragraph with one Text child. Used by the registry's
     /// own tests to construct fixtures.
@@ -1188,5 +1233,104 @@ mod tests {
         let j = flow(&out[0]);
         assert_eq!(j.name.as_deref(), Some("Callout"));
         assert_eq!(attr(j, "title").as_deref(), Some("Heads up"));
+    }
+
+    #[test]
+    fn note_with_custom_label_produces_title_attr() {
+        // Sub #135: :::note[Custom Title] should emit title="Custom Title".
+        let mut r = DirectiveRegistry::with_defaults();
+        let out = run_with_registry(
+            &mut r,
+            vec![
+                text_para(":::note[Custom Title]"),
+                text_para("body"),
+                text_para(":::"),
+            ],
+        );
+        assert_eq!(out.len(), 1);
+        let j = flow(&out[0]);
+        assert_eq!(j.name.as_deref(), Some("Note"));
+        assert_eq!(
+            attr(j, "title").as_deref(),
+            Some("Custom Title"),
+            "bracketed label promoted to title attribute"
+        );
+    }
+
+    // ---- blank-line diagnostic (Sub #185 Gap 2) ----
+
+    #[test]
+    fn merged_container_emits_blank_line_diagnostic() {
+        // When :::note\nbody\n::: is written without blank lines, the
+        // markdown parser collapses them into a single paragraph.  The
+        // registry should emit a diagnostic suggesting the author add
+        // blank lines.
+        let mut r = DirectiveRegistry::with_defaults();
+        // Simulate the merged paragraph: first Text child has the full
+        // un-blank-lined content as a single multi-line value.
+        let merged_para = MdastNode::Paragraph(Paragraph {
+            children: vec![MdastNode::Text(Text {
+                value: ":::note\nbody text\n:::".to_string(),
+                position: None,
+            })],
+            position: None,
+        });
+        let out = run_with_registry(&mut r, vec![merged_para]);
+        // Source is preserved (not converted — no separate close para).
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], MdastNode::Paragraph(_)));
+        // A diagnostic must be emitted.
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got {diags:?}");
+        assert!(
+            diags[0].message.contains("blank lines"),
+            "diagnostic should mention blank lines, got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("note"),
+            "diagnostic should mention directive name, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn fenced_code_block_does_not_trip_blank_line_diagnostic() {
+        // A MdastNode::Code (fenced code block) whose content contains
+        // `:::` should not trigger the diagnostic — only Paragraph nodes
+        // are inspected.
+        let mut r = DirectiveRegistry::with_defaults();
+        let code_block = MdastNode::Code(Code {
+            value: ":::note\nsome code\n:::".to_string(),
+            lang: Some("markdown".to_string()),
+            meta: None,
+            position: None,
+        });
+        let out = run_with_registry(&mut r, vec![code_block]);
+        assert_eq!(out.len(), 1, "code block preserved");
+        assert!(matches!(out[0], MdastNode::Code(_)));
+        let diags = r.take_diagnostics();
+        assert!(
+            diags.is_empty(),
+            "no diagnostic for fenced code block, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_unrecognised_container_no_blank_line_diagnostic() {
+        // A paragraph with a directive opener but NO newline (i.e., the
+        // close is a separate paragraph) should not trigger the blank-
+        // line diagnostic even when we can't find the close.
+        let mut r = DirectiveRegistry::with_defaults();
+        // Just the opener with no close sibling.
+        let out = run_with_registry(&mut r, vec![text_para(":::note")]);
+        // No diagnostic (the missing-close path, not the merged path).
+        let diags = r.take_diagnostics();
+        assert!(
+            diags.is_empty(),
+            "no blank-line diagnostic for lone opener, got {diags:?}"
+        );
+        // Source paragraph preserved.
+        assert_eq!(out.len(), 1);
     }
 }
