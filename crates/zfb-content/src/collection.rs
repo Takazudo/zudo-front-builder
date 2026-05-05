@@ -206,8 +206,32 @@ where
     let mut errors: Vec<CollectionError> = Vec::new();
 
     for path in files {
+        // Reset per-document pipeline state (e.g. HeadingLinksPlugin's
+        // slug-dedupe counter) before each new entry so cross-document
+        // state cannot leak from one file to the next. This mirrors
+        // the bundler's `materialise_collection` / `materialise_shadow`
+        // walk loops in `crates/zfb-build/src/bundler.rs`. Without
+        // this, the snapshot produced by `build_snapshot` and the
+        // bundler's bridge map disagree on the JSX `content_hash` for
+        // any file processed after a slug-colliding heading earlier in
+        // the same walk — `bridge.get(spec)` then misses and the page
+        // silently falls back to `<pre data-zfb-content-fallback>`.
         // Re-borrow the pipeline for each entry so the loop can use the
         // mutable reference across iterations without consuming it.
+        if let Some(p) = pipeline.as_deref_mut() {
+            p.reset_per_entry();
+            // Per-file source_dir for ResolveLinksPlugin (no-op when
+            // the plugin isn't wired). The bundler does the same in
+            // `crates/zfb-build/src/bundler.rs`'s materialise_*
+            // helpers — without this, relative `[link](./other.mdx)`
+            // references in collection content are emitted as raw
+            // markdown links instead of resolved URLs, which changes
+            // the compiled JSX byte-for-byte and diverges the
+            // snapshot's content_hash from the bundler's.
+            if let Some(parent) = path.parent() {
+                p.set_resolve_links_source_dir(parent.to_path_buf());
+            }
+        }
         match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut()) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
