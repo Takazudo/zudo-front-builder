@@ -95,6 +95,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         node_modules_dir: None,
         node_modules_preserve_symlinks: false,
         strip_md_ext: false,
+        code_highlight_theme: None,
+        resolve_markdown_links: None,
     }
 }
 

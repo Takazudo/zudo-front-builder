@@ -313,6 +313,8 @@ fn build_bundle(
         node_modules_preserve_symlinks: true,
         content_collections: Vec::new(),
         strip_md_ext: false,
+        code_highlight_theme: None,
+        resolve_markdown_links: None,
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

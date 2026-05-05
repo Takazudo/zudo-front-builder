@@ -24,8 +24,9 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
-    AdmonitionsPlugin, CjkFriendlyPlugin, CodeTitlePlugin, HeadingLinksPlugin, ImageEnlargePlugin,
-    MermaidPlugin, StripMdExtensionPlugin, SyntectPlugin,
+    AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
+    HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin, ResolveLinksPlugin,
+    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -134,6 +135,16 @@ pub struct Pipeline {
     /// relative href that lacks one). Defaults to `true` to match the
     /// JS engine and converge URL shape with `ResolveLinksPlugin`.
     add_trailing_slash: bool,
+    /// Optional `ResolveLinksPlugin` wired by the orchestrator when the
+    /// consumer enabled `resolveMarkdownLinks` in `zfb.config.ts`.
+    ///
+    /// Stored as a named field (not a generic boxed visitor) so the
+    /// orchestrator can call `set_resolve_links_source_dir` per-file
+    /// and `take_broken_links` to drain diagnostics. Applied in
+    /// `apply_mdast_visitors` AFTER all generic mdast visitors (i.e.
+    /// after `AdmonitionsPlugin`) so link rewriting sees finalized
+    /// mdast link nodes.
+    resolve_links: Option<ResolveLinksPlugin>,
 }
 
 impl Default for Pipeline {
@@ -159,6 +170,7 @@ impl Pipeline {
             hast_visitors: Vec::new(),
             parse_options: markdown::ParseOptions::mdx(),
             add_trailing_slash: true,
+            resolve_links: None,
         }
     }
 
@@ -179,6 +191,51 @@ impl Pipeline {
         };
         self.add_hast_visitor(Box::new(plugin));
         self
+    }
+
+    /// Wire a [`ResolveLinksPlugin`] into the pipeline's mdast phase.
+    ///
+    /// The plugin is applied before the generic mdast visitors so it
+    /// runs on the raw mdast before `AdmonitionsPlugin` transforms
+    /// directives. The `source_dir` slot is empty until the caller
+    /// calls [`Pipeline::set_resolve_links_source_dir`] per file.
+    ///
+    /// Call at most once per pipeline instance — a second call
+    /// replaces the previous plugin.
+    pub fn add_resolve_links(
+        &mut self,
+        source_map: std::collections::HashMap<std::path::PathBuf, String>,
+    ) -> &mut Self {
+        self.resolve_links = Some(ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map,
+            source_dir: None,
+        }));
+        self
+    }
+
+    /// Update the per-file source directory used by the wired
+    /// [`ResolveLinksPlugin`] to resolve relative link targets.
+    ///
+    /// Call once per MDX file, before `apply_mdast_visitors`, so
+    /// `./other.mdx` links are resolved against the correct directory.
+    /// No-op when [`add_resolve_links`](Pipeline::add_resolve_links)
+    /// was not called.
+    pub fn set_resolve_links_source_dir(&mut self, dir: std::path::PathBuf) {
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.set_source_dir(dir);
+        }
+    }
+
+    /// Drain broken-link diagnostics from the wired [`ResolveLinksPlugin`].
+    ///
+    /// Returns diagnostics accumulated since the last call (or since the
+    /// plugin was wired). Returns an empty vec when no plugin is wired.
+    /// Mirrors `DirectiveRegistry::take_diagnostics`.
+    pub fn take_broken_links(&mut self) -> Vec<BrokenLinkDiagnostic> {
+        self.resolve_links
+            .as_mut()
+            .map(|p| p.take_broken_links())
+            .unwrap_or_default()
     }
 
     /// New pipeline preloaded with the project's default plugin chain.
@@ -315,9 +372,19 @@ impl Pipeline {
     /// [`Pipeline::run`] (which would also build a hast tree the JSX
     /// emitter does not consume). Hast visitors stay untouched here —
     /// they are applied by [`Pipeline::run`] only.
+    ///
+    /// The optional `resolve_links` plugin (wired via
+    /// [`Pipeline::add_resolve_links`]) is applied AFTER the generic
+    /// mdast visitors (i.e. after `AdmonitionsPlugin`) so the source
+    /// map lookup sees the final mdast link nodes.
     pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
         for v in &mut self.mdast_visitors {
             v.visit(node);
+        }
+        // Apply ResolveLinksPlugin last in the mdast phase (after
+        // AdmonitionsPlugin) when wired. See field doc.
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(node);
         }
     }
 
