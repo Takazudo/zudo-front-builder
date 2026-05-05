@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
 use zfb_build::EmbeddedV8Host;
 use zfb_content::extract_tsx_frontmatter;
@@ -65,6 +66,86 @@ use zfb_render::paths::{
 };
 use zfb_render::paths_extract::{extract_paths, PathsExtractError, PathsExtraction};
 use zfb_router::{Route, RouteKind, Segment};
+
+// ---------------------------------------------------------------------------
+// Embedded @takazudo/zfb + @takazudo/zfb-runtime packages
+// ---------------------------------------------------------------------------
+//
+// The `build.rs` script copies `packages/zfb/src` and `packages/zfb-runtime/src`
+// (plus each package.json) into `$OUT_DIR/vendor/@takazudo/` and emits the env
+// var `ZFB_VENDOR_DIR` pointing at `$OUT_DIR/vendor`. The `include_dir!` macro
+// then embeds that tree in the binary at compile time.
+//
+// At runtime, `embedded_takazudo_node_modules()` extracts this tree into a
+// freshly allocated tempdir shaped as a proper `node_modules/@takazudo/` layout,
+// ready for esbuild resolution. The tempdir is kept alive for the duration of
+// the build by returning the `TempDir` handle alongside the path.
+
+/// Compile-time embedding of `$OUT_DIR/vendor/@takazudo` (= `@takazudo/zfb` +
+/// `@takazudo/zfb-runtime` source, staged by `build.rs`).
+///
+/// `include_dir!` expands `$VAR` using the env var set via `cargo:rustc-env`.
+/// `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<path>` pointing at
+/// `$OUT_DIR/vendor` so this path resolves at macro-expansion time.
+static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
+
+/// Extract the embedded `@takazudo` packages into a temporary directory
+/// structured as a `node_modules/@takazudo/` layout esbuild can resolve.
+///
+/// Returns a `(TempDir, PathBuf)` pair where:
+/// - `TempDir` must be kept alive for as long as esbuild runs (dropping it
+///   removes the temp directory).
+/// - `PathBuf` is the path to the `node_modules` root (i.e. the directory
+///   that should be passed as `BundlerInput::node_modules_dir`).
+///
+/// # Errors
+///
+/// Returns an error if the temp directory cannot be created or if extracting
+/// any embedded file fails.
+pub fn embedded_takazudo_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
+    let node_modules = dir.path().join("node_modules");
+    extract_dir_with_prefix(&EMBEDDED_VENDOR, &node_modules, Path::new(""))
+        .context("failed to extract embedded @takazudo packages")?;
+    let nm_path = node_modules;
+    Ok((dir, nm_path))
+}
+
+/// Recursively extract all entries from `embedded` into `dest`, stripping
+/// `prefix` from each entry's embedded path so that the layout under `dest`
+/// mirrors only the relative structure beneath `prefix`.
+///
+/// For example, if the embedded root is `$OUT_DIR/vendor` and `prefix` is
+/// `""` (empty), the entry `@takazudo/zfb/src/index.ts` is written to
+/// `dest/@takazudo/zfb/src/index.ts`.
+fn extract_dir_with_prefix(embedded: &Dir<'_>, dest: &Path, prefix: &Path) -> Result<()> {
+    use include_dir::DirEntry;
+    for entry in embedded.entries() {
+        match entry {
+            DirEntry::Dir(sub) => {
+                let rel = sub.path().strip_prefix(prefix).unwrap_or(sub.path());
+                let target = dest.join(rel);
+                std::fs::create_dir_all(&target).with_context(|| {
+                    format!("failed to create dir {}", target.display())
+                })?;
+                extract_dir_with_prefix(sub, dest, prefix)?;
+            }
+            DirEntry::File(file) => {
+                let rel = file.path().strip_prefix(prefix).unwrap_or(file.path());
+                let target = dest.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create parent dir {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&target, file.contents()).with_context(|| {
+                    format!("failed to write embedded file {}", target.display())
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
 
 /// A dynamic / catchall route surfaced by [`build_route_universe`].
 ///
@@ -736,18 +817,46 @@ pub fn build_prerender_map(
     map
 }
 
-/// Verify that `@takazudo/zfb-runtime` is resolvable from `project_root`
-/// (i.e. a `node_modules/@takazudo/zfb-runtime` exists somewhere up the
-/// directory tree). The bundle the renderer drives imports the runtime
-/// at module load time; without it, the embedded V8 host boots and immediately
-/// throws a module-resolution error that's harder for users to map back
-/// to a fixable action.
+/// Verify that `@takazudo/zfb-runtime` is resolvable for the current build.
 ///
-/// Returns `Ok(())` when the runtime is present, `Err(anyhow!)` with a
-/// "run pnpm install …" hint when it isn't. The check is best-effort —
-/// custom `node_modules` layouts (yarn pnp, …) are accepted as long as
-/// the conventional path exists.
+/// Resolution order:
+/// 1. **Binary-adjacent path** — `<dir of current executable>/node_modules/@takazudo/zfb-runtime`.
+///    A `cargo install`-ed `zfb` binary may ship a vendored `node_modules/` tree
+///    next to it; this path is checked first so consumer projects with no
+///    `node_modules` of their own still pass.
+/// 2. **Ancestor `node_modules` walk** starting at `project_root` — the
+///    conventional pnpm/npm layout used during dev / local-checkout flows.
+///
+/// Returns `Ok(())` when the runtime is found via either path.
+/// Returns `Err` with an actionable hint when neither resolves.
 pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
+    // 1. Binary-adjacent path (cargo-installed binary scenario).
+    let exe_dir = std::env::current_exe().ok().and_then(|p| {
+        p.parent().map(|d| d.to_path_buf())
+    });
+    check_runtime_installed_with_exe_dir(project_root, exe_dir.as_deref())
+}
+
+/// Inner implementation for [`check_runtime_installed`], accepting an optional
+/// `exe_dir` override so tests can supply a synthetic binary directory without
+/// depending on the test binary's actual location.
+pub(crate) fn check_runtime_installed_with_exe_dir(
+    project_root: &Path,
+    exe_dir: Option<&Path>,
+) -> Result<()> {
+    // 1. Binary-adjacent path (cargo-installed binary scenario).
+    if let Some(dir) = exe_dir {
+        if dir
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-runtime")
+            .exists()
+        {
+            return Ok(());
+        }
+    }
+
+    // 2. Ancestor node_modules walk (dev / local-checkout scenario).
     let mut cur: Option<&Path> = Some(project_root);
     while let Some(p) = cur {
         if p
@@ -760,10 +869,13 @@ pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
         }
         cur = p.parent();
     }
+
+    // Neither path found — emit an actionable error.
     Err(anyhow::anyhow!(
-        "could not find `node_modules/@takazudo/zfb-runtime` under {} or any parent. \
-         Run `pnpm install` (or your package manager's equivalent) in the project root \
-         so the SSG-render bundle can resolve `@takazudo/zfb-runtime` at embedded V8 host load time.",
+        "could not find `node_modules/@takazudo/zfb-runtime` under {} or any parent, \
+         and no binary-adjacent `node_modules/@takazudo/zfb-runtime` was found next to the `zfb` executable. \
+         Either run `pnpm install` (or your package manager's equivalent) in the project root, \
+         or install `zfb` via `cargo install` (which bundles the runtime automatically).",
         project_root.display()
     ))
     .context("zfb runtime resolution check failed")
@@ -944,6 +1056,80 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
         assert!(msg.contains("pnpm install"), "{msg}");
+    }
+
+    /// Binary-adjacent path: runtime found next to a synthetic executable dir.
+    ///
+    /// Mirrors `check_runtime_installed_finds_runtime_in_parent_node_modules`
+    /// but exercises the new exe-adjacent resolution path introduced by Sub 198.
+    #[test]
+    fn check_runtime_installed_finds_runtime_adjacent_to_binary() {
+        let dir = tempdir().unwrap();
+        // Create the binary-adjacent node_modules layout.
+        let runtime = dir
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+
+        // project_root has no node_modules — only the exe_dir does.
+        let project_root = tempdir().unwrap();
+        check_runtime_installed_with_exe_dir(project_root.path(), Some(dir.path())).unwrap();
+    }
+
+    /// Both paths missing → error that mentions both remedies.
+    #[test]
+    fn check_runtime_installed_errors_with_both_paths_missing() {
+        let project_root = tempdir().unwrap();
+        let fake_exe_dir = tempdir().unwrap(); // no node_modules inside
+        let err =
+            check_runtime_installed_with_exe_dir(project_root.path(), Some(fake_exe_dir.path()))
+                .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
+        assert!(msg.contains("pnpm install"), "{msg}");
+        assert!(msg.contains("cargo install"), "{msg}");
+    }
+
+    /// Smoke-test that `embedded_takazudo_node_modules` extracts a proper
+    /// `node_modules/@takazudo/zfb/package.json` and
+    /// `node_modules/@takazudo/zfb-runtime/package.json` layout that
+    /// `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
+    #[test]
+    fn embedded_takazudo_node_modules_extracts_runtime_layout() {
+        let (handle, nm_path) = embedded_takazudo_node_modules()
+            .expect("embedded_takazudo_node_modules should not fail");
+
+        // Package root markers must exist.
+        assert!(
+            nm_path.join("@takazudo/zfb/package.json").exists(),
+            "missing @takazudo/zfb/package.json in extracted layout"
+        );
+        assert!(
+            nm_path.join("@takazudo/zfb-runtime/package.json").exists(),
+            "missing @takazudo/zfb-runtime/package.json in extracted layout"
+        );
+
+        // Entry-point source files must be present.
+        assert!(
+            nm_path.join("@takazudo/zfb/src/index.ts").exists(),
+            "missing @takazudo/zfb/src/index.ts"
+        );
+        assert!(
+            nm_path.join("@takazudo/zfb-runtime/src/index.ts").exists(),
+            "missing @takazudo/zfb-runtime/src/index.ts"
+        );
+
+        // Verify check_runtime_installed sees the embedded runtime via the
+        // exe-dir path (the nm_path is the node_modules dir; its parent is
+        // the synthetic "binary dir" we pass as exe_dir).
+        let exe_dir = nm_path.parent().expect("nm_path should have a parent");
+        let project_root = tempdir().unwrap();
+        check_runtime_installed_with_exe_dir(project_root.path(), Some(exe_dir))
+            .expect("runtime should resolve via embedded nm_path");
+
+        drop(handle); // explicit: tempdir is removed here
     }
 
     // ---- expand_dynamic_routes -------------------------------------------

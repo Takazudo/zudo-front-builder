@@ -71,8 +71,8 @@ use crate::config::Config;
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    eval_deferred_paths_via_worker, expand_dynamic_routes, DeferredDynamicRoute,
-    RouteUniversePlan, WorkerDispatch,
+    embedded_takazudo_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
+    DeferredDynamicRoute, RouteUniversePlan, WorkerDispatch,
 };
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
@@ -788,8 +788,37 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // tempdir has no `node_modules` to walk into and no tsconfig
     // `paths` to honour, so anything beyond a self-contained page
     // module fails to resolve.
+    //
+    // When the project has no node_modules at all (cargo-install scenario),
+    // fall back to the binary-embedded @takazudo packages so esbuild can
+    // still resolve `@takazudo/zfb` and `@takazudo/zfb-runtime`. The
+    // `_embedded_nm_handle` keeps the tempdir alive for the duration of
+    // the bundle step; it is dropped after `bundle(...)` returns.
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
     if let Some(nm) = detect_project_node_modules(project_root) {
         bundler_input.node_modules_dir = Some(nm);
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_takazudo_node_modules() {
+            Ok((handle, nm_path)) => {
+                bundler_input.node_modules_dir = Some(nm_path);
+                // esbuild must follow symlinks into the tempdir so that
+                // package imports resolve correctly from the extracted location.
+                bundler_input.node_modules_preserve_symlinks = false;
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                // Non-fatal: log a warning and continue without injecting a
+                // node_modules_dir. The build will likely fail later if the
+                // project also has no ancestor node_modules, but that failure
+                // produces a more useful esbuild error message than aborting here.
+                crate::output::warn(format!(
+                    "could not extract embedded @takazudo packages ({e}); \
+                     falling back to node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
     }
     bundler_input.tsconfig_paths = read_tsconfig_paths(project_root);
     // Per-collection content materialisation feeds the MDX content
