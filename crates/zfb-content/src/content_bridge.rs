@@ -119,22 +119,102 @@ pub enum BridgeError {
     },
 }
 
+/// Pipeline-shape configuration for [`build_snapshot_with_config`].
+///
+/// The fields here mirror the knobs the bundler passes to
+/// `Pipeline::with_defaults_and_theme` + `add_strip_md_ext` +
+/// `add_resolve_links` in `crates/zfb-build/src/bundler.rs`. The
+/// snapshot walker MUST construct its pipelines with the same shape so
+/// the JSX `content_hash` it bakes into each `EntrySnapshot::module_specifier`
+/// matches the bundler's bridge-map key byte-for-byte. Any divergence
+/// here makes `bridge.get(specifier)` miss and dumps the page into a
+/// `<pre data-zfb-content-fallback>` block.
+///
+/// `Default` reproduces the pre-config-API behaviour (no theme override,
+/// no strip-md-ext, no resolve-links) so existing call sites that don't
+/// need any of these knobs can keep using [`build_snapshot`].
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPipelineConfig {
+    /// Optional syntect theme name. Forwarded to
+    /// [`Pipeline::with_defaults_and_theme`]. `None` keeps the built-in
+    /// default theme.
+    pub code_highlight_theme: Option<String>,
+    /// When true, append [`Pipeline::add_strip_md_ext`] to every
+    /// per-collection pipeline. Match the bundler's `strip_md_ext`
+    /// flag exactly.
+    pub strip_md_ext: bool,
+    /// When `Some`, wire [`Pipeline::add_resolve_links`] with this
+    /// `(absolute path → URL)` map and call
+    /// [`Pipeline::set_resolve_links_source_dir`] per file so internal
+    /// `[link](./other.mdx)` references resolve to URLs. `None` skips
+    /// the plugin entirely.
+    pub resolve_source_map:
+        Option<std::collections::HashMap<std::path::PathBuf, String>>,
+}
+
+impl SnapshotPipelineConfig {
+    /// Construct a pipeline shaped by this config. Used by
+    /// [`build_snapshot_with_config`] once per collection.
+    fn build_pipeline(&self) -> Pipeline {
+        let mut p = Pipeline::with_defaults_and_theme(self.code_highlight_theme.as_deref());
+        if self.strip_md_ext {
+            p.add_strip_md_ext();
+        }
+        if let Some(map) = self.resolve_source_map.as_ref() {
+            p.add_resolve_links(map.clone());
+        }
+        p
+    }
+}
+
 /// Build a deterministic [`ContentSnapshot`] from the configured
-/// collections.
+/// collections, using the **default** pipeline shape (no theme override,
+/// no strip-md-ext, no resolve-links).
+///
+/// **Most callers should prefer [`build_snapshot_with_config`]**, which
+/// accepts a [`SnapshotPipelineConfig`] mirroring the bundler's
+/// pipeline knobs. This zero-arg form exists for unit tests and
+/// fixture-based call sites that don't enable any of the optional
+/// pipeline plugins; it produces snapshot hashes that only match the
+/// bundler when the bundler is also using the default pipeline shape.
+///
+/// See [`build_snapshot_with_config`] for full semantics.
+///
+/// # Errors
+///
+/// Returns [`BridgeError::Walk`] if any underlying walker call fails.
+pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapshot, BridgeError> {
+    build_snapshot_with_config(collections, &SnapshotPipelineConfig::default())
+}
+
+/// Build a deterministic [`ContentSnapshot`] from the configured
+/// collections, using a pipeline whose shape matches the bundler's.
 ///
 /// Walks each collection in `collections` via [`walk_collection`],
-/// driving the walker through a fresh-per-collection
-/// [`Pipeline::with_defaults()`] so the resulting JSX (and the
-/// [`module_specifier`](EntrySnapshot::module_specifier) hash baked from
-/// it) is **byte-identical** to what the bundler emits in
-/// `crates/zfb-build/src/bundler.rs`. Snapshot specifiers must agree
-/// with the bundler's bridge map keys byte-for-byte; otherwise every
-/// `globalThis.__zfb.content.get(specifier)` lookup misses and the page
-/// renders the raw-markdown `<pre data-zfb-content-fallback>` fallback.
-/// Driving both code paths through the same default pipeline shape —
-/// one pipeline per collection, reused across files within that
-/// collection — is what keeps the two hashes in lock-step
-/// (zfb #131 / #132).
+/// driving the walker through a fresh-per-collection [`Pipeline`] built
+/// from `pipeline_config` so the resulting JSX (and the
+/// [`module_specifier`](EntrySnapshot::module_specifier) hash baked
+/// from it) is **byte-identical** to what the bundler emits in
+/// `crates/zfb-build/src/bundler.rs`. Snapshot specifiers MUST agree
+/// with the bundler's bridge-map keys byte-for-byte; otherwise every
+/// `globalThis.__zfb.content.get(specifier)` lookup misses and the
+/// page renders the raw-markdown `<pre data-zfb-content-fallback>`
+/// fallback.
+///
+/// The pipeline shape covered by [`SnapshotPipelineConfig`] must mirror
+/// the bundler's three knobs (theme, strip-md-ext, resolve-links). When
+/// any of them is enabled in the bundler but disabled here, the JSX
+/// content hash diverges and the bridge lookup misses (zfb#188).
+///
+/// Per-collection instantiation matters because some default plugins
+/// (notably `HeadingLinksPlugin`) carry per-document state (the
+/// slug-dedupe `seen` map). Reusing one pipeline across collections
+/// would mean a heading like "Intro" in collection B would slugify to
+/// `intro-1` if collection A already used `intro`, leaking unrelated
+/// collections' headings into B's compiled JSX (and into the hash that
+/// drives `module_specifier`). The bundler's
+/// `materialise_*` helpers also instantiate one pipeline per
+/// collection; this walker matches that shape.
 ///
 /// Each entry is converted into an [`EntrySnapshot`] and the resulting
 /// `Vec` is inserted into a [`BTreeMap`] keyed by collection name.
@@ -158,34 +238,25 @@ pub enum BridgeError {
 /// Returns [`BridgeError::Walk`] if any underlying walker call fails
 /// (typically a malformed frontmatter, schema validation failure, or
 /// MDX compile error inside one of the configured roots).
-pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapshot, BridgeError> {
+pub fn build_snapshot_with_config(
+    collections: &[CollectionConfig],
+    pipeline_config: &SnapshotPipelineConfig,
+) -> Result<ContentSnapshot, BridgeError> {
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
-        // Construct a fresh `Pipeline::with_defaults()` per collection,
-        // mirroring the bundler's two call sites at
-        // `crates/zfb-build/src/bundler.rs:734` and `:964` — each
-        // `materialise_*` call hoists its own pipeline outside the
-        // walk loop, so within one collection a single pipeline serves
-        // every entry sequentially while no state leaks across
-        // collection boundaries. Per-collection instantiation matters
-        // because some default plugins (notably `HeadingLinksPlugin`)
-        // carry per-document state (the slug-dedupe `seen` map):
-        // reusing one pipeline across collections would mean a heading
-        // like "Intro" in collection B would slugify to `intro-1` if
-        // collection A already used `intro`, leaking unrelated
-        // collections' headings into B's compiled JSX (and into the
-        // hash that drives `module_specifier`). The snapshot must
-        // agree byte-for-byte with the bundler's bridge map keys (see
-        // the doc comment on `build_snapshot`); the fastest way to
-        // hold that contract is to drive `walk_collection` with the
-        // same pipeline shape the bundler uses.
-        let mut pipeline = Pipeline::with_defaults();
+        let mut pipeline = pipeline_config.build_pipeline();
 
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
         // why the parallel walker is implemented as a `T` substitution
         // rather than a duplicate FS traversal.
+        //
+        // `walk_collection_with_cache` resets the pipeline's per-entry
+        // state before each file (zfb#188-followup), so any stateful
+        // plugin in the chain — `HeadingLinksPlugin`'s slug counter
+        // included — starts fresh per document, matching the bundler's
+        // `materialise_*` walk loop.
         let entries: Vec<Entry<UntypedFrontmatter>> =
             walk_collection(&cfg.root, Some(&mut pipeline)).map_err(|source| {
                 BridgeError::Walk {

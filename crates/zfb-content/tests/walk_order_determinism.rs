@@ -112,6 +112,76 @@ fn with_reset_per_entry_same_heading_always_gets_base_slug() {
     }
 }
 
+/// Verify that `build_snapshot` (the snapshot-side walker) and an
+/// independent compile-with-reset call agree on the JSX content hash
+/// for every entry. Before zfb#188-followup, `walk_collection_with_cache`
+/// did NOT call `Pipeline::reset_per_entry()` between files, so any
+/// stateful plugin (notably `HeadingLinksPlugin`) leaked state from one
+/// entry to the next. The bundler's bridge-map walk DID reset, so the
+/// snapshot's `module_specifier` hash diverged from the bridge-map's
+/// hash and `bridge.get(specifier)` missed, dumping the page into a
+/// `<pre data-zfb-content-fallback>` block.
+///
+/// This test pins the contract end-to-end: build a corpus where many
+/// files share an identical heading slug (`## Setup`), let
+/// `build_snapshot` walk it, then independently compile each file with
+/// a fresh-per-file pipeline and confirm every snapshot specifier hash
+/// matches what the bundler-style compile produces.
+#[test]
+fn build_snapshot_resets_pipeline_per_entry_so_hashes_match_bundler() {
+    use zfb_content::{build_snapshot, CollectionConfig};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("docs");
+    std::fs::create_dir_all(&root).unwrap();
+
+    // Five files with the same `## Setup` heading. Without
+    // `reset_per_entry()`, files 2..5 would receive `setup-1`,
+    // `setup-2`, `setup-3`, `setup-4` slugs — yielding distinct JSX
+    // and distinct content hashes from a fresh-pipeline compile.
+    let bodies = [
+        ("a.mdx", "---\ntitle: A\n---\n\n## Setup\n\nFirst.\n"),
+        ("b.mdx", "---\ntitle: B\n---\n\n## Setup\n\nSecond.\n"),
+        ("c.mdx", "---\ntitle: C\n---\n\n## Setup\n\nThird.\n"),
+        ("d.mdx", "---\ntitle: D\n---\n\n## Setup\n\nFourth.\n"),
+        ("e.mdx", "---\ntitle: E\n---\n\n## Setup\n\nFifth.\n"),
+    ];
+    for (name, body) in &bodies {
+        std::fs::write(root.join(name), body).unwrap();
+    }
+
+    let snap =
+        build_snapshot(&[CollectionConfig::new("docs", &root)]).expect("snapshot ok");
+    let entries = snap.collections.get("docs").expect("docs collection");
+    assert_eq!(entries.len(), 5);
+
+    // Now compile each body the same way the bundler does — with a
+    // `reset_per_entry()` call before each file — and assert the
+    // hashes line up byte-for-byte.
+    let mut bundler_pipeline = Pipeline::with_defaults();
+    for (i, (name, body)) in bodies.iter().enumerate() {
+        bundler_pipeline.reset_per_entry();
+        // Strip frontmatter the same way build_snapshot does.
+        let stripped = body.split_once("---\n").and_then(|(_, rest)| rest.split_once("---\n")).map(|(_, b)| b).unwrap_or(body);
+        let path = root.join(name);
+        let compiled = compile_mdx_to_jsx_module_cached(stripped, &path, None, Some(&mut bundler_pipeline))
+            .expect("compile ok");
+        let snap_entry = &entries[i];
+        let snap_hash = snap_entry
+            .module_specifier
+            .rsplit_once('#')
+            .map(|(_, h)| h)
+            .expect("specifier has hash");
+        assert_eq!(
+            snap_hash, compiled.content_hash,
+            "snapshot hash for {name} ({snap_specifier}) must match bundler-style fresh-pipeline compile ({compiled_hash}). \
+             A divergence here means `bridge.get(specifier)` will miss and the page will fall back to <pre data-zfb-content-fallback>.",
+            snap_specifier = snap_entry.module_specifier,
+            compiled_hash = compiled.content_hash,
+        );
+    }
+}
+
 /// Verify that processing documents in two different orders (simulating
 /// the old unsorted walk vs the sorted walk) produces byte-identical
 /// output when `reset_per_entry()` is called between documents.

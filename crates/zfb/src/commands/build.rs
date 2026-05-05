@@ -698,7 +698,22 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
                 )
             })
             .collect();
-        match zfb_content::build_snapshot(&collections) {
+        // Mirror the bundler's pipeline shape (theme, strip-md-ext,
+        // resolve-links). Every plugin the bundler appends to its
+        // `Pipeline::with_defaults_and_theme(...)` MUST also be
+        // appended here, otherwise the JSX content_hash diverges and
+        // `bridge.get(specifier)` misses on every collection page —
+        // dumping the rendered output into a
+        // `<pre data-zfb-content-fallback>` block. See zfb#188.
+        let snapshot_config = zfb_content::SnapshotPipelineConfig {
+            code_highlight_theme: config
+                .code_highlight
+                .as_ref()
+                .and_then(|c| c.theme.clone()),
+            strip_md_ext: config.strip_md_ext,
+            resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
+        };
+        match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
             Ok(snap) => match serde_json::to_string(&snap) {
                 Ok(json) => Some(json),
                 Err(e) => {
@@ -1279,6 +1294,37 @@ fn strip_jsonc(input: &str) -> String {
         j += 1;
     }
     stripped
+}
+
+/// Build the `(absolute path → URL)` source map the bundler hands to
+/// `ResolveLinksPlugin`, so `build_snapshot_with_config` can drive the
+/// snapshot-side pipeline through the same plugin shape. Returns `None`
+/// when the project doesn't enable `resolveMarkdownLinks`. See zfb#188.
+fn build_resolve_source_map_for_snapshot(
+    project_root: &Path,
+    config: &Config,
+) -> Option<std::collections::HashMap<std::path::PathBuf, String>> {
+    use zfb_content::plugins::util::source_map::{
+        build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
+    };
+    let spec = config.resolve_markdown_links.as_ref()?;
+    if !spec.enabled {
+        return None;
+    }
+    let docs_dir = project_root.join(&spec.docs_dir);
+    let map = build_docs_source_map(DocsSourceMapOptions {
+        collections: vec![CollectionRoute {
+            name: "docs".to_string(),
+            dir: docs_dir,
+            // Match the bundler's hard-coded `/docs/` prefix in
+            // `crates/zfb-build/src/bundler.rs` (`build_docs_source_map`
+            // call). Both paths must produce the same URL strings or
+            // `[link](./other.mdx)` rewrites diverge byte-for-byte and
+            // the snapshot's content_hash drifts from the bundler's.
+            route_prefix: "/docs/".to_string(),
+        }],
+    });
+    Some(map)
 }
 
 /// When `ZFB_DEBUG_SNAPSHOT` is truthy, build the content snapshot from

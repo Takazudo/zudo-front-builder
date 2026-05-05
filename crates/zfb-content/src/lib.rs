@@ -12,8 +12,8 @@ pub mod syntect_highlight;
 pub mod tsx_frontmatter;
 
 pub use content_bridge::{
-    build_snapshot, debug_snapshot_enabled, BridgeError, CollectionConfig, ContentSnapshot,
-    EntrySnapshot,
+    build_snapshot, build_snapshot_with_config, debug_snapshot_enabled, BridgeError,
+    CollectionConfig, ContentSnapshot, EntrySnapshot, SnapshotPipelineConfig,
 };
 
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
