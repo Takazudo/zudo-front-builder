@@ -2398,6 +2398,24 @@ mod tests {
         assert!(!jsx_likely_breaks_downstream_parser(
             r"/* {\infty} block-commented */"
         ));
+        // 6. Issue #206 shapes — inline-code values containing
+        //    HTML-tag-like text and curly-brace patterns. The MDX
+        //    emitter wraps each value in `js_string_literal_in_braces`
+        //    (see `crates/zfb-content/src/mdx_jsx_emit.rs`), producing
+        //    `{"…escaped…"}` shapes. The `{` is followed by `"` —
+        //    neither `-` nor `\\` — so the heuristic must skip.
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r#"<_components.code>{"<link rel=\"stylesheet\">"}</_components.code>"#
+        ));
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r#"<_components.code>{"<script type=\"module\">"}</_components.code>"#
+        ));
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r#"<_components.code>{"{main-deploy,preview-deploy,pr-checks}.yml"}</_components.code>"#
+        ));
+        assert!(!jsx_likely_breaks_downstream_parser(
+            r#"<_components.code>{"@theme { --color-*: initial; }"}</_components.code>"#
+        ));
     }
 
     #[test]
