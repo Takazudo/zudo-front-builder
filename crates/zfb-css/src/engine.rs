@@ -226,12 +226,16 @@ pub fn build_synthesised_entry_css(
     let mut out = String::new();
     let mut emitted_import = false;
 
-    // Detect a leading `@import "tailwindcss";` in the user CSS so we
-    // don't emit it twice.
+    // Detect a leading `@import "tailwindcss";` (full bundle) *or* any
+    // split-import sub-path (`@import "tailwindcss/preflight"`, etc.) in
+    // the user CSS so we don't prepend the full bundle on top and leak the
+    // default palette tokens. The split-import pattern is the deliberate
+    // way users opt out of the full default theme.
     let user_has_import = input_css_text
         .map(|t| t.lines().any(|l| {
             let t = l.trim();
             t.starts_with("@import \"tailwindcss\"") || t.starts_with("@import 'tailwindcss'")
+                || t.starts_with("@import \"tailwindcss/") || t.starts_with("@import 'tailwindcss/")
         }))
         .unwrap_or(false);
 
