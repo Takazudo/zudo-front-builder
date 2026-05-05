@@ -117,10 +117,15 @@ fn object_to_ts(obj: &serde_json::Map<String, JsonValue>, indent: usize) -> Stri
     let close_pad = " ".repeat(indent);
 
     let mut out = String::from("{\n");
-    // Iteration order: serde_json's default `Map` is a `BTreeMap`, so
-    // property names sort alphabetically. That keeps the emitted `.d.ts`
-    // byte-stable across runs without depending on `preserve_order`.
-    for (key, sub) in props {
+    // Explicit alphabetical sort so the emitted `.d.ts` is byte-stable
+    // regardless of whether serde_json's `preserve_order` feature is
+    // enabled (transitively or directly). Previously the order relied on
+    // `Map` being a `BTreeMap`, but `preserve_order` swaps that for an
+    // `IndexMap` (insertion order). Sorting explicitly here makes the
+    // contract dep-tree-independent.
+    let mut sorted_props: Vec<(&String, &JsonValue)> = props.iter().collect();
+    sorted_props.sort_by_key(|(k, _)| k.as_str());
+    for (key, sub) in sorted_props {
         let optional = !required.contains(key.as_str());
         let q = if optional { "?" } else { "" };
         let ts = schema_to_ts_inner(sub, inner_indent);
