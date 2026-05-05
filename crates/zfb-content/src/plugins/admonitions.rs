@@ -30,10 +30,16 @@ use super::directives::{DirectiveDef, DirectiveKind, DirectiveRegistry};
 ///
 /// Returned in the historical match order (`note`, `tip`, `warning`,
 /// `danger`, `info`, `details`) so callers building a registry from
-/// these get a deterministic order. `details` has
-/// `title_from_label = false` because the legacy syntax is
-/// `:::details title="Click me"` (unbraced attribute), not
-/// `:::details[Click me]`.
+/// these get a deterministic order. All six have `title_from_label =
+/// true` so `:::note[Custom Title]` promotes the bracketed label to a
+/// `title="…"` attribute — matching the behaviour of Docusaurus and
+/// Starlight. `:::details` continues to accept the legacy unbraced form
+/// (`:::details title="Click me"`) since attribute parsing is additive:
+/// the label path and the unbraced-attr path both set `title`, and the
+/// unbraced form writes directly to `attrs` (not `label`), so both
+/// co-exist without conflict. Consumers that want the old label-as-child
+/// behaviour can register their own `DirectiveDef` with
+/// `title_from_label: false`.
 #[must_use]
 pub fn default_admonition_directives() -> Vec<DirectiveDef> {
     vec![
@@ -41,37 +47,37 @@ pub fn default_admonition_directives() -> Vec<DirectiveDef> {
             name: "note".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Note".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
         DirectiveDef {
             name: "tip".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Tip".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
         DirectiveDef {
             name: "warning".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Warning".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
         DirectiveDef {
             name: "danger".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Danger".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
         DirectiveDef {
             name: "info".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Info".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
         DirectiveDef {
             name: "details".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Details".to_string(),
-            title_from_label: false,
+            title_from_label: true,
         },
     ]
 }
@@ -83,6 +89,33 @@ pub fn default_admonition_directives() -> Vec<DirectiveDef> {
 /// [`DirectiveRegistry::with_defaults`]. New code should prefer using
 /// the registry directly so it can register additional directives
 /// alongside the built-ins.
+///
+/// ## Blank-line requirement
+///
+/// Each fence line (`:::note[…]` and the closing `:::`) **must** be
+/// separated from surrounding content by blank lines so the markdown
+/// parser treats them as separate paragraphs. Without the blank lines
+/// both fences and the body collapse into a single paragraph and the
+/// admonition is not recognised. [`DirectiveRegistry`] emits a
+/// [`super::directives::DirectiveDiagnostic`] at content-processing
+/// time when it detects this pattern; the build orchestrator prints it
+/// as a warning.
+///
+/// Correct:
+/// ```markdown
+/// :::note[Title]
+///
+/// Body text.
+///
+/// :::
+/// ```
+///
+/// Incorrect (no blank lines — emits diagnostic):
+/// ```markdown
+/// :::note
+/// Body text.
+/// :::
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct AdmonitionsPlugin {
     registry: DirectiveRegistry,
@@ -222,5 +255,79 @@ mod tests {
         };
         assert_eq!(children.len(), 2);
         assert!(matches!(children[0], MdastNode::Paragraph(_)));
+    }
+
+    // ---- title_from_label (Sub #135) ----
+
+    #[test]
+    fn note_with_label_promotes_to_title_attr() {
+        // :::note[Custom Title] should produce title="Custom Title" on
+        // the emitted JSX element.
+        let root = run_root(vec![
+            text_para(":::note[Custom Title]"),
+            text_para("body"),
+            text_para(":::"),
+        ]);
+        let MdastNode::Root(Root { children, .. }) = root else {
+            unreachable!("expected MdastNode::Root")
+        };
+        assert_eq!(children.len(), 1);
+        let j = flow(&children[0]);
+        assert_eq!(j.name.as_deref(), Some("Note"));
+        let title_attr = j.attributes.iter().find_map(|a| {
+            if let AttributeContent::Property(p) = a {
+                if p.name == "title" {
+                    if let Some(AttributeValue::Literal(v)) = &p.value {
+                        return Some(v.clone());
+                    }
+                }
+            }
+            None
+        });
+        assert_eq!(
+            title_attr.as_deref(),
+            Some("Custom Title"),
+            "label promoted to title attribute"
+        );
+    }
+
+    #[test]
+    fn all_kinds_accept_label_as_title() {
+        // Verify all six built-in admonitions promote [label] → title="…".
+        for (key, tag) in [
+            ("note", "Note"),
+            ("tip", "Tip"),
+            ("warning", "Warning"),
+            ("danger", "Danger"),
+            ("info", "Info"),
+            ("details", "Details"),
+        ] {
+            let root = run_root(vec![
+                text_para(&format!(":::{key}[My Label]")),
+                text_para("body"),
+                text_para(":::"),
+            ]);
+            let MdastNode::Root(Root { children, .. }) = root else {
+                unreachable!("expected MdastNode::Root")
+            };
+            assert_eq!(children.len(), 1, "single JSX element for {key}");
+            let j = flow(&children[0]);
+            assert_eq!(j.name.as_deref(), Some(tag), "component name for {key}");
+            let title_attr = j.attributes.iter().find_map(|a| {
+                if let AttributeContent::Property(p) = a {
+                    if p.name == "title" {
+                        if let Some(AttributeValue::Literal(v)) = &p.value {
+                            return Some(v.clone());
+                        }
+                    }
+                }
+                None
+            });
+            assert_eq!(
+                title_attr.as_deref(),
+                Some("My Label"),
+                "title attr for {key}"
+            );
+        }
     }
 }
