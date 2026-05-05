@@ -49,6 +49,17 @@ zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
 zfb-watcher = { path = "../zfb-watcher" }
 
+[build-dependencies]
+# Binary download and SHA-256 verification in build.rs.
+# reqwest blocking + rustls-tls avoids a system OpenSSL dependency.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# SHA-256 for binary verification (same version used by zfb-build).
+sha2 = "0.10"
+hex = "0.4"
+# Gzip + tar extraction for the esbuild npm package (.tgz).
+flate2 = "1"
+tar = "0.4"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

@@ -7,10 +7,18 @@
 //
 // Run via `pnpm fetch:tailwind` from the workspace root.
 //
+// ⚠️  SUPERSEDED: crates/zfb/build.rs is now the authoritative download
+// path. When you run `cargo build` or `cargo install --path crates/zfb`,
+// the Cargo build script downloads and stages both the esbuild and
+// tailwindcss binaries automatically — no pnpm or Node.js required.
+// This script is kept as a developer convenience for environments that
+// already have Node.js available and want to pre-fetch the binary without
+// triggering a full Cargo build.
+//
 // The version below MUST stay in sync with the pin documented in
-// crates/zfb-css/README.md ("Tailwind CSS Version" section). When that
-// pin is bumped, bump this constant in the same commit. Until we add a
-// shared workspace pin file, this is the only sync point.
+// crates/zfb-css/README.md ("Tailwind CSS Version" section) AND with
+// TAILWIND_VERSION in crates/zfb/build.rs. When that pin is bumped,
+// bump this constant and the build.rs constant in the same commit.
 const TAILWIND_VERSION = "4.2.0";
 
 import { createHash } from "node:crypto";
