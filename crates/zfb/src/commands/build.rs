@@ -71,7 +71,7 @@ use crate::config::Config;
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    embedded_takazudo_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
+    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
     DeferredDynamicRoute, RouteUniversePlan, WorkerDispatch,
 };
 
@@ -195,10 +195,7 @@ trait BuildRunner {
     /// + `sourcemap_path`. We return them through
     ///   [`zfb_build::bundler::BundlerOutput`] so production retains the
     ///   full manifest for the renderer's diagnostics path.
-    fn bundle(
-        &self,
-        input: BundlerInput,
-    ) -> Result<BundlerOutput>;
+    fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput>;
 
     /// Evaluate deferred dynamic routes whose `paths()` couldn't be
     /// statically extracted. The production runner starts the embedded V8
@@ -221,7 +218,11 @@ trait BuildRunner {
         deferred: &[DeferredDynamicRoute],
         bundle_out: &BundlerOutput,
         cache: &mut PathsCache,
-    ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)>;
+    ) -> Result<(
+        crate::render_pipeline::DynamicExpansion,
+        Backend,
+        WorkerHandle,
+    )>;
 
     /// Run the renderer. Errors surface verbatim — the CLI relies on
     /// the renderer's
@@ -275,10 +276,7 @@ impl Drop for WorkerHandle {
 /// renderer APIs.
 struct DefaultRunner;
 impl BuildRunner for DefaultRunner {
-    fn bundle(
-        &self,
-        input: BundlerInput,
-    ) -> Result<BundlerOutput> {
+    fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
         bundle(input)
     }
 
@@ -287,14 +285,20 @@ impl BuildRunner for DefaultRunner {
         deferred: &[DeferredDynamicRoute],
         bundle_out: &BundlerOutput,
         cache: &mut PathsCache,
-    ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+    ) -> Result<(
+        crate::render_pipeline::DynamicExpansion,
+        Backend,
+        WorkerHandle,
+    )> {
         let factory = crate::v8_host_adapter::make_v8_host_factory();
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
             return Ok((
                 crate::render_pipeline::DynamicExpansion::default(),
-                Backend::EmbeddedV8 { host_factory: factory },
+                Backend::EmbeddedV8 {
+                    host_factory: factory,
+                },
                 WorkerHandle(None),
             ));
         }
@@ -304,7 +308,9 @@ impl BuildRunner for DefaultRunner {
         let mut state = zfb_build::renderer::start(zfb_build::renderer::RendererStartInput {
             bundle_path: bundle_out.bundle_path.clone(),
             sourcemap_path: bundle_out.sourcemap_path.clone(),
-            backend: Backend::EmbeddedV8 { host_factory: factory.clone() },
+            backend: Backend::EmbeddedV8 {
+                host_factory: factory.clone(),
+            },
             request_timeout: None,
         })
         .context("could not start embedded V8 host for runtime paths() evaluation")?;
@@ -329,7 +335,9 @@ impl BuildRunner for DefaultRunner {
         // after render_all.
         Ok((
             expansion,
-            Backend::EmbeddedV8 { host_factory: factory },
+            Backend::EmbeddedV8 {
+                host_factory: factory,
+            },
             WorkerHandle(Some(state)),
         ))
     }
@@ -385,11 +393,7 @@ fn build_default_css_payload(
     // Honour the user's opt-out switch before doing any source
     // discovery work — keeps the default runner free of subprocess
     // cost when the project explicitly does not want Tailwind.
-    let tailwind_enabled = config
-        .tailwind
-        .as_ref()
-        .map(|t| t.enabled)
-        .unwrap_or(true);
+    let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
         return Ok(None);
     }
@@ -486,10 +490,7 @@ fn build_default_css_payload(
 /// `<root>/styles/global.css` wins so existing projects on the
 /// original convention see no behaviour change.
 fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
-    const CANDIDATES: &[&[&str]] = &[
-        &["styles", "global.css"],
-        &["src", "styles", "global.css"],
-    ];
+    const CANDIDATES: &[&[&str]] = &[&["styles", "global.css"], &["src", "styles", "global.css"]];
     for parts in CANDIDATES {
         let mut candidate = project_root.to_path_buf();
         for seg in *parts {
@@ -634,9 +635,7 @@ fn build_default_islands_payload(
 
 /// Drive the build for a fully-resolved input set. Returns the number
 /// of pages written.
-fn run_build<R: BuildRunner, A: AdapterRunner>(
-    args: BuildArgsResolved<'_, R, A>,
-) -> Result<usize> {
+fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>) -> Result<usize> {
     let BuildArgsResolved {
         project_root,
         outdir,
@@ -691,12 +690,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         let collections: Vec<zfb_content::CollectionConfig> = config
             .collections
             .iter()
-            .map(|c| {
-                zfb_content::CollectionConfig::new(
-                    c.name.clone(),
-                    project_root.join(&c.path),
-                )
-            })
+            .map(|c| zfb_content::CollectionConfig::new(c.name.clone(), project_root.join(&c.path)))
             .collect();
         // Mirror the bundler's pipeline shape (theme, strip-md-ext,
         // resolve-links). Every plugin the bundler appends to its
@@ -706,10 +700,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // dumping the rendered output into a
         // `<pre data-zfb-content-fallback>` block. See zfb#188.
         let snapshot_config = zfb_content::SnapshotPipelineConfig {
-            code_highlight_theme: config
-                .code_highlight
-                .as_ref()
-                .and_then(|c| c.theme.clone()),
+            code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
             strip_md_ext: config.strip_md_ext,
             resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
         };
@@ -756,12 +747,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // renderer boot) with a pointer at the offending route.
     let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
         .iter()
-        .filter(|entry| {
-            !prerender_map
-                .get(&entry.route_key)
-                .copied()
-                .unwrap_or(true)
-        })
+        .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
         .map(|entry| SsrRouteRef {
             route_key: entry.route_key.as_str(),
             url_path: entry.url_path.as_str(),
@@ -814,7 +800,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         bundler_input.node_modules_dir = Some(nm);
         _embedded_nm_handle = None;
     } else {
-        match embedded_takazudo_node_modules() {
+        match embedded_node_modules() {
             Ok((handle, nm_path)) => {
                 bundler_input.node_modules_dir = Some(nm_path);
                 // esbuild must follow symlinks into the tempdir so that
@@ -854,10 +840,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme instead of the default `base16-ocean.dark`.
-    bundler_input.code_highlight_theme = config
-        .code_highlight
-        .as_ref()
-        .and_then(|c| c.theme.clone());
+    bundler_input.code_highlight_theme =
+        config.code_highlight.as_ref().and_then(|c| c.theme.clone());
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
@@ -881,9 +865,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     warn_deferred_dynamic(&runtime_expansion.deferred);
 
     if static_routes.is_empty() {
-        output::warn(
-            "no routes to render after runtime paths() evaluation; dist will be empty",
-        );
+        output::warn("no routes to render after runtime paths() evaluation; dist will be empty");
         return Ok(0);
     }
 
@@ -1000,8 +982,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // <out_dir>/<base-segment>/... so URLs emitted via withBase()
     // resolve under the sub-path mount. Missing public/ is silently
     // ignored — not every project has one.
-    copy_public_dir(project_root, outdir, &config.public_dir, config.base.as_deref())
-        .context("public dir copy step failed")?;
+    copy_public_dir(
+        project_root,
+        outdir,
+        &config.public_dir,
+        config.base.as_deref(),
+    )
+    .context("public dir copy step failed")?;
 
     Ok(render_out.ssg_files_written.len())
 }
@@ -1262,9 +1249,7 @@ fn strip_jsonc(input: &str) -> String {
         // Block comment.
         if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
             i += 2;
-            while i + 1 < bytes.len()
-                && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/')
-            {
+            while i + 1 < bytes.len() && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/') {
                 i += 1;
             }
             i = (i + 2).min(bytes.len());
@@ -1382,10 +1367,7 @@ fn copy_public_dir(
 
     // Strip leading/trailing slashes from the base to get the segment,
     // e.g. "/pj/test/" → "pj/test", "/" → "", None → "".
-    let base_segment = base
-        .map(|b| b.trim_matches('/'))
-        .unwrap_or("")
-        .to_string();
+    let base_segment = base.map(|b| b.trim_matches('/')).unwrap_or("").to_string();
 
     let dest_root = if base_segment.is_empty() {
         outdir.to_path_buf()
@@ -1393,7 +1375,10 @@ fn copy_public_dir(
         outdir.join(&base_segment)
     };
 
-    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|r| r.ok()) {
+    for entry in walkdir::WalkDir::new(&src)
+        .into_iter()
+        .filter_map(|r| r.ok())
+    {
         let rel = entry
             .path()
             .strip_prefix(&src)
@@ -1494,7 +1479,11 @@ mod tests {
             deferred: &[DeferredDynamicRoute],
             _bundle_out: &BundlerOutput,
             _cache: &mut PathsCache,
-        ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+        ) -> Result<(
+            crate::render_pipeline::DynamicExpansion,
+            Backend,
+            WorkerHandle,
+        )> {
             // The fake runner doesn't start a real host; return all deferred
             // routes unchanged (still deferred), and a no-op Stub backend
             // (the fake render_all ignores the backend).
@@ -1524,14 +1513,10 @@ mod tests {
                 Some(assets) => {
                     let mut s = String::new();
                     if let Some(href) = assets.css_url.as_deref() {
-                        s.push_str(&format!(
-                            "<link rel=\"stylesheet\" href=\"{href}\">"
-                        ));
+                        s.push_str(&format!("<link rel=\"stylesheet\" href=\"{href}\">"));
                     }
                     for src in &assets.island_module_urls {
-                        s.push_str(&format!(
-                            "<script type=\"module\" src=\"{src}\"></script>"
-                        ));
+                        s.push_str(&format!("<script type=\"module\" src=\"{src}\"></script>"));
                     }
                     s
                 }
@@ -1628,11 +1613,7 @@ mod tests {
         }
     }
     impl AdapterRunner for FakeAdapterRunner {
-        fn run(
-            &self,
-            package: &str,
-            input: &AdapterBundleInput,
-        ) -> Result<AdapterBundleOutput> {
+        fn run(&self, package: &str, input: &AdapterBundleInput) -> Result<AdapterBundleOutput> {
             self.calls
                 .borrow_mut()
                 .push((package.to_string(), input.clone()));
@@ -1842,7 +1823,11 @@ mod tests {
                 deferred: &[DeferredDynamicRoute],
                 _bundle_out: &BundlerOutput,
                 _cache: &mut PathsCache,
-            ) -> Result<(crate::render_pipeline::DynamicExpansion, Backend, WorkerHandle)> {
+            ) -> Result<(
+                crate::render_pipeline::DynamicExpansion,
+                Backend,
+                WorkerHandle,
+            )> {
                 Ok((
                     crate::render_pipeline::DynamicExpansion {
                         resolved: Vec::new(),
@@ -1957,10 +1942,7 @@ mod tests {
 
         let routes = vec![Route {
             source_path: PathBuf::from("pages/api/foo.tsx"),
-            segments: vec![
-                Segment::Static("api".into()),
-                Segment::Static("foo".into()),
-            ],
+            segments: vec![Segment::Static("api".into()), Segment::Static("foo".into())],
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
@@ -2015,10 +1997,7 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             Route {
                 source_path: PathBuf::from("pages/api/foo.tsx"),
-                segments: vec![
-                    Segment::Static("api".into()),
-                    Segment::Static("foo".into()),
-                ],
+                segments: vec![Segment::Static("api".into()), Segment::Static("foo".into())],
                 kind: RouteKind::Static,
                 specificity: 0,
                 output_extension: None,
@@ -2089,15 +2068,16 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             static_route(vec!["about"], "pages/about.tsx"),
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
-            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+            ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
                     stable_url: "/assets/styles.css".to_string(),
                 }),
                 islands: None,
-            });
+            },
+        );
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -2184,20 +2164,38 @@ mod tests {
         // None ⇒ no mutation.
         let mut inputs = fixture();
         apply_asset_url_base(&mut inputs, None);
-        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
-        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "/assets/styles.css"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().stable_url,
+            "/assets/islands.js"
+        );
 
         // "" ⇒ no mutation.
         let mut inputs = fixture();
         apply_asset_url_base(&mut inputs, Some(""));
-        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
-        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "/assets/styles.css"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().stable_url,
+            "/assets/islands.js"
+        );
 
         // "/" ⇒ no mutation (root-mounted site).
         let mut inputs = fixture();
         apply_asset_url_base(&mut inputs, Some("/"));
-        assert_eq!(inputs.css.as_ref().unwrap().stable_url, "/assets/styles.css");
-        assert_eq!(inputs.islands.as_ref().unwrap().stable_url, "/assets/islands.js");
+        assert_eq!(
+            inputs.css.as_ref().unwrap().stable_url,
+            "/assets/styles.css"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().stable_url,
+            "/assets/islands.js"
+        );
 
         // "/pj/zudo-doc/" ⇒ subpath prefix.
         let mut inputs = fixture();
@@ -2258,8 +2256,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
-            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+            ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -2270,7 +2268,8 @@ mod tests {
                     stable_url: "/assets/styles.css".to_string(),
                 }),
                 islands: None,
-            });
+            },
+        );
         let mut cfg = Config::default();
         cfg.base = Some("/pj/zudo-doc/".to_string());
         let fake_adapter = FakeAdapterRunner::new();
@@ -2351,8 +2350,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"))
-            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+            ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -2363,7 +2362,8 @@ mod tests {
                     relative_path: PathBuf::from("assets/islands.js"),
                     stable_url: "/assets/islands.js".to_string(),
                 }),
-            });
+            },
+        );
         let mut cfg = Config::default();
         cfg.base = Some("/pj/zudo-doc/".to_string());
         let fake_adapter = FakeAdapterRunner::new();
@@ -2383,7 +2383,11 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assets_entries.sort();
-        assert_eq!(assets_entries.len(), 2, "expected both hashed assets; got {assets_entries:?}");
+        assert_eq!(
+            assets_entries.len(),
+            2,
+            "expected both hashed assets; got {assets_entries:?}"
+        );
         let css_name = assets_entries
             .iter()
             .find(|n| n.starts_with("styles-") && n.ends_with(".css"))
@@ -2716,7 +2720,10 @@ mod tests {
             .expect("missing public/ must not error");
         // dist/ contains nothing (no phantom files).
         let entries: Vec<_> = std::fs::read_dir(&outdir).unwrap().collect();
-        assert!(entries.is_empty(), "dist/ must stay empty when public/ is absent");
+        assert!(
+            entries.is_empty(),
+            "dist/ must stay empty when public/ is absent"
+        );
     }
 
     /// Without base, files copy directly under out_dir.
@@ -2726,15 +2733,14 @@ mod tests {
         let project_root = tmp.path();
         let outdir = project_root.join("dist");
         std::fs::create_dir_all(project_root.join("public/img")).unwrap();
-        std::fs::write(
-            project_root.join("public/img/logo.svg"),
-            b"<svg/>",
-        )
-        .unwrap();
+        std::fs::write(project_root.join("public/img/logo.svg"), b"<svg/>").unwrap();
         copy_public_dir(project_root, &outdir, std::path::Path::new("public"), None)
             .expect("copy must succeed");
         let dest = outdir.join("img/logo.svg");
-        assert!(dest.is_file(), "public/img/logo.svg must land at dist/img/logo.svg");
+        assert!(
+            dest.is_file(),
+            "public/img/logo.svg must land at dist/img/logo.svg"
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), b"<svg/>");
     }
 
@@ -2746,11 +2752,7 @@ mod tests {
         let outdir = project_root.join("dist");
         std::fs::create_dir_all(project_root.join("public/img")).unwrap();
         let logo_content = b"<svg id=\"logo\"/>";
-        std::fs::write(
-            project_root.join("public/img/logo.svg"),
-            logo_content,
-        )
-        .unwrap();
+        std::fs::write(project_root.join("public/img/logo.svg"), logo_content).unwrap();
         copy_public_dir(
             project_root,
             &outdir,
@@ -2805,7 +2807,10 @@ mod tests {
             Some("/"),
         )
         .expect("copy must succeed");
-        assert!(outdir.join("favicon.ico").is_file(), "base='/' must copy under root, not under '/'");
+        assert!(
+            outdir.join("favicon.ico").is_file(),
+            "base='/' must copy under root, not under '/'"
+        );
     }
 
     /// Full run_build integration: public/img/logo.svg + base = "/pj/test/"

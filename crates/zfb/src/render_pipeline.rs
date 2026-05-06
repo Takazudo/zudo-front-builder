@@ -61,36 +61,52 @@ use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
 use zfb_build::EmbeddedV8Host;
 use zfb_content::extract_tsx_frontmatter;
-use zfb_render::paths::{
-    resolve_paths, PathsCache, PathsError, Segment as PathsSegment,
-};
+use zfb_render::paths::{resolve_paths, PathsCache, PathsError, Segment as PathsSegment};
 use zfb_render::paths_extract::{extract_paths, PathsExtractError, PathsExtraction};
 use zfb_router::{Route, RouteKind, Segment};
 
 // ---------------------------------------------------------------------------
-// Embedded @takazudo/zfb + @takazudo/zfb-runtime packages
+// Embedded @takazudo/* + framework runtime packages
 // ---------------------------------------------------------------------------
 //
-// The `build.rs` script copies `packages/zfb/src` and `packages/zfb-runtime/src`
-// (plus each package.json) into `$OUT_DIR/vendor/@takazudo/` and emits the env
-// var `ZFB_VENDOR_DIR` pointing at `$OUT_DIR/vendor`. The `include_dir!` macro
-// then embeds that tree in the binary at compile time.
+// The `build.rs` script populates `$OUT_DIR/vendor/` with two groups of
+// packages:
 //
-// At runtime, `embedded_takazudo_node_modules()` extracts this tree into a
-// freshly allocated tempdir shaped as a proper `node_modules/@takazudo/` layout,
-// ready for esbuild resolution. The tempdir is kept alive for the duration of
-// the build by returning the `TempDir` handle alongside the path.
+// 1. `@takazudo/zfb` and `@takazudo/zfb-runtime` (sub #198): TypeScript source
+//    of the runtime packages, copied from the `packages/` workspace dirs.
+// 2. `preact`, `preact-render-to-string`, `hono` (sub #209): published trees
+//    copied from zfb's pnpm-installed `node_modules/.pnpm/<name>@<ver>*/` so
+//    consumers without their own node_modules can still resolve framework
+//    imports.
+//
+// Both groups land as siblings under `$OUT_DIR/vendor/`:
+//
+//   $OUT_DIR/vendor/
+//     @takazudo/zfb/             (TS source + package.json)
+//     @takazudo/zfb-runtime/     (TS source + package.json)
+//     preact/                    (published dist/ + package.json + ...)
+//     preact-render-to-string/   (published dist/ + package.json + ...)
+//     hono/                      (published dist/ + package.json)
+//
+// `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<this dir>` so the
+// `include_dir!` macro below embeds the whole tree at compile time.
+//
+// At runtime, [`embedded_node_modules`] extracts the tree into a freshly
+// allocated tempdir shaped as a proper `node_modules/<pkg>/` layout, ready
+// for esbuild resolution. The tempdir is kept alive for the duration of the
+// build by returning the `TempDir` handle alongside the path.
 
-/// Compile-time embedding of `$OUT_DIR/vendor/@takazudo` (= `@takazudo/zfb` +
-/// `@takazudo/zfb-runtime` source, staged by `build.rs`).
+/// Compile-time embedding of `$OUT_DIR/vendor/` (`@takazudo/*` + framework
+/// runtime packages, staged by `build.rs`).
 ///
 /// `include_dir!` expands `$VAR` using the env var set via `cargo:rustc-env`.
 /// `build.rs` emits `cargo:rustc-env=ZFB_VENDOR_DIR=<path>` pointing at
 /// `$OUT_DIR/vendor` so this path resolves at macro-expansion time.
 static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 
-/// Extract the embedded `@takazudo` packages into a temporary directory
-/// structured as a `node_modules/@takazudo/` layout esbuild can resolve.
+/// Extract the embedded `@takazudo/*` packages and framework runtime packages
+/// into a temporary directory structured as a `node_modules/` layout esbuild
+/// can resolve.
 ///
 /// Returns a `(TempDir, PathBuf)` pair where:
 /// - `TempDir` must be kept alive for as long as esbuild runs (dropping it
@@ -102,11 +118,11 @@ static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 ///
 /// Returns an error if the temp directory cannot be created or if extracting
 /// any embedded file fails.
-pub fn embedded_takazudo_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
+pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
     let node_modules = dir.path().join("node_modules");
     extract_dir_with_prefix(&EMBEDDED_VENDOR, &node_modules, Path::new(""))
-        .context("failed to extract embedded @takazudo packages")?;
+        .context("failed to extract embedded packages")?;
     let nm_path = node_modules;
     Ok((dir, nm_path))
 }
@@ -125,9 +141,8 @@ fn extract_dir_with_prefix(embedded: &Dir<'_>, dest: &Path, prefix: &Path) -> Re
             DirEntry::Dir(sub) => {
                 let rel = sub.path().strip_prefix(prefix).unwrap_or(sub.path());
                 let target = dest.join(rel);
-                std::fs::create_dir_all(&target).with_context(|| {
-                    format!("failed to create dir {}", target.display())
-                })?;
+                std::fs::create_dir_all(&target)
+                    .with_context(|| format!("failed to create dir {}", target.display()))?;
                 extract_dir_with_prefix(sub, dest, prefix)?;
             }
             DirEntry::File(file) => {
@@ -348,19 +363,13 @@ fn try_expand_one(
             ));
         }
     };
-    let segs: Vec<PathsSegment> = route
-        .segments
-        .iter()
-        .cloned()
-        .collect();
+    let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
     let mut out = Vec::with_capacity(resolved.len());
     for r in resolved {
-        let output_path = build_output_path_for_resolved_url(
-            &r.url,
-            route.output_extension.as_deref(),
-        );
+        let output_path =
+            build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
         out.push(RouteUniverseEntry {
             url_path: r.url,
             output_path,
@@ -429,7 +438,12 @@ fn format_paths_error(e: &PathsError) -> String {
         PathsError::InvalidParamType { name, reason, .. } => {
             format!("paths() entry has invalid param `{name}`: {reason}")
         }
-        PathsError::InvalidPathsExport { field, reason, expected, .. } => {
+        PathsError::InvalidPathsExport {
+            field,
+            reason,
+            expected,
+            ..
+        } => {
             let field_note = match field {
                 Some(f) => format!(" at `{f}`"),
                 None => String::new(),
@@ -516,9 +530,7 @@ pub fn eval_deferred_paths_via_worker(
         WorkerDispatch::Http { base_url } => {
             eval_deferred_paths_http(deferred, base_url, cache, timeout)
         }
-        WorkerDispatch::EmbeddedV8 { host } => {
-            eval_deferred_paths_embedded(deferred, *host, cache)
-        }
+        WorkerDispatch::EmbeddedV8 { host } => eval_deferred_paths_embedded(deferred, *host, cache),
     }
 }
 
@@ -641,9 +653,12 @@ fn eval_one_deferred_path_http(
         ));
     }
 
-    let json: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("could not parse JSON from /__paths__/{}: {}", route.template, e))?;
+    let json: serde_json::Value = resp.json().map_err(|e| {
+        format!(
+            "could not parse JSON from /__paths__/{}: {}",
+            route.template, e
+        )
+    })?;
 
     resolve_json_paths(json, route, cache)
 }
@@ -658,9 +673,12 @@ fn eval_one_deferred_path_embedded(
     let encoded = encode_route_key(&route.template);
     let url_path = format!("/__paths__/{encoded}");
 
-    let resp = host
-        .dispatch_fetch(&url_path)
-        .map_err(|e| format!("embedded V8 dispatch for /__paths__/{} failed: {e}", route.template))?;
+    let resp = host.dispatch_fetch(&url_path).map_err(|e| {
+        format!(
+            "embedded V8 dispatch for /__paths__/{} failed: {e}",
+            route.template
+        )
+    })?;
 
     if !(200..300).contains(&resp.status) {
         let body = String::from_utf8_lossy(&resp.body).into_owned();
@@ -672,8 +690,12 @@ fn eval_one_deferred_path_embedded(
         ));
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&resp.body)
-        .map_err(|e| format!("could not parse JSON from /__paths__/{}: {}", route.template, e))?;
+    let json: serde_json::Value = serde_json::from_slice(&resp.body).map_err(|e| {
+        format!(
+            "could not parse JSON from /__paths__/{}: {}",
+            route.template, e
+        )
+    })?;
 
     resolve_json_paths(json, route, cache)
 }
@@ -684,18 +706,15 @@ fn resolve_json_paths(
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
 ) -> Result<Vec<RouteUniverseEntry>, String> {
-    let segs: Vec<PathsSegment> = route
-        .segments
-        .iter()
-        .cloned()
-        .collect();
+    let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
 
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", route.template, format_paths_error(&e)))?;
 
     let mut entries = Vec::with_capacity(resolved.len());
     for r in resolved {
-        let output_path = build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
+        let output_path =
+            build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
         entries.push(RouteUniverseEntry {
             url_path: r.url,
             output_path,
@@ -831,9 +850,9 @@ pub fn build_prerender_map(
 /// Returns `Err` with an actionable hint when neither resolves.
 pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
     // 1. Binary-adjacent path (cargo-installed binary scenario).
-    let exe_dir = std::env::current_exe().ok().and_then(|p| {
-        p.parent().map(|d| d.to_path_buf())
-    });
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     check_runtime_installed_with_exe_dir(project_root, exe_dir.as_deref())
 }
 
@@ -859,8 +878,7 @@ pub(crate) fn check_runtime_installed_with_exe_dir(
     // 2. Ancestor node_modules walk (dev / local-checkout scenario).
     let mut cur: Option<&Path> = Some(project_root);
     while let Some(p) = cur {
-        if p
-            .join("node_modules")
+        if p.join("node_modules")
             .join("@takazudo")
             .join("zfb-runtime")
             .exists()
@@ -958,7 +976,10 @@ mod tests {
         let plan = build_route_universe(&routes);
         assert_eq!(plan.static_routes.len(), 2);
         assert_eq!(plan.static_routes[0].url_path, "/");
-        assert_eq!(plan.static_routes[0].output_path, PathBuf::from("index.html"));
+        assert_eq!(
+            plan.static_routes[0].output_path,
+            PathBuf::from("index.html")
+        );
         assert_eq!(plan.static_routes[0].route_key, "/");
         assert_eq!(plan.static_routes[1].url_path, "/about");
         assert_eq!(
@@ -1030,7 +1051,10 @@ mod tests {
         let routes = vec![static_route(vec!["post"], "pages/post.mdx")];
         let mut warnings: Vec<String> = Vec::new();
         let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
-        assert!(map.is_empty(), "MDX should be left to the default-true path");
+        assert!(
+            map.is_empty(),
+            "MDX should be left to the default-true path"
+        );
         // Non-TSX files are skipped silently (no warning).
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
     }
@@ -1092,16 +1116,17 @@ mod tests {
         assert!(msg.contains("cargo install"), "{msg}");
     }
 
-    /// Smoke-test that `embedded_takazudo_node_modules` extracts a proper
-    /// `node_modules/@takazudo/zfb/package.json` and
-    /// `node_modules/@takazudo/zfb-runtime/package.json` layout that
-    /// `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
+    /// Smoke-test that [`embedded_node_modules`] extracts a proper
+    /// `node_modules/@takazudo/zfb/package.json`,
+    /// `node_modules/@takazudo/zfb-runtime/package.json`, and the framework
+    /// runtime packages (`preact`, `preact-render-to-string`, `hono`) layout
+    /// that `check_runtime_installed_with_exe_dir` (and esbuild) can resolve.
     #[test]
-    fn embedded_takazudo_node_modules_extracts_runtime_layout() {
-        let (handle, nm_path) = embedded_takazudo_node_modules()
-            .expect("embedded_takazudo_node_modules should not fail");
+    fn embedded_node_modules_extracts_runtime_layout() {
+        let (handle, nm_path) =
+            embedded_node_modules().expect("embedded_node_modules should not fail");
 
-        // Package root markers must exist.
+        // @takazudo/* package root markers must exist.
         assert!(
             nm_path.join("@takazudo/zfb/package.json").exists(),
             "missing @takazudo/zfb/package.json in extracted layout"
@@ -1111,7 +1136,7 @@ mod tests {
             "missing @takazudo/zfb-runtime/package.json in extracted layout"
         );
 
-        // Entry-point source files must be present.
+        // @takazudo/* entry-point source files must be present.
         assert!(
             nm_path.join("@takazudo/zfb/src/index.ts").exists(),
             "missing @takazudo/zfb/src/index.ts"
@@ -1120,6 +1145,16 @@ mod tests {
             nm_path.join("@takazudo/zfb-runtime/src/index.ts").exists(),
             "missing @takazudo/zfb-runtime/src/index.ts"
         );
+
+        // Sub #209 — framework runtime package roots must exist alongside.
+        for pkg in ["preact", "preact-render-to-string", "hono"] {
+            let pkg_json = nm_path.join(pkg).join("package.json");
+            assert!(
+                pkg_json.exists(),
+                "missing {pkg}/package.json in extracted layout: {}",
+                pkg_json.display()
+            );
+        }
 
         // Verify check_runtime_installed sees the embedded runtime via the
         // exe-dir path (the nm_path is the node_modules dir; its parent is
@@ -1342,7 +1377,9 @@ mod tests {
         assert_eq!(out.resolved.len(), 0);
         assert_eq!(out.deferred.len(), 1);
         assert!(
-            out.deferred[0].reason.contains("missing required param `slug`"),
+            out.deferred[0]
+                .reason
+                .contains("missing required param `slug`"),
             "reason: {}",
             out.deferred[0].reason,
         );
@@ -1430,8 +1467,7 @@ mod tests {
         assert_eq!(plan.deferred_dynamic.len(), 1);
 
         let mut cache = PathsCache::new();
-        let expansion =
-            expand_dynamic_routes(&plan.deferred_dynamic, dir.path(), &mut cache);
+        let expansion = expand_dynamic_routes(&plan.deferred_dynamic, dir.path(), &mut cache);
         assert_eq!(expansion.deferred.len(), 0, "{:?}", expansion.deferred);
         assert_eq!(expansion.resolved.len(), 2);
 

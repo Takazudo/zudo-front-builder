@@ -83,8 +83,7 @@ use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
-    build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    embedded_takazudo_node_modules,
+    build_route_universe, cfg_framework_to_render, check_runtime_installed, embedded_node_modules,
 };
 
 /// Default source directories the watcher follows.
@@ -492,7 +491,7 @@ fn boot_dev_renderer(
         bundler_input.node_modules_dir = Some(nm);
         _embedded_nm_handle = None;
     } else {
-        match embedded_takazudo_node_modules() {
+        match embedded_node_modules() {
             Ok((handle, nm_path)) => {
                 bundler_input.node_modules_dir = Some(nm_path);
                 _embedded_nm_handle = Some(handle);
@@ -524,10 +523,7 @@ fn boot_dev_renderer(
     // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
-    bundler_input.code_highlight_theme = cfg
-        .code_highlight
-        .as_ref()
-        .and_then(|c| c.theme.clone());
+    bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {

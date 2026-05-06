@@ -51,6 +51,24 @@ There are two supported ways to provide it:
 
 See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the full contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
 
+## Embedded npm packages
+
+`crates/zfb/build.rs` snapshots a small set of npm packages into `$OUT_DIR/vendor/` at compile time, then `crates/zfb/src/render_pipeline.rs` embeds the snapshot into the binary via `include_dir!`. At `zfb build` / `zfb dev` time, when the consumer has no `node_modules/`, the snapshot is extracted to a tempdir and esbuild resolves bare imports against it. Two groups of packages live in the snapshot:
+
+| Group | Packages | Source | Pin location |
+| --- | --- | --- | --- |
+| `@takazudo/*` (sub #198) | `@takazudo/zfb`, `@takazudo/zfb-runtime` | `packages/<name>/src/` (TypeScript source) | the workspace itself — versions follow `packages/<name>/package.json` |
+| Framework runtimes (sub #209) | `preact`, `preact-render-to-string`, `hono` | `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>/` (published trees) | `pnpm-lock.yaml`; mirrored as `*_VERSION` constants in `crates/zfb/build.rs` |
+
+To bump a framework-runtime version:
+
+1. Update the dependency in the relevant `package.json` (e.g. `packages/zfb-runtime/package.json` for `hono`, `examples/basic-blog/package.json` for `preact`/`preact-render-to-string`).
+2. Run `pnpm install` so `pnpm-lock.yaml` re-resolves.
+3. Update the corresponding `*_VERSION` constant in `crates/zfb/build.rs` to match the new lockfile entry.
+4. Rebuild — the build script re-snapshots the new tree.
+
+`pnpm install --frozen-lockfile` is a hard prerequisite for `cargo build` because the build script reads `node_modules/.pnpm/`. The smoke test `embedded_node_modules_extracts_runtime_layout` (in `crates/zfb/src/render_pipeline.rs`) and the integration test `framework_packages_no_pnpm` (in `crates/zfb/tests/`) both fail with an actionable error if the embedded snapshot drifts away from the pinned versions.
+
 ## Running tests
 
 ```sh
