@@ -547,6 +547,86 @@ fn download_binaries() -> Result<(), String> {
     download_esbuild(platform, &esbuild_slot)?;
     download_tailwindcss(platform, &tailwind_slot)?;
 
+    // Sub #212 — also stage the binaries into `$OUT_DIR/vendor/bin/` so the
+    // existing `include_dir!("$ZFB_VENDOR_DIR")` snapshot embeds them next to
+    // `@takazudo/*` and the framework packages. Consumers without a
+    // workspace-relative `crates/zfb/binaries/` dir can then extract them at
+    // runtime via `embedded_binary()` in `crates/zfb/src/render_pipeline.rs`.
+    stage_binaries_into_vendor(&esbuild_slot, &tailwind_slot)?;
+
+    Ok(())
+}
+
+/// Copy the staged esbuild and tailwindcss binaries from
+/// `crates/zfb/binaries/` into `$OUT_DIR/vendor/bin/` so they ride along
+/// inside `EMBEDDED_VENDOR` (the `include_dir!` snapshot in
+/// `crates/zfb/src/render_pipeline.rs`). The `embedded_binary()` helper
+/// then extracts whichever name a caller asks for at runtime.
+///
+/// Windows binaries ship with a `.exe` suffix; the destination filename
+/// preserves that suffix. The executable bit is set on Unix so the
+/// extracted file is invocable without an extra chmod.
+fn stage_binaries_into_vendor(esbuild_slot: &Path, tailwind_slot: &Path) -> Result<(), String> {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let bin_dir = out_dir.join("vendor").join("bin");
+    fs::create_dir_all(&bin_dir).map_err(|e| {
+        format!("failed to create vendor bin dir {}: {e}", bin_dir.display())
+    })?;
+
+    // Re-emit rerun triggers so a manual re-fetch of either binary refreshes
+    // the embedded snapshot on the next cargo build.
+    println!("cargo:rerun-if-changed={}", esbuild_slot.display());
+    println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+
+    // Esbuild → vendor/bin/esbuild (or .exe on Windows).
+    let esbuild_dst_name = if cfg!(target_os = "windows") {
+        "esbuild.exe"
+    } else {
+        "esbuild"
+    };
+    let esbuild_dst = bin_dir.join(esbuild_dst_name);
+    copy_executable(esbuild_slot, &esbuild_dst)?;
+
+    // Tailwind → vendor/bin/tailwindcss-v4 (or .exe on Windows).
+    let tailwind_dst_name = if cfg!(target_os = "windows") {
+        "tailwindcss-v4.exe"
+    } else {
+        "tailwindcss-v4"
+    };
+    let tailwind_dst = bin_dir.join(tailwind_dst_name);
+    copy_executable(tailwind_slot, &tailwind_dst)?;
+
+    Ok(())
+}
+
+/// Copy `src` to `dst` and (on Unix) preserve / re-apply the 0o755
+/// executable bit so the extracted binary is invocable without an extra
+/// chmod.
+fn copy_executable(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Err(format!(
+            "expected staged binary at {} to exist before vendor staging — \
+             download_binaries() should have produced it",
+            src.display()
+        ));
+    }
+    fs::copy(src, dst).map_err(|e| {
+        format!(
+            "failed to copy {} → {}: {e}",
+            src.display(),
+            dst.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).map_err(|e| {
+            format!(
+                "failed to set executable bit on {}: {e}",
+                dst.display()
+            )
+        })?;
+    }
     Ok(())
 }
 

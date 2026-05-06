@@ -71,7 +71,7 @@ use crate::config::Config;
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
+    embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
     DeferredDynamicRoute, RouteUniversePlan, WorkerDispatch,
 };
 
@@ -421,6 +421,20 @@ fn build_default_css_payload(
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
         .with_content_globs(content_globs);
+
+    // Sub #212 — wire in the embedded-binary extraction tier so consumers
+    // running `zfb build` from a project that doesn't ship the
+    // `crates/zfb/binaries/` workspace dir still resolve a working tailwind
+    // CLI. The TempDir handle rides on the config (and hence the engine)
+    // so the extracted file outlives every `produce_utility_css` call.
+    // Skip when `ZFB_TAILWIND_BIN` is set — `with_embedded_binary` is also
+    // a no-op in that case, but skipping the extract avoids the disk + tar
+    // work entirely.
+    if std::env::var_os("ZFB_TAILWIND_BIN").is_none() {
+        if let Ok((handle, path)) = embedded_binary("tailwindcss-v4") {
+            tw_cfg = tw_cfg.with_embedded_binary(handle, path);
+        }
+    }
 
     // Honour an authored global stylesheet at the conventional
     // location. Tailwind v4's entry CSS prepends our `@source`

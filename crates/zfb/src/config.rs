@@ -755,9 +755,37 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
 }
 
 /// Resolve the esbuild binary path using the same precedence the
-/// build-time bundler uses: explicit override > `ZFB_ESBUILD_BIN` env >
-/// the staged slot under `crates/zfb/binaries/esbuild/`.
+/// build-time bundler uses:
+/// 1. explicit `LoadOptions::esbuild_binary` override
+/// 2. `ZFB_ESBUILD_BIN` env
+/// 3. embedded extraction from the `EMBEDDED_VENDOR` snapshot (sub #212 —
+///    the consumer-friendly path: works on a machine that has no
+///    `crates/zfb/binaries/` workspace dir)
+/// 4. the staged slot under `crates/zfb/binaries/esbuild/` (in-workspace
+///    dev fallback)
+///
+/// Returns the resolved path. Most callers should use
+/// [`resolve_esbuild_binary_with_handle`] instead — the embedded tier
+/// returns a [`tempfile::TempDir`] that must be kept alive for the
+/// lifetime of the spawned subprocess. This thin wrapper drops the
+/// handle eagerly and is therefore only safe when the caller is sure the
+/// path it gets back will not be the embedded one (e.g. in tests where
+/// `ZFB_ESBUILD_BIN` is set, or when `crates/zfb/binaries/esbuild/esbuild`
+/// is known to exist).
+#[allow(dead_code)]
 fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
+    let (_handle, path) = resolve_esbuild_binary_with_handle(opts)?;
+    Ok(path)
+}
+
+/// Variant of [`resolve_esbuild_binary`] that also returns the
+/// [`tempfile::TempDir`] handle backing the embedded extraction tier.
+/// The caller MUST hold the handle alive for as long as the returned
+/// `PathBuf` is referenced by a running subprocess — dropping the handle
+/// removes the tempdir and the binary along with it.
+fn resolve_esbuild_binary_with_handle(
+    opts: &LoadOptions,
+) -> Result<(Option<tempfile::TempDir>, PathBuf)> {
     if let Some(p) = opts.esbuild_binary.as_deref() {
         if !p.exists() {
             bail!(
@@ -765,7 +793,7 @@ fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
                 p.display()
             );
         }
-        return Ok(p.to_path_buf());
+        return Ok((None, p.to_path_buf()));
     }
     if let Some(env) = std::env::var_os("ZFB_ESBUILD_BIN") {
         let p = PathBuf::from(env);
@@ -775,7 +803,21 @@ fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
                 p.display()
             );
         }
-        return Ok(p);
+        return Ok((None, p));
+    }
+    // Embedded extraction tier (sub #212). We try this BEFORE the
+    // workspace-relative slot so consumers running `zfb build` from a
+    // project that doesn't ship `crates/zfb/binaries/` still resolve a
+    // working binary. The TempDir is propagated to the caller so the
+    // extracted file outlives the subprocess invocation.
+    match crate::render_pipeline::embedded_binary("esbuild") {
+        Ok((handle, path)) => return Ok((Some(handle), path)),
+        Err(_embed_err) => {
+            // Fall through to the workspace-relative slot. The embedded
+            // path is the expected production resolution for cargo-installed
+            // binaries; failure here is normal during in-workspace dev (and
+            // the slot fallback below covers that).
+        }
     }
     let slot = PathBuf::from(DEFAULT_ESBUILD_SLOT);
     if !slot.exists() {
@@ -786,7 +828,7 @@ fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
             slot.display()
         ));
     }
-    Ok(slot)
+    Ok((None, slot))
 }
 
 /// Run esbuild + node to compile `ts_path` to ESM and pull the default
@@ -796,7 +838,10 @@ async fn load_ts_via_subprocess(
     dir: &Path,
     opts: &LoadOptions,
 ) -> Result<String> {
-    let esbuild = resolve_esbuild_binary(opts)?;
+    // The TempDir handle (when the embedded extraction tier is taken) must
+    // outlive every subprocess spawn below — esbuild and node both reference
+    // the extracted binary path. Drop only happens at function return.
+    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
 
     // Stage the embedded helper scripts and esbuild output into a
     // tempdir that vanishes at the end of this function.
@@ -1881,6 +1926,45 @@ mod tests {
         assert!(
             msg.contains("Node.js"),
             "msg should mention Node.js: {msg}"
+        );
+    }
+
+    /// Sub #212 — when neither `LoadOptions::esbuild_binary` nor the
+    /// `ZFB_ESBUILD_BIN` env var is set, the resolver falls through to the
+    /// embedded extraction tier (the binary staged inside the zfb crate at
+    /// build time). The returned path must exist and the function must
+    /// hand back a TempDir handle so the caller can keep the extracted
+    /// binary alive for the lifetime of the spawned subprocess.
+    #[test]
+    fn resolve_esbuild_binary_picks_embedded_path_without_env_or_explicit() {
+        // Defensive: if a parent process has set ZFB_ESBUILD_BIN, this
+        // test would short-circuit on the env tier instead of testing the
+        // embedded tier we care about. Skip cleanly in that case.
+        // SAFETY: tests run sequentially within this thread and we do not
+        // touch ZFB_ESBUILD_BIN ourselves. Other tests must not depend on
+        // a leaked override.
+        if std::env::var_os("ZFB_ESBUILD_BIN").is_some() {
+            eprintln!(
+                "skipping resolve_esbuild_binary_picks_embedded_path_without_env_or_explicit \
+                 because ZFB_ESBUILD_BIN is set in the surrounding env"
+            );
+            return;
+        }
+        let opts = LoadOptions::default();
+        let (handle, path) = resolve_esbuild_binary_with_handle(&opts)
+            .expect("embedded extraction should succeed for esbuild");
+        assert!(
+            path.exists(),
+            "resolved esbuild path should exist: {}",
+            path.display()
+        );
+        // The embedded tier always returns a Some(TempDir). The
+        // workspace-relative dev fallback would return None, but we expect
+        // the embedded tier to win because the include_dir! snapshot
+        // always carries the binary in a release build.
+        assert!(
+            handle.is_some(),
+            "expected the embedded extraction tier to be selected"
         );
     }
 

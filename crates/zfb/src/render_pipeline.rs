@@ -121,10 +121,83 @@ static EMBEDDED_VENDOR: Dir<'_> = include_dir!("$ZFB_VENDOR_DIR");
 pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("failed to create tempdir for embedded packages")?;
     let node_modules = dir.path().join("node_modules");
-    extract_dir_with_prefix(&EMBEDDED_VENDOR, &node_modules, Path::new(""))
-        .context("failed to extract embedded packages")?;
+    // Skip the top-level `bin/` entry — those are helper binaries (esbuild,
+    // tailwindcss-v4) staged by `stage_binaries_into_vendor` for
+    // `embedded_binary()` to extract on demand. They have no business inside
+    // a node_modules tree, and not extracting them avoids ~100 MB of wasted
+    // copies on every esbuild bundler invocation.
+    extract_dir_with_prefix_filtered(&EMBEDDED_VENDOR, &node_modules, Path::new(""), &|p| {
+        p.iter().next().map(|s| s == "bin").unwrap_or(false)
+    })
+    .context("failed to extract embedded packages")?;
     let nm_path = node_modules;
     Ok((dir, nm_path))
+}
+
+/// Extract a single embedded helper binary (esbuild, tailwindcss-v4, …) from
+/// the `bin/` subtree of [`EMBEDDED_VENDOR`] into a fresh tempdir so the TS
+/// config loader and the CSS engine can shell out to it without a
+/// workspace-relative `crates/zfb/binaries/` slot.
+///
+/// `name` is the binary's stem (e.g. `"esbuild"`, `"tailwindcss-v4"`). On
+/// Windows this function additionally probes for `<name>.exe` so a caller
+/// passing `"esbuild"` resolves the Windows variant transparently.
+///
+/// Returns a `(TempDir, PathBuf)` pair where:
+/// - `TempDir` must be kept alive for as long as the subprocess runs
+///   (dropping it removes the temp directory and the extracted binary).
+/// - `PathBuf` is the path to the extracted binary on disk; on Unix the
+///   executable bit is set at write time.
+///
+/// # Errors
+///
+/// Returns an error pointing the operator at the build-script staging step
+/// (`stage_binaries_into_vendor` in `crates/zfb/build.rs`) when the binary is
+/// not present in [`EMBEDDED_VENDOR`].
+pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
+    // Probe `bin/<name>` first; on Windows fall back to `bin/<name>.exe` so
+    // callers can pass the stem without worrying about target_os.
+    let primary = format!("bin/{name}");
+    let file = EMBEDDED_VENDOR.get_file(&primary).or_else(|| {
+        if cfg!(target_os = "windows") {
+            EMBEDDED_VENDOR.get_file(format!("bin/{name}.exe"))
+        } else {
+            None
+        }
+    });
+    let file = file.ok_or_else(|| {
+        anyhow::anyhow!(
+            "embedded binary `{name}` not found under bin/ inside the embedded vendor snapshot. \
+             Make sure `crates/zfb/build.rs::stage_binaries_into_vendor` ran during the last \
+             build (it copies crates/zfb/binaries/{{esbuild,tailwindcss-v4}} into \
+             $OUT_DIR/vendor/bin/ so include_dir! picks them up)."
+        )
+    })?;
+
+    let dir = tempfile::tempdir()
+        .with_context(|| format!("failed to create tempdir for embedded binary `{name}`"))?;
+
+    // Preserve any `.exe` suffix from the matched embedded path so callers
+    // don't need to know the host platform.
+    let dst_name = file
+        .path()
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from(name));
+    let dst = dir.path().join(&dst_name);
+    std::fs::write(&dst, file.contents()).with_context(|| {
+        format!("failed to write embedded binary `{name}` to {}", dst.display())
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).with_context(
+            || format!("failed to set executable bit on {}", dst.display()),
+        )?;
+    }
+
+    Ok((dir, dst))
 }
 
 /// Recursively extract all entries from `embedded` into `dest`, stripping
@@ -134,19 +207,35 @@ pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
 /// For example, if the embedded root is `$OUT_DIR/vendor` and `prefix` is
 /// `""` (empty), the entry `@takazudo/zfb/src/index.ts` is written to
 /// `dest/@takazudo/zfb/src/index.ts`.
-fn extract_dir_with_prefix(embedded: &Dir<'_>, dest: &Path, prefix: &Path) -> Result<()> {
+/// Recursively extract entries from `embedded` into `dest`, stripping
+/// `prefix` from each entry's embedded path. Skips any entry whose
+/// `prefix`-stripped path satisfies `skip`. Used by [`embedded_node_modules`]
+/// to filter out the `bin/` subtree that's only relevant to
+/// [`embedded_binary`].
+fn extract_dir_with_prefix_filtered(
+    embedded: &Dir<'_>,
+    dest: &Path,
+    prefix: &Path,
+    skip: &dyn Fn(&Path) -> bool,
+) -> Result<()> {
     use include_dir::DirEntry;
     for entry in embedded.entries() {
         match entry {
             DirEntry::Dir(sub) => {
                 let rel = sub.path().strip_prefix(prefix).unwrap_or(sub.path());
+                if skip(rel) {
+                    continue;
+                }
                 let target = dest.join(rel);
                 std::fs::create_dir_all(&target)
                     .with_context(|| format!("failed to create dir {}", target.display()))?;
-                extract_dir_with_prefix(sub, dest, prefix)?;
+                extract_dir_with_prefix_filtered(sub, dest, prefix, skip)?;
             }
             DirEntry::File(file) => {
                 let rel = file.path().strip_prefix(prefix).unwrap_or(file.path());
+                if skip(rel) {
+                    continue;
+                }
                 let target = dest.join(rel);
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).with_context(|| {
@@ -1165,6 +1254,59 @@ mod tests {
             .expect("runtime should resolve via embedded nm_path");
 
         drop(handle); // explicit: tempdir is removed here
+    }
+
+    /// Smoke-test [`embedded_binary`] for the `esbuild` slot:
+    ///
+    /// 1. The path returned exists on disk.
+    /// 2. On Unix the executable bit is set so a subprocess can spawn it.
+    /// 3. The file is non-empty (we don't shell out — that's the
+    ///    `#[ignore]`-gated integration test's job).
+    ///
+    /// Mirrors `embedded_node_modules_extracts_runtime_layout` for the
+    /// `bin/` half of the embedded vendor tree (sub #212).
+    #[test]
+    fn embedded_binary_extracts_executable_esbuild_path() {
+        let (handle, path) =
+            embedded_binary("esbuild").expect("embedded_binary(\"esbuild\") should succeed");
+        assert!(
+            path.exists(),
+            "extracted esbuild path should exist: {}",
+            path.display()
+        );
+        let meta = std::fs::metadata(&path).expect("metadata should be readable");
+        assert!(
+            meta.len() > 0,
+            "extracted esbuild binary should not be empty: {}",
+            path.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode();
+            assert!(
+                mode & 0o111 != 0,
+                "extracted esbuild binary should be executable: mode = {mode:o}"
+            );
+        }
+        drop(handle);
+    }
+
+    /// `embedded_binary` returns a clear error when the requested name is
+    /// not present in `EMBEDDED_VENDOR/bin/`. The error message must point
+    /// the operator at the build-script staging step.
+    #[test]
+    fn embedded_binary_errors_with_actionable_hint_when_missing() {
+        let err = embedded_binary("does-not-exist-xyz").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("does-not-exist-xyz"),
+            "msg should name the requested binary: {msg}"
+        );
+        assert!(
+            msg.contains("stage_binaries_into_vendor"),
+            "msg should point at the build-script staging step: {msg}"
+        );
     }
 
     // ---- expand_dynamic_routes -------------------------------------------
