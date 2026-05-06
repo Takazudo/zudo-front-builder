@@ -928,17 +928,22 @@ pub fn build_prerender_map(
 /// Verify that `@takazudo/zfb-runtime` is resolvable for the current build.
 ///
 /// Resolution order:
-/// 1. **Binary-adjacent path** — `<dir of current executable>/node_modules/@takazudo/zfb-runtime`.
+/// 1. **Embedded vendor snapshot** — `EMBEDDED_VENDOR` (the
+///    `include_dir!`-baked tree populated by `build.rs`) ships
+///    `@takazudo/zfb-runtime/package.json`. When that file is present in the
+///    snapshot, the build flow's `embedded_node_modules()` fallback in
+///    `commands::build` will materialise it into a tempdir at bundle time, so
+///    the pre-check passes without requiring an on-disk `node_modules`.
+/// 2. **Binary-adjacent path** — `<dir of current executable>/node_modules/@takazudo/zfb-runtime`.
 ///    A `cargo install`-ed `zfb` binary may ship a vendored `node_modules/` tree
-///    next to it; this path is checked first so consumer projects with no
-///    `node_modules` of their own still pass.
-/// 2. **Ancestor `node_modules` walk** starting at `project_root` — the
+///    next to it; checked next so layouts that explicitly stage a sibling
+///    tree still pass.
+/// 3. **Ancestor `node_modules` walk** starting at `project_root` — the
 ///    conventional pnpm/npm layout used during dev / local-checkout flows.
 ///
-/// Returns `Ok(())` when the runtime is found via either path.
-/// Returns `Err` with an actionable hint when neither resolves.
+/// Returns `Ok(())` when the runtime is found via any path.
+/// Returns `Err` with an actionable hint when none resolves.
 pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
-    // 1. Binary-adjacent path (cargo-installed binary scenario).
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -948,11 +953,40 @@ pub fn check_runtime_installed(project_root: &Path) -> Result<()> {
 /// Inner implementation for [`check_runtime_installed`], accepting an optional
 /// `exe_dir` override so tests can supply a synthetic binary directory without
 /// depending on the test binary's actual location.
+///
+/// Defaults `embedded_has_runtime` from the compile-time `EMBEDDED_VENDOR`
+/// snapshot. Tests that need to simulate a build without the embedded vendor
+/// (e.g. to exercise the legacy on-disk resolution paths in isolation) call
+/// [`check_runtime_installed_with_overrides`] directly.
 pub(crate) fn check_runtime_installed_with_exe_dir(
     project_root: &Path,
     exe_dir: Option<&Path>,
 ) -> Result<()> {
-    // 1. Binary-adjacent path (cargo-installed binary scenario).
+    let embedded_has_runtime = EMBEDDED_VENDOR
+        .get_file("@takazudo/zfb-runtime/package.json")
+        .is_some();
+    check_runtime_installed_with_overrides(project_root, exe_dir, embedded_has_runtime)
+}
+
+/// Resolution-logic core for [`check_runtime_installed`]. Splits out the
+/// embedded-vendor probe behind a boolean so tests can drive both the
+/// "embedded snapshot ships the runtime" and the legacy "on-disk only" paths
+/// without relying on the test binary's compile-time vendor contents.
+pub(crate) fn check_runtime_installed_with_overrides(
+    project_root: &Path,
+    exe_dir: Option<&Path>,
+    embedded_has_runtime: bool,
+) -> Result<()> {
+    // 1. Embedded vendor snapshot — this binary already carries the runtime
+    //    (sub #198) and `commands::build` extracts it on demand when no
+    //    on-disk node_modules is found. Accept this case so the pre-check is
+    //    not strictly more restrictive than the actual build flow.
+    if embedded_has_runtime {
+        return Ok(());
+    }
+
+    // 2. Binary-adjacent path (cargo-installed binary with sibling
+    //    node_modules tree, or test fixtures).
     if let Some(dir) = exe_dir {
         if dir
             .join("node_modules")
@@ -964,7 +998,7 @@ pub(crate) fn check_runtime_installed_with_exe_dir(
         }
     }
 
-    // 2. Ancestor node_modules walk (dev / local-checkout scenario).
+    // 3. Ancestor node_modules walk (dev / local-checkout scenario).
     let mut cur: Option<&Path> = Some(project_root);
     while let Some(p) = cur {
         if p.join("node_modules")
@@ -977,10 +1011,11 @@ pub(crate) fn check_runtime_installed_with_exe_dir(
         cur = p.parent();
     }
 
-    // Neither path found — emit an actionable error.
+    // No path found — emit an actionable error.
     Err(anyhow::anyhow!(
         "could not find `node_modules/@takazudo/zfb-runtime` under {} or any parent, \
-         and no binary-adjacent `node_modules/@takazudo/zfb-runtime` was found next to the `zfb` executable. \
+         no binary-adjacent `node_modules/@takazudo/zfb-runtime` was found next to the `zfb` executable, \
+         and the binary's embedded vendor snapshot does not contain it either. \
          Either run `pnpm install` (or your package manager's equivalent) in the project root, \
          or install `zfb` via `cargo install` (which bundles the runtime automatically).",
         project_root.display()
@@ -1148,6 +1183,23 @@ mod tests {
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
     }
 
+    /// Embedded vendor short-circuits resolution: when the `cargo install`-ed
+    /// binary's `EMBEDDED_VENDOR` ships `@takazudo/zfb-runtime`, no on-disk
+    /// `node_modules` is needed. Exercises the path added so consumer
+    /// projects (e.g. ccresdoc post-zfb#212) can build with no node_modules
+    /// and no env-var prefixes.
+    #[test]
+    fn check_runtime_installed_succeeds_via_embedded_vendor() {
+        let project_root = tempdir().unwrap();
+        let fake_exe_dir = tempdir().unwrap(); // no node_modules inside
+        check_runtime_installed_with_overrides(
+            project_root.path(),
+            Some(fake_exe_dir.path()),
+            true, // embedded vendor has the runtime
+        )
+        .unwrap();
+    }
+
     #[test]
     fn check_runtime_installed_finds_runtime_in_parent_node_modules() {
         let dir = tempdir().unwrap();
@@ -1159,13 +1211,20 @@ mod tests {
         std::fs::create_dir_all(&runtime).unwrap();
         let nested = dir.path().join("examples/basic-blog");
         std::fs::create_dir_all(&nested).unwrap();
-        check_runtime_installed(&nested).unwrap();
+        // Force `embedded_has_runtime=false` so this test exercises the
+        // ancestor-walk path in isolation, regardless of what the test
+        // binary's compile-time vendor contains.
+        check_runtime_installed_with_overrides(&nested, None, false).unwrap();
     }
 
     #[test]
     fn check_runtime_installed_errors_when_runtime_missing() {
         let dir = tempdir().unwrap();
-        let err = check_runtime_installed(dir.path()).unwrap_err();
+        // Drive the legacy on-disk-only branch so the error path remains
+        // exercised even though the production `check_runtime_installed`
+        // now short-circuits via the embedded vendor.
+        let err =
+            check_runtime_installed_with_overrides(dir.path(), None, false).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
         assert!(msg.contains("pnpm install"), "{msg}");
@@ -1174,7 +1233,7 @@ mod tests {
     /// Binary-adjacent path: runtime found next to a synthetic executable dir.
     ///
     /// Mirrors `check_runtime_installed_finds_runtime_in_parent_node_modules`
-    /// but exercises the new exe-adjacent resolution path introduced by Sub 198.
+    /// but exercises the exe-adjacent resolution path introduced by Sub 198.
     #[test]
     fn check_runtime_installed_finds_runtime_adjacent_to_binary() {
         let dir = tempdir().unwrap();
@@ -1188,21 +1247,28 @@ mod tests {
 
         // project_root has no node_modules — only the exe_dir does.
         let project_root = tempdir().unwrap();
-        check_runtime_installed_with_exe_dir(project_root.path(), Some(dir.path())).unwrap();
+        // Pin `embedded_has_runtime=false` so this test isolates the
+        // exe-adjacent branch without dependence on the embedded snapshot.
+        check_runtime_installed_with_overrides(project_root.path(), Some(dir.path()), false)
+            .unwrap();
     }
 
-    /// Both paths missing → error that mentions both remedies.
+    /// All paths missing → error that mentions every remedy.
     #[test]
-    fn check_runtime_installed_errors_with_both_paths_missing() {
+    fn check_runtime_installed_errors_with_all_paths_missing() {
         let project_root = tempdir().unwrap();
         let fake_exe_dir = tempdir().unwrap(); // no node_modules inside
-        let err =
-            check_runtime_installed_with_exe_dir(project_root.path(), Some(fake_exe_dir.path()))
-                .unwrap_err();
+        let err = check_runtime_installed_with_overrides(
+            project_root.path(),
+            Some(fake_exe_dir.path()),
+            false,
+        )
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
         assert!(msg.contains("pnpm install"), "{msg}");
         assert!(msg.contains("cargo install"), "{msg}");
+        assert!(msg.contains("embedded vendor snapshot"), "{msg}");
     }
 
     /// Smoke-test that [`embedded_node_modules`] extracts a proper

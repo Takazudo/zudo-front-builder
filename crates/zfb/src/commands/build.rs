@@ -1888,26 +1888,14 @@ mod tests {
         assert!(msg.contains("pages/error.tsx:5:3"), "{msg}");
     }
 
-    #[test]
-    fn run_build_errors_when_runtime_npm_package_missing() {
-        let tmp = tempdir().unwrap();
-        // No node_modules → check_runtime_installed errors.
-        let cfg = Config::default();
-        let fake_adapter = FakeAdapterRunner::new();
-        let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
-        let runner = FakeRunner::new(tmp.path().join("dist/.zfb-build/bundle.mjs"));
-        let err = run_build(BuildArgsResolved {
-            project_root: tmp.path(),
-            outdir: &tmp.path().join("dist"),
-            config: &cfg,
-            routes: &routes,
-            runner: &runner,
-            adapter_runner: &fake_adapter,
-        })
-        .unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
-    }
+    // Note: there used to be a `run_build_errors_when_runtime_npm_package_missing`
+    // test here, asserting `run_build` errored out at the runtime pre-check
+    // when the project had no `node_modules`. That guard became unreachable
+    // once `check_runtime_installed` started accepting the binary's embedded
+    // vendor snapshot — which production binaries always carry. The legacy
+    // on-disk-only error path is still covered by
+    // `render_pipeline::tests::check_runtime_installed_errors_when_runtime_missing`
+    // via the `_with_overrides` helper.
 
     #[test]
     fn run_build_with_adapter_none_passes_when_every_route_is_ssg() {
