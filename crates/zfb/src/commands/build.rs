@@ -645,32 +645,36 @@ fn build_default_islands_payload(
     //    the embedded esbuild via `embedded_binary("esbuild")` and pin its
     //    path on the config via `with_binary_path`.
     //
-    // 2. node_modules walk: the islands bundler synthesises an entry
-    //    tempfile inside `working_dir` and esbuild walks UP from there
-    //    looking for `node_modules` (see comment block in
-    //    `crates/zfb-islands/src/esbuild.rs::bundle_one_entry`). When the
-    //    consumer project has no on-disk `node_modules`, that walk reaches
-    //    the filesystem root without finding `preact`, `@takazudo/zfb/runtime`,
-    //    etc., and fails. So when no project node_modules is detectable,
-    //    extract the embedded vendor (`embedded_node_modules()`) and re-point
-    //    `working_dir` at its parent — esbuild's first upward hop then sees
-    //    `<tmpdir>/node_modules` and resolves bare imports against the
-    //    embedded snapshot. The user component imports are absolute paths
-    //    so they continue to resolve unchanged.
+    // 2. node_modules resolution: esbuild walks UP from each importing
+    //    file's directory looking for `node_modules`. When the consumer
+    //    project has no on-disk `node_modules`, every bare import in
+    //    user-authored components (`preact/hooks`, `preact/jsx-runtime`,
+    //    etc.) and in the synthesised entry (`@takazudo/zfb/runtime`,
+    //    `preact`) fails. The main bundler addresses this via a "shadow
+    //    tree" with a `node_modules` symlink (see
+    //    `crates/zfb-build/src/bundler.rs:751`); the islands bundler runs
+    //    esbuild directly against the user's source tree so a shadow tree
+    //    is not available. Instead, extract the embedded vendor
+    //    (`embedded_node_modules()`) into a tempdir and pass its path via
+    //    the `NODE_PATH` env var on the esbuild subprocess. esbuild
+    //    consults `NODE_PATH` as a fallback when the upward walk doesn't
+    //    find a match — see esbuild's
+    //    https://esbuild.github.io/api/#node-paths and the
+    //    `with_extra_env` setter on `EsbuildSubprocessConfig`. This
+    //    preserves project_root as the working_dir (so tsconfig
+    //    discovery and the entry-tempfile placement comment block in
+    //    `zfb-islands/src/esbuild.rs::bundle_one_entry` still hold).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
-    let working_dir = if detect_project_node_modules(project_root).is_some() {
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
-        project_root.to_path_buf()
     } else {
         match embedded_node_modules() {
             Ok((handle, nm_path)) => {
-                let wd = nm_path
-                    .parent()
-                    .expect("embedded_node_modules path always has a parent")
-                    .to_path_buf();
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
                 _embedded_nm_handle = Some(handle);
-                wd
             }
             Err(e) => {
                 output::warn(format!(
@@ -678,11 +682,9 @@ fn build_default_islands_payload(
                      falling back to project_root node_modules walk"
                 ));
                 _embedded_nm_handle = None;
-                project_root.to_path_buf()
             }
         }
-    };
-    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(working_dir);
+    }
     if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
         match crate::render_pipeline::embedded_binary("esbuild") {
             Ok((handle, path)) => {
