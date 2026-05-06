@@ -587,7 +587,7 @@ pub async fn load_from_dir_with_options(
         let text = tokio::fs::read_to_string(&json_path)
             .await
             .with_context(|| format!("reading {}", json_path.display()))?;
-        let cfg: Config = serde_json::from_str(&text).map_err(|e| {
+        let mut cfg: Config = serde_json::from_str(&text).map_err(|e| {
             anyhow!(
                 "{}: invalid config JSON at line {}, column {}: {}",
                 json_path.display(),
@@ -596,6 +596,16 @@ pub async fn load_from_dir_with_options(
                 e
             )
         })?;
+        // Issue #211: the JSON config path used to leave every
+        // `PluginConfig.resolved_module` at `None`, which made the
+        // downstream plugin-host filter silently drop ALL plugins
+        // (see `commands::plugins::build_plugin_specs`). Mirror the
+        // shape the TS-load path produces (a `file://` URL) for plugin
+        // entries that name a path on disk; bare specifiers can't be
+        // resolved without a node subprocess and stay `None` with a
+        // user-facing warning so the surprise is visible.
+        resolve_json_plugin_modules(&mut cfg, dir)
+            .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
         validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
         return Ok(cfg);
     }
@@ -609,6 +619,70 @@ pub async fn load_from_dir_with_options(
     // down on what is a benign discovery step.
     validate(&cfg, dir).context("Config::default() must validate cleanly")?;
     Ok(cfg)
+}
+
+/// Resolve `Config.plugins[].resolved_module` for the JSON-load path.
+///
+/// Issue #211: `zfb.config.json` is parsed via `serde_json` and skips the
+/// node subprocess that the TS path uses, so without this helper every
+/// plugin entry would have `resolved_module = None` and the plugin-host
+/// filter (`commands::plugins::build_plugin_specs`) would drop them all
+/// silently — both `preBuild` and `postBuild` hooks would never fire.
+///
+/// Behaviour mirrors the TS path (`config-loader.mjs`) for the cases we
+/// can handle without a JS runtime:
+///
+/// - Plugin entries naming a relative path (`./` or `../` prefix) or an
+///   absolute path are canonicalised against `dir` and converted to a
+///   `file://` URL via [`url::Url::from_file_path`]. A missing file is a
+///   hard error pointing at the path the user wrote so the failure is
+///   self-explanatory.
+/// - Bare specifiers (`@scope/pkg`, `pkg-name`) cannot be resolved here
+///   without running node; they stay `None` and we emit a user-visible
+///   warning so the silent-drop behaviour is at least announced. The
+///   user's recovery path is to switch to `zfb.config.ts`.
+fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
+    for entry in cfg.plugins.iter_mut() {
+        let name = entry.name.as_str();
+        let is_relative = name.starts_with("./") || name.starts_with("../");
+        let is_absolute = name.starts_with('/');
+        if is_relative || is_absolute {
+            let raw_path = if is_relative {
+                dir.join(name)
+            } else {
+                PathBuf::from(name)
+            };
+            let canonical = raw_path.canonicalize().with_context(|| {
+                format!(
+                    "plugin {:?}: cannot resolve plugin file at {} \
+                     (does the file exist?)",
+                    name,
+                    raw_path.display()
+                )
+            })?;
+            let url = url::Url::from_file_path(&canonical).map_err(|()| {
+                anyhow!(
+                    "plugin {:?}: failed to convert {} to a file:// URL",
+                    name,
+                    canonical.display()
+                )
+            })?;
+            entry.resolved_module = Some(url.into());
+        } else {
+            // Bare specifier — no way to resolve without node. Warn so
+            // the surprising "all plugins ignored" behaviour from #211
+            // is at least announced. resolved_module stays None and the
+            // plugin-host filter will drop this entry the same way it
+            // does for synthetic test configs.
+            crate::output::warn(format!(
+                "plugin {:?}: bare specifiers cannot be resolved by zfb.config.json; \
+                 use a relative path (e.g. \"./node_modules/{name}/index.mjs\") or \
+                 switch to zfb.config.ts so node can resolve it",
+                name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Load a single `zfb.config.ts` file: bundle it with esbuild, evaluate
@@ -1608,6 +1682,166 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("json load ok");
         assert_eq!(cfg.port, Some(5500));
+    }
+
+    // --- JSON plugin module resolution (issue #211) ---------------------------
+    //
+    // The JSON-load path used to leave every plugin's `resolved_module` at
+    // `None`, which the plugin-host filter (commands::plugins::build_plugin_specs)
+    // silently dropped — so neither preBuild nor postBuild ever fired for
+    // JSON-config projects. These tests pin the new behaviour: relative and
+    // absolute path entries get resolved into file:// URLs, missing files
+    // become hard errors, and bare specifiers stay None (with a warning) so
+    // the user at least sees the surprise.
+
+    #[tokio::test]
+    async fn json_plugin_relative_path_resolves_to_file_url() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
+        let plugin_path = plugin_dir.join("foo.mjs");
+        tokio::fs::write(&plugin_path, "export default {};\n")
+            .await
+            .unwrap();
+
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "plugins": [
+                    { "name": "./plugins/foo.mjs", "options": { "k": 1 } }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path()).await.expect("json load ok");
+        assert_eq!(cfg.plugins.len(), 1);
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("relative-path plugin should populate resolved_module");
+        assert!(
+            resolved.starts_with("file://"),
+            "expected file:// URL, got {resolved:?}"
+        );
+        // Round-trip the URL back to a path and check it matches the
+        // file we created — the canonicalise step normalises symlinks
+        // (e.g. /tmp → /private/tmp on macOS) so compare against the
+        // canonicalised source path, not the raw `plugin_path`.
+        let parsed = url::Url::parse(resolved).expect("valid url");
+        let parsed_path = parsed
+            .to_file_path()
+            .expect("file:// URL should round-trip to a path");
+        let canonical_plugin = plugin_path.canonicalize().unwrap();
+        assert_eq!(parsed_path, canonical_plugin);
+    }
+
+    #[tokio::test]
+    async fn json_plugin_missing_file_errors_clearly() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "plugins": [
+                    { "name": "./plugins/does-not-exist.mjs" }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("missing plugin file should error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("./plugins/does-not-exist.mjs"),
+            "error should name the offending plugin entry: {msg}"
+        );
+        assert!(
+            msg.contains("plugin"),
+            "error should mention plugin context: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_plugin_bare_specifier_stays_unresolved_no_error() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "plugins": [
+                    { "name": "@takazudo/zfb-shell-rename" },
+                    { "name": "some-bare-pkg" }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        // Bare specifiers cannot be resolved without node; they must
+        // not raise an error here (warning is emitted instead, but we
+        // do not assert on stderr text — that's a UX detail).
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("bare specifier in JSON config must not error");
+        assert_eq!(cfg.plugins.len(), 2);
+        assert!(
+            cfg.plugins[0].resolved_module.is_none(),
+            "bare specifier must stay None (got {:?})",
+            cfg.plugins[0].resolved_module
+        );
+        assert!(
+            cfg.plugins[1].resolved_module.is_none(),
+            "bare specifier must stay None (got {:?})",
+            cfg.plugins[1].resolved_module
+        );
+    }
+
+    #[tokio::test]
+    async fn json_plugin_absolute_path_resolves_to_file_url() {
+        // The plugin file lives at an absolute path that's outside the
+        // project dir — mirror what a user might do when pointing at a
+        // shared monorepo helper. Using TempDir keeps it portable
+        // across CI runners that don't have a stable /opt/... layout.
+        let plugin_root = TempDir::new().unwrap();
+        let plugin_path = plugin_root.path().join("abs-plugin.mjs");
+        tokio::fs::write(&plugin_path, "export default {};\n")
+            .await
+            .unwrap();
+
+        let project = TempDir::new().unwrap();
+        let plugin_path_str = plugin_path.canonicalize().unwrap();
+        let plugin_path_str = plugin_path_str.to_str().unwrap();
+        // The path must be absolute for this branch — assert that
+        // before serialising it into JSON.
+        assert!(
+            plugin_path_str.starts_with('/'),
+            "test setup expects POSIX-absolute path, got {plugin_path_str}"
+        );
+        let json = format!(
+            r#"{{ "plugins": [ {{ "name": "{}" }} ] }}"#,
+            plugin_path_str
+        );
+        tokio::fs::write(project.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+
+        let cfg = load_from_dir(project.path())
+            .await
+            .expect("absolute-path plugin should load");
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("absolute-path plugin should populate resolved_module");
+        let parsed = url::Url::parse(resolved).expect("valid url");
+        assert_eq!(parsed.scheme(), "file");
+        let parsed_path = parsed
+            .to_file_path()
+            .expect("file:// URL should round-trip");
+        assert_eq!(parsed_path, plugin_path.canonicalize().unwrap());
     }
 
     #[tokio::test]
