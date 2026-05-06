@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -118,11 +119,31 @@ pub struct TailwindSubprocessConfig {
 
     /// Output to return when `mock_subprocess` is true.
     pub mock_output: String,
+
+    /// Sub #212 — keep the [`tempfile::TempDir`] backing an
+    /// embedded-binary extraction alive for the lifetime of the engine.
+    ///
+    /// Populated by [`Self::with_embedded_binary`]. Wrapped in [`Arc`] so
+    /// that the surrounding `Clone` impl on `TailwindSubprocessConfig`
+    /// keeps working — `tempfile::TempDir` is itself not `Clone`. The
+    /// field is non-public; callers don't see it, they just receive a
+    /// `binary_path` that points inside the live tempdir.
+    _embedded_handle: Option<Arc<tempfile::TempDir>>,
 }
 
 impl Default for TailwindSubprocessConfig {
     fn default() -> Self {
-        // Resolve binary path: env override → default workspace-relative path.
+        // Resolve binary path with the precedence:
+        //   1. `ZFB_TAILWIND_BIN` env override (full bypass for ops).
+        //   2. embedded extraction (sub #212) — wired in by the caller
+        //      via [`Self::with_embedded_binary`]. We keep `default()`
+        //      infallible by not touching the embedded snapshot here;
+        //      the binary lives inside the `zfb` crate's
+        //      `EMBEDDED_VENDOR` and `zfb-css` would otherwise need a
+        //      reverse dependency to reach it. The `zfb` crate is the
+        //      sole caller that constructs this config and is the
+        //      natural place to do the (potentially fallible) extract.
+        //   3. workspace-relative fallback for in-workspace dev.
         let env_override = std::env::var_os("ZFB_TAILWIND_BIN");
         let binary_path = match env_override {
             Some(p) => PathBuf::from(p),
@@ -139,6 +160,7 @@ impl Default for TailwindSubprocessConfig {
             theme_block: None,
             mock_subprocess: false,
             mock_output: String::new(),
+            _embedded_handle: None,
         }
     }
 }
@@ -193,6 +215,42 @@ impl TailwindSubprocessConfig {
     /// Set an inline `@theme { ... }` block (chainable).
     pub fn with_theme_block(mut self, block: impl Into<String>) -> Self {
         self.theme_block = Some(block.into());
+        self
+    }
+
+    /// Sub #212 — install an embedded-binary extraction as the resolved
+    /// [`Self::binary_path`] and keep the backing [`tempfile::TempDir`]
+    /// alive for the lifetime of `self`.
+    ///
+    /// This is the wiring point for the precedence step "embedded
+    /// extraction" between the env override and the workspace-relative
+    /// fallback. The caller is the zfb crate (which has access to the
+    /// `EMBEDDED_VENDOR` snapshot via
+    /// `crates/zfb/src/render_pipeline.rs::embedded_binary`); zfb-css
+    /// itself stays free of any reverse dependency on the embedded
+    /// vendor tree.
+    ///
+    /// Precedence is preserved: if `ZFB_TAILWIND_BIN` is set in the
+    /// process environment, this method is a no-op so the env override
+    /// keeps winning. Otherwise the embedded `path` replaces the
+    /// workspace-relative fallback that [`Self::default`] selected.
+    ///
+    /// `handle` is wrapped in [`Arc`] so the surrounding
+    /// `#[derive(Clone)]` keeps working — `tempfile::TempDir` is not
+    /// itself `Clone`.
+    pub fn with_embedded_binary(
+        mut self,
+        handle: tempfile::TempDir,
+        path: PathBuf,
+    ) -> Self {
+        if std::env::var_os("ZFB_TAILWIND_BIN").is_some() {
+            // Env tier already won — drop the handle on the floor and
+            // leave `binary_path` pointing at the env value.
+            drop(handle);
+            return self;
+        }
+        self.binary_path = path;
+        self._embedded_handle = Some(Arc::new(handle));
         self
     }
 }
@@ -475,4 +533,111 @@ pub fn engine_provenance(name: &str, version: Option<&str>) -> HashMap<String, S
         m.insert("version".to_string(), v.to_string());
     }
     m
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sub #212 — `with_embedded_binary` installs the path returned by
+    /// the caller's embedded extraction (a tempdir + binary stem) AND
+    /// keeps the [`tempfile::TempDir`] alive on the config so the path
+    /// stays valid for every subprocess invocation.
+    ///
+    /// Bundles BOTH behavioural assertions — the embedded-tier install AND
+    /// the env-override no-op — into a single test so that `cargo test`'s
+    /// parallel runner can never race the two cases on the shared
+    /// `ZFB_TAILWIND_BIN` env var. Splitting them caused the env-set test
+    /// to leak the var into the embedded-tier test on parallel scheduling.
+    ///
+    /// We don't shell out to the real binary here — that's gated by the
+    /// `#[ignore]` integration tests in zfb-build. This unit test just
+    /// proves the wiring: the path is updated, the file is still present
+    /// after we drop the original `TempDir` handle (which we surrender to
+    /// the config), and the env override always wins.
+    #[test]
+    fn with_embedded_binary_installs_path_unless_env_override_is_set() {
+        // Tiny scope guard so a panic doesn't leak the env var.
+        struct EnvGuard {
+            key: &'static str,
+            prev: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+
+        // ----- Phase 1: env unset -> embedded path wins ----------------
+        let prev = std::env::var_os("ZFB_TAILWIND_BIN");
+        std::env::remove_var("ZFB_TAILWIND_BIN");
+        let _guard = EnvGuard {
+            key: "ZFB_TAILWIND_BIN",
+            prev,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin_path = dir.path().join("tailwindcss-v4");
+        std::fs::write(&bin_path, b"#!/bin/sh\necho ok\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+
+        let cfg = TailwindSubprocessConfig::default()
+            .with_embedded_binary(dir, bin_path.clone());
+        assert_eq!(
+            cfg.binary_path, bin_path,
+            "no env override → embedded path should win over the workspace fallback"
+        );
+        assert!(
+            cfg.binary_path.exists(),
+            "embedded binary path should exist via the captured TempDir handle"
+        );
+
+        // Cloning the config preserves the embedded path and keeps the
+        // handle alive (Arc<TempDir>). Drop the original — the clone's
+        // path must still resolve.
+        let cloned = cfg.clone();
+        drop(cfg);
+        assert!(
+            cloned.binary_path.exists(),
+            "Clone should keep the TempDir alive so binary_path stays valid"
+        );
+        drop(cloned);
+
+        // ----- Phase 2: env set -> env value wins, embedded is no-op --
+        std::env::set_var("ZFB_TAILWIND_BIN", "/tmp/zfb-test-tailwind-env-override");
+
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        let bin_path2 = dir2.path().join("tailwindcss-v4");
+        std::fs::write(&bin_path2, b"x").unwrap();
+
+        // Default reads the env override.
+        let cfg = TailwindSubprocessConfig::default();
+        assert_eq!(
+            cfg.binary_path,
+            PathBuf::from("/tmp/zfb-test-tailwind-env-override"),
+            "default() should honour ZFB_TAILWIND_BIN"
+        );
+
+        // with_embedded_binary must not displace the env-override value.
+        let cfg = cfg.with_embedded_binary(dir2, bin_path2);
+        assert_eq!(
+            cfg.binary_path,
+            PathBuf::from("/tmp/zfb-test-tailwind-env-override"),
+            "env-override path must win over with_embedded_binary"
+        );
+
+        // _guard drops here, restoring the previous ZFB_TAILWIND_BIN value.
+    }
 }
