@@ -185,6 +185,11 @@ mod tests {
         let HastNode::Raw(html) = &children[0] else {
             unreachable!("expected HastNode::Raw")
         };
-        assert_eq!(html, "<pre><code>hello</code></pre>");
+        // Unknown lang now produces a themed wrapper instead of bare <pre><code>
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "expected themed wrapper for unknown lang: {html}"
+        );
+        assert!(html.contains("hello"), "code content missing: {html}");
     }
 }
