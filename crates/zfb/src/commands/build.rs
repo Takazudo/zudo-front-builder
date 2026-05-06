@@ -632,16 +632,57 @@ fn build_default_islands_payload(
         return Ok(None);
     }
 
-    let mut esbuild_cfg =
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
-    // Sub #212 follow-up — extend embedded-binary extraction to the islands
-    // bundler. `EsbuildSubprocessConfig::default()` resolves to a fixed
-    // `crates/zfb/binaries/esbuild/esbuild` slot when neither `binary_path`
-    // is overridden nor `ZFB_ESBUILD_BIN` is set; consumer projects without
-    // that workspace dir hit the same "esbuild binary not found at default
-    // slot" failure as the main bundler did before this PR's other fix.
-    // Mirror the wiring applied in `run_build` and the CSS engine path.
+    // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
+    // extraction to the islands bundler.
+    //
+    // 1. Binary path: `EsbuildSubprocessConfig::default()` resolves to a
+    //    fixed `crates/zfb/binaries/esbuild/esbuild` slot when neither
+    //    `binary_path` is overridden nor `ZFB_ESBUILD_BIN` is set; consumer
+    //    projects without that workspace dir hit the same "esbuild binary
+    //    not found at default slot" failure as the main bundler did before
+    //    this PR's other fix. Mirror the wiring applied in `run_build` and
+    //    the CSS engine path: when no env override is in play, pre-extract
+    //    the embedded esbuild via `embedded_binary("esbuild")` and pin its
+    //    path on the config via `with_binary_path`.
+    //
+    // 2. node_modules walk: the islands bundler synthesises an entry
+    //    tempfile inside `working_dir` and esbuild walks UP from there
+    //    looking for `node_modules` (see comment block in
+    //    `crates/zfb-islands/src/esbuild.rs::bundle_one_entry`). When the
+    //    consumer project has no on-disk `node_modules`, that walk reaches
+    //    the filesystem root without finding `preact`, `@takazudo/zfb/runtime`,
+    //    etc., and fails. So when no project node_modules is detectable,
+    //    extract the embedded vendor (`embedded_node_modules()`) and re-point
+    //    `working_dir` at its parent — esbuild's first upward hop then sees
+    //    `<tmpdir>/node_modules` and resolves bare imports against the
+    //    embedded snapshot. The user component imports are absolute paths
+    //    so they continue to resolve unchanged.
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let working_dir = if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+        project_root.to_path_buf()
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                let wd = nm_path
+                    .parent()
+                    .expect("embedded_node_modules path always has a parent")
+                    .to_path_buf();
+                _embedded_nm_handle = Some(handle);
+                wd
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for islands bundler ({e}); \
+                     falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+                project_root.to_path_buf()
+            }
+        }
+    };
+    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(working_dir);
     if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
         match crate::render_pipeline::embedded_binary("esbuild") {
             Ok((handle, path)) => {
