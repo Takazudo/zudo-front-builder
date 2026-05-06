@@ -856,6 +856,37 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // syntect theme instead of the default `base16-ocean.dark`.
     bundler_input.code_highlight_theme =
         config.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Sub #212 follow-up — extend the embedded-binary extraction tier to
+    // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
+    // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
+    // then a fixed `crates/zfb/binaries/esbuild/esbuild` slot — and erred
+    // out on consumer projects that don't ship that slot dir.
+    // Mirror the tailwindcss-v4 wiring at `tailwind_for_runner_with_paths`:
+    // skip when an explicit override is in play (input field or env var),
+    // otherwise pre-extract the embedded esbuild and pin its path on the
+    // input. The TempDir handle rides alongside the bundler input via
+    // `_embedded_esbuild_handle` so it outlives `bundle(...)`.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                bundler_input.esbuild_binary = Some(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                // Non-fatal: log and let the bundler's own resolver fall
+                // through to the on-disk slot, which still produces a useful
+                // error message pointing at `crates/zfb/binaries/esbuild/`.
+                crate::output::warn(format!(
+                    "could not extract embedded esbuild ({e}); \
+                     falling back to bundler resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;

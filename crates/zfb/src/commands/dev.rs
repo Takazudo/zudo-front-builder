@@ -524,6 +524,27 @@ fn boot_dev_renderer(
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
     bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Sub #212 follow-up — same embedded-esbuild wiring as
+    // `commands/build.rs`. Without this, dev mode would also blow up on
+    // consumer projects without `crates/zfb/binaries/esbuild/`.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                bundler_input.esbuild_binary = Some(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                crate::output::warn(format!(
+                    "could not extract embedded esbuild ({e}); \
+                     falling back to bundler resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
 
     let state = start(RendererStartInput {
