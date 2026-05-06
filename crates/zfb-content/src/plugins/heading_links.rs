@@ -150,23 +150,59 @@ fn set_attr(attrs: &mut Vec<(String, String)>, key: &str, val: &str) {
 
 /// github-slugger-equivalent slugifier.
 ///
-/// Lowercase, non-alphanumeric runs collapse to a single `-`, leading
-/// and trailing `-` stripped. Whitespace and punctuation behave the
-/// same way (single `-` between words). ASCII-only — non-ASCII
-/// alphanumerics are dropped, mirroring github-slugger's regex.
+/// Strips control chars and a specific ASCII punctuation set (matching the
+/// npm `github-slugger` regex). Whitespace collapses to a single `-`.
+/// Everything else — Unicode letters, numbers, combining marks, symbols,
+/// emoji, CJK ideographs, kana, hangul — passes through, lowercased where
+/// casing applies.
 #[must_use]
 pub fn slugify(input: &str) -> String {
+    fn is_stripped(ch: char) -> bool {
+        ch.is_control()
+            || ch == '!'
+            || ch == '"'
+            || ch == '#'
+            || ch == '$'
+            || ch == '%'
+            || ch == '&'
+            || ch == '\''
+            || ch == '('
+            || ch == ')'
+            || ch == '*'
+            || ch == '+'
+            || ch == ','
+            || ch == '.'
+            || ch == '/'
+            || ch == ':'
+            || ch == ';'
+            || ch == '<'
+            || ch == '='
+            || ch == '>'
+            || ch == '?'
+            || ch == '@'
+            || ch == '['
+            || ch == '\\'
+            || ch == ']'
+            || ch == '^'
+            || ch == '`'
+            || ch == '{'
+            || ch == '|'
+            || ch == '}'
+            || ch == '~'
+    }
     let mut out = String::with_capacity(input.len());
     let mut last_dash = true;
     for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_whitespace() || is_stripped(ch) {
+            if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        } else {
             for c in ch.to_lowercase() {
                 out.push(c);
             }
             last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
         }
     }
     if out.ends_with('-') {
@@ -259,7 +295,10 @@ mod tests {
     #[test]
     fn slugify_handles_punctuation_and_case() {
         assert_eq!(slugify("Hello, World!"), "hello-world");
-        assert_eq!(slugify("  --weird-- "), "weird");
+        // `-` is NOT in the stripped set per npm github-slugger semantics;
+        // pre-existing dashes survive. Leading/trailing whitespace collapses
+        // via the last_dash flag but the surrounding dashes themselves stay.
+        assert_eq!(slugify("  --weird-- "), "--weird--");
         assert_eq!(slugify("MixedCase 123"), "mixedcase-123");
     }
 
@@ -269,5 +308,54 @@ mod tests {
         let before = tree.clone();
         HeadingLinksPlugin::new().visit(&mut tree);
         assert_eq!(tree, before, "empty text → no slug → no mutation");
+    }
+
+    #[test]
+    fn slugify_preserves_japanese() {
+        assert_eq!(slugify("コンポーネント構文"), "コンポーネント構文");
+    }
+
+    #[test]
+    fn slugify_preserves_chinese() {
+        assert_eq!(slugify("中文标题"), "中文标题");
+    }
+
+    #[test]
+    fn slugify_preserves_korean() {
+        assert_eq!(slugify("한국어 제목"), "한국어-제목");
+    }
+
+    #[test]
+    fn slugify_mixed_ascii_and_cjk() {
+        assert_eq!(slugify("Section 一"), "section-一");
+    }
+
+    #[test]
+    fn slugify_preserves_emoji() {
+        // Emoji are symbols (Symbol_Other), not in the stripped set.
+        // Whitespace between emoji and text collapses to `-`.
+        assert_eq!(slugify("🚀 Launch"), "🚀-launch");
+    }
+
+    #[test]
+    fn slugify_preserves_accented_latin_precomposed() {
+        // Precomposed é (U+00E9) is a single code point that passes through.
+        assert_eq!(slugify("Café au lait"), "café-au-lait");
+    }
+
+    #[test]
+    fn slugify_preserves_accented_latin_decomposed() {
+        // Decomposed: e (U+0065) + combining acute accent (U+0301).
+        // Both code points are preserved — combining marks are not stripped.
+        let input = "Cafe\u{0301} au lait";
+        let result = slugify(input);
+        assert!(
+            result.contains("cafe\u{0301}"),
+            "decomposed accent must survive: {result:?}"
+        );
+        assert!(
+            result.contains("au"),
+            "rest of text must survive: {result:?}"
+        );
     }
 }
