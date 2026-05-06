@@ -25,6 +25,28 @@ See `crates/zfb-islands/README.md` for the pinned esbuild version and rationale,
 and `crates/zfb/binaries/esbuild/README.md` for the slot-shape rationale
 (the esbuild slot uses a subdirectory rather than a single file path).
 
+## Embedded npm packages (no on-disk slot)
+
+In addition to the binaries above, `crates/zfb/build.rs` snapshots three
+groups of npm packages directly **into the compiled `zfb` binary** via
+`include_dir!`. They have no `binaries/` slot — they ride inside the
+executable bytes themselves and are extracted to a tempdir at `zfb build`
+/ `zfb dev` time so esbuild can resolve framework imports without a
+consumer-side `node_modules/`.
+
+| Embedded package(s)                      | Sub  | Source                                                                  |
+| ---------------------------------------- | ---- | ----------------------------------------------------------------------- |
+| `@takazudo/zfb`, `@takazudo/zfb-runtime` | #198 | `packages/<name>/src/` (TypeScript source from this workspace)          |
+| `preact`, `preact-render-to-string`      | #209 | `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>/` (published)     |
+| `hono`                                   | #209 | `node_modules/.pnpm/hono@<ver>/node_modules/hono/` (published)          |
+
+The version pins for the framework runtimes (`preact`,
+`preact-render-to-string`, `hono`) are constants near the top of
+`crates/zfb/build.rs` (`PREACT_VERSION`, `PREACT_RTS_VERSION`,
+`HONO_VERSION`); the source of truth is zfb's own `pnpm-lock.yaml`. See
+the "Embedded npm packages" section in `BUILDING.md` for the bump
+procedure.
+
 ## Why no binaries are committed
 
 Binaries are large, platform-specific, and license-bound. They are **never**

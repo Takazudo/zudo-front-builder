@@ -48,6 +48,34 @@ const ESBUILD_VERSION: &str = "0.25.12";
 const TAILWIND_VERSION: &str = "4.2.0";
 
 // ---------------------------------------------------------------------------
+// Framework package version pins (sub #209 — embed framework runtimes)
+//
+// `preact`, `preact-render-to-string`, and `hono` are the runtime framework
+// packages a `zfb`-built app imports at bundle time. They are NOT
+// downloaded by `build.rs`; instead, zfb's own `pnpm install` resolves the
+// versions in `pnpm-lock.yaml`, and `embed_framework_packages()` copies the
+// resolved trees from `node_modules/.pnpm/<name>@<ver>*/node_modules/<name>`
+// into `$OUT_DIR/vendor/<name>/`. The constants below are the contract
+// between zfb and its consumers — bump these whenever you bump the
+// corresponding entry in zfb's `pnpm-lock.yaml`.
+//
+// Source of truth: zfb's own `pnpm-lock.yaml`. To verify alignment, run:
+//
+//   pnpm list preact preact-render-to-string hono --depth 0 -r
+//
+// from the workspace root and confirm the output matches the constants below.
+// ---------------------------------------------------------------------------
+
+/// Pinned `preact` version. Mirror of the `preact` entry in `pnpm-lock.yaml`.
+const PREACT_VERSION: &str = "10.29.1";
+
+/// Pinned `preact-render-to-string` version.
+const PREACT_RTS_VERSION: &str = "6.6.7";
+
+/// Pinned `hono` version (transitive dep of `@takazudo/zfb-runtime`).
+const HONO_VERSION: &str = "4.12.15";
+
+// ---------------------------------------------------------------------------
 // SHA-256 constants — esbuild 0.25.12 (from the npm package binary)
 //
 // These are SHA-256 digests of the *extracted* esbuild binary inside each
@@ -169,16 +197,13 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| {
-            format!(
-                "network error fetching `{url}`: {e}\n\
+    let response = client.get(url).send().map_err(|e| {
+        format!(
+            "network error fetching `{url}`: {e}\n\
                  Hint: if no network is available, set ZFB_ESBUILD_BIN and \
                  ZFB_TAILWIND_BIN to paths of manually-downloaded binaries."
-            )
-        })?;
+        )
+    })?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -248,9 +273,7 @@ fn esbuild_tarball_url(npm_pkg: &str, version: &str) -> String {
     // npm_pkg is "@esbuild/linux-x64"; the basename after the "/" is the
     // scoped package name used in the tarball URL segment.
     let basename = npm_pkg.split('/').last().unwrap_or(npm_pkg);
-    format!(
-        "https://registry.npmjs.org/{npm_pkg}/-/{basename}-{version}.tgz"
-    )
+    format!("https://registry.npmjs.org/{npm_pkg}/-/{basename}-{version}.tgz")
 }
 
 /// Extract a single file from a gzipped tar archive (held in memory).
@@ -310,9 +333,7 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
     }
 
     let url = esbuild_tarball_url(meta.npm_pkg, ESBUILD_VERSION);
-    println!(
-        "cargo:warning=Downloading esbuild {ESBUILD_VERSION} from {url} ..."
-    );
+    println!("cargo:warning=Downloading esbuild {ESBUILD_VERSION} from {url} ...");
 
     let tgz_bytes = fetch_bytes(&url)?;
     let binary_bytes = extract_from_tgz(&tgz_bytes, meta.tarball_binary_path)?;
@@ -330,8 +351,12 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
         ));
     }
 
-    stage_binary(slot_path, &binary_bytes)
-        .map_err(|e| format!("failed to stage esbuild binary at {}: {e}", slot_path.display()))?;
+    stage_binary(slot_path, &binary_bytes).map_err(|e| {
+        format!(
+            "failed to stage esbuild binary at {}: {e}",
+            slot_path.display()
+        )
+    })?;
 
     println!(
         "cargo:warning=✓ esbuild {ESBUILD_VERSION} installed at {} (sha256 {actual_sha})",
@@ -381,9 +406,7 @@ fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), Stri
         "https://github.com/tailwindlabs/tailwindcss/releases/download/v{TAILWIND_VERSION}"
     );
     let url = format!("{release_base}/{asset_name}");
-    println!(
-        "cargo:warning=Downloading tailwindcss {TAILWIND_VERSION} from {url} ..."
-    );
+    println!("cargo:warning=Downloading tailwindcss {TAILWIND_VERSION} from {url} ...");
 
     let binary_bytes = fetch_bytes(&url)?;
 
@@ -399,8 +422,12 @@ fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), Stri
         ));
     }
 
-    stage_binary(slot_path, &binary_bytes)
-        .map_err(|e| format!("failed to stage tailwindcss binary at {}: {e}", slot_path.display()))?;
+    stage_binary(slot_path, &binary_bytes).map_err(|e| {
+        format!(
+            "failed to stage tailwindcss binary at {}: {e}",
+            slot_path.display()
+        )
+    })?;
 
     println!(
         "cargo:warning=✓ tailwindcss {TAILWIND_VERSION} installed at {} (sha256 {actual_sha})",
@@ -453,9 +480,8 @@ fn stage_binary(dest: &Path, bytes: &[u8]) -> io::Result<()> {
 fn find_workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is set by Cargo to the directory of this crate's
     // Cargo.toml (i.e. crates/zfb/).
-    let manifest_dir = PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"),
-    );
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
 
     let mut dir = manifest_dir.clone();
     loop {
@@ -513,14 +539,8 @@ fn download_binaries() -> Result<(), String> {
     println!("cargo:rerun-if-changed=crates/zfb-islands/src/esbuild.rs");
     println!("cargo:rerun-if-changed=scripts/fetch-tailwind.mjs");
     // Also rerun when either binary slot file changes.
-    println!(
-        "cargo:rerun-if-changed={}",
-        esbuild_slot.display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        tailwind_slot.display()
-    );
+    println!("cargo:rerun-if-changed={}", esbuild_slot.display());
+    println!("cargo:rerun-if-changed={}", tailwind_slot.display());
 
     let platform = detect_platform()?;
 
@@ -534,6 +554,11 @@ fn main() {
     // Sub 198 — embed @takazudo/zfb + zfb-runtime TypeScript source so the
     // installed binary works on a consumer with no node_modules.
     embed_runtime();
+
+    // Sub 209 — embed the framework runtime packages (preact,
+    // preact-render-to-string, hono) so a consumer with no node_modules can
+    // still bundle a page that imports them.
+    embed_framework_packages();
 
     // Sub 197 — download pinned esbuild + tailwindcss standalone binaries.
     if let Err(e) = download_binaries() {
@@ -637,5 +662,150 @@ fn copy_ts_src(src: &Path, dst: &Path) {
                 });
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub 209 — embed framework runtime packages (preact, preact-render-to-string,
+// hono) so esbuild can resolve them from the embedded extraction with no
+// consumer-side node_modules.
+// ---------------------------------------------------------------------------
+
+/// Copy the published trees of `preact`, `preact-render-to-string`, and `hono`
+/// from zfb's pnpm-installed `node_modules/.pnpm/` store into
+/// `$OUT_DIR/vendor/<pkg>/` so they ride along inside `EMBEDDED_VENDOR` (the
+/// `include_dir!` snapshot in `crates/zfb/src/render_pipeline.rs`). The
+/// extraction at runtime then produces `node_modules/<pkg>/` siblings beside
+/// `node_modules/@takazudo/`, giving esbuild a complete tree to resolve from.
+///
+/// pnpm's content-addressable layout puts each direct dep at
+/// `node_modules/.pnpm/<name>@<version>/node_modules/<name>/`. When a package
+/// has injected peer deps (e.g. `preact-render-to-string`), pnpm appends a
+/// `_<peer>@<peerver>` suffix to the directory name, so we match on the
+/// `<name>@<version>` prefix and accept the first match.
+///
+/// Only files needed at bundle time are copied — `node_modules/` (no nested
+/// deps), `__tests__/`, hidden dirs, and source-map files are filtered out to
+/// keep the embedded snapshot lean. The three packages currently have
+/// no nested deps that need following:
+///
+/// - `preact`: zero runtime deps.
+/// - `preact-render-to-string`: peer-only on `preact` (resolved via the
+///   embedded `node_modules/preact` sibling at runtime).
+/// - `hono`: zero runtime deps.
+///
+/// Source of truth for versions: `pnpm-lock.yaml` (mirrored by the
+/// `*_VERSION` constants near the top of this file).
+fn embed_framework_packages() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("could not resolve workspace root from CARGO_MANIFEST_DIR");
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let vendor_dir = out_dir.join("vendor");
+    std::fs::create_dir_all(&vendor_dir).expect("failed to create vendor dir");
+
+    let pnpm_store = workspace_root.join("node_modules").join(".pnpm");
+
+    let packages: [(&str, &str); 3] = [
+        ("preact", PREACT_VERSION),
+        ("preact-render-to-string", PREACT_RTS_VERSION),
+        ("hono", HONO_VERSION),
+    ];
+
+    for (name, version) in &packages {
+        let src_pkg = locate_pnpm_pkg(&pnpm_store, name, version).unwrap_or_else(|| {
+            panic!(
+                "framework package `{name}@{version}` not found under {}.\n\
+                 Run `pnpm install --frozen-lockfile` from the workspace root, \
+                 then re-run cargo build.\n\
+                 If the package has been bumped in pnpm-lock.yaml, also update \
+                 the *_VERSION constant in crates/zfb/build.rs.",
+                pnpm_store.display()
+            )
+        });
+
+        let dst_pkg = vendor_dir.join(name);
+        copy_pkg_published(&src_pkg, &dst_pkg);
+
+        // Re-run if the source package contents change (e.g. a `pnpm install`
+        // bump or a deliberate edit during local hacking).
+        println!("cargo:rerun-if-changed={}", src_pkg.display());
+    }
+
+    // The cargo:rustc-env=ZFB_VENDOR_DIR=... line is emitted by
+    // `embed_runtime()` and points at the same `$OUT_DIR/vendor` dir, so the
+    // framework packages we just staged are picked up by the existing
+    // `include_dir!("$ZFB_VENDOR_DIR")` macro in `render_pipeline.rs`.
+}
+
+/// Find the pnpm-store directory for `<name>@<version>` under
+/// `node_modules/.pnpm/`. Accepts either the bare directory name
+/// `<name>@<version>` or any peer-suffixed variant `<name>@<version>_*`.
+fn locate_pnpm_pkg(pnpm_store: &Path, name: &str, version: &str) -> Option<PathBuf> {
+    let exact_prefix = format!("{name}@{version}");
+    let entries = std::fs::read_dir(pnpm_store).ok()?;
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let entry_str = entry_name.to_string_lossy();
+        // Accept exact match or `<name>@<version>_<peer-suffix>` variants.
+        let matches = entry_str == exact_prefix
+            || entry_str
+                .strip_prefix(&exact_prefix)
+                .is_some_and(|rest| rest.starts_with('_'));
+        if !matches {
+            continue;
+        }
+        let pkg_dir = entry.path().join("node_modules").join(name);
+        if pkg_dir.is_dir() {
+            return Some(pkg_dir);
+        }
+    }
+    None
+}
+
+/// Recursively copy `src` to `dst`, skipping directories and files that are
+/// dev-only or recursive (so we do not pull a vendored package's own
+/// `node_modules/` into the binary). The filter is intentionally conservative:
+/// we keep `package.json`, every `dist/`, `src/`, and any sibling published
+/// JS / TS / d.ts entry files; we drop nested `node_modules/`, `__tests__/`,
+/// hidden dirs, and `*.map` source maps.
+fn copy_pkg_published(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("failed to create vendor pkg dir");
+    let rd = std::fs::read_dir(src)
+        .unwrap_or_else(|e| panic!("failed to read framework pkg dir {}: {e}", src.display()));
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip nested node_modules (recursive copy hazard) and hidden files.
+        if name_str == "node_modules" || name_str.starts_with('.') {
+            continue;
+        }
+        // Skip test directories.
+        if name_str == "__tests__" || name_str == "test" || name_str == "tests" {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            copy_pkg_published(&entry.path(), &dst.join(&name));
+        } else if ft.is_file() {
+            // Drop source maps to keep the embedded snapshot lean. The bundle
+            // does not need them at consumer build time.
+            if name_str.ends_with(".map") {
+                continue;
+            }
+            let dst_file = dst.join(&name);
+            std::fs::copy(entry.path(), &dst_file).unwrap_or_else(|e| {
+                panic!("failed to copy {}: {e}", entry.path().display());
+            });
+        }
+        // Symlinks and other non-regular entries are skipped — the pnpm store
+        // never uses symlinks for the actual published files (only for the
+        // top-level `node_modules/<name>` aliasing, which we don't touch).
     }
 }
