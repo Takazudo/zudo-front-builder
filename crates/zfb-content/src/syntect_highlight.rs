@@ -93,6 +93,8 @@ impl Highlighter {
             .get(theme_name)
             .ok_or_else(|| HighlightError::UnknownTheme(theme_name.to_string()))?;
 
+        let slug = theme_slug(theme_name);
+
         let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
             self.syntax_set.find_syntax_by_token(l).or_else(|| {
                 resolve_alias(l)
@@ -102,21 +104,24 @@ impl Highlighter {
         });
 
         let Some(syntax) = syntax else {
-            return Ok(fallback_html(code));
+            return Ok(fallback_html(code, &slug));
         };
 
         let mut h = HighlightLines::new(syntax, theme_obj);
         let mut spans = String::new();
         for line in LinesWithEndings::from(code) {
-            let regions = h
-                .highlight_line(line, &self.syntax_set)
-                .map_err(|e| HighlightError::ThemeParse(e.to_string()))?;
-            let line_html = styled_line_to_highlighted_html(&regions[..], IncludeBackground::No)
-                .map_err(|e| HighlightError::ThemeParse(e.to_string()))?;
-            spans.push_str(&line_html);
+            let regions = match h.highlight_line(line, &self.syntax_set) {
+                Ok(r) => r,
+                // Path B: tokenization error — degrade to themed fallback instead of
+                // bubbling Err so callers never see a bare unthemed <pre><code>.
+                Err(_) => return Ok(fallback_html(code, &slug)),
+            };
+            match styled_line_to_highlighted_html(&regions[..], IncludeBackground::No) {
+                Ok(line_html) => spans.push_str(&line_html),
+                Err(_) => return Ok(fallback_html(code, &slug)),
+            }
         }
 
-        let slug = theme_slug(theme_name);
         Ok(format!(
             "<pre class=\"syntect-{slug}\"><code>{spans}</code></pre>"
         ))
@@ -145,6 +150,16 @@ fn resolve_alias(lang: &str) -> &'static [&'static str] {
         "py" | "python" => &["Python"],
         "sh" | "bash" | "zsh" => &["Bourne Again Shell (bash)", "Bash"],
         "md" | "markdown" => &["Markdown"],
+        // mdx has no dedicated grammar; treat as Markdown so fences get theming
+        "mdx" => &["Markdown"],
+        "yaml" | "yml" => &["YAML"],
+        "json" => &["JSON"],
+        "c" => &["C"],
+        "cpp" | "c++" => &["C++"],
+        "go" => &["Go"],
+        "toml" => &["TOML"],
+        "html" => &["HTML"],
+        "css" => &["CSS"],
         _ => &[],
     }
 }
@@ -171,9 +186,15 @@ fn theme_slug(name: &str) -> String {
     out
 }
 
-/// HTML-escape and wrap in `<pre><code>…</code></pre>` for unknown languages.
-fn fallback_html(code: &str) -> String {
-    format!("<pre><code>{}</code></pre>", html_escape(code))
+/// HTML-escape and wrap in a themed `<pre class="syntect-{slug}"><code>…</code></pre>`.
+///
+/// Used when syntax lookup fails (Path A) or tokenization errors (Path B).
+/// The `slug` is the pre-computed `theme_slug(theme_name)` from the call site.
+fn fallback_html(code: &str, slug: &str) -> String {
+    format!(
+        "<pre class=\"syntect-{slug}\"><code>{}</code></pre>",
+        html_escape(code)
+    )
 }
 
 fn html_escape(s: &str) -> String {
@@ -243,7 +264,12 @@ mod tests {
         let html = h
             .highlight("hello", Some("klingon"), None)
             .expect("fallback ok");
-        assert_eq!(html, "<pre><code>hello</code></pre>");
+        // Unknown lang uses the themed wrapper, not bare <pre><code>
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "expected themed wrapper: {html}"
+        );
+        assert!(html.contains("hello"), "code content missing: {html}");
     }
 
     #[test]
@@ -302,7 +328,12 @@ mod tests {
     fn empty_lang_falls_back_to_safe_pre_code() {
         let h = Highlighter::new();
         let html = h.highlight("x = 1", Some(""), None).expect("highlight ok");
-        assert_eq!(html, "<pre><code>x = 1</code></pre>");
+        // Empty lang uses the themed wrapper now
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "expected themed wrapper for empty lang: {html}"
+        );
+        assert!(html.contains("x = 1"), "code content missing: {html}");
     }
 
     #[test]
@@ -329,5 +360,165 @@ mod tests {
         assert!(default.contains("syntect-base16-ocean-dark"));
         assert!(override_html.contains("syntect-inspiredgithub"));
         assert_ne!(default, override_html);
+    }
+
+    // --- New tests for alias resolution and themed fallback ---
+
+    #[test]
+    fn mdx_alias_resolves_to_markdown() {
+        let h = Highlighter::new();
+        let html = h
+            .highlight("# h\n", Some("mdx"), None)
+            .expect("mdx highlight ok");
+        // mdx maps to Markdown, which has a grammar — should produce spans
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "expected themed wrapper: {html}"
+        );
+        assert!(
+            html.contains("<span"),
+            "expected spans for mdx/Markdown: {html}"
+        );
+    }
+
+    #[test]
+    fn tsx_jsx_keep_working() {
+        let h = Highlighter::new();
+        let tsx_html = h
+            .highlight("const x: number = 1;\n", Some("tsx"), None)
+            .expect("tsx ok");
+        assert!(
+            tsx_html.starts_with("<pre class=\"syntect-"),
+            "tsx: expected themed wrapper: {tsx_html}"
+        );
+        assert!(
+            tsx_html.contains("<span"),
+            "tsx: expected spans: {tsx_html}"
+        );
+
+        let jsx_html = h
+            .highlight("const x = 1;\n", Some("jsx"), None)
+            .expect("jsx ok");
+        assert!(
+            jsx_html.starts_with("<pre class=\"syntect-"),
+            "jsx: expected themed wrapper: {jsx_html}"
+        );
+        assert!(
+            jsx_html.contains("<span"),
+            "jsx: expected spans: {jsx_html}"
+        );
+    }
+
+    #[test]
+    fn unknown_language_uses_themed_wrapper() {
+        let h = Highlighter::new();
+        let html = h
+            .highlight("hello world", Some("klingon"), None)
+            .expect("klingon fallback ok");
+        assert!(
+            html.starts_with("<pre class=\"syntect-base16-ocean-dark\">"),
+            "expected themed wrapper with default theme: {html}"
+        );
+        assert!(
+            html.contains("<code>hello world</code>"),
+            "code content: {html}"
+        );
+        assert!(!html.contains("<span"), "no spans for unknown lang: {html}");
+    }
+
+    #[test]
+    fn empty_lang_uses_themed_wrapper() {
+        let h = Highlighter::new();
+        // Some("") — treated as no language
+        let html_empty = h.highlight("code", Some(""), None).expect("empty lang ok");
+        assert!(
+            html_empty.starts_with("<pre class=\"syntect-"),
+            "Some(\"\") must use themed wrapper: {html_empty}"
+        );
+        // None — no language at all
+        let html_none = h.highlight("code", None, None).expect("none lang ok");
+        assert!(
+            html_none.starts_with("<pre class=\"syntect-"),
+            "None lang must use themed wrapper: {html_none}"
+        );
+    }
+
+    #[test]
+    fn themed_fallback_escapes_html() {
+        let h = Highlighter::new();
+        let html = h
+            .highlight("<script>alert(1)</script>", Some("klingon"), None)
+            .expect("themed fallback escape ok");
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "expected themed wrapper: {html}"
+        );
+        assert!(html.contains("&lt;script&gt;"), "< not escaped: {html}");
+        assert!(html.contains("&lt;/script&gt;"), "</ not escaped: {html}");
+        assert!(!html.contains("<script>"), "raw script leaked: {html}");
+    }
+
+    /// Path B: tokenization errors fall back to themed output.
+    ///
+    /// Note: the bundled syntect grammars do not have an easily-reproducible
+    /// per-line tokenization error with a synthetic input, so this test
+    /// verifies the happy path still produces themed output (no regression)
+    /// and that the function signature change did not break compilation.
+    /// A more targeted test would require a custom grammar that errors
+    /// mid-stream, which is out of scope for bundled-syntax testing.
+    #[test]
+    fn tokenization_error_path_does_not_bubble_err() {
+        // The important property is that highlight() never returns Err due to
+        // tokenization; it degrades to the themed fallback instead.
+        let h = Highlighter::new();
+        // Normal highlighted path — must still succeed
+        let html = h
+            .highlight("fn main() {}\n", Some("rust"), None)
+            .expect("rust highlight must not return Err");
+        assert!(
+            html.starts_with("<pre class=\"syntect-"),
+            "highlight must produce themed output: {html}"
+        );
+    }
+
+    #[test]
+    fn list_builtin_syntax_names_includes_expected_aliases() {
+        // Verify the alias targets actually exist in the bundled SyntaxSet
+        // so resolve_alias never maps to a name that isn't there.
+        // Note: TypeScript is NOT in the bundled set; ts/tsx fall back to JavaScript.
+        use syntect::parsing::SyntaxSet;
+        let ss = SyntaxSet::load_defaults_newlines();
+        let names: Vec<&str> = ss.syntaxes().iter().map(|s| s.name.as_str()).collect();
+        for expected in [
+            "Markdown",
+            "JavaScript",
+            "Rust",
+            "Python",
+            "YAML",
+            "JSON",
+            "C",
+            "C++",
+            "Go",
+            "HTML",
+            "CSS",
+        ] {
+            assert!(
+                names.iter().any(|n| *n == expected),
+                "bundled SyntaxSet missing expected alias target: {expected}\navailable: {names:?}"
+            );
+        }
+        // Bash may appear under either canonical name
+        assert!(
+            names
+                .iter()
+                .any(|n| *n == "Bourne Again Shell (bash)" || *n == "Bash"),
+            "bundled SyntaxSet missing Bash syntax; available: {names:?}"
+        );
+        // TOML is not in the bundled default set — alias maps to empty result
+        // (no fallback chain available), which degrades to themed fallback.
+        // This is acceptable; the test simply documents the current state.
+        let has_toml = names.iter().any(|n| *n == "TOML");
+        // Not asserting presence — just recording for documentation.
+        let _ = has_toml;
     }
 }

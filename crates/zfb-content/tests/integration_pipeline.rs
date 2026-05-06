@@ -68,7 +68,6 @@ fn render_fixture_with(name: &str, mut pipeline: Pipeline) -> String {
     serialize(&hast)
 }
 
-
 /// Snapshot equality with first-run capture.
 ///
 /// - If `INSANE_UPDATE_SNAPSHOTS=1` is set OR the snapshot file does
@@ -397,6 +396,22 @@ fn fixture_07b_image_opt_out_strips_title() {
     assert!(
         actual.contains("src=\"keep.png\""),
         "image src must survive the opt-out:\n{actual}",
+    );
+}
+
+/// Integration: a fence with lang=mdx produces a themed `<pre class="syntect-…">` wrapper.
+/// mdx resolves to the Markdown grammar via resolve_alias, so the block is themed
+/// even though there is no dedicated MDX grammar bundle.
+#[test]
+fn fixture_09_mdx_lang_fence_uses_themed_wrapper() {
+    let actual = render_fixture("09-mdx-lang-fence.md");
+    assert!(
+        actual.contains("<pre class=\"syntect-"),
+        "mdx fence must produce a themed <pre class=\"syntect-…\"> wrapper:\n{actual}"
+    );
+    assert!(
+        !actual.contains("<pre><code>"),
+        "mdx fence must not fall through to bare <pre><code>:\n{actual}"
     );
 }
 
