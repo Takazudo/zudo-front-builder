@@ -632,9 +632,77 @@ fn build_default_islands_payload(
         return Ok(None);
     }
 
-    let bundler = EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf()),
-    );
+    // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
+    // extraction to the islands bundler.
+    //
+    // 1. Binary path: `EsbuildSubprocessConfig::default()` resolves to a
+    //    fixed `crates/zfb/binaries/esbuild/esbuild` slot when neither
+    //    `binary_path` is overridden nor `ZFB_ESBUILD_BIN` is set; consumer
+    //    projects without that workspace dir hit the same "esbuild binary
+    //    not found at default slot" failure as the main bundler did before
+    //    this PR's other fix. Mirror the wiring applied in `run_build` and
+    //    the CSS engine path: when no env override is in play, pre-extract
+    //    the embedded esbuild via `embedded_binary("esbuild")` and pin its
+    //    path on the config via `with_binary_path`.
+    //
+    // 2. node_modules resolution: esbuild walks UP from each importing
+    //    file's directory looking for `node_modules`. When the consumer
+    //    project has no on-disk `node_modules`, every bare import in
+    //    user-authored components (`preact/hooks`, `preact/jsx-runtime`,
+    //    etc.) and in the synthesised entry (`@takazudo/zfb/runtime`,
+    //    `preact`) fails. The main bundler addresses this via a "shadow
+    //    tree" with a `node_modules` symlink (see
+    //    `crates/zfb-build/src/bundler.rs:751`); the islands bundler runs
+    //    esbuild directly against the user's source tree so a shadow tree
+    //    is not available. Instead, extract the embedded vendor
+    //    (`embedded_node_modules()`) into a tempdir and pass its path via
+    //    the `NODE_PATH` env var on the esbuild subprocess. esbuild
+    //    consults `NODE_PATH` as a fallback when the upward walk doesn't
+    //    find a match — see esbuild's
+    //    https://esbuild.github.io/api/#node-paths and the
+    //    `with_extra_env` setter on `EsbuildSubprocessConfig`. This
+    //    preserves project_root as the working_dir (so tsconfig
+    //    discovery and the entry-tempfile placement comment block in
+    //    `zfb-islands/src/esbuild.rs::bundle_one_entry` still hold).
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for islands bundler ({e}); \
+                     falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
+    }
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for islands bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::production().with_outdir(outdir.to_path_buf());
 
     match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
@@ -856,6 +924,37 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // syntect theme instead of the default `base16-ocean.dark`.
     bundler_input.code_highlight_theme =
         config.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Sub #212 follow-up — extend the embedded-binary extraction tier to
+    // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
+    // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
+    // then a fixed `crates/zfb/binaries/esbuild/esbuild` slot — and erred
+    // out on consumer projects that don't ship that slot dir.
+    // Mirror the tailwindcss-v4 wiring at `tailwind_for_runner_with_paths`:
+    // skip when an explicit override is in play (input field or env var),
+    // otherwise pre-extract the embedded esbuild and pin its path on the
+    // input. The TempDir handle rides alongside the bundler input via
+    // `_embedded_esbuild_handle` so it outlives `bundle(...)`.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                bundler_input.esbuild_binary = Some(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                // Non-fatal: log and let the bundler's own resolver fall
+                // through to the on-disk slot, which still produces a useful
+                // error message pointing at `crates/zfb/binaries/esbuild/`.
+                crate::output::warn(format!(
+                    "could not extract embedded esbuild ({e}); \
+                     falling back to bundler resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
@@ -1888,26 +1987,14 @@ mod tests {
         assert!(msg.contains("pages/error.tsx:5:3"), "{msg}");
     }
 
-    #[test]
-    fn run_build_errors_when_runtime_npm_package_missing() {
-        let tmp = tempdir().unwrap();
-        // No node_modules → check_runtime_installed errors.
-        let cfg = Config::default();
-        let fake_adapter = FakeAdapterRunner::new();
-        let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
-        let runner = FakeRunner::new(tmp.path().join("dist/.zfb-build/bundle.mjs"));
-        let err = run_build(BuildArgsResolved {
-            project_root: tmp.path(),
-            outdir: &tmp.path().join("dist"),
-            config: &cfg,
-            routes: &routes,
-            runner: &runner,
-            adapter_runner: &fake_adapter,
-        })
-        .unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
-    }
+    // Note: there used to be a `run_build_errors_when_runtime_npm_package_missing`
+    // test here, asserting `run_build` errored out at the runtime pre-check
+    // when the project had no `node_modules`. That guard became unreachable
+    // once `check_runtime_installed` started accepting the binary's embedded
+    // vendor snapshot — which production binaries always carry. The legacy
+    // on-disk-only error path is still covered by
+    // `render_pipeline::tests::check_runtime_installed_errors_when_runtime_missing`
+    // via the `_with_overrides` helper.
 
     #[test]
     fn run_build_with_adapter_none_passes_when_every_route_is_ssg() {

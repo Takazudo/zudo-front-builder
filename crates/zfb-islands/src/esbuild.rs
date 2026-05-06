@@ -239,6 +239,22 @@ pub struct EsbuildSubprocessConfig {
 
     /// Output to return when `mock_subprocess` is true.
     pub mock_output: String,
+
+    /// Extra environment variables to set on the esbuild subprocess.
+    ///
+    /// Primarily used to pass `NODE_PATH=<path>` so esbuild resolves bare
+    /// imports against an externally-staged `node_modules` tree (e.g. the
+    /// `include_dir!`-extracted `@takazudo/*` + framework runtime tree
+    /// from the cargo-installed binary). esbuild walks the importing file
+    /// upward looking for `node_modules` and falls back to `NODE_PATH`
+    /// when the walk doesn't find a match — see issue zfb#221's
+    /// follow-up commit.
+    ///
+    /// Each entry becomes a `cmd.env(key, value)` call before spawn.
+    /// Pre-existing process env is inherited; setting an entry here
+    /// overrides any value the parent process had for the same key (for
+    /// the subprocess only — the parent env is untouched).
+    pub env_vars: Vec<(OsString, OsString)>,
 }
 
 impl Default for EsbuildSubprocessConfig {
@@ -271,6 +287,7 @@ impl EsbuildSubprocessConfig {
             extra_args: Vec::new(),
             mock_subprocess: false,
             mock_output: String::new(),
+            env_vars: Vec::new(),
         }
     }
 }
@@ -293,6 +310,19 @@ impl EsbuildSubprocessConfig {
     pub fn with_mock_output(mut self, output: impl Into<String>) -> Self {
         self.mock_subprocess = true;
         self.mock_output = output.into();
+        self
+    }
+
+    /// Append an extra environment variable applied to the esbuild
+    /// subprocess (chainable). Most useful for `NODE_PATH=<path>` so
+    /// esbuild resolves bare imports against an externally-staged
+    /// `node_modules` tree.
+    pub fn with_extra_env(
+        mut self,
+        key: impl Into<OsString>,
+        value: impl Into<OsString>,
+    ) -> Self {
+        self.env_vars.push((key.into(), value.into()));
         self
     }
 }
@@ -551,6 +581,13 @@ impl EsbuildSubprocessBundler {
         );
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
+        // Apply caller-supplied env vars (e.g. NODE_PATH=<embedded
+        // node_modules path> so esbuild can resolve bare imports against
+        // an externally-staged tree when the consumer project has no
+        // on-disk `node_modules`).
+        for (key, value) in &self.config.env_vars {
+            cmd.env(key, value);
+        }
         for arg in &args {
             cmd.arg(arg);
         }
