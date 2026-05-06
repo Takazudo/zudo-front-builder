@@ -31,6 +31,10 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tracing = "0.1"
+# Sub 211: convert relative/absolute plugin paths in zfb.config.json
+# into file:// URLs that match the resolved_module shape produced by
+# the TS-config path (config-loader.mjs returns Node-style file URLs).
+url = "2"
 # Source-file discovery for the production asset emit path: the CSS
 # pipeline takes a `Vec<PathBuf>` of project sources to feed into
 # Tailwind's content scanner, and the islands scanner takes the same
