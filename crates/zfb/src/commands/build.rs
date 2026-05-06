@@ -632,9 +632,34 @@ fn build_default_islands_payload(
         return Ok(None);
     }
 
-    let bundler = EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf()),
-    );
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    // Sub #212 follow-up — extend embedded-binary extraction to the islands
+    // bundler. `EsbuildSubprocessConfig::default()` resolves to a fixed
+    // `crates/zfb/binaries/esbuild/esbuild` slot when neither `binary_path`
+    // is overridden nor `ZFB_ESBUILD_BIN` is set; consumer projects without
+    // that workspace dir hit the same "esbuild binary not found at default
+    // slot" failure as the main bundler did before this PR's other fix.
+    // Mirror the wiring applied in `run_build` and the CSS engine path.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for islands bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::production().with_outdir(outdir.to_path_buf());
 
     match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
