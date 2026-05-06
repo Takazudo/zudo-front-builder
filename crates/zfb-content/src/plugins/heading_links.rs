@@ -311,6 +311,21 @@ mod tests {
     }
 
     #[test]
+    fn slugify_empty_input_returns_empty() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn slugify_all_stripped_returns_empty() {
+        assert_eq!(slugify("!@#$%"), "");
+    }
+
+    #[test]
+    fn slugify_whitespace_only_returns_empty() {
+        assert_eq!(slugify("   \t\n  "), "");
+    }
+
+    #[test]
     fn slugify_preserves_japanese() {
         assert_eq!(slugify("コンポーネント構文"), "コンポーネント構文");
     }
