@@ -169,3 +169,16 @@ fn mdx_jsx_body_not_rewritten() {
     let html = render(input);
     assert_contains(&html, "**重要。**", input);
 }
+
+// --- Heading slug Unicode preservation (issue #219). ---
+
+#[test]
+fn cjk_heading_gets_unicode_slug() {
+    let input = "## コンポーネント構文\n";
+    let html = render(input);
+    // The heading id and anchor href must both carry the full Japanese text.
+    assert_contains(&html, "id=\"コンポーネント構文\"", input);
+    assert_contains(&html, "href=\"#コンポーネント構文\"", input);
+    // A hash-link anchor must be present.
+    assert_contains(&html, "class=\"hash-link\"", input);
+}
