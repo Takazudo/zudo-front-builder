@@ -37,6 +37,13 @@
 //!   SSG path never makes outgoing network requests so the
 //!   `deno_fetch` hyper/rustls/h2/tower stack is dead weight).
 //!
+//! - Browser-Event globals (`Event`, `CustomEvent`, `EventTarget`)
+//!   are installed via [`extensions::BROWSER_EVENT_SRC`]. Needed so
+//!   bundles whose top-level code declares `class X extends Event`
+//!   (e.g. `@takazudo/zfb-runtime`'s client-router events module)
+//!   evaluate at all on the SSG path. See `js/browser_event.js` for
+//!   the scope and intentional gaps.
+//!
 //! - Per-dispatch flow: the host stashes the bundle's `default`
 //!   export at boot, then for each call it invokes the JS-side
 //!   `__zfb.dispatch(url, method, headers, body)` (see
@@ -186,16 +193,25 @@ impl EmbeddedV8RenderHost {
         Ok(host)
     }
 
-    /// Install the web platform polyfills and the host-bridge globals
-    /// shim. Order matters: the polyfills (Request / Response / URL /
-    /// fetch / encoders / etc.) ship before the host shim so the
-    /// host shim's `dispatch(...)` helper can use them when it
-    /// constructs a Request from `dispatch_fetch`'s arguments.
+    /// Install the web platform polyfills, the browser-event globals,
+    /// and the host-bridge globals shim. Order matters: the polyfills
+    /// (Request / Response / URL / fetch / encoders / etc.) and the
+    /// browser-event globals (`Event` / `CustomEvent` / `EventTarget`)
+    /// ship before the host shim so module-top-level
+    /// `class X extends Event` declarations in the bundle evaluate
+    /// against the stubbed globals, and so the host shim's
+    /// `dispatch(...)` helper can use Request / Response when it
+    /// constructs them from `dispatch_fetch`'s arguments.
     fn bootstrap_host_shim(&mut self) -> Result<()> {
         self.runtime
             .execute_script("zfb:web_polyfills", extensions::WEB_POLYFILLS_SRC)
             .map_err(|e| {
                 RenderError::Runtime(format!("web polyfills init failed: {e}"))
+            })?;
+        self.runtime
+            .execute_script("zfb:browser_event", extensions::BROWSER_EVENT_SRC)
+            .map_err(|e| {
+                RenderError::Runtime(format!("browser-event globals init failed: {e}"))
             })?;
         self.runtime
             .execute_script("zfb:host_shim", extensions::HOST_GLOBALS_SHIM_SRC)
