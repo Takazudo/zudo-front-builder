@@ -26,9 +26,12 @@
 //     code; same observable behavior in browser and on SSR.
 //   - `announce()` is a TODO stub (W3C3 owns the route announcer).
 //
-// W3C1 deferred to W3C2:
+// W3C2 additions (this file):
 //   - `navigate()` public entry.
-//   - `onPopState`, `onScrollEnd`, top-level `if (inBrowser)` init block.
+//   - `onPopState`, `onScrollEnd`.
+//   - Top-level `if (inBrowser)` initialization block (seeds `currentHistoryIndex`
+//     from `history.state`, registers popstate / load / scrollend listeners, and
+//     marks already-executed scripts with `dataset["zfbExec"] = ""`).
 //
 // W3C1 deferred to W3C3:
 //   - `announce()` route-announcer implementation.
@@ -101,9 +104,21 @@ let parser: DOMParser;
 // The History API does not tell you if navigation is forward or back, so
 // you can figure it using an index. On pushState the index is incremented so you
 // can use that to determine popstate if going forward or back.
-// W3C2 owns the init block that seeds this from history.state on page load and
-// handles the popstate-driven update.
 let currentHistoryIndex = 0;
+
+if (inBrowser) {
+  if (history.state) {
+    // Here we reloaded a page with history state
+    // (e.g. history navigation from non-transition page or browser reload)
+    currentHistoryIndex = history.state.index;
+    scrollTo({ left: history.state.scrollX, top: history.state.scrollY });
+  } else if (transitionEnabledOnThisPage()) {
+    // This page is loaded from the browser address bar or via a link from extern,
+    // it needs a state in the history
+    history.replaceState({ index: currentHistoryIndex, scrollX, scrollY }, "");
+    history.scrollRestoration = "manual";
+  }
+}
 
 // returns the contents of the page or null if the router can't deal with it.
 async function fetchHTML(
@@ -599,6 +614,112 @@ async function transition(
   }
 }
 
-// W3C2 will add `navigate()` (public entry), `onPopState`, `onScrollEnd`, and the
-// top-level `if (inBrowser)` initialization block here.
+let navigateOnServerWarned = false;
+
+export async function navigate(href: string, options?: Options) {
+  if (inBrowser === false) {
+    if (!navigateOnServerWarned) {
+      // instantiate an error for the stacktrace to show to user.
+      const warning = new Error(
+        "The view transitions client API was called during a server side render. This may be unintentional as the navigate() function is expected to be called in response to user interactions. Please make sure that your usage is correct.",
+      );
+      warning.name = "Warning";
+      // biome-ignore lint/suspicious/noConsole: allowed
+      console.warn(warning);
+      navigateOnServerWarned = true;
+    }
+    return;
+  }
+  await transition("forward", originalLocation, new URL(href, location.href), options ?? {});
+}
+
+function onPopState(ev: PopStateEvent) {
+  if (!transitionEnabledOnThisPage() && ev.state) {
+    // The current page doesn't have View Transitions enabled
+    // but the page we navigate to does (because it set the state).
+    // Do a full page refresh to reload the client-side router from the new page.
+    location.reload();
+    return;
+  }
+
+  // History entries without state are created by the browser (e.g. for hash links)
+  // Our view transition entries always have state.
+  // Just ignore stateless entries.
+  // The browser will handle navigation fine without our help
+  if (ev.state === null) {
+    return;
+  }
+  const state: State = history.state;
+  const nextIndex = state.index;
+  const direction: Direction = nextIndex > currentHistoryIndex ? "forward" : "back";
+  currentHistoryIndex = nextIndex;
+  transition(
+    direction,
+    originalLocation,
+    new URL(location.href),
+    {},
+    state,
+    ev.hasUAVisualTransition,
+  );
+}
+
+const onScrollEnd = () => {
+  // NOTE: our "popstate" event handler may call `pushState()` or
+  // `replaceState()` and then `scrollTo()`, which will fire "scroll" and
+  // "scrollend" events. To avoid redundant work and expensive calls to
+  // `replaceState()`, we simply check that the values are different before
+  // updating.
+  if (history.state && (scrollX !== history.state.scrollX || scrollY !== history.state.scrollY)) {
+    updateScrollPosition({ scrollX, scrollY });
+  }
+};
+
+// initialization
+if (inBrowser) {
+  if (supportsViewTransitions || getFallback() !== "none") {
+    originalLocation = new URL(location.href);
+    addEventListener("popstate", onPopState);
+    addEventListener("load", onPageLoad);
+    // There's not a good way to record scroll position before a history back
+    // navigation, so we will record it when the user has stopped scrolling.
+    if ("onscrollend" in window) addEventListener("scrollend", onScrollEnd);
+    else {
+      // Keep track of state between intervals
+      let intervalId: number | undefined, lastY: number, lastX: number, lastIndex: State["index"];
+      const scrollInterval = () => {
+        // Check the index to see if a popstate event was fired
+        if (lastIndex !== history.state?.index) {
+          clearInterval(intervalId);
+          intervalId = undefined;
+          return;
+        }
+        // Check if the user stopped scrolling
+        if (lastY === scrollY && lastX === scrollX) {
+          // Cancel the interval and update scroll positions
+          clearInterval(intervalId);
+          intervalId = undefined;
+          onScrollEnd();
+          return;
+        } else {
+          ((lastY = scrollY), (lastX = scrollX));
+        }
+      };
+      // We can't know when or how often scroll events fire, so we'll just use them to start intervals
+      addEventListener(
+        "scroll",
+        () => {
+          if (intervalId !== undefined) return;
+          ((lastIndex = history.state?.index), (lastY = scrollY), (lastX = scrollX));
+          intervalId = window.setInterval(scrollInterval, 50);
+        },
+        { passive: true },
+      );
+    }
+  }
+  for (const script of document.getElementsByTagName("script")) {
+    detectScriptExecuted(script);
+    script.dataset["zfbExec"] = "";
+  }
+}
+
 // W3C3 will add the click + form intercept and the route announcer body of `announce()`.
