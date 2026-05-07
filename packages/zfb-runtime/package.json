@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-runtime",
-  "version": "0.1.0-migration.0",
+  "version": "0.2.0-migration.0",
   "private": true,
   "type": "module",
   "description": "zfb SSG runtime — Hono-based page router with embedded ContentSnapshot, driven by the embedded V8 host at build time (ADR-007).",
