@@ -105,7 +105,7 @@ const announcerCss = `
  */
 export function ClientRouter({
   fallback = "animate",
-}: ClientRouterProps): readonly ClientRouterElement[] {
+}: ClientRouterProps = {}): readonly ClientRouterElement[] {
   return [
     // Global styles for the ARIA route-announcer div injected into <body>.
     makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }),
