@@ -16,4 +16,6 @@ export {
 
 export type { Direction, Fallback, NavigationTypeString, Options } from "./types.js";
 
+export { swapFunctions, swap } from "./swap-functions.js";
+
 // (cssesc is an internal helper, not part of the public surface — not re-exported.)
