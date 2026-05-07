@@ -2,39 +2,28 @@
 //
 // Cross-document View Transitions are opted in via the
 // `@view-transition { navigation: auto; }` CSS at-rule on the consumer's
-// top-level stylesheet, NOT via this component. The component is kept as
-// a typed no-op so existing `<ViewTransitions />` mounts compile unchanged.
+// top-level stylesheet, NOT via this component. The component is kept as a
+// typed no-op so existing `<ViewTransitions />` mounts in downstream code
+// compile unchanged. Per the W3D port (zudolab/zudo-doc#1519) the inline IIFE
+// that the component used to emit was deleted; <ClientRouter /> is now the
+// SPA opt-in. This test pins the back-compat contract: ViewTransitions() must
+// return `[]` so the JSX call site emits no DOM.
 //
-// Previously this file held ~22 tests covering meta-tag SSR shape, inline
-// IIFE SSR shape, and a happy-dom click-intercept smoke suite (modifier
-// keys, target=_blank, mailto:/tel:/javascript:, hash-only, cross-origin,
-// download attr, default-prevented events, happy-path interception, etc.).
-// All of that machinery is gone. The contract is now: `ViewTransitions()`
-// returns `[]` (empty readonly array of structural VNodes).
-//
-// The intentionally minimal test surface here is the new SSR contract plus
-// a TS-level assertion that the public type signature is preserved.
+// Previously this file held ~18 click-intercept smoke tests against the
+// deleted IIFE. They are gone — the click/submit intercept is now exercised
+// by `__tests__/client-router/router.test.ts`.
 
 import { describe, expect, it } from "vitest";
 
 import { ViewTransitions, type ViewTransitionsElement } from "../view-transitions.js";
 
-describe("ViewTransitions — typed no-op contract", () => {
-  it("returns an empty array (no DOM injection)", () => {
-    expect(ViewTransitions()).toEqual([]);
-  });
-
-  it("returns a stable readonly array shape", () => {
+describe("ViewTransitions — typed no-op back-compat contract", () => {
+  it("returns an empty array so existing JSX mounts emit no DOM", () => {
     const fragment = ViewTransitions();
-    expect(Array.isArray(fragment)).toBe(true);
-    expect(fragment).toHaveLength(0);
-  });
-
-  it("preserves the public type signature () => readonly ViewTransitionsElement[]", () => {
-    // TS-level contract: this satisfies-check would fail at compile time
-    // if `ViewTransitions` ever stopped returning `readonly
-    // ViewTransitionsElement[]`. The runtime check is incidental — the
-    // value of this test is that `tsc --noEmit` enforces the shape.
+    expect(fragment).toEqual([]);
+    // The TS signature `() => readonly ViewTransitionsElement[]` is enforced
+    // at compile time by `pnpm typecheck`; the runtime check below is the
+    // observable half of that contract.
     const _typeCheck: () => readonly ViewTransitionsElement[] = ViewTransitions;
     expect(typeof _typeCheck).toBe("function");
   });
