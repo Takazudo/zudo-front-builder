@@ -21,6 +21,8 @@ export { swapFunctions, swap } from "./swap-functions.js";
 // Router public surface.
 //   - W3C1: `supportsViewTransitions`, `transitionEnabledOnThisPage`.
 //   - W3C2: `navigate()` (public navigation entry).
-export { navigate, supportsViewTransitions, transitionEnabledOnThisPage } from "./router.js";
+//   - W3C3: `init()` (idempotent bootstrap: registers click + form intercept listeners).
+export { navigate, supportsViewTransitions, transitionEnabledOnThisPage, init } from "./router.js";
+export type { InitOptions } from "./router.js";
 
 // (cssesc is an internal helper, not part of the public surface — not re-exported.)

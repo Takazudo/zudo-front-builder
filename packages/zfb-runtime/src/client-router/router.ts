@@ -89,10 +89,24 @@ let mostRecentTransition: Transition | undefined;
 // This variable tells us where we came from
 let originalLocation: URL;
 
-// W3C3: route announcer. Stub for now — see W1B §13 / Astro's announce() impl.
+// Route announcer — ported from Astro's announce(). Creates (or reuses) a single
+// shared aria-live <div> per navigation, so screen readers announce the new page title.
+// The 60ms delay is Astro's magic number: screen readers need to see the element change
+// and may miss it if it happens too quickly.
 const announce = () => {
-  // TODO(W3C3): port Astro's announce() — appends a polite-live <div> and writes
-  // document.title or first <h1> for screen readers. Intentionally a no-op in W3C1.
+  let div = document.createElement("div");
+  div.setAttribute("aria-live", "assertive");
+  div.setAttribute("aria-atomic", "true");
+  div.className = "zfb-route-announcer";
+  document.body.append(div);
+  setTimeout(
+    () => {
+      let title = document.title || document.querySelector("h1")?.textContent || location.pathname;
+      div.textContent = title;
+    },
+    // Screen readers need to see the element change; 60ms is Astro's empirically chosen delay.
+    60,
+  );
 };
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
@@ -722,4 +736,154 @@ if (inBrowser) {
   }
 }
 
-// W3C3 will add the click + form intercept and the route announcer body of `announce()`.
+// ---- W3C3: click + form intercept, public idempotent init() ----
+
+// Returns true when the modifier-key combo or mouse button means "open in new tab / download".
+// Matches Astro's `leavesWindow` helper in ClientRouter.astro.
+const leavesWindow = (ev: MouseEvent): boolean =>
+  (ev.button !== undefined && ev.button !== 0) || // non-left-click
+  ev.metaKey || // new tab (Mac)
+  ev.ctrlKey || // new tab (Windows/Linux)
+  ev.altKey || // download
+  ev.shiftKey; // new window
+
+// Track the last clicked element that will leave the window so form submit can check it.
+let lastClickedElementLeavingWindow: EventTarget | null = null;
+
+function handleClick(ev: MouseEvent): void {
+  let link: EventTarget | null = ev.target;
+
+  // Record whether this click will leave the window (used by form submit handler).
+  lastClickedElementLeavingWindow = leavesWindow(ev) ? link : null;
+
+  // Shadow DOM: prefer composedPath target over ev.target.
+  if (ev.composed) {
+    link = ev.composedPath()[0] ?? link;
+  }
+
+  // Walk up to the nearest <a>, <area>, or <svg:a>.
+  if (link instanceof Element) {
+    link = link.closest("a, area");
+  }
+
+  if (
+    !(link instanceof HTMLAnchorElement) &&
+    !(link instanceof SVGAElement) &&
+    !(link instanceof HTMLAreaElement)
+  ) {
+    return;
+  }
+
+  const linkEl = link as HTMLAnchorElement | SVGAElement | HTMLAreaElement;
+  const linkTarget =
+    linkEl instanceof HTMLElement ? linkEl.target : (linkEl as SVGAElement).target.baseVal;
+  const href = linkEl instanceof HTMLElement ? linkEl.href : (linkEl as SVGAElement).href.baseVal;
+
+  if (!href) return;
+
+  const origin = new URL(href, location.href).origin;
+
+  if (
+    // data-zfb-reload: caller wants a full browser reload, not a SPA transition.
+    (linkEl as HTMLElement).dataset["zfbReload"] !== undefined ||
+    // download attribute: let browser handle download.
+    linkEl.hasAttribute("download") ||
+    // Non-self target opens in a new context — skip.
+    (linkTarget && linkTarget !== "_self") ||
+    // Cross-origin: not ours to handle.
+    origin !== location.origin ||
+    // Modifier key / non-left-click combo: user wants new tab / window / download.
+    lastClickedElementLeavingWindow !== null ||
+    // Another handler already handled this event.
+    ev.defaultPrevented
+  ) {
+    return;
+  }
+
+  ev.preventDefault();
+  navigate(href, {
+    // data-zfb-history="replace" opts a link into replaceState instead of pushState.
+    history: (linkEl as HTMLElement).dataset["zfbHistory"] === "replace" ? "replace" : "auto",
+    sourceElement: linkEl,
+  });
+}
+
+function handleSubmit(ev: SubmitEvent): void {
+  const el = ev.target as HTMLElement;
+  const submitter = ev.submitter as HTMLElement | null;
+
+  // If the submit was triggered by a modifier-key click, treat as normal browser submit.
+  const clickedWithKeys = submitter !== null && submitter === lastClickedElementLeavingWindow;
+  lastClickedElementLeavingWindow = null;
+
+  if (
+    el.tagName !== "FORM" ||
+    ev.defaultPrevented ||
+    el.dataset["zfbReload"] !== undefined ||
+    clickedWithKeys
+  ) {
+    return;
+  }
+
+  const form = el as HTMLFormElement;
+  const formData = new FormData(form, submitter ?? undefined);
+
+  // form.action / form.method can be shadowed by <input name="action"> / <input name="method">,
+  // so fall back to getAttribute() when the property is not a string. (Astro's comment.)
+  const formAction = typeof form.action === "string" ? form.action : form.getAttribute("action");
+  const formMethod = typeof form.method === "string" ? form.method : form.getAttribute("method");
+
+  // Resolve action: submitter formaction attr overrides form action, fallback to current path.
+  let action = submitter?.getAttribute("formaction") ?? formAction ?? location.pathname;
+  // Resolve method: submitter formmethod attr overrides form method, fallback to "get".
+  const method = submitter?.getAttribute("formmethod") ?? formMethod ?? "get";
+
+  // The "dialog" method is a special keyword used within <dialog> elements —
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
+  if (method === "dialog" || location.origin !== new URL(action, location.href).origin) {
+    // No SPA transition in these cases — let browser handle it.
+    return;
+  }
+
+  const options: import("./types.js").Options = { sourceElement: submitter ?? form };
+  if (method === "get") {
+    const params = new URLSearchParams(formData as any);
+    const url = new URL(action, location.href);
+    url.search = params.toString();
+    action = url.toString();
+  } else {
+    options.formData = formData;
+  }
+
+  ev.preventDefault();
+  navigate(action, options);
+}
+
+export interface InitOptions {
+  /** Reserved for forward-compat with Astro's prefetch integration. Ignored in v1. */
+  prefetchAll?: boolean;
+}
+
+// Guard flag — ensures click + submit listeners are registered only once even if
+// init() is called multiple times (e.g. two <ClientRouter> mounts on the same page).
+let initialized = false;
+
+/**
+ * Wire up the client-router's click and form-submit intercepts.
+ * Safe to call multiple times — subsequent calls are no-ops (idempotent).
+ *
+ * @param _options - Forward-compat hook matching Astro's init() signature. Ignored in v1.
+ */
+export function init(_options?: InitOptions): void {
+  if (initialized) return;
+  initialized = true;
+
+  if (!inBrowser) return;
+  if (!supportsViewTransitions && getFallback() === "none") return;
+
+  document.addEventListener("click", handleClick);
+  document.addEventListener("submit", handleSubmit as EventListener);
+
+  // Prefetch hook intentionally omitted from v1 — see https://github.com/zudolab/zudo-doc/issues/1527
+  // (Followup tracker for porting Astro prefetch module).
+}
