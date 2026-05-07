@@ -860,7 +860,17 @@ impl HastJsxBridge {
             HastNode::Raw(s) => {
                 if s.is_empty() {
                     String::new()
+                } else if starts_with_block_level_tag(s) {
+                    // Block-level raw HTML (e.g. <pre>, <table>, <div>, <ul>) cannot
+                    // be wrapped in a <span> per HTML5 content model. Use <div> so
+                    // preact-render-to-string emits <div>…</div>, which is flow
+                    // content and may contain block elements.
+                    format!(
+                        "<div dangerouslySetInnerHTML={{{{__html: {}}}}} />",
+                        js_string_literal(s),
+                    )
                 } else {
+                    // Inline raw HTML stays in a <span> — same shape as today.
                     format!(
                         "<span dangerouslySetInnerHTML={{{{__html: {}}}}} />",
                         js_string_literal(s),
@@ -959,6 +969,32 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
         out.push_str(&jsx_string_attr(v));
     }
     out
+}
+
+/// Return true if the trimmed-leading raw HTML string begins with a
+/// block-level element tag. Detection is purely lexical — it inspects
+/// the first opening tag and matches against a static block-element
+/// allowlist. No HTML parsing.
+fn starts_with_block_level_tag(s: &str) -> bool {
+    // Block-level elements per HTML5 content model. Conservative list
+    // — anything not on it falls through to <span> (the inline default).
+    const BLOCK_TAGS: &[&str] = &[
+        "address", "article", "aside", "blockquote", "details", "dialog",
+        "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure",
+        "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
+        "hgroup", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
+        "summary", "table", "thead", "tbody", "tfoot", "tr", "td", "th",
+        "ul",
+    ];
+    let trimmed = s.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'<') { return false; }
+    let after_lt = &trimmed[1..];
+    let tag_end = after_lt
+        .find(|c: char| c == ' ' || c == '>' || c == '/' || c == '\t' || c == '\n' || c == '\r')
+        .unwrap_or(after_lt.len());
+    let tag = after_lt[..tag_end].to_ascii_lowercase();
+    BLOCK_TAGS.iter().any(|b| *b == tag.as_str())
 }
 
 /// Scan a JSX-shaped string for PascalCase opening-tag identifiers and
@@ -2078,5 +2114,79 @@ mod tests {
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
         assert_eq!(style_count, 6, "expected 6 style attrs (3 cols × 2 rows): {out}");
+    }
+
+    // ─── HastNode::Raw block-aware wrapper tests (#1490) ────────────────────
+
+    /// syntect's output starts with `<pre` — the bridge must wrap it in
+    /// `<div dangerouslySetInnerHTML …>`, not `<span>`, so that
+    /// preact-render-to-string does not emit the invalid `<span><pre>` nesting.
+    #[test]
+    fn raw_pre_emits_div_wrapper() {
+        let mut bridge = HastJsxBridge::new();
+        let node = HastNode::Raw(
+            r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string(),
+        );
+        let out = bridge.emit_node(&node);
+        assert!(
+            out.starts_with("<div dangerouslySetInnerHTML"),
+            "syntect <pre> raw node must use <div> wrapper, got: {out}"
+        );
+        assert!(
+            !out.starts_with("<span"),
+            "<span> must not be used for block-level raw HTML, got: {out}"
+        );
+    }
+
+    /// Inline raw HTML (e.g. `<code>`, `<em>`) must continue to use the
+    /// `<span>` wrapper — same shape as before this fix.
+    #[test]
+    fn raw_inline_emits_span_wrapper() {
+        let mut bridge = HastJsxBridge::new();
+        let node = HastNode::Raw("<code>x</code>".to_string());
+        let out = bridge.emit_node(&node);
+        assert!(
+            out.starts_with("<span dangerouslySetInnerHTML"),
+            "inline raw node must still use <span> wrapper, got: {out}"
+        );
+    }
+
+    /// `<table>` is a block-level element — its raw HTML must be wrapped
+    /// in `<div>`, not `<span>`.
+    #[test]
+    fn raw_table_emits_div_wrapper() {
+        let mut bridge = HastJsxBridge::new();
+        let node = HastNode::Raw("<table><tr><td>x</td></tr></table>".to_string());
+        let out = bridge.emit_node(&node);
+        assert!(
+            out.starts_with("<div dangerouslySetInnerHTML"),
+            "<table> raw node must use <div> wrapper, got: {out}"
+        );
+    }
+
+    /// Leading whitespace before `<pre>` must not fool the dispatcher —
+    /// `trim_start` must fire before the tag check.
+    #[test]
+    fn raw_leading_whitespace_emits_div_wrapper() {
+        let mut bridge = HastJsxBridge::new();
+        let node = HastNode::Raw("  \n<pre>hello</pre>".to_string());
+        let out = bridge.emit_node(&node);
+        assert!(
+            out.starts_with("<div dangerouslySetInnerHTML"),
+            "leading whitespace before <pre> must still produce <div> wrapper, got: {out}"
+        );
+    }
+
+    /// HTML comments do not start with a block-level tag — they must
+    /// fall through to the `<span>` path (no regression for the inline path).
+    #[test]
+    fn raw_html_comment_emits_span_wrapper() {
+        let mut bridge = HastJsxBridge::new();
+        let node = HastNode::Raw("<!-- comment -->".to_string());
+        let out = bridge.emit_node(&node);
+        assert!(
+            out.starts_with("<span dangerouslySetInnerHTML"),
+            "HTML comment raw node must use <span> wrapper, got: {out}"
+        );
     }
 }
