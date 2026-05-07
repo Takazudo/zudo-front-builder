@@ -80,6 +80,13 @@ pub const HOST_GLOBALS_SHIM_SRC: &str = include_str!("js/globals_shim.js");
 /// scope and intentional gaps.
 pub const WEB_POLYFILLS_SRC: &str = include_str!("js/web_polyfills.js");
 
+/// Browser-Event globals: `Event`, `CustomEvent`, `EventTarget`.
+/// Needed so consumer bundles whose top-level code declares
+/// `class X extends Event` (e.g. `@takazudo/zfb-runtime`'s
+/// client-router events module) can be loaded by the embedded V8
+/// host. See `js/browser_event.js` for the rationale and scope.
+pub const BROWSER_EVENT_SRC: &str = include_str!("js/browser_event.js");
+
 /// The v1 set of specifiers the `node:*` stub recognises. Returned in
 /// stable order for diagnostics. Helpers / tests use this list to
 /// drive parameterised assertions.
