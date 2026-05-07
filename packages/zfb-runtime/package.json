@@ -15,6 +15,10 @@
     "./snapshot": {
       "types": "./src/snapshot.ts",
       "default": "./src/snapshot.ts"
+    },
+    "./client-router": {
+      "types": "./src/client-router/index.ts",
+      "default": "./src/client-router/index.ts"
     }
   },
   "scripts": {
