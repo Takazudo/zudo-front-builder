@@ -229,6 +229,19 @@ const mounted = new WeakSet<Element>();
 // (after `mounted.add`) and failure branches.
 const pending = new WeakSet<Element>();
 
+// Module-level captured manifest — set by the first `mountIslands` call and reused by
+// `mountNewIslands()` so the client-router does not need to know the manifest directly.
+// Named technical cause (W1B §12.1): the router lives in @takazudo/zfb-runtime; the
+// islands manifest lives in @takazudo/zfb. Passing the manifest through the swap event
+// would require widening the event API or threading manifest into router options. The
+// captured-manifest pattern keeps the package boundary clean.
+let capturedManifest: IslandManifest | null = null;
+
+// Map of element → cancel-function for deferred-hydration islands (data-when="idle"|"visible").
+// Populated in scheduleMount; consulted on `zfb:before-swap` so deferred fires do not run
+// against orphan elements after a body swap. (W1B §12.5)
+const pendingCancels = new Map<Element, () => void>();
+
 /**
  * Walk the DOM and mount every `[data-zfb-island]` / `[data-zfb-island-skip-ssr]`
  * element using `manifest`.
@@ -236,9 +249,15 @@ const pending = new WeakSet<Element>();
  * No-op when `document` is undefined (SSR, edge runtime). Safe to call
  * multiple times: each element is mounted at most once thanks to the
  * `mounted` WeakSet guard.
+ *
+ * The manifest is captured at module level so `mountNewIslands()` can re-use
+ * it after an SPA body swap without needing the caller to re-supply it.
  */
 export function mountIslands(manifest: IslandManifest): void {
   if (typeof document === "undefined") return;
+
+  // Capture the manifest for post-swap re-walks via mountNewIslands().
+  capturedManifest = manifest;
 
   const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
   for (const el of Array.from(ssrIslands)) {
@@ -257,6 +276,54 @@ export function mountIslands(manifest: IslandManifest): void {
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     scheduleMount(manifest, el, name, "render");
+  }
+}
+
+/**
+ * Re-walk the current document body and mount any new island markers introduced
+ * by an SPA body swap. Uses the manifest captured by the previous `mountIslands`
+ * call — no manifest arg required.
+ *
+ * The caller (client-router `router.ts`) invokes this after `swap()` + `runScripts()`
+ * and before dispatching `zfb:page-load`, per W1B §12.2 contract.
+ *
+ * No-op when called before `mountIslands` (capturedManifest is null) or when
+ * `document` is undefined.
+ */
+export function mountNewIslands(): void {
+  if (typeof document === "undefined") return;
+  if (capturedManifest === null) return;
+
+  const manifest = capturedManifest;
+
+  const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
+  for (const el of Array.from(ssrIslands)) {
+    const name = el.getAttribute("data-zfb-island");
+    if (!name) continue;
+    scheduleMount(manifest, el, name, "hydrate");
+  }
+
+  const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
+  for (const el of Array.from(skipSsrIslands)) {
+    const name = el.getAttribute("data-zfb-island-skip-ssr");
+    if (!name) continue;
+    scheduleMount(manifest, el, name, "render");
+  }
+}
+
+/**
+ * Cancel deferred-hydration callbacks for all islands in the old body before a
+ * swap. Prevents idle / visibility callbacks from running against orphan elements
+ * after `swapBodyElement` removes them from the live document. (W1B §12.5)
+ *
+ * Call this on `zfb:before-swap` (or equivalently, in the router's swap sequence
+ * before `swap()` mutates the DOM). Fire-and-forget; safe to call if nothing is
+ * pending.
+ */
+export function cancelPendingIslands(): void {
+  for (const [el, cancel] of pendingCancels) {
+    cancel();
+    pendingCancels.delete(el);
   }
 }
 
@@ -306,6 +373,10 @@ function scheduleMount(
     // scheduler (rIC/rAF/visibility) after a sibling caller already
     // mounted or started importing for this element.
     if (mounted.has(element) || pending.has(element)) return;
+
+    // When the deferred fire actually runs, the cancel handle is no longer
+    // needed — remove it so pendingCancels doesn't hold stale entries.
+    pendingCancels.delete(element);
 
     // Mark as pending BEFORE firing the import so any concurrent
     // `mountIslands` invocation that arrives during the await window
@@ -370,7 +441,12 @@ function scheduleMount(
     return;
   }
 
-  scheduleHydrate(element, when, fire);
+  const cancel = scheduleHydrate(element, when, fire);
+  // Track deferred-hydration cancel handle so cancelPendingIslands() can abort
+  // idle / visibility callbacks before a body swap. (W1B §12.5)
+  if (when && when !== "load") {
+    pendingCancels.set(element, cancel);
+  }
 }
 
 /**
@@ -400,6 +476,9 @@ function fireInlineMount(
     // scheduler (rIC/rAF/visibility) after a sibling caller already
     // mounted this element.
     if (mounted.has(element)) return;
+    // When the deferred fire actually runs, the cancel handle is no longer
+    // needed — remove it so pendingCancels doesn't hold stale entries.
+    pendingCancels.delete(element);
     mounted.add(element);
     fn(props, element, mode);
   };
@@ -410,7 +489,12 @@ function fireInlineMount(
   }
 
   const when = element.getAttribute("data-when") ?? undefined;
-  scheduleHydrate(element, when, fire);
+  const cancel = scheduleHydrate(element, when, fire);
+  // Track deferred-hydration cancel handle so cancelPendingIslands() can abort
+  // idle / visibility callbacks before a body swap. (W1B §12.5)
+  if (when && when !== "load") {
+    pendingCancels.set(element, cancel);
+  }
 }
 
 function readProps(element: Element): Record<string, unknown> {

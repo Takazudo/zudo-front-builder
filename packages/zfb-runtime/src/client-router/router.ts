@@ -47,6 +47,11 @@ import {
 } from "./events.js";
 import { detectScriptExecuted } from "./swap-functions.js";
 import type { Direction, Fallback, Options } from "./types.js";
+// Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
+// mountNewIslands() is called after runScripts() and before onPageLoad().
+// cancelPendingIslands() is called before doSwap() so deferred callbacks
+// (rIC/IntersectionObserver) do not fire against orphan elements.
+import { cancelPendingIslands, mountNewIslands } from "@takazudo/zfb/runtime";
 
 type State = {
   index: number;
@@ -356,6 +361,10 @@ async function updateDOM(
   };
 
   const pageTitleForBrowserHistory = document.title; // document.title will be overridden by swap()
+  // Cancel deferred-hydration callbacks for old-body islands before the swap
+  // so rIC / IntersectionObserver fires do not run against orphan elements.
+  // Called before doSwap() which dispatches `zfb:before-swap` then mutates the DOM.
+  cancelPendingIslands();
   const swapEvent = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,
@@ -600,6 +609,11 @@ async function transition(
   // if the visual part of the transition has errors or was skipped
   currentTransition.viewTransition?.updateCallbackDone.finally(async () => {
     await runScripts();
+    // Mount new island markers introduced by the body swap. Fire-and-forget;
+    // each island's scheduleHydrate call is async (idle / visible). Called after
+    // runScripts() so any new mountIslands() registration from inline scripts in
+    // the new page has already run. Called before onPageLoad() per W1B §12.2.
+    mountNewIslands();
     onPageLoad();
     announce();
   });

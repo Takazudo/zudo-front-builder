@@ -1,5 +1,8 @@
 // `@takazudo/zfb-runtime` — `<ViewTransitions />` component (typed no-op).
 //
+// For SPA soft-swap navigation with view-transition animation, use `<ClientRouter />`
+// from this package — see `./client-router.ts`.
+//
 // Originally mirrored Astro's `<ViewTransitions />` integration by injecting
 // (a) a `<meta name="view-transition" content="same-origin">` opt-in tag and
 // (b) an inline client-router IIFE that intercepted same-origin `<a>` clicks

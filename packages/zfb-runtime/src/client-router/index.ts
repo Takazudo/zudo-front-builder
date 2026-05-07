@@ -1,6 +1,9 @@
 // Public API surface for the client-router module.
 // This file is the barrel for @takazudo/zfb-runtime's client-router export.
-// Subsequent W3 sub-issues will add re-exports of swap-functions, router, and the component.
+// W3D adds the <ClientRouter /> component and ClientRouterProps re-exports.
+
+// Component (W3D).
+export { ClientRouter, type ClientRouterProps } from "../client-router.js";
 
 export {
   TRANSITION_BEFORE_PREPARATION,
