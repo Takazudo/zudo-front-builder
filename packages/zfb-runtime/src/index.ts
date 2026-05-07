@@ -26,3 +26,25 @@ export type {
 export type { FrameworkAdapter } from "./framework.js";
 export type { ContentSnapshot, EntrySnapshot } from "./snapshot.js";
 export { ViewTransitions, type ViewTransitionsElement } from "./view-transitions.js";
+
+// Client-router public surface (W3D — mirrors @takazudo/zfb-runtime/client-router barrel).
+// See W1B §2 for the full public API spec.
+export { ClientRouter, type ClientRouterProps } from "./client-router.js";
+export {
+  navigate,
+  supportsViewTransitions,
+  transitionEnabledOnThisPage,
+} from "./client-router/router.js";
+export {
+  TRANSITION_BEFORE_PREPARATION,
+  TRANSITION_AFTER_PREPARATION,
+  TRANSITION_BEFORE_SWAP,
+  TRANSITION_AFTER_SWAP,
+  TRANSITION_PAGE_LOAD,
+  TransitionBeforePreparationEvent,
+  TransitionBeforeSwapEvent,
+  isTransitionBeforePreparationEvent,
+  isTransitionBeforeSwapEvent,
+} from "./client-router/events.js";
+export { swapFunctions, swap } from "./client-router/swap-functions.js";
+export type { Direction, Fallback, NavigationTypeString, Options } from "./client-router/types.js";
