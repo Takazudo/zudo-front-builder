@@ -472,7 +472,7 @@ async function transition(
       // Note: getNamedItem can return null in real life, even if TypeScript doesn't think so, hence
       // the ?.
       init.body =
-        from !== undefined &&
+        form !== undefined &&
         Reflect.get(HTMLFormElement.prototype, "attributes", form).getNamedItem("enctype")
           ?.value === "application/x-www-form-urlencoded"
           ? new URLSearchParams(preparationEvent.formData as any)

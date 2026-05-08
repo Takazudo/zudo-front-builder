@@ -453,17 +453,7 @@ fn canon_into(val: &Value, out: &mut String) {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => {
-            out.push('"');
-            for c in s.chars() {
-                match c {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-        }
+        Value::String(s) => push_canon_string(s, out),
         Value::Array(arr) => {
             out.push('[');
             for (i, v) in arr.iter().enumerate() {
@@ -482,14 +472,25 @@ fn canon_into(val: &Value, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                out.push('"');
-                out.push_str(k);
-                out.push_str("\":");
+                push_canon_string(k, out);
+                out.push(':');
                 canon_into(&map[*k], out);
             }
             out.push('}');
         }
     }
+}
+
+fn push_canon_string(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 #[cfg(test)]

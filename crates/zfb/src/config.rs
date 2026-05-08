@@ -971,6 +971,24 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         ensure_path_in_root(&c.path, dir)
             .with_context(|| format!("collection {:?}", c.name))?;
     }
+    if let Some(rml) = &cfg.resolve_markdown_links {
+        ensure_path_in_root(&rml.docs_dir, dir)
+            .context("resolveMarkdownLinks.docsDir")?;
+    }
+    if let Some(b) = &cfg.base {
+        // An absolute URL is fine ("https://cdn.example.com/..."); a
+        // path-style base must start with `/` so the rendered asset
+        // URLs (`/pj/foo/assets/...`) match the on-disk dist layout.
+        let trimmed = b.trim();
+        let looks_absolute_url =
+            trimmed.starts_with("http://") || trimmed.starts_with("https://");
+        if !trimmed.is_empty() && !looks_absolute_url && !trimmed.starts_with('/') {
+            bail!(
+                "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
+                b
+            );
+        }
+    }
     Ok(())
 }
 

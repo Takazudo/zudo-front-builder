@@ -1488,10 +1488,15 @@ fn copy_public_dir(
         outdir.join(&base_segment)
     };
 
-    for entry in walkdir::WalkDir::new(&src)
-        .into_iter()
-        .filter_map(|r| r.ok())
-    {
+    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|r| match r {
+        Ok(e) => Some(e),
+        Err(err) => {
+            output::warn(format!(
+                "public dir copy: skipping unreadable entry: {err}"
+            ));
+            None
+        }
+    }) {
         let rel = entry
             .path()
             .strip_prefix(&src)

@@ -126,6 +126,12 @@ pub fn decode_position(map_json: &str, line_1: usize, col_1: usize) -> Option<De
     if best.src_idx >= sources.len() as i64 || best.src_idx < 0 {
         return None;
     }
+    // `src_line` and `src_col` are signed accumulators of VLQ deltas;
+    // a malformed map can leave them negative even when `src_idx` is
+    // valid. Reject those instead of silently wrapping to garbage usize.
+    if best.src_line < 0 || best.src_col < 0 {
+        return None;
+    }
     let src_idx = best.src_idx as usize;
     let file = sources.get(src_idx)?.clone();
     let source_content = sources_content

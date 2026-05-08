@@ -32,7 +32,7 @@
 //! served page wires itself up to the live-reload SSE stream.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, State};
@@ -431,7 +431,15 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
 /// Probes `<dist_root>/<trimmed>/index.html` and then
 /// `<dist_root>/<trimmed>` (for pages served at their exact path like
 /// `sitemap.xml`). Returns `None` on any read failure.
+///
+/// `trimmed` comes from a percent-decoded URL, so we reject any path
+/// that contains `..`, NUL, backslash, or absolute components before
+/// joining onto `dist_root`. Without this gate, a request like
+/// `/%2e%2e/...` would let a local browser tab read files outside dist.
 fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+    if !is_safe_url_path(trimmed) {
+        return None;
+    }
     let candidates: [PathBuf; 2] = [
         dist_root.join(trimmed).join("index.html"),
         dist_root.join(trimmed),
@@ -442,6 +450,35 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
         }
     }
     None
+}
+
+/// Reject URL paths that would escape the dist root once joined.
+///
+/// Mirrors `commands/preview.rs::is_safe_path` in the `zfb` crate; see
+/// that copy for the rationale.
+fn is_safe_url_path(url_path: &str) -> bool {
+    let stripped = url_path.trim_start_matches('/');
+    if stripped.is_empty() {
+        return true;
+    }
+    if stripped.contains('\0') {
+        return false;
+    }
+    let p = std::path::Path::new(stripped);
+    for comp in p.components() {
+        match comp {
+            Component::Normal(part) => {
+                if let Some(s) = part.to_str() {
+                    if s.contains('\\') {
+                        return false;
+                    }
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => return false,
+        }
+    }
+    true
 }
 
 /// Result of a plugin dev-middleware dispatch attempt. The dev server
