@@ -147,20 +147,14 @@ impl AssetPipeline for DevAssetPipeline {
                 };
 
                 let changed = {
-                    let mut cache = self.last_bytes.lock().unwrap_or_else(|p| {
+                    let cache = self.last_bytes.lock().unwrap_or_else(|p| {
                         tracing::warn!(
                             site = "DevAssetPipeline.last_bytes",
                             "mutex poisoned, recovering"
                         );
                         p.into_inner()
                     });
-                    match cache.get(&dest) {
-                        Some(prev) if prev == &new_bytes => false,
-                        _ => {
-                            cache.insert(dest.clone(), new_bytes.clone());
-                            true
-                        }
-                    }
+                    !matches!(cache.get(&dest), Some(prev) if prev == &new_bytes)
                 };
 
                 // After a prune the new path is by definition different
@@ -175,6 +169,20 @@ impl AssetPipeline for DevAssetPipeline {
                     // `from_utf8(...).unwrap_or("")` previously turned
                     // any encoding hiccup into a silent blank file.
                     atomic_write(&dest, &new_bytes)?;
+                    // Only after the write succeeds do we record the
+                    // new bytes in the dedup cache. If we updated the
+                    // cache before the write a transient I/O failure
+                    // would poison it: the next tick's identical bytes
+                    // would be deemed "unchanged" and the file would
+                    // silently never make it to disk.
+                    let mut cache = self.last_bytes.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_bytes (commit)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
+                    cache.insert(dest.clone(), new_bytes.clone());
                     outcome.pages_written.push(r.page.clone());
                 }
 

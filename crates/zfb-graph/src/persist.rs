@@ -182,7 +182,17 @@ impl ManifestDigest {
             for entry in WalkDir::new(&abs_root)
                 .follow_links(false)
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(|e| match e {
+                    Ok(entry) => Some(entry),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = ?err,
+                            path = %abs_root.display(),
+                            "walkdir error during manifest digest — skipping entry"
+                        );
+                        None
+                    }
+                })
             {
                 if !entry.file_type().is_file() {
                     continue;

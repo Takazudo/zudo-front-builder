@@ -413,7 +413,20 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
     // latest output even when the in-memory cache hasn't been populated
     // (e.g. on cold start before the first watcher tick fires).
     if let Some(bytes) = read_from_dist(&state.dist_root, trimmed) {
-        return page_response_bytes(StatusCode::OK, bytes, "text/html; charset=utf-8", true);
+        // Mirror the cached-path content-type derivation. Hardcoding
+        // `text/html` here used to splice a livereload `<script>` tag
+        // into XML feeds (`/sitemap.xml`, `/atom.xml`) and serve them
+        // with the wrong Content-Type whenever the in-memory cache was
+        // cold — breaking feed readers and XML parsers.
+        let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        let content_type = if ext.is_empty() {
+            "text/html; charset=utf-8".to_string()
+        } else {
+            content_type_for_extension(ext)
+        };
+        let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
+        return page_response_bytes(StatusCode::OK, bytes, &content_type, is_html);
     }
 
     // 404 is always the dev HTML body so the page is replaced once

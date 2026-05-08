@@ -469,13 +469,23 @@ impl PluginHost {
         let mut line = serde_json::to_string(&envelope)
             .context("plugin host: serialise request")?;
         line.push('\n');
-        {
+        let write_outcome: Result<()> = {
             let mut stdin = self.inner.stdin.lock().await;
-            stdin
+            let r = stdin
                 .write_all(line.as_bytes())
                 .await
-                .context("plugin host: write request")?;
+                .context("plugin host: write request");
             stdin.flush().await.ok();
+            r
+        };
+        // If the stdin write fails the host will never produce a reply
+        // for `id`, so we must evict the `pending` entry inserted
+        // above. Without this cleanup the map grows unboundedly across
+        // transient hiccups (broken pipe, full buffer, etc.).
+        if let Err(e) = write_outcome {
+            let mut pend = self.inner.pending.lock().await;
+            pend.remove(&id);
+            return Err(e);
         }
 
         let reply = rx

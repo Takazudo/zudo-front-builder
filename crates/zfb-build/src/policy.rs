@@ -134,6 +134,11 @@ pub fn classify_change(
         }
     }
 
+    let lower_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
     // Walk components looking for the first root we recognise.
     for comp in comps {
         let s = match comp {
@@ -146,18 +151,23 @@ pub fn classify_change(
             "styles" => return PathClass::Style,
             "data" => return PathClass::Data,
             "public" => return PathClass::Asset,
-            "components" | "layouts" | "lib" | "src" => return PathClass::Module,
+            "components" | "layouts" | "lib" | "src" => {
+                // Co-located CSS inside a module root (e.g.
+                // `components/Button.css`) is still a stylesheet, not
+                // a JS module — without this carve-out the rebuild
+                // plan never sets `rerun_css` and the new bytes never
+                // reach `dist/assets/`.
+                if lower_ext.as_deref() == Some("css") {
+                    return PathClass::Style;
+                }
+                return PathClass::Module;
+            }
             _ => {}
         }
     }
 
     // Fall back to extension sniffing.
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
+    match lower_ext.as_deref() {
         Some("css") => PathClass::Style,
         Some("md") | Some("mdx") => PathClass::Content,
         Some("ts") | Some("tsx") | Some("js") | Some("jsx") => PathClass::Module,
@@ -363,6 +373,39 @@ mod tests {
         let p = Path::new("/proj/zfb.config.ts");
         let cls = classify_change(p, proj(), |q| q == p);
         assert_eq!(cls, PathClass::Global);
+    }
+
+    #[test]
+    fn css_inside_components_is_style_not_module() {
+        // Regression: `components/Button.css` used to classify as
+        // Module because the directory match outranked the extension
+        // fallback. The rebuild plan never set `rerun_css` and the new
+        // bytes never reached `dist/assets/`.
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/components/Button.css"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Style,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/src/widgets/picker.css"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Style,
+        );
+        // Sanity: the `.tsx` companion stays Module.
+        assert_eq!(
+            classify_change(
+                Path::new("/proj/components/Button.tsx"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Module,
+        );
     }
 
     #[test]
