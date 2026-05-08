@@ -519,7 +519,18 @@ pub fn default_source_directives(project_root: &Path) -> String {
     let mut out = String::new();
     for root in DEFAULT_CONTENT_ROOTS {
         let full = project_root.join(root);
-        out.push_str(&format!("@source \"{}\";\n", full.display()));
+        // Escape `"` and `\` so a project root containing those bytes
+        // (legal on Linux/macOS) still emits a well-formed
+        // `@source "..."` directive that Tailwind can parse.
+        out.push_str("@source \"");
+        for c in full.display().to_string().chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                _ => out.push(c),
+            }
+        }
+        out.push_str("\";\n");
     }
     out
 }

@@ -101,18 +101,31 @@ pub enum PathClass {
 ///
 /// `is_global` is consulted first: it lets the dependency graph extend
 /// the global set at runtime without changing this function.
-pub fn classify_change(path: &Path, is_global: impl FnOnce(&Path) -> bool) -> PathClass {
+///
+/// `project_root` is the absolute path to the project's root directory.
+/// Notify hands us absolute file paths, so without anchoring at the root
+/// a project located under e.g. `/home/me/pages/myproj/...` would have
+/// every change misclassified as `PathClass::Page` — the ancestor
+/// `pages` segment would match before we reached the project's own
+/// `components/Header.tsx`. Stripping `project_root` first ensures we
+/// only inspect components inside the project.
+pub fn classify_change(
+    path: &Path,
+    project_root: &Path,
+    is_global: impl FnOnce(&Path) -> bool,
+) -> PathClass {
     if is_global(path) {
         return PathClass::Global;
     }
 
-    // Find the project-relative segment leadership. We look at the path
-    // components in order and match against known roots. Absolute paths
-    // are common (notify hands them back), so we walk components from
-    // the start and find the first known-root component.
-    let mut comps = path.components().peekable();
+    // Anchor at project_root when possible. Absolute paths from notify
+    // typically start with the project root; relative paths and paths
+    // outside the root fall through to the unstripped walk.
+    let project_relative = path.strip_prefix(project_root).unwrap_or(path);
+    let mut comps = project_relative.components().peekable();
 
-    // Skip leading `/` / drive prefixes / `RootDir` components.
+    // Skip leading `/` / drive prefixes / `RootDir` components (only
+    // possible when strip_prefix did not fire).
     while let Some(c) = comps.peek() {
         if matches!(c, Component::Prefix(_) | Component::RootDir) {
             comps.next();
@@ -236,10 +249,14 @@ mod tests {
         false
     }
 
+    fn proj() -> &'static Path {
+        Path::new("/proj")
+    }
+
     #[test]
     fn classifies_pages() {
         assert_eq!(
-            classify_change(Path::new("/proj/pages/index.tsx"), never_global),
+            classify_change(Path::new("/proj/pages/index.tsx"), proj(), never_global),
             PathClass::Page
         );
     }
@@ -254,6 +271,7 @@ mod tests {
         assert_eq!(
             classify_change(
                 Path::new("/proj/pages/sitemap.xml.tsx"),
+                proj(),
                 never_global,
             ),
             PathClass::Page,
@@ -261,6 +279,7 @@ mod tests {
         assert_eq!(
             classify_change(
                 Path::new("/proj/pages/api.v2.json.tsx"),
+                proj(),
                 never_global,
             ),
             PathClass::Page,
@@ -268,6 +287,7 @@ mod tests {
         assert_eq!(
             classify_change(
                 Path::new("/proj/pages/llms.txt.tsx"),
+                proj(),
                 never_global,
             ),
             PathClass::Page,
@@ -277,7 +297,7 @@ mod tests {
     #[test]
     fn classifies_content() {
         assert_eq!(
-            classify_change(Path::new("/proj/content/post.md"), never_global),
+            classify_change(Path::new("/proj/content/post.md"), proj(), never_global),
             PathClass::Content
         );
     }
@@ -285,11 +305,11 @@ mod tests {
     #[test]
     fn classifies_styles() {
         assert_eq!(
-            classify_change(Path::new("/proj/styles/main.css"), never_global),
+            classify_change(Path::new("/proj/styles/main.css"), proj(), never_global),
             PathClass::Style
         );
         assert_eq!(
-            classify_change(Path::new("/proj/some/loose.css"), never_global),
+            classify_change(Path::new("/proj/some/loose.css"), proj(), never_global),
             PathClass::Style
         );
     }
@@ -297,11 +317,11 @@ mod tests {
     #[test]
     fn classifies_modules() {
         assert_eq!(
-            classify_change(Path::new("/proj/components/X.tsx"), never_global),
+            classify_change(Path::new("/proj/components/X.tsx"), proj(), never_global),
             PathClass::Module
         );
         assert_eq!(
-            classify_change(Path::new("/proj/layouts/Y.tsx"), never_global),
+            classify_change(Path::new("/proj/layouts/Y.tsx"), proj(), never_global),
             PathClass::Module
         );
     }
@@ -309,11 +329,11 @@ mod tests {
     #[test]
     fn classifies_data_and_assets() {
         assert_eq!(
-            classify_change(Path::new("/proj/data/config.json"), never_global),
+            classify_change(Path::new("/proj/data/config.json"), proj(), never_global),
             PathClass::Data
         );
         assert_eq!(
-            classify_change(Path::new("/proj/public/logo.svg"), never_global),
+            classify_change(Path::new("/proj/public/logo.svg"), proj(), never_global),
             PathClass::Asset
         );
     }
@@ -321,19 +341,19 @@ mod tests {
     #[test]
     fn unknown_root_falls_back_to_extension() {
         assert_eq!(
-            classify_change(Path::new("/proj/whatever/x.css"), never_global),
+            classify_change(Path::new("/proj/whatever/x.css"), proj(), never_global),
             PathClass::Style
         );
         assert_eq!(
-            classify_change(Path::new("/proj/whatever/x.tsx"), never_global),
+            classify_change(Path::new("/proj/whatever/x.tsx"), proj(), never_global),
             PathClass::Module
         );
         assert_eq!(
-            classify_change(Path::new("/proj/whatever/x.md"), never_global),
+            classify_change(Path::new("/proj/whatever/x.md"), proj(), never_global),
             PathClass::Content
         );
         assert_eq!(
-            classify_change(Path::new("/proj/whatever/x.bin"), never_global),
+            classify_change(Path::new("/proj/whatever/x.bin"), proj(), never_global),
             PathClass::Unclassified
         );
     }
@@ -341,8 +361,35 @@ mod tests {
     #[test]
     fn global_wins() {
         let p = Path::new("/proj/zfb.config.ts");
-        let cls = classify_change(p, |q| q == p);
+        let cls = classify_change(p, proj(), |q| q == p);
         assert_eq!(cls, PathClass::Global);
+    }
+
+    #[test]
+    fn ancestor_named_pages_does_not_misclassify_components() {
+        // Regression: a project hosted under a directory named "pages"
+        // (e.g. `/home/me/pages/myproj/...`) used to misclassify every
+        // change as PathClass::Page because the walker found the
+        // ancestor `pages` first. With project-root anchoring the
+        // ancestor segment is stripped and the classifier sees the
+        // real `components/Header.tsx` shape.
+        let root = Path::new("/home/me/pages/myproj");
+        assert_eq!(
+            classify_change(
+                Path::new("/home/me/pages/myproj/components/Header.tsx"),
+                root,
+                never_global,
+            ),
+            PathClass::Module,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/home/me/pages/myproj/pages/index.tsx"),
+                root,
+                never_global,
+            ),
+            PathClass::Page,
+        );
     }
 
     #[test]

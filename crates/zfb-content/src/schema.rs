@@ -300,10 +300,18 @@ fn value_matches_type(value: &JsonValue, ty: &str) -> bool {
         "number" => value.is_number(),
         "integer" => value.as_i64().is_some()
             || value.as_u64().is_some()
-            // Also accept JSON `1.0` which is technically integral.
+            // Also accept JSON `1.0` which is technically integral, but
+            // only when it actually fits in an integer lane — otherwise
+            // `1e30.fract() == 0.0` would silently classify oversized
+            // floats as integers.
             || value
                 .as_f64()
-                .map(|f| f.fract() == 0.0)
+                .map(|f| {
+                    f.is_finite()
+                        && f.fract() == 0.0
+                        && f >= i64::MIN as f64
+                        && f <= u64::MAX as f64
+                })
                 .unwrap_or(false),
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),

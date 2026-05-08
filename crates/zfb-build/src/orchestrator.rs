@@ -165,7 +165,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let path: PathBuf = change.into();
             plan.record_trigger(path.clone());
 
-            let class = classify_change(&path, |p| graph.is_global(p));
+            let class = classify_change(&path, &self.config.project_root, |p| graph.is_global(p));
 
             match class {
                 PathClass::Global => {
