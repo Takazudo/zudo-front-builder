@@ -25,6 +25,13 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 include_dir = "0.7"
 indicatif = "0.17"
+# Issue #228's HTML link rewriter (`<a href>` / `<form action>`
+# prefix-stamp) used to live here with its own `lol_html` dep. After
+# the post-merge review caught that the dev server also needs to apply
+# the same rewrite to served HTML (issue #229), the pure-string pieces
+# moved to `zfb_build::link_base_rewrite` so both consumers funnel
+# through the same code. We no longer call `lol_html` directly from
+# this crate.
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

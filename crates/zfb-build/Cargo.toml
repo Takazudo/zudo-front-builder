@@ -63,6 +63,14 @@ fs2 = "0.4"
 # same byte stream.
 sha2 = "0.10"
 hex = "0.4"
+# Issue #228 / #229: shared HTML link rewriter that the production
+# build pass and the dev server both call so dev-mode and prod-mode
+# render the same `<a href>` / `<form action>` URLs under a `base`
+# prefix. Lives here (not in `zfb-types`) because `zfb-types` is the
+# zero-dep leaf crate; lol_html is heavy enough to keep above that
+# layer. Same workspace pin as the existing `lol_html` users
+# (`zfb-server`, `zfb-islands`).
+lol_html = "2.8.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -28,23 +28,52 @@
 //! ([`DEV_404_BODY`]).
 //!
 //! All HTML responses (including 404) go through
-//! [`crate::inject::inject_livereload`] before being returned, so every
-//! served page wires itself up to the live-reload SSE stream.
+//! [`crate::inject::inject_livereload_with_prefix`] before being
+//! returned, so every served page wires itself up to the live-reload
+//! SSE stream — with the right URL when the dev server runs under a
+//! `base` prefix.
+//!
+//! ## `base` prefix mounting (issue #229)
+//!
+//! When the project's `zfb.config.ts` declares `base: "/foo/"`, the
+//! whole route table moves under `/foo`:
+//!
+//! - `GET /foo/` and `GET /foo/<route>` serve the rendered page,
+//! - `GET /foo/assets/<file>`, `GET /foo/public/<file>` serve static
+//!   assets,
+//! - `GET /foo/__zfb/livereload.js` and `GET /foo/__zfb/reload` serve
+//!   live-reload (and the injected `<script src>` matches),
+//! - plugin-registered dev-middleware paths are auto-prefixed too
+//!   (a plugin that calls `ctx.register("/api/echo")` is reached at
+//!   `GET /foo/api/echo`; the plugin handler still receives
+//!   `/api/echo` without the `base` prefix in `req.url`).
+//!
+//! Bare `GET /` redirects to `GET /<base>/` so a developer who
+//! navigated to the root sees the home page rather than a confusing
+//! 404. Other unprefixed paths fall through to a 404 body that hints
+//! at the configured base. The redirect is only emitted when the
+//! requested path is exactly `/` to avoid the `/foo/` → `/foo/` loop
+//! the issue's review explicitly called out.
+//!
+//! When `base` is `None` or `"/"` the route table is identical to the
+//! pre-`base` build byte-for-byte.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderValue, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{any, get};
 use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-use crate::inject::inject_livereload;
+use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, ReloadTx};
 use crate::plugin_middleware::{
     DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
@@ -304,6 +333,13 @@ pub struct AppState {
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
     pub dist_root: std::path::PathBuf,
+    /// Canonical mount prefix from `zfb.config.ts`'s `base` field, as
+    /// returned by [`zfb_types::dev_mount_prefix`]. `None` means the
+    /// dev server mounts everything at root (the no-base case);
+    /// `Some("/foo")` (leading slash, no trailing slash) means the
+    /// page handlers serve content under `/foo/...` and the injected
+    /// live-reload script URL points at `/foo/__zfb/livereload.js`.
+    pub base_prefix: Option<String>,
 }
 
 /// Build the axum router for the dev server.
@@ -312,20 +348,142 @@ pub struct AppState {
 /// `public_root` is the project's static assets directory (used for
 /// `/public/*`). Both are served via [`ServeDir`]; missing files fall
 /// back to a plain 404.
+///
+/// ## Method policy (issue #230)
+///
+/// Built-in routes keep their existing GET-only semantics:
+///
+/// - `<base>/__zfb/livereload.js`, `<base>/__zfb/reload`,
+///   `<base>/assets/*`, `<base>/public/*` are all registered with
+///   `get(...)` or via [`ServeDir`] (which is GET/HEAD-only). A non-GET
+///   request to any of these surfaces gets a `405 Method Not Allowed`
+///   from axum / tower-http directly — those routes are dev-server
+///   infrastructure, not user code, and CSRF posture for them must
+///   stay tight.
+/// - The page-renderer mounts accept ALL methods so user-registered
+///   `devMiddleware` handlers can serve `POST`, `PUT`, `DELETE`,
+///   `PATCH`, etc. on prefixes they claim. The handler itself in
+///   [`serve_page`] still returns `405 Allow: GET, HEAD` if a non-GET
+///   request slips through to the page-cache fallback (i.e. no plugin
+///   claimed the URL or a plugin returned `Passthrough`).
+///
+/// ## Base prefix mounting (issue #229)
+///
+/// When `state.base_prefix` is `Some(prefix)`, every route is
+/// registered at `<prefix>/<route>` directly (livereload, SSE,
+/// `/assets/*`, `/public/*`, page cache, plugin middleware). A bare
+/// `GET /` request is redirected to `<prefix>/`, and any other
+/// unprefixed path falls through to a 404 with a one-line hint at the
+/// configured base. See the module docs for the complete contract.
+///
+/// Routes are registered with explicit prefix substitution rather than
+/// [`Router::nest`] because the latter has subtle 0.8.x trailing-slash
+/// quirks when the inner router contains both a literal `/` route and
+/// a `/{*path}` catch-all (the very shape we use). Manual prefix
+/// registration is verbose but uniquely well-defined.
 pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router {
+    let prefix = state.base_prefix.clone();
+
+    let Some(prefix) = prefix else {
+        // No base prefix configured — keep the byte-for-byte
+        // pre-`base` route table at the root.
+        return build_core_router(state, public_root, "")
+            .layer(TraceLayer::new_for_http());
+    };
+
+    // Prefix is canonical: leading slash, no trailing slash (e.g.
+    // "/foo"). Build the core route table with the prefix folded into
+    // every path, then add the bare `/` redirect and the
+    // outside-base 404 fallback.
+    let redirect_target = format!("{prefix}/");
+    let prefix_for_404 = prefix.clone();
+
+    build_core_router(state, public_root, &prefix)
+        // Bare `/` lands the developer on the home page — but only `/`
+        // exactly, never `<prefix>/...`, because the prefixed routes
+        // above already catch those and a redirect there would loop.
+        .route(
+            "/",
+            get(move || {
+                let target = redirect_target.clone();
+                async move { Redirect::to(&target).into_response() }
+            }),
+        )
+        // Any other unprefixed path (e.g. an HTML link that forgot the
+        // base, or a stale browser cache) gets a 404 with a one-line
+        // hint at the configured base. The body is HTML so the
+        // live-reload script can pick it up — the 404 disappears once
+        // the developer follows the hint.
+        .fallback(get(move |uri: Uri| {
+            let prefix = prefix_for_404.clone();
+            async move { unprefixed_404_response(&prefix, uri.path()) }
+        }))
+        .layer(TraceLayer::new_for_http())
+}
+
+/// Assemble the core route table — every route prefixed with `prefix`
+/// (use `""` for the no-base case so paths stay at the root).
+///
+/// Plugin dispatch + cache lookup expect UNPREFIXED paths (issue #229
+/// contract: a plugin that calls `ctx.register("/api/echo")` is reached
+/// at `<prefix>/api/echo` but the handler still sees `req.url =
+/// /api/echo`). The page handlers below strip the prefix from the
+/// captured wildcard / URI before forwarding into [`serve_page`].
+fn build_core_router(
+    state: AppState,
+    public_root: std::path::PathBuf,
+    prefix: &str,
+) -> Router {
     let assets_dir = state.dist_root.join("assets");
     let assets_service = ServeDir::new(&assets_dir);
     let public_service = ServeDir::new(&public_root);
 
+    let livereload_path = format!("{prefix}/__zfb/livereload.js");
+    let sse_path = format!("{prefix}/__zfb/reload");
+    let assets_mount = format!("{prefix}/assets");
+    let public_mount = format!("{prefix}/public");
+    let root_path = format!("{prefix}/");
+    let wild_path = format!("{prefix}/{{*path}}");
+
     Router::new()
-        .route("/__zfb/livereload.js", get(livereload_js))
-        .route("/__zfb/reload", get(sse_handler))
-        .nest_service("/assets", assets_service)
-        .nest_service("/public", public_service)
-        .route("/", get(page_root))
-        .route("/{*path}", get(page_handler))
-        .layer(TraceLayer::new_for_http())
+        .route(&livereload_path, get(livereload_js))
+        .route(&sse_path, get(sse_handler))
+        .nest_service(&assets_mount, assets_service)
+        .nest_service(&public_mount, public_service)
+        // `any` (vs `get`) on the page-renderer mounts so user-registered
+        // devMiddleware handlers can serve every HTTP method (zfb#230).
+        // `serve_page` enforces GET/HEAD-only for the page-cache fallback
+        // when no plugin claims the URL.
+        .route(&root_path, any(page_root))
+        .route(&wild_path, any(page_handler))
         .with_state(state)
+}
+
+/// Build the dev 404 served when a request lands outside the configured
+/// `base` prefix. Mirrors [`DEV_404_BODY`] but appends a one-line hint
+/// pointing at the prefix so the developer notices the typo / forgotten
+/// base instead of staring at a blank "page not in cache" body.
+///
+/// The hint is HTML-escaped — `prefix` and `path` come from request
+/// data and could otherwise smuggle markup into the response.
+fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
+        html_escape(prefix),
+        html_escape(path),
+        html_escape(prefix),
+        html_escape(prefix),
+    );
+    page_response_bytes(
+        StatusCode::NOT_FOUND,
+        body.into_bytes(),
+        "text/html; charset=utf-8",
+        // Inject the live-reload script with the prefix so the
+        // 404 page silently upgrades when the developer fixes the URL
+        // and the matching page becomes reachable.
+        true,
+        prefix,
+    )
 }
 
 /// Handler for `GET /__zfb/livereload.js`. Returns the bundled JS with
@@ -351,24 +509,58 @@ pub async fn sse_handler(State(state): State<AppState>) -> impl IntoResponse {
     sse_response(&state.broadcast)
 }
 
-/// Handler for `GET /` — serve the root page.
-pub async fn page_root(State(state): State<AppState>, uri: Uri) -> Response {
-    serve_page(&state, "/", &uri).await
+/// Handler for `/` — serve the root page or dispatch to a plugin
+/// dev-middleware that claims the root prefix. Accepts every HTTP
+/// method (see [`build_router`] for the method policy); GET/HEAD
+/// fall through to the page cache, other methods 405 unless a plugin
+/// handles them.
+pub async fn page_root(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    serve_page(&state, "/", &uri, method, headers, body).await
 }
 
-/// Handler for `GET /*path` — serve any other rendered page.
+/// Handler for `/*path` — serve any other rendered page or dispatch
+/// to a plugin dev-middleware. See [`page_root`] for the method
+/// policy.
 pub async fn page_handler(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
+    method: Method,
+    headers: HeaderMap,
     uri: Uri,
+    body: Bytes,
 ) -> Response {
-    serve_page(&state, &path, &uri).await
+    serve_page(&state, &path, &uri, method, headers, body).await
 }
 
-async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
+async fn serve_page(
+    state: &AppState,
+    raw_path: &str,
+    uri: &Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     // Strip any leading slash from the captured wildcard so we can
     // build canonical lookup keys ourselves.
     let trimmed = raw_path.trim_start_matches('/');
+    // Mount-prefix-aware livereload injection (issue #229). The
+    // `<script src>` we splice into HTML responses must point at the
+    // prefixed URL the dev server actually serves the JS at, otherwise
+    // the browser would request `/__zfb/livereload.js` (unprefixed) and
+    // hit the dev 404. Empty when no `base` is configured.
+    let lr_prefix = state.base_prefix.as_deref().unwrap_or("");
+
+    // The page-cache fallback below only handles GET/HEAD. Track this
+    // so a non-GET request that does not match any plugin (or hits a
+    // plugin that returns Passthrough) is rejected with `405 Allow:
+    // GET, HEAD` instead of falling through to the cache logic.
+    let is_get_like = matches!(method, Method::GET | Method::HEAD);
 
     // Sub 3 / #108 — plugin dev-middleware takes priority over the
     // page cache so a plugin can override a URL that also has a
@@ -377,20 +569,52 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
     // to the cache lookup below. Forward the full request URI
     // (including query string) so the plugin can implement
     // `?since=<timestamp>` etc.
+    //
+    // Issue #230: every HTTP method (including POST/PUT/DELETE/PATCH)
+    // is forwarded; the plugin handler decides whether to accept or
+    // reject the method. Built-in routes (`/__zfb/...`, `/assets/*`,
+    // `/public/*`) are unaffected — those are routed by axum directly
+    // and stay GET-only.
+    //
+    // Issue #229 contract: plugins register UNPREFIXED paths
+    // (`ctx.register("/api/echo")`); the dev server registers the
+    // route at `<base_prefix>/api/echo` but strips the prefix before
+    // invoking the handler. `trimmed` already drops the prefix because
+    // the route pattern includes it (the wild `{*path}` only captures
+    // what comes after); for `uri.path_and_query()` we strip the
+    // prefix manually so the plugin sees the unprefixed URL.
     if let Some(set) = state.plugins.as_ref() {
         let path_only = format!("/{trimmed}");
         if let Some(reg) = set.find_match(&path_only) {
-            // Path + optional query.
-            let full = match uri.path_and_query() {
-                Some(pq) => pq.as_str().to_string(),
-                None => path_only.clone(),
-            };
-            match dispatch_plugin(set, reg, &full).await {
+            // Path + optional query, with the dev server's mount
+            // prefix stripped so the plugin handler sees the URL
+            // shape it registered.
+            let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                .unwrap_or_else(|| path_only.clone());
+            let plugin_headers = headermap_to_string_map(&headers);
+            let plugin_body = body_bytes_to_utf8_string(&body);
+            match dispatch_plugin(
+                set,
+                reg,
+                &full,
+                method.as_str(),
+                plugin_headers,
+                plugin_body,
+            )
+            .await
+            {
                 PluginDispatchAttempt::Responded(resp) => return resp,
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
             }
         }
+    }
+
+    // No plugin handled this request. The dev page-cache fallback is
+    // GET/HEAD-only — anything else 405s here so a misrouted POST does
+    // not silently get treated as a page lookup.
+    if !is_get_like {
+        return method_not_allowed_get_head();
     }
 
     let candidates = lookup_keys(trimmed);
@@ -403,7 +627,13 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
             //   actually emitted (e.g. `/sitemap.xml`).
             let content_type = resolve_content_type(&entry, key);
             let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
-            return page_response_bytes(StatusCode::OK, entry.body, &content_type, is_html);
+            return page_response_bytes(
+                StatusCode::OK,
+                entry.body,
+                &content_type,
+                is_html,
+                lr_prefix,
+            );
         }
     }
 
@@ -426,7 +656,7 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
             content_type_for_extension(ext)
         };
         let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
-        return page_response_bytes(StatusCode::OK, bytes, &content_type, is_html);
+        return page_response_bytes(StatusCode::OK, bytes, &content_type, is_html, lr_prefix);
     }
 
     // 404 is always the dev HTML body so the page is replaced once
@@ -436,7 +666,47 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
         DEV_404_BODY.as_bytes().to_vec(),
         "text/html; charset=utf-8",
         true,
+        lr_prefix,
     )
+}
+
+/// Strip the dev server's mount prefix from `uri`'s path-and-query
+/// shape so plugin handlers see the unprefixed URL they registered.
+///
+/// Returns `None` when the URI has no path-and-query component (which
+/// would be very unusual — axum always populates this on incoming
+/// requests). When `prefix` is `None` (no base configured) the path
+/// is returned unchanged.
+///
+/// Path components must be a strict prefix (`/foo` followed by `/` or
+/// end-of-string) — `/foobar` is NOT considered prefixed by `/foo` and
+/// is returned unchanged. This mirrors the boundary semantics in the
+/// build-time link rewriter (zfb#228).
+fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String> {
+    let pq = uri.path_and_query()?;
+    let raw = pq.as_str();
+    let prefix = match prefix {
+        Some(p) if !p.is_empty() => p,
+        _ => return Some(raw.to_string()),
+    };
+    if !raw.starts_with(prefix) {
+        return Some(raw.to_string());
+    }
+    let rest = &raw[prefix.len()..];
+    if rest.is_empty() {
+        return Some("/".to_string());
+    }
+    let first_byte = rest.as_bytes()[0];
+    if first_byte == b'/' || first_byte == b'?' || first_byte == b'#' {
+        // Strict-prefix boundary: `/foo` followed by another path
+        // segment, a query, or a fragment is genuinely under the
+        // prefix. `/foobar` (no boundary char) is NOT.
+        if first_byte == b'?' || first_byte == b'#' {
+            return Some(format!("/{rest}"));
+        }
+        return Some(rest.to_string());
+    }
+    Some(raw.to_string())
 }
 
 /// Try to read a page from the dist directory on disk.
@@ -503,21 +773,28 @@ enum PluginDispatchAttempt {
     Errored(Response),
 }
 
-/// Build a [`PluginRequest`] for the given URL and dispatch it. Body
-/// extraction is deliberately not done here: dev-middleware in v1 is
-/// scoped to GET-style endpoints (search index, llms.txt, doc-history
-/// proxy). Adding body forwarding is a future extension that requires
-/// drinking the body before the catch-all handler runs.
+/// Build a [`PluginRequest`] for the given URL/method/headers/body and
+/// dispatch it.
+///
+/// Issue #230: the request method, headers, and body are forwarded
+/// verbatim so plugin handlers can implement non-GET endpoints (form
+/// submissions, save actions, sidecar API proxies). Non-UTF-8 request
+/// bodies are dropped here — dev-middleware bodies are line-protocol
+/// JSON over stdio to the plugin host, and the wire shape only
+/// supports UTF-8 strings. Binary uploads are a separate extension.
 async fn dispatch_plugin(
     set: &DevMiddlewareSet,
     reg: &PluginRegistration,
     url_path: &str,
+    method: &str,
+    headers: HashMap<String, String>,
+    body: Option<String>,
 ) -> PluginDispatchAttempt {
     let req = PluginRequest {
-        method: "GET".into(),
+        method: method.to_string(),
         url: url_path.to_string(),
-        headers: HashMap::new(),
-        body: None,
+        headers,
+        body,
     };
     match set.dispatcher.dispatch(&reg.handler_id, req).await {
         Ok(PluginDispatchOutcome::Response(resp)) => {
@@ -572,6 +849,49 @@ async fn dispatch_plugin(
             err.plugin, err.message,
         ))),
     }
+}
+
+/// Build the `405 Method Not Allowed` response returned when a non-GET
+/// request reaches the page-cache fallback (i.e. no plugin claimed the
+/// URL or a plugin returned `Passthrough`). Mirrors what axum used to
+/// emit for `get(...)` routes before issue #230 broadened the page
+/// mounts to every HTTP method.
+fn method_not_allowed_get_head() -> Response {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(header::ALLOW, HeaderValue::from_static("GET, HEAD"))
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
+        .body(axum::body::Body::empty())
+        .expect("static 405 response builds")
+}
+
+/// Convert an axum [`HeaderMap`] into the flat string map shape the
+/// plugin host wire protocol expects. Header values that are not valid
+/// UTF-8 are dropped — the JS-side handler receives a string-keyed
+/// object and cannot represent arbitrary bytes. Multi-valued headers
+/// keep the last seen value (the protocol does not currently model
+/// repeated headers; see the dev-middleware contract in
+/// `crates/zfb/js/plugin-host.mjs`).
+fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(headers.len());
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            out.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+/// Convert an inbound request body (already drained into [`Bytes`]) to
+/// the `Option<String>` shape the plugin host wire protocol expects.
+/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
+/// note in [`dispatch_plugin`] about binary uploads being a separate
+/// extension).
+fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(body).ok().map(|s| s.to_string())
 }
 
 fn plugin_error_response(message: &str) -> Response {
@@ -638,17 +958,46 @@ fn lookup_keys(path: &str) -> Vec<String> {
 /// Non-UTF-8 bytes in an HTML body are served as-is without injection
 /// rather than panicking — a graceful degradation for the unlikely
 /// case of a malformed page reaching the dev cache.
+///
+/// `base_prefix` is the dev server's mount prefix (issue #229) — empty
+/// for the no-base case, or `"/foo"` when `base: "/foo/"` is set —
+/// folded into the `<script src>` URL so the browser fetches the
+/// live-reload JS at the prefixed path the dev server actually serves
+/// it at.
 fn page_response_bytes(
     status: StatusCode,
     body: Vec<u8>,
     content_type: &str,
     inject_reload: bool,
+    base_prefix: &str,
 ) -> Response {
     let body_out: Vec<u8> = if inject_reload {
         // HTML should always be valid UTF-8; fall back to raw bytes on
         // the rare occasion it isn't so we don't panic in dev mode.
         match std::str::from_utf8(&body) {
-            Ok(html) => inject_livereload(html).into_bytes(),
+            Ok(html) => {
+                // Issue #228 + #229: when the dev server is mounted under a
+                // `base` prefix, user-authored root-absolute `<a href>` /
+                // `<form action>` in the cached HTML must be rewritten so
+                // navigation under the prefix doesn't 404. Production
+                // builds run the same pass on disk; the dev server runs it
+                // in-flight per response. Empty prefix is a no-op (the
+                // shared `compute_prefixed` short-circuits via idempotency)
+                // so this only changes behaviour when a base IS set.
+                let rewritten = if base_prefix.is_empty() {
+                    Cow::Borrowed(html)
+                } else {
+                    match zfb_build::link_base_rewrite::rewrite_links_in_html(html, base_prefix) {
+                        Ok(s) => Cow::Owned(s),
+                        // Graceful degradation in dev mode: lol_html should
+                        // not fail on the renderer's well-formed HTML, but
+                        // if something pathological reaches us, serve the
+                        // original bytes rather than 500ing the page.
+                        Err(_) => Cow::Borrowed(html),
+                    }
+                };
+                inject_livereload_with_prefix(&rewritten, base_prefix).into_bytes()
+            }
             Err(_) => body,
         }
     } else {
@@ -684,6 +1033,18 @@ mod tests {
             broadcast: tx,
             plugins: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            base_prefix: None,
+        }
+    }
+
+    fn test_state_with_base(prefix: &str) -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        AppState {
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            base_prefix: Some(prefix.to_string()),
         }
     }
 
@@ -1048,5 +1409,664 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         assert!(body.contains(LIVERELOAD_TAG));
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #230 — devMiddleware accepts every HTTP method
+    // -------------------------------------------------------------------
+    //
+    // The legacy router only accepted GET/HEAD on the page-renderer
+    // mounts, which meant a plugin's `/api/echo` POST handler never
+    // ran — axum returned 405 before the plugin layer was reached. The
+    // tests below exercise the new policy:
+    //
+    // - User-registered devMiddleware paths receive every method, with
+    //   `req.method`, `req.headers`, and `req.body` propagated.
+    // - Built-in routes (`/__zfb/livereload.js`, `/__zfb/reload`) keep
+    //   their GET-only semantics so a stray POST cannot reach
+    //   dev-server infrastructure.
+    // - Non-GET requests that hit the page-cache fallback (no plugin
+    //   match, or plugin returned `Passthrough`) get a deterministic
+    //   `405 Allow: GET, HEAD` instead of a confused 404.
+
+    /// Recording dispatcher: stores the last [`PluginRequest`] it saw
+    /// and returns whatever the test asks for.
+    struct RecordingDispatcher {
+        last: tokio::sync::Mutex<Option<PluginRequest>>,
+        outcome: PluginDispatchOutcome,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::plugin_middleware::DevMiddlewareDispatcher for RecordingDispatcher {
+        async fn dispatch(
+            &self,
+            _id: &str,
+            request: PluginRequest,
+        ) -> Result<PluginDispatchOutcome, crate::plugin_middleware::PluginDispatchError>
+        {
+            *self.last.lock().await = Some(request);
+            Ok(self.outcome.clone())
+        }
+    }
+
+    fn echo_response() -> PluginDispatchOutcome {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
+            status: 200,
+            headers,
+            body: "{\"ok\":true}".to_string(),
+            body_encoding: PluginResponseEncoding::Utf8,
+        })
+    }
+
+    fn state_with_dispatcher(
+        dispatcher: Arc<RecordingDispatcher>,
+        path: &str,
+    ) -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let set = DevMiddlewareSet {
+            registrations: Arc::new(vec![PluginRegistration {
+                path: path.to_string(),
+                handler_id: "h1".to_string(),
+                plugin: "test".to_string(),
+            }]),
+            dispatcher: dispatcher.clone()
+                as Arc<dyn crate::plugin_middleware::DevMiddlewareDispatcher>,
+        };
+        AppState {
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: Some(set),
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            base_prefix: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_receives_post_request() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: echo_response(),
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/echo")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"x\":1}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let captured = dispatcher
+            .last
+            .lock()
+            .await
+            .clone()
+            .expect("plugin should have been dispatched");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.url, "/api/echo");
+        assert_eq!(captured.body.as_deref(), Some("{\"x\":1}"));
+        assert_eq!(
+            captured.headers.get("content-type").map(String::as_str),
+            Some("application/json"),
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_receives_put_and_delete() {
+        for method in ["PUT", "DELETE", "PATCH"] {
+            let dispatcher = Arc::new(RecordingDispatcher {
+                last: tokio::sync::Mutex::new(None),
+                outcome: echo_response(),
+            });
+            let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+            let router = test_router(state);
+
+            let resp = router
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/echo")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "method {method} should reach plugin handler"
+            );
+            let captured = dispatcher.last.lock().await.clone().unwrap();
+            assert_eq!(captured.method, method);
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_still_works_for_get() {
+        // Regression: switching to `any(...)` must not break the
+        // pre-existing GET path.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: echo_response(),
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let captured = dispatcher.last.lock().await.clone().unwrap();
+        assert_eq!(captured.method, "GET");
+    }
+
+    #[tokio::test]
+    async fn post_to_built_in_livereload_js_still_returns_405() {
+        // Built-in route is registered with `get(...)`; axum returns
+        // 405 with `Allow: GET, HEAD` for any other method. This is
+        // the exact CSRF-relevant guarantee the issue calls out:
+        // do NOT loosen built-in routes when broadening user-registered
+        // devMiddleware prefixes.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/__zfb/livereload.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let allow = resp
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            allow.to_ascii_uppercase().contains("GET"),
+            "Allow header missing GET: {allow:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_to_built_in_livereload_sse_still_returns_405() {
+        // Same as above, for the SSE endpoint.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/__zfb/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn post_to_unregistered_path_returns_405() {
+        // A POST that does not match any plugin registration must NOT
+        // be silently treated as a page lookup. Returning a clear 405
+        // makes the dev-server method policy obvious to plugin authors
+        // who forgot to register the path they're posting to.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/some/random/path")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let allow = resp
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(allow.contains("GET"), "Allow header missing GET: {allow}");
+        assert!(allow.contains("HEAD"), "Allow header missing HEAD: {allow}");
+    }
+
+    #[tokio::test]
+    async fn plugin_passthrough_on_post_returns_405() {
+        // When a plugin is registered on a path but returns
+        // Passthrough, the page-cache fallback should NOT be used for
+        // non-GET methods (the cache is GET-only). 405 keeps the
+        // method policy consistent.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: PluginDispatchOutcome::Passthrough,
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        // Plugin WAS invoked and chose to pass.
+        assert!(dispatcher.last.lock().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn plugin_passthrough_on_get_falls_back_to_page_cache() {
+        // Regression: Passthrough on GET must still let the page cache
+        // serve the URL.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: PluginDispatchOutcome::Passthrough,
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/maybe");
+        state
+            .pages
+            .insert("/maybe", "<html><body>cached</body></html>")
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/maybe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("cached"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
+        // Empty body collapses to None.
+        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
+        // UTF-8 round-trips.
+        assert_eq!(
+            body_bytes_to_utf8_string(&Bytes::from("hello")),
+            Some("hello".to_string())
+        );
+        // Non-UTF-8 is dropped (binary upload is a future extension).
+        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
+        assert!(body_bytes_to_utf8_string(&bad).is_none());
+    }
+
+    // ---- base prefix mounting (issue #229) -------------------------------
+    //
+    // The router-level fixture is identical to `test_router` except it
+    // builds the AppState with `base_prefix: Some("/foo")`. With the
+    // prefix set, every dev-server route (pages, livereload script,
+    // SSE endpoint) must mount under `/foo/...`; bare unprefixed
+    // requests must be redirected (for `/`) or return the
+    // base-aware 404 hint.
+
+    fn test_router_with_base(state: AppState) -> Router {
+        let tmp = std::env::temp_dir();
+        build_router(state, tmp.join("zfb-test-public"))
+    }
+
+    #[tokio::test]
+    async fn base_prefix_serves_root_page_under_prefix() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert("/", "<html><body><h1>home</h1></body></html>")
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("<h1>home</h1>"), "body: {body}");
+        // The injected livereload script must point at the prefixed URL
+        // (otherwise the browser hits /__zfb/livereload.js and 404s).
+        assert!(
+            body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
+            "expected prefixed livereload tag, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_prefix_serves_nested_page_under_prefix() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert("/about", "<html><body>about</body></html>")
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("about"), "body: {body}");
+        assert!(
+            body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
+            "expected prefixed livereload tag, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_prefix_redirects_bare_root_to_prefix() {
+        let state = test_state_with_base("/foo");
+        // No page inserted — the redirect happens before any page
+        // lookup and doesn't depend on the cache.
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(location, "/foo/", "expected redirect to /foo/, got {location}");
+    }
+
+    #[tokio::test]
+    async fn base_prefix_does_not_redirect_prefix_root_to_itself() {
+        // The redirect-loop avoidance the issue's review explicitly
+        // calls out: GET /foo/ must serve the home page directly, not
+        // 302 back to itself.
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert("/", "<html><body><h1>home</h1></body></html>")
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET /foo/ must serve, not redirect"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_prefix_serves_livereload_js_under_prefix() {
+        let state = test_state_with_base("/foo");
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/__zfb/livereload.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            ct.starts_with("application/javascript"),
+            "unexpected content-type: {ct}"
+        );
+        let body = body_string(resp).await;
+        assert!(body.contains("EventSource"), "body missing EventSource");
+    }
+
+    #[tokio::test]
+    async fn base_prefix_returns_hinted_404_for_unprefixed_path() {
+        let state = test_state_with_base("/foo");
+        let router = test_router_with_base(state);
+
+        // Asset request without the base prefix — the typical
+        // "stale HTML referenced /assets/main.css instead of
+        // /foo/assets/main.css" case. The dev server returns a 404
+        // pointing at the configured base.
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/main.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("/foo"),
+            "expected 404 body to mention the configured base, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_prefix_unknown_prefixed_path_uses_dev_404() {
+        // A request UNDER the base prefix that doesn't match the page
+        // cache should still get the regular dev-mode 404 body (which
+        // is the page-cache miss path) — not the "outside base" hint.
+        let state = test_state_with_base("/foo");
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("page not in cache"),
+            "expected dev-mode 404 body, got: {body}"
+        );
+        // Even the 404 page should carry the prefixed livereload tag
+        // so the page upgrades automatically once the route lands.
+        assert!(
+            body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
+            "expected prefixed livereload tag in 404, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_base_prefix_keeps_root_serving_directly() {
+        // Regression guard: with `base_prefix: None` the router must
+        // not introduce any redirect for `/` — that would break every
+        // existing dev session.
+        let state = test_state(); // base_prefix = None
+        state
+            .pages
+            .insert("/", "<html><body>home</body></html>")
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET / must serve directly when no base is set"
+        );
+    }
+
+    // ---- dev-mode link rewrite (zfb#228 + zfb#229 follow-up) -----------
+    //
+    // Codex review of the merge caught that the dev server was serving
+    // cached HTML verbatim, so user-authored `<a href="/about">` and
+    // `<form action="/login">` literals weren't rewritten under a
+    // `base` mount. Production builds rewrite on disk; the dev server
+    // now mirrors that in-flight via `page_response_bytes`. These
+    // tests pin both directions.
+
+    #[tokio::test]
+    async fn dev_rewrites_user_authored_a_href_under_base() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/about\">About</a></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/foo/about""#),
+            "user a-href should be rewritten under base; got: {body}"
+        );
+        // Bare unprefixed href must NOT survive — the whole point of
+        // the fix is that clicking the rendered link lands inside the
+        // configured base, not at the unprefixed root.
+        assert!(
+            !body.contains(r#"href="/about""#),
+            "unprefixed href leaked into served HTML: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rewrites_user_authored_form_action_under_base() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><form action=\"/login\"><input/></form></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"action="/foo/login""#),
+            "form action should be rewritten under base; got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_no_base_keeps_user_links_unchanged() {
+        // Regression guard: existing projects without `base` set must
+        // see byte-identical user links in the served HTML.
+        let state = test_state();
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/about\">About</a></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/about""#),
+            "no-base mode should not rewrite user href: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rewrite_skips_data_no_base_opt_out() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/legal\" data-no-base>legal</a></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/legal""#),
+            "data-no-base opt-out should preserve original href: {body}"
+        );
+        assert!(
+            !body.contains("/foo/legal"),
+            "opt-out href should not be prefixed: {body}"
+        );
     }
 }

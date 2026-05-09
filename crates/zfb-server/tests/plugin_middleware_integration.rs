@@ -30,6 +30,20 @@ struct CountingDispatcher {
     invocations: AtomicU32,
     passthrough_handler_id: String,
     response_handler_id: String,
+    /// Records the last [`PluginRequest`] the dispatcher saw so
+    /// method/header/body-propagation tests can assert on it.
+    last_request: tokio::sync::Mutex<Option<PluginRequest>>,
+}
+
+impl CountingDispatcher {
+    fn new(pass: &str, respond: &str) -> Self {
+        Self {
+            invocations: AtomicU32::new(0),
+            passthrough_handler_id: pass.into(),
+            response_handler_id: respond.into(),
+            last_request: tokio::sync::Mutex::new(None),
+        }
+    }
 }
 
 #[async_trait]
@@ -40,6 +54,7 @@ impl DevMiddlewareDispatcher for CountingDispatcher {
         request: PluginRequest,
     ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
+        *self.last_request.lock().await = Some(request.clone());
         if handler_id == self.passthrough_handler_id {
             return Ok(PluginDispatchOutcome::Passthrough);
         }
@@ -47,10 +62,19 @@ impl DevMiddlewareDispatcher for CountingDispatcher {
             let mut headers = HashMap::new();
             headers.insert("content-type".into(), "application/json".into());
             headers.insert("x-zfb-plugin".into(), "ok".into());
+            // Echo what the plugin saw so the test can assert on the
+            // wire-level method propagation rather than relying on an
+            // out-of-band channel.
+            let body = format!(
+                "{{\"method\":\"{}\",\"url\":\"{}\",\"hasBody\":{}}}",
+                request.method,
+                request.url,
+                request.body.is_some(),
+            );
             return Ok(PluginDispatchOutcome::Response(PluginResponse {
                 status: 200,
                 headers,
-                body: format!("{{\"echo\":\"{}\"}}", request.url),
+                body,
                 body_encoding: PluginResponseEncoding::Utf8,
             }));
         }
@@ -88,6 +112,7 @@ async fn boot_with_dispatcher(
         pages: pages.clone(),
         broadcast: tx,
         plugins: Some(plugin_set),
+        base: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -98,11 +123,7 @@ async fn boot_with_dispatcher(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_middleware_handles_registered_path() {
-    let dispatcher = Arc::new(CountingDispatcher {
-        passthrough_handler_id: "h-pass".into(),
-        response_handler_id: "h-respond".into(),
-        invocations: AtomicU32::new(0),
-    });
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
     let (addr, _pages, server, _tmp) = boot_with_dispatcher(
         dispatcher.clone(),
         vec![PluginRegistration {
@@ -130,11 +151,7 @@ async fn dev_middleware_handles_registered_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_middleware_passthrough_falls_back_to_page_cache() {
-    let dispatcher = Arc::new(CountingDispatcher {
-        passthrough_handler_id: "h-pass".into(),
-        response_handler_id: "h-respond".into(),
-        invocations: AtomicU32::new(0),
-    });
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
     let (addr, pages, server, _tmp) = boot_with_dispatcher(
         dispatcher.clone(),
         vec![PluginRegistration {
@@ -161,11 +178,7 @@ async fn dev_middleware_passthrough_falls_back_to_page_cache() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_middleware_unregistered_path_skips_dispatch() {
-    let dispatcher = Arc::new(CountingDispatcher {
-        passthrough_handler_id: "h-pass".into(),
-        response_handler_id: "h-respond".into(),
-        invocations: AtomicU32::new(0),
-    });
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
     let (addr, _pages, server, _tmp) = boot_with_dispatcher(
         dispatcher.clone(),
         vec![PluginRegistration {
@@ -180,6 +193,159 @@ async fn dev_middleware_unregistered_path_skips_dispatch() {
     // never be called, and the server returns the dev-mode 404.
     let resp = reqwest::get(format!("http://{addr}/different")).await.unwrap();
     assert_eq!(resp.status(), 404);
+    assert_eq!(dispatcher.invocations.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}
+
+// ---------------------------------------------------------------------
+// Issue #230 — devMiddleware accepts every HTTP method end-to-end.
+// ---------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_middleware_handles_post_with_body_and_propagates_method() {
+    // The whole point of issue #230: a POST to a registered path now
+    // reaches the plugin handler instead of being short-circuited by
+    // axum's GET/HEAD-only filter. Verify the plugin sees the real
+    // method and request body across the full HTTP stack.
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/api/echo"))
+        .header("content-type", "application/json")
+        .body("{\"x\":1}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("\"method\":\"POST\""),
+        "plugin did not see POST: {body}"
+    );
+    assert!(
+        body.contains("\"hasBody\":true"),
+        "plugin did not receive body: {body}"
+    );
+    let captured = dispatcher.last_request.lock().await.clone().unwrap();
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.body.as_deref(), Some("{\"x\":1}"));
+    assert_eq!(
+        captured.headers.get("content-type").map(String::as_str),
+        Some("application/json"),
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_middleware_handles_put_and_delete() {
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api/echo".into(),
+            handler_id: "h-respond".into(),
+            plugin: "echo-test".into(),
+        }],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    for method in [reqwest::Method::PUT, reqwest::Method::DELETE, reqwest::Method::PATCH] {
+        let resp = client
+            .request(method.clone(), format!("http://{addr}/api/echo"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "method {method} should reach plugin");
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains(&format!("\"method\":\"{}\"", method.as_str())),
+            "plugin did not see {method}: {body}",
+        );
+    }
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_to_built_in_livereload_js_returns_405() {
+    // Critical CSRF guarantee from issue #230's "security callout":
+    // built-in routes keep their GET-only semantics. The dev-server
+    // must not let a misrouted POST land on `/__zfb/livereload.js`
+    // just because user-registered devMiddleware paths now accept
+    // every method.
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        // No registrations — exercises the built-in route directly.
+        vec![],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/__zfb/livereload.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 405);
+    let allow = resp
+        .headers()
+        .get("allow")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(allow.to_ascii_uppercase().contains("GET"), "allow: {allow}");
+    // Plugin layer must NOT have been touched for a built-in path.
+    assert_eq!(dispatcher.invocations.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_to_unregistered_path_returns_405() {
+    // Non-GET requests that do not match any plugin must 405 rather
+    // than slip into the page-cache lookup (which is GET-only).
+    let dispatcher = Arc::new(CountingDispatcher::new("h-pass", "h-respond"));
+    let (addr, _pages, server, _tmp) = boot_with_dispatcher(
+        dispatcher.clone(),
+        vec![PluginRegistration {
+            path: "/api".into(),
+            handler_id: "h-respond".into(),
+            plugin: "scoped".into(),
+        }],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/totally-unrelated"))
+        .body("ignored")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 405);
+    let allow = resp
+        .headers()
+        .get("allow")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(allow.contains("GET"), "allow header missing GET: {allow}");
+    assert!(allow.contains("HEAD"), "allow header missing HEAD: {allow}");
+    // Plugin path did not match — dispatcher must not have been called.
     assert_eq!(dispatcher.invocations.load(Ordering::SeqCst), 0);
 
     server.abort();
