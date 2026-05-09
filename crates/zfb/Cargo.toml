@@ -25,6 +25,12 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 include_dir = "0.7"
 indicatif = "0.17"
+# Issue #228: walk emitted HTML to prefix root-absolute `<a href>` /
+# `<form action>` with the configured `base` so internal navigation
+# survives sub-path deploys (mirrors how the CSS / islands asset URLs
+# are already prefixed). Same crate + version that `zfb-islands` and
+# `zfb-server` use, so the workspace lock stays single-version.
+lol_html = "2.8.1"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -6,6 +6,7 @@
 pub mod build;
 pub mod check;
 pub mod dev;
+pub mod link_base_rewrite;
 pub mod new;
 pub mod plugins;
 pub mod preview;
