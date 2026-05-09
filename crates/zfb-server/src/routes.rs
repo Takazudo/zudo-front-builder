@@ -35,10 +35,11 @@ use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
@@ -312,6 +313,23 @@ pub struct AppState {
 /// `public_root` is the project's static assets directory (used for
 /// `/public/*`). Both are served via [`ServeDir`]; missing files fall
 /// back to a plain 404.
+///
+/// ## Method policy (issue #230)
+///
+/// Built-in routes keep their existing GET-only semantics:
+///
+/// - `/__zfb/livereload.js`, `/__zfb/reload`, `/assets/*`, `/public/*`
+///   are all registered with `get(...)` or via [`ServeDir`] (which is
+///   GET/HEAD-only). A non-GET request to any of these surfaces gets a
+///   `405 Method Not Allowed` from axum / tower-http directly — those
+///   routes are dev-server infrastructure, not user code, and CSRF
+///   posture for them must stay tight.
+/// - The page-renderer mounts (`/` and `/{*path}`) accept ALL methods
+///   so user-registered `devMiddleware` handlers can serve `POST`,
+///   `PUT`, `DELETE`, `PATCH`, etc. on prefixes they claim. The handler
+///   itself in [`serve_page`] still returns `405 Allow: GET, HEAD` if a
+///   non-GET request slips through to the page-cache fallback (i.e. no
+///   plugin claimed the URL or a plugin returned `Passthrough`).
 pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router {
     let assets_dir = state.dist_root.join("assets");
     let assets_service = ServeDir::new(&assets_dir);
@@ -322,8 +340,11 @@ pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router 
         .route("/__zfb/reload", get(sse_handler))
         .nest_service("/assets", assets_service)
         .nest_service("/public", public_service)
-        .route("/", get(page_root))
-        .route("/{*path}", get(page_handler))
+        // `any` (vs `get`) so user-registered devMiddleware handlers can
+        // serve every HTTP method. `serve_page` enforces GET/HEAD-only
+        // for the page-cache fallback when no plugin claims the URL.
+        .route("/", any(page_root))
+        .route("/{*path}", any(page_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -351,24 +372,52 @@ pub async fn sse_handler(State(state): State<AppState>) -> impl IntoResponse {
     sse_response(&state.broadcast)
 }
 
-/// Handler for `GET /` — serve the root page.
-pub async fn page_root(State(state): State<AppState>, uri: Uri) -> Response {
-    serve_page(&state, "/", &uri).await
+/// Handler for `/` — serve the root page or dispatch to a plugin
+/// dev-middleware that claims the root prefix. Accepts every HTTP
+/// method (see [`build_router`] for the method policy); GET/HEAD
+/// fall through to the page cache, other methods 405 unless a plugin
+/// handles them.
+pub async fn page_root(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    serve_page(&state, "/", &uri, method, headers, body).await
 }
 
-/// Handler for `GET /*path` — serve any other rendered page.
+/// Handler for `/*path` — serve any other rendered page or dispatch
+/// to a plugin dev-middleware. See [`page_root`] for the method
+/// policy.
 pub async fn page_handler(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
+    method: Method,
+    headers: HeaderMap,
     uri: Uri,
+    body: Bytes,
 ) -> Response {
-    serve_page(&state, &path, &uri).await
+    serve_page(&state, &path, &uri, method, headers, body).await
 }
 
-async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
+async fn serve_page(
+    state: &AppState,
+    raw_path: &str,
+    uri: &Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     // Strip any leading slash from the captured wildcard so we can
     // build canonical lookup keys ourselves.
     let trimmed = raw_path.trim_start_matches('/');
+
+    // The page-cache fallback below only handles GET/HEAD. Track this
+    // so a non-GET request that does not match any plugin (or hits a
+    // plugin that returns Passthrough) is rejected with `405 Allow:
+    // GET, HEAD` instead of falling through to the cache logic.
+    let is_get_like = matches!(method, Method::GET | Method::HEAD);
 
     // Sub 3 / #108 — plugin dev-middleware takes priority over the
     // page cache so a plugin can override a URL that also has a
@@ -377,6 +426,12 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
     // to the cache lookup below. Forward the full request URI
     // (including query string) so the plugin can implement
     // `?since=<timestamp>` etc.
+    //
+    // Issue #230: every HTTP method (including POST/PUT/DELETE/PATCH)
+    // is forwarded; the plugin handler decides whether to accept or
+    // reject the method. Built-in routes (`/__zfb/...`, `/assets/*`,
+    // `/public/*`) are unaffected — those are routed by axum directly
+    // and stay GET-only.
     if let Some(set) = state.plugins.as_ref() {
         let path_only = format!("/{trimmed}");
         if let Some(reg) = set.find_match(&path_only) {
@@ -385,12 +440,30 @@ async fn serve_page(state: &AppState, raw_path: &str, uri: &Uri) -> Response {
                 Some(pq) => pq.as_str().to_string(),
                 None => path_only.clone(),
             };
-            match dispatch_plugin(set, reg, &full).await {
+            let plugin_headers = headermap_to_string_map(&headers);
+            let plugin_body = body_bytes_to_utf8_string(&body);
+            match dispatch_plugin(
+                set,
+                reg,
+                &full,
+                method.as_str(),
+                plugin_headers,
+                plugin_body,
+            )
+            .await
+            {
                 PluginDispatchAttempt::Responded(resp) => return resp,
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
             }
         }
+    }
+
+    // No plugin handled this request. The dev page-cache fallback is
+    // GET/HEAD-only — anything else 405s here so a misrouted POST does
+    // not silently get treated as a page lookup.
+    if !is_get_like {
+        return method_not_allowed_get_head();
     }
 
     let candidates = lookup_keys(trimmed);
@@ -503,21 +576,28 @@ enum PluginDispatchAttempt {
     Errored(Response),
 }
 
-/// Build a [`PluginRequest`] for the given URL and dispatch it. Body
-/// extraction is deliberately not done here: dev-middleware in v1 is
-/// scoped to GET-style endpoints (search index, llms.txt, doc-history
-/// proxy). Adding body forwarding is a future extension that requires
-/// drinking the body before the catch-all handler runs.
+/// Build a [`PluginRequest`] for the given URL/method/headers/body and
+/// dispatch it.
+///
+/// Issue #230: the request method, headers, and body are forwarded
+/// verbatim so plugin handlers can implement non-GET endpoints (form
+/// submissions, save actions, sidecar API proxies). Non-UTF-8 request
+/// bodies are dropped here — dev-middleware bodies are line-protocol
+/// JSON over stdio to the plugin host, and the wire shape only
+/// supports UTF-8 strings. Binary uploads are a separate extension.
 async fn dispatch_plugin(
     set: &DevMiddlewareSet,
     reg: &PluginRegistration,
     url_path: &str,
+    method: &str,
+    headers: HashMap<String, String>,
+    body: Option<String>,
 ) -> PluginDispatchAttempt {
     let req = PluginRequest {
-        method: "GET".into(),
+        method: method.to_string(),
         url: url_path.to_string(),
-        headers: HashMap::new(),
-        body: None,
+        headers,
+        body,
     };
     match set.dispatcher.dispatch(&reg.handler_id, req).await {
         Ok(PluginDispatchOutcome::Response(resp)) => {
@@ -572,6 +652,49 @@ async fn dispatch_plugin(
             err.plugin, err.message,
         ))),
     }
+}
+
+/// Build the `405 Method Not Allowed` response returned when a non-GET
+/// request reaches the page-cache fallback (i.e. no plugin claimed the
+/// URL or a plugin returned `Passthrough`). Mirrors what axum used to
+/// emit for `get(...)` routes before issue #230 broadened the page
+/// mounts to every HTTP method.
+fn method_not_allowed_get_head() -> Response {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(header::ALLOW, HeaderValue::from_static("GET, HEAD"))
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
+        .body(axum::body::Body::empty())
+        .expect("static 405 response builds")
+}
+
+/// Convert an axum [`HeaderMap`] into the flat string map shape the
+/// plugin host wire protocol expects. Header values that are not valid
+/// UTF-8 are dropped — the JS-side handler receives a string-keyed
+/// object and cannot represent arbitrary bytes. Multi-valued headers
+/// keep the last seen value (the protocol does not currently model
+/// repeated headers; see the dev-middleware contract in
+/// `crates/zfb/js/plugin-host.mjs`).
+fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(headers.len());
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            out.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+/// Convert an inbound request body (already drained into [`Bytes`]) to
+/// the `Option<String>` shape the plugin host wire protocol expects.
+/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
+/// note in [`dispatch_plugin`] about binary uploads being a separate
+/// extension).
+fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(body).ok().map(|s| s.to_string())
 }
 
 fn plugin_error_response(message: &str) -> Response {
@@ -1048,5 +1171,320 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         assert!(body.contains(LIVERELOAD_TAG));
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #230 — devMiddleware accepts every HTTP method
+    // -------------------------------------------------------------------
+    //
+    // The legacy router only accepted GET/HEAD on the page-renderer
+    // mounts, which meant a plugin's `/api/echo` POST handler never
+    // ran — axum returned 405 before the plugin layer was reached. The
+    // tests below exercise the new policy:
+    //
+    // - User-registered devMiddleware paths receive every method, with
+    //   `req.method`, `req.headers`, and `req.body` propagated.
+    // - Built-in routes (`/__zfb/livereload.js`, `/__zfb/reload`) keep
+    //   their GET-only semantics so a stray POST cannot reach
+    //   dev-server infrastructure.
+    // - Non-GET requests that hit the page-cache fallback (no plugin
+    //   match, or plugin returned `Passthrough`) get a deterministic
+    //   `405 Allow: GET, HEAD` instead of a confused 404.
+
+    /// Recording dispatcher: stores the last [`PluginRequest`] it saw
+    /// and returns whatever the test asks for.
+    struct RecordingDispatcher {
+        last: tokio::sync::Mutex<Option<PluginRequest>>,
+        outcome: PluginDispatchOutcome,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::plugin_middleware::DevMiddlewareDispatcher for RecordingDispatcher {
+        async fn dispatch(
+            &self,
+            _id: &str,
+            request: PluginRequest,
+        ) -> Result<PluginDispatchOutcome, crate::plugin_middleware::PluginDispatchError>
+        {
+            *self.last.lock().await = Some(request);
+            Ok(self.outcome.clone())
+        }
+    }
+
+    fn echo_response() -> PluginDispatchOutcome {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
+            status: 200,
+            headers,
+            body: "{\"ok\":true}".to_string(),
+            body_encoding: PluginResponseEncoding::Utf8,
+        })
+    }
+
+    fn state_with_dispatcher(
+        dispatcher: Arc<RecordingDispatcher>,
+        path: &str,
+    ) -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let set = DevMiddlewareSet {
+            registrations: Arc::new(vec![PluginRegistration {
+                path: path.to_string(),
+                handler_id: "h1".to_string(),
+                plugin: "test".to_string(),
+            }]),
+            dispatcher: dispatcher.clone()
+                as Arc<dyn crate::plugin_middleware::DevMiddlewareDispatcher>,
+        };
+        AppState {
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: Some(set),
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_receives_post_request() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: echo_response(),
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/echo")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"x\":1}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let captured = dispatcher
+            .last
+            .lock()
+            .await
+            .clone()
+            .expect("plugin should have been dispatched");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.url, "/api/echo");
+        assert_eq!(captured.body.as_deref(), Some("{\"x\":1}"));
+        assert_eq!(
+            captured.headers.get("content-type").map(String::as_str),
+            Some("application/json"),
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_receives_put_and_delete() {
+        for method in ["PUT", "DELETE", "PATCH"] {
+            let dispatcher = Arc::new(RecordingDispatcher {
+                last: tokio::sync::Mutex::new(None),
+                outcome: echo_response(),
+            });
+            let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+            let router = test_router(state);
+
+            let resp = router
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/echo")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "method {method} should reach plugin handler"
+            );
+            let captured = dispatcher.last.lock().await.clone().unwrap();
+            assert_eq!(captured.method, method);
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_handler_still_works_for_get() {
+        // Regression: switching to `any(...)` must not break the
+        // pre-existing GET path.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: echo_response(),
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let captured = dispatcher.last.lock().await.clone().unwrap();
+        assert_eq!(captured.method, "GET");
+    }
+
+    #[tokio::test]
+    async fn post_to_built_in_livereload_js_still_returns_405() {
+        // Built-in route is registered with `get(...)`; axum returns
+        // 405 with `Allow: GET, HEAD` for any other method. This is
+        // the exact CSRF-relevant guarantee the issue calls out:
+        // do NOT loosen built-in routes when broadening user-registered
+        // devMiddleware prefixes.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/__zfb/livereload.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let allow = resp
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            allow.to_ascii_uppercase().contains("GET"),
+            "Allow header missing GET: {allow:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_to_built_in_livereload_sse_still_returns_405() {
+        // Same as above, for the SSE endpoint.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/__zfb/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn post_to_unregistered_path_returns_405() {
+        // A POST that does not match any plugin registration must NOT
+        // be silently treated as a page lookup. Returning a clear 405
+        // makes the dev-server method policy obvious to plugin authors
+        // who forgot to register the path they're posting to.
+        let state = test_state();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/some/random/path")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let allow = resp
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(allow.contains("GET"), "Allow header missing GET: {allow}");
+        assert!(allow.contains("HEAD"), "Allow header missing HEAD: {allow}");
+    }
+
+    #[tokio::test]
+    async fn plugin_passthrough_on_post_returns_405() {
+        // When a plugin is registered on a path but returns
+        // Passthrough, the page-cache fallback should NOT be used for
+        // non-GET methods (the cache is GET-only). 405 keeps the
+        // method policy consistent.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: PluginDispatchOutcome::Passthrough,
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/api/echo");
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        // Plugin WAS invoked and chose to pass.
+        assert!(dispatcher.last.lock().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn plugin_passthrough_on_get_falls_back_to_page_cache() {
+        // Regression: Passthrough on GET must still let the page cache
+        // serve the URL.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: PluginDispatchOutcome::Passthrough,
+        });
+        let state = state_with_dispatcher(dispatcher.clone(), "/maybe");
+        state
+            .pages
+            .insert("/maybe", "<html><body>cached</body></html>")
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/maybe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("cached"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
+        // Empty body collapses to None.
+        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
+        // UTF-8 round-trips.
+        assert_eq!(
+            body_bytes_to_utf8_string(&Bytes::from("hello")),
+            Some("hello".to_string())
+        );
+        // Non-UTF-8 is dropped (binary upload is a future extension).
+        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
+        assert!(body_bytes_to_utf8_string(&bad).is_none());
     }
 }
