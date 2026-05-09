@@ -10,6 +10,10 @@ description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
 [dependencies]
 zfb-build = { path = "../zfb-build" }
 zfb-islands = { path = "../zfb-islands" }
+# Issue #229: shared `base` → mount-prefix normalisation lives in
+# zfb-types (the lowest-dep leaf) so the build-time link rewriter
+# (#228) and the dev server agree on the canonical form.
+zfb-types = { path = "../zfb-types" }
 
 axum = "0.8"
 # Sub 3 / #108: dyn-compat async trait for the dev-middleware

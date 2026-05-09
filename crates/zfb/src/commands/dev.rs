@@ -240,6 +240,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     });
 
     // 6. Build the serve options and announce readiness.
+    //
+    // Issue #229: thread `cfg.base` through so the dev server mounts
+    // pages, assets, and live-reload under the same prefix the build
+    // pipeline stamps onto asset URLs. Without this the dev HTML emits
+    // `<link href="/<base>/assets/styles.css">` while the dev server
+    // only knew about unprefixed `/assets/...` — every request 404s.
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -248,6 +254,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         pages,
         broadcast: tx,
         plugins: plugin_set,
+        base: cfg.base.clone(),
     };
 
     output::ready(&format!("http://{host}:{port}"));

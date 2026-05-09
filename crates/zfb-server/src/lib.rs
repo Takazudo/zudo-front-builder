@@ -100,6 +100,20 @@ pub struct ServeOpts {
     /// router skips the plugin-dispatch leg entirely. The bin crate
     /// (`zfb dev`) builds this from the long-lived plugin host.
     pub plugins: Option<DevMiddlewareSet>,
+
+    /// User-supplied `base` config value from `zfb.config.ts` (issue
+    /// #229). Passed through verbatim — the dev server normalises it
+    /// internally via [`zfb_types::dev_mount_prefix`] into the
+    /// canonical `Some("/foo")` / `None` mount-prefix shape.
+    ///
+    /// When this resolves to a `Some(prefix)` the entire route table
+    /// (page cache, assets, public, livereload, plugin middleware)
+    /// mounts under `<prefix>/...`; bare `/` redirects to `<prefix>/`,
+    /// other unprefixed paths fall through to a 404 with a hint.
+    /// When this resolves to `None` (i.e. `base` is `None`, `""`,
+    /// `"/"`, or an absolute URL) the route table is identical to the
+    /// pre-`base` server byte-for-byte.
+    pub base: Option<String>,
 }
 
 impl ServeOpts {
@@ -159,11 +173,19 @@ pub async fn serve_with_listener<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
+    // Issue #229: normalise `base` once at boot. The shared helper
+    // (`zfb_types::dev_mount_prefix`) collapses every accepted shape
+    // (None / "" / "/" / "/foo" / "/foo/" / "https://cdn…") into the
+    // single canonical form the routing layer wants, so the rest of
+    // the server only deals with `Option<String>` of the
+    // leading-slash, no-trailing-slash kind.
+    let base_prefix = zfb_types::dev_mount_prefix(opts.base.as_deref());
     let state = AppState {
         pages: opts.pages,
         broadcast: opts.broadcast,
         plugins: opts.plugins,
         dist_root: opts.dist_root.clone(),
+        base_prefix,
     };
     let router = build_router(state, opts.public_root.clone());
 
