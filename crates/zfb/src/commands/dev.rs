@@ -152,7 +152,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(&project_root, &cfg, &dist_root) {
+    let dev_session = match boot_dev_renderer(&project_root, &cfg) {
         Ok(s) => Some(s),
         Err(err) => {
             output::warn(format!(
@@ -447,7 +447,6 @@ impl Drop for DevRenderInner {
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
-    dist_root: &Path,
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
@@ -470,11 +469,19 @@ fn boot_dev_renderer(
     // Dev mode does not embed a content snapshot — runtime paths()
     // evaluation is a build-mode feature. When dev mode starts the
     // worker, `getCollection(...)` will see an empty snapshot.
+    //
+    // The intermediate `.zfb-build/` directory lives at
+    // `<project_root>/.zfb-build/`, NOT under `<dist_root>/`. This
+    // mirrors the production path in `commands/build.rs` (see zfb#231).
+    // Dev mode's leak risk is lower (the dev server doesn't ship dist/
+    // anywhere), but keeping the path consistent with build means the
+    // intermediate is always at one well-known location regardless of
+    // mode, and any tooling pointing at it stays mode-agnostic.
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
         cfg_framework_to_render(cfg.framework),
         BundleMode::Development,
-        dist_root.join(".zfb-build"),
+        project_root.join(".zfb-build"),
         None,
     );
     // Mirror the production build CLI: surface project-side

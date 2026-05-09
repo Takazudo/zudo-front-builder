@@ -859,11 +859,21 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     //
     // The content snapshot (when present) is embedded in the worker
     // bundle so runtime `paths()` calls can resolve `getCollection(...)`.
+    //
+    // The intermediate `.zfb-build/` directory holds `bundle.mjs` and
+    // its `.map` — the SSR worker bundle the renderer below loads. It
+    // lives at `<project_root>/.zfb-build/`, NOT under `<outdir>/`,
+    // because anything inside `outdir` is part of the deploy upload
+    // (Cloudflare Pages, Netlify, S3, etc.) and these are build
+    // intermediates, not deploy artifacts. See zfb#231 for the
+    // information-disclosure / wasted-bytes rationale. The renderer +
+    // adapter both consume the absolute `bundler_out.bundle_path`
+    // returned below, so the location is opaque to them.
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
         cfg_framework_to_render(config.framework),
         BundleMode::Production,
-        outdir.join(".zfb-build"),
+        project_root.join(".zfb-build"),
         content_snapshot_json,
     );
     // Inject project-side resolution context so esbuild can find
@@ -1752,7 +1762,7 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             static_route(vec!["about"], "pages/about.tsx"),
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
 
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
@@ -1786,6 +1796,60 @@ mod tests {
         }
     }
 
+    /// zfb#231 regression — the SSR worker bundle (`bundle.mjs` + its
+    /// `.map`) is a build intermediate, NOT a deploy artifact. It must
+    /// be written under `<project_root>/.zfb-build/`, not under
+    /// `<outdir>/.zfb-build/`. Anything in `outdir` ships to the deploy
+    /// upload (Cloudflare Pages, Netlify, S3 + CloudFront, etc.); the
+    /// SSR bundle is ~350 KB of internal build state that exposes
+    /// page-level JS authors wrote with the "runs server-side only"
+    /// assumption. Pinning the location prevents a future refactor
+    /// from accidentally re-introducing the leak.
+    #[test]
+    fn run_build_writes_intermediate_bundle_outside_dist() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+        })
+        .unwrap();
+
+        // (a) The bundler was handed `<project_root>/.zfb-build/`, NOT
+        //     `<outdir>/.zfb-build/`. This is the load-bearing wiring
+        //     fix: change this and dist/ stops leaking the SSR bundle.
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].outdir, project_root.join(".zfb-build"));
+        assert_ne!(calls[0].outdir, outdir.join(".zfb-build"));
+
+        // (b) On disk: dist/.zfb-build/ does NOT exist after build.
+        //     A future change that moves the write target back under
+        //     dist/ would fail this assertion.
+        assert!(
+            !outdir.join(".zfb-build").exists(),
+            "dist/.zfb-build/ must not exist after build (zfb#231)",
+        );
+
+        // (c) The relocated intermediate IS written at project root
+        //     (FakeRunner mirrors production by writing the mock
+        //     bundle to its target path).
+        assert!(
+            project_root.join(".zfb-build/bundle.mjs").is_file(),
+            "<project_root>/.zfb-build/bundle.mjs must exist after build",
+        );
+    }
+
     #[test]
     fn run_build_defers_dynamic_routes_whose_source_is_unreadable() {
         // The router yielded a dynamic route whose source file doesn't
@@ -1801,7 +1865,7 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             dynamic_route("slug", "pages/[slug].tsx"),
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
@@ -1856,7 +1920,7 @@ mod tests {
                 output_extension: None,
             },
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
@@ -1897,7 +1961,7 @@ mod tests {
         // defers it, and the FakeRunner's eval_deferred_paths returns
         // empty (no runtime V8 host in unit tests).
         let routes = vec![dynamic_route("slug", "pages/[slug].tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         let pages = run_build(BuildArgsResolved {
@@ -2011,7 +2075,7 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -2053,7 +2117,7 @@ mod tests {
             specificity: 0,
             output_extension: None,
         }];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default(); // adapter is None
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
@@ -2109,7 +2173,7 @@ mod tests {
                 output_extension: None,
             },
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let mut cfg = Config::default();
         cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
         let fake_adapter = FakeAdapterRunner::new();
@@ -2125,10 +2189,12 @@ mod tests {
         let calls = fake_adapter.calls.borrow();
         assert_eq!(calls.len(), 1, "adapter dispatch must run once");
         assert_eq!(calls[0].0, "@takazudo/zfb-adapter-cloudflare");
-        // Adapter receives the same bundle the renderer used.
+        // Adapter receives the same bundle the renderer used. The
+        // bundle lives at <project_root>/.zfb-build/, not under
+        // <outdir>/, so the deploy upload doesn't include it (zfb#231).
         assert_eq!(
             calls[0].1.input_bundle,
-            outdir.join(".zfb-build/bundle.mjs")
+            project_root.join(".zfb-build/bundle.mjs")
         );
         assert_eq!(calls[0].1.outdir, outdir);
     }
@@ -2142,7 +2208,7 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let mut cfg = Config::default();
         cfg.adapter = Some("   ".into());
         let fake_adapter = FakeAdapterRunner::new();
@@ -2174,7 +2240,7 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             static_route(vec!["about"], "pages/about.tsx"),
         ];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
             ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
@@ -2362,7 +2428,7 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
             ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
@@ -2456,7 +2522,7 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
             ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
@@ -2570,7 +2636,7 @@ mod tests {
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         // Default FakeRunner: no preset emitter bytes ⇒ both slots None.
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -2935,7 +3001,7 @@ mod tests {
         std::fs::write(project_root.join("public/img/logo.svg"), logo_content).unwrap();
 
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(outdir.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let mut cfg = Config::default();
         cfg.base = Some("/pj/test/".to_string());
         let fake_adapter = FakeAdapterRunner::new();
