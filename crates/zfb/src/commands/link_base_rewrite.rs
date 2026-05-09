@@ -54,8 +54,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use lol_html::html_content::Element;
-use lol_html::{ElementContentHandlers, LocalHandlerTypes, RewriteStrSettings, Selector};
+use zfb_build::link_base_rewrite::rewrite_links_in_html;
 
 use crate::config::asset_url_base_prefix;
 
@@ -129,116 +128,26 @@ fn is_html_path(p: &Path) -> bool {
     )
 }
 
-/// Rewrite root-absolute `<a href>` / `<form action>` in `html` by
-/// prepending `prefix`. Pure function — no I/O.
-///
-/// `prefix` MUST be the canonical form returned by
-/// [`asset_url_base_prefix`]: empty (no base), a path with no trailing
-/// slash (`/foo`), or an absolute URL with no trailing slash. The
-/// caller guards against the empty / absolute-URL forms; we still
-/// behave correctly if those slip through (empty prefix yields
-/// no-op via the idempotency check; absolute-URL prefix would
-/// mis-rewrite, hence the caller's gate).
-fn rewrite_links_in_html(
-    html: &str,
-    prefix: &str,
-) -> Result<String, lol_html::errors::RewritingError> {
-    use std::borrow::Cow;
-
-    let a_selector: Selector = "a[href]".parse().expect("static selector is valid");
-    let form_selector: Selector = "form[action]"
-        .parse()
-        .expect("static selector is valid");
-
-    // Each handler is `FnMut + Send + Sync`; we capture an owned
-    // `String` clone of the prefix so the closures don't borrow from
-    // the outer scope.
-    let prefix_for_a = prefix.to_string();
-    let prefix_for_form = prefix.to_string();
-
-    lol_html::rewrite_str(
-        html,
-        RewriteStrSettings {
-            element_content_handlers: vec![
-                (
-                    Cow::Owned(a_selector),
-                    ElementContentHandlers::default().element(move |el: &mut Element<'_, '_, _>| {
-                        if has_no_base_optout(el) {
-                            return Ok(());
-                        }
-                        if let Some(href) = el.get_attribute("href") {
-                            if let Some(rewritten) = compute_prefixed(&href, &prefix_for_a) {
-                                el.set_attribute("href", &rewritten)?;
-                            }
-                        }
-                        Ok(())
-                    }),
-                ),
-                (
-                    Cow::Owned(form_selector),
-                    ElementContentHandlers::default().element(move |el: &mut Element<'_, '_, _>| {
-                        if has_no_base_optout(el) {
-                            return Ok(());
-                        }
-                        if let Some(action) = el.get_attribute("action") {
-                            if let Some(rewritten) = compute_prefixed(&action, &prefix_for_form) {
-                                el.set_attribute("action", &rewritten)?;
-                            }
-                        }
-                        Ok(())
-                    }),
-                ),
-            ],
-            ..RewriteStrSettings::new()
-        },
-    )
-}
-
-/// Return the prefixed value, or `None` to leave the attribute alone.
-///
-/// See module docs for the full skip table. The check order matters
-/// for clarity but not for correctness — each branch is independent.
-fn compute_prefixed(value: &str, prefix: &str) -> Option<String> {
-    if value.is_empty() {
-        return None;
-    }
-    let bytes = value.as_bytes();
-    if bytes[0] != b'/' {
-        // Catches relative paths, fragment-only, AND every schemed
-        // URL (mailto:, http:, javascript:, …) — none start with `/`.
-        return None;
-    }
-    if bytes.len() >= 2 && bytes[1] == b'/' {
-        // Protocol-relative `//host/...`.
-        return None;
-    }
-    // Idempotency: if the value is already mounted under `prefix`,
-    // leave it alone. We require the boundary after the prefix to be
-    // either end-of-string or `/`, so `/foobar` is NOT considered
-    // already-prefixed by `/foo`.
-    if value.starts_with(prefix) {
-        let rest = &value[prefix.len()..];
-        if rest.is_empty() || rest.starts_with('/') {
-            return None;
-        }
-    }
-    Some(format!("{prefix}{value}"))
-}
-
-/// Case-insensitive check: is `data-no-base` present on this element?
-/// `lol_html`'s element selectors and `get_attribute` are already
-/// case-insensitive on attribute names, so a literal lookup suffices.
-fn has_no_base_optout(el: &Element<'_, '_, LocalHandlerTypes>) -> bool {
-    el.has_attribute("data-no-base")
-}
+// `rewrite_links_in_html`, `compute_prefixed`, and `has_no_base_optout`
+// live in `zfb_build::link_base_rewrite` so the dev server (issue
+// #229's `routes::page_response_bytes`) and this build-pass call the
+// same code. The dev server applies the rewrite in-flight on cached
+// HTML responses; the build pass applies it on disk via
+// [`apply_link_base_rewrite`] above.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+    use zfb_build::link_base_rewrite::{compute_prefixed, rewrite_links_in_html};
 
     // --- compute_prefixed -----------------------------------------------------
+    //
+    // The pure-string pieces are tested in zfb_build::link_base_rewrite
+    // alongside their implementation; the smoke tests here keep a
+    // few cases pinned at this layer to prevent silent drift if a
+    // future refactor extracts/re-exports them differently.
 
     #[test]
     fn compute_prefixed_root_absolute_gets_prefix() {
@@ -277,6 +186,26 @@ mod tests {
         assert_eq!(compute_prefixed("/foo/", "/foo"), None);
         assert_eq!(compute_prefixed("/foo/about", "/foo"), None);
         assert_eq!(compute_prefixed("/foo/api/x", "/foo"), None);
+    }
+
+    #[test]
+    fn compute_prefixed_idempotent_on_prefixed_with_query_or_fragment() {
+        // Codex review caught these: a prefixed URL with a `?query` or
+        // `#fragment` suffix is still under the prefix and must NOT be
+        // double-prefixed. Without the `?` / `#` boundary, the previous
+        // logic would rewrite `/foo?tab=1` → `/foo/foo?tab=1` because
+        // it failed the "rest starts with /" check.
+        assert_eq!(compute_prefixed("/foo?tab=1", "/foo"), None);
+        assert_eq!(compute_prefixed("/foo?", "/foo"), None);
+        assert_eq!(compute_prefixed("/foo#top", "/foo"), None);
+        assert_eq!(compute_prefixed("/foo#", "/foo"), None);
+        assert_eq!(compute_prefixed("/foo?x=1#y", "/foo"), None);
+        // The boundary still rejects partial matches: `/foobar?` is NOT
+        // under prefix `/foo` and should still be rewritten.
+        assert_eq!(
+            compute_prefixed("/foobar?x=1", "/foo").as_deref(),
+            Some("/foo/foobar?x=1"),
+        );
     }
 
     #[test]

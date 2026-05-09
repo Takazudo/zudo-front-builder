@@ -52,6 +52,7 @@ pub mod adapter;
 pub mod atomic;
 pub mod bundler;
 pub mod head_inject;
+pub mod link_base_rewrite;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;

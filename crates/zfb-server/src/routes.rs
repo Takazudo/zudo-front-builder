@@ -58,6 +58,7 @@
 //! When `base` is `None` or `"/"` the route table is identical to the
 //! pre-`base` build byte-for-byte.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
@@ -974,7 +975,29 @@ fn page_response_bytes(
         // HTML should always be valid UTF-8; fall back to raw bytes on
         // the rare occasion it isn't so we don't panic in dev mode.
         match std::str::from_utf8(&body) {
-            Ok(html) => inject_livereload_with_prefix(html, base_prefix).into_bytes(),
+            Ok(html) => {
+                // Issue #228 + #229: when the dev server is mounted under a
+                // `base` prefix, user-authored root-absolute `<a href>` /
+                // `<form action>` in the cached HTML must be rewritten so
+                // navigation under the prefix doesn't 404. Production
+                // builds run the same pass on disk; the dev server runs it
+                // in-flight per response. Empty prefix is a no-op (the
+                // shared `compute_prefixed` short-circuits via idempotency)
+                // so this only changes behaviour when a base IS set.
+                let rewritten = if base_prefix.is_empty() {
+                    Cow::Borrowed(html)
+                } else {
+                    match zfb_build::link_base_rewrite::rewrite_links_in_html(html, base_prefix) {
+                        Ok(s) => Cow::Owned(s),
+                        // Graceful degradation in dev mode: lol_html should
+                        // not fail on the renderer's well-formed HTML, but
+                        // if something pathological reaches us, serve the
+                        // original bytes rather than 500ing the page.
+                        Err(_) => Cow::Borrowed(html),
+                    }
+                };
+                inject_livereload_with_prefix(&rewritten, base_prefix).into_bytes()
+            }
             Err(_) => body,
         }
     } else {
@@ -1923,6 +1946,127 @@ mod tests {
             resp.status(),
             StatusCode::OK,
             "GET / must serve directly when no base is set"
+        );
+    }
+
+    // ---- dev-mode link rewrite (zfb#228 + zfb#229 follow-up) -----------
+    //
+    // Codex review of the merge caught that the dev server was serving
+    // cached HTML verbatim, so user-authored `<a href="/about">` and
+    // `<form action="/login">` literals weren't rewritten under a
+    // `base` mount. Production builds rewrite on disk; the dev server
+    // now mirrors that in-flight via `page_response_bytes`. These
+    // tests pin both directions.
+
+    #[tokio::test]
+    async fn dev_rewrites_user_authored_a_href_under_base() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/about\">About</a></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/foo/about""#),
+            "user a-href should be rewritten under base; got: {body}"
+        );
+        // Bare unprefixed href must NOT survive — the whole point of
+        // the fix is that clicking the rendered link lands inside the
+        // configured base, not at the unprefixed root.
+        assert!(
+            !body.contains(r#"href="/about""#),
+            "unprefixed href leaked into served HTML: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rewrites_user_authored_form_action_under_base() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><form action=\"/login\"><input/></form></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"action="/foo/login""#),
+            "form action should be rewritten under base; got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_no_base_keeps_user_links_unchanged() {
+        // Regression guard: existing projects without `base` set must
+        // see byte-identical user links in the served HTML.
+        let state = test_state();
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/about\">About</a></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/about""#),
+            "no-base mode should not rewrite user href: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_rewrite_skips_data_no_base_opt_out() {
+        let state = test_state_with_base("/foo");
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><body><a href=\"/legal\" data-no-base>legal</a></body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"href="/legal""#),
+            "data-no-base opt-out should preserve original href: {body}"
+        );
+        assert!(
+            !body.contains("/foo/legal"),
+            "opt-out href should not be prefixed: {body}"
         );
     }
 }
