@@ -50,8 +50,9 @@
 //!   3. Snapshot `module_specifier` hash **equals** bundler-side
 //!      compile hash byte-for-byte (`959febef` for the live file at
 //!      the time of writing). The bridge map in the live worker
-//!      bundle (`dist/.zfb-build/bundle.mjs`) registers exactly this
-//!      hash, so `globalThis.__zfb.content.get(specifier)` lands.
+//!      bundle (`<project_root>/.zfb-build/bundle.mjs`, relocated out
+//!      of `dist/` per zfb#231) registers exactly this hash, so
+//!      `globalThis.__zfb.content.get(specifier)` lands.
 //!
 //! Inspection of the live `dist/docs/claude-skills/l-lessons-zfb-migration-parity/index.html`
 //! found ZERO occurrences of the actual fallback marker

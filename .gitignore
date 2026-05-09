@@ -38,6 +38,14 @@ __inbox/
 # project roots when `zfb dev` runs. Never committed.
 .zfb/
 
+# Build intermediates from `zfb build` / `zfb dev` — the SSR worker
+# bundle (`bundle.mjs` + `bundle.mjs.map`) the renderer loads.
+# Relocated out of `dist/.zfb-build/` (zfb#231) into the project root
+# so it doesn't ship to deploy uploads. Created in user project roots
+# AND in dogfood examples (e.g. `examples/basic-blog/.zfb-build/`).
+# Never committed.
+.zfb-build/
+
 # Stale renderer bootstrap files left at workspace root when the
 # miniflare subprocess is killed before NamedTempFile drop runs
 # (e.g. SIGKILL). See crates/zfb-build/src/renderer.rs.
