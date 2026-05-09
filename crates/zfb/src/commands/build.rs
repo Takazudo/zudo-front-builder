@@ -1041,6 +1041,23 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
             .context("production asset pipeline (hash + URL rewrite) failed")?;
     }
 
+    // 3.6. User-link base rewrite (issue #228).
+    //
+    // The asset rewrite above only touched `/assets/...` URLs in
+    // `<link>` / `<script>`. User-authored absolute links —
+    // `<a href="/about">`, `<form action="/login">` — were left bare,
+    // so a sub-path deploy (`base = "/pj/foo/"`) shipped working
+    // styling but broken navigation. Walk every emitted HTML file and
+    // prefix root-absolute hrefs/actions; module-level docs cover the
+    // skip rules and the `data-no-base` opt-out. No-op when `base` is
+    // unset, `"/"`, or absolute-URL-shaped.
+    crate::commands::link_base_rewrite::apply_link_base_rewrite(
+        outdir,
+        &render_out.ssg_files_written,
+        config.base.as_deref(),
+    )
+    .context("link base rewrite failed")?;
+
     // Surface embedded V8 host runtime logs (console output from the
     // worker) on a green build — they are often informative about
     // deprecations or routing oddities.
