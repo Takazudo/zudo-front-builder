@@ -31,7 +31,8 @@ export const settings = {
   } satisfies ColorModeConfig,
   defaultLocale: "en",
   siteName: "Docs",
-  siteDescription: "" as string,
+  siteDescription:
+    "Rust-built static-site engine for Astro / Next.js (and other frontend framework) users who want millisecond rebuilds and a single binary." as string,
   base: "/pj/zudo-front-builder",
   trailingSlash: false as boolean,
   noindex: false as boolean,
@@ -91,6 +92,11 @@ export const settings = {
   } satisfies FooterConfig as FooterConfig | false,
   headerNav: [
     { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
+    { label: "Concepts", path: "/docs/concepts", categoryMatch: "concepts" },
+    { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
+    { label: "Reference", path: "/docs/api", categoryMatch: "api" },
+    { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
+    { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
     { label: "Changelog", path: "/docs/changelog", categoryMatch: "changelog" },
   ] as HeaderNavItem[],
 };
