@@ -7,35 +7,68 @@ sidebar_position: 3
 ## Signature
 
 ```ts
-paginate(items: T[], opts: { pageSize: number; route: string }): PaginationPath[]
+paginate<T, K extends string = string>(
+  items: readonly T[],
+  opts: PaginateOptions<K>,
+): PaginateRoute<T, K>[]
 ```
 
-Use `paginate` inside a `paths()` export to fan a list of items out across a paginated route. The function chunks `items` by `pageSize` and produces one `PaginationPath` per chunk. Each path knows its URL params and the props the page should receive.
+Use `paginate` inside a `paths()` export to fan a list of items out across a paginated route. The function chunks `items` by `pageSize` and produces one `PaginateRoute` per chunk, each carrying the URL params and page props the component receives.
 
-## PaginationPath shape
+`paginate` always emits at least one route — an empty input list yields a single empty page so the index route still renders rather than 404ing.
 
-- `params`: object — the URL params for the route. For paginated lists, this is typically `{ page: number }`.
-- `props`: object — passed to the page's default export. For a list page, this is usually `{ items: T[], page: number, totalPages: number }`.
+## PaginateOptions
+
+```ts
+type PaginateOptions<K extends string = string> = {
+  pageSize: number;
+  param: K;
+};
+```
+
+- `pageSize` — items per page. Must be a positive integer.
+- `param` — name of the dynamic URL segment to fill (e.g. `"page"` for a route file named `[page].tsx`).
+
+## PaginateRoute shape
+
+```ts
+type PaginateRoute<T, K extends string = string> = {
+  params: Record<K, string>;
+  props: { page: PaginatedPage<T> };
+};
+```
+
+Each route carries:
+
+- `params` — URL segment values. For a `param: "page"` call, this is `{ page: "1" }`, `{ page: "2" }`, etc.
+- `props.page` — a `PaginatedPage<T>` record with:
+  - `data: T[]` — items belonging to this page.
+  - `page: number` — 1-based page number.
+  - `lastPage: number` — total number of pages.
+  - `pageSize: number` — items per page (echoed for convenience).
+  - `total: number` — total item count across all pages.
 
 ## Example
 
-Paginate a blog index 10 posts at a time under `/blog/page/[page]`.
+Paginate a blog index 10 posts at a time under `/blog/page/[page].tsx`.
 
 ```tsx
-import { paginate, getCollection } from "zfb/content";
+import { paginate } from "zfb/paginate";
+import { getCollection } from "zfb/content";
 
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");
   return paginate(posts, {
     pageSize: 10,
-    route: "/blog/page/[page]",
+    param: "page",
   });
 }
 
-export default function BlogPage({ items, page, totalPages }) {
+export default function BlogPage({ page }) {
+  const { data: items, page: currentPage, lastPage } = page;
   return (
     <section>
-      <h2>Blog — page {page} of {totalPages}</h2>
+      <h2>Blog — page {currentPage} of {lastPage}</h2>
       <ul>
         {items.map((post) => (
           <li key={post.slug}>
@@ -48,10 +81,6 @@ export default function BlogPage({ items, page, totalPages }) {
 }
 ```
 
-The `[page]` segment in `route` matches the `params.page` value emitted by `paginate`. Page numbers start at 1.
+The `param` value (`"page"`) must match the dynamic segment name in your route filename (`[page].tsx`). Page numbers start at 1 and are passed as strings in `params`.
 
-<Warning title="v0: paths() evaluation pending">
-
-  `paths()` is part of the routing model today — the router recognises dynamic routes and reserves the `paths` export name. Expanding `paths()` into concrete page instances at build time requires the JS runtime (see [ADR-001](/architecture/js-runtime)). `zfb build` currently warn-skips dynamic routes; you can write your `paginate` calls now and they will be honoured once the runtime lands.
-
-</Warning>
+The page component receives the `PaginatedPage` record as `props.page`. Destructure it to access `data`, `page`, `lastPage`, `pageSize`, and `total`.

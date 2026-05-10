@@ -1,21 +1,86 @@
 ---
-title: "Islands (\"use client\")"
-description: "Mark a component as a client-hydrated island with the \"use client\" directive."
+title: Island
+description: Wrap a component as a client-hydrated island using the Island JSX wrapper.
 sidebar_position: 4
 ---
 
-## The directive
+## The `<Island>` wrapper
 
-A component file whose first statement is the literal string `"use client"` is treated as an **island** — a piece of UI that ships JavaScript and hydrates in the browser. Everything else stays server-rendered HTML.
+Import `Island` from `"@takazudo/zfb"` and wrap any component that should hydrate in the browser. Everything else stays server-rendered HTML.
 
-When the islands pipeline (`crates/zfb-islands`, esbuild-backed) sees the directive, the component is:
+```tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "./Counter";
 
-- Compiled to ESM separately, with its own dependency graph.
-- Embedded into pages via a small bootstrap that hydrates the component when its DOM marker enters the viewport. This is the default lazy strategy.
+export default function Page() {
+  return (
+    <main>
+      <h1>My Page</h1>
+      <Island when="visible">
+        <Counter />
+      </Island>
+    </main>
+  );
+}
+```
 
-## Example
+At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The client runtime (`@takazudo/zfb-runtime`) queries these markers and mounts the component when the `when` condition fires.
 
-The default template's counter shows the canonical shape: a leading `"use client"` line, then a normal Preact component.
+## IslandProps
+
+```ts
+interface IslandProps {
+  when?: When;
+  ssrFallback?: VNode;
+  children?: VNode;
+}
+```
+
+- `when` — hydration strategy. Defaults to `"load"`. See [Hydration strategies](#hydration-strategies) below.
+- `ssrFallback` — enables SSR-skip mode (equivalent to Astro's `client:only`). When provided, the heavy `children` are **not** evaluated server-side; `ssrFallback` is rendered in their place and the client swaps in the real component on hydration.
+- `children` — the component to hydrate.
+
+## Hydration strategies
+
+The `when` prop accepts three values, all shipped today:
+
+| Value | Behaviour |
+| --- | --- |
+| `"load"` | Hydrate immediately when the page's JavaScript runs. This is the default when `when` is omitted. |
+| `"visible"` | Hydrate when the island's root element enters the viewport (IntersectionObserver, threshold 0). Cheapest deferral for off-screen content. |
+| `"idle"` | Hydrate during the browser's next idle callback. Falls back to `setTimeout(0)` on platforms without `requestIdleCallback`. |
+
+## SSR-skip mode
+
+Pass `ssrFallback` to skip server rendering the heavy child entirely:
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import HeavyChart from "./HeavyChart";
+
+export default function Page() {
+  return (
+    <Island ssrFallback={<div>Loading chart…</div>}>
+      <HeavyChart data={data} />
+    </Island>
+  );
+}
+```
+
+The server emits `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>`. On hydration the client runtime renders `HeavyChart` into the placeholder.
+
+## Exported constants and helpers
+
+The following are exported from `"@takazudo/zfb"` alongside `Island`:
+
+- `HYDRATE_MARKER_ATTR` — the `data-zfb-island` attribute name.
+- `SKIP_SSR_MARKER_ATTR` — the `data-zfb-island-skip-ssr` attribute name.
+- `ANONYMOUS_COMPONENT_NAME` — fallback name used when a wrapped child's identity cannot be determined.
+- `resolveWhen(when: unknown): When` — validates and normalises a `when` value. Unknown inputs fall back to `"load"` (with a warning in development).
+
+## "use client" directive
+
+zfb also supports a `"use client"` file-level directive as an alternative authoring style. A component file whose first statement is the literal string `"use client"` is treated as an island entry by the build scanner (`crates/zfb-islands`). The esbuild-backed bundler compiles it to ESM separately, with its own dependency graph.
 
 ```tsx
 "use client";
@@ -32,22 +97,6 @@ export default function Counter() {
 }
 ```
 
-Import the island from a server component or page module and render it as you would any other component. The build pipeline rewrites the import to insert the hydration marker and wire up the bootstrap.
-
-## Hydration directives
-
-Three directives are planned for picking when an island hydrates:
-
-- `client:load` — hydrate as soon as the page's JS runs.
-- `client:visible` — hydrate when the component scrolls into view (today's default behaviour).
-- `client:idle` — hydrate during the browser's next idle period.
-
-Only the default lazy/visible strategy is sketched in v0; the directive surface will land alongside the renderer.
-
-<Warning title="v0 status">
-
-  The `"use client"` detector and the esbuild-backed bundler are sketched in `crates/zfb-islands` but are not yet wired through the renderer (see [ADR-001](/architecture/js-runtime)). Components authored with `"use client"` will produce static SSR markup once the renderer lands; client hydration follows after that. You can write islands today using this pattern and they will activate as the pipeline completes.
-
-</Warning>
+Import the island from a server component or page module. The build pipeline wires the hydration bootstrap automatically.
 
 For the broader story on islands architecture and when to reach for one, see [Islands](/concepts/islands).
