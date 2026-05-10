@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "zfb public SDK — Island JSX wrapper and hydration scheduling helpers",
+  "description": "zfb public SDK — islands, content collections, pagination, config, plugins, and frontmatter helpers",
   "license": "MIT",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
