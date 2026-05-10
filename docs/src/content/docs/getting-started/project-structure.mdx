@@ -4,7 +4,7 @@ description: A tour of every file and directory the default template lays down.
 sidebar_position: 4
 ---
 
-When you run `zfb new my-site`, the `default` template lays down a small but complete project. Knowing what each directory is for makes the rest of the docs much easier to skim.
+When you run `zfb new my-site`, the `basic-blog` template lays down a small but complete project. Knowing what each directory is for makes the rest of the docs much easier to skim.
 
 ```text
 my-site/
@@ -15,14 +15,15 @@ my-site/
 ├── layouts/
 │   └── default.tsx
 ├── components/
-│   └── counter.tsx
+│   ├── note.tsx
+│   └── theme-toggle.tsx
 ├── content/
 │   └── blog/
-│       └── welcome.md
+│       └── hello-zfb.mdx
 ├── styles/
 │   └── global.css
 ├── public/
-├── zfb.config.ts
+├── zfb.config.json
 ├── package.json
 ├── tsconfig.json
 └── .gitignore
@@ -37,7 +38,7 @@ File-system routing lives here. Every `.tsx` file under `pages/` becomes a route
 - `pages/blog/[slug].tsx` → `/blog/:slug` (dynamic route — one HTML file per resolved slug)
 - `pages/docs/[...slug].tsx` → catchall, matches any depth
 
-The default template ships an index page and one dynamic blog route. Dynamic and catchall routes are recognized by the router today, but per-instance expansion (the `paths()` evaluation that turns `[slug]` into concrete files at build time) lands with the JS runtime — see [JS runtime architecture](/architecture/js-runtime).
+The default template ships an index page and one dynamic blog route. A dynamic route file exports a `paths()` function; zfb calls it at build time to expand `[slug]` into one HTML file per resolved slug. See [Dynamic routes](/concepts/dynamic-routes) for the full API.
 
 ## layouts/
 
@@ -45,11 +46,11 @@ Reusable page wrappers. `layouts/default.tsx` is the shell every page imports �
 
 ## components/
 
-Plain components and **islands**. `components/counter.tsx` opens with a `"use client"` directive — that's the marker that turns it into an island, hydrated in the browser. Components without `"use client"` render only on the server. The full mental model is on the [islands page](/concepts/islands).
+Plain components and **islands**. The template ships `components/note.tsx` (a server-rendered callout) and `components/theme-toggle.tsx` (a `"use client"` island for toggling dark mode). The `"use client"` directive at the top of a file is what turns a component into a client-side island — components without it render only on the server and ship zero JavaScript. The full mental model is on the [islands page](/concepts/islands).
 
 ## content/
 
-Content collections. `content/blog/welcome.md` is the seed entry of a `blog` collection: Markdown (or MDX) files in a directory, queried from your pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.{json,ts}` under `collections`.
+Content collections. `content/blog/` holds the seed entries of a `blog` collection: Markdown and MDX files in a named directory, queryable from pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.ts` under `collections`.
 
 ## styles/
 
@@ -59,15 +60,11 @@ Global CSS. `styles/global.css` is the entry point — import it from your root 
 
 Static assets served as-is from the site root. Put `favicon.ico`, robots.txt, and any image you want to reference by absolute URL here. zfb's dev server and `zfb preview` both serve `public/` directly.
 
-## zfb.config — JSON today, TS later
+## zfb.config.json
 
 The config file uses a camelCase schema with these keys: `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`.
 
-<Info title="zfb.config.ts is not loaded yet">
-
-  The template writes a `zfb.config.ts` so your editor gets type hints, but zfb only loads `zfb.config.json` today — TS config support lands with the JS runtime. For now, write your runtime configuration in `zfb.config.json` (same schema) and treat the `.ts` file as a typed reference.
-
-</Info>
+The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, zfb loads it via the bundled esbuild binary and you get full TypeScript types and IDE completion — the schema is identical in both formats.
 
 ## package.json, tsconfig.json, .gitignore
 
