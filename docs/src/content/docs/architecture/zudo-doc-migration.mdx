@@ -1,0 +1,53 @@
+---
+title: zudo-doc → zfb migration notes
+description: Design intent for migrating this documentation site from Astro-based zudo-doc to zfb.
+sidebar_position: 6
+---
+
+<Info>
+
+  Migration captured here for context; per-feature gaps below are mostly closed (see linked ADRs). The actual migration is a future `big-plan` once any remaining gaps are confirmed closed.
+
+</Info>
+
+## Where we are today
+
+This documentation site runs on
+[zudo-doc](https://github.com/zudolab/zudo-doc), an Astro-based
+documentation framework. The full stack is Astro plus MDX, Tailwind CSS
+v4, Preact islands for interactivity, Shiki for syntax highlighting, and
+Pagefind for client-side search. Authoring is plain MDX with frontmatter,
+admonitions (`<Note>`, `<Tip>`, `<Info>`, `<Warning>`, `<Danger>`), a
+`sidebar_position` ordering rule, and a parallel Japanese tree at
+`src/content/docs-ja/` that mirrors the English structure.
+
+That whole authoring surface is what doc writers actually touch. The
+goal of the eventual migration is to keep that surface intact and swap
+the engine underneath it.
+
+## Where we want to go
+
+A future v2 of zudo-doc that runs on zfb instead of Astro. The contract
+for doc authors stays the same — the same MDX dialect, the same
+admonition components, the same frontmatter keys, the same i18n folder
+convention — and the build orchestrator becomes the zfb Rust binary
+talking to a JavaScript renderer. Writers should not have to learn a new
+tool to migrate.
+
+## What needs to land in zfb first
+
+The migration becomes sane once the following gaps in zfb are
+closed. Items marked **shipped** are confirmed in the codebase; items marked **pending** are still open.
+
+- **Real per-route SSR.** [ADR-007](/architecture/js-runtime) landed the embedded V8 host that turns a `pages/[slug].tsx` plus a content collection entry into actual HTML. The full render pipeline (zfb-render → embedded V8 → islands → atomic writes) is **shipped**.
+- **MDX in content collections.** The collection loader handles both Markdown and MDX — the JSX-friendly variant of the parser is wired through so component imports inside content files resolve correctly. **Shipped** (`crates/zfb-content/src/collection.rs`, `mdx_jsx_emit.rs`).
+- **Pagefind-equivalent search.** Pagefind itself is framework-agnostic — it indexes the built static output. With the render pipeline shipping and rendered HTML reflecting page content, the existing Pagefind setup drops in without zfb-side changes. **Shipped** (no zfb-side work required; depends on render pipeline, now landed).
+- **i18n route patterns.** A `/ja/...` tree mirroring `/...` is supported via the locale-mirror config (`ZfbConfig.docs.dirs`). **Shipped** (`crates/zfb/src/config.rs`).
+- **Plugin / integration API for doc-site transforms.** zfb exposes a plugin API (`plugins` array in `zfb.config.ts`) backed by `crates/zfb-server/src/plugin_middleware.rs`. Doc-site-specific MDX transforms (admonitions, code titles, mermaid) have a host on the zfb side. **Shipped**.
+
+## What this page is
+
+A waypoint, not a plan. The actual migration is a separate
+`/big-plan` once the gaps above are confirmed fully closed; this page exists so the
+next contributor who wonders "what would zudo-doc on zfb look like" can
+read the answer without reverse-engineering it from the codebase.
