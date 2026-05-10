@@ -39,7 +39,7 @@ use std::process::Command;
 
 use zfb_build::{
     bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
-    ResolveMarkdownLinksSpec,
+    ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
 };
 use zfb_render::adapters::Framework;
 
@@ -146,9 +146,11 @@ fn make_input_with_resolve(
         strip_md_ext: false,
         code_highlight_theme: None,
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
-            docs_dir: PathBuf::from("content/docs"),
-            // Route prefix for the docs collection.
-            route_prefix: "/docs/".to_string(),
+            routes: vec![ResolveMarkdownLinksRoute {
+                docs_dir: PathBuf::from("content/docs"),
+                // Route prefix for the docs collection.
+                route_prefix: "/docs/".to_string(),
+            }],
             on_broken_links,
         }),
     }
