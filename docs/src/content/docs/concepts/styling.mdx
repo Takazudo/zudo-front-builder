@@ -63,4 +63,4 @@ CSS Modules are not integrated. The integration point, if added, will live in `c
 
 ## What lands in `dist/`
 
-Each rendered page in `dist/<route>.html` has its critical CSS path inlined so the first paint never waits for an external stylesheet. The build pipeline runs Tailwind and PostCSS, extracts per-page CSS, and writes the final HTML with the critical path embedded.
+The build pipeline runs Tailwind and PostCSS, writes a hashed stylesheet to `dist/assets/`, and injects a `<link rel="stylesheet">` into each rendered HTML page. The stylesheet reference is stable so CDN caches can hold it across deployments until the content changes.

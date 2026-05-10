@@ -30,7 +30,7 @@ export default {
 
 The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
 
-You can additionally supply an optional `schema` field with per-field validators (`string`, `number`, `boolean`, `date`, `string[]`, with a trailing `?` for optional). The full schema shape is documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
+You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter at build time. The supported keywords (`type`, `properties`, `items`, `required`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
 
 ## Loading entries from a page
 

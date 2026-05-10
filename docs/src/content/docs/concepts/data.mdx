@@ -33,7 +33,7 @@ Each file becomes one entry. You can supply an optional `schema` field with per-
 ```tsx
 import { getCollection } from "zfb/content";
 
-const products = await getCollection("products");
+const products = getCollection("products");
 ```
 
 A data collection earns its keep when you want **per-entry validation, slug derivation, and the same loading API as your prose content** — without the Markdown-rendering step.
