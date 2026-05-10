@@ -7,19 +7,36 @@ sidebar_position: 2
 ## Signature
 
 ```ts
-getCollection(name: string): CollectionEntry[]
+getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[]
 ```
 
-Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. Schema validation runs against each entry as it is read, so by the time the array reaches your component, frontmatter is already typed and verified.
+Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. The function is synchronous — it returns a plain array, not a Promise. Schema validation runs against each entry as it is read, so by the time the array reaches your component, frontmatter is already typed and verified.
 
 ## CollectionEntry shape
 
-Each entry, per the current sketch in `zfb-content`, has the following fields:
+Each entry has the following fields:
 
-- `slug`: string — the filename without its extension, normalized to kebab-case.
-- `data`: object — the validated frontmatter (for `content` collections) or the parsed file body (for `data` collections).
-- `body`: string — rendered HTML for markdown entries; the raw value for data entries.
-- `id`: string — the full path relative to the collection's `directory`.
+- `slug: string` — the filename without its `.md` extension, normalized to forward-slash paths. Nested files produce path-based slugs (e.g. `"2024/hello"`).
+- `data: T` — the parsed frontmatter, typed by the generic parameter.
+- `body: string` — the raw markdown body with frontmatter stripped.
+- `module_specifier: string` — stable bridge key in the form `mdx://<collection>/<slug>`. Used internally by the renderer; pass to `Content` lookup if building a custom bridge.
+- `Content: (props: ContentProps) => ContentElement` — renderable component for this entry. Renders via the renderer bridge when available; falls back to a `<pre data-zfb-content-fallback>` block in test and dev contexts where the bridge is absent.
+
+## ContentProps
+
+```ts
+type ContentProps = {
+  components?: Record<string, unknown>;
+};
+```
+
+The `components` prop mirrors the Astro `<Content components={...}>` convention: a flat map of element name to override component. Use `defaultComponents` from `"@takazudo/zfb"` as a base:
+
+```tsx
+import { defaultComponents } from "@takazudo/zfb";
+
+<entry.Content components={{ ...defaultComponents, h2: MyHeading }} />
+```
 
 ## Example
 
@@ -28,8 +45,8 @@ A typical use case is rendering a list of blog posts on an index page.
 ```tsx
 import { getCollection } from "zfb/content";
 
-export default async function BlogIndex() {
-  const posts = await getCollection("blog");
+export default function BlogIndex() {
+  const posts = getCollection<{ title: string; date: string }>("blog");
 
   return (
     <ul>
@@ -43,10 +60,4 @@ export default async function BlogIndex() {
 }
 ```
 
-For dynamic per-entry pages, combine `getCollection` with a `paths()` export — see [paginate](/api/paginate) for the related pattern.
-
-<Warning title="v0 status">
-
-  Discovery and schema validation work today: `zfb` reads each collection directory, validates frontmatter against the declared schema, and surfaces errors with file paths. Wiring the `getCollection` call into the rendered page output requires the JS runtime, which is still pending — see [ADR-001](/architecture/js-runtime). You can declare collections and run the build to validate them; rendering will follow once the runtime ships.
-
-</Warning>
+Note that `getCollection` returns synchronously — no `await` needed. For dynamic per-entry pages, combine `getCollection` with a `paths()` export — see [paginate](/api/paginate) for the related pattern.
