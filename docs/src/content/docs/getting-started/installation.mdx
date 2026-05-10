@@ -1,19 +1,18 @@
 ---
 title: Installation
-description: Install the zfb CLI from source while v0 is still in development.
+description: Build and install the zfb CLI from source.
 sidebar_position: 2
 ---
 
-zfb (zudo-front-builder) is shipped as a single Rust binary. While the project is in v0, there are no published releases on crates.io and no prebuilt binaries — you build the CLI yourself from this repository.
+zfb (zudo-front-builder) ships as a single Rust binary. Build it from this repository and install it into your Cargo bin directory.
 
 ## Prerequisites
 
 You will need:
 
-- **Rust toolchain** — install via [rustup](https://rustup.rs/). A recent stable toolchain (1.75 or newer) is fine.
+- **Rust toolchain** — install via [rustup](https://rustup.rs/). Stable 1.75 or newer is fine.
+- **Node.js ≥ 20** — the config loader and some build steps invoke Node. See [BUILDING.md](https://github.com/Takazudo/zudo-front-builder/blob/main/BUILDING.md) for the full requirement list.
 - **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
-
-You **do** need Node.js for `zfb dev` and `zfb preview`. The dev / preview path renders pages through a Node-hosted miniflare worker (see [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)). Production-built static output (`dist/`) does not require Node at deploy time — only the build/dev tooling does.
 
 ## Build and install the CLI
 
@@ -48,9 +47,3 @@ You should see four subcommands:
 - `zfb preview` — serve the build output
 
 If `zfb --help` prints all four, you're ready to move on to [Your first site](/getting-started/your-first-site).
-
-<Info title="v0 distribution">
-
-  This source-build flow is the only supported install path right now. Released crates and prebuilt binaries will land once the framework reaches a stable surface.
-
-</Info>
