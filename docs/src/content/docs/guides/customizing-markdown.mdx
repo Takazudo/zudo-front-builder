@@ -4,10 +4,11 @@ description: How zfb renders Markdown, what is configurable, and how to extend t
 sidebar_position: 3
 ---
 
-zfb's Markdown story lives in the `zfb-content` Rust crate: parse the file,
-highlight code blocks server-side with syntect, and hand you the body as an
-HTML string that your component renders. This page documents what is
-configurable from the content-consumer side.
+zfb's Markdown story lives in the `zfb-content` Rust crate: parse the
+file, highlight code blocks server-side with syntect, and hand each entry
+back as both a raw `body` string and a ready-to-render `Content`
+component. This page documents what is configurable from the
+content-consumer side.
 
 ## The pipeline today
 
@@ -17,18 +18,19 @@ things:
 1. Splits front matter using a `gray-matter`-style `---` separator.
 2. Parses the front matter into `entry.data` against the schema you
    declared in `zfb.config`.
-3. Parses the body as CommonMark plus the GitHub-Flavored Markdown
-   extensions (tables, task lists, strikethrough, autolinks) and emits
-   it as an HTML string on `entry.body`.
+3. Compiles the body as CommonMark plus the GitHub-Flavored Markdown
+   extensions (tables, task lists, strikethrough, autolinks) into a JSX
+   module. The raw markdown source is preserved on `entry.body`; the
+   compiled JSX is reachable via `entry.Content`.
 
-That string is what your TSX page receives. There is no virtual DOM
-representation, no AST handed to user code, and no per-page hook to
-intercept the parse.
+That pair is what your TSX page receives. There is no per-page hook to
+intercept the parse — extension happens at the engine level via the
+`MdastVisitor` / `HastVisitor` traits described below.
 
 ## Rendering Markdown in a page
 
 The standard pattern is to receive a content entry through `paths()` and
-inject the parsed HTML into your JSX:
+render its `Content` component:
 
 ```tsx
 import { getCollection } from "zfb/content";
@@ -43,17 +45,18 @@ export async function paths() {
 
 export default function PostPage({ post }) {
   return (
-    <article
-      className="prose"
-      dangerouslySetInnerHTML={{ __html: post.body }}
-    />
+    <article className="prose">
+      <post.Content />
+    </article>
   );
 }
 ```
 
-`dangerouslySetInnerHTML` reads alarmingly, but the input is your own
-Markdown — the same source you would have rendered in any other SSG. If
-you accept Markdown from untrusted users, sanitize before storing.
+`entry.Content` is the JSX component zfb compiles from your Markdown — it
+renders MDX-aware output including syntect-highlighted code blocks and
+any custom directives you have registered. If you only need the raw
+markdown source (for example, to compute a summary or feed an RSS
+generator), reach for `entry.body` instead.
 
 ## What is customisable
 
@@ -61,8 +64,8 @@ you accept Markdown from untrusted users, sanitize before storing.
   types in `zfb.config`. Schema mismatches fail the build.
 - **GFM features** — enabled by default; tables, task lists,
   strikethrough, and autolinks are all on.
-- **HTML wrapping** — fully under your control. The `entry.body` string
-  is rendered HTML; wrap, slot, and style it however you like.
+- **HTML wrapping** — fully under your control. `entry.Content` is a
+  JSX component; wrap, slot, and style it however you like.
 - **`.mdx` entries** — content collections accept `.md`, `.mdx`, and
   `.tsx` files side by side. MDX entries compile to JSX modules; see
   [MDX Components](/concepts/mdx-components).
@@ -87,17 +90,20 @@ you accept Markdown from untrusted users, sanitize before storing.
 
 ## Extension points
 
-The `plugins: []` field in `zfb.config` is the user-facing plugin
-system. In-binary Rust visitors (the engine-extension path described
-above) can be wired either into `Pipeline::with_defaults()` for
-site-wide behaviour or into a project-specific pipeline for per-context
-overrides. Third-party plugins that install from npm are wired through
-the same `plugins:` array via the `definePlugin` contract
-(exported from `@takazudo/zfb/plugins`).
+The `plugins: []` field in `zfb.config` is the build-orchestration
+plugin system. Each registered plugin exposes three optional hooks —
+`preBuild`, `postBuild`, and `devMiddleware` — for tasks like emitting
+extra files alongside the build, running post-build verification, or
+adding routes to the dev server. Plugins do **not** participate in
+Markdown rendering: the parse and visitor chain run inside the Rust
+engine and never call back into npm-installed plugins.
 
-If your site needs an engine-level rewrite that does not fit the
-directive registry, write a `MdastVisitor` / `HastVisitor` and add
-it in-tree — the
+Markdown-pipeline customisation lives in-tree as `MdastVisitor` /
+`HastVisitor` implementations on the engine side. Wire them either into
+`Pipeline::with_defaults()` for site-wide behaviour or into a
+project-specific pipeline for per-context overrides. If your site needs
+an engine-level rewrite that does not fit the directive registry, write
+a visitor and add it in-tree — the
 [engine extension guide](/guides/extending-the-markdown-pipeline)
 walks through the surface.
 

@@ -21,7 +21,7 @@ All keys are camelCase and mirror `crates/zfb/src/config.rs`.
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
-- `collections?: CollectionDef[]` — content collections. Each entry has `name` (identifier used in `getCollection` calls), `path` (directory relative to the project root), and optional `schema` (accepted but not enforced — reserved for a future release).
+- `collections?: CollectionDef[]` — content collections. Each entry has `name` (identifier used in `getCollection` calls), `path` (directory relative to the project root), and optional `schema` (validated at config-load time; frontmatter is checked against the schema by `zfb check` and the build).
 - `tailwind?: { enabled?: boolean }` — Tailwind options.
 - `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks).
 - `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Pages).
@@ -49,7 +49,7 @@ export default defineConfig({
 });
 ```
 
-The loader accepts `zfb.config.ts` (preferred) and `zfb.config.json` (legacy fallback). When only `zfb.config.json` is present it is read via `serde_json`; note that JSON configs cannot reference local plugin modules by relative path — use `zfb.config.ts` for any project that declares plugins.
+The loader accepts `zfb.config.ts` (preferred) and `zfb.config.json` (legacy fallback). When only `zfb.config.json` is present it is read via `serde_json`; plugin paths declared as `./...`, `../...`, or absolute paths are resolved relative to the config file (npm specifiers like `"@takazudo/some-plugin"` work in both forms).
 
 ```json
 // zfb.config.json — legacy form, still supported
