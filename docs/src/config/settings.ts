@@ -31,7 +31,8 @@ export const settings = {
   } satisfies ColorModeConfig,
   defaultLocale: "en",
   siteName: "Docs",
-  siteDescription: "" as string,
+  siteDescription:
+    "Rust-built static-site engine for Astro / Next.js (and other frontend framework) users who want millisecond rebuilds and a single binary." as string,
   base: "/pj/zudo-front-builder",
   trailingSlash: false as boolean,
   noindex: false as boolean,
@@ -90,7 +91,32 @@ export const settings = {
     copyright: "Copyright © 2026 Your Name. Built with zudo-doc.",
   } satisfies FooterConfig as FooterConfig | false,
   headerNav: [
-    { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
-    { label: "Changelog", path: "/docs/changelog", categoryMatch: "changelog" },
+    {
+      label: "Getting Started",
+      labelKey: "nav.gettingStarted",
+      path: "/docs/getting-started",
+      categoryMatch: "getting-started",
+    },
+    {
+      label: "Concepts",
+      labelKey: "nav.concepts",
+      path: "/docs/concepts",
+      categoryMatch: "concepts",
+    },
+    { label: "Guides", labelKey: "nav.guides", path: "/docs/guides", categoryMatch: "guides" },
+    { label: "Reference", labelKey: "nav.reference", path: "/docs/api", categoryMatch: "api" },
+    {
+      label: "Architecture",
+      labelKey: "nav.architecture",
+      path: "/docs/architecture",
+      categoryMatch: "architecture",
+    },
+    { label: "Claude", labelKey: "nav.claude", path: "/docs/claude", categoryMatch: "claude" },
+    {
+      label: "Changelog",
+      labelKey: "nav.changelog",
+      path: "/docs/changelog",
+      categoryMatch: "changelog",
+    },
   ] as HeaderNavItem[],
 };

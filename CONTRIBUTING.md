@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in `zudo-front-builder`. The project is past initial scaffolding; the toolchain and pre-commit pipeline below are wired up and active.
+Thanks for your interest in `zudo-front-builder`. The full build pipeline is shipping — embedded V8 host (ADR-007), islands bundler, CSS pipeline, content collections, client router, and dev-server are all wired. The toolchain and pre-commit pipeline below are active.
 
 ## Toolchain
 
@@ -58,7 +58,7 @@ cargo nextest run --workspace
 
 ## Workspace layout
 
-This is a Cargo workspace. Crates live under `crates/`. The placeholder bin crate is `crates/zfb/`.
+This is a Cargo workspace. Crates live under `crates/`. The main bin crate is `crates/zfb/`.
 
 Common commands:
 
