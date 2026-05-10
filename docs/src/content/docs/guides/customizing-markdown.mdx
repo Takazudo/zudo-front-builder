@@ -92,8 +92,8 @@ system. In-binary Rust visitors (the engine-extension path described
 above) can be wired either into `Pipeline::with_defaults()` for
 site-wide behaviour or into a project-specific pipeline for per-context
 overrides. Third-party plugins that install from npm are wired through
-the same `plugins:` array via the [`definePlugin`](/api/define-plugin)
-contract.
+the same `plugins:` array via the `definePlugin` contract
+(exported from `@takazudo/zfb/plugins`).
 
 If your site needs an engine-level rewrite that does not fit the
 directive registry, write a `MdastVisitor` / `HastVisitor` and add
