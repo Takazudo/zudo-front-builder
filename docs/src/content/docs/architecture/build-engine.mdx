@@ -48,7 +48,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 zfb owns orchestration, the dependency graph, and the per-page contract. The tools each appear in exactly one layer:
 
 - **esbuild** is called in two places: `zfb-build` (server worker bundle) and `zfb-islands` (per-island client bundles). Both use it for bundling TypeScript/JSX source trees; neither exposes it to the crates above.
-- **deno_core (V8)** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host (`DenoCoreHost`) runs the bundle in an in-process V8 isolate. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
+- **deno_core (V8)** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host (`EmbeddedV8RenderHost`) runs the bundle in an in-process V8 isolate. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
 - **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before esbuild sees the source. Either way it is invisible to the orchestrator.
 - **lol_html** runs after the render host returns HTML, inside `zfb-build/head_inject.rs`. The orchestrator sees plain strings in and plain strings out.
 
