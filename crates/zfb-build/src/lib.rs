@@ -67,7 +67,7 @@ pub use adapter::{
 pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
     bundle, BundleManifest, BundleMode, BundlerInput, BundlerOutput, ContentCollectionSpec,
-    OnBrokenLinks, ResolveMarkdownLinksSpec, RouteEntry,
+    OnBrokenLinks, ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec, RouteEntry,
 };
 pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, ProdHeadAssets,

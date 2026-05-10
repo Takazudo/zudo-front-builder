@@ -76,6 +76,7 @@ pub fn apply_link_base_rewrite(
     out_dir: &Path,
     written_pages: &[PathBuf],
     base: Option<&str>,
+    add_trailing_slash: bool,
 ) -> Result<()> {
     let prefix = asset_url_base_prefix(base);
     if prefix.is_empty() || !prefix.starts_with('/') {
@@ -102,13 +103,14 @@ pub fn apply_link_base_rewrite(
                 page.display()
             )
         })?;
-        let new_html = rewrite_links_in_html(html, &prefix).with_context(|| {
-            format!(
-                "link-base-rewrite: lol_html failed on {} (under {})",
-                page.display(),
-                out_dir.display()
-            )
-        })?;
+        let new_html = rewrite_links_in_html(html, &prefix, add_trailing_slash)
+            .with_context(|| {
+                format!(
+                    "link-base-rewrite: lol_html failed on {} (under {})",
+                    page.display(),
+                    out_dir.display()
+                )
+            })?;
         if new_html != html {
             std::fs::write(page, new_html).with_context(|| {
                 format!(
@@ -282,7 +284,7 @@ mod tests {
     #[test]
     fn rewrite_html_a_href_root_absolute() {
         let html = r#"<a href="/about">About</a>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(
             out.contains(r#"href="/foo/about""#),
             "expected /foo/about; got: {out}"
@@ -292,7 +294,7 @@ mod tests {
     #[test]
     fn rewrite_html_form_action_root_absolute() {
         let html = r#"<form action="/submit"><input/></form>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(
             out.contains(r#"action="/foo/submit""#),
             "expected /foo/submit; got: {out}"
@@ -302,7 +304,7 @@ mod tests {
     #[test]
     fn rewrite_html_data_no_base_optout_a() {
         let html = r#"<a href="/about" data-no-base>About</a>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         // Original href preserved.
         assert!(
             out.contains(r#"href="/about""#),
@@ -317,7 +319,7 @@ mod tests {
     #[test]
     fn rewrite_html_data_no_base_optout_form() {
         let html = r#"<form action="/submit" data-no-base><input/></form>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(out.contains(r#"action="/submit""#), "got: {out}");
         assert!(!out.contains("/foo/submit"), "got: {out}");
     }
@@ -333,7 +335,7 @@ mod tests {
             r#"<a href="/x" data-no-base="true">x</a>"#,
             r#"<a href="/x" data-no-base="anything">x</a>"#,
         ] {
-            let out = rewrite_links_in_html(snippet, "/foo").unwrap();
+            let out = rewrite_links_in_html(snippet, "/foo", false).unwrap();
             assert!(
                 out.contains(r#"href="/x""#) && !out.contains("/foo/x"),
                 "expected unchanged for: {snippet}; got: {out}"
@@ -345,7 +347,7 @@ mod tests {
     fn rewrite_html_attribute_order_does_not_matter() {
         // data-no-base could appear before href.
         let html = r#"<a data-no-base href="/about">About</a>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(out.contains(r#"href="/about""#), "got: {out}");
         assert!(!out.contains("/foo/about"), "got: {out}");
     }
@@ -364,7 +366,7 @@ mod tests {
             <a href="foo.html">rel</a>
             <a href="./foo">dot</a>
             <a href="../foo">dotdot</a>"##;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         // None of the originals should have been touched.
         for original in [
             r#"href="//cdn.example.com/x""#,
@@ -393,7 +395,7 @@ mod tests {
     fn rewrite_html_idempotent_on_already_prefixed() {
         // Already-prefixed values stay byte-identical.
         let html = r#"<a href="/foo/about">about</a>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert_eq!(out, html);
     }
 
@@ -406,7 +408,7 @@ mod tests {
             <a href="/foo/already">Already</a>
             <a href="https://example.com/">Out</a>
         </body></html>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(out.contains(r#"href="/foo/about""#), "got: {out}");
         assert!(out.contains(r#"href="/foo/contact""#), "got: {out}");
         assert!(out.contains(r#"action="/foo/login""#), "got: {out}");
@@ -422,7 +424,7 @@ mod tests {
     #[test]
     fn rewrite_html_root_alone_gets_base_root() {
         let html = r#"<a href="/">home</a>"#;
-        let out = rewrite_links_in_html(html, "/foo").unwrap();
+        let out = rewrite_links_in_html(html, "/foo", false).unwrap();
         assert!(out.contains(r#"href="/foo/""#), "got: {out}");
     }
 
@@ -442,7 +444,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], None).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], None, false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body);
     }
@@ -453,7 +455,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body);
     }
@@ -463,7 +465,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<!doctype html><html><body><a href="/about">About</a></body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"href="/foo/about""#),
@@ -476,7 +478,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"href="/foo/about""#),
@@ -490,7 +492,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("https://cdn.example.com/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("https://cdn.example.com/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body, "user links should stay same-origin");
     }
@@ -500,7 +502,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let xml_body = r#"<?xml version="1.0"?><feed><link href="/post/1"/></feed>"#;
         let xml = write_file(tmp.path(), "feed.xml", xml_body);
-        apply_link_base_rewrite(tmp.path(), &[xml.clone()], Some("/foo")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[xml.clone()], Some("/foo"), false).unwrap();
         let after = fs::read_to_string(&xml).unwrap();
         assert_eq!(
             after, xml_body,
@@ -515,7 +517,7 @@ mod tests {
             <form action="/submit" method="post"><button>go</button></form>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"action="/foo/submit""#),
@@ -530,9 +532,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
         let after_first = fs::read_to_string(&p).unwrap();
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
         let after_second = fs::read_to_string(&p).unwrap();
         assert_eq!(after_first, after_second);
         assert!(after_second.contains(r#"href="/foo/about""#));
@@ -547,7 +549,7 @@ mod tests {
             <a href="/legal" data-no-base>legal-stays-bare</a>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/")).unwrap();
+        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(after.contains(r#"href="/foo/about""#), "got: {after}");
         assert!(after.contains(r#"href="/legal""#), "got: {after}");

@@ -929,6 +929,37 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // `StripMdExtensionPlugin`. Mirrored in `commands/dev.rs` so dev
     // and build produce the same href shape (zfb#127 / #129).
     bundler_input.strip_md_ext = config.strip_md_ext;
+    // Thread the opt-in `resolveMarkdownLinks` config into the bundler
+    // so the hoisted MDX pre-compile pipeline appends
+    // `ResolveLinksPlugin`. Without this wiring the bundler's MDX
+    // pipeline only ran `StripMdExtensionPlugin`, and author-written
+    // relative `.mdx` links were emitted as relative href values that
+    // broke at the file→directory transformation in dist HTML
+    // (sub #234 / zudolab/zudo-doc#1577). The shared helper
+    // `resolve_links_routes_from_config` builds the same per-route map
+    // the snapshot path uses so content_hash stays deterministic.
+    if let Some(routes) = resolve_links_routes_from_config(project_root, config) {
+        let on_broken_links = match config
+            .resolve_markdown_links
+            .as_ref()
+            .map(|r| r.on_broken_links)
+            .unwrap_or_default()
+        {
+            crate::config::OnBrokenLinks::Warn => zfb_build::bundler::OnBrokenLinks::Warn,
+            crate::config::OnBrokenLinks::Error => zfb_build::bundler::OnBrokenLinks::Error,
+            crate::config::OnBrokenLinks::Ignore => zfb_build::bundler::OnBrokenLinks::Ignore,
+        };
+        bundler_input.resolve_markdown_links = Some(zfb_build::bundler::ResolveMarkdownLinksSpec {
+            routes: routes
+                .into_iter()
+                .map(|r| zfb_build::bundler::ResolveMarkdownLinksRoute {
+                    docs_dir: r.dir,
+                    route_prefix: r.route_prefix,
+                })
+                .collect(),
+            on_broken_links,
+        });
+    }
     // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme instead of the default `base16-ocean.dark`.
@@ -1065,6 +1096,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         outdir,
         &render_out.ssg_files_written,
         config.base.as_deref(),
+        config.trailing_slash,
     )
     .context("link base rewrite failed")?;
 
@@ -1425,31 +1457,72 @@ fn strip_jsonc(input: &str) -> String {
 /// `ResolveLinksPlugin`, so `build_snapshot_with_config` can drive the
 /// snapshot-side pipeline through the same plugin shape. Returns `None`
 /// when the project doesn't enable `resolveMarkdownLinks`. See zfb#188.
+///
+/// The shape of `spec` decides which collections to scan:
+///
+/// - `spec.dirs` non-empty → use those entries verbatim.
+/// - `spec.dirs` empty → fall back to the legacy single-dir form, which
+///   pairs `spec.docs_dir` with the hard-coded `/docs/` route prefix.
+///
+/// The bundler-side wiring in `crates/zfb-build/src/bundler.rs` MUST
+/// produce the same URL strings or the snapshot's `content_hash` drifts
+/// from the bundler's bridge-map key, which silently misses the
+/// `globalThis.__zfb.content.get(specifier)` lookup at SSR time
+/// (zfb#187 / #188). The shared helper
+/// [`resolve_links_routes_from_config`] guarantees the two sites stay
+/// in sync.
 fn build_resolve_source_map_for_snapshot(
     project_root: &Path,
     config: &Config,
 ) -> Option<std::collections::HashMap<std::path::PathBuf, String>> {
     use zfb_content::plugins::util::source_map::{
-        build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
+        build_docs_source_map, DocsSourceMapOptions,
     };
+    let routes = resolve_links_routes_from_config(project_root, config)?;
+    let map = build_docs_source_map(DocsSourceMapOptions {
+        collections: routes,
+    });
+    Some(map)
+}
+
+/// Build the `Vec<CollectionRoute>` the source-map helper expects from
+/// a project-root-relative `Config`.
+///
+/// Returns `None` when `resolveMarkdownLinks` is absent or disabled, so
+/// callers can short-circuit. When `spec.dirs` is non-empty, every
+/// entry becomes one `CollectionRoute`; otherwise the legacy single-dir
+/// fallback emits one route at the hard-coded `/docs/` prefix.
+///
+/// Both the snapshot-side helper above and the bundler-side wiring in
+/// `commands/build.rs::build` consume this so the `path → URL` map is
+/// identical at both sites — required for content-hash determinism.
+pub(crate) fn resolve_links_routes_from_config(
+    project_root: &Path,
+    config: &Config,
+) -> Option<Vec<zfb_content::plugins::util::source_map::CollectionRoute>> {
+    use zfb_content::plugins::util::source_map::CollectionRoute;
     let spec = config.resolve_markdown_links.as_ref()?;
     if !spec.enabled {
         return None;
     }
-    let docs_dir = project_root.join(&spec.docs_dir);
-    let map = build_docs_source_map(DocsSourceMapOptions {
-        collections: vec![CollectionRoute {
+    let routes = if !spec.dirs.is_empty() {
+        spec.dirs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| CollectionRoute {
+                name: format!("dirs[{i}]"),
+                dir: project_root.join(&d.dir),
+                route_prefix: d.route_prefix.clone(),
+            })
+            .collect()
+    } else {
+        vec![CollectionRoute {
             name: "docs".to_string(),
-            dir: docs_dir,
-            // Match the bundler's hard-coded `/docs/` prefix in
-            // `crates/zfb-build/src/bundler.rs` (`build_docs_source_map`
-            // call). Both paths must produce the same URL strings or
-            // `[link](./other.mdx)` rewrites diverge byte-for-byte and
-            // the snapshot's content_hash drifts from the bundler's.
+            dir: project_root.join(&spec.docs_dir),
             route_prefix: "/docs/".to_string(),
-        }],
-    });
-    Some(map)
+        }]
+    };
+    Some(routes)
 }
 
 /// When `ZFB_DEBUG_SNAPSHOT` is truthy, build the content snapshot from

@@ -45,7 +45,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksSpec};
+use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec};
 use zfb_render::adapters::Framework;
 
 // ---------------------------------------------------------------------------
@@ -415,8 +415,10 @@ fn make_full_fixture_input(
         code_highlight_theme: Some("InspiredGitHub".to_string()),
         // Warn on broken links — exercises sub #196 / #185 Gap 1.
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
-            docs_dir: PathBuf::from("content/docs"),
-            route_prefix: "/docs/".to_string(),
+            routes: vec![ResolveMarkdownLinksRoute {
+                docs_dir: PathBuf::from("content/docs"),
+                route_prefix: "/docs/".to_string(),
+            }],
             on_broken_links: OnBrokenLinks::Warn,
         }),
     }

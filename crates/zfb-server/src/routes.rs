@@ -340,6 +340,12 @@ pub struct AppState {
     /// page handlers serve content under `/foo/...` and the injected
     /// live-reload script URL points at `/foo/__zfb/livereload.js`.
     pub base_prefix: Option<String>,
+    /// Mirror of `zfb.config.ts`'s `trailingSlash` field. When true,
+    /// the in-flight base-rewrite pass (sub #234 /
+    /// zudolab/zudo-doc#1579) appends `/` to extensionless absolute
+    /// hrefs after prefixing, so dev preview matches the canonical
+    /// trailing-slash URL shape that `zfb build` emits to disk.
+    pub trailing_slash: bool,
 }
 
 /// Build the axum router for the dev server.
@@ -483,6 +489,9 @@ fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
         // and the matching page becomes reachable.
         true,
         prefix,
+        // Static 404 body — its `href="{prefix}/"` already ends in `/`,
+        // so the trailing-slash post-process is a no-op either way.
+        false,
     )
 }
 
@@ -633,6 +642,7 @@ async fn serve_page(
                 &content_type,
                 is_html,
                 lr_prefix,
+                state.trailing_slash,
             );
         }
     }
@@ -656,7 +666,14 @@ async fn serve_page(
             content_type_for_extension(ext)
         };
         let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
-        return page_response_bytes(StatusCode::OK, bytes, &content_type, is_html, lr_prefix);
+        return page_response_bytes(
+            StatusCode::OK,
+            bytes,
+            &content_type,
+            is_html,
+            lr_prefix,
+            state.trailing_slash,
+        );
     }
 
     // 404 is always the dev HTML body so the page is replaced once
@@ -667,6 +684,7 @@ async fn serve_page(
         "text/html; charset=utf-8",
         true,
         lr_prefix,
+        state.trailing_slash,
     )
 }
 
@@ -964,12 +982,17 @@ fn lookup_keys(path: &str) -> Vec<String> {
 /// folded into the `<script src>` URL so the browser fetches the
 /// live-reload JS at the prefixed path the dev server actually serves
 /// it at.
+///
+/// `add_trailing_slash` mirrors `zfb.config.ts`'s `trailingSlash` field
+/// so the dev-mode rewrite shape matches the canonical build-mode
+/// shape (sub #234 / zudolab/zudo-doc#1579).
 fn page_response_bytes(
     status: StatusCode,
     body: Vec<u8>,
     content_type: &str,
     inject_reload: bool,
     base_prefix: &str,
+    add_trailing_slash: bool,
 ) -> Response {
     let body_out: Vec<u8> = if inject_reload {
         // HTML should always be valid UTF-8; fall back to raw bytes on
@@ -987,7 +1010,11 @@ fn page_response_bytes(
                 let rewritten = if base_prefix.is_empty() {
                     Cow::Borrowed(html)
                 } else {
-                    match zfb_build::link_base_rewrite::rewrite_links_in_html(html, base_prefix) {
+                    match zfb_build::link_base_rewrite::rewrite_links_in_html(
+                        html,
+                        base_prefix,
+                        add_trailing_slash,
+                    ) {
                         Ok(s) => Cow::Owned(s),
                         // Graceful degradation in dev mode: lol_html should
                         // not fail on the renderer's well-formed HTML, but
@@ -1034,6 +1061,7 @@ mod tests {
             plugins: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             base_prefix: None,
+            trailing_slash: false,
         }
     }
 
@@ -1045,6 +1073,7 @@ mod tests {
             plugins: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             base_prefix: Some(prefix.to_string()),
+            trailing_slash: false,
         }
     }
 
@@ -1480,6 +1509,7 @@ mod tests {
             plugins: Some(set),
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             base_prefix: None,
+            trailing_slash: false,
         }
     }
 

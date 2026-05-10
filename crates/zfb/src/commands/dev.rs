@@ -255,6 +255,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         broadcast: tx,
         plugins: plugin_set,
         base: cfg.base.clone(),
+        trailing_slash: cfg.trailing_slash,
     };
 
     output::ready(&format!("http://{host}:{port}"));
@@ -534,6 +535,31 @@ fn boot_dev_renderer(
     // also reads this flag for in-process MDX rendering, so dev preview
     // matches built dist (zfb#127 / #129).
     bundler_input.strip_md_ext = cfg.strip_md_ext;
+    // Mirror the `commands/build.rs` wiring for `resolveMarkdownLinks`
+    // so dev preview rewrites `.mdx` link targets to their final route
+    // URLs the same way the production build does (sub #234).
+    if let Some(routes) = crate::commands::build::resolve_links_routes_from_config(project_root, cfg) {
+        let on_broken_links = match cfg
+            .resolve_markdown_links
+            .as_ref()
+            .map(|r| r.on_broken_links)
+            .unwrap_or_default()
+        {
+            crate::config::OnBrokenLinks::Warn => zfb_build::bundler::OnBrokenLinks::Warn,
+            crate::config::OnBrokenLinks::Error => zfb_build::bundler::OnBrokenLinks::Error,
+            crate::config::OnBrokenLinks::Ignore => zfb_build::bundler::OnBrokenLinks::Ignore,
+        };
+        bundler_input.resolve_markdown_links = Some(zfb_build::bundler::ResolveMarkdownLinksSpec {
+            routes: routes
+                .into_iter()
+                .map(|r| zfb_build::bundler::ResolveMarkdownLinksRoute {
+                    docs_dir: r.dir,
+                    route_prefix: r.route_prefix,
+                })
+                .collect(),
+            on_broken_links,
+        });
+    }
     // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
