@@ -128,6 +128,99 @@ export type ZfbConfig = {
    * Mirrors `Config::base` in crates/zfb/src/config.rs.
    */
   base?: string;
+
+  /**
+   * Markdown link resolver (port of `remarkResolveMarkdownLinks`).
+   *
+   * When `enabled: true`, the build appends `ResolveLinksPlugin` to the
+   * mdast pipeline so author-written `[label](./other.mdx)` links are
+   * rewritten to the corresponding rendered route URL — bypassing the
+   * file→directory transformation that breaks relative paths in dist
+   * HTML when `foo.mdx` becomes `foo/index.html`.
+   *
+   * Two ways to specify the source dirs:
+   *
+   * - **Single dir (legacy):** set `docsDir` and the build assumes the
+   *   `/docs/` route prefix. Convenient for single-locale projects.
+   * - **Multi dir (`dirs` non-empty):** explicit `{ dir, routePrefix }`
+   *   entries — required for any project with locale mirrors (e.g.
+   *   `docs/` AND `docs-ja/`) so each dir maps to its own route prefix
+   *   (`/docs/` vs `/ja/docs/`). When `dirs` is non-empty, `docsDir`
+   *   is ignored.
+   *
+   * Mirrors `Config::resolve_markdown_links` in crates/zfb/src/config.rs.
+   */
+  resolveMarkdownLinks?: ResolveMarkdownLinksConfig;
+
+  /**
+   * Whether the basePath rewriter should append a trailing `/` to
+   * extensionless absolute hrefs (`<a href="/docs/foo">` becomes
+   * `<a href="/pj/zudo-doc/docs/foo/">` when `base = "/pj/zudo-doc/"`
+   * and this is `true`).
+   *
+   * Off by default — preserves byte-for-byte parity with the
+   * pre-`trailingSlash` build for projects that haven't opted in.
+   * Enable when the deploy target serves canonical URLs with trailing
+   * slashes (Cloudflare Pages with `trailingSlash: always`, Netlify
+   * pretty URLs, etc.) so the dist HTML doesn't ship non-canonical
+   * hrefs that 301-redirect on every click.
+   *
+   * Only the trailing slash for extensionless hrefs is affected.
+   * Hrefs that already end in `/`, that have a file extension
+   * (`.png`, `.pdf`, …), or that opt out via `data-no-base` pass
+   * through unchanged.
+   *
+   * Mirrors `Config::trailing_slash` in crates/zfb/src/config.rs.
+   */
+  trailingSlash?: boolean;
+};
+
+/**
+ * What to do when a `.md`/`.mdx` link cannot be resolved.
+ *
+ * Mirrors `OnBrokenLinks` in crates/zfb/src/config.rs.
+ */
+export type OnBrokenLinks = "warn" | "error" | "ignore";
+
+/**
+ * Config for the markdown link resolver. See
+ * [`ZfbConfig.resolveMarkdownLinks`] for the design rationale.
+ */
+export type ResolveMarkdownLinksConfig = {
+  /** Whether to enable link resolution. Default: `false`. */
+  enabled?: boolean;
+
+  /**
+   * Legacy single-dir field. Used only when [`dirs`] is empty. When
+   * non-empty, scanned against the hard-coded `/docs/` route prefix.
+   */
+  docsDir?: string;
+
+  /**
+   * Explicit per-dir source map. Each entry is one collection (e.g.
+   * EN docs at `src/content/docs/` → `/docs/`, JA docs at
+   * `src/content/docs-ja/` → `/ja/docs/`). Takes precedence over
+   * [`docsDir`] when non-empty.
+   */
+  dirs?: ResolveMarkdownLinksDir[];
+
+  /** What to do with unresolved `.md`/`.mdx` links. Default: `"warn"`. */
+  onBrokenLinks?: OnBrokenLinks;
+};
+
+/** One source-dir entry for [`ResolveMarkdownLinksConfig.dirs`]. */
+export type ResolveMarkdownLinksDir = {
+  /**
+   * Directory (relative to project root) whose `.md`/`.mdx` files are
+   * scanned. Must be relative and must not escape the root via `..`.
+   */
+  dir: string;
+
+  /**
+   * Route prefix prepended to each file's slug. Include leading and
+   * trailing slashes (e.g. `"/docs/"` or `"/ja/docs/"`).
+   */
+  routePrefix: string;
 };
 
 /**
