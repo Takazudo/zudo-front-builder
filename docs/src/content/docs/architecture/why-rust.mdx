@@ -4,12 +4,6 @@ description: The bet behind writing a static-site framework in Rust, what it buy
 sidebar_position: 4
 ---
 
-<Warning title="V8 / deno_core paragraph superseded by ADR-005">
-
-The "first build of V8 takes 5–15 minutes" note further down in this page assumed an in-process `deno_core` runtime. That decision was superseded by [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md), which renders through a Node-hosted miniflare worker — no V8 source bundle in the workspace's `cargo build`.
-
-</Warning>
-
 zfb is a static-site framework whose users write TypeScript and JSX. The framework itself is Rust. This page explains why.
 
 ## Performance
@@ -40,9 +34,9 @@ A single binary pins cleanly. CI installs the version it needs; production deplo
 
 ## Honest counterpoint: build cost
 
-The first `cargo build` of zfb's workspace is slow. If V8 (`deno_core`) ends up as the JS runtime — see [JS runtime](/architecture/js-runtime) — the V8 source bundle compiles for 5 to 15 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts.
+The first `cargo build` of zfb's workspace is slow. The V8 source bundle (pulled in by `zfb-render` via `deno_core`) compiles for 15 to 30 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts. See [JS runtime](/architecture/js-runtime) for the runtime details and [ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md) for why this cost is accepted.
 
-The runtime spike's QuickJS feature is much faster (around 30 seconds). We gate the heavy candidates behind opt-in cargo features so a contributor can run unit tests without waiting on V8. End users do not pay this cost — they install the prebuilt binary.
+zfb gates the V8 build behind a default-on `embed_v8` cargo feature on `zfb-render`. Crates that do not need JavaScript rendering never pull in V8. A contributor running `cargo test -p zfb-content` compiles in seconds. End users do not pay this cost — they install the prebuilt binary.
 
 ## Compared to JS-based alternatives
 

@@ -7,28 +7,52 @@ sidebar_position: 1
 ## Signature
 
 ```ts
-defineConfig(config: Config): Config
+defineConfig(config: ZfbConfig): ZfbConfig
 ```
 
-`defineConfig` is re-exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `Config` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
+`defineConfig` is exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `ZfbConfig` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
 
 ## Config shape
 
 All keys are camelCase and mirror `crates/zfb/src/config.rs`.
 
-- `outDir`: string, default `"dist"`
-- `publicDir`: string, default `"public"`
-- `host`: string, default `"localhost"`
-- `port`: number, default `3000`
-- `framework`: `"preact" | "react"`, default `"preact"`
-- `collections`: array of `CollectionDef`. Each entry has `name` (the call-site identifier, e.g. `"blog"`), `path` (directory relative to the project root), and optional `schema` (reserved — accepted today but not enforced; see the v0 note below).
-- `tailwind?`: `{ enabled: boolean }`
-- `plugins?`: array — schema TBD; not yet consumed in v0.
+- `outDir?: string` — output directory. Default: `"dist"`.
+- `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
+- `host?: string` — dev/preview server bind host.
+- `port?: number` — dev/preview server port.
+- `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
+- `collections?: CollectionDef[]` — content collections. Each entry has `name` (identifier used in `getCollection` calls), `path` (directory relative to the project root), and optional `schema` (validated at config-load time; frontmatter is checked against the schema by `zfb check` and the build).
+- `tailwind?: { enabled?: boolean }` — Tailwind options.
+- `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks).
+- `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Pages).
+- `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`).
+- `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
+- `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
+- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs.
 
 ## Examples
 
+```ts
+// zfb.config.ts — the recommended form
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  outDir: "dist",
+  framework: "preact",
+  collections: [
+    {
+      name: "blog",
+      path: "content/blog",
+    },
+  ],
+  tailwind: { enabled: true },
+});
+```
+
+The loader accepts `zfb.config.ts` (preferred) and `zfb.config.json` (legacy fallback). When only `zfb.config.json` is present it is read via `serde_json`; plugin paths declared as `./...`, `../...`, or absolute paths are resolved relative to the config file (npm specifiers like `"@takazudo/some-plugin"` work in both forms).
+
 ```json
-// zfb.config.json — the form actually loaded by v0
+// zfb.config.json — legacy form, still supported
 {
   "outDir": "dist",
   "framework": "preact",
@@ -41,37 +65,6 @@ All keys are camelCase and mirror `crates/zfb/src/config.rs`.
   "tailwind": { "enabled": true }
 }
 ```
-
-```ts
-// zfb.config.ts — aspirational form, NOT yet loaded.
-// Documented here for forward compatibility; once the runtime ships
-// (ADR-001) this richer schema lands. Do NOT ship this alongside a
-// zfb.config.json — the v0 loader rejects when both files are present.
-import { defineConfig } from "zfb/config";
-
-export default defineConfig({
-  outDir: "dist",
-  framework: "preact",
-  collections: {
-    blog: {
-      type: "content",
-      directory: "content/blog",
-      schema: {
-        title: "string",
-        date: "date",
-        draft: "boolean?",
-      },
-    },
-  },
-  tailwind: { enabled: true },
-});
-```
-
-<Warning title="v0: schema is intentionally narrow">
-
-  Today the loader accepts only the JSON form above — `collections` is an array of `{ name, path, schema? }`, and `schema` is parsed but not enforced (it lands as opaque JSON, reserved for v1.1). The richer object-keyed shape with `type: "content" | "data"` and per-field validators is the planned future schema and is shown in the TypeScript example purely so you can author against it now and switch over later. `zfb.config.ts` parsing itself is pending the JS runtime decision (see [ADR-001](/architecture/js-runtime)). For now, write your configuration as `zfb.config.json` — the loader reads that form today.
-
-</Warning>
 
 ## Validation
 

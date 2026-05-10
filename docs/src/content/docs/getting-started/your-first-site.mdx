@@ -4,12 +4,6 @@ description: Scaffold, run, and build a zfb project in about five minutes.
 sidebar_position: 3
 ---
 
-<Warning title="Superseded by ADR-005">
-
-The `dev_404` / `DenoCoreHost` status note below predates [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md). The current architecture renders pages through a Node-hosted miniflare worker rather than an in-process `deno_core` runtime, so the "blocked on ADR-001" framing no longer reflects how zfb dev works today.
-
-</Warning>
-
 This walkthrough takes you from an empty directory to a running dev server and a built site. It assumes you already [installed the zfb CLI](/getting-started/installation).
 
 ## Scaffold a new project
@@ -19,9 +13,13 @@ zfb new my-site
 cd my-site
 ```
 
-`zfb new` copies the `default` template into `my-site/`. If pnpm is on your `PATH`, zfb runs `pnpm install` automatically right after copying the template; otherwise it prints a short note telling you to run it yourself.
+`zfb new` copies the `basic-blog` template into `my-site/`. If pnpm is on your `PATH`, zfb runs `pnpm install` automatically right after copying the template; otherwise it prints a short note telling you to run it yourself.
 
-The `--template` flag is reserved for future templates — only `default` ships today.
+Pass `--template` to select a different template if additional ones are available:
+
+```bash
+zfb new my-site --template basic-blog
+```
 
 ## Start the dev server
 
@@ -31,17 +29,11 @@ zfb dev
 
 You'll see a "ready" banner with the host and port (defaults: `http://localhost:3000`). zfb watches the project directory; saving any file in `pages/`, `layouts/`, `components/`, `content/`, or `styles/` triggers a live-reload broadcast to connected browsers. The server also serves anything you drop into `public/`.
 
-You can override host and port from the CLI — they always win over `zfb.config.json`:
+You can override host and port from the CLI — they always win over `zfb.config.ts`:
 
 ```bash
 zfb dev --port 4000 --host 0.0.0.0
 ```
-
-<Warning title="v0 status — renderer pending">
-
-  Today `zfb dev` boots, watches files, and broadcasts live-reload events on save — but every page request currently falls through to a `dev_404` placeholder body. Per-route rendering is blocked on **ADR-001**: the JS runtime host (`DenoCoreHost`) is still a skeleton (`execute_module` returns a placeholder, `call_default` returns "not yet implemented"). The watcher, router, dev server, and live-reload pipeline are all real and exercisable; the actual page output lands once the runtime decision in [JS runtime architecture](/architecture/js-runtime) is implemented.
-
-</Warning>
 
 ## Build and preview
 
@@ -54,14 +46,9 @@ zfb preview
 
 `zfb build` resolves the output directory (defaulting to `dist/`), enumerates routes via the file-system router, and writes one HTML file per static route. `zfb preview` then serves that directory over HTTP on port `4321` by default. CLI flags (`--outdir`, `--port`) win over the config file in both commands.
 
-<Warning title="v0 status — build output is a placeholder">
-
-  Same caveat as `zfb dev`: `zfb build` already validates the project, loads config, and walks the route table — but each generated HTML file currently contains a stub noting the route template, not the rendered page. Real per-route SSR turns on the day ADR-001 lands. See [JS runtime architecture](/architecture/js-runtime).
-
-</Warning>
-
 ## What to read next
 
 - [Project structure](/getting-started/project-structure) — what every directory the template created actually does.
 - [Routing](/concepts/routing) — how `pages/` becomes URLs, including dynamic and catchall routes.
-- [JS runtime architecture](/architecture/js-runtime) — the in-progress decision behind the rendering placeholder.
+- [Islands](/concepts/islands) — how to opt individual components into client-side hydration.
+- [Build engine](/architecture/build-engine) — how the Rust crates fit together under the hood.

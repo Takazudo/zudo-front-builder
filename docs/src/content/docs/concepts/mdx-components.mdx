@@ -44,7 +44,7 @@ const post = posts[0];
 
 You get `post.data` (the parsed frontmatter), `post.slug`, and `post.Content` (the renderable body). Same shape for `.md` and `.mdx` — CommonMark is a strict MDX subset, so the same pipeline handles both. Plain markdown entries simply have no JSX nodes to override, but the `components` prop still applies to the HTML elements they emit.
 
-The bridge that connects `post.Content` to the actual compiled JSX module lives at `globalThis.__zfb.content.get(specifier)`, installed by the Rust-side renderer before the page module evaluates. When the bridge isn't present (unit tests, dev sandboxes, the v0 CLI), `Content` falls back to a clearly marked `<pre data-zfb-content-fallback>` block so the absence is obvious.
+The bridge that connects `post.Content` to the actual compiled JSX module lives at `globalThis.__zfb.content.get(specifier)`, installed by the Rust-side renderer before the page module evaluates. When the bridge isn't present (unit tests, dev sandboxes), `Content` falls back to a clearly marked `<pre data-zfb-content-fallback>` block so the absence is obvious.
 
 ## Spreading `defaultComponents`
 

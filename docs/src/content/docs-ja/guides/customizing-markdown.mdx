@@ -1,6 +1,6 @@
 ---
 title: Markdown のカスタマイズ
-description: zfb の Markdown レンダリングパイプラインの現状、設定可能な範囲、ロードマップ
+description: zfb の Markdown レンダリングパイプライン、設定可能な範囲、拡張方法
 sidebar_position: 3
 ---
 
@@ -13,7 +13,7 @@ sidebar_position: 3
 
 ## 概要
 
-`zfb-content` クレートが Markdown / MDX をどう扱い、現時点で何をカスタマイズでき、何が今後の作業として残っているかをまとめたページです。コンテンツコレクションから受け取る `entry.body`（HTML 文字列）を起点にした「消費側」の視点でまとめています。
+`zfb-content` クレートが Markdown / MDX をどう扱い、現時点で何をカスタマイズでき、何が今後の作業として残っているかをまとめたページです。コンテンツコレクションから受け取るエントリの `entry.body`（フロントマターを除いた生の Markdown 文字列）と `entry.Content`（コンパイル済みの JSX コンポーネント）を起点にした「消費側」の視点でまとめています。
 
 エンジン側を Rust の visitor で拡張したい場合は
 [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)

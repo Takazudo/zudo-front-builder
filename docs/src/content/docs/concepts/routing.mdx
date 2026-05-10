@@ -5,12 +5,6 @@ sidebar_position: 1
 category: Concepts
 ---
 
-<Warning title="v0 status">
-
-Today the framework's skeleton is shipping; the JS-runtime decision (ADR-001) lands the actual page rendering. Route discovery works now, but `paths()` evaluation for dynamic and catchall routes is deferred. See /architecture/js-runtime for the deeper discussion.
-
-</Warning>
-
 zfb uses **file-system routing** under the `pages/` directory. The router scans `pages/` at build time (and on every change in dev), turning each `.tsx` file into a route. The conventions match what you might recognise from Next.js or Astro.
 
 ## File-to-route mapping
@@ -56,14 +50,14 @@ Dynamic and catchall routes need to know which concrete URLs to render at build 
 
 ```tsx
 // pages/blog/[slug].tsx
-export async function paths() {
-  const posts = await getCollection("blog");
-  return posts.map((p) => ({ slug: p.slug }));
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((p) => ({ params: { slug: p.slug } }));
 }
 
-export default function BlogPost({ slug }: { slug: string }) {
-  return <article>Post {slug}</article>;
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post {params.slug}</article>;
 }
 ```
 
-Today `paths()` evaluation requires the JS runtime, which is still being wired in (ADR-001). `zfb build` discovers dynamic and catchall routes correctly, but emits a warn-line and skips them until the runtime lands. Static routes go through the rest of the pipeline as expected.
+`paths()` is evaluated by the embedded V8 host (ADR-007) during the build. `zfb build` discovers static, dynamic, and catchall routes and evaluates `paths()` for each dynamic and catchall route to enumerate the concrete URLs to render. Static routes require no `paths()` export.

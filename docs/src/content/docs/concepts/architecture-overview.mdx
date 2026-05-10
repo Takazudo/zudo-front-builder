@@ -34,8 +34,8 @@ export default {
 };
 ```
 
-The Rust orchestrator loads this bundle into an embedded V8 isolate (via
-`deno_core`) and drives it with synthetic HTTP requests — one request per page
+The Rust orchestrator loads this bundle into an embedded V8 isolate (ADR-007)
+and drives it with synthetic HTTP requests — one request per page
 URL. Each synthetic request produces an HTML `Response`. The orchestrator writes
 those responses to `dist/` as plain `.html` files. When the build finishes, the
 isolate is torn down. The worker bundle never leaves your machine; it is the
@@ -63,7 +63,7 @@ flowchart TD
 
     subgraph build["zfb build — your machine"]
         esbuild_worker["esbuild\n(worker bundle)"]
-        v8["embedded V8 via deno_core\n(synthetic HTTP requests → HTML)"]
+        v8["embedded V8 (ADR-007)\n(synthetic HTTP requests → HTML)"]
         esbuild_islands["esbuild\n(island bundles)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/\nisland JS files"]
@@ -106,9 +106,9 @@ The Cloudflare Workers adapter registers it as the worker's `fetch` handler. The
 router itself does not know which adapter is driving it.
 
 This is the portability bet: by fixing the bundle shape as the stable contract,
-zfb stays decoupled from which JS engine executes it. Today the build-time host
-is an embedded V8 isolate (`deno_core`). The production host is workerd.
-The contract — `export default { fetch }` — is the same in both contexts.
+zfb stays decoupled from which JS engine executes it. The build-time host is an
+embedded V8 isolate (ADR-007). The production host is workerd. The contract —
+`export default { fetch }` — is the same in both contexts.
 
 `packages/zfb-adapter-cloudflare` is the deployment adapter for Cloudflare
 Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
@@ -116,11 +116,13 @@ wraps it in the thin shell that `wrangler deploy` expects.
 
 The full rationale for this design, including the sequence of decisions that
 arrived at it, lives in
-[ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)
-(the original miniflare + Hono design) and
 [ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md)
-(why the build-time host later moved to embedded V8 while the bundle contract
-stayed the same).
+(the embedded V8 host design and why the bundle contract is engine-agnostic).
+The predecessor decisions are
+[ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)
+(SSG-first, the Hono/Workers bundle shape) and
+[ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)
+(the original in-process `deno_core` design, superseded by ADR-007).
 
 ## Layering summary
 
@@ -130,7 +132,7 @@ Three layers, each with a distinct job:
 |-------|-------------|----------------------|
 | **Your source** | Pages, components, content, styles | Build mechanics |
 | **zfb** | The build contract — route table, page props shape, island protocol, `dist/` layout | Which bundler, which JS runtime |
-| **Tools** | esbuild (bundling), V8 via `deno_core` (build-time evaluation) | Your code's semantics |
+| **Tools** | esbuild (bundling), embedded V8 (build-time evaluation) | Your code's semantics |
 
 zfb owns the contract — what inputs it accepts, what the output looks like, and
 what invariants hold across the build. esbuild and the embedded V8 runtime are

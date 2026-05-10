@@ -1,47 +1,8 @@
 ---
-title: Welcome
-sidebar_position: 1
+title: Getting Started
+sidebar_position: 0
 ---
 
-zfb (zudo-front-builder) is a static-site framework where you write pages in TSX and the build produces plain HTML — no Node.js or server required at runtime.
+Welcome to the Getting Started section. Choose a topic below to begin.
 
-## What zfb is
-
-zfb is a **build-time engine**. You write pages and components in TSX; zfb compiles them with SWC, renders them through a V8-based runtime during the build, and writes the output to `dist/` as static HTML. Once built, the site is a folder of files — no application server, no runtime dependency.
-
-The engine is written in Rust. Rust handles orchestration, file-watching, content parsing, routing, and atomic writes. Node.js (via a miniflare/workerd worker) is the render runtime during `zfb dev` and `zfb build` — it evaluates your compiled TSX and returns HTML strings. When you deploy the built output, nothing from that toolchain is needed on the host.
-
-## What you write
-
-Your project has a `pages/` directory. Each file in it is a route. A page is a `.tsx` file that exports a React component as its default export, plus an optional `meta` export for `<head>` data:
-
-```tsx
-// pages/index.tsx
-export const meta = { title: "Home" };
-
-export default function Home() {
-  return <h1>Hello from zfb</h1>;
-}
-```
-
-Components, layouts, and content collections live alongside `pages/` in their own directories. The entire authoring surface is TypeScript and JSX — no framework-specific template syntax or custom file formats to learn.
-
-## What the build produces
-
-`zfb build` produces static HTML in `dist/`. Each route becomes an `.html` file. Interactive fragments — [Islands](/concepts/islands) — ship their own small JS bundles and hydrate in the browser. Pages with no interactive components ship zero bytes of JavaScript.
-
-The engine rebuilds only the pages affected by each file change, not the whole site, so dev-loop latency stays in the tens of milliseconds even for large sites. See [Build engine](/architecture/build-engine) for the full picture of how the crates fit together.
-
-## What problems it solves
-
-**Build speed.** zfb's orchestration is a tight Rust loop over a dependency graph. A shared header change in a 2,000-page site touches only the pages that import it.
-
-**Distribution.** The framework ships as a single binary. No `node_modules` for zfb itself, no transitive package tree to audit. Your project's own dependencies are still managed via pnpm — zfb just isn't one of them.
-
-**Authoring simplicity.** TSX is the only authoring surface. Content collections work the same whether a file is `.md`, `.mdx`, or `.tsx`. There is no framework-specific config layer or plugin API to learn before you can ship a page.
-
-**Clear scope.** zfb is an [engine, not a framework](/concepts/engine-vs-framework). It commits to six primitives — frontmatter, content collections, dynamic routes, MDX components, non-HTML pages, and the content-query bridge — and stops there. Sidebars, search, theming, and i18n are your project's responsibility, which means they're under your control.
-
-## What to read next
-
-Start with [Installation](/getting-started/installation) to build and install the CLI. Then work through [Your first site](/getting-started/your-first-site) to scaffold a project and see an end-to-end build. For a deeper understanding of the system, read [Engine vs Framework](/concepts/engine-vs-framework) to understand zfb's scope, [Build engine](/architecture/build-engine) for how the Rust crates fit together, and [Islands](/concepts/islands) for how interactive components work. If you are moving an existing site, [Migrating from Astro](/guides/migrating-from-astro) maps concepts side by side.
+<CategoryNav category="getting-started" />

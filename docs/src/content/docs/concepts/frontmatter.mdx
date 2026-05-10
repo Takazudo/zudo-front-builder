@@ -179,12 +179,3 @@ extension changes between builds.
   the output-extension precedence.
 - `crates/zfb-render/src/meta.rs` — `derive_output_extension` /
   `derive_content_type` apply the rule to a final filename.
-
-<Note>
-
-`zfb-content` ships today; the runtime that *evaluates* a TSX page
-(rather than just extracting its frontmatter) lands with the
-ADR-001 follow-up. The frontmatter contract on this page is stable
-regardless — it's a Rust-side static analysis pass.
-
-</Note>

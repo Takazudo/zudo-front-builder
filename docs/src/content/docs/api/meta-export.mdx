@@ -6,9 +6,7 @@ sidebar_position: 5
 
 ## The pattern
 
-Every page module may export a `meta` constant (or an async function returning the same record) describing the page's `<head>` data — title, description, Open Graph tags, canonical URL, and so on. The renderer reads this export and merges it into the page layout's `<head>` block.
-
-The extraction goes through the `RenderHost::get_export` API, defined in `crates/zfb-render/src/render_host.rs`. That signature is the contract every JS runtime backend must satisfy when v0 of the renderer lands.
+Every page module may export a `meta` constant (or an async function returning the same record) describing the page's `<head>` data — title, description, Open Graph tags, canonical URL, and so on. The renderer reads this export via `RenderHost::get_export` and merges it into the page layout's `<head>` block.
 
 ## Example
 
@@ -30,20 +28,25 @@ export default function BlogPage() {
 
 If you need data from a collection or an async source to compute meta — for example, an OG image derived from a CMS field — export `meta` as an async function. The renderer awaits it before rendering the page shell.
 
-## Recommended schema
+```tsx
+export async function meta() {
+  const post = getCollection("blog")[0];
+  return {
+    title: post.data.title,
+    og: { image: `/og/${post.slug}.png` },
+  };
+}
+```
 
-The renderer treats `meta` as a permissive bag, but the following keys are the supported subset and what page layouts will look for first:
+## Supported keys
+
+The renderer treats `meta` as a permissive bag, but the following keys are the supported subset that page layouts look for:
 
 - `title?: string` — overrides the layout default for this page.
 - `description?: string` — used for the `<meta name="description">` tag and as the OG fallback.
 - `canonical?: string` — absolute URL for `<link rel="canonical">`.
 - `og?: { title?, description?, image?, type?, url? }` — Open Graph tags. Missing fields fall back to top-level `title` / `description` where it makes sense.
 - `twitter?: { card?, site?, creator?, image? }` — Twitter Card tags.
+- `layout?: string` — module specifier (relative path or bare specifier) for the page layout component. When absent, the project default layout is used.
 
 Unknown keys pass through untouched, which lets you stash structured data for plugins or custom layout components.
-
-<Warning title="v0 status">
-
-  The `meta` extraction interface is defined in `zfb-render`, but actual extraction at render time depends on the JS runtime (see [ADR-001](/architecture/js-runtime)). For now, you can plan and write your `meta` exports against this schema — they will flow through the renderer once the runtime ships.
-
-</Warning>

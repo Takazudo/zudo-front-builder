@@ -1,0 +1,62 @@
+---
+title: Introduction
+description: What zfb is, who it is for, and how it compares to Astro and Next.js.
+sidebar_position: 1
+---
+
+zfb is a Rust-built static-site engine for people who already know Astro or Next.js and want millisecond rebuilds, a single-binary toolchain, and an opt-in island model.
+
+If you can read a `pages/` directory tree and write a TSX component, you already know 90 percent of what zfb requires.
+
+## What zfb provides
+
+- **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime (ADR-007). No separate Node process is required at build time.
+- **Atomic writes** — the build never leaves the output directory in a partially-written state. Each `zfb build` run either completes fully or leaves `dist/` unchanged.
+- **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
+- **Opt-in islands** — components are server-rendered by default. Add `"use client"` to a component file to opt into client-side hydration. Pages with no islands ship zero JavaScript.
+- **Frontmatter and content collections** — Markdown, MDX, and TypeScript data files in a named directory become a typed collection, queryable from pages via `getCollection()`.
+- **Dynamic routes** — `pages/blog/[slug].tsx` exports a `paths()` function; zfb evaluates it at build time to expand the route into one HTML file per slug.
+- **MDX components** — import any TSX component into `.mdx` content and use it as JSX.
+- **Non-HTML pages** — a page file can export a `contentType` to produce JSON, XML, RSS, or any other text format instead of HTML.
+- **Content-query bridge** — `getCollection()` is available inside MDX files and inside `paths()`, not only in page components.
+- **Single-binary distribution** — zfb ships as one Rust binary. No `node_modules` for the framework itself, no plugin registry to audit.
+
+## Familiar from Astro
+
+| Astro concept | zfb equivalent |
+| --- | --- |
+| `src/pages/` file-system routing | `pages/` directory, same naming conventions |
+| `.astro` components with a frontmatter fence | TSX page files with a `getStaticProps` export |
+| Content Collections with typed schemas | `getCollection()` + schema declared in `zfb.config.ts` |
+| `<slot />` in layouts | React `children` prop — plain TSX composition |
+| `client:load` directive | `"use client"` directive at the top of a component file |
+| `public/` for static assets | `public/` — same semantics |
+| `astro.config.mjs` | `zfb.config.ts` (TypeScript, loaded directly) |
+
+What is different: zfb has no component syntax of its own — everything is TSX. There is no `.astro` file format to learn. The trade-off is that you lose Astro's per-component fence syntax and gain a single consistent authoring surface for pages, layouts, and components.
+
+## Familiar from Next.js
+
+| Next.js concept | zfb equivalent |
+| --- | --- |
+| `pages/` directory routing (Pages Router) | `pages/` — same file naming and nesting rules |
+| `getStaticProps` / `getStaticPaths` | `getStaticProps` + `paths()` export, same two-function pattern |
+| Dynamic routes `[slug].tsx` | `[slug].tsx` — identical syntax |
+| Catch-all routes `[...slug].tsx` | `[...slug].tsx` — identical syntax |
+| `public/` for static assets | `public/` — same semantics |
+| Layout components wrapping pages | Layout components wrapping pages — plain TSX composition |
+
+What is different: zfb produces only static HTML — there is no server runtime, no API routes, and no SSR at request time. Think of it as Next.js with `output: "export"` only, but with a faster build engine and no Node.js required in the build environment. The App Router, server components, and middleware are outside zfb's scope.
+
+## Client router and view transitions
+
+The `@takazudo/zfb-runtime` package ships a `<ClientRouter />` component that intercepts same-origin navigations and replaces page content without a full reload, with optional View Transitions API support. Opt in by mounting it in your root layout — pages that do not mount it get normal link behavior.
+
+## Migration guides
+
+- [Migrating from Astro](/guides/migrating-from-astro) — concept-by-concept map for moving an existing Astro static site to zfb.
+
+## What to read next
+
+[Installation](/getting-started/installation) covers building and installing the CLI.
+[Your first site](/getting-started/your-first-site) walks through scaffolding a project and running a build end to end.

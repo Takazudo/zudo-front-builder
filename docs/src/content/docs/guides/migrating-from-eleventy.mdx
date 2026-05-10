@@ -4,14 +4,6 @@ description: Concept-by-concept guidance for moving an 11ty site to zfb — and 
 sidebar_position: 2
 ---
 
-<Warning title="v0 status">
-
-  zfb's renderer is pending the runtime decision tracked in ADR-001
-  (see /architecture/js-runtime). The migration map below is stable, but
-  hands-on porting is best done once the renderer lands.
-
-</Warning>
-
 Eleventy and zfb agree on the big things: small dependency footprint,
 file-based routing, content driven by Markdown plus front matter. Where
 they differ is the templating story. Read the
@@ -49,17 +41,17 @@ cascade have no direct equivalent in zfb. Instead, you express data in
 two places:
 
 - **Static / shared data** — declare a data collection in
-  `zfb.config.json`. Today the loader accepts the simpler array form
-  (`{ name, path }`); the richer record-keyed form with explicit `type`
-  and per-field schemas is the v1 target — see
-  [`defineConfig`](/api/define-config) for both shapes side by side:
+  `zfb.config.ts` (or the legacy `zfb.config.json`). See
+  [`defineConfig`](/api/define-config) for the full shape:
 
-```json
-{
-  "collections": [
-    { "name": "site", "path": "data/site" }
-  ]
-}
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  collections: [
+    { name: "site", path: "data/site" },
+  ],
+});
 ```
 
 - **Per-page data** — return it from a page's `paths()` export, which

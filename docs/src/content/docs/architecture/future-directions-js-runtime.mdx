@@ -23,7 +23,7 @@ Cloudflare-Workers-compatible `export default { fetch }` module, per
 Cloudflare Workers for runtime SSR via `packages/zfb-adapter-cloudflare`. The
 `RenderHost` trait in `crates/zfb-render` is the Rust abstraction that wraps
 the host — the renderer never names the concrete implementation. Today's
-concrete implementation is `DenoCoreHost`.
+concrete implementation is `EmbeddedV8RenderHost` (`crates/zfb-render/src/embedded_v8/`).
 
 ## The implementation / contract distinction
 
