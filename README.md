@@ -1,6 +1,6 @@
 # zudo-front-builder
 
-`zfb` (zudo-front-builder) is a frontend build orchestrator. The repository is currently in scaffolding phase — the Rust workspace, placeholder bin crate, basic tooling, the docs site, and Cloudflare Pages CI are wired up. The actual orchestration logic lands in subsequent epics.
+`zfb` (zudo-front-builder) is a Rust-built static-site engine for Astro / Next.js (and other frontend framework) users who want millisecond rebuilds and a single binary. The full pipeline is shipping: embedded V8 host (ADR-007), `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 
 ## What zfb is
 
