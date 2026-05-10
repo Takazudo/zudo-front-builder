@@ -5,12 +5,6 @@ sidebar_position: 1.5
 category: Concepts
 ---
 
-<Warning title="ADR-001 reference superseded by ADR-005">
-
-The "blocked on ADR-001" callout further down in this page predates [ADR-005 (SSG-first)](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md), which moved the JS runtime out of process and onto a Node-hosted miniflare worker. Treat that paragraph as historical — `paths()` itself is unaffected.
-
-</Warning>
-
 <Info title="What this page covers">
 
 How `paths()` enumerates the URLs a dynamic or catchall page should
@@ -154,17 +148,6 @@ this when it builds the route table — see
 - Two routes that resolve to the same template raise
   `RouterError::AmbiguousRoute` at build time. The router never
   silently picks a winner.
-
-<Warning title="v0 status">
-
-Today the framework's skeleton is shipping; the JS-runtime decision
-([ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)) lands the actual
-`paths()` evaluation. Route discovery works now, but `paths()` for
-dynamic and catchall routes is currently warned and skipped until the
-runtime lands. The contract on this page is what the engine commits to
-once the runtime arrives.
-
-</Warning>
 
 ## See also
 
