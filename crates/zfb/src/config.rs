@@ -301,6 +301,25 @@ pub struct Config {
     /// deserialises the JSON / TS form `base` 1:1.
     #[serde(default)]
     pub base: Option<String>,
+
+    /// Whether the basePath rewriter should append a trailing `/` to
+    /// extensionless absolute hrefs (`<a href="/docs/foo">` becomes
+    /// `<a href="/pj/zudo-doc/docs/foo/">` when `base = "/pj/zudo-doc/"`
+    /// and this is `true`).
+    ///
+    /// Off by default — preserves byte-for-byte parity with the
+    /// pre-`trailing_slash` build for projects that haven't opted in.
+    /// Enable when the deploy target serves canonical URLs with
+    /// trailing slashes (Cloudflare Pages with `trailingSlash: always`,
+    /// Netlify pretty URLs, etc.) so the dist HTML doesn't ship
+    /// non-canonical hrefs that 301-redirect on every click.
+    ///
+    /// Only the trailing slash for extensionless hrefs is affected.
+    /// Hrefs that already end in `/`, that have a file extension
+    /// (`.png`, `.pdf`, …), or that opt out via `data-no-base` pass
+    /// through unchanged.
+    #[serde(default)]
+    pub trailing_slash: bool,
 }
 
 impl Default for Config {
@@ -319,6 +338,7 @@ impl Default for Config {
             base: None,
             code_highlight: None,
             resolve_markdown_links: None,
+            trailing_slash: false,
         }
     }
 }
@@ -405,8 +425,17 @@ pub enum OnBrokenLinks {
 /// When `enabled` is `true`, the build appends `ResolveLinksPlugin` to the
 /// mdast pipeline after `AdmonitionsPlugin` so author-written
 /// `[label](./other.mdx)` links are rewritten to the corresponding rendered
-/// route URL (e.g. `/docs/other/`). The `docs_dir` field points at the
-/// directory whose `.md`/`.mdx` files are scanned to build the source map.
+/// route URL (e.g. `/docs/other/`).
+///
+/// Two ways to specify the source dirs:
+///
+/// - **Single dir (legacy):** set `docs_dir` and the build assumes the
+///   `/docs/` route prefix. Convenient for single-locale projects.
+/// - **Multi dir (`dirs` non-empty):** explicit list of `{ dir, route_prefix }`
+///   entries — required for any project with locale mirrors (e.g. `docs/`
+///   AND `docs-ja/`) so each dir maps to its own route prefix
+///   (`/docs/` vs `/ja/docs/`). When `dirs` is non-empty, `docs_dir` is
+///   ignored and only `dirs` is consulted.
 ///
 /// Default (absent / `enabled: false`) preserves the current pass-through
 /// behavior — links are not rewritten.
@@ -416,18 +445,41 @@ pub struct ResolveMarkdownLinksConfig {
     /// Whether to enable link resolution. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
-    /// Directory (relative to project root) whose `.md`/`.mdx` files are
-    /// scanned to build the `path → URL` source map. Typically the same
-    /// directory as the content collection's `path`.
-    ///
-    /// `docs_dir` is interpreted relative to the project root the same
-    /// way `CollectionDef::path` is — it must be relative and must not
-    /// escape the root via `..`.
+    /// Legacy single-dir field. Used only when [`Self::dirs`] is empty.
+    /// When non-empty, scanned against the hard-coded `/docs/` route
+    /// prefix. Interpreted relative to the project root the same way
+    /// `CollectionDef::path` is — must be relative and must not escape
+    /// the root via `..`.
     #[serde(default)]
     pub docs_dir: PathBuf,
+    /// Explicit per-dir source map. Each entry is one collection
+    /// (e.g. EN docs at `src/content/docs/` → `/docs/`, JA docs at
+    /// `src/content/docs-ja/` → `/ja/docs/`). Takes precedence over
+    /// [`Self::docs_dir`] when non-empty.
+    ///
+    /// Required for any project with more than one docs root because
+    /// the legacy `docs_dir` shape only supports a single hard-coded
+    /// `/docs/` route prefix and cannot represent locale mirrors that
+    /// must resolve under `/{locale}/docs/`. See
+    /// `zudolab/zudo-doc#1577` for the host-side bug this surfaces.
+    #[serde(default)]
+    pub dirs: Vec<ResolveMarkdownLinksDir>,
     /// What to do when a `.md`/`.mdx` link cannot be resolved. Default: `"warn"`.
     #[serde(default)]
     pub on_broken_links: OnBrokenLinks,
+}
+
+/// One source dir entry for [`ResolveMarkdownLinksConfig::dirs`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveMarkdownLinksDir {
+    /// Directory (relative to project root) whose `.md`/`.mdx` files
+    /// are scanned. Must be relative and must not escape the root via
+    /// `..` — validated at config load.
+    pub dir: PathBuf,
+    /// Route prefix prepended to each file's slug. Include leading and
+    /// trailing slashes (e.g. `"/docs/"` or `"/ja/docs/"`).
+    pub route_prefix: String,
 }
 
 impl Default for TailwindConfig {
@@ -972,8 +1024,14 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             .with_context(|| format!("collection {:?}", c.name))?;
     }
     if let Some(rml) = &cfg.resolve_markdown_links {
-        ensure_path_in_root(&rml.docs_dir, dir)
-            .context("resolveMarkdownLinks.docsDir")?;
+        if !rml.docs_dir.as_os_str().is_empty() {
+            ensure_path_in_root(&rml.docs_dir, dir)
+                .context("resolveMarkdownLinks.docsDir")?;
+        }
+        for (i, d) in rml.dirs.iter().enumerate() {
+            ensure_path_in_root(&d.dir, dir)
+                .with_context(|| format!("resolveMarkdownLinks.dirs[{i}].dir"))?;
+        }
     }
     if let Some(b) = &cfg.base {
         // An absolute URL is fine ("https://cdn.example.com/..."); a

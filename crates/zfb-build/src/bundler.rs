@@ -187,20 +187,38 @@ pub enum OnBrokenLinks {
 /// Options for the `ResolveLinksPlugin` in the bundler pipeline.
 ///
 /// When present on [`BundlerInput`], the bundler builds a
-/// `path → URL` source map from `docs_dir`, appends
+/// `path → URL` source map from every entry in `routes`, appends
 /// [`zfb_content::plugins::ResolveLinksPlugin`] to the mdast pipeline of
 /// every materialisation call, and handles broken links according to
 /// `on_broken_links` after the walk completes.
+///
+/// Each entry in `routes` is one source dir + its route prefix
+/// (e.g. EN docs at `src/content/docs/` → `/docs/`, JA docs at
+/// `src/content/docs-ja/` → `/ja/docs/`). The bundler scans them all
+/// and merges the resulting `path → URL` map. Required for any project
+/// with locale mirrors so each mirror dir resolves under its own route
+/// prefix — see `zudolab/zudo-doc#1577` for the host-side bug this
+/// surfaces when only a single dir is configured.
 #[derive(Debug, Clone)]
 pub struct ResolveMarkdownLinksSpec {
-    /// Directory (absolute or project-relative) whose `.md`/`.mdx` files
-    /// are scanned to build the source map.
-    pub docs_dir: PathBuf,
-    /// Route prefix applied to every slug when building the source map
-    /// (e.g. `"/docs/"`). Must include the trailing slash.
-    pub route_prefix: String,
+    /// Per-dir source map. Empty `routes` is a no-op (caller would
+    /// just not pass `Some` in that case).
+    pub routes: Vec<ResolveMarkdownLinksRoute>,
     /// What to do with unresolved `.md`/`.mdx` links.
     pub on_broken_links: OnBrokenLinks,
+}
+
+/// One entry in [`ResolveMarkdownLinksSpec::routes`]. Mirrors
+/// [`zfb_content::plugins::util::source_map::CollectionRoute`] minus the
+/// informational `name` (callers don't surface route names).
+#[derive(Debug, Clone)]
+pub struct ResolveMarkdownLinksRoute {
+    /// Directory (absolute or project-relative) whose `.md`/`.mdx`
+    /// files are scanned.
+    pub docs_dir: PathBuf,
+    /// Route prefix applied to every slug from this dir
+    /// (e.g. `"/docs/"`). Must include the trailing slash.
+    pub route_prefix: String,
 }
 
 /// All the inputs the bundler needs.
@@ -531,21 +549,29 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
-    // The map is built once here (before the shadow walk) from the
-    // configured `docs_dir` and shared across all materialise calls via
-    // a reference. An empty map is used when the feature is disabled so
+    // The map is built once here (before the shadow walk) from every
+    // configured route and shared across all materialise calls via a
+    // reference. An empty map is used when the feature is disabled so
     // the materialise helpers can always receive a reference without
     // conditional logic at each call site.
+    //
+    // Multi-route shape (sub #234) lets locale mirrors map to distinct
+    // route prefixes — required for any project with EN+JA mirrors, or
+    // any other multi-collection layout, so each mirror dir resolves
+    // under its own route prefix (`/docs/` vs `/ja/docs/`).
     let resolve_source_map: HashMap<std::path::PathBuf, String> =
         if let Some(spec) = &input.resolve_markdown_links {
-            let docs_dir = resolver.resolve(&spec.docs_dir);
-            build_docs_source_map(DocsSourceMapOptions {
-                collections: vec![CollectionRoute {
-                    name: "docs".to_string(),
-                    dir: docs_dir,
-                    route_prefix: spec.route_prefix.clone(),
-                }],
-            })
+            let collections: Vec<CollectionRoute> = spec
+                .routes
+                .iter()
+                .enumerate()
+                .map(|(i, r)| CollectionRoute {
+                    name: format!("routes[{i}]"),
+                    dir: resolver.resolve(&r.docs_dir),
+                    route_prefix: r.route_prefix.clone(),
+                })
+                .collect();
+            build_docs_source_map(DocsSourceMapOptions { collections })
         } else {
             HashMap::new()
         };

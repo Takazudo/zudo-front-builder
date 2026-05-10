@@ -69,6 +69,7 @@ impl Harness {
             broadcast: tx.clone(),
             plugins: None,
             base: None,
+            trailing_slash: false,
         };
 
         let server = tokio::spawn(async move {

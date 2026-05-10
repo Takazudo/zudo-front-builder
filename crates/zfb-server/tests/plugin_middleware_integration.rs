@@ -113,6 +113,7 @@ async fn boot_with_dispatcher(
         broadcast: tx,
         plugins: Some(plugin_set),
         base: None,
+        trailing_slash: false,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

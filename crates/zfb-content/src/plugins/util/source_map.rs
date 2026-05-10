@@ -37,10 +37,15 @@ pub struct DocsSourceMapOptions {
 /// Walk every collection's `dir` and return a map of
 /// `absolute_file_path` → `url_string`.
 ///
-/// URL is `{route_prefix}{slug}/`, where `slug` is the file stem
-/// (`my-post.md` → `my-post`). Nested directories are flattened — the
-/// slug is just the file stem regardless of depth. Non-`.md` / `.mdx`
-/// files are ignored.
+/// URL is `{route_prefix}{slug}/`, where `slug` is the file path
+/// relative to `route.dir` with the `.md` / `.mdx` extension stripped.
+/// Nested directories are preserved — `components/code-blocks.mdx`
+/// becomes `{route_prefix}components/code-blocks/`, not
+/// `{route_prefix}code-blocks/` (sub #234 nested-route fix). A trailing
+/// `/index` segment is dropped so directory-style URLs collapse to the
+/// parent (`guides/index.mdx` → `{route_prefix}guides/`,
+/// `index.mdx` → `{route_prefix}`). Non-`.md` / `.mdx` files are
+/// ignored.
 ///
 /// Missing directories are silently skipped (a collection with no
 /// content yet is not an error). I/O errors during traversal cause the
@@ -55,14 +60,47 @@ pub fn build_docs_source_map(options: DocsSourceMapOptions) -> HashMap<PathBuf, 
         let mut files: Vec<PathBuf> = Vec::new();
         let _ = collect_md_files(&route.dir, &mut files);
         for path in files {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            let Some(slug) = slug_for(&route.dir, &path) else {
                 continue;
             };
-            let url = format!("{}{}/", route.route_prefix, stem);
+            let url = if slug.is_empty() {
+                // `{route.dir}/index.mdx` → bare prefix (e.g. `/docs/`).
+                route.route_prefix.clone()
+            } else {
+                format!("{}{}/", route.route_prefix, slug)
+            };
             map.insert(path, url);
         }
     }
     map
+}
+
+/// Build the slug portion of the URL from `path`'s position under `dir`.
+///
+/// - Strips the `dir` prefix → keeps the nested directory structure.
+/// - Strips the `.md` / `.mdx` extension.
+/// - Drops a trailing `/index` segment so directory-style URLs collapse
+///   to the parent (`guides/index.mdx` → `guides`,
+///   `index.mdx` → `""` which the caller maps to the bare prefix).
+/// - Normalises platform path separators to `/`.
+///
+/// Returns `None` when the path can't be expressed relative to `dir`
+/// (caller skips such entries).
+fn slug_for(dir: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(dir).ok()?;
+    let mut s = rel.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = s.strip_suffix(".mdx") {
+        s = stripped.to_string();
+    } else if let Some(stripped) = s.strip_suffix(".md") {
+        s = stripped.to_string();
+    }
+    if s == "index" {
+        return Some(String::new());
+    }
+    if let Some(stripped) = s.strip_suffix("/index") {
+        s = stripped.to_string();
+    }
+    Some(s)
 }
 
 fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -160,7 +198,100 @@ mod tests {
         });
         assert_eq!(map.len(), 2);
         assert_eq!(map.get(&a), Some(&"/docs/intro/".to_string()));
-        assert_eq!(map.get(&b), Some(&"/docs/advanced/".to_string()));
+        // sub #234: nested directory survives — was `/docs/advanced/`
+        // before the fix (file-stem flatten), broke 109 cross-page
+        // links in zudolab/zudo-doc#1577.
+        assert_eq!(map.get(&b), Some(&"/docs/nested/advanced/".to_string()));
+    }
+
+    #[test]
+    fn deeply_nested_paths_preserve_full_directory_structure() {
+        let tmp = TmpDir::new("deep");
+        let a = tmp.write("guides/layout-demos/hide-toc.mdx", "");
+        let b = tmp.write("components/basic-components.mdx", "");
+
+        let map = build_docs_source_map(DocsSourceMapOptions {
+            collections: vec![CollectionRoute {
+                name: "docs".into(),
+                dir: tmp.path.clone(),
+                route_prefix: "/docs/".into(),
+            }],
+        });
+        assert_eq!(
+            map.get(&a),
+            Some(&"/docs/guides/layout-demos/hide-toc/".to_string())
+        );
+        assert_eq!(
+            map.get(&b),
+            Some(&"/docs/components/basic-components/".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_index_collapses_to_parent_directory_url() {
+        let tmp = TmpDir::new("indexed");
+        let a = tmp.write("guides/index.mdx", "");
+        let b = tmp.write("components/index.md", "");
+
+        let map = build_docs_source_map(DocsSourceMapOptions {
+            collections: vec![CollectionRoute {
+                name: "docs".into(),
+                dir: tmp.path.clone(),
+                route_prefix: "/docs/".into(),
+            }],
+        });
+        assert_eq!(map.get(&a), Some(&"/docs/guides/".to_string()));
+        assert_eq!(map.get(&b), Some(&"/docs/components/".to_string()));
+    }
+
+    #[test]
+    fn root_index_maps_to_bare_route_prefix() {
+        let tmp = TmpDir::new("root-index");
+        let a = tmp.write("index.mdx", "");
+
+        let map = build_docs_source_map(DocsSourceMapOptions {
+            collections: vec![CollectionRoute {
+                name: "docs".into(),
+                dir: tmp.path.clone(),
+                route_prefix: "/docs/".into(),
+            }],
+        });
+        assert_eq!(map.get(&a), Some(&"/docs/".to_string()));
+    }
+
+    #[test]
+    fn ja_locale_collection_uses_distinct_route_prefix() {
+        // sub #234 multi-locale wiring: one collection per locale, each
+        // with its own route_prefix. zudolab/zudo-doc#1577 surfaced this
+        // when JA mirror docs would have resolved to `/docs/...` instead
+        // of `/ja/docs/...` if the source map only knew one prefix.
+        let en = TmpDir::new("en");
+        let ja = TmpDir::new("ja");
+        let en_file = en.write("getting-started/installation.mdx", "");
+        let ja_file = ja.write("getting-started/installation.mdx", "");
+
+        let map = build_docs_source_map(DocsSourceMapOptions {
+            collections: vec![
+                CollectionRoute {
+                    name: "docs".into(),
+                    dir: en.path.clone(),
+                    route_prefix: "/docs/".into(),
+                },
+                CollectionRoute {
+                    name: "docs-ja".into(),
+                    dir: ja.path.clone(),
+                    route_prefix: "/ja/docs/".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            map.get(&en_file),
+            Some(&"/docs/getting-started/installation/".to_string())
+        );
+        assert_eq!(
+            map.get(&ja_file),
+            Some(&"/ja/docs/getting-started/installation/".to_string())
+        );
     }
 
     #[test]

@@ -114,6 +114,13 @@ pub struct ServeOpts {
     /// `"/"`, or an absolute URL) the route table is identical to the
     /// pre-`base` server byte-for-byte.
     pub base: Option<String>,
+
+    /// Mirror of `zfb.config.ts`'s `trailingSlash` field. Threaded
+    /// through to [`crate::routes::AppState::trailing_slash`] so the
+    /// in-flight base-rewrite pass appends `/` to extensionless
+    /// absolute hrefs the same way the production build does
+    /// (sub #234 / zudolab/zudo-doc#1579).
+    pub trailing_slash: bool,
 }
 
 impl ServeOpts {
@@ -186,6 +193,7 @@ where
         plugins: opts.plugins,
         dist_root: opts.dist_root.clone(),
         base_prefix,
+        trailing_slash: opts.trailing_slash,
     };
     let router = build_router(state, opts.public_root.clone());
 
