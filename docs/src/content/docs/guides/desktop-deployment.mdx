@@ -28,8 +28,8 @@ For **Tauri**, the relevant `tauri.conf.json` keys are:
 
 Point `distDir` at your `dist/` folder (adjust the relative path to match your
 project layout). Tauri's built-in static file server handles the rest. There is
-no Node.js process, no miniflare worker, and no HTTP server required in the
-packaged app — just files on disk.
+no Node.js process and no HTTP server required in the packaged app — just files
+on disk.
 
 This is the **recommended approach** for documentation apps, help systems, and
 any desktop app where the content is authored at build time and bundled with the
@@ -50,8 +50,9 @@ preview inside the app — essentially running `zfb dev` from within a packaged
 Tauri or Electron window.
 
 This is where the current constraint surfaces: **zfb's build and dev tooling
-requires Node.js**. The dev server spins up a miniflare worker to evaluate your
-TSX page modules. Miniflare is a Node.js process; it cannot run without one.
+requires Node.js**. The dev CLI (`zfb dev` / `zfb build`) is a Node.js process;
+the embedded V8 worker that evaluates your TSX pages runs inside the Rust binary,
+but the outer toolchain still requires Node.js to be present on the build machine.
 
 If you need in-app rebuilds today, the realistic options are:
 
@@ -60,12 +61,11 @@ Node.js sidecar, but Electron does — the entire framework runs on Node.js, so
 `zfb dev` runs naturally inside an Electron process. The cost is a significant
 binary size increase and a more complex packaging story.
 
-**Ship `workerd` as a Tauri sidecar.** `workerd` (Cloudflare's open-source
-Workers runtime, the engine behind miniflare) is a standalone C++ binary with no
-Node dependency. Tauri's sidecar mechanism can launch and manage it. This is
-architecturally cleaner than bundling Node.js, but it requires writing a custom
-bridge between `workerd` and zfb's build pipeline — that integration does not
-exist out of the box today.
+**Bundle the zfb binary as a Tauri sidecar.** Because the render pipeline runs
+inside an embedded V8 host (the `zfb` Rust binary), you can ship the binary as a
+Tauri sidecar and invoke it for incremental rebuilds. This requires writing a
+thin IPC bridge between the sidecar and your Tauri frontend — that integration is
+not provided out of the box, but the boundary is clean.
 
 **Pre-build on the developer machine; embed the result.** Rather than rebuilding
 inside the app, keep the rebuild workflow on developer machines and ship only

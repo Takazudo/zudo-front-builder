@@ -1,67 +1,57 @@
 ---
 title: Syntax Highlighting
-description: There is no built-in syntax highlighter in zfb v0. Two practical patterns for user-side highlighting until one lands.
+description: zfb ships syntect-backed server-side syntax highlighting. This page explains the built-in behaviour and two supplementary patterns for client-side or theme-customised highlighting.
 sidebar_position: 4
 ---
 
-<Warning title="v0 status">
+zfb ships **server-side syntax highlighting** via
+[syntect](https://github.com/trishume/syntect) — a Rust library that runs at
+build time inside `crates/zfb-content`. When the pipeline encounters a fenced
+code block, `SyntectPlugin` looks up the language tag, highlights the source
+with the configured theme, and replaces the `<pre><code>` element with a
+`<pre class="syntect-…"><code>…</code></pre>` HTML fragment baked into the
+output. No JavaScript is shipped to the browser for highlighting.
 
-  zfb does not ship a built-in code-block highlighter yet. Both options
-  on this page are user-side. The official story will land alongside the
-  rendering pipeline once ADR-001 (see /architecture/js-runtime) is
-  decided.
+## Built-in behaviour
 
-</Warning>
+| Property | Value |
+|---|---|
+| Engine | `syntect` (Sublime Text–compatible grammars) |
+| Execution | Build-time (hast visitor phase in `crates/zfb-content`) |
+| Output | Inline HTML with `class` attributes — zero runtime JS |
+| Unknown languages | Themed fallback: wrapped in `<pre class="syntect-…">`, code preserved |
+| `mermaid` blocks | Skipped — routed to `MermaidPlugin` instead |
 
-If you write technical content with zfb today, your fenced code blocks
-render as plain `<pre><code>...</code></pre>` with the language as a
-class on the `<code>` element. There are two practical paths to colour
-them.
+The theme is configured on the `SyntectPlugin` instance inside
+`Pipeline::with_defaults()`. See
+[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) if
+you need to swap the default theme or add a per-project override.
 
-<Tip>
+## Customising the theme
 
-  Plain `<pre><code>` is more legible than people give it credit for.
-  Style it with CSS — a monospace font, comfortable line height, a
-  subtle background — and you have a perfectly serviceable baseline
-  while you decide whether you actually need a highlighter.
+If you want a different colour scheme, the approach depends on whether you need
+a per-collection override or a single site-wide change.
 
-</Tip>
+**Site-wide:** Pass a different `SyntaxSet` / `ThemeSet` to the
+`SyntectPlugin::with_theme` builder when constructing the pipeline in
+`crates/zfb-content/src/pipeline.rs`. The plugin exposes `with_theme` for this:
 
-## Option 1 — Build-time highlighting
-
-Run a highlighter once during the build and bake the coloured HTML
-into the output. Today this means doing the work outside the framework,
-because zfb has no plugin API yet. A typical sketch:
-
-1. Build your site with `zfb build` so the rendered HTML is on disk.
-2. Walk the output directory with a small Node script.
-3. For each `.html` file, parse it, find every `<pre><code class="language-…">`
-   block, run Shiki or Prism over the inner text, and replace the node.
-4. Write the file back.
-
-```ts
-// post-build/highlight.ts — sketch only
-import { glob } from "glob";
-import { readFile, writeFile } from "node:fs/promises";
-import { codeToHtml } from "shiki";
-
-for (const file of await glob("dist/**/*.html")) {
-  const html = await readFile(file, "utf8");
-  const next = await highlightCodeBlocks(html, codeToHtml);
-  if (next !== html) await writeFile(file, next);
-}
+```rust
+// inside Pipeline::with_defaults()
+p.add_hast_visitor(Box::new(
+    SyntectPlugin::new(highlighter).with_theme("Solarized (light)"),
+));
 ```
 
-Pros: zero JavaScript shipped to the browser, fully static output.
-Cons: extra build step, and you own the script. Once zfb exposes a
-post-render plugin hook, this same logic will move into a zfb plugin
-without changing semantics.
+**Per-collection:** Construct a pipeline via `Pipeline::with_mdx()` and append
+a separately-configured `SyntectPlugin` — the same approach used by
+`ResolveLinksPlugin` for project-specific options.
 
-## Option 2 — Client-time highlighting
+## Supplementary pattern 1 — additional client-side highlighting
 
-Ship a small highlighter to the browser as an island. Prism and
-highlight.js are the obvious choices. Mark the wrapper component as a
-client island with the `"use client"` directive:
+If you want interactive theme switching or per-user preferences, layer a
+client-side highlighter on top of the server-rendered output as a
+[client island](/concepts/islands):
 
 ```tsx
 "use client";
@@ -77,21 +67,39 @@ export default function PrismRoot({ children }) {
 }
 ```
 
-Wrap your article body in `<PrismRoot>` and the islanded component will
-hydrate, scan, and highlight the existing markup in place.
+Wrap your article body in `<PrismRoot>` and the island will re-highlight the
+pre-rendered blocks in place. This is useful for themes that depend on media
+queries or user preference, but it adds JavaScript and causes a brief re-paint
+after hydration.
 
-Pros: no build step, easy to swap themes, works for user-generated
-content. Cons: extra JavaScript, a flash of unstyled code before the
-island hydrates, and the per-language grammars add bytes quickly.
+## Supplementary pattern 2 — post-build script for custom grammars
 
-## Why the docs site looks different
+`syntect` uses Sublime Text–compatible grammars. If you need a grammar that
+syntect does not bundle (an internal DSL, a niche language), you can run a
+post-build Node script to replace specific blocks after `zfb build`:
 
-The site you are reading right now uses Shiki via Astro and zudo-doc.
-That stack ships with build-time highlighting baked in. zfb sites do
-not run on Astro, so that integration is not available — the two
-options above are what you have until zfb's own pipeline ships.
+```ts
+// post-build/highlight-custom.ts — runs after `zfb build`
+import { glob } from "glob";
+import { readFile, writeFile } from "node:fs/promises";
+import { codeToHtml } from "shiki";
 
-When the renderer story is settled, expect a built-in build-time
-highlighter (probably Shiki) plus a configuration knob in `zfb.config`
-to choose themes and enabled languages. The migration from a hand-rolled
-post-build script will be straightforward.
+for (const file of await glob("dist/**/*.html")) {
+  const html = await readFile(file, "utf8");
+  const next = await highlightCustomBlocks(html, codeToHtml);
+  if (next !== html) await writeFile(file, next);
+}
+```
+
+This only makes sense for grammars absent from syntect's bundled set. For all
+standard languages (Rust, TypeScript, Python, Go, etc.), the built-in pipeline
+handles them without an extra step.
+
+## See also
+
+- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) —
+  how `SyntectPlugin` fits into the hast-phase pipeline and how to swap or
+  extend it.
+- [Custom Directives](/concepts/custom-directives) — `mermaid` blocks use this
+  path instead of syntect.
+- `crates/zfb-content/src/plugins/syntect_plugin.rs` — plugin source.
