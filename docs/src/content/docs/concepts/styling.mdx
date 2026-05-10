@@ -5,13 +5,7 @@ sidebar_position: 4
 category: Concepts
 ---
 
-<Info>
-
-The CSS pipeline (Tailwind compilation, PostCSS) is wired up in `crates/zfb-css` and runs today. Inlining the critical path into rendered HTML waits on the renderer (ADR-001).
-
-</Info>
-
-Styling in zfb is intentionally small. Today there are two layers — global CSS and Tailwind v4 — and one well-supported pattern for everything else: utility classes on the markup itself. Component-scoped styling is an open design space and is not part of v0.
+Styling in zfb has two layers — global CSS and Tailwind v4 — and one well-supported pattern for everything else: utility classes on the markup itself.
 
 ## Global CSS
 
@@ -63,12 +57,10 @@ Tailwind v4's CSS-first configuration is supported through `@theme` directives i
 
 ## Component-scoped styling
 
-This is the part to be honest about. CSS Modules, styled-components, and vanilla-extract are all reasonable choices for scoped component styles, and none of them are integrated into v0 of zfb.
+The recommended pattern is **global CSS for site-wide concerns plus Tailwind utility classes for component-level styling**. This keeps the build fast and the runtime trivial, and it maps cleanly onto Tailwind v4's design-token model.
 
-The recommended pattern today is **global CSS for site-wide concerns plus Tailwind utility classes for component-level styling**. This keeps the build fast and the runtime trivial, and it maps cleanly onto Tailwind v4's design-token model.
-
-Component-scoped CSS is on the radar as future work, and the integration point will live in `crates/zfb-css`.
+CSS Modules are not integrated. The integration point, if added, will live in `crates/zfb-css`.
 
 ## What lands in `dist/`
 
-Each rendered page in `dist/<route>.html` will eventually inline its critical CSS path so the first paint never waits for an external stylesheet. Today the build emits stub HTML without the CSS extraction step — that part lights up alongside the renderer. The compilation half (Tailwind, PostCSS, your `global.css`) already runs as part of the pipeline; what changes is where the output ends up.
+The build pipeline runs Tailwind and PostCSS, writes a hashed stylesheet to `dist/assets/`, and injects a `<link rel="stylesheet">` into each rendered HTML page. The stylesheet reference is stable so CDN caches can hold it across deployments until the content changes.

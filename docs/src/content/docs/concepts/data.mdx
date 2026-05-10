@@ -5,12 +5,6 @@ sidebar_position: 3
 category: Concepts
 ---
 
-<Info>
-
-The discovery and parsing halves of data and content collections work today. The bridge into the page renderer is part of the ADR-001 work.
-
-</Info>
-
 zfb gives you three different routes for getting structured data into a page, and the right choice depends on the shape of the data and how much ceremony you want around it.
 
 ## 1. Content collections
@@ -21,25 +15,25 @@ This is the right choice whenever the body of each entry is meant to be read.
 
 ## 2. Data collections
 
-When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection: a directory of JSON / YAML / TOML files declared in `zfb.config.json`. The same `[{ name, path }]` shape that content collections use today (see [Content Collections](/concepts/content-collections)) accepts data directories without ceremony:
+When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection: a directory of JSON / YAML / TOML files declared in `zfb.config.ts`. The same `[{ name, path }]` shape that content collections use (see [Content Collections](/concepts/content-collections)) accepts data directories without ceremony:
 
-```json
-{
-  "collections": [
+```ts
+export default {
+  collections: [
     {
-      "name": "products",
-      "path": "data/products"
-    }
-  ]
-}
+      name: "products",
+      path: "data/products",
+    },
+  ],
+};
 ```
 
-Each file becomes one entry. Per-entry schema validation is the planned future shape (matches the `defineConfig` v1 schema with explicit `type: "data"` + per-field validators); today the loader walks the directory and surfaces entries through `getCollection()`. You load them the same way:
+Each file becomes one entry. You can supply an optional `schema` field with per-field validators (see [`defineConfig`](/api/define-config) for the full shape). You load data entries the same way as content entries:
 
 ```tsx
 import { getCollection } from "zfb/content";
 
-const products = await getCollection("products");
+const products = getCollection("products");
 ```
 
 A data collection earns its keep when you want **per-entry validation, slug derivation, and the same loading API as your prose content** — without the Markdown-rendering step.

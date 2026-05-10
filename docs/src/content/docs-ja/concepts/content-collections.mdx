@@ -11,38 +11,26 @@ category: Concepts
 
 </Info>
 
-<Warning title="v0 status">
-
-File discovery, frontmatter parsing, and Markdown/MDX compilation live in `crates/zfb-content` and are wired through the renderer. Each entry now exposes `entry.Content` — a renderable React/Preact component compiled from the source via the mdast → JSX-source pipeline. See [MDX Components](/concepts/mdx-components) for how the `<post.Content components={...} />` contract works, and /architecture/js-runtime for the deeper runtime discussion.
-
-</Warning>
-
 A **content collection** is a directory of Markdown (or MDX) files declared in your project config. zfb scans the directory at build time, parses each file's frontmatter against a schema you supply, and exposes the entries through a `getCollection()` helper your pages can call.
 
 ## Declaring a collection
 
-Collections are configured in `zfb.config.json` under the `collections` key. Today the loader accepts an array of entries with `name` and `path`:
+Collections are configured in `zfb.config.ts` (or `zfb.config.json`) under the `collections` key. Each entry has a `name` and a `path`:
 
-```json
-{
-  "collections": [
+```ts
+export default {
+  collections: [
     {
-      "name": "blog",
-      "path": "content/blog"
-    }
-  ]
-}
+      name: "blog",
+      path: "content/blog",
+    },
+  ],
+};
 ```
 
 The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
 
-You can additionally supply an optional `schema` field — it is parsed but not yet enforced in v0; the planned future shape (per-field validators with `string`, `number`, `boolean`, `date`, `string[]` and a trailing `?` for optional) is described on the [`defineConfig`](/api/define-config) page so you can plan for it.
-
-<Info title="The richer schema lands with the runtime">
-
-  The forward-looking shape — `collections` keyed by name with `type: "content" | "data"`, `directory`, and an enforced `schema` — is the v1 target. It is documented on the `defineConfig` page for forward compatibility but is not what the loader accepts today. Author against the `[{ name, path }]` form for now; migrating later is a mechanical translation.
-
-</Info>
+You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter at build time. The supported keywords (`type`, `properties`, `items`, `required`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
 
 ## Loading entries from a page
 
@@ -51,8 +39,8 @@ Pages use `getCollection()` to enumerate entries:
 ```tsx
 import { getCollection } from "zfb/content";
 
-export default async function BlogIndex() {
-  const posts = await getCollection("blog");
+export default function BlogIndex() {
+  const posts = getCollection("blog");
   return (
     <ul>
       {posts.map((post) => (
@@ -77,4 +65,4 @@ The function signature lives in [`getCollection`](/api/get-collection).
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The remaining open work — picking up changes in dev for the full per-page loop and a few surrounding pieces — depends on ADR-001 (the JS runtime decision). The compilation and surface contract are stable; see [MDX Components](/concepts/mdx-components) for the rendering side.
+The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge contract.

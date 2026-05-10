@@ -5,12 +5,6 @@ sidebar_position: 6
 category: Concepts
 ---
 
-<Warning title="v0 status">
-
-Steps 1, 2, 3, and 9 work today. Steps 5–8 — render, CSS extraction, island bundling, and the build orchestrator's full per-page work — are sketched but not yet wired end-to-end. The blocker is ADR-001 (the JS runtime decision). See /architecture/build-engine for the deeper why-this-shape discussion and /architecture/js-runtime for the runtime decision itself.
-
-</Warning>
-
 zfb is built as a set of small Rust crates that each own one job. This page is a tour of the whole pipeline at the level of "which crate does what, and in what order" — enough to give you a mental map without diving into any single piece.
 
 ## The crates, in order
