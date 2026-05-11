@@ -49,7 +49,8 @@ use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as Mdast
 use sha2::{Digest, Sha256};
 
 use crate::pipeline::{
-    mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline, PipelineError,
+    constructs_for_jsx_emit, mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline,
+    PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{next_slug, slugify};
 
@@ -175,16 +176,25 @@ fn mdx_to_jsx_module_inner(
     // of inline math (markdown-rs's `math_text_single_dollar` defaults
     // to true). Authors who want a literal dollar sign must escape it
     // as `\$` — same convention as the upstream remark-math ecosystem.
+    //
+    // The GFM constructs come from the supplied pipeline (the bundler
+    // / dev loader / snapshot bridge resolve them from
+    // `zfb.config.ts#markdown.gfm` and thread them through). Without a
+    // pipeline (the no-`pipeline` legacy entry point) we fall back to
+    // the conservative default — strikethrough + table on, every other
+    // GFM construct off — so the no-pipeline path doesn't silently
+    // strip strikethrough either. Both paths route through
+    // `constructs_for_jsx_emit` so math (`math_flow` / `math_text`)
+    // stays hard-coded ON regardless of the GFM choice; math
+    // constructs are not part of the new `markdown.gfm` config
+    // surface, and the JSX emitter has dedicated arms for them
+    // (zfb#93).
+    let resolved_gfm: ResolvedGfmConstructs = pipeline
+        .as_deref()
+        .map(|p| p.gfm_constructs())
+        .unwrap_or(ResolvedGfmConstructs::CONSERVATIVE);
     let parse_options = markdown::ParseOptions {
-        constructs: markdown::Constructs {
-            math_flow: true,
-            math_text: true,
-            // GFM pipe-table syntax: `| Key | Value |`. Not part of
-            // Constructs::mdx() by default; enabled so MdastNode::Table
-            // reaches the emitter (see zfb#136).
-            gfm_table: true,
-            ..markdown::Constructs::mdx()
-        },
+        constructs: constructs_for_jsx_emit(resolved_gfm),
         mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
             markdown::MdxSignal::Ok
         })),

@@ -320,6 +320,16 @@ pub struct Config {
     /// through unchanged.
     #[serde(default)]
     pub trailing_slash: bool,
+
+    /// Markdown / MDX parsing options. Currently the only knob exposed
+    /// is [`MarkdownConfig::gfm`], which toggles GFM constructs
+    /// (strikethrough, table, autolink-literal, task-list-item,
+    /// footnote-definition) on or off.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `markdown` into this field.
+    #[serde(default)]
+    pub markdown: Option<MarkdownConfig>,
 }
 
 impl Default for Config {
@@ -339,6 +349,7 @@ impl Default for Config {
             code_highlight: None,
             resolve_markdown_links: None,
             trailing_slash: false,
+            markdown: None,
         }
     }
 }
@@ -514,6 +525,143 @@ pub struct PluginConfig {
     /// for JSON-only configs and synthetic test configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_module: Option<String>,
+}
+
+// --- markdown / GFM config -------------------------------------------------
+
+/// Markdown / MDX parsing options.
+///
+/// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Today the
+/// only knob is [`Self::gfm`]; future markdown-pipeline knobs would
+/// also live here.
+///
+/// `#[serde(rename_all = "camelCase")]` on this struct (and on the
+/// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
+/// with the Rust shape.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkdownConfig {
+    /// Enable GFM constructs. Accepts three shapes — see [`GfmFlag`].
+    /// Absent / `None` defers to the conservative resolved default in
+    /// [`MarkdownConfig::resolve_constructs`] (strikethrough + table on,
+    /// other GFM constructs off).
+    #[serde(default)]
+    pub gfm: Option<GfmFlag>,
+}
+
+/// Either the shorthand boolean form (`true` = all GFM constructs on,
+/// `false` = all off) or a partial [`GfmConstructs`] object that toggles
+/// individual constructs.
+///
+/// `serde(untagged)` plus the `Constructs` variant being listed FIRST
+/// is important: serde tries variants in order, so the object form
+/// must be tried before the boolean form. (`true` / `false` will never
+/// deserialise into the object variant anyway.)
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum GfmFlag {
+    /// Per-construct opt-in / opt-out.
+    Constructs(GfmConstructs),
+    /// Shorthand: `true` = every GFM construct on, `false` = every GFM
+    /// construct off.
+    All(bool),
+}
+
+/// Per-construct opt-in / opt-out for GFM. Every field is optional;
+/// omitted fields fall back to the conservative default
+/// (`strikethrough: Some(true)`, `table: Some(true)`, others
+/// `Some(false)` at resolve time — see
+/// [`MarkdownConfig::resolve_constructs`]).
+///
+/// Wrapping each field in `Option<bool>` (rather than plain `bool`)
+/// lets `resolve_constructs` distinguish "user explicitly said `false`"
+/// from "user did not mention this field" — the latter falls back to
+/// the conservative default; the former is honoured verbatim.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GfmConstructs {
+    /// GFM strikethrough (`~~text~~` → `<del>text</del>`).
+    #[serde(default)]
+    pub strikethrough: Option<bool>,
+    /// GFM pipe-style tables.
+    #[serde(default)]
+    pub table: Option<bool>,
+    /// GFM autolink literal — bare URLs like `https://example.com`
+    /// become clickable without `<…>` brackets.
+    #[serde(default)]
+    pub autolink_literal: Option<bool>,
+    /// GFM task list items (`- [x]` / `- [ ]`).
+    #[serde(default)]
+    pub task_list_item: Option<bool>,
+    /// GFM footnote definitions (`[^ref]: …`).
+    #[serde(default)]
+    pub footnote_definition: Option<bool>,
+}
+
+/// Resolved per-construct GFM flags.
+///
+/// Re-exported from `zfb_content::ResolvedGfmConstructs` — the type
+/// itself lives in `zfb-content` (the lowest crate that actually
+/// touches `markdown::Constructs`) so the snapshot walker, bundler,
+/// and dev loader can wire it into [`markdown::ParseOptions`] without
+/// an upward dependency on this crate. This re-export keeps the public
+/// `zfb::config` surface self-contained for `zfb.config.ts` consumers.
+pub use zfb_content::ResolvedGfmConstructs;
+
+impl MarkdownConfig {
+    /// Pure function — overlay this config's `gfm` field onto a
+    /// [`ResolvedGfmConstructs`] base.
+    ///
+    /// Resolution rules:
+    ///
+    /// - `gfm: None` (absent) → return the conservative default
+    ///   ([`ResolvedGfmConstructs::CONSERVATIVE`]). The `base` argument
+    ///   is provided so callers that want a different "what fields the
+    ///   user did NOT mention fall back to" can supply it; the default
+    ///   pipeline path always passes [`ResolvedGfmConstructs::CONSERVATIVE`].
+    /// - `gfm: Some(All(true))` → [`ResolvedGfmConstructs::ALL_ON`].
+    /// - `gfm: Some(All(false))` → [`ResolvedGfmConstructs::ALL_OFF`].
+    /// - `gfm: Some(Constructs(partial))` → overlay each `Some(_)`
+    ///   field of `partial` onto `base`; `None` fields keep the `base`
+    ///   value. So `{ strikethrough: true }` only flips strikethrough
+    ///   relative to the conservative default; the other four
+    ///   constructs keep their default values.
+    ///
+    /// Covered by the four-case test matrix in this module's `#[cfg(test)]`
+    /// block.
+    #[must_use]
+    pub fn resolve_constructs(&self, base: ResolvedGfmConstructs) -> ResolvedGfmConstructs {
+        match &self.gfm {
+            None => base,
+            Some(GfmFlag::All(true)) => ResolvedGfmConstructs::ALL_ON,
+            Some(GfmFlag::All(false)) => ResolvedGfmConstructs::ALL_OFF,
+            Some(GfmFlag::Constructs(c)) => ResolvedGfmConstructs {
+                strikethrough: c.strikethrough.unwrap_or(base.strikethrough),
+                table: c.table.unwrap_or(base.table),
+                autolink_literal: c.autolink_literal.unwrap_or(base.autolink_literal),
+                task_list_item: c.task_list_item.unwrap_or(base.task_list_item),
+                footnote_definition: c.footnote_definition.unwrap_or(base.footnote_definition),
+            },
+        }
+    }
+}
+
+/// Convenience helper: resolve `cfg.markdown.as_ref()` — handling both
+/// "the user omitted the whole `markdown` block" and "the user wrote
+/// `markdown: { gfm: …}`" — to a final [`ResolvedGfmConstructs`].
+///
+/// Pure, deterministic, zero-allocation; intended to be called from the
+/// bundler / loader / snapshot-bridge sites that need the resolved
+/// flags. Matching the conservative-default rule everywhere (and only
+/// here) is what keeps snapshot ↔ bundler hashes byte-identical — the
+/// content_bridge land mine in
+/// `crates/zfb-content/src/content_bridge.rs:118-153`.
+#[must_use]
+pub fn resolve_gfm_constructs(markdown: Option<&MarkdownConfig>) -> ResolvedGfmConstructs {
+    match markdown {
+        Some(m) => m.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
+        None => ResolvedGfmConstructs::CONSERVATIVE,
+    }
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -2105,6 +2253,152 @@ mod tests {
         assert_eq!(
             cfg.collections[0].path,
             PathBuf::from("content/blog")
+        );
+    }
+
+    // --- MarkdownConfig / GFM resolution tests ----------------------------
+
+    // Case 1 of the spec's four-case resolution matrix: `markdown`
+    // omitted entirely → conservative default.
+    #[test]
+    fn gfm_resolve_absent_markdown_yields_conservative_default() {
+        let resolved = resolve_gfm_constructs(None);
+        assert_eq!(resolved, ResolvedGfmConstructs::CONSERVATIVE);
+        // Spell it out so future readers can audit the intent at a
+        // glance — strikethrough + table on, everything else off.
+        assert!(resolved.strikethrough);
+        assert!(resolved.table);
+        assert!(!resolved.autolink_literal);
+        assert!(!resolved.task_list_item);
+        assert!(!resolved.footnote_definition);
+    }
+
+    // Same as case 1 but exercising the "user wrote `markdown: {}`"
+    // path — every field of MarkdownConfig is None / default, and the
+    // overlay should reduce to the conservative base verbatim.
+    #[test]
+    fn gfm_resolve_empty_markdown_yields_conservative_default() {
+        let cfg = MarkdownConfig::default();
+        assert_eq!(
+            cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
+            ResolvedGfmConstructs::CONSERVATIVE
+        );
+    }
+
+    // Case 2 of the spec's matrix: `gfm: true` → every GFM construct on.
+    #[test]
+    fn gfm_resolve_shorthand_true_turns_everything_on() {
+        let cfg = MarkdownConfig {
+            gfm: Some(GfmFlag::All(true)),
+        };
+        assert_eq!(
+            cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
+            ResolvedGfmConstructs::ALL_ON
+        );
+    }
+
+    // Case 3 of the spec's matrix: `gfm: false` → every GFM construct off.
+    #[test]
+    fn gfm_resolve_shorthand_false_turns_everything_off() {
+        let cfg = MarkdownConfig {
+            gfm: Some(GfmFlag::All(false)),
+        };
+        assert_eq!(
+            cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
+            ResolvedGfmConstructs::ALL_OFF
+        );
+    }
+
+    // Case 4 of the spec's matrix: partial object —
+    // `{ strikethrough: true, autolinkLiteral: false }` — only those
+    // fields overlay; absent fields fall back to the conservative
+    // default values.
+    #[test]
+    fn gfm_resolve_partial_object_overlays_only_named_fields() {
+        let cfg = MarkdownConfig {
+            gfm: Some(GfmFlag::Constructs(GfmConstructs {
+                strikethrough: Some(true),
+                autolink_literal: Some(false),
+                ..GfmConstructs::default()
+            })),
+        };
+        let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
+        // Named explicitly:
+        assert!(resolved.strikethrough);
+        assert!(!resolved.autolink_literal);
+        // Unnamed → conservative defaults:
+        assert!(resolved.table);
+        assert!(!resolved.task_list_item);
+        assert!(!resolved.footnote_definition);
+    }
+
+    // A partial object that flips a single conservative-default field
+    // OFF (e.g. `{ table: false }`) — verifies the overlay can move a
+    // field in either direction.
+    #[test]
+    fn gfm_resolve_partial_object_can_turn_off_conservative_defaults() {
+        let cfg = MarkdownConfig {
+            gfm: Some(GfmFlag::Constructs(GfmConstructs {
+                table: Some(false),
+                ..GfmConstructs::default()
+            })),
+        };
+        let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
+        assert!(resolved.strikethrough); // conservative-default stayed
+        assert!(!resolved.table);        // explicit override
+    }
+
+    // Serde round-trip — the TS `gfm: true` shorthand and the
+    // TS `gfm: { strikethrough: true }` partial object must both
+    // deserialise into the right variant.
+    #[test]
+    fn markdown_config_deserialises_from_shorthand_and_partial_object() {
+        // Shorthand boolean form.
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "gfm": true
+        }))
+        .expect("shorthand true deserialises");
+        assert_eq!(cfg.gfm, Some(GfmFlag::All(true)));
+
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "gfm": false
+        }))
+        .expect("shorthand false deserialises");
+        assert_eq!(cfg.gfm, Some(GfmFlag::All(false)));
+
+        // Partial object form — TS camelCase round-trips into Rust
+        // snake_case via the parent struct's `rename_all = "camelCase"`.
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "gfm": {
+                "strikethrough": true,
+                "autolinkLiteral": false
+            }
+        }))
+        .expect("partial object deserialises");
+        assert_eq!(
+            cfg.gfm,
+            Some(GfmFlag::Constructs(GfmConstructs {
+                strikethrough: Some(true),
+                autolink_literal: Some(false),
+                ..GfmConstructs::default()
+            }))
+        );
+    }
+
+    // The top-level `Config` accepts the `markdown` field via the
+    // camelCase rename — confirming integration with the rest of the
+    // config struct.
+    #[test]
+    fn config_top_level_accepts_markdown_field() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "markdown": { "gfm": true }
+        }))
+        .expect("top-level markdown deserialises");
+        assert_eq!(
+            cfg.markdown,
+            Some(MarkdownConfig {
+                gfm: Some(GfmFlag::All(true))
+            })
         );
     }
 }

@@ -196,8 +196,33 @@ impl ModuleLoader {
     /// #129): when the bundler has the flag on, the dev loader must
     /// honour it too or `pnpm dev` and `zfb build` produce different
     /// href shapes for `[link](other.md)` style references.
+    ///
+    /// GFM constructs default to the conservative set
+    /// (`ResolvedGfmConstructs::CONSERVATIVE`). Use
+    /// [`ModuleLoader::with_strip_md_ext_and_gfm`] when the project's
+    /// `zfb.config.ts` configures `markdown.gfm` so dev rendering
+    /// agrees with the bundler.
     pub fn with_strip_md_ext(jsx_runtime: JsxRuntime, strip_md_ext: bool) -> Self {
-        let mut content_pipeline = Pipeline::with_defaults();
+        Self::with_strip_md_ext_and_gfm(
+            jsx_runtime,
+            strip_md_ext,
+            zfb_content::ResolvedGfmConstructs::default(),
+        )
+    }
+
+    /// Most-explicit constructor: takes both the strip-md-ext toggle
+    /// and the resolved GFM construct set so dev rendering and the
+    /// bundler agree on every parser knob.
+    ///
+    /// Mirrors
+    /// [`zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm`]
+    /// — the bundler funnels through the same constructor.
+    pub fn with_strip_md_ext_and_gfm(
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    ) -> Self {
+        let mut content_pipeline = Pipeline::with_defaults_and_gfm(gfm_constructs);
         if strip_md_ext {
             content_pipeline.add_strip_md_ext();
         }

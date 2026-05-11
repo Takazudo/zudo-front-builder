@@ -30,6 +30,115 @@ use crate::plugins::{
 };
 use crate::syntect_highlight::Highlighter;
 
+/// Resolved per-construct GFM flags.
+///
+/// Output of `zfb::config::MarkdownConfig::resolve_constructs` (and the
+/// matching `resolve_gfm_constructs` free function). Threaded into
+/// every site that builds [`markdown::ParseOptions`] so the snapshot
+/// walker, bundler, and dev loader stay in lockstep on the parser
+/// constructs — divergence here is the
+/// `content_bridge.rs:118-153` land mine (snapshot ↔ bundler
+/// `content_hash` divergence → `<pre data-zfb-content-fallback>`).
+///
+/// Defined here in `zfb-content` (the lowest crate that actually
+/// touches `markdown::Constructs`) so consumers can wire it into the
+/// pipeline without an upward dependency on `zfb`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedGfmConstructs {
+    /// GFM strikethrough (`~~text~~`).
+    pub strikethrough: bool,
+    /// GFM pipe-style tables.
+    pub table: bool,
+    /// GFM autolink literal (bare URLs).
+    pub autolink_literal: bool,
+    /// GFM task list items (`- [x]` / `- [ ]`).
+    pub task_list_item: bool,
+    /// GFM footnote definitions (`[^ref]: …`).
+    pub footnote_definition: bool,
+}
+
+impl ResolvedGfmConstructs {
+    /// Conservative default — strikethrough + table on, every other
+    /// GFM construct off. See
+    /// `zfb::config::ResolvedGfmConstructs::CONSERVATIVE` for the full
+    /// rationale; both constants must stay in sync.
+    pub const CONSERVATIVE: Self = Self {
+        strikethrough: true,
+        table: true,
+        autolink_literal: false,
+        task_list_item: false,
+        footnote_definition: false,
+    };
+
+    /// Every GFM construct ON.
+    pub const ALL_ON: Self = Self {
+        strikethrough: true,
+        table: true,
+        autolink_literal: true,
+        task_list_item: true,
+        footnote_definition: true,
+    };
+
+    /// Every GFM construct OFF.
+    pub const ALL_OFF: Self = Self {
+        strikethrough: false,
+        table: false,
+        autolink_literal: false,
+        task_list_item: false,
+        footnote_definition: false,
+    };
+}
+
+impl Default for ResolvedGfmConstructs {
+    /// `Default` is the conservative default — the only `Default` that
+    /// makes sense without further context.
+    fn default() -> Self {
+        Self::CONSERVATIVE
+    }
+}
+
+/// Build `markdown::Constructs` for the HTML-serializer / collection
+/// walker pipeline (`Pipeline::run`) from a resolved GFM flag set.
+///
+/// Math constructs are deliberately left at their `Constructs::mdx()`
+/// default values here. The HTML serializer path treats math nodes as
+/// passthrough; enabling them here would not change the serializer
+/// output. The JSX-emit path enables `math_flow` / `math_text`
+/// separately, where the JSX emitter has dedicated arms for them.
+#[must_use]
+pub fn constructs_for_pipeline(
+    resolved: ResolvedGfmConstructs,
+) -> markdown::Constructs {
+    markdown::Constructs {
+        gfm_strikethrough: resolved.strikethrough,
+        gfm_table: resolved.table,
+        gfm_autolink_literal: resolved.autolink_literal,
+        gfm_task_list_item: resolved.task_list_item,
+        gfm_footnote_definition: resolved.footnote_definition,
+        // `gfm_label_start_footnote` is the inline-side of footnotes
+        // (`[^ref]` reference markers); markdown-rs treats it as a
+        // pair with `gfm_footnote_definition`, so we mirror the flag.
+        gfm_label_start_footnote: resolved.footnote_definition,
+        ..markdown::Constructs::mdx()
+    }
+}
+
+/// Same as [`constructs_for_pipeline`] but additionally turns on
+/// `math_flow` + `math_text`. Used at the JSX emit site so `$$…$$`
+/// and `$…$` parse into dedicated `Math` / `InlineMath` mdast nodes
+/// (zfb#93).
+#[must_use]
+pub fn constructs_for_jsx_emit(
+    resolved: ResolvedGfmConstructs,
+) -> markdown::Constructs {
+    markdown::Constructs {
+        math_flow: true,
+        math_text: true,
+        ..constructs_for_pipeline(resolved)
+    }
+}
+
+
 /// Lightweight HTML AST node.
 ///
 /// Plugins (mdast and hast visitors) operate on this representation in
@@ -129,6 +238,15 @@ pub struct Pipeline {
     mdast_visitors: Vec<Box<dyn MdastVisitor>>,
     hast_visitors: Vec<Box<dyn HastVisitor>>,
     parse_options: markdown::ParseOptions,
+    /// Resolved GFM constructs the pipeline was constructed with.
+    /// Stored separately from `parse_options.constructs` so the JSX
+    /// emit path can read back the same flags and build its own
+    /// `ParseOptions` (which also enables math constructs) without
+    /// having to round-trip through the markdown-rs `Constructs`
+    /// struct field-by-field. The two MUST stay in sync; the
+    /// constructors enforce this by building both from one
+    /// `ResolvedGfmConstructs` input.
+    gfm_constructs: ResolvedGfmConstructs,
     /// When the `StripMdExtensionPlugin` is wired into the pipeline,
     /// this flag controls whether the plugin appends `/` to internal
     /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
@@ -163,15 +281,68 @@ impl Pipeline {
     }
 
     /// New pipeline using MDX-aware [`markdown::ParseOptions`].
+    ///
+    /// GFM construct flags follow the conservative default
+    /// (`gfm_strikethrough` + `gfm_table` on, every other GFM construct
+    /// off) — matching `ResolvedGfmConstructs::CONSERVATIVE` in
+    /// `crates/zfb/src/config.rs`. Math constructs (`math_flow`,
+    /// `math_text`) stay OFF here because [`Pipeline::run`] consumes
+    /// HTML output and the HTML serializer treats math nodes as
+    /// passthrough; the JSX-emit path enables them separately at
+    /// `mdx_jsx_emit::mdx_to_jsx_module_inner`. Callers wiring this
+    /// pipeline from a project config should prefer
+    /// [`Pipeline::with_resolved_gfm_constructs`] so the user's
+    /// `markdown.gfm` setting flows through.
     #[must_use]
     pub fn with_mdx() -> Self {
+        Self::with_resolved_gfm_constructs(ResolvedGfmConstructs::CONSERVATIVE)
+    }
+
+    /// New pipeline whose [`markdown::ParseOptions::constructs`] is
+    /// built from a project-supplied [`ResolvedGfmConstructs`] (see
+    /// `zfb::config::resolve_gfm_constructs`).
+    ///
+    /// The bundler + dev loader + snapshot bridge all funnel through
+    /// this entry point so every site that materialises MDX content
+    /// agrees on the same parser constructs — which is what keeps the
+    /// snapshot ↔ bundler JSX `content_hash` byte-identical. The
+    /// land-mine comment at
+    /// `crates/zfb-content/src/content_bridge.rs:118-153` calls this
+    /// out explicitly.
+    ///
+    /// `gfm_label_start_footnote` is mirrored to the resolved
+    /// `footnote_definition` flag because the two constructs are
+    /// paired in markdown-rs: enabling the definition without the
+    /// label-start means the parser sees `[^a]: body` but never the
+    /// `[^a]` reference at the use site.
+    #[must_use]
+    pub fn with_resolved_gfm_constructs(
+        resolved: ResolvedGfmConstructs,
+    ) -> Self {
+        let constructs = constructs_for_pipeline(resolved);
         Self {
             mdast_visitors: Vec::new(),
             hast_visitors: Vec::new(),
-            parse_options: markdown::ParseOptions::mdx(),
+            parse_options: markdown::ParseOptions {
+                constructs,
+                ..markdown::ParseOptions::mdx()
+            },
+            gfm_constructs: resolved,
             add_trailing_slash: true,
             resolve_links: None,
         }
+    }
+
+    /// Borrow the resolved GFM construct set this pipeline was built
+    /// with.
+    ///
+    /// The JSX-emit detour reads this to build its own
+    /// `ParseOptions` (which also enables math constructs) so the two
+    /// parse paths agree on every non-math construct. Snapshot ↔
+    /// bundler hash parity depends on this agreement.
+    #[must_use]
+    pub fn gfm_constructs(&self) -> ResolvedGfmConstructs {
+        self.gfm_constructs
     }
 
     /// Set the `add_trailing_slash` option. Affects subsequent
@@ -313,6 +484,17 @@ impl Pipeline {
         Self::with_defaults_and_theme(None)
     }
 
+    /// New pipeline preloaded with the default plugin chain plus an
+    /// explicit GFM construct set.
+    ///
+    /// Forwards to [`Pipeline::with_defaults_and_theme_and_gfm`] with
+    /// the default theme. Use when the project's `zfb.config.ts`
+    /// configures `markdown.gfm` but not `codeHighlight.theme`.
+    #[must_use]
+    pub fn with_defaults_and_gfm(resolved: ResolvedGfmConstructs) -> Self {
+        Self::with_defaults_and_theme_and_gfm(None, resolved)
+    }
+
     /// New pipeline preloaded with the default plugin chain, optionally
     /// overriding the syntect highlight theme.
     ///
@@ -332,8 +514,24 @@ impl Pipeline {
     /// (theme = `base16-ocean.dark`).
     #[must_use]
     pub fn with_defaults_and_theme(theme: Option<&str>) -> Self {
+        Self::with_defaults_and_theme_and_gfm(theme, ResolvedGfmConstructs::CONSERVATIVE)
+    }
+
+    /// Most-explicit constructor: default plugin chain + theme +
+    /// resolved GFM construct set.
+    ///
+    /// The bundler, snapshot walker, and dev loader all funnel through
+    /// this entry point so every site that materialises MDX content
+    /// agrees on the same parser constructs — the snapshot ↔ bundler
+    /// hash parity requirement called out in
+    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
+    #[must_use]
+    pub fn with_defaults_and_theme_and_gfm(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+    ) -> Self {
         let highlighter = Arc::new(Highlighter::new());
-        let mut p = Self::with_mdx();
+        let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase.
         p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
@@ -902,9 +1100,12 @@ mod tests {
 
     // 4. Bold/italic/strikethrough/inline-code.
     //
-    // Strikethrough (`~~x~~`) is a GFM construct; MDX ParseOptions does
-    // not enable it. We test it explicitly with a Delete mdast node fed
-    // through the converter so the mapping is still covered.
+    // Strikethrough is GFM; with the conservative default
+    // (`ResolvedGfmConstructs::CONSERVATIVE`) it is now ON by default,
+    // so `~~x~~` parses into a `Delete` mdast node and the converter
+    // maps it to `<del>`. We exercise both paths: the synthetic
+    // `Delete` arm of `mdast_to_hast` AND the parse-driven path
+    // through `Pipeline::run`.
     #[test]
     fn inline_formatting() {
         // *em* and **strong** and `code` work under MDX parse options.
@@ -921,7 +1122,8 @@ mod tests {
         let (_, code_children, _) = assert_element(&p_children[4], "code");
         assert_eq!(code_children, &[HastNode::Text("c".into())]);
 
-        // Strikethrough: feed a synthetic Delete node directly.
+        // Strikethrough — synthetic Delete node: the mdast→hast arm is
+        // covered regardless of the parser construct flag.
         let del = MdastNode::Delete(markdown::mdast::Delete {
             children: vec![MdastNode::Text(Text {
                 value: "gone".into(),
@@ -932,6 +1134,51 @@ mod tests {
         let hast = mdast_to_hast(&del);
         let (_, del_children, _) = assert_element(&hast, "del");
         assert_eq!(del_children, &[HastNode::Text("gone".into())]);
+    }
+
+    // 4b. Conservative-default parser turns `~~text~~` into a Delete
+    // node. This is the missing-half of `inline_formatting` (the
+    // pre-config-API test only exercised the synthetic-node path).
+    // Sub-issue #61 of zudo-design-token-panel #60.
+    #[test]
+    fn strikethrough_parses_with_conservative_default() {
+        let h = run("a ~~b~~ c");
+        let (_, p_children, _) = assert_element(first_child(&h), "p");
+        // The `<p>` body is: Text("a ") · <del>b</del> · Text(" c").
+        // Find the `<del>` element regardless of how markdown-rs
+        // splits the surrounding text — what matters is that one
+        // exists.
+        let del = p_children
+            .iter()
+            .find(|child| matches!(child, HastNode::Element { tag, .. } if tag == "del"))
+            .expect("expected a <del> element in the parsed paragraph");
+        let (_, del_children, _) = assert_element(del, "del");
+        assert_eq!(del_children, &[HastNode::Text("b".into())]);
+    }
+
+    // 4c. With strikethrough explicitly OFF (`gfm: false` shape), the
+    // parser leaves `~~text~~` as bare text — no `Delete` node.
+    #[test]
+    fn strikethrough_disabled_emits_no_delete_node() {
+        let mut p = Pipeline::with_resolved_gfm_constructs(
+            ResolvedGfmConstructs::ALL_OFF,
+        );
+        let h = p.run("a ~~b~~ c").expect("parse ok");
+        // Walk the tree and assert there is no `<del>` anywhere — the
+        // raw `~~` characters live inside a Text node instead.
+        fn has_del(node: &HastNode) -> bool {
+            match node {
+                HastNode::Element { tag, children, .. } => {
+                    if tag == "del" {
+                        return true;
+                    }
+                    children.iter().any(has_del)
+                }
+                HastNode::Root { children } => children.iter().any(has_del),
+                _ => false,
+            }
+        }
+        assert!(!has_del(&h), "no <del> expected when strikethrough is off");
     }
 
     // 5. Fenced code block preserves lang and meta as attrs.

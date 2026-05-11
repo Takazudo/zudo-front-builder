@@ -384,6 +384,21 @@ pub struct BundlerInput {
     /// Mirrors `zfb::config::Config::resolve_markdown_links`. Default: `None`
     /// (pass-through — links are not rewritten).
     pub resolve_markdown_links: Option<ResolveMarkdownLinksSpec>,
+
+    /// Resolved per-construct GFM flags. Threaded into the hoisted MDX
+    /// pre-compile pipeline at every `materialise_*` call site so the
+    /// JSX `content_hash` baked into each compiled module agrees with
+    /// what the snapshot walker (`zfb_content::build_snapshot_with_config`)
+    /// produces. Divergence here is the snapshot ↔ bundler hash
+    /// land mine documented at
+    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
+    ///
+    /// Mirrors `zfb::config::resolve_gfm_constructs(config.markdown)`.
+    /// `Default` is [`ResolvedGfmConstructs::CONSERVATIVE`] so call
+    /// sites that don't construct this struct manually (the test
+    /// builders in `crates/zfb-build/tests/` etc.) keep the same
+    /// effective parser behaviour.
+    pub gfm_constructs: zfb_content::ResolvedGfmConstructs,
 }
 
 impl BundlerInput {
@@ -429,6 +444,7 @@ impl BundlerInput {
             strip_md_ext: false,
             code_highlight_theme: None,
             resolve_markdown_links: None,
+            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         }
     }
 }
@@ -604,6 +620,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            input.gfm_constructs,
             &mut broken,
         )
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
@@ -636,6 +653,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.strip_md_ext,
                 input.code_highlight_theme.as_deref(),
                 if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                input.gfm_constructs,
                 &mut broken,
             )
             .with_context(|| {
@@ -661,6 +679,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            input.gfm_constructs,
             &mut broken,
         )
         .with_context(|| {
@@ -682,6 +701,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            input.gfm_constructs,
             &mut broken,
         )
         .with_context(|| {
@@ -702,6 +722,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            input.gfm_constructs,
             &mut broken,
         )
         .with_context(|| {
@@ -756,6 +777,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     input.strip_md_ext,
                     input.code_highlight_theme.as_deref(),
                     if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                    input.gfm_constructs,
                     &mut broken,
                 )
                 .with_context(|| {
@@ -933,6 +955,7 @@ fn materialise_shadow(
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
+    gfm_constructs: zfb_content::ResolvedGfmConstructs,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -977,7 +1000,10 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+        code_highlight_theme,
+        gfm_constructs,
+    );
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -1218,6 +1244,7 @@ fn materialise_collection(
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
+    gfm_constructs: zfb_content::ResolvedGfmConstructs,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1240,7 +1267,10 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme(code_highlight_theme);
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+        code_highlight_theme,
+        gfm_constructs,
+    );
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -2108,6 +2138,7 @@ mod tests {
             strip_md_ext: false,
             code_highlight_theme: None,
             resolve_markdown_links: None,
+            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         }
     }
 
@@ -2332,7 +2363,18 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("docs");
         let mut imports: Vec<ContentImport> = Vec::new();
-        materialise_collection(&src, &dest, "docs", &mut imports, false, None, None, &mut Vec::new()).unwrap();
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports,
+            false,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         // Two MDX files → two ContentImport records, with stable
         // forward-slash shadow_rel_paths under `content/docs/...`.
@@ -2460,6 +2502,7 @@ mod tests {
             false,
             None,
             None,
+            zfb_content::ResolvedGfmConstructs::default(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -2663,6 +2706,7 @@ mod tests {
             strip_md_ext: false,
             code_highlight_theme: None,
             resolve_markdown_links: None,
+            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2771,7 +2815,18 @@ mod tests {
         let mut routes = Vec::new();
         // dest must be named "pages" for is_pages_dir detection in materialise_shadow
         let shadow_pages_dest = root.join("shadow").join("pages");
-        materialise_shadow(&pages, &shadow_pages_dest, &mut routes, &root, false, None, None, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &pages,
+            &shadow_pages_dest,
+            &mut routes,
+            &root,
+            false,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         // Map route → registration index.
         let order: BTreeMap<&str, usize> = routes

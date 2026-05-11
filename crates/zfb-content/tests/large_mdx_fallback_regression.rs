@@ -376,6 +376,7 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
         code_highlight_theme: None,
         strip_md_ext: true,
         resolve_source_map: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
     };
     let snap = build_snapshot_with_config(
         &[CollectionConfig::new("docs", &root)],

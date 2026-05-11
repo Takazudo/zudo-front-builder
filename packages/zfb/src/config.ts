@@ -173,6 +173,79 @@ export type ZfbConfig = {
    * Mirrors `Config::trailing_slash` in crates/zfb/src/config.rs.
    */
   trailingSlash?: boolean;
+
+  /**
+   * Markdown / MDX parsing options. Currently the only knob exposed is
+   * [`gfm`](MarkdownConfig.gfm), which toggles GFM constructs
+   * (strikethrough, table, autolink-literal, task-list-item,
+   * footnote-definition) on or off.
+   *
+   * Mirrors `Config::markdown` in crates/zfb/src/config.rs.
+   */
+  markdown?: MarkdownConfig;
+};
+
+/**
+ * Markdown / MDX parsing options.
+ *
+ * See [`ZfbConfig.markdown`] for the embed point. Today the only field
+ * is [`gfm`](MarkdownConfig.gfm); future markdown knobs (e.g. CommonMark
+ * variants, custom extensions) would also live here.
+ *
+ * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
+ */
+export type MarkdownConfig = {
+  /**
+   * Enable GFM constructs.
+   *
+   * Accepts three shapes:
+   *
+   * - `true` — turn every GFM construct ON (strikethrough, table,
+   *   autolink-literal, task-list-item, footnote-definition).
+   * - `false` — turn every GFM construct OFF.
+   * - partial object — set individual fields explicitly; fields you
+   *   omit fall back to the conservative-default values described
+   *   below.
+   *
+   * When `markdown` itself is omitted entirely, the conservative
+   * default applies: `strikethrough: true`, `table: true`, every other
+   * GFM construct off. This is the smallest behavioural delta from
+   * zfb's historical effective state (table-only). Projects that want
+   * the full GFM surface should opt in with `gfm: true`.
+   */
+  gfm?: GfmFlag;
+};
+
+/**
+ * Either the shorthand boolean form (`true` = all GFM constructs on,
+ * `false` = all off) or a partial object that toggles individual
+ * constructs.
+ *
+ * Mirrors `GfmFlag` in crates/zfb/src/config.rs.
+ */
+export type GfmFlag = boolean | GfmConstructs;
+
+/**
+ * Per-construct opt-in / opt-out for GFM. Every field is optional;
+ * omitted fields fall back to the conservative default
+ * (`strikethrough: true`, `table: true`, others `false`).
+ *
+ * Mirrors `GfmConstructs` in crates/zfb/src/config.rs.
+ */
+export type GfmConstructs = {
+  /** GFM strikethrough (`~~text~~` → `<del>text</del>`). */
+  strikethrough?: boolean;
+  /** GFM pipe-style tables. */
+  table?: boolean;
+  /**
+   * GFM autolink literal — bare URLs like `https://example.com` become
+   * clickable links without `<…>` brackets.
+   */
+  autolinkLiteral?: boolean;
+  /** GFM task list items (`- [x]` / `- [ ]`). */
+  taskListItem?: boolean;
+  /** GFM footnote definitions (`[^ref]: …`). */
+  footnoteDefinition?: boolean;
 };
 
 /**
