@@ -315,6 +315,7 @@ fn build_bundle(
         strip_md_ext: false,
         code_highlight_theme: None,
         resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

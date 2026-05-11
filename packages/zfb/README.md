@@ -124,6 +124,63 @@ for (const el of document.querySelectorAll<HTMLElement>("[data-zfb-island]")) {
 if hydration has not fired yet. After firing, calling `cancel` is a
 no-op.
 
+## Markdown / GFM config
+
+`ZfbConfig.markdown.gfm` controls which GitHub-Flavored-Markdown
+constructs the MDX parser recognises. The field accepts three shapes:
+
+1. **Shorthand boolean** — turn every GFM construct on or off in one
+   step. Use this when you want the full GFM surface.
+
+   ```ts
+   // zfb.config.ts
+   import { defineConfig } from "zfb/config";
+
+   export default defineConfig({
+     markdown: {
+       gfm: true, // strikethrough + table + autolink-literal + task-list-item + footnote-definition
+     },
+   });
+   ```
+
+2. **Partial object** — toggle individual constructs. Fields you omit
+   fall back to the conservative default (`strikethrough: true`,
+   `table: true`, everything else off).
+
+   ```ts
+   // zfb.config.ts
+   import { defineConfig } from "zfb/config";
+
+   export default defineConfig({
+     markdown: {
+       gfm: {
+         strikethrough: true,
+         table: true,
+         autolinkLiteral: false,    // explicit opt-out
+         taskListItem: false,
+         footnoteDefinition: false,
+       },
+     },
+   });
+   ```
+
+3. **Omitted entirely** — the parser uses the conservative default.
+   `~~text~~` parses as `<del>text</del>` and pipe tables render as
+   `<table>`; every other GFM construct stays off.
+
+   ```ts
+   export default defineConfig({
+     // no `markdown` field — strikethrough + table on, everything else off
+   });
+   ```
+
+The five constructs you can toggle are: `strikethrough`, `table`,
+`autolinkLiteral`, `taskListItem`, `footnoteDefinition`.
+
+Projects that previously relied on raw `~~text~~` passing through as
+literal characters should set `markdown: { gfm: { strikethrough: false } }`
+or `markdown: { gfm: false }` to restore the old behaviour.
+
 ## Tests
 
 ```sh

@@ -150,13 +150,30 @@ pub struct SnapshotPipelineConfig {
     /// the plugin entirely.
     pub resolve_source_map:
         Option<std::collections::HashMap<std::path::PathBuf, String>>,
+    /// Resolved GFM construct flags (output of
+    /// `zfb::config::resolve_gfm_constructs` / `MarkdownConfig::resolve_constructs`).
+    /// MUST match what the bundler threads into its own
+    /// `Pipeline::with_defaults_and_theme_and_gfm` call. Divergence
+    /// here is the snapshot ↔ bundler hash divergence land mine
+    /// documented above — flipping `gfm_strikethrough` on one side and
+    /// off on the other shifts every snapshot's JSX `content_hash`,
+    /// and every `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// `Default` is [`ResolvedGfmConstructs::CONSERVATIVE`] so existing
+    /// tests + fixtures that don't construct this struct manually keep
+    /// the same effective behaviour as before this field landed.
+    pub gfm_constructs: super::pipeline::ResolvedGfmConstructs,
 }
 
 impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
     fn build_pipeline(&self) -> Pipeline {
-        let mut p = Pipeline::with_defaults_and_theme(self.code_highlight_theme.as_deref());
+        let mut p = Pipeline::with_defaults_and_theme_and_gfm(
+            self.code_highlight_theme.as_deref(),
+            self.gfm_constructs,
+        );
         if self.strip_md_ext {
             p.add_strip_md_ext();
         }
@@ -730,5 +747,123 @@ mod tests {
         let docs = snap.collections.get("docs").expect("docs present");
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].rel_path, "guides/intro.md");
+    }
+
+    /// Sub-issue #61 land-mine guard: GFM resolved-constructs threaded
+    /// through `SnapshotPipelineConfig` must produce the same JSX
+    /// `content_hash` as an independent bundler-shaped compile that
+    /// uses the same constructs. Diverging here is exactly the
+    /// `<pre data-zfb-content-fallback>` failure mode the docstring at
+    /// lines 118-153 warns about.
+    ///
+    /// We exercise BOTH endpoints of the new config surface:
+    /// `gfm: false` (every GFM construct off — strikethrough should
+    /// pass through as raw `~~` text) and `gfm: true` (every GFM
+    /// construct on — strikethrough emits `<del>` and divides the
+    /// `content_hash` from the all-off path).
+    #[test]
+    fn snapshot_specifier_matches_bridge_hash_under_explicit_gfm_choice() {
+        use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, parse_mdx_specifier};
+        use crate::pipeline::ResolvedGfmConstructs;
+
+        let mdx = "---\ntitle: \"Strike\"\n---\n\nplain ~~gone~~ here\n";
+        let body = "\nplain ~~gone~~ here\n";
+
+        for (label, resolved) in [
+            ("ALL_OFF", ResolvedGfmConstructs::ALL_OFF),
+            ("ALL_ON", ResolvedGfmConstructs::ALL_ON),
+        ] {
+            let tmp = TmpDir::new(&format!("snapshot-gfm-parity-{}", label.to_lowercase()));
+            let path = tmp.write("docs/strike.mdx", mdx);
+
+            let cfg = CollectionConfig::new("docs", tmp.path.join("docs"));
+            let snap = build_snapshot_with_config(
+                &[cfg],
+                &SnapshotPipelineConfig {
+                    gfm_constructs: resolved,
+                    ..Default::default()
+                },
+            )
+            .expect("snapshot must succeed");
+            let entry = snap
+                .collections
+                .get("docs")
+                .expect("docs collection")
+                .iter()
+                .find(|e| e.slug == "strike")
+                .expect("strike entry");
+
+            // Independent bundler-shaped compile with the same
+            // constructs. Hash must agree byte-for-byte.
+            let mut pipeline =
+                crate::pipeline::Pipeline::with_defaults_and_theme_and_gfm(None, resolved);
+            let compiled =
+                compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
+                    .expect("bundler-style compile must succeed");
+
+            let snap_spec = parse_mdx_specifier(&entry.module_specifier)
+                .expect("snapshot specifier parses");
+            let bridge_spec = parse_mdx_specifier(&compiled.specifier)
+                .expect("bundler specifier parses");
+
+            assert_eq!(
+                snap_spec.content_hash, bridge_spec.content_hash,
+                "snapshot ↔ bundler hash divergence under gfm={label}: \
+                 snapshot={snap}, bundler={bridge} — this is the \
+                 sub-#61 / zfb#132 hazard (see content_bridge.rs:118-153)",
+                snap = snap_spec.content_hash,
+                bridge = bridge_spec.content_hash,
+            );
+            // Sanity — neither output should carry the fallback marker
+            // (the `<pre data-zfb-content-fallback>` shape is emitted
+            // by the bundler entry-module shim, not the compiled JSX
+            // itself; the proxy here is "compiled JSX agrees on both
+            // sides", which is the input the shim sees).
+            assert!(
+                !compiled.jsx_source.contains("zfb-content-fallback"),
+                "unexpected fallback marker in compiled JSX under gfm={label}"
+            );
+        }
+    }
+
+    /// Smoke check that the two extreme GFM choices produce *different*
+    /// `content_hash` values for the same input — otherwise the parity
+    /// assertion above could trivially pass when the resolve path is
+    /// broken (everything would collapse to a single hash).
+    #[test]
+    fn snapshot_specifier_differs_between_gfm_on_and_off() {
+        use crate::pipeline::ResolvedGfmConstructs;
+
+        let mdx = "---\ntitle: \"Strike\"\n---\n\nplain ~~gone~~ here\n";
+
+        let tmp = TmpDir::new("snapshot-gfm-distinct");
+        tmp.write("docs/strike.mdx", mdx);
+        let cfg = || CollectionConfig::new("docs", tmp.path.join("docs"));
+
+        let off = build_snapshot_with_config(
+            &[cfg()],
+            &SnapshotPipelineConfig {
+                gfm_constructs: ResolvedGfmConstructs::ALL_OFF,
+                ..Default::default()
+            },
+        )
+        .expect("snapshot off");
+        let on = build_snapshot_with_config(
+            &[cfg()],
+            &SnapshotPipelineConfig {
+                gfm_constructs: ResolvedGfmConstructs::ALL_ON,
+                ..Default::default()
+            },
+        )
+        .expect("snapshot on");
+
+        let off_spec = off.collections["docs"][0].module_specifier.as_str();
+        let on_spec = on.collections["docs"][0].module_specifier.as_str();
+        assert_ne!(
+            off_spec, on_spec,
+            "snapshot specifier MUST differ between gfm=on and gfm=off — \
+             otherwise the resolve_constructs path is not actually \
+             threading through to the parser"
+        );
     }
 }

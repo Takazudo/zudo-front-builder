@@ -63,10 +63,35 @@ impl<H: RenderHost> Renderer<H> {
     /// #129); the build CLI threads `Config::strip_md_ext` here so
     /// `zfb dev` and `zfb build` produce identical href shapes.
     ///
+    /// GFM constructs default to the conservative set
+    /// (`ResolvedGfmConstructs::CONSERVATIVE`); use
+    /// [`Renderer::with_strip_md_ext_and_gfm`] when the project's
+    /// `zfb.config.ts` configures `markdown.gfm`.
+    ///
     /// [`StripMdExtensionPlugin`]: zfb_content::plugins::StripMdExtensionPlugin
     pub fn with_strip_md_ext(host: H, jsx_runtime: JsxRuntime, strip_md_ext: bool) -> Self {
+        Self::with_strip_md_ext_and_gfm(
+            host,
+            jsx_runtime,
+            strip_md_ext,
+            zfb_content::ResolvedGfmConstructs::default(),
+        )
+    }
+
+    /// Most-explicit constructor: forwards both `strip_md_ext` and the
+    /// resolved GFM construct set through to the loader.
+    pub fn with_strip_md_ext_and_gfm(
+        host: H,
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    ) -> Self {
         Self {
-            loader: ModuleLoader::with_strip_md_ext(jsx_runtime, strip_md_ext),
+            loader: ModuleLoader::with_strip_md_ext_and_gfm(
+                jsx_runtime,
+                strip_md_ext,
+                gfm_constructs,
+            ),
             host,
         }
     }

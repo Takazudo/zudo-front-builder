@@ -153,6 +153,7 @@ fn make_input_with_resolve(
             }],
             on_broken_links,
         }),
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
     }
 }
 
@@ -191,6 +192,7 @@ fn make_input_without_resolve(
         code_highlight_theme: None,
         // Feature disabled: links pass through unchanged.
         resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
     }
 }
 

@@ -97,6 +97,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         strip_md_ext: false,
         code_highlight_theme: None,
         resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
     }
 }
 

@@ -151,12 +151,28 @@ fn thematic_break_and_break_are_void() {
 
 #[test]
 fn delete_strikethrough_via_synthetic_node() {
-    // GFM strikethrough is not enabled by `ParseOptions::mdx()`, but
-    // `Delete` is a real mdast node. Round-trip a paragraph that
-    // contains a manually wrapped `<del>` MDX-JSX element to confirm
-    // the lowercase JSX-element path still routes through `_components`.
+    // Two ways a `<del>` element can reach the emitter:
+    //
+    // 1. Author-written `<del>` MDX-JSX element — covered here. The
+    //    lowercase JSX-element path routes through `_components.del`
+    //    regardless of the GFM strikethrough flag.
     let out = emit("text with <del>gone</del> here");
     assert!(out.contains("<_components.del>"));
+    assert!(out.contains("</_components.del>"));
+}
+
+#[test]
+fn gfm_strikethrough_parses_with_conservative_default() {
+    // 2. GFM `~~text~~` shorthand — under the conservative default
+    //    (`markdown.gfm` omitted from `zfb.config.ts`), strikethrough
+    //    is ON, so `~~gone~~` parses into a `Delete` mdast node and
+    //    the emitter routes it through `_components.del`. Sub-issue #61
+    //    of zudo-design-token-panel #60.
+    let out = emit("text with ~~gone~~ here");
+    assert!(
+        out.contains("<_components.del>"),
+        "expected <_components.del> in:\n{out}"
+    );
     assert!(out.contains("</_components.del>"));
 }
 
