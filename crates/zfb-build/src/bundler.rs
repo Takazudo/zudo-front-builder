@@ -399,6 +399,18 @@ pub struct BundlerInput {
     /// builders in `crates/zfb-build/tests/` etc.) keep the same
     /// effective parser behaviour.
     pub gfm_constructs: zfb_content::ResolvedGfmConstructs,
+
+    /// Canonical origin URL for the site, threaded from
+    /// `zfb::config::Config::site`. When `Some`, the bundler emits
+    /// `globalThis.__zfb.site = <value>` in the synthetic `entry.mjs`
+    /// so layouts can build canonical `<link>` tags, OG URLs, sitemap
+    /// absolute hrefs, and hreflang `<link rel="alternate">` without
+    /// hard-coding the origin. When `None`, no setter is emitted — the
+    /// build output is byte-for-byte identical to the pre-`site` build.
+    ///
+    /// The value is validated as an absolute HTTP/HTTPS URL by the
+    /// config loader before reaching here. Default: `None`.
+    pub site: Option<String>,
 }
 
 impl BundlerInput {
@@ -445,6 +457,7 @@ impl BundlerInput {
             code_highlight_theme: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
         }
     }
 }
@@ -875,6 +888,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         adapter.render_to_string_module(),
         input.content_snapshot_json.as_deref(),
         &content_imports,
+        input.site.as_deref(),
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -1638,6 +1652,7 @@ fn write_entry_module(
     render_to_string_module: &str,
     content_snapshot_json: Option<&str>,
     content_imports: &[ContentImport],
+    site: Option<&str>,
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -1774,6 +1789,24 @@ fn write_entry_module(
     )
     .unwrap();
     src.push('\n');
+
+    // ---------------------------------------------------------------
+    // Site setter (sub-issue #254).
+    //
+    // When `site` is configured, emit it onto `globalThis.__zfb.site`
+    // so layouts can build canonical `<link>` tags, OG URLs, sitemap
+    // absolute hrefs, and hreflang `<link rel="alternate">` from a
+    // single config-level source. When absent, zero bytes are emitted
+    // so the build output is byte-for-byte identical to the pre-`site`
+    // build.
+    // ---------------------------------------------------------------
+    if let Some(site_url) = site {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str(&format!(
+            "globalThis.__zfb.site = {};\n\n",
+            json_str(site_url)
+        ));
+    }
 
     // ---------------------------------------------------------------
     // Content bridge installer (#506).
@@ -2139,6 +2172,7 @@ mod tests {
             code_highlight_theme: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
         }
     }
 
@@ -2184,7 +2218,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[]).unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2257,7 +2291,7 @@ mod tests {
                 shadow_rel_path: "content/docs-ja/intro.mdx".to_string(),
             },
         ];
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports, None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2321,7 +2355,7 @@ mod tests {
         // `entry.mjs` without the bridge symbols).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[]).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -2331,6 +2365,68 @@ mod tests {
         assert!(
             !body.contains("globalThis.__zfb.content"),
             "no imports → no bridge installer; got:\n{body}"
+        );
+    }
+
+    // --- site setter tests (#254) ------------------------------------------
+
+    #[test]
+    fn entry_module_emits_site_setter_when_some() {
+        // When `site` is `Some`, the entry module must emit
+        // `globalThis.__zfb.site = <json-encoded-url>` BEFORE the
+        // content bridge and `createPageRouter` so any SSR call to
+        // `globalThis.__zfb.site` sees the value from the first request.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            Some("https://example.com"),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "site branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.site = \"https://example.com\";"),
+            "site setter must contain the JSON-encoded URL; got:\n{body}"
+        );
+
+        // The site setter must precede createPageRouter so SSR code
+        // that reads `globalThis.__zfb.site` during the first request
+        // already sees the value.
+        let site_idx = body
+            .find("globalThis.__zfb.site = ")
+            .expect("site setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            site_idx < router_idx,
+            "site setter must precede createPageRouter; site at {site_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_site_setter_when_none() {
+        // When `site` is `None`, zero bytes related to the site setter
+        // are emitted — preserving byte-for-byte parity with the
+        // pre-`site` build (sub #254 acceptance criterion).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("globalThis.__zfb.site"),
+            "site=None → no site setter; got:\n{body}"
         );
     }
 
@@ -2518,7 +2614,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None, &[]).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -2533,7 +2629,7 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[]).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
@@ -2707,6 +2803,7 @@ mod tests {
             code_highlight_theme: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

@@ -195,6 +195,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         code_highlight_theme: None,
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");

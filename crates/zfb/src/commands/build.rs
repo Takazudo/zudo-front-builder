@@ -974,6 +974,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // at `crates/zfb-content/src/content_bridge.rs:118-153`).
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(config.markdown.as_ref());
+    // Thread the optional `site` canonical-origin URL from `zfb.config.ts`
+    // so the bundler emits `globalThis.__zfb.site` in `entry.mjs` for
+    // layout-side canonical tag, OG URL, and sitemap construction (sub #254).
+    bundler_input.site = config.site.clone();
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
