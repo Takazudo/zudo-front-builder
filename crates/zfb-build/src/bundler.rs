@@ -370,11 +370,25 @@ pub struct BundlerInput {
     /// syntect theme instead of the default `base16-ocean.dark`.
     ///
     /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
-    /// `"Solarized (light)"`, etc.). Shiki names like `"dracula"` are
-    /// NOT part of the bundled set and will produce an `unknown theme`
-    /// error at render time. Mirrors
+    /// `"Solarized (light)"`, etc.). Custom themes are loaded via
+    /// `code_highlight_themes_dir`. Mirrors
     /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
     pub code_highlight_theme: Option<String>,
+
+    /// Optional absolute path to a directory of `.tmTheme` files.
+    ///
+    /// When `Some`, the hoisted MDX pre-compile pipeline loads every
+    /// `.tmTheme` file in the directory so custom themes (e.g. Dracula)
+    /// become addressable by name in `code_highlight_theme`.
+    ///
+    /// Mirrors `zfb::config::Config::code_highlight.themes_dir` (resolved
+    /// to an absolute path by the command layer before being stored here).
+    /// Default: `None` — bundled themes only.
+    ///
+    /// MUST be kept in sync with
+    /// `zfb_content::SnapshotPipelineConfig::code_highlight_themes_dir`
+    /// so the snapshot ↔ bundler `content_hash` stays byte-identical.
+    pub code_highlight_themes_dir: Option<PathBuf>,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
     /// source map from [`ResolveMarkdownLinksSpec::docs_dir`], appends
@@ -443,6 +457,7 @@ impl BundlerInput {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         }
@@ -619,6 +634,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             &mut broken,
@@ -652,6 +668,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &mut content_imports,
                 input.strip_md_ext,
                 input.code_highlight_theme.as_deref(),
+                input.code_highlight_themes_dir.as_deref(),
                 if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                 input.gfm_constructs,
                 &mut broken,
@@ -678,6 +695,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             &mut broken,
@@ -700,6 +718,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             &mut broken,
@@ -721,6 +740,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             &mut broken,
@@ -776,6 +796,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     &input.project_root,
                     input.strip_md_ext,
                     input.code_highlight_theme.as_deref(),
+                    input.code_highlight_themes_dir.as_deref(),
                     if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                     input.gfm_constructs,
                     &mut broken,
@@ -954,6 +975,7 @@ fn materialise_shadow(
     project_root: &Path,
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
+    code_highlight_themes_dir: Option<&Path>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     broken_links_out: &mut Vec<(String, String)>,
@@ -1000,10 +1022,24 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
-        code_highlight_theme,
-        gfm_constructs,
-    );
+    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+            code_highlight_theme,
+            gfm_constructs,
+            dir,
+        )
+        .with_context(|| {
+            format!(
+                "codeHighlight.themesDir: failed to load themes from {}",
+                dir.display()
+            )
+        })?
+    } else {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+            code_highlight_theme,
+            gfm_constructs,
+        )
+    };
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -1243,6 +1279,7 @@ fn materialise_collection(
     imports: &mut Vec<ContentImport>,
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
+    code_highlight_themes_dir: Option<&Path>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     broken_links_out: &mut Vec<(String, String)>,
@@ -1267,10 +1304,24 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
-        code_highlight_theme,
-        gfm_constructs,
-    );
+    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+            code_highlight_theme,
+            gfm_constructs,
+            dir,
+        )
+        .with_context(|| {
+            format!(
+                "codeHighlight.themesDir: failed to load themes from {}",
+                dir.display()
+            )
+        })?
+    } else {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+            code_highlight_theme,
+            gfm_constructs,
+        )
+    };
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -2137,6 +2188,7 @@ mod tests {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         }
@@ -2371,6 +2423,7 @@ mod tests {
             false,
             None,
             None,
+            None,
             zfb_content::ResolvedGfmConstructs::default(),
             &mut Vec::new(),
         )
@@ -2500,6 +2553,7 @@ mod tests {
             "ghost",
             &mut imports,
             false,
+            None,
             None,
             None,
             zfb_content::ResolvedGfmConstructs::default(),
@@ -2705,6 +2759,7 @@ mod tests {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         };
@@ -2821,6 +2876,7 @@ mod tests {
             &mut routes,
             &root,
             false,
+            None,
             None,
             None,
             zfb_content::ResolvedGfmConstructs::default(),
