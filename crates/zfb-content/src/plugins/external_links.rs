@@ -76,6 +76,12 @@ impl ExternalLinksPlugin {
 
 impl HastVisitor for ExternalLinksPlugin {
     fn visit(&mut self, node: &mut HastNode) {
+        // Note: MDX JSX anchors (`<a href="...">` written inline in .mdx files)
+        // are lowered to `HastNode::JsxRaw` (opaque strings) before this visitor
+        // runs, so they are not rewritten. Only standard-markdown links
+        // (`[label](https://...)`) — which become `HastNode::Element { tag: "a", … }`
+        // — are in scope. This matches `rehype-external-links` in JS, which also
+        // only sees the hast layer and cannot inspect JSX.
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
                 // First recurse into children so inner <a> elements are
@@ -101,7 +107,7 @@ impl HastVisitor for ExternalLinksPlugin {
                 return;
             }
             // Apply target.
-            set_attr(attrs, "target", &self.config.target.clone());
+            set_attr(attrs, "target", &self.config.target);
             // Merge rel tokens.
             let existing: Vec<String> = attrs
                 .iter()
@@ -204,6 +210,12 @@ fn is_external(href: &str, site_origin: Option<&str>) -> bool {
 }
 
 /// Compare two origin strings case-insensitively.
+///
+/// Note: default-port equivalence (`https://example.com:443` ==
+/// `https://example.com`) is **not** normalized here. In practice,
+/// content authors almost never write explicit default ports in
+/// same-origin self-links, so the omission is acceptable for now.
+/// If this becomes a real issue, strip default ports before comparison.
 fn origins_equal(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
@@ -501,5 +513,45 @@ mod tests {
             merge_rel_tokens(&existing, &configured),
             "Noopener noreferrer"
         );
+    }
+
+    // --- edge cases in URL parsing -----------------------------------------
+
+    #[test]
+    fn uppercase_scheme_treated_as_external() {
+        // RFC 3986 §3.1: scheme is case-insensitive; HTTPS == https.
+        let mut tree = root(vec![a("HTTPS://other.com/")]);
+        plugin_no_site().visit(&mut tree);
+        assert_eq!(attr(first_child(&tree), "target"), Some("_blank"));
+    }
+
+    #[test]
+    fn protocol_relative_url_is_not_rewritten() {
+        // `//example.com/path` has no scheme colon → treated as relative.
+        let before = root(vec![a("//example.com/path")]);
+        let mut tree = before.clone();
+        plugin_no_site().visit(&mut tree);
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn url_with_userinfo_classifies_correctly() {
+        // `http://user:pass@host/` — same host as site origin.
+        let mut tree = root(vec![a("http://user:pass@example.com/path")]);
+        plugin_with_site("http://example.com").visit(&mut tree);
+        // userinfo is stripped before origin comparison; should be same origin.
+        assert_eq!(
+            attr(first_child(&tree), "target"),
+            None,
+            "userinfo-prefixed same-origin must not be rewritten"
+        );
+    }
+
+    #[test]
+    fn data_url_is_not_rewritten() {
+        let before = root(vec![a("data:text/html,<h1>hi</h1>")]);
+        let mut tree = before.clone();
+        plugin_no_site().visit(&mut tree);
+        assert_eq!(tree, before);
     }
 }
