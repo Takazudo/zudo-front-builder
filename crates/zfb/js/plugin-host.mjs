@@ -1,4 +1,5 @@
-// AUTO-LOADED by zfb-build's plugin runner (Phase B Sub 3 / issue #108).
+// AUTO-LOADED by zfb-build's plugin runner (Phase B Sub 3 / issue #108,
+// extended for the new `setup` hook in epic #253 / sub-issue #255).
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb-build/src/plugin_runner.rs`.
 //
@@ -12,6 +13,14 @@
 //        { "module": "<file-url>", "name": "<display>", "options": {...} },
 //        ...
 //      ] }
+//
+//   { "id": <number>, "kind": "setup", "ctx": { "projectRoot",
+//        "command": "build" | "dev", "config" } }
+//        -- calls each plugin's `setup(ctx)`. ctx exposes
+//           addAlias, addVirtualModule, injectRoute. The host
+//           accumulates raw registrations per plugin and replies
+//           with `{ outputs: [{ plugin, registrations: [...] }] }`
+//           so Rust can run conflict detection against canonical types.
 //
 //   { "id": <number>, "kind": "preBuild", "ctx": { "projectRoot",
 //        "outDir", "config" } }   -- runs preBuild on every plugin in order
@@ -27,6 +36,13 @@
 //        "request": {...} }
 //        -- dispatches one HTTP request to a previously-registered
 //           dev-middleware handler; reply contains the response.
+//
+//   { "id": <number>, "kind": "virtualLoad", "loaderId": "<id>" }
+//        -- invokes a virtual-module loader registered via setup's
+//           addVirtualModule and returns the produced ESM source.
+//           Loader output is cached after the first call so the same
+//           specifier produces a byte-identical module on subsequent
+//           imports.
 //
 //   { "id": <number>, "kind": "shutdown" }
 //
@@ -54,6 +70,15 @@ const { stdin, stdout, exit } = process;
 let plugins = []; // [{ module, name, options, mod }] after init.
 const devHandlers = new Map(); // handlerId -> { plugin, handler }
 let nextHandlerId = 0;
+
+// `setup` hook state (#255). `virtualLoaders` is keyed by the same
+// opaque loaderId the Rust side stores on each `VirtualModuleEntry`;
+// `virtualCache` memoises the first invocation's result so a loader
+// runs exactly once per build / per dev-host boot, matching the
+// "loader runs exactly once" contract documented in the spec.
+const virtualLoaders = new Map(); // loaderId -> { plugin, loader }
+const virtualCache = new Map(); // loaderId -> string (cached source)
+let nextLoaderId = 0;
 
 function send(envelope) {
   stdout.write(JSON.stringify(envelope) + "\n");
@@ -140,6 +165,137 @@ async function runBuildHook(id, hookName, ctx) {
     }
   }
   sendOk(id, { ran: plugins.length });
+}
+
+async function handleSetup(id, msg) {
+  // Reset accumulated state so a config reload (future feature)
+  // doesn't surface stale loaders / routes from the previous run.
+  virtualLoaders.clear();
+  virtualCache.clear();
+  nextLoaderId = 0;
+  const command = msg.ctx && msg.ctx.command;
+  if (command !== "build" && command !== "dev") {
+    sendErr(
+      id,
+      "(host)",
+      "setup",
+      new Error(`setup ctx.command must be "build" or "dev" (got ${JSON.stringify(command)})`),
+    );
+    return;
+  }
+  const outputs = [];
+  for (const p of plugins) {
+    const fn = p.mod.setup;
+    if (typeof fn !== "function") {
+      // Silent no-op for plugins without `setup`. Still emit an
+      // empty entry so the Rust side can reason about declaration
+      // order if it wants to (it doesn't today, but the wire shape
+      // stays simpler and the cost is negligible).
+      outputs.push({ plugin: p.name, registrations: [] });
+      continue;
+    }
+    const registrations = [];
+    // Closed surface: only the four declared methods. We deliberately
+    // do NOT expose addRemarkPlugin / addRehypePlugin / addMarkdownVisitor —
+    // markdown extension is closed in v1 (see big-plan §B1 rationale).
+    const ctx = {
+      command,
+      projectRoot: msg.ctx.projectRoot,
+      config: msg.ctx.config,
+      options: p.options,
+      logger: makeLogger(p.name),
+      addAlias(from, to) {
+        if (typeof from !== "string" || from.length === 0) {
+          throw new Error(
+            `addAlias: \`from\` must be a non-empty string (got ${JSON.stringify(from)})`,
+          );
+        }
+        if (typeof to !== "string" || to.length === 0) {
+          throw new Error(
+            `addAlias: \`to\` must be a non-empty string (got ${JSON.stringify(to)})`,
+          );
+        }
+        registrations.push({ kind: "alias", from, to });
+      },
+      addVirtualModule(specifier, loader) {
+        if (typeof specifier !== "string" || specifier.length === 0) {
+          throw new Error(
+            `addVirtualModule: \`specifier\` must be a non-empty string (got ${JSON.stringify(specifier)})`,
+          );
+        }
+        if (typeof loader !== "function") {
+          throw new Error(
+            `addVirtualModule: \`loader\` must be a function returning a string or Promise<string> (got ${typeof loader})`,
+          );
+        }
+        const loaderId = `v${nextLoaderId++}`;
+        virtualLoaders.set(loaderId, { plugin: p.name, loader });
+        registrations.push({ kind: "virtualModule", specifier, loaderId });
+      },
+      injectRoute(pattern, entrypoint) {
+        if (typeof pattern !== "string" || !pattern.startsWith("/")) {
+          throw new Error(
+            `injectRoute: \`pattern\` must be a string starting with "/" (got ${JSON.stringify(pattern)})`,
+          );
+        }
+        if (typeof entrypoint !== "string" || entrypoint.length === 0) {
+          throw new Error(
+            `injectRoute: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
+          );
+        }
+        registrations.push({ kind: "injectRoute", pattern, entrypoint });
+      },
+    };
+    try {
+      await fn.call(p.mod, ctx);
+    } catch (err) {
+      sendErr(id, p.name, "setup", err);
+      return;
+    }
+    outputs.push({ plugin: p.name, registrations });
+  }
+  sendOk(id, { outputs });
+}
+
+async function handleVirtualLoad(id, msg) {
+  const entry = virtualLoaders.get(msg.loaderId);
+  if (!entry) {
+    sendErr(
+      id,
+      "(unknown)",
+      "setup",
+      new Error(
+        `virtualLoad: unknown loaderId ${JSON.stringify(msg.loaderId)} (was setup re-run?)`,
+      ),
+    );
+    return;
+  }
+  // First-call wins: subsequent invocations return the memoised
+  // source string verbatim. Matches the "loader runs exactly once
+  // per build" contract from #255 and the cache check in the V8 host
+  // (#260) / esbuild plugin (#261).
+  if (virtualCache.has(msg.loaderId)) {
+    sendOk(id, { source: virtualCache.get(msg.loaderId) });
+    return;
+  }
+  let source;
+  try {
+    source = await entry.loader();
+  } catch (err) {
+    sendErr(id, entry.plugin, "setup", err);
+    return;
+  }
+  if (typeof source !== "string") {
+    sendErr(
+      id,
+      entry.plugin,
+      "setup",
+      new Error(`virtual module loader must return a string (got ${typeof source})`),
+    );
+    return;
+  }
+  virtualCache.set(msg.loaderId, source);
+  sendOk(id, { source });
 }
 
 async function handleDevRegister(id, msg) {
@@ -257,6 +413,9 @@ rl.on("line", (line) => {
     case "init":
       handleInit(msg.id, msg);
       break;
+    case "setup":
+      handleSetup(msg.id, msg);
+      break;
     case "preBuild":
       runBuildHook(msg.id, "preBuild", msg.ctx);
       break;
@@ -268,6 +427,9 @@ rl.on("line", (line) => {
       break;
     case "devInvoke":
       handleDevInvoke(msg.id, msg);
+      break;
+    case "virtualLoad":
+      handleVirtualLoad(msg.id, msg);
       break;
     case "shutdown":
       sendOk(msg.id, { bye: true });

@@ -1,9 +1,18 @@
-//! Plugin host subprocess + lifecycle hook dispatcher (Sub 3 / #108).
+//! Plugin host subprocess + lifecycle hook dispatcher (Sub 3 / #108,
+//! extended in Astro-migration epic #253 / #255 with the new `setup`
+//! hook).
 //!
 //! Owns one long-lived `node crates/zfb/js/plugin-host.mjs` process for
-//! the lifetime of a build (or dev session) and dispatches the three
-//! lifecycle hooks — `preBuild`, `postBuild`, `devMiddleware` — over a
-//! newline-delimited JSON stdio protocol.
+//! the lifetime of a build (or dev session) and dispatches the four
+//! lifecycle hooks — `setup`, `preBuild`, `postBuild`, `devMiddleware` —
+//! over a newline-delimited JSON stdio protocol.
+//!
+//! `setup` is the newest addition (#255). It runs once per host boot,
+//! before `preBuild`, and lets a plugin register virtual modules,
+//! aliases, and dev-time injected routes that Wave 2 consumers
+//! (#260 V8 host resolver, #261 islands esbuild resolver, dev server
+//! injected-route handler) read from the three [`SetupRegistries`]
+//! returned by [`PluginHost::run_setup`].
 //!
 //! ## Why a long-lived subprocess
 //!
@@ -72,6 +81,11 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
+use crate::plugin_registries::{
+    PluginSetupAccumulator, RawPluginSetupOutput, RawSetupRegistration, SetupCommand,
+    SetupRegistries, VirtualLoaderId,
+};
+
 /// JS payload that the Rust side stages into a tempfile and runs via
 /// `node`. Embedded so we don't have to ship a sidecar at runtime.
 const PLUGIN_HOST_MJS: &str = include_str!("../../zfb/js/plugin-host.mjs");
@@ -111,6 +125,26 @@ pub struct BuildHookContext {
 #[serde(rename_all = "camelCase")]
 pub struct DevRegisterContext {
     pub project_root: PathBuf,
+    pub config: serde_json::Value,
+}
+
+/// Context handed to the new `setup` hook (#255). Carries the active
+/// command so a plugin can `if (ctx.command === "dev")` to gate
+/// dev-only registrations. The JS side decorates this with three
+/// methods — `injectRoute`, `addVirtualModule`, `addAlias` — that
+/// accumulate raw registrations the Rust accumulator then folds into
+/// the three [`SetupRegistries`].
+///
+/// Mirrors the existing `BuildHookContext` shape (per-plugin
+/// `options` + `logger` are added on the JS side from each plugin's
+/// own metadata).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupHookContext {
+    pub project_root: PathBuf,
+    /// `"build"` or `"dev"` — string form matches the `command` field
+    /// the JS-side `SetupContext` exposes.
+    pub command: String,
     pub config: serde_json::Value,
 }
 
@@ -380,6 +414,129 @@ impl PluginHost {
             )
             .await?;
         Ok(())
+    }
+
+    /// Run every plugin's new `setup` hook (in declaration order) and
+    /// collect the three accumulated registries (#255).
+    ///
+    /// The JS host collects every `ctx.addAlias` / `ctx.addVirtualModule` /
+    /// `ctx.injectRoute` call per plugin and returns the batched
+    /// registrations in the reply. Conflict detection runs in Rust
+    /// against the canonical types so any violation surfaces with the
+    /// offending pair named.
+    ///
+    /// `command` controls the `ctx.command` string visible to plugins
+    /// AND the `injectRoute` guard — calling `injectRoute` from a
+    /// `Build` invocation raises `InjectRouteInBuildMode`.
+    pub async fn run_setup(
+        &self,
+        project_root: &std::path::Path,
+        command: SetupCommand,
+        config: &serde_json::Value,
+    ) -> Result<SetupRegistries> {
+        // Wire shape returned by the host: one entry per plugin, in
+        // declaration order, each carrying that plugin's batched raw
+        // registrations.
+        #[derive(Deserialize)]
+        struct WireOutput {
+            plugin: String,
+            registrations: Vec<WireRegistration>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(tag = "kind")]
+        enum WireRegistration {
+            #[serde(rename = "alias")]
+            Alias { from: String, to: String },
+            #[serde(rename = "virtualModule")]
+            VirtualModule {
+                specifier: String,
+                #[serde(rename = "loaderId")]
+                loader_id: String,
+            },
+            #[serde(rename = "injectRoute")]
+            InjectRoute {
+                pattern: String,
+                entrypoint: String,
+            },
+        }
+
+        #[derive(Deserialize)]
+        struct WireReply {
+            outputs: Vec<WireOutput>,
+        }
+
+        let ctx = SetupHookContext {
+            project_root: project_root.to_path_buf(),
+            command: command.as_str().to_string(),
+            config: config.clone(),
+        };
+        let reply: WireReply = self
+            .request_typed("setup", serde_json::json!({ "ctx": ctx }))
+            .await?;
+
+        let mut acc = PluginSetupAccumulator::new(project_root, command);
+        for output in reply.outputs {
+            let raws: Vec<RawSetupRegistration> = output
+                .registrations
+                .into_iter()
+                .map(|r| match r {
+                    WireRegistration::Alias { from, to } => {
+                        RawSetupRegistration::Alias { from, to }
+                    }
+                    WireRegistration::VirtualModule {
+                        specifier,
+                        loader_id,
+                    } => RawSetupRegistration::VirtualModule {
+                        specifier,
+                        loader_id: VirtualLoaderId(loader_id),
+                    },
+                    WireRegistration::InjectRoute {
+                        pattern,
+                        entrypoint,
+                    } => RawSetupRegistration::InjectRoute {
+                        pattern,
+                        entrypoint,
+                    },
+                })
+                .collect();
+            acc.ingest(RawPluginSetupOutput {
+                plugin: output.plugin,
+                registrations: raws,
+            })
+            .map_err(anyhow::Error::from)?;
+        }
+        let (aliases, virtual_modules, injected_routes) = acc.finish();
+        Ok(SetupRegistries {
+            aliases,
+            virtual_modules,
+            injected_routes,
+        })
+    }
+
+    /// Invoke a previously-registered virtual-module loader by its
+    /// opaque [`VirtualLoaderId`]. The JS host runs the loader (once,
+    /// cached) and returns the produced ESM module source as a string.
+    ///
+    /// Wave 2 consumers (#260 V8 host resolver, #261 islands esbuild
+    /// resolver) call this from their respective module-resolution
+    /// paths when an import specifier matches a registered
+    /// virtual-module entry.
+    pub async fn invoke_virtual_loader(
+        &self,
+        loader_id: &VirtualLoaderId,
+    ) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Reply {
+            source: String,
+        }
+        let reply: Reply = self
+            .request_typed(
+                "virtualLoad",
+                serde_json::json!({ "loaderId": loader_id.as_str() }),
+            )
+            .await?;
+        Ok(reply.source)
     }
 
     /// Call `devMiddleware(ctx)` on every plugin and collect the
@@ -861,4 +1018,285 @@ mod tests {
         host.shutdown().await.ok();
     }
 
+    // --- #255 setup-hook integration tests ----------------------------------
+
+    #[tokio::test]
+    async fn setup_hook_collects_alias_virtual_module_and_inject_route_in_dev() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("setupper.mjs");
+        // One plugin exercises all three setup-ctx methods, plus the
+        // dev-only injectRoute path.
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "setupper",
+              setup({ addAlias, addVirtualModule, injectRoute, command }) {
+                if (command !== "dev") {
+                  throw new Error("expected dev, got " + command);
+                }
+                addAlias("@/foo", "./src/foo.tsx");
+                addVirtualModule("virtual:data", () => 'export default 42');
+                injectRoute("/dev/x", "./scripts/x.ts");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "setupper".into(),
+                module: module_url,
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let regs = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("setup ok");
+        assert_eq!(regs.aliases.len(), 1);
+        let alias = regs.aliases.get("@/foo").expect("alias registered");
+        assert_eq!(alias.plugin, "setupper");
+        assert_eq!(alias.target, tmp.path().join("src/foo.tsx"));
+        assert_eq!(regs.virtual_modules.len(), 1);
+        let vm = regs
+            .virtual_modules
+            .get("virtual:data")
+            .expect("vm registered");
+        assert_eq!(vm.plugin, "setupper");
+        // Invoke the loader and confirm the cached source is returned
+        // both times.
+        let first = host.invoke_virtual_loader(&vm.loader_id).await.unwrap();
+        assert_eq!(first, "export default 42");
+        let second = host.invoke_virtual_loader(&vm.loader_id).await.unwrap();
+        assert_eq!(second, first);
+        assert_eq!(regs.injected_routes.len(), 1);
+        let r = &regs.injected_routes.as_slice()[0];
+        assert_eq!(r.pattern, "/dev/x");
+        assert_eq!(r.entrypoint, tmp.path().join("scripts/x.ts"));
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_rejects_inject_route_in_build_mode() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("builder.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "builder",
+              setup({ injectRoute }) {
+                injectRoute("/dev/x", "./scripts/x.ts");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "builder".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Build,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("injectRoute during build must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("injectRoute") && msg.contains("dev-only"),
+            "expected InjectRouteInBuildMode-style error, got: {msg}",
+        );
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_detects_alias_conflicts_across_plugins() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_a = tmp.path().join("a.mjs");
+        let plugin_b = tmp.path().join("b.mjs");
+        tokio::fs::write(
+            &plugin_a,
+            r#"
+            export default {
+              name: "a",
+              setup({ addAlias }) { addAlias("@/x", "./a.tsx"); },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &plugin_b,
+            r#"
+            export default {
+              name: "b",
+              setup({ addAlias }) { addAlias("@/x", "./b.tsx"); },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![
+                PluginSpec {
+                    name: "a".into(),
+                    module: file_url_for_test(&plugin_a),
+                    options: serde_json::json!({}),
+                },
+                PluginSpec {
+                    name: "b".into(),
+                    module: file_url_for_test(&plugin_b),
+                    options: serde_json::json!({}),
+                },
+            ],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("conflicting alias must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("alias") && msg.contains("@/x") && msg.contains("`a`") && msg.contains("`b`"), "got: {msg}");
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_silent_when_plugin_has_no_setup() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("silent.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "silent",
+              preBuild() {},
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "silent".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let regs = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Build,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("setup no-op ok");
+        assert!(regs.aliases.is_empty());
+        assert!(regs.virtual_modules.is_empty());
+        assert!(regs.injected_routes.is_empty());
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_closes_markdown_extension_surface() {
+        // Spec AC: SetupContext exposes ONLY injectRoute /
+        // addVirtualModule / addAlias. No addRemarkPlugin etc. — those
+        // markdown surfaces are deliberately closed in v1. Test by
+        // checking the ctx from a plugin's `setup` and asserting the
+        // forbidden names are `undefined`.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("closed.mjs");
+        let marker = tmp.path().join("closed-surface.txt");
+        let marker_str = marker.to_string_lossy().to_string();
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            export default {{
+              name: "closed",
+              setup(ctx) {{
+                // Probe each forbidden surface. Each must be undefined
+                // so the v1 contract stays narrow.
+                const missing = [];
+                if (typeof ctx.addRemarkPlugin !== "undefined") missing.push("addRemarkPlugin");
+                if (typeof ctx.addRehypePlugin !== "undefined") missing.push("addRehypePlugin");
+                if (typeof ctx.addMarkdownVisitor !== "undefined") missing.push("addMarkdownVisitor");
+                writeFileSync({marker:?}, missing.join(","));
+              }},
+            }};
+            "#,
+            marker = marker_str,
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "closed".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        host.run_setup(
+            tmp.path(),
+            crate::plugin_registries::SetupCommand::Dev,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("setup ok");
+        let leaked = tokio::fs::read_to_string(&marker).await.unwrap();
+        assert!(
+            leaked.is_empty(),
+            "SetupContext leaked forbidden surfaces: {leaked}",
+        );
+        host.shutdown().await.ok();
+    }
 }
