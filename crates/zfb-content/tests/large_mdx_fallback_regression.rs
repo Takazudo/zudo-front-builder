@@ -374,6 +374,7 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
     // hashes computed match the production path.
     let pipeline_config = SnapshotPipelineConfig {
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         strip_md_ext: true,
         resolve_source_map: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
