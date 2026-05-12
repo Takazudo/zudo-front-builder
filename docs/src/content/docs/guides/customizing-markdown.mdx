@@ -64,6 +64,8 @@ generator), reach for `entry.body` instead.
   types in `zfb.config`. Schema mismatches fail the build.
 - **GFM features** — enabled by default; tables, task lists,
   strikethrough, and autolinks are all on.
+- **CJK-friendly emphasis** — enabled by default; see
+  [CJK-friendly emphasis](#cjk-friendly-emphasis) below.
 - **HTML wrapping** — fully under your control. `entry.Content` is a
   JSX component; wrap, slot, and style it however you like.
 - **`.mdx` entries** — content collections accept `.md`, `.mdx`, and
@@ -113,6 +115,43 @@ walks through the surface.
   Markdown" requests turn out to be styling questions that CSS solves.
 
 </Tip>
+
+## CJK-friendly emphasis
+
+CommonMark's emphasis flanking rules treat CJK ideographs and kana as
+non-whitespace non-punctuation. This means a `**` adjacent to CJK text
+— such as `**テスト。**テスト` — is not considered right-flanking by the
+base parser, and renders as literal stars instead of `<strong>`.
+
+zfb ships a built-in `CjkFriendlyPlugin` that post-processes the parsed
+markdown AST and re-tokenises these cases. It is **on by default** so
+all existing CJK-content sites work without any config change.
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    // CJK-friendly is on when absent or true (default).
+    cjkFriendly: true,
+
+    // Set to false only when you need strict CommonMark output and
+    // do not have CJK content with adjacent emphasis markers.
+    // cjkFriendly: false,
+  },
+});
+```
+
+**Conservative default rationale:** flipping `cjkFriendly` to `false`
+by default would silently break every existing site whose CJK content
+uses `**bold**` adjacent to Japanese punctuation or kana. The field was
+introduced to let projects opt out if needed — not to change the
+existing behaviour.
+
+**GFM strikethrough** (`~~foo~~`) at CJK boundaries does not need this
+toggle. markdown-rs's GFM tokeniser handles `~~` delimiter runs
+independently of CommonMark emphasis flanking rules, so strikethrough
+works correctly at CJK boundaries in both modes.
 
 ## See also
 
