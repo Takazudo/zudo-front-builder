@@ -564,6 +564,14 @@ fn boot_dev_renderer(
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
     bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Thread the optional `codeHighlight.themesDir` so dev rendering
+    // loads custom .tmTheme files just like the production build.
+    // Mirrors the `commands/build.rs` wiring.
+    bundler_input.code_highlight_themes_dir = cfg
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.themes_dir.as_ref())
+        .map(|td| project_root.join(td));
     // Thread `markdown.gfm` through to the bundler so dev rendering
     // and the build agree on the parser construct set. Mirrors the
     // `commands/build.rs` wiring.
