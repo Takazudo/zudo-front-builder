@@ -2178,4 +2178,71 @@ mod tests {
             "opt-out href should not be prefixed: {body}"
         );
     }
+
+    /// A public file must remain reachable when the dev server runs
+    /// under a `base` prefix. `GET /foo/logo.svg` with `base: "/foo"`
+    /// resolves to `<public_root>/logo.svg` — the prefix is stripped
+    /// before the on-disk fallback runs, matching the production
+    /// `copy_public_dir` layout where `public/*` lands under the same
+    /// `<base-segment>/` in `dist/`.
+    #[tokio::test]
+    async fn base_prefix_serves_public_file_at_prefixed_root() {
+        // Stage a real public_root with a fixture file. The default
+        // test_state_with_base uses a bogus path; override it here so
+        // the on-disk read actually finds something.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let public_root = tmp.path().to_path_buf();
+        std::fs::write(public_root.join("logo.svg"), b"<svg/>").unwrap();
+
+        let mut state = test_state_with_base("/foo");
+        state.public_root = public_root;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/foo/logo.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        assert_eq!(bytes.as_ref(), b"<svg/>");
+    }
+
+    /// Sibling check: under a `base` prefix, requesting the same file
+    /// WITHOUT the prefix must 404 (lands in the outside-base 404
+    /// handler), not silently serve the public file from the root.
+    /// This locks in that the public on-disk fallback is gated by the
+    /// prefix-stripping in `serve_page` and not reachable via a bare
+    /// unprefixed URL.
+    #[tokio::test]
+    async fn base_prefix_unprefixed_public_path_is_not_served() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let public_root = tmp.path().to_path_buf();
+        std::fs::write(public_root.join("logo.svg"), b"<svg/>").unwrap();
+
+        let mut state = test_state_with_base("/foo");
+        state.public_root = public_root;
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/logo.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "bare unprefixed asset URL must not bypass the base prefix"
+        );
+    }
 }

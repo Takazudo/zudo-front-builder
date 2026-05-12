@@ -207,6 +207,54 @@ async fn page_cache_wins_over_public_file() {
     );
 }
 
+/// When a file exists in both `dist/` and `public/`, the dist copy
+/// wins. The on-disk fallback chain in `serve_page` consults
+/// `<dist_root>/<path>` before `<public_root>/<path>`, so any artefact
+/// the build pipeline materialised into `dist/` (rendered HTML, hashed
+/// assets, etc.) shadows a same-named user file in `public/`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dist_wins_over_public_file() {
+    let h = Harness::start().await;
+    // The dist_root for the harness is `<tmp>/dist`. Drop a file in
+    // there that collides with a public/ file of the same name.
+    let dist_root = h.tmp_path().join("dist");
+    std::fs::write(dist_root.join("collide.txt"), b"FROM DIST").unwrap();
+    std::fs::write(h.public_root().join("collide.txt"), b"FROM PUBLIC").unwrap();
+
+    let resp = reqwest::get(h.url("/collide.txt")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "FROM DIST",
+        "dist/ must win over public/ when both have the same path"
+    );
+}
+
+/// Requesting a subdirectory of `public/` (e.g. `/img/`) must NOT
+/// produce a directory listing — `read_from_public` rejects directory
+/// reads explicitly. Returns the dev 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_directory_request_does_not_list() {
+    let h = Harness::start().await;
+    std::fs::create_dir_all(h.public_root().join("img")).unwrap();
+    std::fs::write(h.public_root().join("img/inside.png"), b"PNG").unwrap();
+
+    // `/img/inside.png` works — it's a real file.
+    let ok = reqwest::get(h.url("/img/inside.png")).await.unwrap();
+    assert_eq!(ok.status(), 200);
+
+    // `/img` as a directory must 404 — neither the page cache nor the
+    // public fallback should serve it. (read_from_public explicitly
+    // rejects directory reads; read_from_dist would also miss because
+    // we're under the harness's empty dist/.)
+    let dir = reqwest::get(h.url("/img")).await.unwrap();
+    assert_eq!(
+        dir.status(),
+        404,
+        "directory request should fall through to dev 404"
+    );
+}
+
 /// Path traversal must not escape `public_root`. The `is_safe_url_path`
 /// gate (shared with the dist fallback) rejects `..` and absolute
 /// segments before any disk read.
