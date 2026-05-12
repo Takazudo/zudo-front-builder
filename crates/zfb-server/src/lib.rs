@@ -41,6 +41,7 @@
 //! a different runtime (Cloudflare Workers, an edge CDN, …) and must
 //! not pull in `zfb-server`.
 
+pub mod injected_routes;
 pub mod inject;
 pub mod livereload;
 pub mod plugin_middleware;
@@ -55,6 +56,9 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
+pub use injected_routes::{
+    pattern_matches, InjectedRouteRecord, InjectedRouteSet,
+};
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use plugin_middleware::{
     path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,
@@ -106,6 +110,13 @@ pub struct ServeOpts {
     /// router skips the plugin-dispatch leg entirely. The bin crate
     /// (`zfb dev`) builds this from the long-lived plugin host.
     pub plugins: Option<DevMiddlewareSet>,
+
+    /// Injected synthetic routes from user plugins' new `setup` hook
+    /// (#255). `None` = no plugin called `injectRoute`. The dev
+    /// router checks this set on every page-cache miss so the
+    /// matched entrypoint is visible to follow-up renderer work
+    /// without re-plumbing.
+    pub injected_routes: Option<InjectedRouteSet>,
 
     /// User-supplied `base` config value from `zfb.config.ts` (issue
     /// #229). Passed through verbatim — the dev server normalises it
@@ -197,6 +208,7 @@ where
         pages: opts.pages,
         broadcast: opts.broadcast,
         plugins: opts.plugins,
+        injected_routes: opts.injected_routes,
         dist_root: opts.dist_root.clone(),
         public_root: opts.public_root.clone(),
         base_prefix,

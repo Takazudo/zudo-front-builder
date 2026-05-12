@@ -112,6 +112,7 @@ async fn boot_with_dispatcher(
         pages: pages.clone(),
         broadcast: tx,
         plugins: Some(plugin_set),
+        injected_routes: None,
         base: None,
         trailing_slash: false,
     };

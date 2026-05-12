@@ -72,6 +72,7 @@ impl Harness {
             pages: pages.clone(),
             broadcast: tx.clone(),
             plugins: None,
+            injected_routes: None,
             base: None,
             trailing_slash: false,
         };
