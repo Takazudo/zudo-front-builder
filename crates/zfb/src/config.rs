@@ -532,8 +532,8 @@ pub struct PluginConfig {
 /// Markdown / MDX parsing options.
 ///
 /// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Today the
-/// only knob is [`Self::gfm`]; future markdown-pipeline knobs would
-/// also live here.
+/// knobs are [`Self::gfm`] and [`Self::cjk_friendly`]; future
+/// markdown-pipeline knobs would also live here.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -547,6 +547,22 @@ pub struct MarkdownConfig {
     /// other GFM constructs off).
     #[serde(default)]
     pub gfm: Option<GfmFlag>,
+
+    /// Enable CJK-friendly emphasis/strong re-tokenisation.
+    ///
+    /// - `None` (absent, default) — CJK-friendly is **on**. Preserves
+    ///   today's behaviour so existing CJK-content sites are unaffected
+    ///   by the new field.
+    /// - `Some(true)` — explicit opt-in; identical to absent.
+    /// - `Some(false)` — opt-out. [`CjkFriendlyPlugin`] is NOT added to
+    ///   the mdast pipeline; emphasis markers adjacent to CJK characters
+    ///   follow base CommonMark flanking rules (rarely the right choice;
+    ///   provided as an escape hatch for projects that need strict
+    ///   CommonMark output).
+    ///
+    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
+    #[serde(default)]
+    pub cjk_friendly: Option<bool>,
 }
 
 /// Either the shorthand boolean form (`true` = all GFM constructs on,
@@ -661,6 +677,24 @@ pub fn resolve_gfm_constructs(markdown: Option<&MarkdownConfig>) -> ResolvedGfmC
     match markdown {
         Some(m) => m.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
         None => ResolvedGfmConstructs::CONSERVATIVE,
+    }
+}
+
+/// Convenience helper: resolve `cfg.markdown.as_ref()` — handling both
+/// "the user omitted the whole `markdown` block" and "the user wrote
+/// `markdown: { cjkFriendly: false }`" — to a final `bool`.
+///
+/// Returns `true` (plugin on) when the field is absent or `Some(true)`;
+/// `false` only when `cjk_friendly: Some(false)`.
+///
+/// Must be kept in sync with the bundler and snapshot walker so the
+/// `CjkFriendlyPlugin` is either present in BOTH or absent in BOTH —
+/// exactly as `resolve_gfm_constructs` guards the GFM construct set.
+#[must_use]
+pub fn resolve_cjk_friendly(markdown: Option<&MarkdownConfig>) -> bool {
+    match markdown {
+        Some(m) => m.cjk_friendly.unwrap_or(true),
+        None => true,
     }
 }
 
@@ -2290,6 +2324,7 @@ mod tests {
     fn gfm_resolve_shorthand_true_turns_everything_on() {
         let cfg = MarkdownConfig {
             gfm: Some(GfmFlag::All(true)),
+            ..MarkdownConfig::default()
         };
         assert_eq!(
             cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
@@ -2302,6 +2337,7 @@ mod tests {
     fn gfm_resolve_shorthand_false_turns_everything_off() {
         let cfg = MarkdownConfig {
             gfm: Some(GfmFlag::All(false)),
+            ..MarkdownConfig::default()
         };
         assert_eq!(
             cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
@@ -2321,6 +2357,7 @@ mod tests {
                 autolink_literal: Some(false),
                 ..GfmConstructs::default()
             })),
+            ..MarkdownConfig::default()
         };
         let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
         // Named explicitly:
@@ -2342,6 +2379,7 @@ mod tests {
                 table: Some(false),
                 ..GfmConstructs::default()
             })),
+            ..MarkdownConfig::default()
         };
         let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
         assert!(resolved.strikethrough); // conservative-default stayed
@@ -2397,8 +2435,65 @@ mod tests {
         assert_eq!(
             cfg.markdown,
             Some(MarkdownConfig {
-                gfm: Some(GfmFlag::All(true))
+                gfm: Some(GfmFlag::All(true)),
+                cjk_friendly: None,
             })
         );
+    }
+
+    // --- resolve_cjk_friendly tests ---
+
+    // Absent `markdown` block → CJK-friendly is on (default-true).
+    #[test]
+    fn cjk_friendly_absent_markdown_yields_true() {
+        assert!(resolve_cjk_friendly(None));
+    }
+
+    // Empty `MarkdownConfig` → no cjk_friendly field → default true.
+    #[test]
+    fn cjk_friendly_empty_markdown_yields_true() {
+        let cfg = MarkdownConfig::default();
+        assert!(resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // `cjkFriendly: true` — explicit opt-in.
+    #[test]
+    fn cjk_friendly_explicit_true() {
+        let cfg = MarkdownConfig {
+            cjk_friendly: Some(true),
+            ..MarkdownConfig::default()
+        };
+        assert!(resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // `cjkFriendly: false` — opt-out.
+    #[test]
+    fn cjk_friendly_explicit_false() {
+        let cfg = MarkdownConfig {
+            cjk_friendly: Some(false),
+            ..MarkdownConfig::default()
+        };
+        assert!(!resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // Serde: `cjkFriendly` camelCase round-trips from JSON.
+    #[test]
+    fn cjk_friendly_deserialises_from_camel_case() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "cjkFriendly": false
+        }))
+        .expect("cjkFriendly:false deserialises");
+        assert_eq!(cfg.cjk_friendly, Some(false));
+
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "cjkFriendly": true
+        }))
+        .expect("cjkFriendly:true deserialises");
+        assert_eq!(cfg.cjk_friendly, Some(true));
+
+        // Absent field → None (default-on at resolve time).
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty object deserialises");
+        assert_eq!(cfg.cjk_friendly, None);
     }
 }

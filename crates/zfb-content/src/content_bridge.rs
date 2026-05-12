@@ -133,7 +133,7 @@ pub enum BridgeError {
 /// `Default` reproduces the pre-config-API behaviour (no theme override,
 /// no strip-md-ext, no resolve-links) so existing call sites that don't
 /// need any of these knobs can keep using [`build_snapshot`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SnapshotPipelineConfig {
     /// Optional syntect theme name. Forwarded to
     /// [`Pipeline::with_defaults_and_theme`]. `None` keeps the built-in
@@ -153,7 +153,7 @@ pub struct SnapshotPipelineConfig {
     /// Resolved GFM construct flags (output of
     /// `zfb::config::resolve_gfm_constructs` / `MarkdownConfig::resolve_constructs`).
     /// MUST match what the bundler threads into its own
-    /// `Pipeline::with_defaults_and_theme_and_gfm` call. Divergence
+    /// `Pipeline::with_defaults_and_theme_and_gfm_and_cjk` call. Divergence
     /// here is the snapshot ↔ bundler hash divergence land mine
     /// documented above — flipping `gfm_strikethrough` on one side and
     /// off on the other shifts every snapshot's JSX `content_hash`,
@@ -164,15 +164,39 @@ pub struct SnapshotPipelineConfig {
     /// tests + fixtures that don't construct this struct manually keep
     /// the same effective behaviour as before this field landed.
     pub gfm_constructs: super::pipeline::ResolvedGfmConstructs,
+
+    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
+    /// MUST match the bundler's value (output of
+    /// `zfb::config::resolve_cjk_friendly(config.markdown.as_ref())`).
+    ///
+    /// `Default` is `true` (plugin on) so existing call sites and tests
+    /// that don't set this field keep the same effective behaviour as
+    /// before this field landed.
+    ///
+    /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
+    pub cjk_friendly: bool,
+}
+
+impl Default for SnapshotPipelineConfig {
+    fn default() -> Self {
+        Self {
+            code_highlight_theme: None,
+            strip_md_ext: false,
+            resolve_source_map: None,
+            gfm_constructs: super::pipeline::ResolvedGfmConstructs::default(),
+            cjk_friendly: true,
+        }
+    }
 }
 
 impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
     fn build_pipeline(&self) -> Pipeline {
-        let mut p = Pipeline::with_defaults_and_theme_and_gfm(
+        let mut p = Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
             self.code_highlight_theme.as_deref(),
             self.gfm_constructs,
+            self.cjk_friendly,
         );
         if self.strip_md_ext {
             p.add_strip_md_ext();

@@ -188,9 +188,10 @@ export type ZfbConfig = {
 /**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the only field
- * is [`gfm`](MarkdownConfig.gfm); future markdown knobs (e.g. CommonMark
- * variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Today the fields are
+ * [`gfm`](MarkdownConfig.gfm) and
+ * [`cjkFriendly`](MarkdownConfig.cjkFriendly); future markdown knobs
+ * (e.g. CommonMark variants, custom extensions) would also live here.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -214,6 +215,31 @@ export type MarkdownConfig = {
    * the full GFM surface should opt in with `gfm: true`.
    */
   gfm?: GfmFlag;
+
+  /**
+   * Enable CJK-friendly emphasis/strong re-tokenisation.
+   *
+   * CommonMark's left-/right-flanking delimiter-run rules treat CJK
+   * characters as non-whitespace non-punctuation, which causes `**foo**`
+   * adjacent to CJK text (e.g. `**テスト。**テスト`) to render as literal
+   * stars instead of `<strong>`. zfb's built-in `CjkFriendlyPlugin`
+   * corrects this post-parse.
+   *
+   * - **absent / `true` (default):** CJK-friendly re-tokenisation is
+   *   on. Preserves today's behaviour — existing CJK-content sites are
+   *   unaffected.
+   * - **`false`:** opt-out. `CjkFriendlyPlugin` is NOT added to the
+   *   pipeline; emphasis markers adjacent to CJK characters follow base
+   *   CommonMark flanking rules. Rarely the right choice; provided as
+   *   an escape hatch for projects that need strict CommonMark output.
+   *
+   * **GFM strikethrough** (`~~foo~~`) at CJK boundaries is unaffected
+   * by this toggle — it is handled by markdown-rs's GFM tokeniser, not
+   * by `CjkFriendlyPlugin`, and works correctly in both modes.
+   *
+   * Mirrors `MarkdownConfig::cjk_friendly` in crates/zfb/src/config.rs.
+   */
+  cjkFriendly?: boolean;
 };
 
 /**

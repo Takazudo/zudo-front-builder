@@ -182,3 +182,95 @@ fn cjk_heading_gets_unicode_slug() {
     // A hash-link anchor must be present.
     assert_contains(&html, "class=\"hash-link\"", input);
 }
+
+// --- cjkFriendly config toggle (issue #258). ---
+
+fn render_no_cjk(input: &str) -> String {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    let mut p = Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        false,
+    );
+    let hast = p.run(input).expect("pipeline runs");
+    serialize(&hast)
+}
+
+/// Default (no cjkFriendly field) — CJK-friendly is on. The CJK-punct-
+/// inside-close case that base CommonMark misses must still be fixed.
+#[test]
+fn cjk_friendly_default_true_fixes_cjk_punct_close() {
+    let input = "**テスト。**テスト\n";
+    let html = render(input);
+    assert_contains(&html, "<strong>テスト。</strong>テスト", input);
+}
+
+/// `cjkFriendly: true` — same output as absent.
+#[test]
+fn cjk_friendly_explicit_true_same_as_default() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    let input = "**テスト。**テスト\n";
+    let mut p = Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        true,
+    );
+    let hast = p.run(input).expect("pipeline runs");
+    let html = serialize(&hast);
+    let html_default = render(input);
+    assert_eq!(
+        html, html_default,
+        "cjkFriendly:true must be byte-identical to absent"
+    );
+}
+
+/// `cjkFriendly: false` — plugin omitted; CJK-punct-inside-close NOT
+/// repaired. The marker stays as literal `**` inside `<p>`.
+#[test]
+fn cjk_friendly_false_omits_plugin() {
+    let input = "**テスト。**テスト\n";
+    let html = render_no_cjk(input);
+    // Under CommonMark-strict the closing `**` before `テ` is not
+    // right-flanking — the run stays literal; no <strong> tag.
+    assert_lacks(&html, "<strong>", input);
+    assert_contains(&html, "**テスト。**テスト", input);
+}
+
+/// `cjkFriendly: false` — ordinary ASCII emphasis must still work.
+#[test]
+fn cjk_friendly_false_keeps_ascii_emphasis() {
+    let input = "This is **bold** text\n";
+    let html = render_no_cjk(input);
+    assert_contains(&html, "<strong>bold</strong>", input);
+}
+
+/// GFM strikethrough at a CJK boundary works under the default pipeline.
+/// `remark-cjk-friendly-gfm-strikethrough` covers this in the JS world;
+/// in our Rust port it works because markdown-rs's GFM tokeniser handles
+/// `~~` delimiter runs independently of the CommonMark emphasis flanking
+/// rules. No extension to `CjkFriendlyPlugin` is needed.
+#[test]
+fn gfm_strikethrough_cjk_boundary_default() {
+    let input = "~~取り消し線~~の続き\n";
+    let html = render(input);
+    assert_contains(&html, "<del>取り消し線</del>の続き", input);
+}
+
+/// GFM strikethrough at a CJK boundary also works when `cjkFriendly:
+/// false` because strikethrough is handled by the GFM tokeniser, not
+/// by `CjkFriendlyPlugin`.
+#[test]
+fn gfm_strikethrough_cjk_boundary_cjk_friendly_false() {
+    let input = "~~取り消し線~~の続き\n";
+    let html = render_no_cjk(input);
+    assert_contains(&html, "<del>取り消し線</del>の続き", input);
+}
+
+/// Bold/italic at CJK boundary — default pipeline.
+#[test]
+fn bold_at_cjk_boundary_default() {
+    let input = "**強調**するテキスト\n";
+    let html = render(input);
+    assert_contains(&html, "<strong>強調</strong>するテキスト", input);
+}
+
