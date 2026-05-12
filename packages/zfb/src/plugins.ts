@@ -7,8 +7,11 @@
 // module via dynamic `import()` and dispatches the lifecycle hooks.
 //
 // Sub 3 / issue #108 — initial drop. Three optional hooks: `preBuild`,
-// `postBuild`, `devMiddleware`. None of the hooks see real Node IPC
-// objects across the boundary; everything is JSON-friendly.
+// `postBuild`, `devMiddleware`. Astro-migration epic #253 / sub-issue
+// #255 adds a fourth: `setup`, which runs once before `preBuild` and
+// lets plugins register virtual modules, import aliases, and dev-only
+// injected routes. None of the hooks see real Node IPC objects across
+// the boundary; everything is JSON-friendly.
 //
 // ## Inline functions are NOT supported
 //
@@ -102,13 +105,125 @@ export type ZfbDevMiddlewareContext = {
 };
 
 /**
+ * Loader signature for a virtual-module registration. Must return the
+ * **complete ESM module source text** as a string — the bundler /
+ * embedded V8 host feeds the returned string in as the module's
+ * source verbatim. The loader is invoked **exactly once per build**
+ * (and once per `zfb dev` host boot) the first time any consumer
+ * imports the registered specifier; subsequent imports of the same
+ * specifier re-use the memoised result.
+ *
+ * Example:
+ *
+ * ```ts
+ * addVirtualModule("virtual:my-data", () =>
+ *   `export default ${JSON.stringify(myJson)}`,
+ * );
+ * ```
+ */
+export type ZfbVirtualModuleLoader = () => string | Promise<string>;
+
+/**
+ * Context passed to the new `setup` hook (#255). Runs once per host
+ * boot, in `Config.plugins` declaration order, **before** `preBuild`.
+ *
+ * `ctx.command` tells the plugin which lifecycle is active so it can
+ * gate dev-only registrations:
+ *
+ * ```ts
+ * setup({ command, injectRoute }) {
+ *   if (command === "dev") {
+ *     injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+ *   }
+ * }
+ * ```
+ *
+ * The hook's surface is intentionally **closed**: only
+ * `injectRoute`, `addVirtualModule`, `addAlias`. There is no
+ * `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` — by
+ * design (see the concept doc for the rationale).
+ */
+export type ZfbSetupContext = {
+  /**
+   * Active zfb command. `"build"` during `zfb build`; `"dev"` during
+   * `zfb dev`. Gates `injectRoute` (calling it during `"build"` is an
+   * error — see [`injectRoute`](#injectRoute)).
+   */
+  command: "build" | "dev";
+  /** Project root — the directory containing `zfb.config.ts`. */
+  projectRoot: string;
+  /** The full loaded `ZfbConfig` (data-only view). */
+  config: import("./config.js").ZfbConfig;
+  /** Plugin-specific options block, copied verbatim from `PluginConfig.options`. */
+  options: Record<string, unknown>;
+  /** Logger that wraps the Rust-side `tracing` subscriber. */
+  logger: ZfbPluginLogger;
+
+  /**
+   * Register an import alias. **Exact-match-only in v1**:
+   * `addAlias("@/foo", "./src/foo.tsx")` rewrites `import "@/foo"`
+   * but does NOT match `import "@/foo/bar"`. Prefix-matching is
+   * explicitly deferred to v2 — switch to one bare alias per file
+   * until then.
+   *
+   * `to` is resolved relative to the project root. Two plugins
+   * registering the same `from` with different `to` raises
+   * `AliasConflict` and aborts the build.
+   */
+  addAlias(from: string, to: string): void;
+
+  /**
+   * Register a virtual module. `specifier` is a bare import
+   * specifier (recommended `virtual:` prefix, not enforced).
+   * `loader` returns the complete ESM source text as a string and
+   * runs **exactly once per build** at first import.
+   *
+   * Two plugins registering the same `specifier` raises
+   * `VirtualModuleConflict` and aborts the build.
+   */
+  addVirtualModule(specifier: string, loader: ZfbVirtualModuleLoader): void;
+
+  /**
+   * Register a synthetic page route. The dev server routes the
+   * matched URL into the page rendering pipeline as if `entrypoint`
+   * were a `pages/<...>.tsx` file. `pattern` uses the same grammar
+   * as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
+   * `/docs/[...rest]`).
+   *
+   * **Dev-only.** Calling `injectRoute` when `ctx.command === "build"`
+   * raises `InjectRouteInBuildMode` and aborts the build — synthetic
+   * routes during a static build would invite SSR-shaped pages that
+   * conflict with `output: 'static'`.
+   *
+   * Two plugins registering the same `pattern` raises
+   * `InjectRouteConflict`.
+   */
+  injectRoute(pattern: string, entrypoint: string): void;
+};
+
+/**
  * The plugin-module shape. `name` is informational (the resolved module
  * specifier wins for identification on the Rust side) and helps the
  * plugin self-identify in logs.
+ *
+ * Four optional hooks; declaration-order matters when multiple plugins
+ * touch the same surface. Each hook is independent — a plugin may
+ * declare any subset:
+ *
+ * - `setup` (#255) — register virtual modules, aliases, injected
+ *   routes. Runs once at host boot, before `preBuild`.
+ * - `preBuild` — file-generation work that downstream stages will
+ *   see. Runs once per `zfb build` and once per `zfb dev` boot.
+ * - `postBuild` — finalisation work that runs after `dist/` has been
+ *   written.
+ * - `devMiddleware` — register HTTP handlers for ad-hoc dev-only
+ *   URLs. Per-request dispatch, distinct from `injectRoute` (which
+ *   goes through the page renderer).
  */
 export type ZfbPlugin = {
   /** Plugin display name; surfaces in error / log lines. */
   name: string;
+  setup?(ctx: ZfbSetupContext): Promise<void> | void;
   preBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
   postBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
   devMiddleware?(ctx: ZfbDevMiddlewareContext): Promise<void> | void;

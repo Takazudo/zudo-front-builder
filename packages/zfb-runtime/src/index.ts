@@ -48,3 +48,20 @@ export {
 } from "./client-router/events.js";
 export { swapFunctions, swap } from "./client-router/swap-functions.js";
 export type { Direction, Fallback, NavigationTypeString, Options } from "./client-router/types.js";
+
+// Plugin lifecycle types (#255). The runtime package re-exports the
+// `@takazudo/zfb/plugins` surface so consumers writing plugins from a
+// project that only depends on `@takazudo/zfb-runtime` can still
+// import the canonical types (e.g. `import type { ZfbPlugin } from
+// "@takazudo/zfb-runtime"`).
+export type {
+  ZfbPlugin,
+  ZfbPluginLogger,
+  ZfbBuildHookContext,
+  ZfbDevMiddlewareContext,
+  ZfbDevMiddlewareHandler,
+  ZfbDevMiddlewareRequest,
+  ZfbDevMiddlewareResponse,
+  ZfbSetupContext,
+  ZfbVirtualModuleLoader,
+} from "@takazudo/zfb/plugins";
