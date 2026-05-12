@@ -188,9 +188,8 @@ export type ZfbConfig = {
 /**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the only field
- * is [`gfm`](MarkdownConfig.gfm); future markdown knobs (e.g. CommonMark
- * variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`] and
+ * [`externalLinks`]; future markdown knobs would also live here.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -214,6 +213,52 @@ export type MarkdownConfig = {
    * the full GFM surface should opt in with `gfm: true`.
    */
   gfm?: GfmFlag;
+  /**
+   * External-link rewriter. When set, every `<a>` whose href is
+   * classified as external receives the configured `target` and `rel`
+   * attributes.
+   *
+   * An href is external when it is an absolute HTTP/HTTPS URL AND its
+   * origin differs from the top-level `site` URL (if `site` is
+   * configured). When `site` is absent, any absolute HTTP/HTTPS URL is
+   * treated as external.
+   *
+   * `mailto:`, `tel:`, and other non-HTTP(S) schemes are always left
+   * unchanged. Relative URLs (`/internal/`, `./file.mdx`, `#anchor`) are
+   * always internal.
+   *
+   * Omitting this field keeps the output byte-for-byte identical to the
+   * pre-feature behaviour.
+   *
+   * Mirrors `ExternalLinksConfig` in crates/zfb/src/config.rs.
+   */
+  externalLinks?: ExternalLinksConfig;
+};
+
+/**
+ * Options for the external-link rewriter (port of `rehype-external-links`).
+ *
+ * All fields are optional; omitting a field applies the documented default.
+ *
+ * Mirrors `ExternalLinksConfig` in crates/zfb/src/config.rs.
+ */
+export type ExternalLinksConfig = {
+  /**
+   * `rel` tokens applied to external links.
+   *
+   * Default: `["noopener", "noreferrer"]`.
+   *
+   * Tokens are deduplicated (case-insensitive) and merged with any
+   * existing `rel` attribute on the `<a>` element — existing tokens
+   * appear first.
+   */
+  rel?: string[];
+  /**
+   * `target` value for external links.
+   *
+   * Default: `"_blank"`.
+   */
+  target?: string;
 };
 
 /**

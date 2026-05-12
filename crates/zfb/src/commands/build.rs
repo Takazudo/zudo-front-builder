@@ -786,6 +786,14 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
             strip_md_ext: config.strip_md_ext,
             resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
             gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
+            // Thread `markdown.externalLinks` into the snapshot pipeline.
+            // `site` is read from `config.site` once #254 lands; until then
+            // `None` means any absolute HTTP/HTTPS URL is treated as external.
+            external_links: config
+                .markdown
+                .as_ref()
+                .and_then(|m| m.external_links.clone())
+                .map(|el| (el.into_content_config(), None)),
         };
         match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
             Ok(snap) => match serde_json::to_string(&snap) {
@@ -974,6 +982,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // at `crates/zfb-content/src/content_bridge.rs:118-153`).
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(config.markdown.as_ref());
+    // Thread `markdown.externalLinks` into the bundler so the hoisted MDX
+    // pre-compile pipeline appends `ExternalLinksPlugin`. MUST mirror
+    // the snapshot wiring above; divergence shifts `content_hash` and
+    // breaks the snapshot ↔ bundler bridge lookup.
+    // `site` is read from `config.site` once #254 lands; until then
+    // `None` means any absolute HTTP/HTTPS URL is treated as external.
+    bundler_input.external_links = config
+        .markdown
+        .as_ref()
+        .and_then(|m| m.external_links.clone())
+        .map(|el| (el.into_content_config(), None));
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
