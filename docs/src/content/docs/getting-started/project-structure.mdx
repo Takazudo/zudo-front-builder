@@ -58,7 +58,20 @@ Global CSS. `styles/global.css` is the entry point — import it from your root 
 
 ## public/
 
-Static assets served as-is from the site root. Put `favicon.ico`, robots.txt, and any image you want to reference by absolute URL here. zfb's dev server and `zfb preview` both serve `public/` directly.
+Static assets served as-is from the site root. Put `favicon.ico`, `robots.txt`, SVGs, raster images, fonts, manifest files, or any binary you want to reference by absolute URL here. The directory does NOT appear in the URL — `public/logo.svg` is reachable at `/logo.svg`, both in `zfb dev` and after `zfb build`.
+
+Reference these files by URL from your TSX, MDX, or CSS:
+
+```tsx
+<img src="/logo.svg" alt="" width={128} height={32} />
+<link rel="icon" href="/favicon.ico" />
+```
+
+Do NOT use bundler-style imports (`import logo from "./logo.svg"`) for static assets — zfb does not run an asset pipeline over `public/`. The directory is a verbatim mirror; files come out at the URL that matches their relative path.
+
+When `base` is set in `zfb.config.ts` (e.g. `base: "/pj/site/"`), files in `public/` are served under that prefix too — `public/logo.svg` → `/pj/site/logo.svg`. The same prepend happens at build time, so the prefix is consistent between dev and prod.
+
+See [Static Assets](/concepts/static-assets) for the full reference, including when to use `public/` vs a TSX import for islands.
 
 ## zfb.config.json
 

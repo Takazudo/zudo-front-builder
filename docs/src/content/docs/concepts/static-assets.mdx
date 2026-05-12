@@ -1,0 +1,148 @@
+---
+title: Static Assets
+description: "How to ship images, SVGs, fonts, favicons, robots.txt, and any other byte-for-byte file through zfb's public/ directory."
+sidebar_position: 4.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How to ship static files — images, SVGs, fonts, favicons, `robots.txt`,
+JSON manifests, anything binary — through the `public/` directory.
+Covers the URL convention, the dev/prod parity guarantee, the
+precedence rule when filenames collide with pages, the interaction
+with the `base` mount prefix, and when to reach for a TSX `import`
+instead.
+
+</Info>
+
+zfb handles non-code assets through a single directory: `public/`. Drop a file in, reference it by absolute URL, and the same URL works in `zfb dev`, `zfb preview`, and the static `dist/` your build emits. There's no plugin to install, no `import` to write, no bundler step you can break.
+
+## The convention
+
+Anything inside `public/` is served verbatim at the site root. The `public` segment does **not** appear in the URL.
+
+```text
+public/favicon.ico       →  /favicon.ico
+public/logo.svg          →  /logo.svg
+public/robots.txt        →  /robots.txt
+public/img/hero.png      →  /img/hero.png
+public/fonts/Inter.woff2 →  /fonts/Inter.woff2
+```
+
+Subdirectories are preserved, but the top-level `public/` name is stripped. A request to `/img/hero.png` resolves to `<project_root>/public/img/hero.png` in dev and to `dist/img/hero.png` after `zfb build`.
+
+## Referencing assets
+
+Use absolute URLs. The asset path mirrors what shows up in the rendered HTML:
+
+```tsx
+// pages/index.tsx
+export default function Home() {
+  return (
+    <main>
+      <img src="/logo.svg" alt="Site logo" width={128} height={32} />
+      <link rel="icon" href="/favicon.ico" />
+    </main>
+  );
+}
+```
+
+CSS works the same way — the URL is what the browser ultimately requests:
+
+```css
+/* styles/global.css */
+.hero {
+  background-image: url("/img/hero.png");
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter.woff2") format("woff2");
+}
+```
+
+## Do not import static assets as modules
+
+zfb does **not** run a bundler over `public/`. Patterns like the ones below — common in Vite, webpack, and similar toolchains — do not work here:
+
+```tsx
+// ❌ Do not do this for static files.
+import logoUrl from "../public/logo.svg";
+import heroImg from "./hero.png";
+```
+
+There is no asset pipeline that turns those imports into URLs. Use the absolute-URL form (`src="/logo.svg"`) instead. Imports are still the right answer for **code** — `.ts`, `.tsx`, `.css` modules used by islands — but not for binary files like images, fonts, or SVGs you want the browser to fetch as-is.
+
+If you genuinely need to inline an SVG as JSX (so CSS can style strokes, fills, etc.), copy the SVG markup into a TSX component. That's a code path; `public/` is the byte-for-byte path.
+
+## Dev / prod parity
+
+The dev server and the production build agree on URL shape. This is a guarantee, not a coincidence:
+
+- **`zfb dev`** — the page handler falls back to reading from `<public_root>/<path>` after a page-cache miss and a `dist/` miss. The `public/` directory has no URL prefix and no top-level `nest_service` mount; files appear at the site root directly.
+- **`zfb build`** — `copy_public_dir` (in `crates/zfb/src/commands/build.rs`) copies every file under `public/` into `dist/<rel>`, recursively. The static `dist/` tree your edge CDN serves is the same shape your browser saw in dev.
+
+That means `<img src="/logo.svg">` written once in your page works in both modes without conditional logic, environment checks, or a `withBase`-style helper.
+
+## Precedence: pages win over public files
+
+It is possible — though usually unintentional — to have a `pages/foo.tsx` route and a `public/foo` file with the same URL. zfb resolves this deterministically:
+
+1. **Plugin dev-middleware** that claims `/foo` runs first.
+2. **Page cache** — the rendered output of `pages/foo.tsx` wins next.
+3. **`dist/` directory** — files written by the build pipeline are served next.
+4. **`public/` directory** — only consulted if all three of the above miss.
+5. **404** otherwise.
+
+So a same-named TSX page always shadows a public file. The reverse is not possible — `public/foo` cannot override a route. If you need a static file at a URL that a page also claims, rename one of them.
+
+## Interaction with `base`
+
+When `zfb.config.ts` sets a `base` prefix (e.g. `base: "/pj/site/"` for a deploy under a sub-path), files in `public/` move under that prefix too:
+
+```text
+config: base: "/pj/site/"
+
+public/logo.svg  →  /pj/site/logo.svg   (dev and prod)
+```
+
+Both the dev server's `serve_page` fallback and the build-time `copy_public_dir` honour the prefix. As long as you write asset URLs in HTML the same way the rest of your project does — typically by going through the link rewriter that the markdown / TSX pipeline already runs — the prefix is applied for free.
+
+## Configuration
+
+The directory is configurable. Add `publicDir` to `zfb.config.ts` to point somewhere other than the default:
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  publicDir: "static",
+});
+```
+
+Default: `"public"`. The path is resolved relative to the project root. A missing directory is a silent no-op — not every project needs one.
+
+## What does NOT go in `public/`
+
+`public/` is the right home for:
+
+- Site-wide icons and favicons (`favicon.ico`, `apple-touch-icon.png`)
+- Open Graph / social-share images
+- `robots.txt`, `humans.txt`, security.txt
+- Web app manifests (`manifest.webmanifest`)
+- Fonts you self-host
+- Decorative imagery referenced by absolute URL from many pages
+
+It is the wrong home for:
+
+- **Source images you transform** (resize, optimise, convert to AVIF/WebP). zfb has no built-in image pipeline; if you need transforms, run them out-of-band (e.g. via a `prebuild` script) and check the optimised outputs into `public/`, or reach for a separate tool entirely.
+- **Code dependencies of islands**. TSX / JSX / TS / CSS imported by a `"use client"` island should live alongside the island and be bundled. Putting code in `public/` skips the bundler entirely — the browser will fetch raw source the runtime cannot execute.
+- **Files that need a different `Content-Type` than the extension implies**. zfb derives the Content-Type from the file extension. If you need an override, render the file through a TSX page instead (see [Non-HTML Pages](/concepts/non-html-pages)).
+
+## See also
+
+- [Project structure: `public/`](/getting-started/project-structure) — the directory layout at a glance.
+- [Non-HTML Pages](/concepts/non-html-pages) — render `.xml`, `.json`, or `.txt` through a TSX page when you need control over headers or want the page to depend on collection data.
+- [Islands](/concepts/islands) — the path for client-side JS, distinct from the static-asset path described here.

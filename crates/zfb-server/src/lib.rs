@@ -1,8 +1,11 @@
 //! `zfb-server` — the dev-mode HTTP server for `zudo-front-builder`.
 //!
 //! This crate runs an [`axum`] server that serves the in-memory
-//! page-cache HTML produced by [`zfb_build`]'s rebuild loop, plus the
-//! built `dist/assets/` and `public/` directories. Every served HTML
+//! page-cache HTML produced by [`zfb_build`]'s rebuild loop, the built
+//! `dist/assets/` tree, and per-request on-disk fallbacks for the
+//! project's `dist/` and `public/` directories so static files in
+//! `public/` are reachable at the site root (e.g.
+//! `public/logo.svg` → `/logo.svg`). Every served HTML
 //! response has a small `<script src="/__zfb/livereload.js"></script>`
 //! injected before `</body>`. That script opens an SSE connection to
 //! `/__zfb/reload` and listens for two event types:
@@ -80,8 +83,11 @@ pub struct ServeOpts {
     /// `<dist_root>/assets/`.
     pub dist_root: PathBuf,
 
-    /// Project public-static directory. `/public/*` is served from
-    /// here verbatim.
+    /// Project public-static directory. Files here are served at the
+    /// site root via a per-request on-disk fallback inside the page
+    /// handler — `public/logo.svg` → `GET /logo.svg`. The same shape
+    /// `zfb build` produces (it copies `public/*` straight into
+    /// `dist/`), so dev and prod URLs match.
     pub public_root: PathBuf,
 
     /// Address to bind. Defaults to `127.0.0.1:3000`.
@@ -192,10 +198,11 @@ where
         broadcast: opts.broadcast,
         plugins: opts.plugins,
         dist_root: opts.dist_root.clone(),
+        public_root: opts.public_root.clone(),
         base_prefix,
         trailing_slash: opts.trailing_slash,
     };
-    let router = build_router(state, opts.public_root.clone());
+    let router = build_router(state);
 
     let actual = listener.local_addr().unwrap_or(opts.addr);
     info!(

@@ -30,6 +30,10 @@ struct Harness {
     pages: PageCache,
     tx: broadcast::Sender<ReloadEvent>,
     server: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// Project public-static directory inside the tempdir — exposed so
+    /// tests can stage fixture files at runtime (e.g. for precedence
+    /// and path-safety checks). `_tmp` keeps the directory alive.
+    public_root: PathBuf,
     _tmp: TempDir,
 }
 
@@ -63,7 +67,7 @@ impl Harness {
         let opts = ServeOpts {
             project_root: root.clone(),
             dist_root,
-            public_root,
+            public_root: public_root.clone(),
             addr,
             pages: pages.clone(),
             broadcast: tx.clone(),
@@ -87,12 +91,21 @@ impl Harness {
             pages,
             tx,
             server,
+            public_root,
             _tmp: tmp,
         }
     }
 
     fn url(&self, path: &str) -> String {
         format!("http://{}{}", self.addr, path)
+    }
+
+    fn public_root(&self) -> &std::path::Path {
+        &self.public_root
+    }
+
+    fn tmp_path(&self) -> &std::path::Path {
+        self._tmp.path()
     }
 }
 
@@ -142,13 +155,125 @@ async fn asset_route_serves_static_files() {
     assert_eq!(body, "body { color: red; }");
 }
 
+/// `public/favicon.ico` must be reachable at the site root (`/favicon.ico`),
+/// NOT under a `/public/` URL prefix. This mirrors the production build
+/// (`copy_public_dir` copies straight into `dist/`) so a single
+/// `<link rel="icon" href="/favicon.ico">` works in both dev and prod.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn public_route_serves_user_files() {
+async fn public_files_serve_at_site_root() {
     let h = Harness::start().await;
-    let resp = reqwest::get(h.url("/public/favicon.ico")).await.unwrap();
-    assert_eq!(resp.status(), 200);
+    let resp = reqwest::get(h.url("/favicon.ico")).await.unwrap();
+    assert_eq!(resp.status(), 200, "public file should be reachable at root");
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.as_ref(), b"\x00FAVICON\x00");
+}
+
+/// Files in `public/` should NOT be reachable under a `/public/...` URL
+/// prefix — that was the pre-fix dev URL space, and it doesn't exist in
+/// production (where `public/*` is copied to `dist/` root). Keeping the
+/// old URL alive would let developers ship code that works in dev but
+/// 404s in prod.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_files_not_reachable_under_public_prefix() {
+    let h = Harness::start().await;
+    let resp = reqwest::get(h.url("/public/favicon.ico")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "the legacy /public/* mount must be gone — files appear at site root"
+    );
+}
+
+/// When a `pages/foo.tsx` route and a `public/foo` file collide, the
+/// rendered page wins. This is a precedence guarantee: the public-disk
+/// fallback runs AFTER the page cache, so the page handler always sees
+/// the rendered HTML first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_cache_wins_over_public_file() {
+    let h = Harness::start().await;
+    // Stage a "page" at /robots.txt in the cache while a same-named
+    // file exists in public/ (we add one via the harness's tempdir).
+    std::fs::write(h.public_root().join("robots.txt"), b"FROM PUBLIC").unwrap();
+    h.pages
+        .insert("/robots.txt", "FROM PAGE CACHE")
+        .await;
+
+    let resp = reqwest::get(h.url("/robots.txt")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("FROM PAGE CACHE"),
+        "page cache must win over public/ file, got: {body}"
+    );
+}
+
+/// When a file exists in both `dist/` and `public/`, the dist copy
+/// wins. The on-disk fallback chain in `serve_page` consults
+/// `<dist_root>/<path>` before `<public_root>/<path>`, so any artefact
+/// the build pipeline materialised into `dist/` (rendered HTML, hashed
+/// assets, etc.) shadows a same-named user file in `public/`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dist_wins_over_public_file() {
+    let h = Harness::start().await;
+    // The dist_root for the harness is `<tmp>/dist`. Drop a file in
+    // there that collides with a public/ file of the same name.
+    let dist_root = h.tmp_path().join("dist");
+    std::fs::write(dist_root.join("collide.txt"), b"FROM DIST").unwrap();
+    std::fs::write(h.public_root().join("collide.txt"), b"FROM PUBLIC").unwrap();
+
+    let resp = reqwest::get(h.url("/collide.txt")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "FROM DIST",
+        "dist/ must win over public/ when both have the same path"
+    );
+}
+
+/// Requesting a subdirectory of `public/` (e.g. `/img/`) must NOT
+/// produce a directory listing — `read_from_public` rejects directory
+/// reads explicitly. Returns the dev 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_directory_request_does_not_list() {
+    let h = Harness::start().await;
+    std::fs::create_dir_all(h.public_root().join("img")).unwrap();
+    std::fs::write(h.public_root().join("img/inside.png"), b"PNG").unwrap();
+
+    // `/img/inside.png` works — it's a real file.
+    let ok = reqwest::get(h.url("/img/inside.png")).await.unwrap();
+    assert_eq!(ok.status(), 200);
+
+    // `/img` as a directory must 404 — neither the page cache nor the
+    // public fallback should serve it. (read_from_public explicitly
+    // rejects directory reads; read_from_dist would also miss because
+    // we're under the harness's empty dist/.)
+    let dir = reqwest::get(h.url("/img")).await.unwrap();
+    assert_eq!(
+        dir.status(),
+        404,
+        "directory request should fall through to dev 404"
+    );
+}
+
+/// Path traversal must not escape `public_root`. The `is_safe_url_path`
+/// gate (shared with the dist fallback) rejects `..` and absolute
+/// segments before any disk read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_fallback_rejects_path_traversal() {
+    let h = Harness::start().await;
+    // Place a secret file OUTSIDE public/ but inside the harness tmp,
+    // so a successful traversal would surface it.
+    std::fs::write(h.tmp_path().join("secret.txt"), b"top secret").unwrap();
+
+    // `/%2e%2e/secret.txt` decodes to `/../secret.txt`. Must 404, not
+    // 200 with the secret bytes.
+    let resp = reqwest::get(h.url("/%2e%2e/secret.txt")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("top secret"),
+        "secret file must not leak through traversal, body: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
