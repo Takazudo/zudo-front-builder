@@ -23,7 +23,7 @@ All keys are camelCase and mirror `crates/zfb/src/config.rs`.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
 - `collections?: CollectionDef[]` — content collections. Each entry has `name` (identifier used in `getCollection` calls), `path` (directory relative to the project root), and optional `schema` (validated at config-load time; frontmatter is checked against the schema by `zfb check` and the build).
 - `tailwind?: { enabled?: boolean }` — Tailwind options.
-- `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks).
+- `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks). See [Plugins](/concepts/plugins) for the full hook contract — `setup`, `preBuild`, `postBuild`, `devMiddleware` — including virtual modules, import aliases, and dev-only injected routes.
 - `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Pages).
 - `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`).
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.

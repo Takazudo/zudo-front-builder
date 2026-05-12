@@ -1,0 +1,46 @@
+---
+title: プラグイン
+description: zfb プラグインの作成と利用 — 4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、開発専用の注入ルート。
+sidebar_position: 12
+category: Concepts
+---
+
+<Info title="翻訳予定">
+
+このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
+英語版: [Plugins](/concepts/plugins)
+
+</Info>
+
+## 概要
+
+zfb プラグインは、`ZfbPlugin` オブジェクトをデフォルトエクスポートする ES モジュールです。zfb の build / dev ホストは各プラグインモジュールを起動時に一度ロードし、4 つのライフサイクルフックを順次ディスパッチします。
+
+```ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  setup?(ctx) {},        // #255 — ホスト起動時に一度、preBuild の前
+  preBuild?(ctx) {},     // バンドラ / レンダラ前のファイル生成
+  postBuild?(ctx) {},    // dist/ への書き出し後の仕上げ処理
+  devMiddleware?(ctx) {},// zfb dev でのリクエスト単位 HTTP ハンドラ
+});
+```
+
+## 4 つのフック
+
+- **`setup(ctx)`** — `addAlias` / `addVirtualModule` / `injectRoute` で仮想モジュール、インポートエイリアス、開発専用の合成ルートを登録します。`ctx.command` が `"build"` か `"dev"` かで分岐できます。
+- **`preBuild(ctx)`** — バンドル前にファイルを生成する用途。
+- **`postBuild(ctx)`** — `dist/` 書き出し後の仕上げ。
+- **`devMiddleware(ctx)`** — リクエストごとに `{ status, headers, body }` を返す HTTP ハンドラ。`injectRoute` がページレンダリングパイプラインを通すのに対し、こちらは JSX を介さない素の HTTP 応答です。
+
+## 設計上の制約
+
+- `addAlias` は v1 では **完全一致のみ**。`@/foo` を登録しても `@/foo/bar` には一致しません。プレフィックス一致は v2 以降。
+- `addVirtualModule(specifier, loader)` の `loader` は **完全な ESM ソーステキスト** を返します。loader はビルドごと（および dev ホスト起動ごと）に最初の `import` のタイミングで **1 回だけ** 実行され、結果はキャッシュされます。
+- `injectRoute` は **dev 専用**。`zfb build` 中に呼ぶと `InjectRouteInBuildMode` で失敗します。
+- 同じキー（エイリアスの `from` / 仮想モジュールの `specifier` / 注入ルートの `pattern`）を 2 つのプラグインが異なる値で登録すると衝突エラーで両方のプラグイン名を含めて中断します。
+- `SetupContext` には `addRemarkPlugin` などのマークダウン拡張面は **意図的に存在しません**。マークダウン関連は zfb 本体（Rust 側）に内包する方針です。
+
+詳細は英語版を参照してください。
