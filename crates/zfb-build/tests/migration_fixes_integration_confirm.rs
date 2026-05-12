@@ -422,6 +422,7 @@ fn make_full_fixture_input(
             on_broken_links: OnBrokenLinks::Warn,
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        toc: None,
     }
 }
 
