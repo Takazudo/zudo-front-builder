@@ -74,11 +74,17 @@ There is **one** loader contract. There is no alternate "loader returns JSON and
 
 ### `injectRoute(pattern, entrypoint)` — dev-only synthetic page routes
 
-Registers a TSX/TS file as a synthetic page route the dev server evaluates through the **page rendering pipeline**, the same way it evaluates `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
+Registers a TSX/TS file under a URL pattern the dev server is aware of, **conceptually** routed through the same page-rendering pipeline as `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
 
 ```ts
 injectRoute("/api/dev/x", "./scripts/dev-x.ts");
 ```
+
+<Warning title="Renderer integration is a follow-up">
+
+The registry, conflict detection, dev-only guard, and pattern-matching plumbing are all shipping in v1. **Full evaluation of the matched entrypoint through the page renderer is a follow-up issue.** Today the dev server logs a structured match on the `zfb_plugin` tracing target when the URL matches an injected pattern, so you can confirm the registration landed end-to-end — but the request then falls through to the existing dist / public fallbacks (and 404s if no other file claims the URL). The renderer-side wiring will land without changing the public API documented here.
+
+</Warning>
 
 **Dev-only.** Calling `injectRoute` when `command === "build"` raises `InjectRouteInBuildMode` and aborts the build. Static builds should not surface SSR-shaped routes; if you need dev-only HTML on a real URL, gate the call with `if (command === "dev")`.
 

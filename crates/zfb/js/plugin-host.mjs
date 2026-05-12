@@ -238,6 +238,21 @@ async function handleSetup(id, msg) {
             `injectRoute: \`pattern\` must be a string starting with "/" (got ${JSON.stringify(pattern)})`,
           );
         }
+        // Reject obvious malformed patterns up front so the dev
+        // router doesn't have to: bare "/" is the catch-all
+        // (use devMiddleware for that), consecutive slashes are
+        // almost always a typo, and empty bracket segments
+        // ([] / [...]) are not valid in the pages/ grammar.
+        if (pattern === "/" || pattern.includes("//")) {
+          throw new Error(
+            `injectRoute: \`pattern\` must not be "/" or contain consecutive slashes (got ${JSON.stringify(pattern)})`,
+          );
+        }
+        if (/\[\]|\[\.\.\.\]/.test(pattern)) {
+          throw new Error(
+            `injectRoute: \`pattern\` has an empty parameter segment (got ${JSON.stringify(pattern)})`,
+          );
+        }
         if (typeof entrypoint !== "string" || entrypoint.length === 0) {
           throw new Error(
             `injectRoute: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
