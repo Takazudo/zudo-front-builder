@@ -129,6 +129,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // The host is dropped when this `run` returns (Ctrl+C path), which
     // kills the subprocess.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
+
+    // #255 — run the new `setup` hook once, before `preBuild`. The
+    // registries are owned by `zfb-build`; we extract the
+    // `injected_routes` view, translate it into the dev-server's
+    // local mirror, and plumb it through `ServeOpts.injected_routes`.
+    // The alias map / virtual-module registry feed Wave 2 (#260,
+    // #261) which is not yet wired — we keep `_setup_registries` in
+    // scope here so the registries stay live for the duration of the
+    // dev session (the embedded references count on it).
+    let setup_registries = if let Some(h) = plugin_host.as_ref() {
+        let cfg_json = serde_json::to_value(&cfg)
+            .context("plugin lifecycle: serialise config for setup ctx")?;
+        h.run_setup(&project_root, zfb_build::SetupCommand::Dev, &cfg_json)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("setup lifecycle hook")?
+    } else {
+        zfb_build::SetupRegistries::empty()
+    };
+
     if let Some(h) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
@@ -146,6 +166,29 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     } else {
         None
     };
+
+    // Translate the build-side InjectedRouteList into the dev
+    // server's local mirror so zfb-server doesn't depend on
+    // zfb-build. Wave 2 (#260, #261) consume `setup_registries.aliases`
+    // and `setup_registries.virtual_modules` — kept named (not `_`)
+    // so the variable stays in scope as the wiring lands.
+    let injected_route_set = if setup_registries.injected_routes.is_empty() {
+        None
+    } else {
+        let records: Vec<zfb_server::InjectedRouteRecord> = setup_registries
+            .injected_routes
+            .iter()
+            .map(|r| zfb_server::InjectedRouteRecord {
+                pattern: r.pattern.clone(),
+                entrypoint: r.entrypoint.clone(),
+                plugin: r.plugin.clone(),
+            })
+            .collect();
+        Some(zfb_server::InjectedRouteSet::new(records))
+    };
+    // Bind `_setup_registries` so the unused `aliases` / `virtual_modules`
+    // pieces don't warn until Wave 2 picks them up.
+    let _setup_registries = setup_registries;
 
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
@@ -254,6 +297,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         pages,
         broadcast: tx,
         plugins: plugin_set,
+        injected_routes: injected_route_set,
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
     };

@@ -101,6 +101,26 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // claude-resources index emission). If no plugins are declared, we
     // skip the spawn entirely so a config-less project pays nothing.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&config).await?;
+
+    // #255 — run the new `setup` hook once, before `preBuild`. The
+    // returned registries (aliases, virtual modules, injected routes)
+    // are owned by `zfb-build` and consumed downstream by Wave 2
+    // (#260 V8 host resolver, #261 islands esbuild resolver). For the
+    // build command `injectRoute` is rejected by the accumulator with
+    // `InjectRouteInBuildMode` — see crates/zfb-build/src/plugin_registries.rs.
+    let _setup_registries = if let Some(host) = plugin_host.as_ref() {
+        let cfg_json = serde_json::to_value(&config)
+            .context("plugin lifecycle: serialise config for setup ctx")?;
+        let regs = host
+            .run_setup(&project_root, zfb_build::SetupCommand::Build, &cfg_json)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("setup lifecycle hook")?;
+        regs
+    } else {
+        zfb_build::SetupRegistries::empty()
+    };
+
     if let Some(host) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
