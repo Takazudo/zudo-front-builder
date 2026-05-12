@@ -39,8 +39,13 @@ jobs:
       # Sub 2).
       - uses: Swatinem/rust-cache@v2
         with:
-          # Prefix so future workspace-member additions don't share a stale cache.
-          prefix-key: "v1-zfb"
+          # Prefix so future workspace-member additions don't share a stale
+          # cache. Bumped v1 → v2 in PR #250 after the cached target/ snapshot
+          # started failing to link `v8` (rusty_v8 native static lib not found
+          # in OUT_DIR after partial rebuild). The first build on this key
+          # will take 15-30 min for V8 first-compile; subsequent runs hit the
+          # restored cache and are fast.
+          prefix-key: "v2-zfb"
 
       - run: pnpm install --frozen-lockfile
 
