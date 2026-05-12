@@ -1,6 +1,6 @@
 ---
 title: Syntax Highlighting
-description: zfb ships syntect-backed server-side syntax highlighting. This page explains the built-in behaviour and two supplementary patterns for client-side or theme-customised highlighting.
+description: zfb ships syntect-backed server-side syntax highlighting. This page explains the built-in behaviour, how to use custom .tmTheme files, and two supplementary patterns for client-side or theme-customised highlighting.
 sidebar_position: 4
 ---
 
@@ -22,30 +22,64 @@ output. No JavaScript is shipped to the browser for highlighting.
 | Unknown languages | Themed fallback: wrapped in `<pre class="syntect-…">`, code preserved |
 | `mermaid` blocks | Skipped — routed to `MermaidPlugin` instead |
 
-The theme is configured on the `SyntectPlugin` instance inside
-`Pipeline::with_defaults()`. See
-[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) if
-you need to swap the default theme or add a per-project override.
+## Customising the theme (built-in themes)
 
-## Customising the theme
+The simplest way to change the colour scheme is to pick one of syntect's
+bundled themes in `zfb.config.ts`:
 
-If you want a different colour scheme, the approach depends on whether you need
-a per-collection override or a single site-wide change.
-
-**Site-wide:** Pass a different `SyntaxSet` / `ThemeSet` to the
-`SyntectPlugin::with_theme` builder when constructing the pipeline in
-`crates/zfb-content/src/pipeline.rs`. The plugin exposes `with_theme` for this:
-
-```rust
-// inside Pipeline::with_defaults()
-p.add_hast_visitor(Box::new(
-    SyntectPlugin::new(highlighter).with_theme("Solarized (light)"),
-));
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    theme: "Solarized (light)",
+  },
+};
 ```
 
-**Per-collection:** Construct a pipeline via `Pipeline::with_mdx()` and append
-a separately-configured `SyntectPlugin` — the same approach used by
-`ResolveLinksPlugin` for project-specific options.
+Built-in theme names: `"base16-ocean.dark"` (default), `"base16-ocean.light"`,
+`"InspiredGitHub"`, `"Solarized (dark)"`, `"Solarized (light)"`.
+
+These are **not** Shiki theme names. Using a name like `"dracula"` without
+loading it via `themesDir` will produce an `unknown theme` error at build time.
+
+## Using custom .tmTheme files
+
+Syntect is compatible with Sublime Text's `.tmTheme` format.  You can load any
+`.tmTheme` file (Dracula, One Dark, Catppuccin, …) by dropping it into a
+directory and pointing `codeHighlight.themesDir` at it:
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    themesDir: "./themes",   // relative to the project root
+    theme: "Dracula",        // the `name` declared inside the .tmTheme file
+  },
+};
+```
+
+**Directory layout:**
+
+```
+my-project/
+├── themes/
+│   └── dracula.tmTheme      ← drop your .tmTheme files here
+├── pages/
+├── content/
+└── zfb.config.ts
+```
+
+The `.tmTheme` filename does not matter — the name you pass to `theme` must
+match the `<string>` value of the `name` key inside the plist.  For Dracula,
+the declared name is `"Dracula"`.
+
+**Downloading Dracula:** the official Dracula `.tmTheme` is available at
+[https://draculatheme.com/sublime](https://draculatheme.com/sublime) or
+directly from the [Dracula GitHub repository](https://github.com/dracula/sublime/blob/master/Dracula.tmTheme).
+
+**Error reporting:** if `themesDir` points at a missing directory or any
+`.tmTheme` file is malformed, zfb surfaces a clear error at build start (before
+rendering any pages) that includes the file path and the parse error.
 
 ## Supplementary pattern 1 — additional client-side highlighting
 
