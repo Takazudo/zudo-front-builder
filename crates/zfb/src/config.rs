@@ -529,11 +529,16 @@ pub struct PluginConfig {
 
 // --- markdown / GFM config -------------------------------------------------
 
+/// Re-export [`TocConfig`] from `zfb-content` so `zfb.config.ts`
+/// consumers (and the bundler / snapshot callers) reach the type without
+/// a direct `zfb-content` dependency.
+pub use zfb_content::TocConfig;
+
 /// Markdown / MDX parsing options.
 ///
 /// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Today the
-/// only knob is [`Self::gfm`]; future markdown-pipeline knobs would
-/// also live here.
+/// knobs are [`Self::gfm`] and [`Self::toc`]; future markdown-pipeline
+/// knobs would also live here.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -547,6 +552,17 @@ pub struct MarkdownConfig {
     /// other GFM constructs off).
     #[serde(default)]
     pub gfm: Option<GfmFlag>,
+
+    /// Table-of-contents options. When `Some`, a [`TocPlugin`] is wired
+    /// into the hast phase (after `HeadingLinksPlugin`) that inserts a
+    /// `<ul>/<li>` TOC list after the first heading whose text matches
+    /// `heading`. When `None` (the default), the visitor is not registered
+    /// and the build is byte-for-byte identical to the pre-TOC build.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on [`TocConfig`] deserialises
+    /// the TS shape `{ heading?: string; maxDepth?: number }`.
+    #[serde(default)]
+    pub toc: Option<TocConfig>,
 }
 
 /// Either the shorthand boolean form (`true` = all GFM constructs on,
