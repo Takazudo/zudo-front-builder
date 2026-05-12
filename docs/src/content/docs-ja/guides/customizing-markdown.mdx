@@ -21,3 +21,25 @@ sidebar_position: 3
 [Custom Directives](/concepts/custom-directives) で十分です。
 
 英語の最新ドキュメントは [Customizing Markdown](/guides/customizing-markdown) を参照してください。
+
+## 外部リンク
+
+`markdown.externalLinks` オプションを使うと、サイト外へのリンクに `target` や `rel` 属性を自動付与できます。
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+  },
+});
+```
+
+href が外部リンクと判定される条件: 絶対 URL（`http:` または `https:` スキーム）であり、かつ `site` 設定が指定されている場合はそのオリジンと異なる場合。`site` が未設定のときは、すべての絶対 HTTP/HTTPS URL が外部リンクとして扱われます。
+
+`mailto:`・`tel:` などの非 HTTP(S) スキームは常にそのまま出力されます。相対パス（`/internal/`・`./page.mdx`・`#anchor`）は常に内部リンクです。
+
+詳細は英語版 [Customizing Markdown](/guides/customizing-markdown) を参照してください。
