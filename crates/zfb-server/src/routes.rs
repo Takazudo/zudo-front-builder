@@ -4,19 +4,22 @@
 //!
 //! - `GET /assets/*path` — static files from `<dist_root>/assets/`,
 //!   served via [`tower_http::services::ServeDir`].
-//! - `GET /public/*path` — static files from `<public_root>/`,
-//!   served via [`tower_http::services::ServeDir`].
 //! - `GET /__zfb/livereload.js` — bundled JS that opens an SSE
 //!   connection back to this server. Always served with
 //!   `Cache-Control: no-store`.
 //! - `GET /__zfb/reload` — SSE event stream. See
 //!   [`crate::livereload::sse_response`].
 //! - `GET /` and `GET /*path` — render HTML out of the in-memory page
-//!   cache. See [`PageCache`] for keying conventions.
+//!   cache, then fall back to `<dist_root>/...` and finally to
+//!   `<public_root>/...` on disk before returning the dev 404. The
+//!   `public/` directory has NO URL prefix — `public/logo.svg` is
+//!   reachable at `/logo.svg`, matching the production layout
+//!   `zfb build` produces (`copy_public_dir` copies straight into
+//!   `dist/`).
 //!
-//! ## Page key resolution
+//! ## Page key / static-file resolution
 //!
-//! For a request to `/blog/foo` we look up the cache in this order:
+//! For a request to `/blog/foo` we look up the page cache in this order:
 //!
 //! 1. `/blog/foo`
 //! 2. `/blog/foo/index.html`
@@ -24,8 +27,14 @@
 //!    directory-style path)
 //!
 //! For a request to `/` we look up `/` and then `/index.html`. First
-//! hit wins. Misses respond with the dev-mode 404 body
-//! ([`DEV_404_BODY`]).
+//! hit wins. If the cache misses, we then try `<dist_root>/<path>` and
+//! `<dist_root>/<path>/index.html` on disk, then `<public_root>/<path>`
+//! as a verbatim static-file read. Only after all three layers miss do
+//! we return [`DEV_404_BODY`].
+//!
+//! Precedence (highest first): plugin dev-middleware → page cache →
+//! dist directory → public directory → 404. A `pages/foo.tsx` route
+//! therefore always wins over a same-named `public/foo` file.
 //!
 //! All HTML responses (including 404) go through
 //! [`crate::inject::inject_livereload_with_prefix`] before being
@@ -38,9 +47,11 @@
 //! When the project's `zfb.config.ts` declares `base: "/foo/"`, the
 //! whole route table moves under `/foo`:
 //!
-//! - `GET /foo/` and `GET /foo/<route>` serve the rendered page,
-//! - `GET /foo/assets/<file>`, `GET /foo/public/<file>` serve static
-//!   assets,
+//! - `GET /foo/` and `GET /foo/<route>` serve the rendered page (with
+//!   the same `dist/` + `public/` disk fallback chain described above,
+//!   so `public/logo.svg` is reachable at `/foo/logo.svg`),
+//! - `GET /foo/assets/<file>` serves built static assets from
+//!   `<dist_root>/assets/`,
 //! - `GET /foo/__zfb/livereload.js` and `GET /foo/__zfb/reload` serve
 //!   live-reload (and the injected `<script src>` matches),
 //! - plugin-registered dev-middleware paths are auto-prefixed too
@@ -333,6 +344,13 @@ pub struct AppState {
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
     pub dist_root: std::path::PathBuf,
+    /// Project public-static directory. Used as a final on-disk fallback
+    /// after the page cache and dist directory miss, so that user files
+    /// in `public/` are reachable at the site root (e.g.
+    /// `public/logo.svg` → `/logo.svg`). Matches the production layout
+    /// that `zfb build` produces by copying `public/*` straight into
+    /// `dist/`.
+    pub public_root: std::path::PathBuf,
     /// Canonical mount prefix from `zfb.config.ts`'s `base` field, as
     /// returned by [`zfb_types::dev_mount_prefix`]. `None` means the
     /// dev server mounts everything at root (the no-base case);
@@ -350,51 +368,57 @@ pub struct AppState {
 
 /// Build the axum router for the dev server.
 ///
-/// `dist_root` is the build output directory (used for `/assets/*`).
-/// `public_root` is the project's static assets directory (used for
-/// `/public/*`). Both are served via [`ServeDir`]; missing files fall
-/// back to a plain 404.
+/// `state.dist_root` is the build output directory (used for
+/// `/assets/*` and as the first on-disk fallback for page misses).
+/// `state.public_root` is the project's static assets directory; it
+/// is consulted as a per-request on-disk fallback inside [`serve_page`]
+/// (no top-level `/public/*` mount — files there appear at the site
+/// root, mirroring `zfb build`'s `public/` → `dist/` copy).
 ///
 /// ## Method policy (issue #230)
 ///
 /// Built-in routes keep their existing GET-only semantics:
 ///
 /// - `<base>/__zfb/livereload.js`, `<base>/__zfb/reload`,
-///   `<base>/assets/*`, `<base>/public/*` are all registered with
-///   `get(...)` or via [`ServeDir`] (which is GET/HEAD-only). A non-GET
-///   request to any of these surfaces gets a `405 Method Not Allowed`
-///   from axum / tower-http directly — those routes are dev-server
-///   infrastructure, not user code, and CSRF posture for them must
-///   stay tight.
+///   `<base>/assets/*` are all registered with `get(...)` or via
+///   [`ServeDir`] (which is GET/HEAD-only). A non-GET request to any
+///   of these surfaces gets a `405 Method Not Allowed` from axum /
+///   tower-http directly — those routes are dev-server infrastructure,
+///   not user code, and CSRF posture for them must stay tight.
 /// - The page-renderer mounts accept ALL methods so user-registered
 ///   `devMiddleware` handlers can serve `POST`, `PUT`, `DELETE`,
 ///   `PATCH`, etc. on prefixes they claim. The handler itself in
 ///   [`serve_page`] still returns `405 Allow: GET, HEAD` if a non-GET
 ///   request slips through to the page-cache fallback (i.e. no plugin
-///   claimed the URL or a plugin returned `Passthrough`).
+///   claimed the URL or a plugin returned `Passthrough`). The
+///   `public/` on-disk fallback inside `serve_page` is also reached
+///   only on the GET/HEAD path, so `POST /favicon.ico` 405s the same
+///   way it always did.
 ///
 /// ## Base prefix mounting (issue #229)
 ///
 /// When `state.base_prefix` is `Some(prefix)`, every route is
 /// registered at `<prefix>/<route>` directly (livereload, SSE,
-/// `/assets/*`, `/public/*`, page cache, plugin middleware). A bare
-/// `GET /` request is redirected to `<prefix>/`, and any other
-/// unprefixed path falls through to a 404 with a one-line hint at the
-/// configured base. See the module docs for the complete contract.
+/// `/assets/*`, page cache, plugin middleware). A bare `GET /` request
+/// is redirected to `<prefix>/`, and any other unprefixed path falls
+/// through to a 404 with a one-line hint at the configured base. See
+/// the module docs for the complete contract. The `public/` on-disk
+/// fallback inside `serve_page` is reached after the page-cache miss,
+/// so `public/logo.svg` is served at `<prefix>/logo.svg` just like the
+/// production build emits.
 ///
 /// Routes are registered with explicit prefix substitution rather than
 /// [`Router::nest`] because the latter has subtle 0.8.x trailing-slash
 /// quirks when the inner router contains both a literal `/` route and
 /// a `/{*path}` catch-all (the very shape we use). Manual prefix
 /// registration is verbose but uniquely well-defined.
-pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router {
+pub fn build_router(state: AppState) -> Router {
     let prefix = state.base_prefix.clone();
 
     let Some(prefix) = prefix else {
         // No base prefix configured — keep the byte-for-byte
         // pre-`base` route table at the root.
-        return build_core_router(state, public_root, "")
-            .layer(TraceLayer::new_for_http());
+        return build_core_router(state, "").layer(TraceLayer::new_for_http());
     };
 
     // Prefix is canonical: leading slash, no trailing slash (e.g.
@@ -404,7 +428,7 @@ pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router 
     let redirect_target = format!("{prefix}/");
     let prefix_for_404 = prefix.clone();
 
-    build_core_router(state, public_root, &prefix)
+    build_core_router(state, &prefix)
         // Bare `/` lands the developer on the home page — but only `/`
         // exactly, never `<prefix>/...`, because the prefixed routes
         // above already catch those and a redirect there would loop.
@@ -435,19 +459,13 @@ pub fn build_router(state: AppState, public_root: std::path::PathBuf) -> Router 
 /// at `<prefix>/api/echo` but the handler still sees `req.url =
 /// /api/echo`). The page handlers below strip the prefix from the
 /// captured wildcard / URI before forwarding into [`serve_page`].
-fn build_core_router(
-    state: AppState,
-    public_root: std::path::PathBuf,
-    prefix: &str,
-) -> Router {
+fn build_core_router(state: AppState, prefix: &str) -> Router {
     let assets_dir = state.dist_root.join("assets");
     let assets_service = ServeDir::new(&assets_dir);
-    let public_service = ServeDir::new(&public_root);
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
     let assets_mount = format!("{prefix}/assets");
-    let public_mount = format!("{prefix}/public");
     let root_path = format!("{prefix}/");
     let wild_path = format!("{prefix}/{{*path}}");
 
@@ -455,7 +473,6 @@ fn build_core_router(
         .route(&livereload_path, get(livereload_js))
         .route(&sse_path, get(sse_handler))
         .nest_service(&assets_mount, assets_service)
-        .nest_service(&public_mount, public_service)
         // `any` (vs `get`) on the page-renderer mounts so user-registered
         // devMiddleware handlers can serve every HTTP method (zfb#230).
         // `serve_page` enforces GET/HEAD-only for the page-cache fallback
@@ -581,9 +598,10 @@ async fn serve_page(
     //
     // Issue #230: every HTTP method (including POST/PUT/DELETE/PATCH)
     // is forwarded; the plugin handler decides whether to accept or
-    // reject the method. Built-in routes (`/__zfb/...`, `/assets/*`,
-    // `/public/*`) are unaffected — those are routed by axum directly
-    // and stay GET-only.
+    // reject the method. Built-in routes (`/__zfb/...`, `/assets/*`)
+    // are unaffected — those are routed by axum directly and stay
+    // GET-only. The `public/` on-disk fallback further down only
+    // runs on the GET/HEAD path, so `POST /favicon.ico` still 405s.
     //
     // Issue #229 contract: plugins register UNPREFIXED paths
     // (`ctx.register("/api/echo")`); the dev server registers the
@@ -676,6 +694,36 @@ async fn serve_page(
         );
     }
 
+    // Final on-disk fallback: project `public/` directory. The
+    // production build copies `public/*` straight into `dist/` (see
+    // `crates/zfb/src/commands/build.rs::copy_public_dir`), so files
+    // there must also appear at the site root in dev — otherwise
+    // `<img src="/logo.svg">` referencing `public/logo.svg` 404s in
+    // dev but works after `zfb build`, which is the bug this lookup
+    // is designed to prevent. Page cache and dist take precedence
+    // (above), so a same-named `pages/foo.tsx` route always wins over
+    // `public/foo`.
+    if !trimmed.is_empty() {
+        if let Some(bytes) = read_from_public(&state.public_root, trimmed) {
+            let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
+            let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+            let content_type = if ext.is_empty() {
+                "application/octet-stream".to_string()
+            } else {
+                content_type_for_extension(ext)
+            };
+            let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
+            return page_response_bytes(
+                StatusCode::OK,
+                bytes,
+                &content_type,
+                is_html,
+                lr_prefix,
+                state.trailing_slash,
+            );
+        }
+    }
+
     // 404 is always the dev HTML body so the page is replaced once
     // a real one lands. The live-reload script gets injected.
     page_response_bytes(
@@ -751,6 +799,33 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
         }
     }
     None
+}
+
+/// Try to read a file from the project's `public/` directory on disk.
+///
+/// Unlike [`read_from_dist`] this does NOT probe an `index.html`
+/// candidate — `public/` is a verbatim static-file mirror, so a
+/// request to `/foo` resolves to `<public_root>/foo` only. Returns
+/// `None` on any read failure (including the file simply not existing).
+///
+/// `trimmed` comes from a percent-decoded URL, so we reject any path
+/// that contains `..`, NUL, backslash, or absolute components before
+/// joining onto `public_root` — same threat model as [`read_from_dist`].
+/// Empty `trimmed` (a bare `/` request) is also rejected because we
+/// never want to serve the directory itself.
+fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+    if trimmed.is_empty() || !is_safe_url_path(trimmed) {
+        return None;
+    }
+    let path = public_root.join(trimmed);
+    // Reject directory reads explicitly — `std::fs::read` on a directory
+    // returns an EISDIR error on Unix and would surface as a None here
+    // anyway, but on Windows the behaviour is platform-dependent. Being
+    // explicit also documents the intent.
+    if path.is_dir() {
+        return None;
+    }
+    std::fs::read(&path).ok()
 }
 
 /// Reject URL paths that would escape the dist root once joined.
@@ -1060,6 +1135,7 @@ mod tests {
             broadcast: tx,
             plugins: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
         }
@@ -1072,17 +1148,20 @@ mod tests {
             broadcast: tx,
             plugins: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
             trailing_slash: false,
         }
     }
 
     fn test_router(state: AppState) -> Router {
-        // Use bogus dist/public roots — ServeDir will simply 404, which
-        // is fine: these tests don't exercise asset routing (Sub 6
-        // covers integration with a real fixture project).
-        let tmp = std::env::temp_dir();
-        build_router(state, tmp.join("zfb-test-public"))
+        // The dist/public roots on the state are bogus paths that
+        // don't exist on disk, so the dist + public on-disk fallbacks
+        // inside `serve_page` simply return None — which is fine: these
+        // tests exercise the routing logic, not asset I/O. Tests that
+        // need real on-disk fixtures override `dist_root` / `public_root`
+        // on the AppState before calling `test_router`.
+        build_router(state)
     }
 
     async fn body_string(resp: Response) -> String {
@@ -1508,6 +1587,7 @@ mod tests {
             broadcast: tx,
             plugins: Some(set),
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
         }
@@ -1767,8 +1847,7 @@ mod tests {
     // base-aware 404 hint.
 
     fn test_router_with_base(state: AppState) -> Router {
-        let tmp = std::env::temp_dir();
-        build_router(state, tmp.join("zfb-test-public"))
+        build_router(state)
     }
 
     #[tokio::test]
