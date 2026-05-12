@@ -16,6 +16,19 @@ use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
+/// A single `.tmTheme` parse failure, carrying the file path.
+#[derive(Debug)]
+pub struct ThemeFileError {
+    pub path: std::path::PathBuf,
+    pub message: String,
+}
+
+impl std::fmt::Display for ThemeFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.message)
+    }
+}
+
 /// Cached syntect resources.
 pub struct Highlighter {
     syntax_set: SyntaxSet,
@@ -55,11 +68,47 @@ impl Highlighter {
         Ok(())
     }
 
-    /// Load extra themes from a directory at runtime (`.tmTheme` files).
+    /// Load extra `.tmTheme` files from `dir`.
+    ///
+    /// Each `.tmTheme` file is parsed individually.  On the first parse
+    /// failure the function returns [`HighlightError::ThemeFileParse`] with
+    /// the failing file's path attached — this is the acceptance-criterion
+    /// "surface file path + parse error" guarantee.  IO errors reading the
+    /// directory itself are returned as [`HighlightError::ThemeLoad`].
+    ///
+    /// The directory **must exist** before calling this function.  A missing
+    /// directory is reported as an [`HighlightError::ThemeLoad`] IO error.
     pub fn load_themes_from_dir(&mut self, dir: &Path) -> Result<(), HighlightError> {
-        self.theme_set
-            .add_from_folder(dir)
-            .map_err(|e| HighlightError::ThemeParse(e.to_string()))?;
+        let entries = std::fs::read_dir(dir)?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("tmTheme") {
+                continue;
+            }
+            // Parse the individual file so we can attach its path to any error.
+            let theme = ThemeSet::get_theme(&path).map_err(|e| {
+                HighlightError::ThemeFileParse(ThemeFileError {
+                    path: path.clone(),
+                    message: e.to_string(),
+                })
+            })?;
+            // Derive the theme name from its plist `name` key (already stored
+            // in `theme.name`) or fall back to the file stem so the theme
+            // is always addressable.
+            let name = theme
+                .name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                });
+            self.theme_set.themes.insert(name, theme);
+        }
         Ok(())
     }
 
@@ -220,6 +269,9 @@ pub enum HighlightError {
     ThemeLoad(#[from] std::io::Error),
     #[error("theme parse error: {0}")]
     ThemeParse(String),
+    /// A single `.tmTheme` file failed to parse; carries path + message.
+    #[error("theme parse error in {0}")]
+    ThemeFileParse(ThemeFileError),
 }
 
 #[cfg(test)]
@@ -520,5 +572,102 @@ mod tests {
         let has_toml = names.iter().any(|n| *n == "TOML");
         // Not asserting presence — just recording for documentation.
         let _ = has_toml;
+    }
+
+    // Minimal valid `.tmTheme` plist used by the load_themes_from_dir tests.
+    // The `name` key determines the theme name reported by theme_names().
+    const MINIMAL_TMTHEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>name</key>
+    <string>My Custom Theme</string>
+    <key>settings</key>
+    <array>
+        <dict>
+            <key>settings</key>
+            <dict>
+                <key>background</key>
+                <string>#1e1e1e</string>
+                <key>foreground</key>
+                <string>#d4d4d4</string>
+            </dict>
+        </dict>
+    </array>
+    <key>uuid</key>
+    <string>aaaaaaaa-0000-0000-0000-000000000001</string>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn load_themes_from_dir_adds_custom_theme() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("my-custom.tmTheme"), MINIMAL_TMTHEME)
+            .expect("write fixture");
+
+        let mut h = Highlighter::new();
+        // Before loading: custom theme is absent.
+        assert!(
+            !h.theme_names().iter().any(|n| n == "My Custom Theme"),
+            "custom theme must not be present before load"
+        );
+
+        h.load_themes_from_dir(dir.path())
+            .expect("load_themes_from_dir ok");
+
+        // After loading: custom theme is present.
+        assert!(
+            h.theme_names().iter().any(|n| n == "My Custom Theme"),
+            "custom theme must be present after load; got: {:?}",
+            h.theme_names()
+        );
+    }
+
+    #[test]
+    fn load_themes_from_dir_missing_dir_returns_error() {
+        let mut h = Highlighter::new();
+        let missing = std::path::Path::new("/tmp/zfb-test-nonexistent-themes-dir-abc123");
+        let result = h.load_themes_from_dir(missing);
+        assert!(
+            result.is_err(),
+            "expected error for missing directory, got Ok"
+        );
+    }
+
+    #[test]
+    fn load_themes_from_dir_invalid_tmtheme_surfaces_path_in_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Write broken XML that can't parse as a valid plist/theme.
+        std::fs::write(dir.path().join("broken.tmTheme"), b"NOT VALID XML <<<<<")
+            .expect("write broken fixture");
+
+        let mut h = Highlighter::new();
+        let err = h
+            .load_themes_from_dir(dir.path())
+            .expect_err("must fail for broken .tmTheme");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("broken.tmTheme"),
+            "error message must include filename; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_themes_from_dir_non_tmtheme_files_are_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Write a .txt file that would fail to parse — must be silently ignored.
+        std::fs::write(dir.path().join("readme.txt"), b"NOT A THEME")
+            .expect("write non-theme file");
+        std::fs::write(dir.path().join("my-custom.tmTheme"), MINIMAL_TMTHEME)
+            .expect("write fixture");
+
+        let mut h = Highlighter::new();
+        h.load_themes_from_dir(dir.path())
+            .expect("must not fail; non-.tmTheme files are skipped");
+        assert!(
+            h.theme_names().iter().any(|n| n == "My Custom Theme"),
+            "custom theme present after mixed-dir load"
+        );
     }
 }

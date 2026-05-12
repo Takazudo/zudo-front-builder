@@ -19,6 +19,7 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
@@ -530,7 +531,42 @@ impl Pipeline {
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
     ) -> Self {
-        let highlighter = Arc::new(Highlighter::new());
+        // Infallible path: no themes_dir.  Any error from a
+        // `themes_dir`-bearing call site is caught by the fallible variant.
+        Self::build_defaults(theme, resolved, None)
+            .expect("no themes_dir — cannot fail")
+    }
+
+    /// Like [`with_defaults_and_theme_and_gfm`] but also loads extra
+    /// `.tmTheme` files from `themes_dir` before constructing the
+    /// `SyntectPlugin`.
+    ///
+    /// Returns `Err` if the directory is missing, unreadable, or any
+    /// `.tmTheme` file inside it fails to parse.  The error message
+    /// includes the failing file's path so users get a clear diagnostic
+    /// at build start.
+    ///
+    /// Call sites that don't use `themes_dir` stay on the infallible
+    /// `with_defaults_and_theme_and_gfm` path.
+    pub fn with_defaults_and_theme_and_gfm_and_themes_dir(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: &Path,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        Self::build_defaults(theme, resolved, Some(themes_dir))
+    }
+
+    /// Shared builder used by the infallible and fallible public constructors.
+    fn build_defaults(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        let mut highlighter = Highlighter::new();
+        if let Some(dir) = themes_dir {
+            highlighter.load_themes_from_dir(dir)?;
+        }
+        let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase.
         p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
@@ -546,7 +582,7 @@ impl Pipeline {
             SyntectPlugin::new(highlighter)
         };
         p.add_hast_visitor(Box::new(syntect));
-        p
+        Ok(p)
     }
 
     /// Append an mdast visitor; visitors run in insertion order.
