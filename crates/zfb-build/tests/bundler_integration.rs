@@ -197,6 +197,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        prefetch_disabled: false,
         toc: None,
             external_links: None,
             cjk_friendly: true,
