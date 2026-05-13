@@ -31,7 +31,10 @@ pub mod swc_pipeline;
 pub mod embedded_v8;
 
 #[cfg(feature = "embed_v8")]
-pub use embedded_v8::{EmbeddedV8RenderHost, HttpRequestLike, HttpResponseLike};
+pub use embedded_v8::{
+    AliasHook, BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, HttpResponseLike,
+    PluginRegistryHooks, VirtualModuleHook,
+};
 
 pub use error::{RenderError, Result};
 pub use loader::{read_to_string, ResolverError};
