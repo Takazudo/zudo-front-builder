@@ -256,27 +256,34 @@ pub struct EsbuildSubprocessConfig {
     /// the subprocess only — the parent env is untouched).
     pub env_vars: Vec<(OsString, OsString)>,
 
-    /// Import alias rewrites consumed by the islands bundler (#261).
+    /// Import alias rewrites consumed by the islands bundler (#261, #269).
     ///
     /// Each entry is an exact-match `(from, to)` pair where `to` is the
     /// absolute filesystem path the alias resolves to. Populated from
     /// [`zfb_build::AliasMap`] by the build/dev orchestrator after the
-    /// plugin `setup` hook runs. Each pair becomes a
-    /// `--alias:<from>=<to>` CLI flag passed to esbuild.
+    /// plugin `setup` hook runs.
     ///
-    /// **Exact-match only** (mirrors `AliasMap`'s v1 contract): a
+    /// **Exact-match only** (mirrors `AliasMap`'s contract): a
     /// registration for `"@/foo"` matches `import "@/foo"` but NOT
-    /// `import "@/foo/bar"`. esbuild's own `--alias` semantics are
-    /// prefix-based, so we rely on the fact that users must register
-    /// exact import strings.
+    /// `import "@/foo/bar"`. To achieve this, `bundle_one_entry`
+    /// writes a synthetic `tsconfig.json` whose `compilerOptions.paths`
+    /// map carries one entry per pair (wildcard-free, which is the
+    /// literal exact-match shape in TS / esbuild's path-mapping
+    /// pipeline) and passes `--tsconfig=<that file>` to esbuild. No
+    /// `--alias` flags are emitted for plugin entries — esbuild's
+    /// `--alias` is prefix-with-slash and would silently rewrite
+    /// `@/foo/bar` to `<to>/bar`, contradicting the V8 host's
+    /// exact-match contract
+    /// (`zfb-render::BundleModuleLoader::resolve_alias`).
     ///
     /// Populated only when plugin registrations are present. An empty
-    /// `Vec` (the default) adds no `--alias` flags so the bundle output
-    /// is byte-identical to a build without any plugin registrations
-    /// (zero-registration regression guard).
+    /// `Vec` (the default) skips both the helper call and the
+    /// synthetic tsconfig, so the bundle output is byte-identical to
+    /// a build without any plugin registrations (#261
+    /// zero-registration regression guard).
     pub alias_entries: Vec<(String, String)>,
 
-    /// Virtual-module source strings consumed by the islands bundler (#261).
+    /// Virtual-module source strings consumed by the islands bundler (#261, #269).
     ///
     /// Each entry is a `(specifier, source)` pair. The specifier is the
     /// bare import string an island uses (e.g. `"virtual:my-data"`); the
@@ -285,15 +292,18 @@ pub struct EsbuildSubprocessConfig {
     /// [`zfb_build::PluginHost::invoke_virtual_loader`] before constructing
     /// this config).
     ///
-    /// In `bundle_one_entry` each source string is written to a temporary
-    /// `.mjs` file inside `working_dir` (or the system temp dir as
-    /// fallback), and an `--alias:<specifier>=<temp-path>` CLI flag is
-    /// added so esbuild redirects the bare import to the on-disk source.
-    /// The temp files are held alive for the duration of the subprocess
-    /// call and dropped afterwards.
+    /// In `bundle_one_entry` each source string is written to a
+    /// `.zfb-virtual-*.mjs` temp file (allocated by
+    /// `zfb_plugin_resolver::build_resolver_inputs`, inside
+    /// `working_dir` or the system tempdir as a fallback) and the temp
+    /// file's path is added to the synthetic tsconfig's
+    /// `compilerOptions.paths` map under the bare specifier — same
+    /// exact-match shape as `alias_entries`. Temp files are held alive
+    /// for the duration of the subprocess call and dropped afterwards.
     ///
-    /// An empty `Vec` (the default) adds no temp files and no `--alias`
-    /// flags — zero-registration builds are byte-identical to today.
+    /// An empty `Vec` (the default) adds no temp files and no
+    /// synthetic tsconfig entry — zero-registration builds are
+    /// byte-identical to today.
     pub virtual_modules: Vec<(String, String)>,
 }
 
@@ -370,12 +380,14 @@ impl EsbuildSubprocessConfig {
 
     /// Set the alias entries for the islands bundler (chainable).
     ///
-    /// Replaces the current `alias_entries` list. Each `(from, to)` pair
-    /// adds `--alias:<from>=<to>` to the esbuild subprocess invocation.
-    /// `to` must be an absolute filesystem path (as produced by
-    /// [`zfb_build::AliasMap`]).  When the list is empty (the default)
-    /// no `--alias` flags are added and the bundle is byte-identical to
-    /// a zero-registration build (#261 regression guard).
+    /// Replaces the current `alias_entries` list. Each `(from, to)`
+    /// pair becomes an exact-match `compilerOptions.paths` entry in the
+    /// synthetic tsconfig the bundler hands to esbuild (#269); `to`
+    /// must be an absolute filesystem path (as produced by
+    /// [`zfb_build::AliasMap`]). When the list is empty (the default)
+    /// no synthetic tsconfig is generated and the bundle is
+    /// byte-identical to a zero-registration build (#261 regression
+    /// guard).
     pub fn with_alias_entries(mut self, aliases: Vec<(String, String)>) -> Self {
         self.alias_entries = aliases;
         self
@@ -383,11 +395,13 @@ impl EsbuildSubprocessConfig {
 
     /// Set the virtual-module source map for the islands bundler (chainable).
     ///
-    /// Replaces the current `virtual_modules` list. Each `(specifier, source)`
-    /// pair causes `bundle_one_entry` to write the source to a temporary
-    /// file and add `--alias:<specifier>=<path>` so esbuild redirects the
-    /// bare import to the on-disk module. The source must be an ESM module
-    /// string (the text returned by
+    /// Replaces the current `virtual_modules` list. Each
+    /// `(specifier, source)` pair causes `bundle_one_entry` to
+    /// materialize the source to a `.zfb-virtual-*.mjs` temp file (via
+    /// `zfb_plugin_resolver::build_resolver_inputs`) and to add an
+    /// exact-match `compilerOptions.paths` entry under the bare
+    /// specifier in the synthetic tsconfig (#269). The source must be
+    /// an ESM module string (the text returned by
     /// [`zfb_build::PluginHost::invoke_virtual_loader`]).
     pub fn with_virtual_modules(mut self, vms: Vec<(String, String)>) -> Self {
         self.virtual_modules = vms;
@@ -641,57 +655,77 @@ impl EsbuildSubprocessBundler {
             .tempfile()
             .context("failed to allocate out temp file")?;
 
-        // Virtual-module temp files (#261). Each virtual module's source
-        // is written to a `.mjs` temp file so esbuild can read it as a
-        // real module, then an `--alias:<specifier>=<path>` flag redirects
-        // the bare import. The temp files are held alive via their
-        // `NamedTempFile` handles until after the subprocess returns.
-        // Allocated inside `working_dir` for the same node_modules-walk
-        // reason as the entry temp file above; fall back to system tmpdir
-        // when `working_dir` is not a real directory (unit test environment).
-        let mut vm_temp_files: Vec<(String, tempfile::NamedTempFile)> = Vec::new();
-        for (specifier, source) in &self.config.virtual_modules {
-            let vm_tmp = if self.config.working_dir.is_dir() {
+        // Plugin-registered aliases + virtual modules (#269). Both
+        // surface through a synthetic `compilerOptions.paths` map
+        // esbuild reads via `--tsconfig=<temp tsconfig>`, NOT as
+        // `--alias` flags. esbuild's `--alias:<from>=<to>` is
+        // prefix-with-slash — registering `@/foo` would silently
+        // rewrite `@/foo/bar`, contradicting the embedded V8 host's
+        // exact-match contract
+        // (`zfb-render::BundleModuleLoader::resolve_alias`). A
+        // wildcard-free `compilerOptions.paths` entry is a literal
+        // exact match in TS / esbuild's path-mapping pipeline.
+        //
+        // `zfb_plugin_resolver::build_resolver_inputs` materializes
+        // each virtual module's source to a `.zfb-virtual-*.mjs` temp
+        // file inside `working_dir` (same node_modules-walk rationale
+        // as the entry temp file above) and returns POSIX-normalized
+        // `(specifier, absolute-path)` pairs. The held-alive temp
+        // files live in `resolver_inputs._temp_files` and are dropped
+        // after the subprocess returns.
+        let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+            &self.config.alias_entries,
+            &self.config.virtual_modules,
+            &self.config.working_dir,
+        )
+        .context("zfb-islands: failed materializing plugin resolver inputs")?;
+
+        // Synthetic tsconfig. We allocate one only when there is at
+        // least one plugin-registered entry; otherwise islands stays
+        // byte-identical to the no-plugin path — esbuild walks up from
+        // the entry file to find the user's `tsconfig.json` as it does
+        // today. The synthetic tsconfig sets `paths` (the plugin
+        // entries) plus a minimal `baseUrl` so esbuild treats the
+        // map as relative to its own dir; absolute targets sidestep
+        // `baseUrl` entirely.
+        let plugin_tsconfig: Option<tempfile::NamedTempFile> = if resolver_inputs
+            .paths_entries
+            .is_empty()
+        {
+            None
+        } else {
+            let mut paths_map: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            zfb_plugin_resolver::merge_into_tsconfig_paths(
+                &mut paths_map,
+                &resolver_inputs.paths_entries,
+            );
+            let json = serde_json::json!({
+                "//": "Synthetic tsconfig generated by zfb-islands::esbuild. \
+                       Drives plugin-registered alias / virtual-module \
+                       exact-match resolution through compilerOptions.paths.",
+                "compilerOptions": {
+                    "baseUrl": ".",
+                    "paths": paths_map,
+                },
+            });
+            let tmp = if self.config.working_dir.is_dir() {
                 tempfile::Builder::new()
-                    .prefix(".zfb-virtual-")
-                    .suffix(".mjs")
+                    .prefix(".zfb-islands-tsconfig-")
+                    .suffix(".json")
                     .tempfile_in(&self.config.working_dir)
-                    .with_context(|| {
-                        format!(
-                            "failed to allocate virtual-module temp file for `{specifier}` \
-                             inside working_dir"
-                        )
-                    })?
+                    .context("failed to allocate islands tsconfig temp file inside working_dir")?
             } else {
                 tempfile::Builder::new()
-                    .prefix("zfb-virtual-")
-                    .suffix(".mjs")
+                    .prefix("zfb-islands-tsconfig-")
+                    .suffix(".json")
                     .tempfile()
-                    .with_context(|| {
-                        format!(
-                            "failed to allocate virtual-module temp file for `{specifier}`"
-                        )
-                    })?
+                    .context("failed to allocate islands tsconfig temp file")?
             };
-            std::fs::write(vm_tmp.path(), source.as_bytes()).with_context(|| {
-                format!(
-                    "zfb-islands plugin (islands-resolver): failed to write virtual-module \
-                     source for specifier `{specifier}`"
-                )
-            })?;
-            vm_temp_files.push((specifier.clone(), vm_tmp));
-        }
-
-        // Collect alias args: registered aliases + virtual-module redirects.
-        // Each becomes `--alias:<from>=<to>` on the esbuild command line.
-        let mut alias_args: Vec<OsString> = Vec::new();
-        for (from, to) in &self.config.alias_entries {
-            alias_args.push(OsString::from(format!("--alias:{from}={to}")));
-        }
-        for (specifier, vm_tmp) in &vm_temp_files {
-            let path_str = vm_tmp.path().to_string_lossy();
-            alias_args.push(OsString::from(format!("--alias:{specifier}={path_str}")));
-        }
+            std::fs::write(tmp.path(), serde_json::to_vec_pretty(&json)?)
+                .context("failed to write islands synthetic tsconfig")?;
+            Some(tmp)
+        };
 
         let args = build_esbuild_args(
             config,
@@ -708,10 +742,15 @@ impl EsbuildSubprocessBundler {
         for (key, value) in &self.config.env_vars {
             cmd.env(key, value);
         }
-        // Alias args first so the order is deterministic and reviewable:
-        // aliases before extra_args and the entry path.
-        for arg in &alias_args {
-            cmd.arg(arg);
+        // `--tsconfig=<synthetic>` goes first so it's adjacent to its
+        // adjacent in the argv (deterministic + reviewable). Only
+        // emitted when plugin entries are present; the zero-plugin
+        // path is byte-identical to the previous behaviour.
+        if let Some(ref tsconfig_tmp) = plugin_tsconfig {
+            cmd.arg(OsString::from(format!(
+                "--tsconfig={}",
+                tsconfig_tmp.path().display()
+            )));
         }
         for arg in &args {
             cmd.arg(arg);
@@ -721,10 +760,12 @@ impl EsbuildSubprocessBundler {
             .output()
             .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
 
-        // Drop vm_temp_files now — the subprocess has finished. Explicit
-        // drop makes the lifetime intent visible; temp files are removed
-        // from disk by their Drop impl.
-        drop(vm_temp_files);
+        // Drop `resolver_inputs` and the synthetic tsconfig now — the
+        // subprocess has finished and esbuild no longer needs either.
+        // Explicit drops make the lifetime intent visible; both delete
+        // their on-disk file via Drop.
+        drop(resolver_inputs);
+        drop(plugin_tsconfig);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

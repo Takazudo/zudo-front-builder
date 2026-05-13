@@ -34,6 +34,12 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no
 # coupling beyond the constants themselves.
 zfb-types = { path = "../zfb-types" }
+# Shared exact-match resolver helper used by both this islands
+# bundler and the main bundler in zfb-build. Replaces the
+# prefix-with-slash `--alias:<from>=<to>` flag emission with
+# exact-match `compilerOptions.paths` entries on a synthetic
+# tsconfig.
+zfb-plugin-resolver = { path = "../zfb-plugin-resolver" }
 
 # Workspace-shared helpers.
 anyhow = { workspace = true }
