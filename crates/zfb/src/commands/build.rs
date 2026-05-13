@@ -108,7 +108,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // (#260 V8 host resolver, #261 islands esbuild resolver). For the
     // build command `injectRoute` is rejected by the accumulator with
     // `InjectRouteInBuildMode` — see crates/zfb-build/src/plugin_registries.rs.
-    let _setup_registries = if let Some(host) = plugin_host.as_ref() {
+    let setup_registries = if let Some(host) = plugin_host.as_ref() {
         let cfg_json = serde_json::to_value(&config)
             .context("plugin lifecycle: serialise config for setup ctx")?;
         let regs = host
@@ -119,6 +119,45 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         regs
     } else {
         zfb_build::SetupRegistries::empty()
+    };
+
+    // #261 — pre-fetch virtual module sources (async) before entering the
+    // synchronous block_in_place section. `invoke_virtual_loader` is async,
+    // so we collect all sources here and pass the plain strings to the
+    // synchronous `build_default_islands_payload` via `IslandsPluginConfig`.
+    let islands_plugin_config = {
+        let alias_entries: Vec<(String, String)> = setup_registries
+            .aliases
+            .iter()
+            .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
+            .collect();
+
+        let mut virtual_modules: Vec<(String, String)> = Vec::new();
+        if let Some(host) = plugin_host.as_ref() {
+            for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
+                match host.invoke_virtual_loader(&vm_entry.loader_id).await {
+                    Ok(source) => {
+                        virtual_modules.push((specifier.clone(), source));
+                    }
+                    Err(e) => {
+                        return Err(e)
+                            .map_err(zfb_build::annotate_with_plugin_error)
+                            .with_context(|| {
+                                format!(
+                                    "islands esbuild plugin: failed to load virtual module \
+                                     `{specifier}` (plugin: `{plugin}`)",
+                                    plugin = vm_entry.plugin
+                                )
+                            });
+                    }
+                }
+            }
+        }
+
+        IslandsPluginConfig {
+            alias_entries,
+            virtual_modules,
+        }
     };
 
     if let Some(host) = plugin_host.as_ref() {
@@ -153,7 +192,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             outdir: &outdir,
             config: &config,
             routes,
-            runner: &DefaultRunner,
+            runner: &DefaultRunner { islands_plugin_config },
             adapter_runner: &DefaultAdapterRunner,
         })
     })?;
@@ -292,9 +331,32 @@ impl Drop for WorkerHandle {
     }
 }
 
+/// Pre-fetched alias and virtual-module data from the plugin `setup` hook
+/// (#261). Populated in the async `run()` context (where
+/// `PluginHost::invoke_virtual_loader` is awaitable) and consumed by the
+/// synchronous `build_default_islands_payload` call inside `block_in_place`.
+///
+/// An empty instance (the default) means no plugin registrations were active;
+/// the islands bundler then produces output byte-identical to a build without
+/// any plugin hooks.
+#[derive(Debug, Default, Clone)]
+struct IslandsPluginConfig {
+    /// Alias entries derived from `SetupRegistries::aliases`. Each `(from, to)`
+    /// pair becomes `--alias:<from>=<to>` on the esbuild subprocess.
+    alias_entries: Vec<(String, String)>,
+    /// Virtual-module `(specifier, source)` pairs. The source text has been
+    /// fetched from `PluginHost::invoke_virtual_loader` before this struct is
+    /// constructed. Each entry causes a temp `.mjs` file to be written and an
+    /// `--alias:<specifier>=<path>` flag to be added to esbuild.
+    virtual_modules: Vec<(String, String)>,
+}
+
 /// Production runner — straight pass-throughs to the real bundler /
 /// renderer APIs.
-struct DefaultRunner;
+struct DefaultRunner {
+    /// Pre-fetched plugin setup registries to wire into the islands bundler.
+    islands_plugin_config: IslandsPluginConfig,
+}
 impl BuildRunner for DefaultRunner {
     fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
         bundle(input)
@@ -380,7 +442,7 @@ impl BuildRunner for DefaultRunner {
         // `"use client"` components, etc.).
         let css = build_default_css_payload(project_root, outdir, config)
             .context("CSS emitter (DefaultRunner) failed")?;
-        let islands = build_default_islands_payload(project_root, outdir)
+        let islands = build_default_islands_payload(project_root, outdir, &self.islands_plugin_config)
             .context("islands emitter (DefaultRunner) failed")?;
         Ok(ProdAssetEmitterInputs { css, islands })
     }
@@ -599,6 +661,7 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
+    plugin_config: &IslandsPluginConfig,
 ) -> Result<Option<AssetEmitterPayload>> {
     // Walk the conventional islands roots. The scanner DFS-walks
     // imports starting from each entry path, so seeding with the
@@ -722,6 +785,18 @@ fn build_default_islands_payload(
     } else {
         _embedded_esbuild_handle = None;
     }
+    // #261 — wire alias + virtual-module registries from the plugin setup
+    // hook into the islands esbuild config. When both are empty (no plugin
+    // registrations) no `--alias` flags are added and the bundle output is
+    // byte-identical to a build without any plugins (zero-registration
+    // regression guard).
+    if !plugin_config.alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    }
+    if !plugin_config.virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    }
+
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::production().with_outdir(outdir.to_path_buf());
 
