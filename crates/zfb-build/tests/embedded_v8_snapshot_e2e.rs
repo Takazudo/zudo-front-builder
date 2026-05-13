@@ -101,6 +101,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         toc: None,
+        external_links: None,
+        cjk_friendly: true,
     }
 }
 

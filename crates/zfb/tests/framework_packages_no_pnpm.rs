@@ -172,6 +172,9 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
     };
 
     let out = bundle(input).expect(

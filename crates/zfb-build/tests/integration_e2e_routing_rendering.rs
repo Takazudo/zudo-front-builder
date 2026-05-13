@@ -319,6 +319,8 @@ fn build_bundle(
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         toc: None,
+            external_links: None,
+            cjk_friendly: true,
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

@@ -198,6 +198,8 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         toc: None,
+            external_links: None,
+            cjk_friendly: true,
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");
