@@ -35,6 +35,16 @@ export {
   supportsViewTransitions,
   transitionEnabledOnThisPage,
 } from "./client-router/router.js";
+
+// Prefetch public surface (#276).
+// `init` from prefetch.ts is re-exported as `prefetchInit` to avoid collision
+// with the router's `init`.
+export { prefetch, init as prefetchInit } from "./client-router/prefetch.js";
+export type {
+  PrefetchStrategy,
+  PrefetchInitOptions,
+  PrefetchOptions,
+} from "./client-router/prefetch.js";
 export {
   TRANSITION_BEFORE_PREPARATION,
   TRANSITION_AFTER_PREPARATION,
