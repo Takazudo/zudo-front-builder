@@ -190,9 +190,12 @@ type IslandMount = (
   mode: "hydrate" | "render",
 ) => void;
 
+type IslandUnmount = (element: Element) => void;
+
 interface IslandModule {
   mount?: IslandMount;
   default?: IslandMount;
+  unmount?: IslandUnmount;
 }
 
 /**
@@ -218,7 +221,11 @@ interface IslandModule {
 export type IslandManifestValue = string | IslandModule;
 export type IslandManifest = Readonly<Record<string, IslandManifestValue>>;
 
-const mounted = new WeakSet<Element>();
+// WeakMap<Element, unmount thunk> — replaces the old WeakSet.
+// Value is a per-element function that calls the bundle's unmount(element)
+// (or a noop if the bundle does not expose one). Used by unmountIslands()
+// to fire framework lifecycle cleanups before a body swap.
+const mounted = new WeakMap<Element, () => void>();
 // Elements with an in-flight dynamic import that has not yet resolved.
 // Two concurrent `mountIslands` invocations (or two `scheduleMount`
 // calls hitting the same element through different code paths) could
@@ -226,7 +233,7 @@ const mounted = new WeakSet<Element>();
 // `importIsland(url)` -> `fn()` chain, double-mounting the component.
 // Adding the element to `pending` synchronously, before the import is
 // fired, closes that window; the entry is removed in both the success
-// (after `mounted.add`) and failure branches.
+// (after `mounted.set`) and failure branches.
 const pending = new WeakSet<Element>();
 
 // Module-level captured manifest — set by the first `mountIslands` call and reused by
@@ -417,7 +424,20 @@ function scheduleMount(
           }
           return;
         }
-        mounted.add(element);
+        // Stale-mount race guard: if the element was detached while the
+        // dynamic import was in-flight (e.g. a body swap happened), skip
+        // mounting — the element is no longer in the live document and
+        // its useEffect listeners would never receive a cleanup call.
+        if (!element.isConnected) {
+          pending.delete(element);
+          return;
+        }
+        const unmountThunk = mod.unmount
+          ? () => mod.unmount!(element)
+          : () => {
+              // noop — bundle does not expose unmount
+            };
+        mounted.set(element, unmountThunk);
         pending.delete(element);
         fn(props, element, mode);
       },
@@ -479,7 +499,15 @@ function fireInlineMount(
     // When the deferred fire actually runs, the cancel handle is no longer
     // needed — remove it so pendingCancels doesn't hold stale entries.
     pendingCancels.delete(element);
-    mounted.add(element);
+    // Stale-mount race guard for deferred inline mounts: skip if the element
+    // was detached (e.g. body swap) while the idle/visible callback was queued.
+    if (!element.isConnected) return;
+    const unmountThunk = mod.unmount
+      ? () => mod.unmount!(element)
+      : () => {
+          // noop — inline module does not expose unmount
+        };
+    mounted.set(element, unmountThunk);
     fn(props, element, mode);
   };
 
@@ -494,6 +522,31 @@ function fireInlineMount(
   // idle / visibility callbacks before a body swap. (W1B §12.5)
   if (when && when !== "load") {
     pendingCancels.set(element, cancel);
+  }
+}
+
+/**
+ * Unmount all currently-mounted islands within `root` (default: `document.body`).
+ *
+ * Walks `root` for `[data-zfb-island]` and `[data-zfb-island-skip-ssr]` elements,
+ * looks up each element's unmount thunk in the `mounted` WeakMap, calls it (which
+ * triggers `render(null, element)` for Preact or `root.unmount()` for React), and
+ * removes the entry from the map so `mountNewIslands()` can re-mount later.
+ *
+ * Call this before `swapBodyElement(...)` so the OLD body's islands receive proper
+ * framework lifecycle cleanup (useEffect teardowns, etc.) before being discarded.
+ *
+ * No-op for elements not in the `mounted` map (e.g. never-mounted or already cleaned up).
+ */
+export function unmountIslands(root: ParentNode = document.body): void {
+  const selector = "[data-zfb-island],[data-zfb-island-skip-ssr]";
+  const elements = root.querySelectorAll<HTMLElement>(selector);
+  for (const el of Array.from(elements)) {
+    const thunk = mounted.get(el);
+    if (thunk) {
+      thunk();
+      mounted.delete(el);
+    }
   }
 }
 
