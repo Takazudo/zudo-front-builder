@@ -448,6 +448,7 @@ async function transition(
   );
   if (prepEvent.defaultPrevented || prepEvent.signal.aborted) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
+    triggerEvent("zfb:navigation-aborted");
     if (!prepEvent.signal.aborted) {
       // not aborted -> delegate to browser
       location.href = to.href;

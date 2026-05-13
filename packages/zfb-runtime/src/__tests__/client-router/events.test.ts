@@ -23,6 +23,7 @@ import {
   TRANSITION_AFTER_SWAP,
   TRANSITION_BEFORE_PREPARATION,
   TRANSITION_BEFORE_SWAP,
+  TRANSITION_NAVIGATION_ABORTED,
   TRANSITION_PAGE_LOAD,
   TransitionBeforePreparationEvent,
   TransitionBeforeSwapEvent,
@@ -48,6 +49,7 @@ describe("event constants", () => {
     expect(TRANSITION_BEFORE_SWAP).toBe("zfb:before-swap");
     expect(TRANSITION_AFTER_SWAP).toBe("zfb:after-swap");
     expect(TRANSITION_PAGE_LOAD).toBe("zfb:page-load");
+    expect(TRANSITION_NAVIGATION_ABORTED).toBe("zfb:navigation-aborted");
   });
 });
 

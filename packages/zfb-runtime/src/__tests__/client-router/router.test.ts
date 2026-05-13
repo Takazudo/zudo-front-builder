@@ -168,6 +168,90 @@ describe("navigate() — happy path with mocked fetch", () => {
   });
 });
 
+describe("zfb:navigation-aborted — positive control (happy path does NOT fire)", () => {
+  it("does not dispatch zfb:navigation-aborted on a successful SPA swap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("Success", "success content"))),
+    );
+
+    const seenNavigationAborted = vi.fn();
+    document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
+
+    await navigate("/success");
+
+    document.removeEventListener("zfb:navigation-aborted", seenNavigationAborted);
+
+    // The happy path completes the swap; navigation-aborted must NOT fire.
+    expect(seenNavigationAborted).not.toHaveBeenCalled();
+    expect(document.querySelector("main")?.textContent).toBe("success content");
+  });
+});
+
+describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branch)", () => {
+  it("fires navigation-aborted exactly once for the superseded navigation, not for the winner", async () => {
+    // Build a manually-resolvable promise for /page-a so we control when A's
+    // fetch completes. /page-b resolves immediately.
+    let releaseA!: (r: Response) => void;
+    const promiseA = new Promise<Response>((resolve) => {
+      releaseA = resolve;
+    });
+
+    const fetchMock = vi.fn(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/page-a")) return promiseA;
+      if (u.includes("/page-b")) return htmlResponse(pageHtml("B", "page b content"));
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const originalHref = location.href;
+    Object.defineProperty(location, "href", {
+      configurable: true,
+      get: () => originalHref,
+      set: (_v: string) => {
+        // capture but don't assign; keeps happy-dom stable
+      },
+    });
+
+    const seenNavigationAborted = vi.fn();
+    const seenAfterSwap = vi.fn();
+    document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
+    document.addEventListener("zfb:after-swap", seenAfterSwap);
+
+    // Start /page-a navigation without awaiting so it's in-flight.
+    const navAPromise = navigate("/page-a");
+
+    // Immediately start /page-b — this aborts A's AbortController via
+    // abortAndRecreateMostRecentNavigation() inside transition().
+    const navBPromise = navigate("/page-b");
+
+    // Verify A's fetch signal is aborted. The signal was the second argument
+    // (init) passed to fetch for the /page-a call.
+    const aFetchCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/page-a"));
+    expect(aFetchCall).toBeDefined();
+    const aSignal = (aFetchCall![1] as RequestInit | undefined)?.signal;
+    expect(aSignal?.aborted).toBe(true);
+
+    // Release A's promise with a valid opt-in HTML page. A's loader will
+    // complete normally, but the signal is already aborted so transition()
+    // will take the signal-aborted branch and fire zfb:navigation-aborted.
+    releaseA(htmlResponse(pageHtml("A", "page a content")));
+
+    // Await both navigations.
+    await navAPromise;
+    await navBPromise;
+
+    document.removeEventListener("zfb:navigation-aborted", seenNavigationAborted);
+    document.removeEventListener("zfb:after-swap", seenAfterSwap);
+
+    // A fires navigation-aborted (signal-aborted branch); B fires after-swap.
+    // B must NOT fire navigation-aborted.
+    expect(seenNavigationAborted).toHaveBeenCalledTimes(1);
+    expect(seenAfterSwap).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("hash-only same-page navigation", () => {
   it("does not call fetch for `#anchor` on the same page", async () => {
     const fetchMock = vi.fn();
@@ -215,7 +299,9 @@ describe("non-opt-in target page degrade", () => {
     );
 
     const seenAfterSwap = vi.fn();
+    const seenNavigationAborted = vi.fn();
     document.addEventListener("zfb:after-swap", seenAfterSwap);
+    document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
     // happy-dom's location.href is read-only by default; capture assignments.
     const originalHref = location.href;
@@ -231,13 +317,16 @@ describe("non-opt-in target page degrade", () => {
     await navigate("/plain-no-clientrouter");
 
     document.removeEventListener("zfb:after-swap", seenAfterSwap);
+    document.removeEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
     // The router's defaultLoader path calls `preventDefault()` on the
     // preparation event when the new page has no opt-in meta, which short-
     // circuits the swap. The before/after-preparation events fire but
     // before-swap/after-swap do NOT, and a full browser load is requested
-    // by setting location.href.
+    // by setting location.href. zfb:navigation-aborted fires in the
+    // prep-aborted branch to signal that the SPA swap will not happen.
     expect(seenAfterSwap).not.toHaveBeenCalled();
+    expect(seenNavigationAborted).toHaveBeenCalledOnce();
     expect(assignedHref).toContain("/plain-no-clientrouter");
   });
 });
@@ -301,7 +390,9 @@ describe("non-HTML response degrade", () => {
     );
 
     const seenAfterSwap = vi.fn();
+    const seenNavigationAborted = vi.fn();
     document.addEventListener("zfb:after-swap", seenAfterSwap);
+    document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
     const originalHref = location.href;
     let assignedHref: string | undefined;
@@ -316,8 +407,12 @@ describe("non-HTML response degrade", () => {
     await navigate("/api/echo");
 
     document.removeEventListener("zfb:after-swap", seenAfterSwap);
+    document.removeEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
+    // When the response is not HTML, the preparation event is prevented and
+    // zfb:navigation-aborted fires in the prep-aborted branch.
     expect(seenAfterSwap).not.toHaveBeenCalled();
+    expect(seenNavigationAborted).toHaveBeenCalledOnce();
     expect(assignedHref).toContain("/api/echo");
   });
 });
