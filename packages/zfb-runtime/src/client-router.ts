@@ -106,7 +106,7 @@ const announcerCss = `
 export function ClientRouter({
   fallback = "animate",
 }: ClientRouterProps = {}): readonly ClientRouterElement[] {
-  return [
+  const nodes: ClientRouterElement[] = [
     // Global styles for the ARIA route-announcer div injected into <body>.
     makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }),
     // Opt-in meta tag: router checks for this to decide whether to intercept navigations.
@@ -114,4 +114,22 @@ export function ClientRouter({
     // Fallback strategy meta tag: read by getFallback() in router.ts.
     makeVNode("meta", { name: "zfb-view-transitions-fallback", content: fallback }),
   ];
+
+  // Prefetch-disabled meta tag (#277): emitted when the bundler set
+  // `globalThis.__zfb.prefetchDisabled = true` (from `zfb.config.ts`
+  // `prefetch: { disabled: true }`). The sibling prefetch-core module reads
+  // `document.querySelector('meta[name="zfb-prefetch-disabled"][content="true"]')`
+  // at `init()` time and short-circuits if found.
+  //
+  // The flag is site-wide and static — set once at bundle-emit time, never
+  // per-page. This meta tag appears on every page that mounts `<ClientRouter />`
+  // or not at all.
+  //
+  // Pin the contract verbatim — the attribute names and content value are
+  // shared with the sibling prefetch-core sub-issue (#276).
+  if ((globalThis as { __zfb?: { prefetchDisabled?: boolean } }).__zfb?.prefetchDisabled === true) {
+    nodes.push(makeVNode("meta", { name: "zfb-prefetch-disabled", content: "true" }));
+  }
+
+  return nodes;
 }
