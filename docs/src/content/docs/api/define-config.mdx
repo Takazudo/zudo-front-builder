@@ -25,7 +25,8 @@ All keys are camelCase and mirror `crates/zfb/src/config.rs`.
 - `tailwind?: { enabled?: boolean }` — Tailwind options.
 - `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks).
 - `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Pages).
-- `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`).
+- `site?: string` — canonical origin URL (e.g. `"https://example.com"`). When set, exposes `globalThis.__zfb.site` so layouts can build canonical `<link>` tags, OpenGraph meta, sitemap absolute hrefs, and hreflang alternates. Must be an absolute HTTP/HTTPS URL; omit for builds that do not need server-side canonical URL construction. Distinct from `base` — see below.
+- `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`). Distinct from `site`: `base` prefixes asset URLs; `site` is the full canonical origin used in metadata.
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
 - `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
 - `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs.

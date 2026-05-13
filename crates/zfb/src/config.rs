@@ -330,6 +330,28 @@ pub struct Config {
     /// the JSON / TS form `markdown` into this field.
     #[serde(default)]
     pub markdown: Option<MarkdownConfig>,
+
+    /// Canonical origin URL for the site (e.g. `"https://example.com"`).
+    ///
+    /// When set, the bundler emits `globalThis.__zfb.site = <value>` in
+    /// the synthetic `entry.mjs` so layouts can build canonical `<link>`
+    /// tags, OpenGraph `og:url` meta, sitemap absolute hrefs, and
+    /// hreflang `<link rel="alternate">` from a single config-level
+    /// source of truth.
+    ///
+    /// Accepted shape: an absolute HTTP or HTTPS URL. Relative URLs,
+    /// non-HTTP(S) schemes (e.g. `ftp://`), and empty strings are
+    /// rejected at config-load time with a clear error message. The
+    /// value is stored verbatim (trailing slash normalisation is the
+    /// consumer's responsibility).
+    ///
+    /// When absent, `globalThis.__zfb.site` is not emitted — the build
+    /// output is byte-for-byte identical to the pre-`site` build.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `site` 1:1.
+    #[serde(default)]
+    pub site: Option<String>,
 }
 
 impl Default for Config {
@@ -350,6 +372,7 @@ impl Default for Config {
             resolve_markdown_links: None,
             trailing_slash: false,
             markdown: None,
+            site: None,
         }
     }
 }
@@ -1193,6 +1216,27 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
                 b
             );
+        }
+    }
+    if let Some(s) = &cfg.site {
+        // `site` must be an absolute HTTP/HTTPS URL — it is used to build
+        // canonical hrefs, OG URLs, and sitemap entries, none of which make
+        // sense with a relative path or non-web scheme.
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            bail!("site must not be empty; supply an absolute HTTPS URL (e.g. \"https://example.com\") or omit the field");
+        }
+        match url::Url::parse(trimmed) {
+            Ok(parsed) if parsed.scheme() == "http" || parsed.scheme() == "https" => {}
+            Ok(parsed) => bail!(
+                "site {:?} uses scheme {:?}; only \"http\" and \"https\" are accepted",
+                s,
+                parsed.scheme()
+            ),
+            Err(_) => bail!(
+                "site {:?} is not a valid absolute URL; supply an absolute HTTPS URL (e.g. \"https://example.com\")",
+                s
+            ),
         }
     }
     Ok(())
@@ -2399,6 +2443,110 @@ mod tests {
             Some(MarkdownConfig {
                 gfm: Some(GfmFlag::All(true))
             })
+        );
+    }
+
+    // --- site field tests (#254) --------------------------------------------
+
+    #[tokio::test]
+    async fn site_loads_valid_https_url() {
+        // Present-and-valid: a well-formed HTTPS URL loads without error
+        // and round-trips into `Config::site`.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "https://example.com" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site.as_deref(), Some("https://example.com"));
+    }
+
+    #[tokio::test]
+    async fn site_loads_valid_http_url() {
+        // HTTP is accepted in addition to HTTPS (e.g. local/intranet sites).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "http://localhost:3000" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site.as_deref(), Some("http://localhost:3000"));
+    }
+
+    #[tokio::test]
+    async fn site_defaults_to_none_when_absent() {
+        // Absent `site` must produce `None` — the build is byte-for-byte
+        // identical to the pre-`site` build (sub #254 parity criterion).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site, None);
+    }
+
+    #[tokio::test]
+    async fn site_rejects_relative_url() {
+        // A relative path is not an absolute URL and must be rejected.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "/pj/my-site/" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("relative path should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && (msg.contains("not a valid absolute URL") || msg.contains("scheme")),
+            "expected error mentioning 'site' and URL validity; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_rejects_empty_string() {
+        // Empty string has no semantic value for a canonical URL.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("empty string should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && msg.contains("not be empty"),
+            "expected error mentioning 'site' and emptiness; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_rejects_non_http_scheme() {
+        // Non-HTTP(S) schemes like `ftp://` are semantically wrong for
+        // a web canonical URL.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "ftp://example.com" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("ftp:// scheme should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && msg.contains("ftp"),
+            "expected error mentioning 'site' and 'ftp'; got: {msg}"
         );
     }
 }

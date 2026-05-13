@@ -130,6 +130,31 @@ export type ZfbConfig = {
   base?: string;
 
   /**
+   * Canonical origin URL for the site (e.g. `"https://example.com"`).
+   *
+   * When set, the bundler emits `globalThis.__zfb.site = <value>` in
+   * `entry.mjs` so layouts can build canonical `<link>` tags,
+   * OpenGraph `og:url` meta, sitemap absolute hrefs, and hreflang
+   * `<link rel="alternate">` from a single config-level source of truth.
+   *
+   * **Distinct from `base`**: `base` is a sub-path mount prefix used
+   * for asset URLs (e.g. `"/pj/my-site/"`). `site` is the full
+   * canonical origin (scheme + host, no path) used to construct
+   * absolute page URLs for SEO/social metadata. Both may be set
+   * simultaneously.
+   *
+   * Accepted shape: an absolute HTTP or HTTPS URL. Relative URLs,
+   * non-HTTP(S) schemes, and empty strings are rejected at config-load
+   * time. Trailing slash normalisation is the consumer's responsibility.
+   *
+   * When absent, `globalThis.__zfb.site` is not emitted — the build
+   * output is byte-for-byte identical to builds without this field.
+   *
+   * Mirrors `Config::site` in crates/zfb/src/config.rs.
+   */
+  site?: string;
+
+  /**
    * Markdown link resolver (port of `remarkResolveMarkdownLinks`).
    *
    * When `enabled: true`, the build appends `ResolveLinksPlugin` to the

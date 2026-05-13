@@ -569,6 +569,10 @@ fn boot_dev_renderer(
     // `commands/build.rs` wiring.
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(cfg.markdown.as_ref());
+    // Thread the optional `site` canonical-origin URL so `zfb dev` emits
+    // `globalThis.__zfb.site` the same way `zfb build` does. Mirrors the
+    // `commands/build.rs` wiring (sub #254).
+    bundler_input.site = cfg.site.clone();
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.
