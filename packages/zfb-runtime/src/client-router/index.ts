@@ -11,6 +11,7 @@ export {
   TRANSITION_BEFORE_SWAP,
   TRANSITION_AFTER_SWAP,
   TRANSITION_PAGE_LOAD,
+  TRANSITION_NAVIGATION_ABORTED,
   TransitionBeforePreparationEvent,
   TransitionBeforeSwapEvent,
   isTransitionBeforePreparationEvent,
