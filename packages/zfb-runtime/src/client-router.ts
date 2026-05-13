@@ -29,6 +29,7 @@
 // `client-router/router.ts` on every navigation.
 
 import { init } from "./client-router/router.js";
+import { init as prefetchInit } from "./client-router/prefetch.js";
 
 // Side-effect: wire click + submit intercepts on first import of this component.
 // Guarded by the idempotent `initialized` flag in router.ts — safe for multiple
@@ -37,9 +38,18 @@ if (typeof document !== "undefined") {
   init();
 }
 
+// Module-level guard: prefetch bootstrap is triggered at most once per module
+// lifetime even if <ClientRouter prefetchAll /> is mounted multiple times (#276).
+let prefetchBootstrapped = false;
+
 export interface ClientRouterProps {
   /** Fallback animation strategy when native View Transitions are not supported. */
   fallback?: "none" | "animate" | "swap";
+  /**
+   * When true, opts every same-origin link into the default prefetch strategy
+   * (hover) by calling prefetchInit({ prefetchAll: true }) once on the client.
+   */
+  prefetchAll?: boolean;
 }
 
 /**
@@ -105,7 +115,16 @@ const announcerCss = `
  */
 export function ClientRouter({
   fallback = "animate",
+  prefetchAll: prefetchAllProp = false,
 }: ClientRouterProps = {}): readonly ClientRouterElement[] {
+  // Bootstrap prefetch exactly once on the client when prefetchAll is true.
+  // The initialized flag inside prefetchInit() provides a second safety layer
+  // in case of concurrent hydration or manual callers (#276).
+  if (typeof document !== "undefined" && prefetchAllProp && !prefetchBootstrapped) {
+    prefetchBootstrapped = true;
+    prefetchInit({ prefetchAll: true });
+  }
+
   return [
     // Global styles for the ARIA route-announcer div injected into <body>.
     makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }),

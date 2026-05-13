@@ -1,0 +1,338 @@
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
+// `@takazudo/zfb-runtime` — prefetch module.
+//
+// Ported from Astro's prefetch module (packages/astro/src/prefetch/index.ts).
+// Source: https://github.com/withastro/astro
+// Issue: Takazudo/zudo-front-builder#276
+//
+// Mechanical renames per W1B §13.5:
+//   astro:* event names          → zfb:*
+//   data-astro-prefetch          → data-zfb-prefetch
+//   __PREFETCH_DISABLED__        → <meta name="zfb-prefetch-disabled" content="true">
+//
+// DISABLED-FLAG CONTRACT — exact meta tag name and content value are locked:
+//   meta[name="zfb-prefetch-disabled"][content="true"]
+// Both this module and sibling sub-issue #272-config pin this verbatim.
+
+export type PrefetchStrategy = "hover" | "viewport" | "load" | "tap";
+
+export interface PrefetchInitOptions {
+  prefetchAll?: boolean;
+  defaultStrategy?: PrefetchStrategy;
+}
+
+export interface PrefetchOptions {
+  ignoreSlowConnection?: boolean;
+  with?: "link" | "fetch";
+}
+
+// Module-level state — persists across SPA navigations within a session.
+let initialized = false;
+let prefetchAll = false;
+let defaultStrategy: PrefetchStrategy = "hover";
+
+// Set of hrefs that have been completed or are in-flight.
+const prefetched = new Set<string>();
+// Map of in-flight prefetch promises for dedup.
+const inFlight = new Map<string, Promise<void>>();
+
+// The viewport observer — retained across post-swap re-scans so new elements
+// can be observed without recreating the observer.
+let viewportObserver: IntersectionObserver | null = null;
+
+// Hover cancel handle — set when a pointerenter idle-callback fires, cleared on
+// pointerleave before the callback executes.
+const hoverCancelHandles = new Map<Element, ReturnType<typeof setTimeout> | number>();
+
+/**
+ * Reset all module-level state. Exported for test isolation only — not part of
+ * the public API and not re-exported from any barrel.
+ */
+export function __resetForTests(): void {
+  initialized = false;
+  prefetchAll = false;
+  defaultStrategy = "hover";
+  prefetched.clear();
+  inFlight.clear();
+  if (viewportObserver) {
+    viewportObserver.disconnect();
+    viewportObserver = null;
+  }
+  hoverCancelHandles.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Feature detection
+// ---------------------------------------------------------------------------
+
+function supportsLinkPrefetch(): boolean {
+  const link = document.createElement("link");
+  return link.relList?.supports?.("prefetch") ?? false;
+}
+
+function isSlowConnection(): boolean {
+  const nav = navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+  };
+  return (
+    nav.connection?.saveData === true ||
+    nav.connection?.effectiveType === "2g" ||
+    nav.connection?.effectiveType === "slow-2g"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Core prefetch logic
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve an href to an absolute URL string keyed against the current origin.
+ * Returns null for cross-origin hrefs (these are skipped entirely).
+ */
+function resolveHref(href: string): string | null {
+  try {
+    const url = new URL(href, location.href);
+    if (url.origin !== location.origin) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Execute a single prefetch for the given absolute href.
+ * Uses <link rel="prefetch"> (preferred) or fetch() fallback.
+ */
+function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
+  const existing = inFlight.get(href);
+  if (existing) return existing;
+
+  const p: Promise<void> = (async () => {
+    const method = opts.with ?? (supportsLinkPrefetch() ? "link" : "fetch");
+    if (method === "link") {
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.href = href;
+      document.head.appendChild(link);
+    } else {
+      await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
+    }
+    prefetched.add(href);
+    inFlight.delete(href);
+  })();
+
+  inFlight.set(href, p);
+  // Also add to prefetched immediately to prevent concurrent triggers from
+  // queuing duplicate in-flight entries before the async operation resolves.
+  prefetched.add(href);
+  return p;
+}
+
+/**
+ * Public prefetch function. Idempotent per href.
+ */
+export function prefetch(url: string, opts: PrefetchOptions = {}): void {
+  const href = resolveHref(url);
+  if (!href) return; // cross-origin — skip
+
+  if (opts.ignoreSlowConnection !== true && isSlowConnection()) return;
+
+  if (prefetched.has(href)) return;
+
+  void executePrefetch(href, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: hover (pointerenter / focusin with cancel on pointerleave)
+// ---------------------------------------------------------------------------
+
+function onPointerEnter(e: Event): void {
+  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+  if (!shouldPrefetchLink(link, "hover")) return;
+
+  // Use requestIdleCallback if available, else a small timeout.
+  const fire = () => {
+    hoverCancelHandles.delete(link);
+    prefetch(link.href);
+  };
+
+  if (typeof requestIdleCallback !== "undefined") {
+    const handle = requestIdleCallback(fire);
+    hoverCancelHandles.set(link, handle);
+  } else {
+    const handle = setTimeout(fire, 100);
+    hoverCancelHandles.set(link, handle);
+  }
+}
+
+function onPointerLeave(e: Event): void {
+  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+
+  const handle = hoverCancelHandles.get(link);
+  if (handle === undefined) return;
+
+  if (typeof cancelIdleCallback !== "undefined") {
+    cancelIdleCallback(handle as number);
+  } else {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  }
+  hoverCancelHandles.delete(link);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: tap (touchstart / mousedown)
+// ---------------------------------------------------------------------------
+
+function onTap(e: Event): void {
+  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+  if (!shouldPrefetchLink(link, "tap")) return;
+  prefetch(link.href);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: viewport (IntersectionObserver)
+// ---------------------------------------------------------------------------
+
+function initViewportObserver(): IntersectionObserver {
+  if (viewportObserver) return viewportObserver;
+
+  viewportObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          const link = entry.target as HTMLAnchorElement;
+          prefetch(link.href);
+          // Once observed and in-flight, no need to keep observing.
+          viewportObserver?.unobserve(link);
+        }
+      }
+    },
+    { threshold: 0 },
+  );
+
+  return viewportObserver;
+}
+
+function observeViewportLinks(): void {
+  const observer = initViewportObserver();
+  const selector =
+    prefetchAll && defaultStrategy === "viewport"
+      ? "a[href]:not([data-zfb-prefetch='false'])"
+      : "a[data-zfb-prefetch='viewport']";
+
+  document.querySelectorAll<HTMLAnchorElement>(selector).forEach((link) => {
+    const href = resolveHref(link.href);
+    if (href && !prefetched.has(href)) {
+      observer.observe(link);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: load (requestIdleCallback after DOMContentLoaded)
+// ---------------------------------------------------------------------------
+
+function prefetchLoadLinks(): void {
+  const selector =
+    prefetchAll && defaultStrategy === "load"
+      ? "a[href]:not([data-zfb-prefetch='false'])"
+      : "a[data-zfb-prefetch='load']";
+
+  document.querySelectorAll<HTMLAnchorElement>(selector).forEach((link) => {
+    const href = resolveHref(link.href);
+    if (!href || prefetched.has(href)) return;
+
+    if (typeof requestIdleCallback !== "undefined") {
+      requestIdleCallback(() => prefetch(link.href));
+    } else {
+      setTimeout(() => prefetch(link.href), 0);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Per-link strategy resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine whether a given link should be prefetched for the supplied trigger strategy.
+ * Returns false if:
+ *   - data-zfb-prefetch="false" (always disabled)
+ *   - The effective strategy for this link doesn't match the active trigger
+ */
+function shouldPrefetchLink(link: HTMLAnchorElement, triggerStrategy: PrefetchStrategy): boolean {
+  const attr = link.dataset["zfbPrefetch"];
+
+  // Explicitly disabled.
+  if (attr === "false") return false;
+
+  // Per-link explicit strategy.
+  if (attr && attr !== "false") {
+    return attr === triggerStrategy;
+  }
+
+  // No explicit attribute — rely on prefetchAll + defaultStrategy.
+  if (!prefetchAll) return false;
+
+  return defaultStrategy === triggerStrategy;
+}
+
+// ---------------------------------------------------------------------------
+// Post-swap re-scan
+// ---------------------------------------------------------------------------
+
+function onAfterSwap(): void {
+  observeViewportLinks();
+  prefetchLoadLinks();
+}
+
+// ---------------------------------------------------------------------------
+// init()
+// ---------------------------------------------------------------------------
+
+/**
+ * Initialize the prefetch module.
+ *
+ * Idempotent — multiple calls are safe. The module-level `initialized` flag
+ * ensures listeners are registered exactly once.
+ *
+ * DISABLED-FLAG CONTRACT: if `<meta name="zfb-prefetch-disabled" content="true">`
+ * is present in the document at init() time, this function is a no-op.
+ */
+export function init(options?: PrefetchInitOptions): void {
+  // Disabled-flag check — exact selector is the contract with #272-config.
+  if (document.querySelector('meta[name="zfb-prefetch-disabled"][content="true"]')) {
+    return;
+  }
+
+  if (initialized) return;
+  initialized = true;
+
+  prefetchAll = options?.prefetchAll ?? false;
+  defaultStrategy = options?.defaultStrategy ?? "hover";
+
+  // Hover + tap — document delegation, picks up SPA-inserted links automatically.
+  document.addEventListener("pointerenter", onPointerEnter, { capture: true });
+  document.addEventListener("focusin", onPointerEnter, { capture: true });
+  document.addEventListener("pointerleave", onPointerLeave, { capture: true });
+  document.addEventListener("touchstart", onTap, { capture: true, passive: true });
+  document.addEventListener("mousedown", onTap, { capture: true });
+
+  // Viewport — observe current links immediately.
+  observeViewportLinks();
+
+  // Load — queue current links via idle callback.
+  const queueLoad = () => prefetchLoadLinks();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", queueLoad, { once: true });
+  } else {
+    queueLoad();
+  }
+
+  // Post-swap re-scan — re-walk viewport + load links after each SPA navigation.
+  document.addEventListener("zfb:after-swap", onAfterSwap);
+}
