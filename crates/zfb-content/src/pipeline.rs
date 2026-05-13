@@ -625,11 +625,9 @@ impl Pipeline {
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
         themes_dir: &Path,
+        cjk_friendly: bool,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
-        // Honour the default CJK-friendly behaviour (on); the themes-dir
-        // entry point pre-dates the `cjkFriendly` toggle and never had a
-        // way to disable it.
-        Self::build_defaults(theme, resolved, Some(themes_dir), true)
+        Self::build_defaults(theme, resolved, Some(themes_dir), cjk_friendly)
     }
 
     /// Shared builder used by the infallible and fallible public constructors.

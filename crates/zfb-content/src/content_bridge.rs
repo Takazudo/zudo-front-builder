@@ -228,6 +228,7 @@ impl SnapshotPipelineConfig {
                 self.code_highlight_theme.as_deref(),
                 self.gfm_constructs,
                 dir,
+                self.cjk_friendly,
             )
             .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?
         } else {

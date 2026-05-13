@@ -1095,19 +1095,12 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-        code_highlight_theme,
-        gfm_constructs,
-        cjk_friendly,
-    );
-    if let Some(toc_cfg) = toc {
-        pipeline.add_toc(toc_cfg);
-    }
     let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
         zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
             code_highlight_theme,
             gfm_constructs,
             dir,
+            cjk_friendly,
         )
         .with_context(|| {
             format!(
@@ -1116,11 +1109,15 @@ fn materialise_shadow(
             )
         })?
     } else {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
             code_highlight_theme,
             gfm_constructs,
+            cjk_friendly,
         )
     };
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -1391,19 +1388,12 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-        code_highlight_theme,
-        gfm_constructs,
-        cjk_friendly,
-    );
-    if let Some(toc_cfg) = toc {
-        pipeline.add_toc(toc_cfg);
-    }
     let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
         zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
             code_highlight_theme,
             gfm_constructs,
             dir,
+            cjk_friendly,
         )
         .with_context(|| {
             format!(
@@ -1412,11 +1402,15 @@ fn materialise_collection(
             )
         })?
     } else {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
             code_highlight_theme,
             gfm_constructs,
+            cjk_friendly,
         )
     };
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
