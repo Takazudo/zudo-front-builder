@@ -562,6 +562,8 @@ pub use zfb_content::TocConfig;
 /// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Today the
 /// knobs are [`Self::gfm`] and [`Self::toc`]; future markdown-pipeline
 /// knobs would also live here.
+/// only knobs are [`Self::gfm`] and [`Self::external_links`]; future
+/// markdown-pipeline knobs would also live here.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -586,6 +588,47 @@ pub struct MarkdownConfig {
     /// the TS shape `{ heading?: string; maxDepth?: number }`.
     #[serde(default)]
     pub toc: Option<TocConfig>,
+    /// External-link rewriter. When `Some`, every `<a>` whose href is
+    /// classified as external gains `target` and `rel` attributes.
+    /// `None` (absent) = feature disabled; output byte-identical to today.
+    ///
+    /// Mirrors `markdown.externalLinks` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub external_links: Option<ExternalLinksConfig>,
+}
+
+/// Options for the `rehype-external-links` port.
+///
+/// An absent field uses the documented default so the shape is additive:
+/// existing configs that add `externalLinks: {}` get the safe defaults
+/// without spelling out every field.
+///
+/// Mirrors `ExternalLinksConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinksConfig {
+    /// `rel` tokens applied to external links.
+    /// Default: `["noopener", "noreferrer"]`.
+    #[serde(default)]
+    pub rel: Option<Vec<String>>,
+    /// `target` value for external links.
+    /// Default: `"_blank"`.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+impl ExternalLinksConfig {
+    /// Convert to the `zfb_content` plugin config, applying documented
+    /// defaults for absent fields.
+    #[must_use]
+    pub fn into_content_config(self) -> zfb_content::ExternalLinksConfig {
+        zfb_content::ExternalLinksConfig {
+            rel: self.rel.unwrap_or_else(|| {
+                vec!["noopener".to_string(), "noreferrer".to_string()]
+            }),
+            target: self.target.unwrap_or_else(|| "_blank".to_string()),
+        }
+    }
 }
 
 /// Either the shorthand boolean form (`true` = all GFM constructs on,

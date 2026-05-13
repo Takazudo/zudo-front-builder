@@ -422,6 +422,17 @@ pub struct BundlerInput {
     /// same pipeline shape and produce byte-identical JSX `content_hash`
     /// values.
     pub toc: Option<zfb_content::TocConfig>,
+    /// External-link rewriter config. When `Some`, the bundler's MDX
+    /// pre-compile pipeline appends [`ExternalLinksPlugin`] so external
+    /// `<a>` elements are annotated with `target` / `rel`. `None` (the
+    /// default) keeps prior behaviour unchanged.
+    ///
+    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`. MUST match
+    /// what [`zfb_content::SnapshotPipelineConfig::external_links`] is
+    /// set to — divergence shifts the JSX `content_hash` and breaks the
+    /// snapshot ↔ bundler bridge lookup (the land mine at
+    /// `crates/zfb-content/src/content_bridge.rs:118-153`).
+    pub external_links: Option<(zfb_content::ExternalLinksConfig, Option<String>)>,
 }
 
 impl BundlerInput {
@@ -470,6 +481,7 @@ impl BundlerInput {
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             toc: None,
+            external_links: None,
         }
     }
 }
@@ -647,6 +659,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             input.toc.clone(),
+            input.external_links.as_ref(),
             &mut broken,
         )
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
@@ -681,6 +694,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                 input.gfm_constructs,
                 input.toc.clone(),
+                input.external_links.as_ref(),
                 &mut broken,
             )
             .with_context(|| {
@@ -708,6 +722,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             input.toc.clone(),
+            input.external_links.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -731,6 +746,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             input.toc.clone(),
+            input.external_links.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -753,6 +769,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
             input.toc.clone(),
+            input.external_links.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -809,6 +826,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                     input.gfm_constructs,
                     input.toc.clone(),
+                    input.external_links.as_ref(),
                     &mut broken,
                 )
                 .with_context(|| {
@@ -989,6 +1007,7 @@ fn materialise_shadow(
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     toc: Option<zfb_content::TocConfig>,
+    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1045,6 +1064,9 @@ fn materialise_shadow(
     }
     if let Some(map) = resolve_source_map {
         pipeline.add_resolve_links(map.clone());
+    }
+    if let Some((cfg, site)) = external_links {
+        pipeline.add_external_links(cfg.clone(), site.as_deref());
     }
 
     // sort_by_file_name() gives lexicographic order within each directory
@@ -1282,6 +1304,7 @@ fn materialise_collection(
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     toc: Option<zfb_content::TocConfig>,
+    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1316,6 +1339,9 @@ fn materialise_collection(
     }
     if let Some(map) = resolve_source_map {
         pipeline.add_resolve_links(map.clone());
+    }
+    if let Some((cfg, site)) = external_links {
+        pipeline.add_external_links(cfg.clone(), site.as_deref());
     }
 
     // sort_by_file_name() gives lexicographic order within each directory
@@ -2200,6 +2226,7 @@ mod tests {
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             toc: None,
+            external_links: None,
         }
     }
 
@@ -2834,6 +2861,7 @@ mod tests {
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             toc: None,
+            external_links: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

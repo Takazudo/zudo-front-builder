@@ -29,3 +29,24 @@ zfb は `remark-toc` 相当の機能を opt-in の hast ビジターとして提
 このビジターは **hast フェーズの `HeadingLinksPlugin` 後** に実行されるため、`id` 属性を再計算することなく、すでに付与された最終的な（重複排除済みの）`id` をそのまま参照します。
 
 詳細は英語版の [Customizing Markdown](/guides/customizing-markdown#table-of-contents-toc) を参照してください。
+## 外部リンク
+
+`markdown.externalLinks` オプションを使うと、サイト外へのリンクに `target` や `rel` 属性を自動付与できます。
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+  },
+});
+```
+
+href が外部リンクと判定される条件: 絶対 URL（`http:` または `https:` スキーム）であり、かつ `site` 設定が指定されている場合はそのオリジンと異なる場合。`site` が未設定のときは、すべての絶対 HTTP/HTTPS URL が外部リンクとして扱われます。
+
+`mailto:`・`tel:` などの非 HTTP(S) スキームは常にそのまま出力されます。相対パス（`/internal/`・`./page.mdx`・`#anchor`）は常に内部リンクです。
+
+詳細は英語版 [Customizing Markdown](/guides/customizing-markdown) を参照してください。

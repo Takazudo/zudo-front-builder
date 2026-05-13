@@ -138,6 +138,18 @@ export default defineConfig({
     toc: {
       heading: "TOC",   // optional; default "TOC" (case-insensitive)
       maxDepth: 2,       // optional; default 2 (h2 + h3)
+## External links
+
+The `markdown.externalLinks` option automatically adds `target` and `rel`
+attributes to links whose destination is outside your site.
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
     },
   },
 });
@@ -180,6 +192,30 @@ zfb inserts the TOC list immediately after the `## TOC` heading:
 
 Omitting the `toc` key entirely leaves the build byte-for-byte identical —
 no visitor is registered and no output changes.
+An href is treated as **external** when it is an absolute `http:` or
+`https:` URL and its origin differs from your site's origin (determined
+by the top-level `site` config option, once configured). When `site` is
+absent, any absolute HTTP/HTTPS URL is treated as external.
+
+`mailto:`, `tel:`, and other non-HTTP(S) schemes are always left
+unchanged. Relative paths (`/internal/`, `./page.mdx`, `#anchor`) are
+always internal.
+
+**Merging with existing `rel`** — if an `<a>` element already carries a
+`rel` attribute, the configured tokens are merged in (deduplicated,
+case-insensitive). Existing tokens appear first, so author intent is
+preserved.
+
+**Omitting `externalLinks`** keeps the rendered output byte-for-byte
+identical to the pre-feature behaviour — no extra attributes are emitted.
+
+<Note>
+
+  Same-origin classification depends on the `site` config option
+  (introduced separately). Until `site` is configured, every absolute
+  HTTP/HTTPS URL is treated as external.
+
+</Note>
 
 ## See also
 

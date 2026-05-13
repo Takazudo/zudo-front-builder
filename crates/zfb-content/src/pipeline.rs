@@ -25,8 +25,9 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
     AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
-    HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin, ResolveLinksPlugin,
-    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin, TocConfig, TocPlugin,
+    ExternalLinksConfig, ExternalLinksPlugin, HeadingLinksPlugin, ImageEnlargePlugin,
+    MermaidPlugin, ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin,
+    SyntectPlugin, TocConfig, TocPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -361,6 +362,24 @@ impl Pipeline {
             StripMdExtensionPlugin::new()
         };
         self.add_hast_visitor(Box::new(plugin));
+        self
+    }
+
+    /// Append an [`ExternalLinksPlugin`] to the pipeline's hast phase.
+    ///
+    /// External links (absolute HTTP/HTTPS hrefs whose origin differs from
+    /// `site`, or any absolute HTTP/HTTPS href when `site` is absent) will
+    /// receive `target` and `rel` attributes as specified by `config`.
+    ///
+    /// Not in [`Pipeline::with_defaults`] because the feature is opt-in via
+    /// `markdown.externalLinks` in `zfb.config.ts`. Absent config flag →
+    /// visitor not registered, output identical to today.
+    pub fn add_external_links(
+        &mut self,
+        config: ExternalLinksConfig,
+        site: Option<&str>,
+    ) -> &mut Self {
+        self.add_hast_visitor(Box::new(ExternalLinksPlugin::new(config, site)));
         self
     }
 

@@ -618,6 +618,14 @@ fn boot_dev_renderer(
     // `commands/build.rs` wiring (sub #254).
     bundler_input.site = cfg.site.clone();
     bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
+    // Thread `markdown.externalLinks` through to the bundler so dev
+    // rendering matches the production build. Mirrors `commands/build.rs`.
+    // `site` is read from `config.site` once #254 lands; `None` for now.
+    bundler_input.external_links = cfg
+        .markdown
+        .as_ref()
+        .and_then(|m| m.external_links.clone())
+        .map(|el| (el.into_content_config(), None));
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.

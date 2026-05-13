@@ -173,6 +173,13 @@ pub struct SnapshotPipelineConfig {
     /// `Default` is `None` (visitor not wired) for byte-for-byte parity with
     /// the pre-TOC build.
     pub toc: Option<super::plugins::toc::TocConfig>,
+    /// When `Some`, append [`Pipeline::add_external_links`] with the given
+    /// config and optional site origin so external `<a>` elements are
+    /// annotated with `target` / `rel`. `None` (the default) skips the
+    /// plugin entirely — byte-for-byte identical to the pre-feature build.
+    ///
+    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`.
+    pub external_links: Option<(crate::plugins::ExternalLinksConfig, Option<String>)>,
 }
 
 impl SnapshotPipelineConfig {
@@ -191,6 +198,9 @@ impl SnapshotPipelineConfig {
         }
         if let Some(toc_cfg) = self.toc.clone() {
             p.add_toc(toc_cfg);
+        }
+        if let Some((cfg, site)) = self.external_links.as_ref() {
+            p.add_external_links(cfg.clone(), site.as_deref());
         }
         p
     }
