@@ -1,0 +1,262 @@
+---
+title: Plugins
+description: Author and consume zfb plugins — the four lifecycle hooks, virtual modules, import aliases, and dev-only injected routes.
+sidebar_position: 12
+category: Concepts
+---
+
+zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. The zfb build (and dev) host loads each plugin module once at boot and dispatches four optional lifecycle hooks to it. A plugin may declare any subset of the four — anything it omits is a silent no-op.
+
+This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](/api/define-config).
+
+## The four hooks
+
+```ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  setup?(ctx) {},        // #255 — runs once at host boot, before preBuild
+  preBuild?(ctx) {},     // file-generation work before the bundler / renderer
+  postBuild?(ctx) {},    // finalisation after dist/ has been written
+  devMiddleware?(ctx) {},// per-request HTTP handlers in `zfb dev`
+});
+```
+
+Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev boot) and surfaces the plugin name + the hook that threw in the error banner.
+
+## `setup` — register virtual modules, aliases, and injected routes
+
+Runs **once** per `zfb build` and once per `zfb dev` host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases) and registers any dev-only synthetic routes. After `setup` completes, the registries are frozen for the remainder of the run.
+
+```ts
+setup({ command, projectRoot, config, options, logger, addAlias, addVirtualModule, injectRoute }) {
+  // `command` is "build" or "dev". Gate dev-only registrations on it.
+  addAlias("@/components/foo", "./src/components/foo.tsx");
+  addVirtualModule("virtual:my-data", () =>
+    `export default ${JSON.stringify(myJson)}`,
+  );
+  if (command === "dev") {
+    injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+  }
+}
+```
+
+### `addAlias(from, to)` — exact-match import rewrites
+
+Registers a single import specifier that, when matched **exactly**, resolves to `to`. The path is joined against the project root.
+
+```ts
+addAlias("@/components/foo", "./src/components/foo.tsx");
+```
+
+After this, `import Foo from "@/components/foo"` resolves to `./src/components/foo.tsx`.
+
+**v1 caveat: contract is exact-match; one consumer (islands) is prefix-with-slash.**
+The documented contract is exact-match only — registering `@/foo` should not match
+`@/foo/bar`. The embedded V8 host (used for SSR and `paths()` evaluation) honors
+this. The islands esbuild path (used to bundle client-side `"use client"`
+components) currently relies on esbuild CLI's `--alias` flag, which is
+prefix-with-slash — registering `@/foo` will also rewrite `@/foo/bar`. Aligning
+both paths on exact-match is tracked as a v1 follow-up. To stay safe across both
+consumers today, alias only the exact specifiers you import; do not assume
+subpath imports of an aliased specifier will fail.
+
+**Conflict detection.** Two plugins registering the same `from` with different `to` raises `AliasConflict` and aborts the build, naming both offending plugins. Idempotent re-registration (same plugin, same `to`) is allowed.
+
+### `addVirtualModule(specifier, loader)` — synthetic module sources
+
+Registers a bare specifier whose source text is produced on-demand by `loader`. The recommended prefix is `virtual:` but it is not enforced — anything that does not collide with a real module specifier works.
+
+```ts
+addVirtualModule("virtual:metadata-db", () =>
+  `export default ${JSON.stringify(buildMetadataIndex())}`,
+);
+```
+
+`loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader is invoked **exactly once per build** at the moment the specifier is first imported; subsequent imports of the same specifier reuse the cached source.
+
+There is **one** loader contract. There is no alternate "loader returns JSON and zfb wraps it" mode — if you want to expose JSON, do `() => "export default " + JSON.stringify(data)` yourself.
+
+**Conflict detection.** Two plugins registering the same `specifier` raises `VirtualModuleConflict` and aborts the build.
+
+### `injectRoute(pattern, entrypoint)` — dev-only synthetic page routes
+
+Registers a TSX/TS file under a URL pattern the dev server is aware of, **conceptually** routed through the same page-rendering pipeline as `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
+
+```ts
+injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+```
+
+<Warning title="Renderer integration is a follow-up">
+
+The registry, conflict detection, dev-only guard, and pattern-matching plumbing are all shipping in v1. **Full evaluation of the matched entrypoint through the page renderer is a follow-up issue.** Today the dev server logs a structured match on the `zfb_plugin` tracing target when the URL matches an injected pattern, so you can confirm the registration landed end-to-end — but the request then falls through to the existing dist / public fallbacks (and 404s if no other file claims the URL). The renderer-side wiring will land without changing the public API documented here.
+
+</Warning>
+
+**Dev-only.** Calling `injectRoute` when `command === "build"` raises `InjectRouteInBuildMode` and aborts the build. Static builds should not surface SSR-shaped routes; if you need dev-only HTML on a real URL, gate the call with `if (command === "dev")`.
+
+**Conflict detection.** Two plugins registering the same `pattern` raises `InjectRouteConflict` and aborts the dev boot.
+
+### `injectRoute` vs `devMiddleware` — pick the right hook
+
+Both add new URLs that only exist during `zfb dev`, but they aim at different problems:
+
+| Hook | Returns | Use when |
+| --- | --- | --- |
+| `injectRoute(pattern, entrypoint)` | a TSX/TS module that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page on a dev-only URL (matching zmod's Astro `injectRoute`). |
+| `devMiddleware(ctx)` → `ctx.register(path, handler)` | a JS function that returns `{ status, headers, body }` per request | you want an HTTP handler — JSON API, a hot-reload bridge, an upload endpoint. No page pipeline, no JSX. |
+
+`devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic `pages/foo.tsx` that lives outside the on-disk `pages/` tree.
+
+### Closed surface — no markdown extension hooks
+
+`SetupContext` exposes exactly three registration methods: `addAlias`, `addVirtualModule`, `injectRoute`. The deliberate omissions:
+
+- no `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor`,
+- no `addModuleLoader` / `addModuleTransform`,
+- no `onConfigResolved` / `onModuleLoad`.
+
+Markdown extensibility lives **inside** zfb's tree as in-tree Rust visitors (TOC, external links, CJK handling, etc.); future markdown features are added to the engine, not exposed as JS plugin points. This keeps the v1 contract narrow and the build pipeline auditable.
+
+## `preBuild(ctx)` and `postBuild(ctx)`
+
+- `preBuild` runs after `setup` and before the bundler / renderer / CSS / islands work. Use it to emit files the downstream stages will see.
+- `postBuild` runs after `dist/` has been fully written (including any adapter wrapping). Use it for finalisation steps that need a complete tree on disk.
+
+Both hooks receive `{ projectRoot, outDir, config, options, logger }`. `postBuild` additionally receives `ctx.routes` — the complete route manifest for the build. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
+
+### `ctx.routes` — the route manifest (postBuild only)
+
+`postBuild` plugins receive a `ctx.routes` object describing every URL the build emitted. The field is **absent (`undefined`)** during `preBuild` — the manifest is not available until rendering finishes.
+
+```ts
+interface ZfbRouteManifest {
+  routes: ZfbRouteEntry[];
+}
+
+interface ZfbRouteEntry {
+  url: string;         // emitted URL path, e.g. "/blog/hello/"
+  output: string;      // path under outDir, e.g. "blog/hello/index.html"
+  extension: string;   // file extension: "html", "xml", "rss", "txt", "json", …
+  source: string;      // source page module, e.g. "pages/blog/[slug].tsx"
+  params?: Record<string, string | string[]>; // absent for static routes;
+                       // dynamic params are strings, catchall params are string[]
+}
+```
+
+Routes are sorted by `url` for byte-stable output across runs. Non-HTML routes (`sitemap.xml.tsx`, `feed.rss.tsx`, `llms.txt.tsx`) appear with their actual extension and output path.
+
+### Worked example: generating a `sitemap.xml` in `postBuild`
+
+A plugin that writes a `sitemap.xml` from every HTML route the build produced.
+
+```ts
+// plugins/sitemap.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "sitemap",
+  postBuild({ outDir, routes }) {
+    if (!routes) return; // guard: absent on preBuild
+    const siteUrl = "https://example.com";
+    const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...htmlRoutes.map(
+        (r) => `  <url><loc>${siteUrl}${r.url}</loc></url>`,
+      ),
+      "</urlset>",
+    ].join("\n");
+    writeFileSync(join(outDir, "sitemap.xml"), xml, "utf-8");
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/sitemap.ts" }],
+});
+```
+
+The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
+
+## `devMiddleware(ctx)`
+
+Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, handler)`; handlers return `{ status, headers, body }` (or `undefined` to fall through to zfb's built-in dev routes).
+
+See [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
+
+## Worked example: `virtual:metadata-db`
+
+A plugin that builds a metadata index and exposes it as a virtual module. Pages can then `import metadata from "virtual:metadata-db"` without zfb knowing anything about the index format.
+
+```ts
+// plugins/metadata-db.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "metadata-db",
+  setup({ projectRoot, addVirtualModule }) {
+    addVirtualModule("virtual:metadata-db", () => {
+      const dir = join(projectRoot, "src/content/docs");
+      const entries = readdirSync(dir, { recursive: true })
+        .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+        .map((relPath) => {
+          const body = readFileSync(join(dir, relPath as string), "utf-8");
+          // ... parse frontmatter, compute slug, etc.
+          return { slug: relPath, title: "...", description: "..." };
+        });
+      return `export default ${JSON.stringify(entries)}`;
+    });
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/metadata-db.ts" }],
+});
+```
+
+```tsx
+// pages/index.tsx
+import metadata from "virtual:metadata-db";
+export default function Home() {
+  return (
+    <ul>
+      {metadata.map((m) => (
+        <li key={m.slug}><a href={`/${m.slug}`}>{m.title}</a></li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The loader runs once at the start of `zfb build`; the bundler caches the result and every `import` of `virtual:metadata-db` sees the same source. On the next `zfb build` the loader runs again — there is no on-disk cache between builds.
+
+## Conflict-detection summary
+
+When two plugins clash on a registration, zfb aborts the build/dev with one of three errors that names both offending plugins:
+
+- `AliasConflict` — same `from`, different `to`.
+- `VirtualModuleConflict` — same specifier, different plugins.
+- `InjectRouteConflict` — same URL pattern, different plugins.
+
+`InjectRouteInBuildMode` is raised when any plugin calls `injectRoute` during `zfb build` (regardless of who registered first).
+
+## See also
+
+- [`defineConfig`](/api/define-config) — wiring `plugins: [{ name: "...", options: {...} }]`.
+- [Build Pipeline](/concepts/build-pipeline) — where each hook lands in the overall sequence.

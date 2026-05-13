@@ -19,6 +19,9 @@ pub use content_bridge::{
 pub use pipeline::{
     constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
 };
+pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};
+
+pub use plugins::toc::TocConfig;
 
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{

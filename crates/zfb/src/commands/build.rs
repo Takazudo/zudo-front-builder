@@ -72,7 +72,8 @@ use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
     embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    DeferredDynamicRoute, RouteUniversePlan, WorkerDispatch,
+    DeferredDynamicRoute, DynamicResolvedEntry, ResolvedRouteParams, RouteUniversePlan,
+    WorkerDispatch,
 };
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
@@ -101,12 +102,84 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // claude-resources index emission). If no plugins are declared, we
     // skip the spawn entirely so a config-less project pays nothing.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&config).await?;
+
+    // #255 — run the new `setup` hook once, before `preBuild`. The
+    // returned registries (aliases, virtual modules, injected routes)
+    // are owned by `zfb-build` and consumed downstream by Wave 2
+    // (#260 V8 host resolver, #261 islands esbuild resolver). For the
+    // build command `injectRoute` is rejected by the accumulator with
+    // `InjectRouteInBuildMode` — see crates/zfb-build/src/plugin_registries.rs.
+    let setup_registries = if let Some(host) = plugin_host.as_ref() {
+        let cfg_json = serde_json::to_value(&config)
+            .context("plugin lifecycle: serialise config for setup ctx")?;
+        let regs = host
+            .run_setup(&project_root, zfb_build::SetupCommand::Build, &cfg_json)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("setup lifecycle hook")?;
+        regs
+    } else {
+        zfb_build::SetupRegistries::empty()
+    };
+
+    // #261 — pre-fetch virtual module sources (async) before entering the
+    // synchronous block_in_place section. `invoke_virtual_loader` is async,
+    // so we collect all sources here and pass the plain strings to the
+    // synchronous `build_default_islands_payload` via `IslandsPluginConfig`.
+    // Pre-fetch all virtual-module sources once. They feed BOTH the islands
+    // esbuild plugin config (#261) and the V8 host's plugin hooks (#260), so
+    // a single async loop here invokes each loader exactly once per build.
+    let mut virtual_sources: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(host) = plugin_host.as_ref() {
+        for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
+            match host.invoke_virtual_loader(&vm_entry.loader_id).await {
+                Ok(source) => {
+                    virtual_sources.insert(specifier.clone(), source);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .map_err(zfb_build::annotate_with_plugin_error)
+                        .with_context(|| {
+                            format!(
+                                "plugin lifecycle: failed to load virtual module \
+                                 `{specifier}` (plugin: `{plugin}`)",
+                                plugin = vm_entry.plugin
+                            )
+                        });
+                }
+            }
+        }
+    }
+
+    let islands_plugin_config = {
+        let alias_entries: Vec<(String, String)> = setup_registries
+            .aliases
+            .iter()
+            .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
+            .collect();
+        let virtual_modules: Vec<(String, String)> = virtual_sources
+            .iter()
+            .map(|(spec, src)| (spec.clone(), src.clone()))
+            .collect();
+        IslandsPluginConfig {
+            alias_entries,
+            virtual_modules,
+        }
+    };
+    let v8_plugin_hooks = crate::v8_host_adapter::translate_setup_registries_to_hooks(
+        &setup_registries,
+        &virtual_sources,
+    );
+
     if let Some(host) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: outdir.clone(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
+            // preBuild: routes absent (undefined in JS) — spec AC for #262.
+            routes: None,
         };
         host.run_pre_build(&ctx)
             .await
@@ -127,13 +200,16 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // context where blocking is not allowed`. Telling the outer
     // runtime up-front that the next stretch of work is blocking is
     // the supported escape hatch.
-    let pages_built = tokio::task::block_in_place(|| {
+    let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
         run_build(BuildArgsResolved {
             project_root: &project_root,
             outdir: &outdir,
             config: &config,
             routes,
-            runner: &DefaultRunner,
+            runner: &DefaultRunner {
+                islands_plugin_config,
+                v8_plugin_hooks,
+            },
             adapter_runner: &DefaultAdapterRunner,
         })
     })?;
@@ -148,6 +224,8 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             out_dir: outdir.clone(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for postBuild ctx")?,
+            // postBuild: routes present with all emitted URLs (#262).
+            routes: Some(route_manifest),
         };
         host.run_post_build(&ctx)
             .await
@@ -272,9 +350,37 @@ impl Drop for WorkerHandle {
     }
 }
 
+/// Pre-fetched alias and virtual-module data from the plugin `setup` hook
+/// (#261). Populated in the async `run()` context (where
+/// `PluginHost::invoke_virtual_loader` is awaitable) and consumed by the
+/// synchronous `build_default_islands_payload` call inside `block_in_place`.
+///
+/// An empty instance (the default) means no plugin registrations were active;
+/// the islands bundler then produces output byte-identical to a build without
+/// any plugin hooks.
+#[derive(Debug, Default, Clone)]
+struct IslandsPluginConfig {
+    /// Alias entries derived from `SetupRegistries::aliases`. Each `(from, to)`
+    /// pair becomes `--alias:<from>=<to>` on the esbuild subprocess.
+    alias_entries: Vec<(String, String)>,
+    /// Virtual-module `(specifier, source)` pairs. The source text has been
+    /// fetched from `PluginHost::invoke_virtual_loader` before this struct is
+    /// constructed. Each entry causes a temp `.mjs` file to be written and an
+    /// `--alias:<specifier>=<path>` flag to be added to esbuild.
+    virtual_modules: Vec<(String, String)>,
+}
+
 /// Production runner — straight pass-throughs to the real bundler /
 /// renderer APIs.
-struct DefaultRunner;
+struct DefaultRunner {
+    /// Pre-fetched plugin setup registries to wire into the islands bundler.
+    islands_plugin_config: IslandsPluginConfig,
+    /// Plugin-registry hooks for the embedded V8 host (sub-issue #260).
+    /// Built from the same `setup_registries` + virtual-source map as
+    /// `islands_plugin_config` so islands esbuild and the V8 host agree on
+    /// the registered aliases / virtual modules.
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+}
 impl BuildRunner for DefaultRunner {
     fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
         bundle(input)
@@ -290,7 +396,9 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
-        let factory = crate::v8_host_adapter::make_v8_host_factory();
+        let factory = crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+            self.v8_plugin_hooks.clone(),
+        );
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
@@ -360,7 +468,7 @@ impl BuildRunner for DefaultRunner {
         // `"use client"` components, etc.).
         let css = build_default_css_payload(project_root, outdir, config)
             .context("CSS emitter (DefaultRunner) failed")?;
-        let islands = build_default_islands_payload(project_root, outdir)
+        let islands = build_default_islands_payload(project_root, outdir, &self.islands_plugin_config)
             .context("islands emitter (DefaultRunner) failed")?;
         Ok(ProdAssetEmitterInputs { css, islands })
     }
@@ -579,6 +687,7 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
+    plugin_config: &IslandsPluginConfig,
 ) -> Result<Option<AssetEmitterPayload>> {
     // Walk the conventional islands roots. The scanner DFS-walks
     // imports starting from each entry path, so seeding with the
@@ -702,6 +811,18 @@ fn build_default_islands_payload(
     } else {
         _embedded_esbuild_handle = None;
     }
+    // #261 — wire alias + virtual-module registries from the plugin setup
+    // hook into the islands esbuild config. When both are empty (no plugin
+    // registrations) no `--alias` flags are added and the bundle output is
+    // byte-identical to a build without any plugins (zero-registration
+    // regression guard).
+    if !plugin_config.alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    }
+    if !plugin_config.virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    }
+
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
     let bundle_cfg = BundleConfig::production().with_outdir(outdir.to_path_buf());
 
@@ -716,8 +837,10 @@ fn build_default_islands_payload(
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
-/// of pages written.
-fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>) -> Result<usize> {
+/// of pages written and the postBuild route manifest (#262).
+fn run_build<R: BuildRunner, A: AdapterRunner>(
+    args: BuildArgsResolved<'_, R, A>,
+) -> Result<(usize, zfb_build::PostBuildRouteManifest)> {
     let BuildArgsResolved {
         project_root,
         outdir,
@@ -783,9 +906,24 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         // `<pre data-zfb-content-fallback>` block. See zfb#188.
         let snapshot_config = zfb_content::SnapshotPipelineConfig {
             code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
+            code_highlight_themes_dir: config
+                .code_highlight
+                .as_ref()
+                .and_then(|c| c.themes_dir.as_ref())
+                .map(|td| project_root.join(td)),
             strip_md_ext: config.strip_md_ext,
             resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
             gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
+            toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
+            // Thread `markdown.externalLinks` into the snapshot pipeline.
+            // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
+            // classify same-origin absolute URLs as internal.
+            external_links: config
+                .markdown
+                .as_ref()
+                .and_then(|m| m.external_links.clone())
+                .map(|el| (el.into_content_config(), config.site.clone())),
+            cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
         };
         match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
             Ok(snap) => match serde_json::to_string(&snap) {
@@ -818,7 +956,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         output::warn(
             "no routes to render; dist will be empty (every dynamic route deferred to runtime evaluation)",
         );
-        return Ok(0);
+        return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
     }
 
     // Adapter precondition check.
@@ -966,6 +1104,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // syntect theme instead of the default `base16-ocean.dark`.
     bundler_input.code_highlight_theme =
         config.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Thread the optional `markdown.gfm` and `markdown.cjkFriendly`
+    // config into the bundler so the hoisted MDX pre-compile pipeline
+    // parses the same constructs the snapshot walker uses. Both are
+    // resolved from the same source, so `content_hash` inputs stay
+    // byte-identical (the snapshot ↔ bundler land mine called out
+    // Thread the optional `codeHighlight.themesDir` (resolved to an
+    // absolute path here) so the bundler loads custom .tmTheme files
+    // before constructing the SyntectPlugin.  MUST stay in sync with
+    // the snapshot wiring above so both content_hash inputs agree.
+    bundler_input.code_highlight_themes_dir = config
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.themes_dir.as_ref())
+        .map(|td| project_root.join(td));
     // Thread the optional `markdown.gfm` config into the bundler so
     // the hoisted MDX pre-compile pipeline parses the same GFM
     // constructs the snapshot walker uses. The snapshot wiring above
@@ -974,6 +1126,24 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // at `crates/zfb-content/src/content_bridge.rs:118-153`).
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(config.markdown.as_ref());
+    // Thread the optional `site` canonical-origin URL from `zfb.config.ts`
+    // so the bundler emits `globalThis.__zfb.site` in `entry.mjs` for
+    // layout-side canonical tag, OG URL, and sitemap construction (sub #254).
+    bundler_input.site = config.site.clone();
+    bundler_input.toc = config.markdown.as_ref().and_then(|m| m.toc.clone());
+    // Thread `markdown.externalLinks` into the bundler so the hoisted MDX
+    // pre-compile pipeline appends `ExternalLinksPlugin`. MUST mirror
+    // the snapshot wiring above; divergence shifts `content_hash` and
+    // breaks the snapshot ↔ bundler bridge lookup.
+    // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
+    // classify same-origin absolute URLs as internal.
+    bundler_input.external_links = config
+        .markdown
+        .as_ref()
+        .and_then(|m| m.external_links.clone())
+        .map(|el| (el.into_content_config(), config.site.clone()));
+    bundler_input.cjk_friendly =
+        crate::config::resolve_cjk_friendly(config.markdown.as_ref());
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
@@ -1029,7 +1199,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
 
     if static_routes.is_empty() {
         output::warn("no routes to render after runtime paths() evaluation; dist will be empty");
-        return Ok(0);
+        return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
     }
 
     // 2.5. Pre-render: produce CSS / islands bytes so we know which
@@ -1171,7 +1341,108 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     )
     .context("public dir copy step failed")?;
 
-    Ok(render_out.ssg_files_written.len())
+    // Build the postBuild route manifest (#262). Combines:
+    // - static routes from the router scan (no params),
+    // - statically-expanded dynamic routes (params from `expansion`),
+    // - runtime-expanded dynamic routes (params from `runtime_expansion`).
+    //
+    // Only routes that actually appear in the renderer's ssg_files_written
+    // (i.e. emitted to disk) are included, to avoid surfacing SSR-only pages.
+    let manifest = build_post_build_manifest(
+        routes,
+        project_root,
+        &expansion.resolved_with_params,
+        &runtime_expansion.resolved_with_params,
+    );
+
+    Ok((render_out.ssg_files_written.len(), manifest))
+}
+
+/// Build the [`PostBuildRouteManifest`] from the routes scanned before the
+/// build plus the params collected during dynamic expansion. Only routes whose
+/// output path is a plain HTML or non-HTML page are included (adapter-specific
+/// artefacts like `_worker.js` are not). The manifest is sorted by `url` for
+/// byte-stable output across runs (#262 AC: "Manifest byte-stable across runs").
+fn build_post_build_manifest(
+    routes: &[zfb_router::Route],
+    project_root: &Path,
+    static_expansion_params: &[DynamicResolvedEntry],
+    runtime_expansion_params: &[DynamicResolvedEntry],
+) -> zfb_build::PostBuildRouteManifest {
+    use std::collections::BTreeMap;
+    use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
+    use zfb_router::RouteKind;
+
+    let mut entries: Vec<PostBuildRouteEntry> = Vec::new();
+
+    // 1. Static routes — no params.
+    for route in routes {
+        if route.kind != RouteKind::Static {
+            continue;
+        }
+        let template = route.template();
+        let output_path = route.output_filename(None);
+        let ext = route
+            .output_extension
+            .as_deref()
+            .unwrap_or("html")
+            .to_string();
+        let source = route
+            .source_path
+            .strip_prefix(project_root)
+            .unwrap_or(&route.source_path)
+            .to_string_lossy()
+            .into_owned();
+        entries.push(PostBuildRouteEntry {
+            url: template,
+            output: output_path.to_string_lossy().into_owned(),
+            extension: ext,
+            source,
+            params: None,
+        });
+    }
+
+    // 2. Statically-expanded + 3. runtime-expanded dynamic routes.
+    for dyn_entry in static_expansion_params
+        .iter()
+        .chain(runtime_expansion_params.iter())
+    {
+        let source = dyn_entry
+            .source_path
+            .strip_prefix(project_root)
+            .unwrap_or(&dyn_entry.source_path)
+            .to_string_lossy()
+            .into_owned();
+
+        // Build the params map only when there are bindings.
+        let params = if dyn_entry.params.scalars.is_empty()
+            && dyn_entry.params.arrays.is_empty()
+        {
+            None
+        } else {
+            let mut map: BTreeMap<String, PostBuildParamValue> = BTreeMap::new();
+            for (k, v) in &dyn_entry.params.scalars {
+                map.insert(k.clone(), PostBuildParamValue::Scalar(v.clone()));
+            }
+            for (k, v) in &dyn_entry.params.arrays {
+                map.insert(k.clone(), PostBuildParamValue::Array(v.clone()));
+            }
+            Some(map)
+        };
+
+        entries.push(PostBuildRouteEntry {
+            url: dyn_entry.url_path.clone(),
+            output: dyn_entry.output_path.to_string_lossy().into_owned(),
+            extension: dyn_entry.extension.clone(),
+            source,
+            params,
+        });
+    }
+
+    // Sort by URL for byte-stable output (#262 AC).
+    entries.sort_by(|a, b| a.url.cmp(&b.url));
+
+    PostBuildRouteManifest { routes: entries }
 }
 
 /// Mount each emitter's `stable_url` under the project's configured
@@ -1718,6 +1989,7 @@ mod tests {
                 crate::render_pipeline::DynamicExpansion {
                     resolved: Vec::new(),
                     deferred: deferred.to_vec(),
+                    ..Default::default()
                 },
                 Backend::Stub {
                     handler: std::sync::Arc::new(|_url| HttpResponseLike {
@@ -1865,7 +2137,7 @@ mod tests {
 
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -1967,7 +2239,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2022,7 +2294,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2063,7 +2335,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2113,6 +2385,7 @@ mod tests {
                     crate::render_pipeline::DynamicExpansion {
                         resolved: Vec::new(),
                         deferred: deferred.to_vec(),
+                        ..Default::default()
                     },
                     Backend::Stub {
                         handler: std::sync::Arc::new(|_url| HttpResponseLike {
@@ -2876,8 +3149,12 @@ mod tests {
         let project_root = tmp.path();
         // No pages/, so the entry walk returns empty and we never
         // reach the scanner or esbuild.
-        let payload = build_default_islands_payload(project_root, &project_root.join("dist"))
-            .expect("should not error");
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when project has no pages/; got {payload:?}",
@@ -2898,8 +3175,12 @@ mod tests {
             "export default function Index() { return null; }\n",
         )
         .unwrap();
-        let payload = build_default_islands_payload(project_root, &project_root.join("dist"))
-            .expect("should not error");
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when no use-client components; got {payload:?}",
@@ -2929,7 +3210,10 @@ mod tests {
         .unwrap();
         let cfg = Config::default(); // tailwind defaults to enabled
         let outdir = project_root.join("dist");
-        let runner = DefaultRunner;
+        let runner = DefaultRunner {
+            islands_plugin_config: IslandsPluginConfig::default(),
+            v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+        };
         let inputs = runner
             .emit_prod_assets(project_root, &outdir, &cfg)
             .expect("emit_prod_assets must succeed");

@@ -19,14 +19,16 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
     AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
-    HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin, ResolveLinksPlugin,
-    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin,
+    ExternalLinksConfig, ExternalLinksPlugin, HeadingLinksPlugin, ImageEnlargePlugin,
+    MermaidPlugin, ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin,
+    SyntectPlugin, TocConfig, TocPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -364,6 +366,24 @@ impl Pipeline {
         self
     }
 
+    /// Append an [`ExternalLinksPlugin`] to the pipeline's hast phase.
+    ///
+    /// External links (absolute HTTP/HTTPS hrefs whose origin differs from
+    /// `site`, or any absolute HTTP/HTTPS href when `site` is absent) will
+    /// receive `target` and `rel` attributes as specified by `config`.
+    ///
+    /// Not in [`Pipeline::with_defaults`] because the feature is opt-in via
+    /// `markdown.externalLinks` in `zfb.config.ts`. Absent config flag →
+    /// visitor not registered, output identical to today.
+    pub fn add_external_links(
+        &mut self,
+        config: ExternalLinksConfig,
+        site: Option<&str>,
+    ) -> &mut Self {
+        self.add_hast_visitor(Box::new(ExternalLinksPlugin::new(config, site)));
+        self
+    }
+
     /// Wire a [`ResolveLinksPlugin`] into the pipeline's mdast phase.
     ///
     /// The plugin is applied before the generic mdast visitors so it
@@ -395,6 +415,34 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.set_source_dir(dir);
         }
+    }
+
+    /// Append a [`TocPlugin`] to the hast phase.
+    ///
+    /// The TOC visitor runs **after** [`HeadingLinksPlugin`] (which is always
+    /// first in the hast chain) so it can read the final deduplicated `id`
+    /// attributes that plugin placed on each `<h2>`–`<h6>`. Callers should
+    /// invoke this after [`Pipeline::with_defaults_and_theme_and_gfm`] — the
+    /// insertion order is preserved, so TOC ends up scheduled after
+    /// heading-links but before code-title and syntect.
+    ///
+    /// Not in `with_defaults()` because the feature is opt-in: absence of
+    /// `markdown.toc` in `zfb.config.ts` must leave the build byte-for-byte
+    /// identical.
+    pub fn add_toc(&mut self, cfg: TocConfig) -> &mut Self {
+        // Insert at position 1 in the hast visitors list so TOC runs
+        // immediately after HeadingLinksPlugin (index 0) and before all
+        // subsequent hast visitors. This guarantees ids are already set.
+        //
+        // If the list is empty (e.g. in a bare pipeline built without
+        // with_defaults), append normally so the visitor still runs.
+        let toc = Box::new(TocPlugin::new(cfg)) as Box<dyn HastVisitor>;
+        if self.hast_visitors.is_empty() {
+            self.hast_visitors.push(toc);
+        } else {
+            self.hast_visitors.insert(1, toc);
+        }
+        self
     }
 
     /// Drain broken-link diagnostics from the wired [`ResolveLinksPlugin`].
@@ -517,8 +565,12 @@ impl Pipeline {
         Self::with_defaults_and_theme_and_gfm(theme, ResolvedGfmConstructs::CONSERVATIVE)
     }
 
-    /// Most-explicit constructor: default plugin chain + theme +
-    /// resolved GFM construct set.
+    /// Default constructor + theme + resolved GFM construct set.
+    /// CJK-friendly emphasis is always on (the conservative default).
+    ///
+    /// Use [`Pipeline::with_defaults_and_theme_and_gfm_and_cjk`] when
+    /// the user has set `markdown.cjkFriendly: false` to disable the
+    /// plugin. All other call sites use this form.
     ///
     /// The bundler, snapshot walker, and dev loader all funnel through
     /// this entry point so every site that materialises MDX content
@@ -530,10 +582,71 @@ impl Pipeline {
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
     ) -> Self {
-        let highlighter = Arc::new(Highlighter::new());
+        Self::with_defaults_and_theme_and_gfm_and_cjk(theme, resolved, true)
+    }
+
+    /// Most-explicit constructor: default plugin chain + theme + GFM +
+    /// CJK-friendly toggle.
+    ///
+    /// When `cjk_friendly` is `true` (the default for all other
+    /// `with_defaults*` constructors), [`CjkFriendlyPlugin`] is
+    /// prepended to the mdast phase so emphasis/strong markers adjacent
+    /// to CJK characters are re-tokenised correctly. Set `false` to omit
+    /// the plugin — useful when the author opts out via
+    /// `markdown.cjkFriendly: false` in `zfb.config.ts`.
+    ///
+    /// All other callers should use [`Pipeline::with_defaults_and_theme_and_gfm`]
+    /// (which hard-codes `cjk_friendly: true`) unless they need to
+    /// honour the user-supplied `markdown.cjkFriendly` flag.
+    #[must_use]
+    pub fn with_defaults_and_theme_and_gfm_and_cjk(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        cjk_friendly: bool,
+    ) -> Self {
+        // Infallible path: no themes_dir.  Any error from a
+        // `themes_dir`-bearing call site is caught by the fallible variant.
+        Self::build_defaults(theme, resolved, None, cjk_friendly)
+            .expect("no themes_dir — cannot fail")
+    }
+
+    /// Like [`with_defaults_and_theme_and_gfm`] but also loads extra
+    /// `.tmTheme` files from `themes_dir` before constructing the
+    /// `SyntectPlugin`.
+    ///
+    /// Returns `Err` if the directory is missing, unreadable, or any
+    /// `.tmTheme` file inside it fails to parse.  The error message
+    /// includes the failing file's path so users get a clear diagnostic
+    /// at build start.
+    ///
+    /// Call sites that don't use `themes_dir` stay on the infallible
+    /// `with_defaults_and_theme_and_gfm` path.
+    pub fn with_defaults_and_theme_and_gfm_and_themes_dir(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: &Path,
+        cjk_friendly: bool,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        Self::build_defaults(theme, resolved, Some(themes_dir), cjk_friendly)
+    }
+
+    /// Shared builder used by the infallible and fallible public constructors.
+    fn build_defaults(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+        cjk_friendly: bool,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        let mut highlighter = Highlighter::new();
+        if let Some(dir) = themes_dir {
+            highlighter.load_themes_from_dir(dir)?;
+        }
+        let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase.
-        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        if cjk_friendly {
+            p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        }
         p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
@@ -546,7 +659,7 @@ impl Pipeline {
             SyntectPlugin::new(highlighter)
         };
         p.add_hast_visitor(Box::new(syntect));
-        p
+        Ok(p)
     }
 
     /// Append an mdast visitor; visitors run in insertion order.

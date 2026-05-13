@@ -52,7 +52,7 @@
 //!    that names the missing `default` export. The CLI
 //!    surfaces that error verbatim instead of swallowing it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -355,6 +355,36 @@ pub fn build_route_universe(routes: &[Route]) -> RouteUniversePlan {
     plan
 }
 
+/// Params captured for one expanded dynamic-route URL. Mirrors the
+/// `params` field shape exposed on `postBuild`'s `ctx.routes` manifest
+/// (#262): dynamic segment values are scalars (`String`), catchall
+/// segment values are arrays (`Vec<String>`) because the path parts were
+/// joined with `/` for URL assembly but must surface as individual
+/// segments in the manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedRouteParams {
+    /// Dynamic params (single segment, e.g. `[slug]` → `"hello"`).
+    pub scalars: BTreeMap<String, String>,
+    /// Catchall params (multi-segment, e.g. `[...rest]` → `["a", "b"]`).
+    pub arrays: BTreeMap<String, Vec<String>>,
+}
+
+/// One resolved dynamic URL plus its source-path / extension / params,
+/// for building the postBuild route manifest (#262).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicResolvedEntry {
+    /// Resolved URL path, e.g. `/blog/hello-world`.
+    pub url_path: String,
+    /// Output path relative to `dist/`, e.g. `blog/hello-world/index.html`.
+    pub output_path: PathBuf,
+    /// Source page module relative to the project root.
+    pub source_path: PathBuf,
+    /// Output extension (`html`, `xml`, `rss`, …).
+    pub extension: String,
+    /// Resolved params for the URL.
+    pub params: ResolvedRouteParams,
+}
+
 /// Outcome of [`expand_dynamic_routes`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DynamicExpansion {
@@ -368,6 +398,10 @@ pub struct DynamicExpansion {
     /// itself (bad shape, missing param, ambiguous URL, …). Each
     /// carries a short reason suitable for a build warning.
     pub deferred: Vec<DeferredDynamicRoute>,
+    /// Params + metadata for each resolved URL, in the same order as
+    /// [`DynamicExpansion::resolved`]. Used by the postBuild manifest
+    /// builder (#262) to expose params to plugin `postBuild` callbacks.
+    pub resolved_with_params: Vec<DynamicResolvedEntry>,
 }
 
 /// Walk the deferred dynamic routes from [`build_route_universe`] and
@@ -399,7 +433,10 @@ pub fn expand_dynamic_routes(
     let mut out = DynamicExpansion::default();
     for route in deferred {
         match try_expand_one(route, project_root, cache) {
-            Ok(entries) => out.resolved.extend(entries),
+            Ok((entries, params_entries)) => {
+                out.resolved.extend(entries);
+                out.resolved_with_params.extend(params_entries);
+            }
             Err(reason) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
@@ -413,13 +450,15 @@ pub fn expand_dynamic_routes(
 }
 
 /// Try to expand a single dynamic route into concrete entries. Returns
-/// the resolved entries on success, or a one-line reason string on
-/// failure (suitable for direct inclusion in a build warning).
+/// `(universe_entries, manifest_entries)` on success, or a one-line
+/// reason string on failure (suitable for direct inclusion in a build
+/// warning). `manifest_entries` carries params + metadata for the
+/// postBuild route manifest (#262).
 fn try_expand_one(
     route: &PendingDynamicRoute,
     project_root: &Path,
     cache: &mut PathsCache,
-) -> Result<Vec<RouteUniverseEntry>, String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     let abs = if route.source_path.is_absolute() {
         route.source_path.clone()
     } else {
@@ -452,20 +491,63 @@ fn try_expand_one(
             ));
         }
     };
+
+    // Pre-compute which param names are catchall so we can split the
+    // joined string back into a `Vec<String>` for the manifest (#262).
+    let catchall_names: std::collections::HashSet<&str> = route
+        .segments
+        .iter()
+        .filter_map(|seg| {
+            if let Segment::Catchall(name) = seg {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
-    let mut out = Vec::with_capacity(resolved.len());
+    let extension = route
+        .output_extension
+        .as_deref()
+        .unwrap_or("html")
+        .to_string();
+    let mut universe_out = Vec::with_capacity(resolved.len());
+    let mut manifest_out = Vec::with_capacity(resolved.len());
     for r in resolved {
         let output_path =
             build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
-        out.push(RouteUniverseEntry {
-            url_path: r.url,
-            output_path,
+        universe_out.push(RouteUniverseEntry {
+            url_path: r.url.clone(),
+            output_path: output_path.clone(),
             route_key: route.template.clone(),
         });
+
+        // Split the flat `HashMap<String, String>` from `ResolvedPath`
+        // into scalar vs array buckets, splitting catchall strings on `/`.
+        let mut scalars = BTreeMap::new();
+        let mut arrays: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (k, v) in &r.params {
+            if catchall_names.contains(k.as_str()) {
+                // Catchall strings were joined from an array; split back.
+                let parts: Vec<String> = v.split('/').map(|s| s.to_string()).collect();
+                arrays.insert(k.clone(), parts);
+            } else {
+                scalars.insert(k.clone(), v.clone());
+            }
+        }
+
+        manifest_out.push(DynamicResolvedEntry {
+            url_path: r.url,
+            output_path,
+            source_path: route.source_path.clone(),
+            extension: extension.clone(),
+            params: ResolvedRouteParams { scalars, arrays },
+        });
     }
-    Ok(out)
+    Ok((universe_out, manifest_out))
 }
 
 /// Compute the on-disk output path for a resolved dynamic URL, mirroring
@@ -663,6 +745,7 @@ fn eval_deferred_paths_http(
             return DynamicExpansion {
                 resolved: Vec::new(),
                 deferred: deferred_out,
+                ..Default::default()
             };
         }
     };
@@ -672,7 +755,10 @@ fn eval_deferred_paths_http(
 
     for route in deferred {
         match eval_one_deferred_path_http(&client, base, route, cache) {
-            Ok(entries) => out.resolved.extend(entries),
+            Ok((entries, params_entries)) => {
+                out.resolved.extend(entries);
+                out.resolved_with_params.extend(params_entries);
+            }
             Err(reason) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
@@ -696,7 +782,10 @@ fn eval_deferred_paths_embedded(
 
     for route in deferred {
         match eval_one_deferred_path_embedded(host, route, cache) {
-            Ok(entries) => out.resolved.extend(entries),
+            Ok((entries, params_entries)) => {
+                out.resolved.extend(entries);
+                out.resolved_with_params.extend(params_entries);
+            }
             Err(reason) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
@@ -711,13 +800,13 @@ fn eval_deferred_paths_embedded(
 }
 
 /// Query one route's `paths()` via HTTP and resolve it into
-/// [`RouteUniverseEntry`]s. Returns a one-line reason string on any failure.
+/// `(universe_entries, manifest_entries)`. Returns a one-line reason string on any failure.
 fn eval_one_deferred_path_http(
     client: &reqwest::blocking::Client,
     base: &str,
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
-) -> Result<Vec<RouteUniverseEntry>, String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     // Percent-encode the route key. The worker's `/__paths__/:routeKey{.+}`
     // pattern captures the rest of the path (including encoded slashes),
     // and the TS side does `decodeURIComponent` on it. We must encode `/`
@@ -753,12 +842,12 @@ fn eval_one_deferred_path_http(
 }
 
 /// Query one route's `paths()` via the embedded V8 host and resolve it.
-/// Returns a one-line reason string on any failure.
+/// Returns `(universe_entries, manifest_entries)`, or a one-line reason string on any failure.
 fn eval_one_deferred_path_embedded(
     host: &mut dyn EmbeddedV8Host,
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
-) -> Result<Vec<RouteUniverseEntry>, String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     let encoded = encode_route_key(&route.template);
     let url_path = format!("/__paths__/{encoded}");
 
@@ -789,28 +878,67 @@ fn eval_one_deferred_path_embedded(
     resolve_json_paths(json, route, cache)
 }
 
-/// Shared path resolution from a parsed JSON value.
+/// Shared path resolution from a parsed JSON value. Returns
+/// `(universe_entries, manifest_entries)` so both the renderer
+/// input and the postBuild manifest (#262) can be built from one call.
 fn resolve_json_paths(
     json: serde_json::Value,
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
-) -> Result<Vec<RouteUniverseEntry>, String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
+
+    // Which param names are catchall (need array form in the manifest).
+    let catchall_names: std::collections::HashSet<&str> = route
+        .segments
+        .iter()
+        .filter_map(|seg| {
+            if let Segment::Catchall(name) = seg {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", route.template, format_paths_error(&e)))?;
 
-    let mut entries = Vec::with_capacity(resolved.len());
+    let extension = route
+        .output_extension
+        .as_deref()
+        .unwrap_or("html")
+        .to_string();
+    let mut universe_entries = Vec::with_capacity(resolved.len());
+    let mut manifest_entries = Vec::with_capacity(resolved.len());
     for r in resolved {
         let output_path =
             build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
-        entries.push(RouteUniverseEntry {
-            url_path: r.url,
-            output_path,
+        universe_entries.push(RouteUniverseEntry {
+            url_path: r.url.clone(),
+            output_path: output_path.clone(),
             route_key: route.template.clone(),
         });
+
+        let mut scalars = BTreeMap::new();
+        let mut arrays: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (k, v) in &r.params {
+            if catchall_names.contains(k.as_str()) {
+                let parts: Vec<String> = v.split('/').map(|s| s.to_string()).collect();
+                arrays.insert(k.clone(), parts);
+            } else {
+                scalars.insert(k.clone(), v.clone());
+            }
+        }
+        manifest_entries.push(DynamicResolvedEntry {
+            url_path: r.url,
+            output_path,
+            source_path: route.source_path.clone(),
+            extension: extension.clone(),
+            params: ResolvedRouteParams { scalars, arrays },
+        });
     }
-    Ok(entries)
+    Ok((universe_entries, manifest_entries))
 }
 
 // Keep the old `eval_one_deferred_path` name as a private alias so any
@@ -823,7 +951,7 @@ fn eval_one_deferred_path(
     base: &str,
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
-) -> Result<Vec<RouteUniverseEntry>, String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     eval_one_deferred_path_http(client, base, route, cache)
 }
 

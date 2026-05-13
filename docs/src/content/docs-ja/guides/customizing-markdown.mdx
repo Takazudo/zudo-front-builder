@@ -21,3 +21,55 @@ sidebar_position: 3
 [Custom Directives](/concepts/custom-directives) で十分です。
 
 英語の最新ドキュメントは [Customizing Markdown](/guides/customizing-markdown) を参照してください。
+
+## 目次（TOC）の自動生成
+
+zfb は `remark-toc` 相当の機能を opt-in の hast ビジターとして提供しています。有効にすると、設定したアンカー文字列（デフォルト `"TOC"`、大小文字を区別しない）と一致する見出しを検出し、後続の見出しを `<ul>/<li>` リストとして次の兄弟要素に挿入します。
+
+このビジターは **hast フェーズの `HeadingLinksPlugin` 後** に実行されるため、`id` 属性を再計算することなく、すでに付与された最終的な（重複排除済みの）`id` をそのまま参照します。
+
+詳細は英語版の [Customizing Markdown](/guides/customizing-markdown#table-of-contents-toc) を参照してください。
+
+## 外部リンク
+
+`markdown.externalLinks` オプションを使うと、サイト外へのリンクに `target` や `rel` 属性を自動付与できます。
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+## CJK フレンドリーな強調
+
+CommonMark の強調フランキングルールは、CJK 文字（漢字・かな・ハングルなど）を空白でも句読点でもないとみなします。そのため `**テスト。**テスト` のように CJK テキストに隣接した `**` は CommonMark の仕様では右フランキングと判定されず、`<strong>` タグではなくリテラルのアスタリスクとして出力されます。
+
+zfb には組み込みの `CjkFriendlyPlugin` があり、パース後の Markdown AST を後処理してこのケースを再トークナイズします。**デフォルトで有効**になっているため、既存の CJK コンテンツサイトは設定変更なしでそのまま動作します。
+
+```ts title="zfb.config.ts"
+
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    // absent または true の場合、CJK フレンドリーは有効（デフォルト）。
+    cjkFriendly: true,
+
+    // 厳密な CommonMark 出力が必要で、かつ強調マーカーが隣接した
+    // CJK コンテンツがない場合のみ false に設定してください。
+    // cjkFriendly: false,
+  },
+});
+
+```
+
+href が外部リンクと判定される条件: 絶対 URL（`http:` または `https:` スキーム）であり、かつ `site` 設定が指定されている場合はそのオリジンと異なる場合。`site` が未設定のときは、すべての絶対 HTTP/HTTPS URL が外部リンクとして扱われます。
+
+`mailto:`・`tel:` などの非 HTTP(S) スキームは常にそのまま出力されます。相対パス（`/internal/`・`./page.mdx`・`#anchor`）は常に内部リンクです。
+
+詳細は英語版 [Customizing Markdown](/guides/customizing-markdown) を参照してください。
+**保守的なデフォルトの理由:** `cjkFriendly` をデフォルト `false` にすると、日本語の句読点やかなに隣接した `**bold**` を使用している既存のサイトがすべて壊れます。このフィールドは既存の動作を変えるためではなく、必要な場合にオプトアウトするために導入されました。
+
+**GFM 取り消し線**（`~~foo~~`）は CJK 境界でも正常に動作します。markdown-rs の GFM トークナイザーが `~~` 区切りを CommonMark の強調フランキングルールとは独立して処理するため、このトグルの影響を受けません。

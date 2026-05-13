@@ -56,6 +56,7 @@ pub mod link_base_rewrite;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
+pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
 pub mod renderer;
@@ -73,9 +74,14 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, ProdHeadAssets,
 };
 pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
+pub use plugin_registries::{
+    AliasEntry, AliasMap, InjectedRoute, InjectedRouteList, SetupCommand, SetupRegistries,
+    SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,
+};
 pub use plugin_runner::{
     annotate_with_plugin_error, extract_plugin_error, BuildHookContext, DevRegisterContext,
     DevRegistration, DevRequest, DevResponse, PluginError, PluginHost, PluginSpec,
+    PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
 };
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,

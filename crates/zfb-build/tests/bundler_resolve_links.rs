@@ -145,6 +145,7 @@ fn make_input_with_resolve(
         )],
         strip_md_ext: false,
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
             routes: vec![ResolveMarkdownLinksRoute {
                 docs_dir: PathBuf::from("content/docs"),
@@ -154,6 +155,10 @@ fn make_input_with_resolve(
             on_broken_links,
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
     }
 }
 
@@ -190,9 +195,14 @@ fn make_input_without_resolve(
         )],
         strip_md_ext: false,
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         // Feature disabled: links pass through unchanged.
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        toc: None,
+            external_links: None,
+            cjk_friendly: true,
     }
 }
 

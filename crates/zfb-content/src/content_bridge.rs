@@ -117,6 +117,10 @@ pub enum BridgeError {
         #[source]
         source: CollectionError,
     },
+    /// Pipeline configuration failed (e.g. loading a `themesDir` before the
+    /// walk starts).
+    #[error("{0}")]
+    PipelineConfig(String),
 }
 
 /// Pipeline-shape configuration for [`build_snapshot_with_config`].
@@ -133,12 +137,20 @@ pub enum BridgeError {
 /// `Default` reproduces the pre-config-API behaviour (no theme override,
 /// no strip-md-ext, no resolve-links) so existing call sites that don't
 /// need any of these knobs can keep using [`build_snapshot`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SnapshotPipelineConfig {
     /// Optional syntect theme name. Forwarded to
     /// [`Pipeline::with_defaults_and_theme`]. `None` keeps the built-in
     /// default theme.
     pub code_highlight_theme: Option<String>,
+    /// Optional absolute path to a directory of `.tmTheme` files.
+    /// Forwarded to
+    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`].
+    /// `None` keeps syntect's bundled themes only.
+    ///
+    /// MUST match `BundlerInput::code_highlight_themes_dir` so the
+    /// snapshot ↔ bundler `content_hash` values stay byte-identical.
+    pub code_highlight_themes_dir: Option<std::path::PathBuf>,
     /// When true, append [`Pipeline::add_strip_md_ext`] to every
     /// per-collection pipeline. Match the bundler's `strip_md_ext`
     /// flag exactly.
@@ -153,7 +165,7 @@ pub struct SnapshotPipelineConfig {
     /// Resolved GFM construct flags (output of
     /// `zfb::config::resolve_gfm_constructs` / `MarkdownConfig::resolve_constructs`).
     /// MUST match what the bundler threads into its own
-    /// `Pipeline::with_defaults_and_theme_and_gfm` call. Divergence
+    /// `Pipeline::with_defaults_and_theme_and_gfm_and_cjk` call. Divergence
     /// here is the snapshot ↔ bundler hash divergence land mine
     /// documented above — flipping `gfm_strikethrough` on one side and
     /// off on the other shifts every snapshot's JSX `content_hash`,
@@ -164,23 +176,81 @@ pub struct SnapshotPipelineConfig {
     /// tests + fixtures that don't construct this struct manually keep
     /// the same effective behaviour as before this field landed.
     pub gfm_constructs: super::pipeline::ResolvedGfmConstructs,
+
+    /// When `Some`, wire [`TocPlugin`] into the hast phase immediately after
+    /// `HeadingLinksPlugin`. MUST match the bundler's `markdown.toc` setting
+    /// exactly — divergence shifts the JSX `content_hash` and every
+    /// `<Content />` lookup falls back to `<pre data-zfb-content-fallback>`.
+    ///
+    /// `Default` is `None` (visitor not wired) for byte-for-byte parity with
+    /// the pre-TOC build.
+    pub toc: Option<super::plugins::toc::TocConfig>,
+    /// When `Some`, append [`Pipeline::add_external_links`] with the given
+    /// config and optional site origin so external `<a>` elements are
+    /// annotated with `target` / `rel`. `None` (the default) skips the
+    /// plugin entirely — byte-for-byte identical to the pre-feature build.
+    ///
+    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`.
+    pub external_links: Option<(crate::plugins::ExternalLinksConfig, Option<String>)>,
+    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
+    /// MUST match the bundler's value (output of
+    /// `zfb::config::resolve_cjk_friendly(config.markdown.as_ref())`).
+    ///
+    /// `Default` is `true` (plugin on) so existing call sites and tests
+    /// that don't set this field keep the same effective behaviour as
+    /// before this field landed.
+    ///
+    /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
+    pub cjk_friendly: bool,
+}
+
+impl Default for SnapshotPipelineConfig {
+    fn default() -> Self {
+        Self {
+            code_highlight_theme: None,
+            code_highlight_themes_dir: None,
+            strip_md_ext: false,
+            resolve_source_map: None,
+            gfm_constructs: super::pipeline::ResolvedGfmConstructs::default(),
+            cjk_friendly: true,
+            toc: None,
+            external_links: None,
+        }
+    }
 }
 
 impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
-    fn build_pipeline(&self) -> Pipeline {
-        let mut p = Pipeline::with_defaults_and_theme_and_gfm(
-            self.code_highlight_theme.as_deref(),
-            self.gfm_constructs,
-        );
+    fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
+        let mut p = if let Some(dir) = self.code_highlight_themes_dir.as_deref() {
+            Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+                self.code_highlight_theme.as_deref(),
+                self.gfm_constructs,
+                dir,
+                self.cjk_friendly,
+            )
+            .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?
+        } else {
+            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+                self.code_highlight_theme.as_deref(),
+                self.gfm_constructs,
+                self.cjk_friendly,
+            )
+        };
         if self.strip_md_ext {
             p.add_strip_md_ext();
         }
         if let Some(map) = self.resolve_source_map.as_ref() {
             p.add_resolve_links(map.clone());
         }
-        p
+        if let Some(toc_cfg) = self.toc.clone() {
+            p.add_toc(toc_cfg);
+        }
+        if let Some((cfg, site)) = self.external_links.as_ref() {
+            p.add_external_links(cfg.clone(), site.as_deref());
+        }
+        Ok(p)
     }
 }
 
@@ -262,7 +332,7 @@ pub fn build_snapshot_with_config(
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
-        let mut pipeline = pipeline_config.build_pipeline();
+        let mut pipeline = pipeline_config.build_pipeline()?;
 
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
@@ -606,6 +676,7 @@ mod tests {
         let err = build_snapshot(&[cfg]).expect_err("malformed YAML must fail");
         match err {
             BridgeError::Walk { collection, .. } => assert_eq!(collection, "blog"),
+            other => panic!("expected BridgeError::Walk, got: {other:?}"),
         }
     }
 

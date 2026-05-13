@@ -413,6 +413,7 @@ fn make_full_fixture_input(
         strip_md_ext: false,
         // InspiredGitHub theme — exercises sub #194 / #188.
         code_highlight_theme: Some("InspiredGitHub".to_string()),
+        code_highlight_themes_dir: None,
         // Warn on broken links — exercises sub #196 / #185 Gap 1.
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
             routes: vec![ResolveMarkdownLinksRoute {
@@ -422,6 +423,10 @@ fn make_full_fixture_input(
             on_broken_links: OnBrokenLinks::Warn,
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
     }
 }
 

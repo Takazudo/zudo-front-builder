@@ -129,12 +129,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // The host is dropped when this `run` returns (Ctrl+C path), which
     // kills the subprocess.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
+
+    // #255 — run the new `setup` hook once, before `preBuild`. The
+    // registries are owned by `zfb-build`; we extract the
+    // `injected_routes` view, translate it into the dev-server's
+    // local mirror, and plumb it through `ServeOpts.injected_routes`.
+    // The alias map / virtual-module registry feed Wave 2 (#260,
+    // #261) which is not yet wired — we keep `_setup_registries` in
+    // scope here so the registries stay live for the duration of the
+    // dev session (the embedded references count on it).
+    let setup_registries = if let Some(h) = plugin_host.as_ref() {
+        let cfg_json = serde_json::to_value(&cfg)
+            .context("plugin lifecycle: serialise config for setup ctx")?;
+        h.run_setup(&project_root, zfb_build::SetupCommand::Dev, &cfg_json)
+            .await
+            .map_err(zfb_build::annotate_with_plugin_error)
+            .context("setup lifecycle hook")?
+    } else {
+        zfb_build::SetupRegistries::empty()
+    };
+
     if let Some(h) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
             out_dir: dist_root.clone(),
             config: serde_json::to_value(&cfg)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
+            // dev mode: routes always absent on preBuild (no manifest yet).
+            routes: None,
         };
         h.run_pre_build(&ctx)
             .await
@@ -147,12 +169,72 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         None
     };
 
+    // Translate the build-side InjectedRouteList into the dev
+    // server's local mirror so zfb-server doesn't depend on
+    // zfb-build. Wave 2 (#260, #261) consume `setup_registries.aliases`
+    // and `setup_registries.virtual_modules` — kept named (not `_`)
+    // so the variable stays in scope as the wiring lands.
+    let injected_route_set = if setup_registries.injected_routes.is_empty() {
+        None
+    } else {
+        let records: Vec<zfb_server::InjectedRouteRecord> = setup_registries
+            .injected_routes
+            .iter()
+            .map(|r| zfb_server::InjectedRouteRecord {
+                pattern: r.pattern.clone(),
+                entrypoint: r.entrypoint.clone(),
+                plugin: r.plugin.clone(),
+            })
+            .collect();
+        Some(zfb_server::InjectedRouteSet::new(records))
+    };
+    // #261 — build mode wires `aliases` + `virtual_modules` into the esbuild
+    // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev-mode
+    // per-island bundling (`run_islands`) is not yet wired in the orchestrator
+    // (`run_islands: None` below); that wiring will land in a follow-up wave.
+
+    // #260 — pre-fetch all virtual-module sources once so the embedded V8 host
+    // can resolve plugin-registered virtual modules at runtime. Each
+    // `invoke_virtual_loader` runs exactly once per dev-session boot; the
+    // resolved sources are owned by the `PluginRegistryHooks` clone the
+    // factory closure captures.
+    let mut virtual_sources: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(host) = plugin_host.as_ref() {
+        for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
+            match host.invoke_virtual_loader(&vm_entry.loader_id).await {
+                Ok(source) => {
+                    virtual_sources.insert(specifier.clone(), source);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .map_err(zfb_build::annotate_with_plugin_error)
+                        .with_context(|| {
+                            format!(
+                                "plugin lifecycle: failed to load virtual module \
+                                 `{specifier}` (plugin: `{plugin}`)",
+                                plugin = vm_entry.plugin
+                            )
+                        });
+                }
+            }
+        }
+    }
+    let v8_plugin_hooks = crate::v8_host_adapter::translate_setup_registries_to_hooks(
+        &setup_registries,
+        &virtual_sources,
+    );
+    // Keep `setup_registries` in scope so the underlying registries stay live
+    // (the hook entries borrow nothing from it now, but the variable's role as
+    // the lifecycle owner is preserved).
+    let _setup_registries = setup_registries;
+
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(&project_root, &cfg) {
+    let dev_session = match boot_dev_renderer(&project_root, &cfg, v8_plugin_hooks) {
         Ok(s) => Some(s),
         Err(err) => {
             output::warn(format!(
@@ -254,6 +336,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         pages,
         broadcast: tx,
         plugins: plugin_set,
+        injected_routes: injected_route_set,
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
     };
@@ -455,6 +538,7 @@ impl Drop for DevRenderInner {
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
@@ -564,11 +648,38 @@ fn boot_dev_renderer(
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
     bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
+    // Thread `markdown.gfm` and `markdown.cjkFriendly` through to the
+    // bundler so dev rendering and the build agree on the parser
+    // construct set. Mirrors the `commands/build.rs` wiring.
+    // Thread the optional `codeHighlight.themesDir` so dev rendering
+    // loads custom .tmTheme files just like the production build.
+    // Mirrors the `commands/build.rs` wiring.
+    bundler_input.code_highlight_themes_dir = cfg
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.themes_dir.as_ref())
+        .map(|td| project_root.join(td));
     // Thread `markdown.gfm` through to the bundler so dev rendering
     // and the build agree on the parser construct set. Mirrors the
     // `commands/build.rs` wiring.
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(cfg.markdown.as_ref());
+    // Thread the optional `site` canonical-origin URL so `zfb dev` emits
+    // `globalThis.__zfb.site` the same way `zfb build` does. Mirrors the
+    // `commands/build.rs` wiring (sub #254).
+    bundler_input.site = cfg.site.clone();
+    bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
+    // Thread `markdown.externalLinks` through to the bundler so dev
+    // rendering matches the production build. Mirrors `commands/build.rs`.
+    // `site` (top-level cfg.site, #254) lets `ExternalLinksPlugin`
+    // classify same-origin absolute URLs as internal.
+    bundler_input.external_links = cfg
+        .markdown
+        .as_ref()
+        .and_then(|m| m.external_links.clone())
+        .map(|el| (el.into_content_config(), cfg.site.clone()));
+    bundler_input.cjk_friendly =
+        crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.
@@ -596,7 +707,9 @@ fn boot_dev_renderer(
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
         backend: Backend::EmbeddedV8 {
-            host_factory: crate::v8_host_adapter::make_v8_host_factory(),
+            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                v8_plugin_hooks,
+            ),
         },
         request_timeout: None,
     })

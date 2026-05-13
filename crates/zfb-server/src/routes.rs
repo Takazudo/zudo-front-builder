@@ -340,6 +340,12 @@ pub struct AppState {
     /// Optional plugin dev-middleware set. `None` when no user plugins
     /// declared a `devMiddleware` hook.
     pub plugins: Option<DevMiddlewareSet>,
+    /// Optional plugin-injected synthetic-route set (#255). `None`
+    /// when no plugin called `injectRoute` from the new `setup`
+    /// hook. The dev router checks this on every page-cache miss
+    /// to surface the matched entrypoint (full evaluation through
+    /// the page renderer lands in a follow-up).
+    pub injected_routes: Option<crate::injected_routes::InjectedRouteSet>,
     /// Build output directory, used as a disk fallback when a page is
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
@@ -661,6 +667,32 @@ async fn serve_page(
                 is_html,
                 lr_prefix,
                 state.trailing_slash,
+            );
+        }
+    }
+
+    // #255 — plugin-injected synthetic routes. After the page cache
+    // miss but before the dist / public fallbacks we consult the
+    // injected-route registry. A hit means a plugin claimed this URL
+    // pattern via `injectRoute(pattern, entrypoint)`. The registry
+    // plumbing is the deliverable for #255; full evaluation of the
+    // matched entrypoint through the page renderer is a follow-up.
+    // Today we emit a structured log so the user can confirm the
+    // injection landed end-to-end, and fall through to the existing
+    // dist / public fallback (which will 404 if no other file claims
+    // the URL — exactly the same shape as before, plus the log).
+    let path_for_inject = format!("/{trimmed}");
+    if let Some(set) = state.injected_routes.as_ref() {
+        if let Some(rec) = set.find_match(&path_for_inject) {
+            // Use the same tracing target the dev middleware uses so
+            // plugin diagnostics cluster together in dev output.
+            tracing::info!(
+                target: "zfb_plugin",
+                plugin = %rec.plugin,
+                pattern = %rec.pattern,
+                entrypoint = %rec.entrypoint.display(),
+                url = %path_for_inject,
+                "injectRoute matched (renderer integration is a follow-up)",
             );
         }
     }
@@ -1134,6 +1166,7 @@ mod tests {
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
+            injected_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
@@ -1147,6 +1180,7 @@ mod tests {
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
+            injected_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
@@ -1586,6 +1620,7 @@ mod tests {
             pages: PageCache::new(),
             broadcast: tx,
             plugins: Some(set),
+            injected_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,

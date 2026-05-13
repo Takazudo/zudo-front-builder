@@ -96,8 +96,13 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         node_modules_preserve_symlinks: false,
         strip_md_ext: false,
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
     }
 }
 

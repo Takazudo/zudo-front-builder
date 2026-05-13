@@ -330,6 +330,28 @@ pub struct Config {
     /// the JSON / TS form `markdown` into this field.
     #[serde(default)]
     pub markdown: Option<MarkdownConfig>,
+
+    /// Canonical origin URL for the site (e.g. `"https://example.com"`).
+    ///
+    /// When set, the bundler emits `globalThis.__zfb.site = <value>` in
+    /// the synthetic `entry.mjs` so layouts can build canonical `<link>`
+    /// tags, OpenGraph `og:url` meta, sitemap absolute hrefs, and
+    /// hreflang `<link rel="alternate">` from a single config-level
+    /// source of truth.
+    ///
+    /// Accepted shape: an absolute HTTP or HTTPS URL. Relative URLs,
+    /// non-HTTP(S) schemes (e.g. `ftp://`), and empty strings are
+    /// rejected at config-load time with a clear error message. The
+    /// value is stored verbatim (trailing slash normalisation is the
+    /// consumer's responsibility).
+    ///
+    /// When absent, `globalThis.__zfb.site` is not emitted — the build
+    /// output is byte-for-byte identical to the pre-`site` build.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `site` 1:1.
+    #[serde(default)]
+    pub site: Option<String>,
 }
 
 impl Default for Config {
@@ -350,6 +372,7 @@ impl Default for Config {
             resolve_markdown_links: None,
             trailing_slash: false,
             markdown: None,
+            site: None,
         }
     }
 }
@@ -396,9 +419,12 @@ pub struct TailwindConfig {
 /// `"base16-ocean.dark"` (default), `"base16-ocean.light"`,
 /// `"InspiredGitHub"`, `"Solarized (dark)"`, `"Solarized (light)"`.
 ///
-/// **Note:** These are NOT Shiki theme names. Names like `"dracula"` or
-/// `"github-dark"` are not part of syntect's bundled set and will
-/// produce an `unknown theme` error at build time.
+/// To use a custom theme (e.g. Dracula), drop the `.tmTheme` file into
+/// a directory and set `themesDir` to point at it.  The theme name to
+/// pass in `theme` is the name declared inside the `.tmTheme` plist
+/// (its `name` key).
+///
+/// **Note:** These are NOT Shiki theme names.
 ///
 /// Unknown theme names are rejected with a clear error rather than
 /// silently falling back — this matches the behaviour of
@@ -406,10 +432,22 @@ pub struct TailwindConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeHighlightConfig {
-    /// Syntect built-in theme name.  When absent the pipeline defaults to
-    /// `"base16-ocean.dark"`.
+    /// Syntect built-in or user-loaded theme name.  When absent the
+    /// pipeline defaults to `"base16-ocean.dark"`.
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Path to a directory of `.tmTheme` files, relative to the
+    /// project root.  Every `.tmTheme` file in the directory is loaded
+    /// and becomes available by its declared `name` via `theme`.
+    ///
+    /// When absent only syntect's bundled themes are available.
+    ///
+    /// The path must be relative and must not escape the project root
+    /// via `..`.  A missing directory is reported as an error at build
+    /// start (before any pages are rendered).
+    #[serde(default)]
+    pub themes_dir: Option<std::path::PathBuf>,
 }
 
 /// What to do when a `.md`/`.mdx` link cannot be found in the source map.
@@ -529,11 +567,17 @@ pub struct PluginConfig {
 
 // --- markdown / GFM config -------------------------------------------------
 
+/// Re-export [`TocConfig`] from `zfb-content` so `zfb.config.ts`
+/// consumers (and the bundler / snapshot callers) reach the type without
+/// a direct `zfb-content` dependency.
+pub use zfb_content::TocConfig;
+
 /// Markdown / MDX parsing options.
 ///
-/// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Today the
-/// only knob is [`Self::gfm`]; future markdown-pipeline knobs would
-/// also live here.
+/// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Knobs include
+/// [`Self::gfm`], [`Self::toc`], [`Self::external_links`], and
+/// [`Self::cjk_friendly`]; future markdown-pipeline knobs would also live
+/// here.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -547,6 +591,74 @@ pub struct MarkdownConfig {
     /// other GFM constructs off).
     #[serde(default)]
     pub gfm: Option<GfmFlag>,
+
+    /// Table-of-contents options. When `Some`, a [`TocPlugin`] is wired
+    /// into the hast phase (after `HeadingLinksPlugin`) that inserts a
+    /// `<ul>/<li>` TOC list after the first heading whose text matches
+    /// `heading`. When `None` (the default), the visitor is not registered
+    /// and the build is byte-for-byte identical to the pre-TOC build.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on [`TocConfig`] deserialises
+    /// the TS shape `{ heading?: string; maxDepth?: number }`.
+    #[serde(default)]
+    pub toc: Option<TocConfig>,
+    /// External-link rewriter. When `Some`, every `<a>` whose href is
+    /// classified as external gains `target` and `rel` attributes.
+    /// `None` (absent) = feature disabled; output byte-identical to today.
+    ///
+    /// Mirrors `markdown.externalLinks` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub external_links: Option<ExternalLinksConfig>,
+
+    /// Enable CJK-friendly emphasis/strong re-tokenisation.
+    ///
+    /// - `None` (absent, default) — CJK-friendly is **on**. Preserves
+    ///   today's behaviour so existing CJK-content sites are unaffected
+    ///   by the new field.
+    /// - `Some(true)` — explicit opt-in; identical to absent.
+    /// - `Some(false)` — opt-out. [`CjkFriendlyPlugin`] is NOT added to
+    ///   the mdast pipeline; emphasis markers adjacent to CJK characters
+    ///   follow base CommonMark flanking rules (rarely the right choice;
+    ///   provided as an escape hatch for projects that need strict
+    ///   CommonMark output).
+    ///
+    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
+    #[serde(default)]
+    pub cjk_friendly: Option<bool>,
+}
+
+/// Options for the `rehype-external-links` port.
+///
+/// An absent field uses the documented default so the shape is additive:
+/// existing configs that add `externalLinks: {}` get the safe defaults
+/// without spelling out every field.
+///
+/// Mirrors `ExternalLinksConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinksConfig {
+    /// `rel` tokens applied to external links.
+    /// Default: `["noopener", "noreferrer"]`.
+    #[serde(default)]
+    pub rel: Option<Vec<String>>,
+    /// `target` value for external links.
+    /// Default: `"_blank"`.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+impl ExternalLinksConfig {
+    /// Convert to the `zfb_content` plugin config, applying documented
+    /// defaults for absent fields.
+    #[must_use]
+    pub fn into_content_config(self) -> zfb_content::ExternalLinksConfig {
+        zfb_content::ExternalLinksConfig {
+            rel: self.rel.unwrap_or_else(|| {
+                vec!["noopener".to_string(), "noreferrer".to_string()]
+            }),
+            target: self.target.unwrap_or_else(|| "_blank".to_string()),
+        }
+    }
 }
 
 /// Either the shorthand boolean form (`true` = all GFM constructs on,
@@ -661,6 +773,24 @@ pub fn resolve_gfm_constructs(markdown: Option<&MarkdownConfig>) -> ResolvedGfmC
     match markdown {
         Some(m) => m.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
         None => ResolvedGfmConstructs::CONSERVATIVE,
+    }
+}
+
+/// Convenience helper: resolve `cfg.markdown.as_ref()` — handling both
+/// "the user omitted the whole `markdown` block" and "the user wrote
+/// `markdown: { cjkFriendly: false }`" — to a final `bool`.
+///
+/// Returns `true` (plugin on) when the field is absent or `Some(true)`;
+/// `false` only when `cjk_friendly: Some(false)`.
+///
+/// Must be kept in sync with the bundler and snapshot walker so the
+/// `CjkFriendlyPlugin` is either present in BOTH or absent in BOTH —
+/// exactly as `resolve_gfm_constructs` guards the GFM construct set.
+#[must_use]
+pub fn resolve_cjk_friendly(markdown: Option<&MarkdownConfig>) -> bool {
+    match markdown {
+        Some(m) => m.cjk_friendly.unwrap_or(true),
+        None => true,
     }
 }
 
@@ -1171,6 +1301,12 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         ensure_path_in_root(&c.path, dir)
             .with_context(|| format!("collection {:?}", c.name))?;
     }
+    if let Some(ch) = &cfg.code_highlight {
+        if let Some(td) = &ch.themes_dir {
+            ensure_path_in_root(td, dir)
+                .context("codeHighlight.themesDir")?;
+        }
+    }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {
             ensure_path_in_root(&rml.docs_dir, dir)
@@ -1193,6 +1329,27 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
                 b
             );
+        }
+    }
+    if let Some(s) = &cfg.site {
+        // `site` must be an absolute HTTP/HTTPS URL — it is used to build
+        // canonical hrefs, OG URLs, and sitemap entries, none of which make
+        // sense with a relative path or non-web scheme.
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            bail!("site must not be empty; supply an absolute HTTPS URL (e.g. \"https://example.com\") or omit the field");
+        }
+        match url::Url::parse(trimmed) {
+            Ok(parsed) if parsed.scheme() == "http" || parsed.scheme() == "https" => {}
+            Ok(parsed) => bail!(
+                "site {:?} uses scheme {:?}; only \"http\" and \"https\" are accepted",
+                s,
+                parsed.scheme()
+            ),
+            Err(_) => bail!(
+                "site {:?} is not a valid absolute URL; supply an absolute HTTPS URL (e.g. \"https://example.com\")",
+                s
+            ),
         }
     }
     Ok(())
@@ -1587,6 +1744,70 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg.code_highlight, None);
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_loads_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "./themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("./themes")));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_and_theme_together() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "theme": "Dracula", "themesDir": "themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme.as_deref(), Some("Dracula"));
+        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("themes")));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_absolute_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "/absolute/path" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path()).await.expect_err("must reject absolute path");
+        // anyhow chains context messages; use {:#} to get the full chain.
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.themesDir"),
+            "error should mention field; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_dotdot_escape_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "../../etc" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path()).await.expect_err("must reject .. escape");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.themesDir"),
+            "error should mention field; got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -2290,6 +2511,7 @@ mod tests {
     fn gfm_resolve_shorthand_true_turns_everything_on() {
         let cfg = MarkdownConfig {
             gfm: Some(GfmFlag::All(true)),
+            ..MarkdownConfig::default()
         };
         assert_eq!(
             cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
@@ -2302,6 +2524,7 @@ mod tests {
     fn gfm_resolve_shorthand_false_turns_everything_off() {
         let cfg = MarkdownConfig {
             gfm: Some(GfmFlag::All(false)),
+            ..MarkdownConfig::default()
         };
         assert_eq!(
             cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE),
@@ -2321,6 +2544,7 @@ mod tests {
                 autolink_literal: Some(false),
                 ..GfmConstructs::default()
             })),
+            ..MarkdownConfig::default()
         };
         let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
         // Named explicitly:
@@ -2342,6 +2566,7 @@ mod tests {
                 table: Some(false),
                 ..GfmConstructs::default()
             })),
+            ..MarkdownConfig::default()
         };
         let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
         assert!(resolved.strikethrough); // conservative-default stayed
@@ -2397,8 +2622,171 @@ mod tests {
         assert_eq!(
             cfg.markdown,
             Some(MarkdownConfig {
-                gfm: Some(GfmFlag::All(true))
+                gfm: Some(GfmFlag::All(true)),
+                toc: None,
+                external_links: None,
+                cjk_friendly: None,
             })
         );
+    }
+
+    // --- site field tests (#254) --------------------------------------------
+
+    #[tokio::test]
+    async fn site_loads_valid_https_url() {
+        // Present-and-valid: a well-formed HTTPS URL loads without error
+        // and round-trips into `Config::site`.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "https://example.com" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site.as_deref(), Some("https://example.com"));
+    }
+
+    #[tokio::test]
+    async fn site_loads_valid_http_url() {
+        // HTTP is accepted in addition to HTTPS (e.g. local/intranet sites).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "http://localhost:3000" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site.as_deref(), Some("http://localhost:3000"));
+    }
+
+    #[tokio::test]
+    async fn site_defaults_to_none_when_absent() {
+        // Absent `site` must produce `None` — the build is byte-for-byte
+        // identical to the pre-`site` build (sub #254 parity criterion).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.site, None);
+    }
+
+    #[tokio::test]
+    async fn site_rejects_relative_url() {
+        // A relative path is not an absolute URL and must be rejected.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "/pj/my-site/" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("relative path should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && (msg.contains("not a valid absolute URL") || msg.contains("scheme")),
+            "expected error mentioning 'site' and URL validity; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_rejects_empty_string() {
+        // Empty string has no semantic value for a canonical URL.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("empty string should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && msg.contains("not be empty"),
+            "expected error mentioning 'site' and emptiness; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn site_rejects_non_http_scheme() {
+        // Non-HTTP(S) schemes like `ftp://` are semantically wrong for
+        // a web canonical URL.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "site": "ftp://example.com" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("ftp:// scheme should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("site") && msg.contains("ftp"),
+            "expected error mentioning 'site' and 'ftp'; got: {msg}"
+        );
+    }
+
+    // --- resolve_cjk_friendly tests ---
+
+    // Absent `markdown` block → CJK-friendly is on (default-true).
+    #[test]
+    fn cjk_friendly_absent_markdown_yields_true() {
+        assert!(resolve_cjk_friendly(None));
+    }
+
+    // Empty `MarkdownConfig` → no cjk_friendly field → default true.
+    #[test]
+    fn cjk_friendly_empty_markdown_yields_true() {
+        let cfg = MarkdownConfig::default();
+        assert!(resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // `cjkFriendly: true` — explicit opt-in.
+    #[test]
+    fn cjk_friendly_explicit_true() {
+        let cfg = MarkdownConfig {
+            cjk_friendly: Some(true),
+            ..MarkdownConfig::default()
+        };
+        assert!(resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // `cjkFriendly: false` — opt-out.
+    #[test]
+    fn cjk_friendly_explicit_false() {
+        let cfg = MarkdownConfig {
+            cjk_friendly: Some(false),
+            ..MarkdownConfig::default()
+        };
+        assert!(!resolve_cjk_friendly(Some(&cfg)));
+    }
+
+    // Serde: `cjkFriendly` camelCase round-trips from JSON.
+    #[test]
+    fn cjk_friendly_deserialises_from_camel_case() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "cjkFriendly": false
+        }))
+        .expect("cjkFriendly:false deserialises");
+        assert_eq!(cfg.cjk_friendly, Some(false));
+
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "cjkFriendly": true
+        }))
+        .expect("cjkFriendly:true deserialises");
+        assert_eq!(cfg.cjk_friendly, Some(true));
+
+        // Absent field → None (default-on at resolve time).
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty object deserialises");
+        assert_eq!(cfg.cjk_friendly, None);
     }
 }

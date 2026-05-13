@@ -64,6 +64,8 @@ generator), reach for `entry.body` instead.
   types in `zfb.config`. Schema mismatches fail the build.
 - **GFM features** — enabled by default; tables, task lists,
   strikethrough, and autolinks are all on.
+- **CJK-friendly emphasis** — enabled by default; see
+  [CJK-friendly emphasis](#cjk-friendly-emphasis) below.
 - **HTML wrapping** — fully under your control. `entry.Content` is a
   JSX component; wrap, slot, and style it however you like.
 - **`.mdx` entries** — content collections accept `.md`, `.mdx`, and
@@ -113,6 +115,140 @@ walks through the surface.
   Markdown" requests turn out to be styling questions that CSS solves.
 
 </Tip>
+
+## Table of Contents (TOC)
+
+zfb ships a `remark-toc`-equivalent as an opt-in hast visitor. When enabled,
+it scans the rendered heading tree for a heading whose text matches a
+configured anchor string (default `"TOC"`, case-insensitive) and inserts a
+nested `<ul>/<li>` list of the **subsequent** headings as the next sibling.
+
+Because the visitor runs in the **hast phase after `HeadingLinksPlugin`**, it
+reads the final deduplicated `id` attributes that plugin already placed on
+every `<h2>`–`<h6>`. Links in the generated list are guaranteed to match the
+rendered anchor IDs — including documents that repeat the same heading text
+(e.g. multiple "Overview" sections), where `HeadingLinksPlugin` produces
+`overview`, `overview-1`, `overview-2`, …
+
+To enable, add a `toc` key inside the `markdown` block in `zfb.config.ts`:
+
+```ts
+## CJK-friendly emphasis
+
+CommonMark's emphasis flanking rules treat CJK ideographs and kana as
+non-whitespace non-punctuation. This means a `**` adjacent to CJK text
+— such as `**テスト。**テスト` — is not considered right-flanking by the
+base parser, and renders as literal stars instead of `<strong>`.
+
+zfb ships a built-in `CjkFriendlyPlugin` that post-processes the parsed
+markdown AST and re-tokenises these cases. It is **on by default** so
+all existing CJK-content sites work without any config change.
+
+```ts title="zfb.config.ts"
+
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    toc: {
+      heading: "TOC",   // optional; default "TOC" (case-insensitive)
+      maxDepth: 2,       // optional; default 2 (h2 + h3)
+
+## External links
+
+The `markdown.externalLinks` option automatically adds `target` and `rel`
+attributes to links whose destination is outside your site.
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+    // CJK-friendly is on when absent or true (default).
+    cjkFriendly: true,
+
+    // Set to false only when you need strict CommonMark output and
+    // do not have CJK content with adjacent emphasis markers.
+    // cjkFriendly: false,
+  },
+});
+```
+
+Then place a heading with that text anywhere in your Markdown body:
+
+```md
+## TOC
+
+## Introduction
+
+### Getting started
+
+## Advanced usage
+```
+
+zfb inserts the TOC list immediately after the `## TOC` heading:
+
+```html
+<h2 id="toc">TOC …</h2>
+<ul>
+  <li><a href="#introduction">Introduction</a>
+    <ul>
+      <li><a href="#getting-started">Getting started</a></li>
+    </ul>
+  </li>
+  <li><a href="#advanced-usage">Advanced usage</a></li>
+</ul>
+<h2 id="introduction">Introduction …</h2>
+…
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `heading` | `string` | `"TOC"` | Heading text that triggers insertion (case-insensitive). |
+| `maxDepth` | `number` | `2` | Levels to include from `<h2>`. `1` → h2 only, `2` → h2+h3, `3` → h2–h4, max `5`. |
+
+Omitting the `toc` key entirely leaves the build byte-for-byte identical —
+no visitor is registered and no output changes.
+An href is treated as **external** when it is an absolute `http:` or
+`https:` URL and its origin differs from your site's origin (determined
+by the top-level `site` config option, once configured). When `site` is
+absent, any absolute HTTP/HTTPS URL is treated as external.
+
+`mailto:`, `tel:`, and other non-HTTP(S) schemes are always left
+unchanged. Relative paths (`/internal/`, `./page.mdx`, `#anchor`) are
+always internal.
+
+**Merging with existing `rel`** — if an `<a>` element already carries a
+`rel` attribute, the configured tokens are merged in (deduplicated,
+case-insensitive). Existing tokens appear first, so author intent is
+preserved.
+
+**Omitting `externalLinks`** keeps the rendered output byte-for-byte
+identical to the pre-feature behaviour — no extra attributes are emitted.
+
+<Note>
+
+  Same-origin classification depends on the `site` config option
+  (introduced separately). Until `site` is configured, every absolute
+  HTTP/HTTPS URL is treated as external.
+
+</Note>
+
+**Conservative default rationale:** flipping `cjkFriendly` to `false`
+by default would silently break every existing site whose CJK content
+uses `**bold**` adjacent to Japanese punctuation or kana. The field was
+introduced to let projects opt out if needed — not to change the
+existing behaviour.
+
+**GFM strikethrough** (`~~foo~~`) at CJK boundaries does not need this
+toggle. markdown-rs's GFM tokeniser handles `~~` delimiter runs
+independently of CommonMark emphasis flanking rules, so strikethrough
+works correctly at CJK boundaries in both modes.
 
 ## See also
 

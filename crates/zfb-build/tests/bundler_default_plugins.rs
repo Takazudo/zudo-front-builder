@@ -312,8 +312,13 @@ fn make_input(
         )],
         strip_md_ext: false,
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        toc: None,
+            external_links: None,
+            cjk_friendly: true,
     }
 }
 

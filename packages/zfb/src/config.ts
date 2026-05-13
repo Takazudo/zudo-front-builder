@@ -130,6 +130,31 @@ export type ZfbConfig = {
   base?: string;
 
   /**
+   * Canonical origin URL for the site (e.g. `"https://example.com"`).
+   *
+   * When set, the bundler emits `globalThis.__zfb.site = <value>` in
+   * `entry.mjs` so layouts can build canonical `<link>` tags,
+   * OpenGraph `og:url` meta, sitemap absolute hrefs, and hreflang
+   * `<link rel="alternate">` from a single config-level source of truth.
+   *
+   * **Distinct from `base`**: `base` is a sub-path mount prefix used
+   * for asset URLs (e.g. `"/pj/my-site/"`). `site` is the full
+   * canonical origin (scheme + host, no path) used to construct
+   * absolute page URLs for SEO/social metadata. Both may be set
+   * simultaneously.
+   *
+   * Accepted shape: an absolute HTTP or HTTPS URL. Relative URLs,
+   * non-HTTP(S) schemes, and empty strings are rejected at config-load
+   * time. Trailing slash normalisation is the consumer's responsibility.
+   *
+   * When absent, `globalThis.__zfb.site` is not emitted — the build
+   * output is byte-for-byte identical to builds without this field.
+   *
+   * Mirrors `Config::site` in crates/zfb/src/config.rs.
+   */
+  site?: string;
+
+  /**
    * Markdown link resolver (port of `remarkResolveMarkdownLinks`).
    *
    * When `enabled: true`, the build appends `ResolveLinksPlugin` to the
@@ -186,11 +211,46 @@ export type ZfbConfig = {
 };
 
 /**
+ * Table-of-contents options. Wire via `markdown.toc` in `zfb.config.ts`.
+ *
+ * When present, a TOC `<ul>/<li>` list is inserted as the next sibling
+ * of the first heading whose text matches `heading` (case-insensitive).
+ * Each `<a href="#id">` links to the deduplicated `id` that
+ * `HeadingLinksPlugin` placed on the corresponding heading.
+ *
+ * Mirrors `TocConfig` in `crates/zfb-content/src/plugins/toc.rs`.
+ */
+export type TocConfig = {
+  /**
+   * Heading text that triggers TOC insertion. Matched
+   * case-insensitively after whitespace trimming. Default: `"TOC"`.
+   */
+  heading?: string;
+
+  /**
+   * Number of heading levels to include starting from `<h2>`.
+   *
+   * - `1` — h2 only
+   * - `2` (default) — h2 + h3
+   * - `3` — h2, h3, h4
+   * - …up to `5` (h2 through h6)
+   */
+  maxDepth?: number;
+};
+
+/**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the only field
- * is [`gfm`](MarkdownConfig.gfm); future markdown knobs (e.g. CommonMark
- * variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Today the knobs are
+ * [`gfm`](MarkdownConfig.gfm) and [`toc`](MarkdownConfig.toc); future
+ * markdown knobs (e.g. CommonMark variants, custom extensions) would
+ * also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`] and
+ * [`externalLinks`]; future markdown knobs would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Today the fields are
+ * [`gfm`](MarkdownConfig.gfm) and
+ * [`cjkFriendly`](MarkdownConfig.cjkFriendly); future markdown knobs
+ * (e.g. CommonMark variants, custom extensions) would also live here.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -214,6 +274,90 @@ export type MarkdownConfig = {
    * the full GFM surface should opt in with `gfm: true`.
    */
   gfm?: GfmFlag;
+
+  /**
+   * Table-of-contents options. When present, a `<ul>/<li>` list is
+   * inserted after the first heading whose text matches `heading`
+   * (default `"TOC"`, case-insensitive). Each link points to the
+   * deduplicated `id` that `HeadingLinksPlugin` placed on the heading.
+   *
+   * Omitting this field entirely leaves the build byte-for-byte identical
+   * to the pre-TOC build. See [`TocConfig`] for the available options.
+   *
+   * Mirrors `MarkdownConfig::toc` in crates/zfb/src/config.rs.
+   */
+  toc?: TocConfig;
+  /**
+   * External-link rewriter. When set, every `<a>` whose href is
+   * classified as external receives the configured `target` and `rel`
+   * attributes.
+   *
+   * An href is external when it is an absolute HTTP/HTTPS URL AND its
+   * origin differs from the top-level `site` URL (if `site` is
+   * configured). When `site` is absent, any absolute HTTP/HTTPS URL is
+   * treated as external.
+   *
+   * `mailto:`, `tel:`, and other non-HTTP(S) schemes are always left
+   * unchanged. Relative URLs (`/internal/`, `./file.mdx`, `#anchor`) are
+   * always internal.
+   *
+   * Omitting this field keeps the output byte-for-byte identical to the
+   * pre-feature behaviour.
+   *
+   * Mirrors `ExternalLinksConfig` in crates/zfb/src/config.rs.
+   */
+  externalLinks?: ExternalLinksConfig;
+
+  /**
+   * Enable CJK-friendly emphasis/strong re-tokenisation.
+   *
+   * CommonMark's left-/right-flanking delimiter-run rules treat CJK
+   * characters as non-whitespace non-punctuation, which causes `**foo**`
+   * adjacent to CJK text (e.g. `**テスト。**テスト`) to render as literal
+   * stars instead of `<strong>`. zfb's built-in `CjkFriendlyPlugin`
+   * corrects this post-parse.
+   *
+   * - **absent / `true` (default):** CJK-friendly re-tokenisation is
+   *   on. Preserves today's behaviour — existing CJK-content sites are
+   *   unaffected.
+   * - **`false`:** opt-out. `CjkFriendlyPlugin` is NOT added to the
+   *   pipeline; emphasis markers adjacent to CJK characters follow base
+   *   CommonMark flanking rules. Rarely the right choice; provided as
+   *   an escape hatch for projects that need strict CommonMark output.
+   *
+   * **GFM strikethrough** (`~~foo~~`) at CJK boundaries is unaffected
+   * by this toggle — it is handled by markdown-rs's GFM tokeniser, not
+   * by `CjkFriendlyPlugin`, and works correctly in both modes.
+   *
+   * Mirrors `MarkdownConfig::cjk_friendly` in crates/zfb/src/config.rs.
+   */
+  cjkFriendly?: boolean;
+};
+
+/**
+ * Options for the external-link rewriter (port of `rehype-external-links`).
+ *
+ * All fields are optional; omitting a field applies the documented default.
+ *
+ * Mirrors `ExternalLinksConfig` in crates/zfb/src/config.rs.
+ */
+export type ExternalLinksConfig = {
+  /**
+   * `rel` tokens applied to external links.
+   *
+   * Default: `["noopener", "noreferrer"]`.
+   *
+   * Tokens are deduplicated (case-insensitive) and merged with any
+   * existing `rel` attribute on the `<a>` element — existing tokens
+   * appear first.
+   */
+  rel?: string[];
+  /**
+   * `target` value for external links.
+   *
+   * Default: `"_blank"`.
+   */
+  target?: string;
 };
 
 /**

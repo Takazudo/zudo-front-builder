@@ -370,11 +370,25 @@ pub struct BundlerInput {
     /// syntect theme instead of the default `base16-ocean.dark`.
     ///
     /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
-    /// `"Solarized (light)"`, etc.). Shiki names like `"dracula"` are
-    /// NOT part of the bundled set and will produce an `unknown theme`
-    /// error at render time. Mirrors
+    /// `"Solarized (light)"`, etc.). Custom themes are loaded via
+    /// `code_highlight_themes_dir`. Mirrors
     /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
     pub code_highlight_theme: Option<String>,
+
+    /// Optional absolute path to a directory of `.tmTheme` files.
+    ///
+    /// When `Some`, the hoisted MDX pre-compile pipeline loads every
+    /// `.tmTheme` file in the directory so custom themes (e.g. Dracula)
+    /// become addressable by name in `code_highlight_theme`.
+    ///
+    /// Mirrors `zfb::config::Config::code_highlight.themes_dir` (resolved
+    /// to an absolute path by the command layer before being stored here).
+    /// Default: `None` — bundled themes only.
+    ///
+    /// MUST be kept in sync with
+    /// `zfb_content::SnapshotPipelineConfig::code_highlight_themes_dir`
+    /// so the snapshot ↔ bundler `content_hash` stays byte-identical.
+    pub code_highlight_themes_dir: Option<PathBuf>,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
     /// source map from [`ResolveMarkdownLinksSpec::docs_dir`], appends
@@ -399,6 +413,53 @@ pub struct BundlerInput {
     /// builders in `crates/zfb-build/tests/` etc.) keep the same
     /// effective parser behaviour.
     pub gfm_constructs: zfb_content::ResolvedGfmConstructs,
+
+    /// Canonical origin URL for the site, threaded from
+    /// `zfb::config::Config::site`. When `Some`, the bundler emits
+    /// `globalThis.__zfb.site = <value>` in the synthetic `entry.mjs`
+    /// so layouts can build canonical `<link>` tags, OG URLs, sitemap
+    /// absolute hrefs, and hreflang `<link rel="alternate">` without
+    /// hard-coding the origin. When `None`, no setter is emitted — the
+    /// build output is byte-for-byte identical to the pre-`site` build.
+    ///
+    /// The value is validated as an absolute HTTP/HTTPS URL by the
+    /// config loader before reaching here. Default: `None`.
+    pub site: Option<String>,
+
+    /// Optional TOC config. When `Some`, a [`TocPlugin`] is appended to
+    /// the hast phase immediately after `HeadingLinksPlugin` so it reads
+    /// final deduplicated `id` attributes. `None` (the default) leaves
+    /// the build byte-for-byte identical to the pre-TOC build.
+    ///
+    /// Mirrors `zfb::config::Config::markdown.toc`. Threaded alongside
+    /// `gfm_constructs` so the snapshot walker and bundler agree on the
+    /// same pipeline shape and produce byte-identical JSX `content_hash`
+    /// values.
+    pub toc: Option<zfb_content::TocConfig>,
+    /// External-link rewriter config. When `Some`, the bundler's MDX
+    /// pre-compile pipeline appends [`ExternalLinksPlugin`] so external
+    /// `<a>` elements are annotated with `target` / `rel`. `None` (the
+    /// default) keeps prior behaviour unchanged.
+    ///
+    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`. MUST match
+    /// what [`zfb_content::SnapshotPipelineConfig::external_links`] is
+    /// set to — divergence shifts the JSX `content_hash` and breaks the
+    /// snapshot ↔ bundler bridge lookup (the land mine at
+    /// `crates/zfb-content/src/content_bridge.rs:118-153`).
+    pub external_links: Option<(zfb_content::ExternalLinksConfig, Option<String>)>,
+    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
+    /// Mirrors `zfb::config::resolve_cjk_friendly(config.markdown)`.
+    /// Default: `true` (plugin on). Set to `false` only when the user
+    /// wrote `markdown: { cjkFriendly: false }` in `zfb.config.ts`.
+    ///
+    /// Must match the `SnapshotPipelineConfig::cjk_friendly` value used
+    /// by the snapshot walker — otherwise the `content_hash` baked into
+    /// every compiled MDX module diverges and every
+    /// `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
+    pub cjk_friendly: bool,
 }
 
 impl BundlerInput {
@@ -443,8 +504,13 @@ impl BundlerInput {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
+            toc: None,
+            external_links: None,
+            cjk_friendly: true,
         }
     }
 }
@@ -619,8 +685,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
+            input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
@@ -652,8 +722,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &mut content_imports,
                 input.strip_md_ext,
                 input.code_highlight_theme.as_deref(),
+                input.code_highlight_themes_dir.as_deref(),
                 if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                 input.gfm_constructs,
+                input.toc.clone(),
+                input.external_links.as_ref(),
+                input.cjk_friendly,
                 &mut broken,
             )
             .with_context(|| {
@@ -678,8 +752,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
+            input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -700,8 +778,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
+            input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -721,8 +803,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &input.project_root,
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
+            input.code_highlight_themes_dir.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
+            input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -776,8 +862,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     &input.project_root,
                     input.strip_md_ext,
                     input.code_highlight_theme.as_deref(),
+                    input.code_highlight_themes_dir.as_deref(),
                     if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                     input.gfm_constructs,
+                    input.toc.clone(),
+                    input.external_links.as_ref(),
+                    input.cjk_friendly,
                     &mut broken,
                 )
                 .with_context(|| {
@@ -875,6 +965,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         adapter.render_to_string_module(),
         input.content_snapshot_json.as_deref(),
         &content_imports,
+        input.site.as_deref(),
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -954,8 +1045,12 @@ fn materialise_shadow(
     project_root: &Path,
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
+    code_highlight_themes_dir: Option<&Path>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    toc: Option<zfb_content::TocConfig>,
+    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
+    cjk_friendly: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1000,15 +1095,37 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
-        code_highlight_theme,
-        gfm_constructs,
-    );
+    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+            code_highlight_theme,
+            gfm_constructs,
+            dir,
+            cjk_friendly,
+        )
+        .with_context(|| {
+            format!(
+                "codeHighlight.themesDir: failed to load themes from {}",
+                dir.display()
+            )
+        })?
+    } else {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+            code_highlight_theme,
+            gfm_constructs,
+            cjk_friendly,
+        )
+    };
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
     if let Some(map) = resolve_source_map {
         pipeline.add_resolve_links(map.clone());
+    }
+    if let Some((cfg, site)) = external_links {
+        pipeline.add_external_links(cfg.clone(), site.as_deref());
     }
 
     // sort_by_file_name() gives lexicographic order within each directory
@@ -1243,8 +1360,12 @@ fn materialise_collection(
     imports: &mut Vec<ContentImport>,
     strip_md_ext: bool,
     code_highlight_theme: Option<&str>,
+    code_highlight_themes_dir: Option<&Path>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    toc: Option<zfb_content::TocConfig>,
+    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
+    cjk_friendly: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1267,15 +1388,37 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
-        code_highlight_theme,
-        gfm_constructs,
-    );
+    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+            code_highlight_theme,
+            gfm_constructs,
+            dir,
+            cjk_friendly,
+        )
+        .with_context(|| {
+            format!(
+                "codeHighlight.themesDir: failed to load themes from {}",
+                dir.display()
+            )
+        })?
+    } else {
+        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+            code_highlight_theme,
+            gfm_constructs,
+            cjk_friendly,
+        )
+    };
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
     if let Some(map) = resolve_source_map {
         pipeline.add_resolve_links(map.clone());
+    }
+    if let Some((cfg, site)) = external_links {
+        pipeline.add_external_links(cfg.clone(), site.as_deref());
     }
 
     // sort_by_file_name() gives lexicographic order within each directory
@@ -1638,6 +1781,7 @@ fn write_entry_module(
     render_to_string_module: &str,
     content_snapshot_json: Option<&str>,
     content_imports: &[ContentImport],
+    site: Option<&str>,
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -1774,6 +1918,24 @@ fn write_entry_module(
     )
     .unwrap();
     src.push('\n');
+
+    // ---------------------------------------------------------------
+    // Site setter (sub-issue #254).
+    //
+    // When `site` is configured, emit it onto `globalThis.__zfb.site`
+    // so layouts can build canonical `<link>` tags, OG URLs, sitemap
+    // absolute hrefs, and hreflang `<link rel="alternate">` from a
+    // single config-level source. When absent, zero bytes are emitted
+    // so the build output is byte-for-byte identical to the pre-`site`
+    // build.
+    // ---------------------------------------------------------------
+    if let Some(site_url) = site {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str(&format!(
+            "globalThis.__zfb.site = {};\n\n",
+            json_str(site_url)
+        ));
+    }
 
     // ---------------------------------------------------------------
     // Content bridge installer (#506).
@@ -2137,8 +2299,13 @@ mod tests {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
+            toc: None,
+            external_links: None,
+            cjk_friendly: true,
         }
     }
 
@@ -2184,7 +2351,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[]).unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2257,7 +2424,7 @@ mod tests {
                 shadow_rel_path: "content/docs-ja/intro.mdx".to_string(),
             },
         ];
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports, None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2321,7 +2488,7 @@ mod tests {
         // `entry.mjs` without the bridge symbols).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[]).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -2331,6 +2498,68 @@ mod tests {
         assert!(
             !body.contains("globalThis.__zfb.content"),
             "no imports → no bridge installer; got:\n{body}"
+        );
+    }
+
+    // --- site setter tests (#254) ------------------------------------------
+
+    #[test]
+    fn entry_module_emits_site_setter_when_some() {
+        // When `site` is `Some`, the entry module must emit
+        // `globalThis.__zfb.site = <json-encoded-url>` BEFORE the
+        // content bridge and `createPageRouter` so any SSR call to
+        // `globalThis.__zfb.site` sees the value from the first request.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            Some("https://example.com"),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "site branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.site = \"https://example.com\";"),
+            "site setter must contain the JSON-encoded URL; got:\n{body}"
+        );
+
+        // The site setter must precede createPageRouter so SSR code
+        // that reads `globalThis.__zfb.site` during the first request
+        // already sees the value.
+        let site_idx = body
+            .find("globalThis.__zfb.site = ")
+            .expect("site setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            site_idx < router_idx,
+            "site setter must precede createPageRouter; site at {site_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_site_setter_when_none() {
+        // When `site` is `None`, zero bytes related to the site setter
+        // are emitted — preserving byte-for-byte parity with the
+        // pre-`site` build (sub #254 acceptance criterion).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("globalThis.__zfb.site"),
+            "site=None → no site setter; got:\n{body}"
         );
     }
 
@@ -2371,7 +2600,11 @@ mod tests {
             false,
             None,
             None,
+            None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2502,7 +2735,11 @@ mod tests {
             false,
             None,
             None,
+            None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2518,7 +2755,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None, &[]).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None, &[], None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -2533,7 +2770,7 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[]).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
@@ -2705,8 +2942,13 @@ mod tests {
             node_modules_preserve_symlinks: false,
             strip_md_ext: false,
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+            site: None,
+            toc: None,
+            external_links: None,
+            cjk_friendly: true,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2823,7 +3065,11 @@ mod tests {
             false,
             None,
             None,
+            None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
