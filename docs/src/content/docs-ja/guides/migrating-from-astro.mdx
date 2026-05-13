@@ -1,0 +1,131 @@
+---
+title: Astro からの移行
+description: 既存の Astro 静的サイトを zfb に移行するための概念対応マップ。
+sidebar_position: 1
+---
+
+<Info title="翻訳予定">
+
+このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
+英語版: [Migrating from Astro](/guides/migrating-from-astro)
+
+</Info>
+
+## 概要
+
+Astro サイトをお持ちの方は、zfb の多くの部分に馴染みを感じるでしょう。どちらもファイルベースのルーティング、コンテンツコレクション、パーシャルハイドレーションを提供しています。主な違いはスコープにあります。zfb はより小さく、よりエンド・ツー・エンドで Rust を基盤としています。
+
+英語の最新ドキュメントは [Migrating from Astro](/guides/migrating-from-astro) を参照してください。
+
+## エンジンの追加機能（v0 以降）
+
+以下の機能は初期リリース後に追加されたものです。Astro で同等のパターンを使用していた場合、zfb での対応箇所を示します。
+
+**サイトの正規 URL（`site`）**
+
+Astro の `site` 設定キーは、zfb のトップレベル `site` オプションに直接対応します:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  site: "https://example.com",
+});
+```
+
+**プラグインライフサイクル: `setup`、`addAlias`、`addVirtualModule`、`injectRoute`**
+
+Astro インテグレーションの `astro:config:setup` フックに相当するのが、zfb プラグインの `setup` フックです。`addAlias` でインポートエイリアスを登録し、`addVirtualModule` で仮想 ESM モジュールを提供し、`injectRoute` で開発サーバー専用のルートを追加できます。詳細は [Plugins](/concepts/plugins) を参照してください。
+
+**`postBuild` でのルートマニフェスト（`ctx.routes`）**
+
+`postBuild` フックは `ctx.routes` を受け取ります。これはビルドが出力したすべての URL の完全なマニフェストです。サイトマップや RSS フィードの生成に利用できます。詳細は [Plugins](/concepts/plugins) を参照してください。
+
+**Markdown: 目次（TOC）、外部リンク、CJK フレンドリーな強調**
+
+Astro でよく使われる `remark-toc` や `rehype-external-links` に相当する機能は、zfb では `markdown` 設定ブロックの組み込みオプションとして提供されています:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    toc: { heading: "TOC", maxDepth: 2 },
+    externalLinks: { target: "_blank", rel: ["noopener", "noreferrer"] },
+    cjkFriendly: true, // デフォルトで有効
+  },
+});
+```
+
+詳細は [Customizing Markdown](/guides/customizing-markdown) を参照してください。
+
+**シンタックスハイライトのカスタムテーマ（`codeHighlight.themesDir`）**
+
+zfb は syntect（Sublime Text 互換の `.tmTheme` 形式）を使用しています。`codeHighlight.themesDir` で `.tmTheme` ファイルを含むディレクトリを指定します:
+
+```ts
+export default defineConfig({
+  codeHighlight: {
+    themesDir: "./themes",
+    theme: "Dracula",
+  },
+});
+```
+
+詳細は [Syntax Highlighting](/guides/syntax-highlighting) を参照してください。
+
+## ユーザースペースに移行するパターン
+
+zfb は Astro の一部の機能を意図的に省略しています。これらのパターンは、純粋な JSX/Preact モデルにおいて、エンジンサポートなしにクリーンなユーザーランドの解決策があるためです。
+
+### `client:media` — メディアクエリによる条件付きハイドレーション
+
+Astro の `client:media="(max-width: 768px)"` に相当するパターンは、コンポーネント内部での早期リターンです:
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "preact/hooks";
+
+interface Props {
+  children: preact.ComponentChildren;
+}
+
+/** クエリにマッチするビューポートでのみ children をレンダリングする */
+export default function MediaMount({ children }: Props) {
+  const [matches, setMatches] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    setMatches(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  if (!matches) return null;
+  return <>{children}</>;
+}
+```
+
+### ページごとの `<head>` 追加（Astro の `<Fragment slot="head">`）
+
+Astro の `<Fragment slot="head">` に相当する機能はエンジンレベルでは提供されていません。
+
+<Note>
+
+  `PageMeta` は現在 unknown フィールドを拒否します。将来の ADR でこの制約が緩和された場合、このレシピはよりシンプルになります。
+
+</Note>
+
+ユーザーランドのパターンは **Preact コンテキストベースのヘルメット** です。レイアウトがページボディを先にレンダリングしてコレクターに登録し、その後収集されたヘッドノードを出力します。詳細なスニペットは英語版 [Migrating from Astro](/guides/migrating-from-astro#per-page-head-additions-astros-fragment-slothead) を参照してください。
+
+### Preact-compat エイリアス（`@/components/svg`、`@/components/responsive-image`）
+
+Astro のコンポーネントモデルの回避策として登録されていたエイリアスは、移行時に**削除してください**。zfb ではすべてのコンポーネントが最初から `.tsx` であるため、これらのブリッジレイヤーは不要です。コンポーネントを直接ファイルパスで（またはシンプルなエイリアスで）インポートしてください。
+
+### `data-island` マーカーによるカスタムハイドレーション
+
+このパターンは zfb に**バイト単位でそのまま**移行できます。`"use client"` アイランドとして自前の `<script>` を用意し、マーカーを `querySelectorAll` して Preact の `hydrate()` を呼び出します。詳細は英語版 [Migrating from Astro](/guides/migrating-from-astro#custom-hydration-with-data-island-markers) を参照してください。
+
+### カスタム remark / rehype プラグイン
+
+zfb の Markdown パイプラインは Rust バックエンドであり、npm レベルの remark/rehype プラグインローダーはありません。Markdown レベルのカスタマイズは in-tree の Rust visitor として実装します。一般的な組み込みプラグイン（TOC、外部リンク、CJK 修正）はすでに `zfb.config.ts` のオプションとして提供されています。より固有のカスタマイズが必要な場合は [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。

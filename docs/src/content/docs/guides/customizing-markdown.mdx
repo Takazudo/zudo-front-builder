@@ -145,6 +145,7 @@ markdown AST and re-tokenises these cases. It is **on by default** so
 all existing CJK-content sites work without any config change.
 
 ```ts title="zfb.config.ts"
+
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
@@ -152,6 +153,7 @@ export default defineConfig({
     toc: {
       heading: "TOC",   // optional; default "TOC" (case-insensitive)
       maxDepth: 2,       // optional; default 2 (h2 + h3)
+
 ## External links
 
 The `markdown.externalLinks` option automatically adds `target` and `rel`
@@ -236,6 +238,7 @@ identical to the pre-feature behaviour — no extra attributes are emitted.
   HTTP/HTTPS URL is treated as external.
 
 </Note>
+
 **Conservative default rationale:** flipping `cjkFriendly` to `false`
 by default would silently break every existing site whose CJK content
 uses `**bold**` adjacent to Japanese punctuation or kana. The field was
