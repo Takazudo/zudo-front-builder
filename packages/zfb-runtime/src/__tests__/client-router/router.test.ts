@@ -25,10 +25,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
+import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 vi.mock("@takazudo/zfb/runtime", () => ({
   mountNewIslands: vi.fn(),
   cancelPendingIslands: vi.fn(),
+  unmountIslands: vi.fn(),
 }));
 
 installHappyDomShim();
@@ -352,5 +354,40 @@ describe("popstate — forward + back history navigation", () => {
     // Check that fetch was called for /page-a as part of the back navigation.
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("/page-a"))).toBe(true);
+  });
+});
+
+describe("island lifecycle ordering during navigate()", () => {
+  it("calls cancelPendingIslands then unmountIslands then mountNewIslands in that order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("Next", "next content"))),
+    );
+
+    const order: string[] = [];
+    vi.mocked(cancelPendingIslands).mockImplementation(() => {
+      order.push("cancelPendingIslands");
+    });
+    vi.mocked(unmountIslands).mockImplementation(() => {
+      order.push("unmountIslands");
+    });
+    vi.mocked(mountNewIslands).mockImplementation(() => {
+      order.push("mountNewIslands");
+    });
+
+    await navigate("/ordering-test");
+
+    // cancelPendingIslands and unmountIslands happen in updateDOM (before the swap),
+    // mountNewIslands happens after runScripts (post-swap). The spec requires
+    // unmountIslands to be called between cancelPendingIslands and mountNewIslands.
+    const cancelIdx = order.indexOf("cancelPendingIslands");
+    const unmountIdx = order.indexOf("unmountIslands");
+    const mountIdx = order.indexOf("mountNewIslands");
+
+    expect(cancelIdx).toBeGreaterThanOrEqual(0);
+    expect(unmountIdx).toBeGreaterThanOrEqual(0);
+    expect(mountIdx).toBeGreaterThanOrEqual(0);
+    expect(cancelIdx).toBeLessThan(unmountIdx);
+    expect(unmountIdx).toBeLessThan(mountIdx);
   });
 });

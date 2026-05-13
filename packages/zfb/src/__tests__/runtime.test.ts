@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
-import { __setIslandImporterForTests, mountIslands, scheduleHydrate } from "../runtime.js";
+import {
+  __setIslandImporterForTests,
+  mountIslands,
+  scheduleHydrate,
+  unmountIslands,
+} from "../runtime.js";
 
 type IntersectionCallback = (
   entries: Array<{ isIntersecting: boolean; target: Element }>,
@@ -441,6 +446,104 @@ describe("scheduleHydrate", () => {
       mountIslands({ Counter: { mount } });
 
       expect(mount).toHaveBeenCalledTimes(1);
+    });
+
+    // -----------------------------------------------------------------------
+    // unmountIslands() test cases (#274)
+    // -----------------------------------------------------------------------
+
+    it("unmountIslands(root) calls the bundle's unmount with the correct element", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{"start":1}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      const unmount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount, unmount }));
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+
+      // Calling unmountIslands with a root that contains the mounted island
+      // should invoke the bundle's unmount function with the element.
+      const el = document.querySelector("[data-zfb-island]")!;
+      unmountIslands(document.body);
+
+      expect(unmount).toHaveBeenCalledTimes(1);
+      expect(unmount).toHaveBeenCalledWith(el);
+    });
+
+    it("unmountIslands does not throw when bundle exposes no unmount", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      // Bundle has no unmount export — the runtime stores a noop thunk.
+      restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).toHaveBeenCalledTimes(1);
+      // Must not throw even though no unmount was exposed by the bundle.
+      expect(() => unmountIslands(document.body)).not.toThrow();
+    });
+
+    it("unmountIslands honours unmount from shared-bundle inline manifest entry", () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{"start":5}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+      const unmount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      // Inline IslandModule shape (shared-bundle path) with unmount.
+      mountIslands({ Counter: { mount, unmount } });
+
+      // Inline mount is synchronous.
+      expect(mount).toHaveBeenCalledTimes(1);
+
+      const el = document.querySelector("[data-zfb-island]")!;
+      unmountIslands(document.body);
+
+      expect(unmount).toHaveBeenCalledTimes(1);
+      expect(unmount).toHaveBeenCalledWith(el);
+    });
+
+    it("stale-mount race: does not call mount when element is detached before import resolves", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+      `;
+      const mount = vi.fn();
+
+      // Deferred importer: only resolves after we explicitly flush.
+      let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
+      const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
+        resolveImport = resolve;
+      });
+      restoreImporter = __setIslandImporterForTests(() => importPromise);
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+
+      // Detach the element from the DOM to simulate a body swap while the
+      // import is still in-flight.
+      const el = document.querySelector("[data-zfb-island]")!;
+      el.remove();
+      expect(el.isConnected).toBe(false);
+
+      // Now resolve the import — the isConnected guard must prevent mount()
+      // from being called for the detached element.
+      resolveImport!({ mount });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mount).not.toHaveBeenCalled();
     });
   });
 
