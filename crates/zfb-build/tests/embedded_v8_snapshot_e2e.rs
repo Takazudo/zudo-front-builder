@@ -103,6 +103,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
     }
 }
 

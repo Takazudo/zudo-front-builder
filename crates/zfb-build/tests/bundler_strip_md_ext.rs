@@ -136,6 +136,8 @@ fn make_input(
         toc: None,
             external_links: None,
             cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
     }
 }
 

@@ -159,6 +159,8 @@ fn make_input_with_resolve(
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
     }
 }
 
@@ -203,6 +205,8 @@ fn make_input_without_resolve(
         toc: None,
             external_links: None,
             cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
     }
 }
 
