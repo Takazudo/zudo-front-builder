@@ -52,15 +52,7 @@ addAlias("@/components/foo", "./src/components/foo.tsx");
 
 After this, `import Foo from "@/components/foo"` resolves to `./src/components/foo.tsx`.
 
-**v1 caveat: contract is exact-match; one consumer (islands) is prefix-with-slash.**
-The documented contract is exact-match only — registering `@/foo` should not match
-`@/foo/bar`. The embedded V8 host (used for SSR and `paths()` evaluation) honors
-this. The islands esbuild path (used to bundle client-side `"use client"`
-components) currently relies on esbuild CLI's `--alias` flag, which is
-prefix-with-slash — registering `@/foo` will also rewrite `@/foo/bar`. Aligning
-both paths on exact-match is tracked as a v1 follow-up. To stay safe across both
-consumers today, alias only the exact specifiers you import; do not assume
-subpath imports of an aliased specifier will fail.
+Subpath imports do NOT match: `import "@/components/foo/bar"` is not rewritten and surfaces as an unresolved-import error at bundle time. All three consumers (the embedded V8 host that drives SSR and `paths()` evaluation, the main page/layout bundler, and the islands esbuild bundler that produces client-side `"use client"` bundles) honor the same exact-match contract.
 
 **Conflict detection.** Two plugins registering the same `from` with different `to` raises `AliasConflict` and aborts the build, naming both offending plugins. Idempotent re-registration (same plugin, same `to`) is allowed.
 

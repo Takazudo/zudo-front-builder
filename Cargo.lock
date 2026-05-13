@@ -4915,6 +4915,7 @@ dependencies = [
  "zfb-content",
  "zfb-css",
  "zfb-graph",
+ "zfb-plugin-resolver",
  "zfb-render",
  "zfb-router",
  "zfb-types",
@@ -4992,7 +4993,16 @@ dependencies = [
  "thiserror",
  "tracing",
  "walkdir",
+ "zfb-plugin-resolver",
  "zfb-types",
+]
+
+[[package]]
+name = "zfb-plugin-resolver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
 ]
 
 [[package]]

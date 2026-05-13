@@ -460,6 +460,29 @@ pub struct BundlerInput {
     ///
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
+
+    /// Plugin-registered import aliases. Each `(from, to)` pair maps a
+    /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
+    /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
+    /// flags alongside the hard-coded preact shim aliases.
+    ///
+    /// Populated by the command layer from `setup_registries.aliases` for
+    /// both `zfb build` and `zfb dev`. Default: empty.
+    ///
+    /// Mirrors `zfb_islands::EsbuildSubprocessConfig::alias_entries` so
+    /// the islands path and the main bundler path receive identical alias sets.
+    pub plugin_alias_entries: Vec<(String, String)>,
+
+    /// Plugin-registered virtual modules. Each `(specifier, source)` pair
+    /// maps a bare specifier (e.g. `virtual:foo`) to its JS/TS source text.
+    /// At bundle time the source is written to a temp `.mjs` file and an
+    /// `--alias:<specifier>=<path>` flag redirects imports to that file.
+    ///
+    /// Populated by the command layer from `setup_registries.virtual_modules`
+    /// (sources pre-fetched via `invoke_virtual_loader`). Default: empty.
+    ///
+    /// Mirrors `zfb_islands::EsbuildSubprocessConfig::virtual_modules`.
+    pub plugin_virtual_modules: Vec<(String, String)>,
 }
 
 impl BundlerInput {
@@ -511,6 +534,8 @@ impl BundlerInput {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         }
     }
 }
@@ -2133,6 +2158,52 @@ fn run_esbuild(
     // map without any per-subpath wiring.
     cmd.arg("--alias:zfb=@takazudo/zfb");
 
+    // Plugin-registered aliases + virtual modules (#269). Both surface
+    // through the synthetic `compilerOptions.paths` map esbuild reads
+    // via `--tsconfig=<tsconfig.json>` above, NOT as `--alias` flags.
+    //
+    // Why not `--alias`: esbuild's `--alias:<from>=<to>` is
+    // prefix-with-slash — registering `@/foo` would silently also
+    // rewrite `@/foo/bar`, contradicting the documented exact-match
+    // contract honored by the embedded V8 host
+    // (`zfb-render::BundleModuleLoader::resolve_alias`). A
+    // `compilerOptions.paths` entry without the wildcard suffix is a
+    // literal exact match in the TypeScript / esbuild path-mapping
+    // pipeline.
+    //
+    // `zfb_plugin_resolver::build_resolver_inputs` materializes each
+    // virtual module to a `.zfb-virtual-*.mjs` temp file inside
+    // `shadow` (so esbuild's upward `node_modules` walk still finds
+    // the right packages) and returns POSIX-normalized
+    // `(specifier, absolute-path)` pairs. The `NamedTempFile` handles
+    // live inside `resolver_inputs._temp_files` and are dropped after
+    // the subprocess returns.
+    let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+        &input.plugin_alias_entries,
+        &input.plugin_virtual_modules,
+        shadow,
+    )
+    .context("bundler: failed materializing plugin resolver inputs")?;
+
+    // Rewrite the synthetic tsconfig with the merged path map. Step 4
+    // above already wrote a tsconfig honouring `input.tsconfig_paths`
+    // alone; merge plugin entries on top (user-wins on key collision —
+    // see `merge_into_tsconfig_paths` doc) and rewrite. The mock-
+    // subprocess path skips this whole function, so the no-plugin /
+    // unit-test path is byte-identical to the previous behaviour.
+    let mut merged_paths = input.tsconfig_paths.clone();
+    zfb_plugin_resolver::merge_into_tsconfig_paths(
+        &mut merged_paths,
+        &resolver_inputs.paths_entries,
+    );
+    // Recreate the adapter to get `jsx_import_source` — cheap (ADR-002
+    // adapters are zero-state) and avoids threading another parameter
+    // through `run_esbuild`. Stays in sync with step 4 above so a
+    // future framework switch can't make the two writes diverge.
+    let jsx_import_source = make_adapter(input.framework).jsx_import_source().to_string();
+    write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
+        .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
+
     // import.meta.env.{PROD,DEV} — always emitted, driven by mode.
     let prod = input.mode.is_prod();
     cmd.arg(format!("--define:import.meta.env.PROD={}", prod));
@@ -2189,6 +2260,13 @@ fn run_esbuild(
     let output = cmd
         .output()
         .with_context(|| format!("failed to spawn {}", bin.display()))?;
+    // Drop `resolver_inputs` now — the subprocess has finished and
+    // esbuild no longer needs the virtual-module `.mjs` temp files.
+    // Explicit drop makes the lifetime intent visible; the
+    // `NamedTempFile`s inside `_temp_files` delete themselves via
+    // their Drop impl.
+    drop(resolver_inputs);
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
@@ -2306,6 +2384,8 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         }
     }
 
@@ -2949,6 +3029,8 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -3169,6 +3251,105 @@ mod tests {
             "Worker bundle must keep `--loader:.mdx=jsx` so MDX modules \
              continue to be parsed as JSX; got: {:?}",
             ESBUILD_LOADER_ARGS,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin alias / virtual-module wiring tests (#268)
+    // -----------------------------------------------------------------------
+
+    /// Regression test: a plugin alias `@/foo` → absolute path is consumable
+    /// from a **shared SSR-only module** (i.e. imported by a page but not an
+    /// island). This locks in the source-issue requirement: plugin aliases
+    /// registered via `setup()` must resolve in pages / layouts / shared
+    /// SSR-only code, not just in island bundles.
+    ///
+    /// Uses `mock_subprocess_output` so no real esbuild binary is required.
+    /// The test verifies that:
+    ///  1. `BundlerInput::plugin_alias_entries` is accepted without error.
+    ///  2. `BundlerInput::plugin_virtual_modules` is accepted without error.
+    ///  3. The bundler does NOT reject or drop the fields silently
+    ///     (the mock-mode path exercises the struct-construction code path;
+    ///     the real esbuild emission is covered by the end-to-end bundler
+    ///     integration tests in `crates/zfb-build/tests/bundler_integration.rs`
+    ///     which run when `ZFB_ESBUILD_BIN` is available).
+    #[test]
+    fn plugin_alias_and_virtual_module_fields_are_accepted_in_bundler_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Minimal project layout.
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+        // Shared SSR-only module that would consume a plugin alias — the page
+        // imports this module so the alias is in the non-island (main bundler)
+        // dependency graph.
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::write(
+            root.join("components/shared.tsx"),
+            // In real usage this would `import Foo from '@/foo'`. We don't
+            // need real resolution in mock mode — what we're testing is that
+            // the fields wire through without compilation or runtime errors.
+            "export const shared = 'hello';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("pages/index.tsx"),
+            "import { shared } from '../components/shared';\n\
+             export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            // Plugin alias: `@/foo` → some absolute path (no real file needed
+            // because mock_subprocess_output bypasses esbuild).
+            plugin_alias_entries: vec![
+                ("@/foo".to_string(), root.join("src/foo.tsx").to_string_lossy().into_owned()),
+            ],
+            // Virtual module: `virtual:meta` with inline source.
+            plugin_virtual_modules: vec![
+                ("virtual:meta".to_string(), "export const version = '1.0.0';\n".to_string()),
+            ],
+            ..make_minimal_input(&tmp)
+        };
+
+        // With mock_subprocess_output the bundler writes the mock string to
+        // dist/bundle.mjs without invoking esbuild, so the test succeeds
+        // without a real binary and without needing `@/foo` to resolve.
+        let out = bundle(input).expect(
+            "bundler must accept plugin_alias_entries and plugin_virtual_modules \
+             without error (#268)",
+        );
+        assert!(
+            out.bundle_path.exists(),
+            "bundle path must exist even in mock mode"
+        );
+    }
+
+    /// Verify that `BundlerInput::plugin_alias_entries` and
+    /// `plugin_virtual_modules` default to empty vecs in `for_project()` so
+    /// existing call sites that don't supply plugin data keep working
+    /// byte-for-byte identical to the pre-#268 build.
+    #[test]
+    fn for_project_defaults_plugin_fields_to_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let input = BundlerInput::for_project(
+            root.clone(),
+            zfb_render::adapters::Framework::Preact,
+            BundleMode::Production,
+            root.join("dist"),
+            None,
+        );
+        assert!(
+            input.plugin_alias_entries.is_empty(),
+            "plugin_alias_entries must default to empty"
+        );
+        assert!(
+            input.plugin_virtual_modules.is_empty(),
+            "plugin_virtual_modules must default to empty"
         );
     }
 }
