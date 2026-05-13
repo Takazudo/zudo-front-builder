@@ -31,6 +31,25 @@ export type TailwindConfig = {
 };
 
 /**
+ * Prefetch options. Mirrors `PrefetchConfig` in `crates/zfb/src/config.rs`.
+ */
+export type PrefetchConfig = {
+  /**
+   * Disable prefetch entirely.
+   *
+   * When `true`, the bundler emits `globalThis.__zfb.prefetchDisabled = true`
+   * in `entry.mjs`, and `<ClientRouter />` renders
+   * `<meta name="zfb-prefetch-disabled" content="true">` in `<head>`.
+   * The sibling prefetch-core module reads that meta tag at `init()` time
+   * and short-circuits — no prefetch wiring runs.
+   *
+   * The flag is site-wide and static — set once at bundle-emit time,
+   * never recomputed per-page. Default: `false`.
+   */
+  disabled?: boolean;
+};
+
+/**
  * One plugin entry in `zfb.config.ts`.
  *
  * `name` MUST be a module reference that Node's resolver can locate from
@@ -70,6 +89,13 @@ export type ZfbConfig = {
   collections?: CollectionDef[];
   /** Tailwind options; absent = defaults. */
   tailwind?: TailwindConfig;
+  /**
+   * Prefetch options. When `disabled: true`, the build emits a meta tag
+   * that the runtime's prefetch-core module reads at init time to skip
+   * all prefetch wiring. Mirrors `Config::prefetch` in
+   * `crates/zfb/src/config.rs`.
+   */
+  prefetch?: PrefetchConfig;
   /** User-supplied plugins. */
   plugins?: PluginConfig[];
   /**
