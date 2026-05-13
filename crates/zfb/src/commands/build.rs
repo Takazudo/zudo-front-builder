@@ -3128,8 +3128,12 @@ mod tests {
         let project_root = tmp.path();
         // No pages/, so the entry walk returns empty and we never
         // reach the scanner or esbuild.
-        let payload = build_default_islands_payload(project_root, &project_root.join("dist"))
-            .expect("should not error");
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when project has no pages/; got {payload:?}",
@@ -3150,8 +3154,12 @@ mod tests {
             "export default function Index() { return null; }\n",
         )
         .unwrap();
-        let payload = build_default_islands_payload(project_root, &project_root.join("dist"))
-            .expect("should not error");
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when no use-client components; got {payload:?}",
@@ -3181,7 +3189,9 @@ mod tests {
         .unwrap();
         let cfg = Config::default(); // tailwind defaults to enabled
         let outdir = project_root.join("dist");
-        let runner = DefaultRunner;
+        let runner = DefaultRunner {
+            islands_plugin_config: IslandsPluginConfig::default(),
+        };
         let inputs = runner
             .emit_prod_assets(project_root, &outdir, &cfg)
             .expect("emit_prod_assets must succeed");
