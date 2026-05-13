@@ -105,6 +105,55 @@ pub struct PluginSpec {
     pub options: serde_json::Value,
 }
 
+/// One emitted route in the `postBuild` route manifest (#262). Exposed
+/// on `ctx.routes.routes` so plugins can iterate every URL the build
+/// produced (e.g. to write a `sitemap.xml`).
+///
+/// For static routes `params` is absent. For dynamic / catchall routes
+/// `params` contains the bound parameter values: scalar strings for
+/// `[slug]` segments, string arrays for `[...rest]` segments.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostBuildRouteEntry {
+    /// Emitted URL path, e.g. `/blog/hello/`.
+    pub url: String,
+    /// Path under `outDir`, e.g. `blog/hello/index.html`.
+    pub output: String,
+    /// File extension: `html`, `xml`, `rss`, `txt`, `json`, …
+    pub extension: String,
+    /// Source page module, relative to the project root,
+    /// e.g. `pages/blog/[slug].tsx`.
+    pub source: String,
+    /// Bound route params. `None` for static routes. Dynamic params are
+    /// `String` scalars; catchall params are `Vec<String>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<std::collections::BTreeMap<String, PostBuildParamValue>>,
+}
+
+/// A single bound route parameter value in the postBuild manifest.
+/// Dynamic (`[slug]`) params are scalars; catchall (`[...rest]`) params
+/// are arrays, matching the shape the plugin's TypeScript types expose.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PostBuildParamValue {
+    Scalar(String),
+    Array(Vec<String>),
+}
+
+/// The route manifest passed to `postBuild` plugins on `ctx.routes`.
+/// Sorted by `url` for byte-stable output across runs.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PostBuildRouteManifest {
+    pub routes: Vec<PostBuildRouteEntry>,
+}
+
+impl PostBuildRouteManifest {
+    /// Construct an empty manifest.
+    pub fn empty() -> Self {
+        Self { routes: Vec::new() }
+    }
+}
+
 /// Build-hook context handed to `preBuild` / `postBuild` plugin
 /// callbacks. The same shape works for both hooks; only the lifecycle
 /// timing differs.
@@ -117,6 +166,11 @@ pub struct BuildHookContext {
     /// view, but we re-send it so plugins can cheaply read it without
     /// having to keep state across hook calls).
     pub config: serde_json::Value,
+    /// Route manifest — present only on `postBuild` calls; absent
+    /// (`undefined` in JS) on `preBuild` calls (#262). Sorted by `url`
+    /// for byte-stable output across runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routes: Option<PostBuildRouteManifest>,
 }
 
 /// Dev-middleware registration context. Sent at boot so each plugin
@@ -406,6 +460,10 @@ impl PluginHost {
     }
 
     /// Run every plugin's `postBuild` hook (in declaration order).
+    ///
+    /// `ctx` must carry a populated `routes` field — use
+    /// [`PostBuildRouteManifest`] to construct it from the build's
+    /// emitted route table (#262).
     pub async fn run_post_build(&self, ctx: &BuildHookContext) -> Result<()> {
         let _ = self
             .request_typed::<serde_json::Value>(
@@ -808,6 +866,7 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
+            routes: None,
         };
         host.run_pre_build(&ctx).await.expect("preBuild ok");
         host.run_post_build(&ctx).await.expect("postBuild ok");
@@ -855,6 +914,7 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
+            routes: None,
         };
         let err = host
             .run_pre_build(&ctx)
@@ -916,6 +976,7 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             out_dir: tmp.path().join("dist"),
             config: serde_json::json!({}),
+            routes: None,
         };
         host.run_pre_build(&bctx).await.expect("preBuild ok");
         let regs = host
@@ -1298,5 +1359,199 @@ mod tests {
             "SetupContext leaked forbidden surfaces: {leaked}",
         );
         host.shutdown().await.ok();
+    }
+
+    // --- #262 routes-manifest tests ------------------------------------------
+
+    /// `postBuild` receives `ctx.routes` populated; `preBuild` sees
+    /// `ctx.routes === undefined`. Covers the core acceptance criterion.
+    #[tokio::test]
+    async fn post_build_ctx_carries_routes_manifest_pre_build_does_not() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("manifest-probe.mjs");
+        let pre_marker = tmp.path().join("pre-routes-type.txt");
+        let post_marker = tmp.path().join("post-routes.json");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            export default {{
+              name: "manifest-probe",
+              preBuild(ctx) {{
+                // routes must be undefined on preBuild
+                writeFileSync({pre:?}, typeof ctx.routes);
+              }},
+              postBuild(ctx) {{
+                // routes must be present on postBuild
+                writeFileSync({post:?}, JSON.stringify(ctx.routes));
+              }},
+            }};
+            "#,
+            pre = pre_marker.to_string_lossy().to_string(),
+            post = post_marker.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "manifest-probe".into(),
+                module: module_url,
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        let pre_ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&pre_ctx).await.expect("preBuild ok");
+
+        // Build a manifest with one static route.
+        let manifest = PostBuildRouteManifest {
+            routes: vec![PostBuildRouteEntry {
+                url: "/".to_string(),
+                output: "index.html".to_string(),
+                extension: "html".to_string(),
+                source: "pages/index.tsx".to_string(),
+                params: None,
+            }],
+        };
+        let post_ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: Some(manifest),
+        };
+        host.run_post_build(&post_ctx).await.expect("postBuild ok");
+        host.shutdown().await.ok();
+
+        // preBuild must have seen `typeof ctx.routes === "undefined"`.
+        let pre_type = tokio::fs::read_to_string(&pre_marker).await.unwrap();
+        assert_eq!(
+            pre_type.trim(),
+            "undefined",
+            "preBuild must NOT expose ctx.routes, got type: {pre_type}",
+        );
+
+        // postBuild must have received the manifest.
+        let post_json = tokio::fs::read_to_string(&post_marker).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&post_json).unwrap();
+        let routes = parsed["routes"].as_array().expect("routes array");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["url"], "/");
+        assert_eq!(routes[0]["output"], "index.html");
+        assert_eq!(routes[0]["extension"], "html");
+        assert_eq!(routes[0]["source"], "pages/index.tsx");
+        // params must be absent for a static route.
+        assert!(routes[0].get("params").is_none() || routes[0]["params"].is_null(),
+            "static route must not carry params, got: {}", routes[0]);
+    }
+
+    /// Dynamic route params surface as string scalars; catchall params
+    /// surface as string arrays (#262 AC).
+    #[tokio::test]
+    async fn post_build_route_manifest_dynamic_and_catchall_params() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("params-probe.mjs");
+        let marker = tmp.path().join("routes.json");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            export default {{
+              name: "params-probe",
+              postBuild(ctx) {{
+                writeFileSync({marker:?}, JSON.stringify(ctx.routes));
+              }},
+            }};
+            "#,
+            marker = marker.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "params-probe".into(),
+                module: module_url,
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        let mut dyn_params = std::collections::BTreeMap::new();
+        dyn_params.insert("slug".to_string(), PostBuildParamValue::Scalar("hello-world".to_string()));
+
+        let mut catchall_params = std::collections::BTreeMap::new();
+        catchall_params.insert("rest".to_string(), PostBuildParamValue::Array(vec!["a".to_string(), "b".to_string()]));
+
+        let manifest = PostBuildRouteManifest {
+            routes: vec![
+                PostBuildRouteEntry {
+                    url: "/blog/hello-world".to_string(),
+                    output: "blog/hello-world/index.html".to_string(),
+                    extension: "html".to_string(),
+                    source: "pages/blog/[slug].tsx".to_string(),
+                    params: Some(dyn_params),
+                },
+                PostBuildRouteEntry {
+                    url: "/docs/a/b".to_string(),
+                    output: "docs/a/b/index.html".to_string(),
+                    extension: "html".to_string(),
+                    source: "pages/docs/[...rest].tsx".to_string(),
+                    params: Some(catchall_params),
+                },
+                PostBuildRouteEntry {
+                    url: "/sitemap.xml".to_string(),
+                    output: "sitemap.xml".to_string(),
+                    extension: "xml".to_string(),
+                    source: "pages/sitemap.xml.tsx".to_string(),
+                    params: None,
+                },
+            ],
+        };
+        let ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: Some(manifest),
+        };
+        host.run_post_build(&ctx).await.expect("postBuild ok");
+        host.shutdown().await.ok();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&marker).await.unwrap()).unwrap();
+        let routes = json["routes"].as_array().unwrap();
+        assert_eq!(routes.len(), 3);
+
+        // Dynamic route: slug is a string scalar.
+        let dyn_r = routes.iter().find(|r| r["url"] == "/blog/hello-world").unwrap();
+        assert_eq!(dyn_r["params"]["slug"], "hello-world");
+
+        // Catchall route: rest is a string array.
+        let ca_r = routes.iter().find(|r| r["url"] == "/docs/a/b").unwrap();
+        assert!(ca_r["params"]["rest"].is_array(), "catchall param must be array");
+        let rest = ca_r["params"]["rest"].as_array().unwrap();
+        assert_eq!(rest, &[serde_json::json!("a"), serde_json::json!("b")]);
+
+        // Non-HTML route: extension is "xml", no params key.
+        let xml_r = routes.iter().find(|r| r["url"] == "/sitemap.xml").unwrap();
+        assert_eq!(xml_r["extension"], "xml");
+        assert_eq!(xml_r["output"], "sitemap.xml");
+        assert!(xml_r.get("params").is_none() || xml_r["params"].is_null(),
+            "non-HTML static route must not carry params, got: {}", xml_r);
     }
 }

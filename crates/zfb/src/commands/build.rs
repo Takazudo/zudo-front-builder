@@ -72,7 +72,8 @@ use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
     embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    DeferredDynamicRoute, RouteUniversePlan, WorkerDispatch,
+    DeferredDynamicRoute, DynamicResolvedEntry, ResolvedRouteParams, RouteUniversePlan,
+    WorkerDispatch,
 };
 
 pub async fn run(args: &BuildArgs) -> Result<()> {
@@ -127,6 +128,8 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             out_dir: outdir.clone(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
+            // preBuild: routes absent (undefined in JS) — spec AC for #262.
+            routes: None,
         };
         host.run_pre_build(&ctx)
             .await
@@ -147,7 +150,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // context where blocking is not allowed`. Telling the outer
     // runtime up-front that the next stretch of work is blocking is
     // the supported escape hatch.
-    let pages_built = tokio::task::block_in_place(|| {
+    let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
         run_build(BuildArgsResolved {
             project_root: &project_root,
             outdir: &outdir,
@@ -168,6 +171,8 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             out_dir: outdir.clone(),
             config: serde_json::to_value(&config)
                 .context("plugin lifecycle: serialise config for postBuild ctx")?,
+            // postBuild: routes present with all emitted URLs (#262).
+            routes: Some(route_manifest),
         };
         host.run_post_build(&ctx)
             .await
@@ -736,8 +741,10 @@ fn build_default_islands_payload(
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
-/// of pages written.
-fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>) -> Result<usize> {
+/// of pages written and the postBuild route manifest (#262).
+fn run_build<R: BuildRunner, A: AdapterRunner>(
+    args: BuildArgsResolved<'_, R, A>,
+) -> Result<(usize, zfb_build::PostBuildRouteManifest)> {
     let BuildArgsResolved {
         project_root,
         outdir,
@@ -853,7 +860,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         output::warn(
             "no routes to render; dist will be empty (every dynamic route deferred to runtime evaluation)",
         );
-        return Ok(0);
+        return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
     }
 
     // Adapter precondition check.
@@ -1096,7 +1103,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
 
     if static_routes.is_empty() {
         output::warn("no routes to render after runtime paths() evaluation; dist will be empty");
-        return Ok(0);
+        return Ok((0, zfb_build::PostBuildRouteManifest::empty()));
     }
 
     // 2.5. Pre-render: produce CSS / islands bytes so we know which
@@ -1238,7 +1245,108 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     )
     .context("public dir copy step failed")?;
 
-    Ok(render_out.ssg_files_written.len())
+    // Build the postBuild route manifest (#262). Combines:
+    // - static routes from the router scan (no params),
+    // - statically-expanded dynamic routes (params from `expansion`),
+    // - runtime-expanded dynamic routes (params from `runtime_expansion`).
+    //
+    // Only routes that actually appear in the renderer's ssg_files_written
+    // (i.e. emitted to disk) are included, to avoid surfacing SSR-only pages.
+    let manifest = build_post_build_manifest(
+        routes,
+        project_root,
+        &expansion.resolved_with_params,
+        &runtime_expansion.resolved_with_params,
+    );
+
+    Ok((render_out.ssg_files_written.len(), manifest))
+}
+
+/// Build the [`PostBuildRouteManifest`] from the routes scanned before the
+/// build plus the params collected during dynamic expansion. Only routes whose
+/// output path is a plain HTML or non-HTML page are included (adapter-specific
+/// artefacts like `_worker.js` are not). The manifest is sorted by `url` for
+/// byte-stable output across runs (#262 AC: "Manifest byte-stable across runs").
+fn build_post_build_manifest(
+    routes: &[zfb_router::Route],
+    project_root: &Path,
+    static_expansion_params: &[DynamicResolvedEntry],
+    runtime_expansion_params: &[DynamicResolvedEntry],
+) -> zfb_build::PostBuildRouteManifest {
+    use std::collections::BTreeMap;
+    use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
+    use zfb_router::RouteKind;
+
+    let mut entries: Vec<PostBuildRouteEntry> = Vec::new();
+
+    // 1. Static routes — no params.
+    for route in routes {
+        if route.kind != RouteKind::Static {
+            continue;
+        }
+        let template = route.template();
+        let output_path = route.output_filename(None);
+        let ext = route
+            .output_extension
+            .as_deref()
+            .unwrap_or("html")
+            .to_string();
+        let source = route
+            .source_path
+            .strip_prefix(project_root)
+            .unwrap_or(&route.source_path)
+            .to_string_lossy()
+            .into_owned();
+        entries.push(PostBuildRouteEntry {
+            url: template,
+            output: output_path.to_string_lossy().into_owned(),
+            extension: ext,
+            source,
+            params: None,
+        });
+    }
+
+    // 2. Statically-expanded + 3. runtime-expanded dynamic routes.
+    for dyn_entry in static_expansion_params
+        .iter()
+        .chain(runtime_expansion_params.iter())
+    {
+        let source = dyn_entry
+            .source_path
+            .strip_prefix(project_root)
+            .unwrap_or(&dyn_entry.source_path)
+            .to_string_lossy()
+            .into_owned();
+
+        // Build the params map only when there are bindings.
+        let params = if dyn_entry.params.scalars.is_empty()
+            && dyn_entry.params.arrays.is_empty()
+        {
+            None
+        } else {
+            let mut map: BTreeMap<String, PostBuildParamValue> = BTreeMap::new();
+            for (k, v) in &dyn_entry.params.scalars {
+                map.insert(k.clone(), PostBuildParamValue::Scalar(v.clone()));
+            }
+            for (k, v) in &dyn_entry.params.arrays {
+                map.insert(k.clone(), PostBuildParamValue::Array(v.clone()));
+            }
+            Some(map)
+        };
+
+        entries.push(PostBuildRouteEntry {
+            url: dyn_entry.url_path.clone(),
+            output: dyn_entry.output_path.to_string_lossy().into_owned(),
+            extension: dyn_entry.extension.clone(),
+            source,
+            params,
+        });
+    }
+
+    // Sort by URL for byte-stable output (#262 AC).
+    entries.sort_by(|a, b| a.url.cmp(&b.url));
+
+    PostBuildRouteManifest { routes: entries }
 }
 
 /// Mount each emitter's `stable_url` under the project's configured
@@ -1785,6 +1893,7 @@ mod tests {
                 crate::render_pipeline::DynamicExpansion {
                     resolved: Vec::new(),
                     deferred: deferred.to_vec(),
+                    ..Default::default()
                 },
                 Backend::Stub {
                     handler: std::sync::Arc::new(|_url| HttpResponseLike {
@@ -1932,7 +2041,7 @@ mod tests {
 
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2034,7 +2143,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2089,7 +2198,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2130,7 +2239,7 @@ mod tests {
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
-        let pages = run_build(BuildArgsResolved {
+        let (pages, _) = run_build(BuildArgsResolved {
             project_root,
             outdir: &outdir,
             config: &cfg,
@@ -2180,6 +2289,7 @@ mod tests {
                     crate::render_pipeline::DynamicExpansion {
                         resolved: Vec::new(),
                         deferred: deferred.to_vec(),
+                        ..Default::default()
                     },
                     Backend::Stub {
                         handler: std::sync::Arc::new(|_url| HttpResponseLike {

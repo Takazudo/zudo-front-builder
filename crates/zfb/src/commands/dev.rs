@@ -155,6 +155,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             out_dir: dist_root.clone(),
             config: serde_json::to_value(&cfg)
                 .context("plugin lifecycle: serialise config for preBuild ctx")?,
+            // dev mode: routes always absent on preBuild (no manifest yet).
+            routes: None,
         };
         h.run_pre_build(&ctx)
             .await
