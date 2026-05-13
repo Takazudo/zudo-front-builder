@@ -62,6 +62,8 @@ export type {
   ZfbDevMiddlewareHandler,
   ZfbDevMiddlewareRequest,
   ZfbDevMiddlewareResponse,
+  ZfbRouteEntry,
+  ZfbRouteManifest,
   ZfbSetupContext,
   ZfbVirtualModuleLoader,
 } from "@takazudo/zfb/plugins";
