@@ -32,7 +32,7 @@ export default definePlugin({
 
 - **`setup(ctx)`** — `addAlias` / `addVirtualModule` / `injectRoute` で仮想モジュール、インポートエイリアス、開発専用の合成ルートを登録します。`ctx.command` が `"build"` か `"dev"` かで分岐できます。
 - **`preBuild(ctx)`** — バンドル前にファイルを生成する用途。
-- **`postBuild(ctx)`** — `dist/` 書き出し後の仕上げ。
+- **`postBuild(ctx)`** — `dist/` 書き出し後の仕上げ。`ctx.routes` にビルドが生成した全 URL のルートマニフェストが渡されます（`preBuild` では `undefined`）。
 - **`devMiddleware(ctx)`** — リクエストごとに `{ status, headers, body }` を返す HTTP ハンドラ。`injectRoute` がページレンダリングパイプラインを通すのに対し、こちらは JSX を介さない素の HTTP 応答です。
 
 ## 設計上の制約
