@@ -8,7 +8,8 @@
   "packageManager": "pnpm@10.30.0",
   "scripts": {
     "//// === ROOT ===": "",
-    "prepare": "lefthook install --reset-hooks-path",
+    "prepare": "lefthook install --reset-hooks-path && bash scripts/install-git-hooks.sh",
+    "init-worktree": "bash scripts/install-git-hooks.sh",
     "//// === BINARIES ===": "",
     "fetch:tailwind": "node scripts/fetch-tailwind.mjs",
     "//// === DOCS ===": "",
