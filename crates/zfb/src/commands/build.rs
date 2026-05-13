@@ -126,40 +126,51 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // synchronous block_in_place section. `invoke_virtual_loader` is async,
     // so we collect all sources here and pass the plain strings to the
     // synchronous `build_default_islands_payload` via `IslandsPluginConfig`.
+    // Pre-fetch all virtual-module sources once. They feed BOTH the islands
+    // esbuild plugin config (#261) and the V8 host's plugin hooks (#260), so
+    // a single async loop here invokes each loader exactly once per build.
+    let mut virtual_sources: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(host) = plugin_host.as_ref() {
+        for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
+            match host.invoke_virtual_loader(&vm_entry.loader_id).await {
+                Ok(source) => {
+                    virtual_sources.insert(specifier.clone(), source);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .map_err(zfb_build::annotate_with_plugin_error)
+                        .with_context(|| {
+                            format!(
+                                "plugin lifecycle: failed to load virtual module \
+                                 `{specifier}` (plugin: `{plugin}`)",
+                                plugin = vm_entry.plugin
+                            )
+                        });
+                }
+            }
+        }
+    }
+
     let islands_plugin_config = {
         let alias_entries: Vec<(String, String)> = setup_registries
             .aliases
             .iter()
             .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
             .collect();
-
-        let mut virtual_modules: Vec<(String, String)> = Vec::new();
-        if let Some(host) = plugin_host.as_ref() {
-            for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
-                match host.invoke_virtual_loader(&vm_entry.loader_id).await {
-                    Ok(source) => {
-                        virtual_modules.push((specifier.clone(), source));
-                    }
-                    Err(e) => {
-                        return Err(e)
-                            .map_err(zfb_build::annotate_with_plugin_error)
-                            .with_context(|| {
-                                format!(
-                                    "islands esbuild plugin: failed to load virtual module \
-                                     `{specifier}` (plugin: `{plugin}`)",
-                                    plugin = vm_entry.plugin
-                                )
-                            });
-                    }
-                }
-            }
-        }
-
+        let virtual_modules: Vec<(String, String)> = virtual_sources
+            .iter()
+            .map(|(spec, src)| (spec.clone(), src.clone()))
+            .collect();
         IslandsPluginConfig {
             alias_entries,
             virtual_modules,
         }
     };
+    let v8_plugin_hooks = crate::v8_host_adapter::translate_setup_registries_to_hooks(
+        &setup_registries,
+        &virtual_sources,
+    );
 
     if let Some(host) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
@@ -195,7 +206,10 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             outdir: &outdir,
             config: &config,
             routes,
-            runner: &DefaultRunner { islands_plugin_config },
+            runner: &DefaultRunner {
+                islands_plugin_config,
+                v8_plugin_hooks,
+            },
             adapter_runner: &DefaultAdapterRunner,
         })
     })?;
@@ -361,6 +375,11 @@ struct IslandsPluginConfig {
 struct DefaultRunner {
     /// Pre-fetched plugin setup registries to wire into the islands bundler.
     islands_plugin_config: IslandsPluginConfig,
+    /// Plugin-registry hooks for the embedded V8 host (sub-issue #260).
+    /// Built from the same `setup_registries` + virtual-source map as
+    /// `islands_plugin_config` so islands esbuild and the V8 host agree on
+    /// the registered aliases / virtual modules.
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
 }
 impl BuildRunner for DefaultRunner {
     fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
@@ -377,7 +396,9 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
-        let factory = crate::v8_host_adapter::make_v8_host_factory();
+        let factory = crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+            self.v8_plugin_hooks.clone(),
+        );
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
@@ -895,13 +916,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
             toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
             // Thread `markdown.externalLinks` into the snapshot pipeline.
-            // `site` is read from `config.site` once #254 lands; until then
-            // `None` means any absolute HTTP/HTTPS URL is treated as external.
+            // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
+            // classify same-origin absolute URLs as internal.
             external_links: config
                 .markdown
                 .as_ref()
                 .and_then(|m| m.external_links.clone())
-                .map(|el| (el.into_content_config(), None)),
+                .map(|el| (el.into_content_config(), config.site.clone())),
             cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
         };
         match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
@@ -1114,13 +1135,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // pre-compile pipeline appends `ExternalLinksPlugin`. MUST mirror
     // the snapshot wiring above; divergence shifts `content_hash` and
     // breaks the snapshot ↔ bundler bridge lookup.
-    // `site` is read from `config.site` once #254 lands; until then
-    // `None` means any absolute HTTP/HTTPS URL is treated as external.
+    // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
+    // classify same-origin absolute URLs as internal.
     bundler_input.external_links = config
         .markdown
         .as_ref()
         .and_then(|m| m.external_links.clone())
-        .map(|el| (el.into_content_config(), None));
+        .map(|el| (el.into_content_config(), config.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
@@ -3191,6 +3212,7 @@ mod tests {
         let outdir = project_root.join("dist");
         let runner = DefaultRunner {
             islands_plugin_config: IslandsPluginConfig::default(),
+            v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
         };
         let inputs = runner
             .emit_prod_assets(project_root, &outdir, &cfg)

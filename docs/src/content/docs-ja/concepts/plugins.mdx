@@ -37,7 +37,7 @@ export default definePlugin({
 
 ## 設計上の制約
 
-- `addAlias` は v1 では **完全一致のみ**。`@/foo` を登録しても `@/foo/bar` には一致しません。プレフィックス一致は v2 以降。
+- `addAlias` のコントラクトは **完全一致のみ** ですが、現状 1 系統だけ振る舞いが異なります。SSR と `paths()` を実行する組み込み V8 ホストは完全一致を遵守します。一方、`"use client"` 島をバンドルする islands esbuild 経路は esbuild CLI の `--alias` フラグに依拠しており、これがプレフィックス + スラッシュ一致のため `@/foo` を登録すると `@/foo/bar` も書き換えてしまいます。両系統を完全一致に揃える作業は v1 フォローアップで追跡されます。当面は実際に import する specifier のみをエイリアス登録するのが安全です。
 - `addVirtualModule(specifier, loader)` の `loader` は **完全な ESM ソーステキスト** を返します。loader はビルドごと（および dev ホスト起動ごと）に最初の `import` のタイミングで **1 回だけ** 実行され、結果はキャッシュされます。
 - `injectRoute` は **dev 専用**。`zfb build` 中に呼ぶと `InjectRouteInBuildMode` で失敗します。なお v1 ではレジストリへの登録・衝突検出・パターンマッチングまでが対象で、マッチした entrypoint を実際にページレンダラで評価する処理は後続イシューで対応します（マッチ自体は `zfb_plugin` トレースに記録されます）。
 - 同じキー（エイリアスの `from` / 仮想モジュールの `specifier` / 注入ルートの `pattern`）を 2 つのプラグインが異なる値で登録すると衝突エラーで両方のプラグイン名を含めて中断します。

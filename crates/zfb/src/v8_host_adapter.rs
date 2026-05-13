@@ -27,7 +27,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use zfb_build::renderer::{EmbeddedV8Host, HttpResponseLike, RendererError};
-use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike};
+use zfb_render::{
+    BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, PluginRegistryHooks,
+};
 
 /// Request sent from the caller thread to the V8 host thread.
 struct DispatchRequest {
@@ -80,6 +82,17 @@ impl ThreadedV8Host {
     /// Returns an error if the V8 runtime fails to initialise or if the
     /// bundle fails to load.
     pub fn new(bundle_path: &Path) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
+        Self::new_with_hooks(bundle_path, PluginRegistryHooks::default())
+    }
+
+    /// Same as [`Self::new`] but wires plugin-registry hooks into the
+    /// V8 module loader. The hooks are consumed at module-resolve time
+    /// so plugin-registered aliases / virtual modules can be imported
+    /// by code running inside the V8 host. See sub-issue #260.
+    pub fn new_with_hooks(
+        bundle_path: &Path,
+        hooks: PluginRegistryHooks,
+    ) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
         // Use a rendezvous channel (bound = 0) so the request loop cannot
         // get more than one request ahead. This matches the single-threaded
         // contract of `BackendHandle::dispatch`.
@@ -112,7 +125,10 @@ impl ThreadedV8Host {
                 rt.block_on(async move {
                     // Construct the host. This parses the bundle and warms
                     // the V8 snapshot — the most expensive part of boot.
-                    let mut host = match EmbeddedV8RenderHost::new() {
+                    // Wire plugin hooks (sub-issue #260) so the loader can
+                    // resolve registered aliases + virtual modules.
+                    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+                    let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
                         Ok(h) => h,
                         Err(e) => {
                             let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
@@ -229,4 +245,61 @@ impl EmbeddedV8Host for ThreadedV8Host {
 /// the embedded V8 path.
 pub fn make_v8_host_factory() -> zfb_build::renderer::EmbeddedV8HostFactory {
     std::sync::Arc::new(|bundle_path: &Path| ThreadedV8Host::new(bundle_path))
+}
+
+/// Same as [`make_v8_host_factory`] but pre-binds plugin-registry hooks
+/// the constructed host's module loader will consume. Each call to the
+/// returned factory clones the hooks (cheap — they're already in shared
+/// owned shape) so multiple host constructions during one build see the
+/// same registered aliases / virtual modules. See sub-issue #260.
+pub fn make_v8_host_factory_with_hooks(
+    hooks: PluginRegistryHooks,
+) -> zfb_build::renderer::EmbeddedV8HostFactory {
+    std::sync::Arc::new(move |bundle_path: &Path| {
+        ThreadedV8Host::new_with_hooks(bundle_path, hooks.clone())
+    })
+}
+
+/// Translate a `zfb-build::SetupRegistries` (the build-side registry shape
+/// from sub-issue #255) plus the pre-fetched virtual-module source map into
+/// the loader-side [`PluginRegistryHooks`] (#260's owned mirror). Virtual
+/// loaders are invoked async **before** this call so the loader can return
+/// the pre-resolved source synchronously inside the V8 isolate.
+///
+/// `virtual_sources` is keyed by specifier and produced by the caller
+/// (see `commands/build.rs` and `commands/dev.rs`) by walking
+/// `registries.virtual_modules` and awaiting each `invoke_virtual_loader`.
+pub fn translate_setup_registries_to_hooks(
+    registries: &zfb_build::SetupRegistries,
+    virtual_sources: &std::collections::BTreeMap<String, String>,
+) -> PluginRegistryHooks {
+    use std::collections::HashMap;
+    let mut aliases: HashMap<String, zfb_render::AliasHook> = HashMap::new();
+    for (from, entry) in registries.aliases.iter() {
+        aliases.insert(
+            from.clone(),
+            zfb_render::AliasHook {
+                target: entry.target.clone(),
+                plugin: entry.plugin.clone(),
+            },
+        );
+    }
+    let mut virtual_modules: HashMap<String, zfb_render::VirtualModuleHook> = HashMap::new();
+    for (specifier, vm_entry) in registries.virtual_modules.iter() {
+        let source = virtual_sources
+            .get(specifier)
+            .cloned()
+            .unwrap_or_default();
+        virtual_modules.insert(
+            specifier.clone(),
+            zfb_render::VirtualModuleHook {
+                source,
+                plugin: vm_entry.plugin.clone(),
+            },
+        );
+    }
+    PluginRegistryHooks {
+        aliases,
+        virtual_modules,
+    }
 }

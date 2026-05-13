@@ -192,7 +192,41 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev-mode
     // per-island bundling (`run_islands`) is not yet wired in the orchestrator
     // (`run_islands: None` below); that wiring will land in a follow-up wave.
-    // Keep the variable in scope so it stays live for the session duration.
+
+    // #260 — pre-fetch all virtual-module sources once so the embedded V8 host
+    // can resolve plugin-registered virtual modules at runtime. Each
+    // `invoke_virtual_loader` runs exactly once per dev-session boot; the
+    // resolved sources are owned by the `PluginRegistryHooks` clone the
+    // factory closure captures.
+    let mut virtual_sources: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(host) = plugin_host.as_ref() {
+        for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
+            match host.invoke_virtual_loader(&vm_entry.loader_id).await {
+                Ok(source) => {
+                    virtual_sources.insert(specifier.clone(), source);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .map_err(zfb_build::annotate_with_plugin_error)
+                        .with_context(|| {
+                            format!(
+                                "plugin lifecycle: failed to load virtual module \
+                                 `{specifier}` (plugin: `{plugin}`)",
+                                plugin = vm_entry.plugin
+                            )
+                        });
+                }
+            }
+        }
+    }
+    let v8_plugin_hooks = crate::v8_host_adapter::translate_setup_registries_to_hooks(
+        &setup_registries,
+        &virtual_sources,
+    );
+    // Keep `setup_registries` in scope so the underlying registries stay live
+    // (the hook entries borrow nothing from it now, but the variable's role as
+    // the lifecycle owner is preserved).
     let _setup_registries = setup_registries;
 
     // 2. Stand up the long-lived renderer state if the project looks
@@ -200,7 +234,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(&project_root, &cfg) {
+    let dev_session = match boot_dev_renderer(&project_root, &cfg, v8_plugin_hooks) {
         Ok(s) => Some(s),
         Err(err) => {
             output::warn(format!(
@@ -504,6 +538,7 @@ impl Drop for DevRenderInner {
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
@@ -636,12 +671,13 @@ fn boot_dev_renderer(
     bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
     // Thread `markdown.externalLinks` through to the bundler so dev
     // rendering matches the production build. Mirrors `commands/build.rs`.
-    // `site` is read from `config.site` once #254 lands; `None` for now.
+    // `site` (top-level cfg.site, #254) lets `ExternalLinksPlugin`
+    // classify same-origin absolute URLs as internal.
     bundler_input.external_links = cfg
         .markdown
         .as_ref()
         .and_then(|m| m.external_links.clone())
-        .map(|el| (el.into_content_config(), None));
+        .map(|el| (el.into_content_config(), cfg.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
     // Sub #212 follow-up — same embedded-esbuild wiring as
@@ -671,7 +707,9 @@ fn boot_dev_renderer(
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
         backend: Backend::EmbeddedV8 {
-            host_factory: crate::v8_host_adapter::make_v8_host_factory(),
+            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                v8_plugin_hooks,
+            ),
         },
         request_timeout: None,
     })
