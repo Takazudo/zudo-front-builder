@@ -7,8 +7,13 @@ export const TRANSITION_AFTER_PREPARATION = "zfb:after-preparation";
 export const TRANSITION_BEFORE_SWAP = "zfb:before-swap";
 export const TRANSITION_AFTER_SWAP = "zfb:after-swap";
 export const TRANSITION_PAGE_LOAD = "zfb:page-load";
+export const TRANSITION_NAVIGATION_ABORTED = "zfb:navigation-aborted";
 
-type Events = "zfb:after-preparation" | "zfb:after-swap" | "zfb:page-load";
+type Events =
+  | "zfb:after-preparation"
+  | "zfb:after-swap"
+  | "zfb:page-load"
+  | "zfb:navigation-aborted";
 export const triggerEvent = (name: Events) => document.dispatchEvent(new Event(name));
 export const onPageLoad = () => triggerEvent("zfb:page-load");
 

@@ -992,10 +992,13 @@ function __zfb_pick(ns, exportName) {\n\
 function __zfb_register(ns, exportName, markerName) {\n\
   const C = __zfb_pick(ns, exportName);\n\
   if (!C) return;\n\
-  __zfb_manifest[markerName] = { mount: (props, element, mode) => {\n\
-    const v = h(C, props);\n\
-    if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
-  } };\n\
+  __zfb_manifest[markerName] = {\n\
+    mount: (props, element, mode) => {\n\
+      const v = h(C, props);\n\
+      if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
+    },\n\
+    unmount: (element) => { render(null, element); },\n\
+  };\n\
 }\n",
     );
     // One register call per island. The `__zfb_register(...)` calls
@@ -1055,6 +1058,9 @@ export function mount(props, element, mode) {{
     render(vnode, element);
   }}
 }}
+export function unmount(element) {{
+  render(null, element);
+}}
 export default mount;
 "#
         ),
@@ -1064,13 +1070,21 @@ import * as Mod from {path_lit};
 import {{ createElement }} from "react";
 import {{ hydrateRoot, createRoot }} from "react-dom/client";
 const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
+const __zfb_roots = new WeakMap();
 export function mount(props, element, mode) {{
   const vnode = createElement(Component, props);
   if (mode === "hydrate") {{
-    hydrateRoot(element, vnode);
+    const root = hydrateRoot(element, vnode);
+    __zfb_roots.set(element, root);
   }} else {{
-    createRoot(element).render(vnode);
+    const root = createRoot(element);
+    root.render(vnode);
+    __zfb_roots.set(element, root);
   }}
+}}
+export function unmount(element) {{
+  const root = __zfb_roots.get(element);
+  if (root) {{ root.unmount(); __zfb_roots.delete(element); }}
 }}
 export default mount;
 "#
@@ -1255,6 +1269,15 @@ mod tests {
         assert!(src.contains(r#"from "/abs/components/Counter.tsx""#));
         assert!(src.contains("export function mount"));
         assert!(src.contains("export default mount"));
+        // Per-island Preact bundles must export unmount for lifecycle cleanup.
+        assert!(
+            src.contains("export function unmount"),
+            "expected unmount export in Preact bundle: {src}"
+        );
+        assert!(
+            src.contains("render(null, element)"),
+            "expected render(null, element) in Preact unmount: {src}"
+        );
     }
 
     #[test]
@@ -1266,6 +1289,19 @@ mod tests {
         assert!(src.contains("createRoot"));
         // Distinguish hydrate path (SSR'd) from render path (SSR-skip).
         assert!(src.contains(r#"mode === "hydrate""#));
+        // Per-island React bundles must export unmount using WeakMap-tracked Root.
+        assert!(
+            src.contains("export function unmount"),
+            "expected unmount export in React bundle: {src}"
+        );
+        assert!(
+            src.contains("__zfb_roots"),
+            "expected WeakMap __zfb_roots in React bundle: {src}"
+        );
+        assert!(
+            src.contains("root.unmount()"),
+            "expected root.unmount() call in React unmount: {src}"
+        );
     }
 
     #[test]
@@ -1520,6 +1556,12 @@ mod tests {
         // hydrate vs render branching mirrors render_island_entry_source.
         assert!(src.contains(r#"if (mode === "hydrate") { hydrate(v, element); }"#));
         assert!(src.contains("else { render(v, element); }"));
+
+        // Shared-bundle manifest entries must include an unmount thunk (Preact-only path).
+        assert!(
+            src.contains("unmount: (element) => { render(null, element); }"),
+            "expected unmount thunk in shared-bundle manifest entry: {src}"
+        );
 
         // Final invocation hands the populated manifest to the runtime.
         assert!(src.contains("mountIslands(__zfb_manifest);"));

@@ -696,6 +696,14 @@ fn boot_dev_renderer(
     // `globalThis.__zfb.site` the same way `zfb build` does. Mirrors the
     // `commands/build.rs` wiring (sub #254).
     bundler_input.site = cfg.site.clone();
+    // Thread `prefetch.disabled` so `zfb dev` emits
+    // `globalThis.__zfb.prefetchDisabled = true` the same way `zfb build`
+    // does. Mirrors the `commands/build.rs` wiring (sub #277).
+    bundler_input.prefetch_disabled = cfg
+        .prefetch
+        .as_ref()
+        .and_then(|p| p.disabled)
+        .unwrap_or(false);
     bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
     // Thread `markdown.externalLinks` through to the bundler so dev
     // rendering matches the production build. Mirrors `commands/build.rs`.

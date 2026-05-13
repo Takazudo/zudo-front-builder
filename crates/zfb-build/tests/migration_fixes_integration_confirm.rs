@@ -424,6 +424,7 @@ fn make_full_fixture_input(
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        prefetch_disabled: false,
         toc: None,
         external_links: None,
         cjk_friendly: true,

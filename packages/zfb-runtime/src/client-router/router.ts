@@ -51,7 +51,7 @@ import type { Direction, Fallback, Options } from "./types.js";
 // mountNewIslands() is called after runScripts() and before onPageLoad().
 // cancelPendingIslands() is called before doSwap() so deferred callbacks
 // (rIC/IntersectionObserver) do not fire against orphan elements.
-import { cancelPendingIslands, mountNewIslands } from "@takazudo/zfb/runtime";
+import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 type State = {
   index: number;
@@ -365,6 +365,11 @@ async function updateDOM(
   // so rIC / IntersectionObserver fires do not run against orphan elements.
   // Called before doSwap() which dispatches `zfb:before-swap` then mutates the DOM.
   cancelPendingIslands();
+  // Unmount mounted islands on the OLD body before the swap so Preact/React
+  // trees receive render(null, element) / root.unmount() and their useEffect
+  // cleanups fire. Must happen after cancelPendingIslands() and before doSwap()
+  // so document.body still points to the old body.
+  unmountIslands();
   const swapEvent = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,
@@ -443,6 +448,7 @@ async function transition(
   );
   if (prepEvent.defaultPrevented || prepEvent.signal.aborted) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
+    triggerEvent("zfb:navigation-aborted");
     if (!prepEvent.signal.aborted) {
       // not aborted -> delegate to browser
       location.href = to.href;

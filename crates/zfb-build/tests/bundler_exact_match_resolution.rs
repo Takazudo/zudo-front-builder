@@ -126,6 +126,7 @@ fn make_input(
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        prefetch_disabled: false,
         toc: None,
         external_links: None,
         cjk_friendly: true,

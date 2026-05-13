@@ -221,6 +221,19 @@ pub struct Config {
     #[serde(default)]
     pub tailwind: Option<TailwindConfig>,
 
+    /// Prefetch options. When `prefetch.disabled` is `true`, the bundler
+    /// emits `globalThis.__zfb.prefetchDisabled = true` in `entry.mjs` and
+    /// `<ClientRouter />` renders `<meta name="zfb-prefetch-disabled"
+    /// content="true">` in `<head>`. The runtime's prefetch-core reads that
+    /// meta tag at `init()` time and short-circuits.
+    ///
+    /// Absent / `None` preserves current behaviour — no prefetch meta tag is
+    /// emitted and no flag is set.
+    ///
+    /// Mirrors `PrefetchConfig` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub prefetch: Option<PrefetchConfig>,
+
     /// User-supplied plugins.
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
@@ -364,6 +377,7 @@ impl Default for Config {
             framework: Framework::default(),
             collections: Vec::new(),
             tailwind: None,
+            prefetch: None,
             plugins: Vec::new(),
             adapter: None,
             strip_md_ext: false,
@@ -410,6 +424,21 @@ pub struct CollectionDef {
 pub struct TailwindConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// Prefetch options. Mirrors `PrefetchConfig` in `packages/zfb/src/config.ts`.
+///
+/// When `disabled` is `Some(true)`, the bundler emits
+/// `globalThis.__zfb.prefetchDisabled = true` in `entry.mjs`, and
+/// `<ClientRouter />` renders `<meta name="zfb-prefetch-disabled"
+/// content="true">` in `<head>`. The runtime's prefetch-core reads that meta
+/// tag at `init()` time and short-circuits so no prefetch wiring runs.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefetchConfig {
+    /// Disable prefetch entirely. Default: `None` (equivalent to `false`).
+    #[serde(default)]
+    pub disabled: Option<bool>,
 }
 
 /// Syntect-based code-highlight options.
@@ -2732,6 +2761,39 @@ mod tests {
             msg.contains("site") && msg.contains("ftp"),
             "expected error mentioning 'site' and 'ftp'; got: {msg}"
         );
+    }
+
+    // --- PrefetchConfig field tests (#277) -----------------------------------
+
+    #[tokio::test]
+    async fn prefetch_disabled_true_parses_correctly() {
+        // `{ "prefetch": { "disabled": true } }` must parse to
+        // `Some(PrefetchConfig { disabled: Some(true) })`.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "prefetch": { "disabled": true } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(
+            cfg.prefetch,
+            Some(PrefetchConfig { disabled: Some(true) }),
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_defaults_to_none_when_absent() {
+        // Absent `prefetch` block must produce `None` — the build is
+        // byte-for-byte identical to the pre-`prefetch` build (parity
+        // criterion).
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.prefetch, None);
     }
 
     // --- resolve_cjk_friendly tests ---

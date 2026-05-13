@@ -14,7 +14,13 @@ export {
   type IslandElement,
   type IslandProps,
 } from "./island.js";
-export { scheduleHydrate, mountIslands, mountNewIslands, cancelPendingIslands } from "./runtime.js";
+export {
+  scheduleHydrate,
+  mountIslands,
+  mountNewIslands,
+  cancelPendingIslands,
+  unmountIslands,
+} from "./runtime.js";
 export type { IslandManifest, IslandManifestValue } from "./runtime.js";
 export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 
