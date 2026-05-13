@@ -564,8 +564,12 @@ impl Pipeline {
         Self::with_defaults_and_theme_and_gfm(theme, ResolvedGfmConstructs::CONSERVATIVE)
     }
 
-    /// Most-explicit constructor: default plugin chain + theme +
-    /// resolved GFM construct set.
+    /// Default constructor + theme + resolved GFM construct set.
+    /// CJK-friendly emphasis is always on (the conservative default).
+    ///
+    /// Use [`Pipeline::with_defaults_and_theme_and_gfm_and_cjk`] when
+    /// the user has set `markdown.cjkFriendly: false` to disable the
+    /// plugin. All other call sites use this form.
     ///
     /// The bundler, snapshot walker, and dev loader all funnel through
     /// this entry point so every site that materialises MDX content
@@ -577,10 +581,34 @@ impl Pipeline {
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
     ) -> Self {
+        Self::with_defaults_and_theme_and_gfm_and_cjk(theme, resolved, true)
+    }
+
+    /// Most-explicit constructor: default plugin chain + theme + GFM +
+    /// CJK-friendly toggle.
+    ///
+    /// When `cjk_friendly` is `true` (the default for all other
+    /// `with_defaults*` constructors), [`CjkFriendlyPlugin`] is
+    /// prepended to the mdast phase so emphasis/strong markers adjacent
+    /// to CJK characters are re-tokenised correctly. Set `false` to omit
+    /// the plugin — useful when the author opts out via
+    /// `markdown.cjkFriendly: false` in `zfb.config.ts`.
+    ///
+    /// All other callers should use [`Pipeline::with_defaults_and_theme_and_gfm`]
+    /// (which hard-codes `cjk_friendly: true`) unless they need to
+    /// honour the user-supplied `markdown.cjkFriendly` flag.
+    #[must_use]
+    pub fn with_defaults_and_theme_and_gfm_and_cjk(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        cjk_friendly: bool,
+    ) -> Self {
         let highlighter = Arc::new(Highlighter::new());
         let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase.
-        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        if cjk_friendly {
+            p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        }
         p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));

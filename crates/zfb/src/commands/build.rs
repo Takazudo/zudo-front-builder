@@ -815,6 +815,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
                 .as_ref()
                 .and_then(|m| m.external_links.clone())
                 .map(|el| (el.into_content_config(), None)),
+            cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
         };
         match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
             Ok(snap) => match serde_json::to_string(&snap) {
@@ -995,11 +996,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // syntect theme instead of the default `base16-ocean.dark`.
     bundler_input.code_highlight_theme =
         config.code_highlight.as_ref().and_then(|c| c.theme.clone());
-    // Thread the optional `markdown.gfm` config into the bundler so
-    // the hoisted MDX pre-compile pipeline parses the same GFM
-    // constructs the snapshot walker uses. The snapshot wiring above
-    // resolves from the same source, so both `content_hash` inputs
-    // stay byte-identical (the snapshot ↔ bundler land mine called out
+    // Thread the optional `markdown.gfm` and `markdown.cjkFriendly`
+    // config into the bundler so the hoisted MDX pre-compile pipeline
+    // parses the same constructs the snapshot walker uses. Both are
+    // resolved from the same source, so `content_hash` inputs stay
+    // byte-identical (the snapshot ↔ bundler land mine called out
     // at `crates/zfb-content/src/content_bridge.rs:118-153`).
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(config.markdown.as_ref());
@@ -1019,6 +1020,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         .as_ref()
         .and_then(|m| m.external_links.clone())
         .map(|el| (el.into_content_config(), None));
+    bundler_input.cjk_friendly =
+        crate::config::resolve_cjk_friendly(config.markdown.as_ref());
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,

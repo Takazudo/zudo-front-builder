@@ -433,6 +433,19 @@ pub struct BundlerInput {
     /// snapshot ↔ bundler bridge lookup (the land mine at
     /// `crates/zfb-content/src/content_bridge.rs:118-153`).
     pub external_links: Option<(zfb_content::ExternalLinksConfig, Option<String>)>,
+    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
+    /// Mirrors `zfb::config::resolve_cjk_friendly(config.markdown)`.
+    /// Default: `true` (plugin on). Set to `false` only when the user
+    /// wrote `markdown: { cjkFriendly: false }` in `zfb.config.ts`.
+    ///
+    /// Must match the `SnapshotPipelineConfig::cjk_friendly` value used
+    /// by the snapshot walker — otherwise the `content_hash` baked into
+    /// every compiled MDX module diverges and every
+    /// `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
+    pub cjk_friendly: bool,
 }
 
 impl BundlerInput {
@@ -482,6 +495,7 @@ impl BundlerInput {
             site: None,
             toc: None,
             external_links: None,
+            cjk_friendly: true,
         }
     }
 }
@@ -660,6 +674,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
@@ -695,6 +710,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.gfm_constructs,
                 input.toc.clone(),
                 input.external_links.as_ref(),
+                input.cjk_friendly,
                 &mut broken,
             )
             .with_context(|| {
@@ -723,6 +739,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -747,6 +764,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -770,6 +788,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
+            input.cjk_friendly,
             &mut broken,
         )
         .with_context(|| {
@@ -827,6 +846,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     input.gfm_constructs,
                     input.toc.clone(),
                     input.external_links.as_ref(),
+                    input.cjk_friendly,
                     &mut broken,
                 )
                 .with_context(|| {
@@ -1008,6 +1028,7 @@ fn materialise_shadow(
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
+    cjk_friendly: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1052,9 +1073,10 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
         code_highlight_theme,
         gfm_constructs,
+        cjk_friendly,
     );
     if let Some(toc_cfg) = toc {
         pipeline.add_toc(toc_cfg);
@@ -1305,6 +1327,7 @@ fn materialise_collection(
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
+    cjk_friendly: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1327,9 +1350,10 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm(
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
         code_highlight_theme,
         gfm_constructs,
+        cjk_friendly,
     );
     if let Some(toc_cfg) = toc {
         pipeline.add_toc(toc_cfg);

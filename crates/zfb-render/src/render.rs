@@ -78,19 +78,33 @@ impl<H: RenderHost> Renderer<H> {
         )
     }
 
-    /// Most-explicit constructor: forwards both `strip_md_ext` and the
-    /// resolved GFM construct set through to the loader.
+    /// Constructor with `strip_md_ext`, resolved GFM construct set, and
+    /// CJK-friendly toggle. Forwards all three to the loader so dev
+    /// rendering and the bundler agree on every parser knob.
     pub fn with_strip_md_ext_and_gfm(
         host: H,
         jsx_runtime: JsxRuntime,
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
     ) -> Self {
+        Self::with_strip_md_ext_and_gfm_and_cjk(host, jsx_runtime, strip_md_ext, gfm_constructs, true)
+    }
+
+    /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
+    /// and CJK-friendly toggle to the loader.
+    pub fn with_strip_md_ext_and_gfm_and_cjk(
+        host: H,
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+        cjk_friendly: bool,
+    ) -> Self {
         Self {
-            loader: ModuleLoader::with_strip_md_ext_and_gfm(
+            loader: ModuleLoader::with_strip_md_ext_and_gfm_and_cjk(
                 jsx_runtime,
                 strip_md_ext,
                 gfm_constructs,
+                cjk_friendly,
             ),
             host,
         }

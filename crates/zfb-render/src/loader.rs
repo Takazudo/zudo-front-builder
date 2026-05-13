@@ -222,7 +222,20 @@ impl ModuleLoader {
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
     ) -> Self {
-        let mut content_pipeline = Pipeline::with_defaults_and_gfm(gfm_constructs);
+        Self::with_strip_md_ext_and_gfm_and_cjk(jsx_runtime, strip_md_ext, gfm_constructs, true)
+    }
+
+    /// Full constructor: strip-md-ext + GFM + CJK-friendly toggle. Use
+    /// when the project's `zfb.config.ts` sets `markdown.cjkFriendly`
+    /// so dev rendering agrees with the bundler.
+    pub fn with_strip_md_ext_and_gfm_and_cjk(
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+        cjk_friendly: bool,
+    ) -> Self {
+        let mut content_pipeline =
+            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(None, gfm_constructs, cjk_friendly);
         if strip_md_ext {
             content_pipeline.add_strip_md_ext();
         }

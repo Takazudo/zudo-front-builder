@@ -608,9 +608,9 @@ fn boot_dev_renderer(
     // so the hoisted MDX pre-compile pipeline uses the configured
     // syntect theme. Mirrors the `commands/build.rs` wiring.
     bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
-    // Thread `markdown.gfm` through to the bundler so dev rendering
-    // and the build agree on the parser construct set. Mirrors the
-    // `commands/build.rs` wiring.
+    // Thread `markdown.gfm` and `markdown.cjkFriendly` through to the
+    // bundler so dev rendering and the build agree on the parser
+    // construct set. Mirrors the `commands/build.rs` wiring.
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(cfg.markdown.as_ref());
     // Thread the optional `site` canonical-origin URL so `zfb dev` emits
@@ -626,6 +626,8 @@ fn boot_dev_renderer(
         .as_ref()
         .and_then(|m| m.external_links.clone())
         .map(|el| (el.into_content_config(), None));
+    bundler_input.cjk_friendly =
+        crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.
