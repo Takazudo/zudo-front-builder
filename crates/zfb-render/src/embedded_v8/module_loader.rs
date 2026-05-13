@@ -1,6 +1,6 @@
 //! Custom `deno_core::ModuleLoader` for the embedded V8 host.
 //!
-//! Resolves three families of specifier:
+//! Resolves four families of specifier:
 //!
 //! 1. The bundle's main entry — registered up front via
 //!    [`BundleModuleLoader::with_main`] and served from an in-memory
@@ -11,23 +11,152 @@
 //! 3. `ext:zfb_node_stubs/*` synthetic — internal helper imports the
 //!    `node:*` stubs themselves use to share the throwing-proxy
 //!    factory.
+//! 4. Plugin-registered specifiers wired in via [`PluginRegistryHooks`]
+//!    (sub-issue #260 — Astro-migration epic #253):
+//!    - **Aliases**: exact-match bare specifiers rewritten to a
+//!      filesystem path. `resolve()` maps the specifier to a
+//!      `file://` URL; `load()` reads the file from disk.
+//!    - **Virtual modules**: bare specifiers whose JS source was
+//!      pre-resolved by the plugin host before the V8 runtime started.
+//!      `load()` serves the cached source string directly so the
+//!      loader closure is invoked exactly once per build regardless of
+//!      how many pages import the same virtual specifier.
+//!
+//! ## Why pre-resolved virtual modules (not async invocation)
+//!
+//! `deno_core::ModuleLoader::load` returns `ModuleLoadResponse`, which
+//! can be `Future`-based; however the plugin host's
+//! `invoke_virtual_loader` is an async JSON-RPC call that lives in
+//! `zfb-build`, which depends on `zfb-render` and therefore cannot
+//! be imported here without creating a dependency cycle. Callers that
+//! hold a `PluginHost` must call `invoke_virtual_loader` for each
+//! registered specifier **before** constructing the host, then pass
+//! the resolved sources into [`PluginRegistryHooks`]. This also
+//! naturally satisfies acceptance criterion 4 ("loader invoked exactly
+//! once per build per specifier").
+//!
+//! ## Alias resolution and filesystem access
+//!
+//! Aliases resolve to absolute filesystem paths produced by the
+//! `PluginSetupAccumulator` in `zfb-build`. The loader reads those
+//! files from disk via `std::fs::read_to_string`. This is an
+//! intentional exception to "bundles must be self-contained" — plugin
+//! aliases are a deliberate escape hatch for user-land libraries that
+//! the esbuild bundler did not inline (typically because they are
+//! registered at plugin `setup` time after the bundle entry is
+//! already determined).
 //!
 //! Every other specifier is rejected with a clear error so the host
 //! does not silently absorb a typo'd import.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use deno_core::error::ModuleLoaderError;
 use deno_core::{
-    ModuleLoadResponse, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoader, ModuleSource,
+    ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader, ModuleSource,
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 
 use super::extensions::{ext_node_stubs_source, node_stub_source};
 
+// ---------------------------------------------------------------------------
+// PluginRegistryHooks — the alias + virtual-module data consumed by Wave 2
+// ---------------------------------------------------------------------------
+
+/// One alias entry as the loader sees it: a bare `from` specifier (exact
+/// match only) and the absolute filesystem path it should resolve to.
+///
+/// The `plugin` field is carried for diagnostics — it surfaces in any
+/// error the loader produces when the file cannot be read.
+#[derive(Debug, Clone)]
+pub struct AliasHook {
+    /// Absolute path of the target file on disk.
+    pub target: PathBuf,
+    /// Display name of the plugin that registered the alias.
+    pub plugin: String,
+}
+
+/// One virtual-module entry as the loader sees it: the bare specifier and
+/// its pre-resolved JS source string, plus the registering plugin name for
+/// diagnostics.
+///
+/// The source is computed by calling `PluginHost::invoke_virtual_loader`
+/// **before** the V8 host is constructed so the loader closure runs exactly
+/// once per build regardless of how many pages import the specifier.
+#[derive(Debug, Clone)]
+pub struct VirtualModuleHook {
+    /// Pre-resolved ESM source text for this specifier.
+    pub source: String,
+    /// Display name of the plugin that registered the loader.
+    pub plugin: String,
+}
+
+/// Plugin-registry hooks wired into [`BundleModuleLoader`] at construction
+/// time (sub-issue #260).
+///
+/// Build with [`PluginRegistryHooks::builder`] and pass the result to
+/// [`BundleModuleLoader::with_plugin_hooks`].
+#[derive(Debug, Default, Clone)]
+pub struct PluginRegistryHooks {
+    /// Exact-match alias map: bare `from` specifier → [`AliasHook`].
+    pub aliases: HashMap<String, AliasHook>,
+    /// Virtual-module map: bare specifier → [`VirtualModuleHook`].
+    pub virtual_modules: HashMap<String, VirtualModuleHook>,
+}
+
+impl PluginRegistryHooks {
+    /// Create an empty hooks bundle.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert an alias. The `from` key is the exact bare specifier the
+    /// bundle may import (e.g. `"@/components/foo"`); `target` is the
+    /// resolved absolute path of the file to load.
+    pub fn add_alias(
+        &mut self,
+        from: impl Into<String>,
+        target: PathBuf,
+        plugin: impl Into<String>,
+    ) {
+        self.aliases.insert(
+            from.into(),
+            AliasHook {
+                target,
+                plugin: plugin.into(),
+            },
+        );
+    }
+
+    /// Insert a virtual module. The `specifier` is the exact bare specifier
+    /// the bundle may import (e.g. `"virtual:my-data"`); `source` is the
+    /// pre-resolved ESM source string.
+    pub fn add_virtual_module(
+        &mut self,
+        specifier: impl Into<String>,
+        source: impl Into<String>,
+        plugin: impl Into<String>,
+    ) {
+        self.virtual_modules.insert(
+            specifier.into(),
+            VirtualModuleHook {
+                source: source.into(),
+                plugin: plugin.into(),
+            },
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BundleModuleLoader
+// ---------------------------------------------------------------------------
+
 /// Loader that serves: the main bundle source (in-memory), the
-/// `node:*` stubs, and the internal `ext:zfb_node_stubs/*` helpers.
+/// `node:*` stubs, the internal `ext:zfb_node_stubs/*` helpers, and
+/// optionally plugin-registered aliases and virtual modules via
+/// [`PluginRegistryHooks`].
 ///
 /// Additional in-memory modules can be registered via
 /// [`Self::register_module`] — handy for tests that load a stub
@@ -39,6 +168,9 @@ pub struct BundleModuleLoader {
     /// occasionally lazily insert the main bundle the first time it's
     /// asked for (via [`Self::with_main`]).
     modules: RefCell<HashMap<String, String>>,
+    /// Optional plugin-registry hooks (aliases + virtual modules).
+    /// `None` when no plugins registered any contributions.
+    hooks: Option<PluginRegistryHooks>,
 }
 
 impl BundleModuleLoader {
@@ -57,12 +189,47 @@ impl BundleModuleLoader {
         self
     }
 
+    /// Attach plugin-registry hooks (aliases and virtual modules) to
+    /// this loader (sub-issue #260). Replaces any previously attached
+    /// hooks. Returns `self` for chaining.
+    pub fn with_plugin_hooks(mut self, hooks: PluginRegistryHooks) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
     /// Register an in-memory module. Called by the host on demand
     /// (e.g. tests that want to inject a Hono shim).
     pub fn register_module(&self, specifier: &str, source: impl Into<String>) {
         self.modules
             .borrow_mut()
             .insert(specifier.to_string(), source.into());
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers for alias / virtual-module resolution
+    // -----------------------------------------------------------------------
+
+    /// Look up a bare `specifier` in the alias map. Returns the resolved
+    /// `file://` URL string if the specifier has an exact-match alias.
+    fn resolve_alias(&self, specifier: &str) -> Option<String> {
+        let hooks = self.hooks.as_ref()?;
+        let entry = hooks.aliases.get(specifier)?;
+        // Convert the absolute PathBuf to a `file://` URL. The path is
+        // guaranteed absolute by `PluginSetupAccumulator::resolve_against_root`.
+        let url = url_from_path(&entry.target)?;
+        Some(url)
+    }
+
+    /// Look up a resolved specifier (after `resolve()` ran) in the
+    /// virtual-module map. The specifier stored in the hook is the bare
+    /// form (e.g. `"virtual:my-data"`); after `deno_core::resolve_import`
+    /// it becomes a full URL (e.g. `"virtual:my-data"` is a valid URI
+    /// scheme+path). We match on the original bare form by checking
+    /// whether the URL's string form equals the bare specifier directly
+    /// (virtual specifiers survive URL parsing unchanged).
+    fn find_virtual_module(&self, spec_str: &str) -> Option<&VirtualModuleHook> {
+        let hooks = self.hooks.as_ref()?;
+        hooks.virtual_modules.get(spec_str)
     }
 }
 
@@ -81,6 +248,24 @@ impl ModuleLoader for BundleModuleLoader {
         }
         // Same story for our internal `ext:` namespace.
         if specifier.starts_with("ext:") {
+            return parse_synthetic(specifier);
+        }
+        // Alias lookup (exact match, plugin-registered). Rewrite the
+        // bare specifier to the `file://` URL of the aliased file so
+        // `load()` can read it from disk.
+        if let Some(file_url) = self.resolve_alias(specifier) {
+            return ModuleSpecifier::parse(&file_url).map_err(|e| {
+                ModuleLoaderError::generic(format!(
+                    "embedded V8 host: alias `{specifier}` resolved to `{file_url}` \
+                     which is not a valid URL: {e}"
+                ))
+            });
+        }
+        // Virtual module (exact match, plugin-registered). These are
+        // valid URI shapes (scheme + path), so `ModuleSpecifier::parse`
+        // accepts them directly — no `resolve_import` base-URL
+        // arithmetic needed.
+        if self.find_virtual_module(specifier).is_some() {
             return parse_synthetic(specifier);
         }
         // Otherwise fall back to deno_core's standard URL-relative
@@ -110,7 +295,76 @@ impl ModuleLoader for BundleModuleLoader {
         if let Some(src) = ext_node_stubs_source(spec_str) {
             return ok_js(module_specifier, src);
         }
-        // 3. In-memory module (the main bundle, etc.)?
+        // 3. Virtual module (plugin-registered, pre-resolved source)?
+        //    The specifier survived URL parsing in `resolve()` unchanged
+        //    so `spec_str` here is the original bare form.
+        if let Some(vm) = self.find_virtual_module(spec_str) {
+            return ok_js(module_specifier, &vm.source);
+        }
+        // 4. Alias-resolved file URL (plugin-registered)?
+        //    `resolve()` rewrote the bare alias to a `file://` URL; the
+        //    URL's path component is the absolute filesystem path.
+        if spec_str.starts_with("file://") {
+            // First check the in-memory map (registered modules and the
+            // bundle's own entry take precedence over disk).
+            let modules = self.modules.borrow();
+            if let Some(src) = modules.get(spec_str) {
+                return ok_js(module_specifier, src.as_str());
+            }
+            drop(modules);
+            // For file:// specifiers that came from an alias, attempt a
+            // disk read. Non-alias file:// URLs (e.g. the bundle's own
+            // synthetic specifier) are in the in-memory map and were
+            // already served above.
+            if let Some(hooks) = &self.hooks {
+                // Check if this file URL corresponds to any alias target.
+                let is_alias_target = hooks.aliases.values().any(|entry| {
+                    url_from_path(&entry.target)
+                        .map(|u| u == spec_str)
+                        .unwrap_or(false)
+                });
+                if is_alias_target {
+                    let path = match module_specifier.to_file_path() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            return ModuleLoadResponse::Sync(Err(
+                                ModuleLoaderError::generic(format!(
+                                    "embedded V8 host: alias target `{spec_str}` \
+                                     is not a valid file:// URL"
+                                )),
+                            ));
+                        }
+                    };
+                    // Find plugin name for diagnostics.
+                    let plugin_name = hooks
+                        .aliases
+                        .values()
+                        .find(|e| {
+                            url_from_path(&e.target)
+                                .map(|u| u == spec_str)
+                                .unwrap_or(false)
+                        })
+                        .map(|e| e.plugin.as_str())
+                        .unwrap_or("<unknown>");
+                    let src = match std::fs::read_to_string(&path) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return ModuleLoadResponse::Sync(Err(
+                                ModuleLoaderError::generic(format!(
+                                    "embedded V8 host: alias target `{}` registered by \
+                                     plugin `{plugin_name}` could not be read: {e}",
+                                    path.display()
+                                )),
+                            ));
+                        }
+                    };
+                    return ok_js(module_specifier, &src);
+                }
+            }
+            // file:// URL that is neither in-memory nor an alias target
+            // — fall through to the catch-all error below.
+        }
+        // 5. In-memory module (the main bundle, etc.)?
         let modules = self.modules.borrow();
         if let Some(src) = modules.get(spec_str) {
             return ok_js(module_specifier, src.as_str());
@@ -124,10 +378,10 @@ impl ModuleLoader for BundleModuleLoader {
     }
 }
 
-/// Parse a `node:*` / `ext:*` specifier as a `ModuleSpecifier`.
-/// `Url::parse` accepts both because they are valid URI shapes (with
-/// the scheme component); we just don't go through the relative-base
-/// machinery.
+/// Parse a `node:*` / `ext:*` / `virtual:*` specifier as a
+/// `ModuleSpecifier`. `Url::parse` accepts all of these because they
+/// are valid URI shapes (scheme + path); we just bypass the
+/// relative-base machinery.
 fn parse_synthetic(specifier: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
     ModuleSpecifier::parse(specifier).map_err(|e| {
         ModuleLoaderError::generic(format!(
@@ -144,4 +398,19 @@ fn ok_js(specifier: &ModuleSpecifier, src: &str) -> ModuleLoadResponse {
         specifier,
         None,
     )))
+}
+
+/// Convert an absolute [`PathBuf`] to a `file://` URL string.
+/// Returns `None` if the path is not absolute (shouldn't happen — the
+/// `PluginSetupAccumulator` always produces absolute paths).
+fn url_from_path(path: &std::path::Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    // Use `url::Url::from_file_path` to get the canonical `file://`
+    // encoding including percent-escaping of special characters.
+    // `deno_core` re-exports `url`, so we go through `ModuleSpecifier`
+    // (which is `url::Url`) to avoid a separate `url` dep.
+    let url = ModuleSpecifier::from_file_path(path).ok()?;
+    Some(url.to_string())
 }

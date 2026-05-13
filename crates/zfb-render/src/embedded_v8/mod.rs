@@ -104,7 +104,7 @@ pub mod extensions;
 mod module_loader;
 
 pub use dispatch::{HttpRequestLike, HttpResponseLike};
-pub use module_loader::BundleModuleLoader;
+pub use module_loader::{AliasHook, BundleModuleLoader, PluginRegistryHooks, VirtualModuleHook};
 
 /// Synthetic main-module specifier used when the caller calls
 /// [`EmbeddedV8RenderHost::execute_module`] without supplying a URL.
