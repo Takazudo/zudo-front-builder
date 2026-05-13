@@ -2623,6 +2623,8 @@ mod tests {
             cfg.markdown,
             Some(MarkdownConfig {
                 gfm: Some(GfmFlag::All(true)),
+                toc: None,
+                external_links: None,
                 cjk_friendly: None,
             })
         );

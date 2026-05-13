@@ -2311,6 +2311,7 @@ mod tests {
             site: None,
             toc: None,
             external_links: None,
+            cjk_friendly: true,
         }
     }
 
@@ -2608,6 +2609,8 @@ mod tests {
             None,
             zfb_content::ResolvedGfmConstructs::default(),
             None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2741,6 +2744,8 @@ mod tests {
             None,
             zfb_content::ResolvedGfmConstructs::default(),
             None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2949,6 +2954,7 @@ mod tests {
             site: None,
             toc: None,
             external_links: None,
+            cjk_friendly: true,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -3068,6 +3074,8 @@ mod tests {
             None,
             zfb_content::ResolvedGfmConstructs::default(),
             None,
+            None,
+            true,
             &mut Vec::new(),
         )
         .unwrap();
