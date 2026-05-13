@@ -321,6 +321,8 @@ fn build_bundle(
         toc: None,
             external_links: None,
             cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

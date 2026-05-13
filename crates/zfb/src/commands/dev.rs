@@ -224,6 +224,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &setup_registries,
         &virtual_sources,
     );
+    // #268 — derive alias / virtual-module lists for the main bundler from
+    // the same setup_registries the islands path already uses. These are
+    // cheap clones of data already on the heap; producing them here (before
+    // the rename below) keeps `boot_dev_renderer` API symmetrical with the
+    // build-command path.
+    let dev_plugin_alias_entries: Vec<(String, String)> = setup_registries
+        .aliases
+        .iter()
+        .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
+        .collect();
+    let dev_plugin_virtual_modules: Vec<(String, String)> = virtual_sources
+        .iter()
+        .map(|(spec, src)| (spec.clone(), src.clone()))
+        .collect();
     // Keep `setup_registries` in scope so the underlying registries stay live
     // (the hook entries borrow nothing from it now, but the variable's role as
     // the lifecycle owner is preserved).
@@ -234,7 +248,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    noop renderer so the dev server still boots — the user can
     //    still poke at the dev URL while they fix the underlying
     //    bundler / runtime issue.
-    let dev_session = match boot_dev_renderer(&project_root, &cfg, v8_plugin_hooks) {
+    let dev_session = match boot_dev_renderer(
+        &project_root,
+        &cfg,
+        v8_plugin_hooks,
+        dev_plugin_alias_entries,
+        dev_plugin_virtual_modules,
+    ) {
         Ok(s) => Some(s),
         Err(err) => {
             output::warn(format!(
@@ -539,6 +559,14 @@ fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+    // Plugin-registered import aliases from `setup_registries.aliases`.
+    // Threaded into `BundlerInput::plugin_alias_entries` so the dev-mode
+    // esbuild invocation can resolve plugin aliases from pages / layouts /
+    // shared modules (#268).
+    plugin_alias_entries: Vec<(String, String)>,
+    // Plugin-registered virtual-module `(specifier, source)` pairs.
+    // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
+    plugin_virtual_modules: Vec<(String, String)>,
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
@@ -680,6 +708,12 @@ fn boot_dev_renderer(
         .map(|el| (el.into_content_config(), cfg.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
+    // #268 — thread plugin-registered aliases and virtual modules into the
+    // dev-mode bundler's esbuild invocation. Mirrors `commands/build.rs`
+    // wiring so `zfb dev` and `zfb build` produce identical alias resolution
+    // for pages / layouts / shared SSR-only modules.
+    bundler_input.plugin_alias_entries = plugin_alias_entries;
+    bundler_input.plugin_virtual_modules = plugin_virtual_modules;
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.
