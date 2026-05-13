@@ -168,6 +168,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         content_collections: Vec::new(),
         strip_md_ext: false,
         code_highlight_theme: None,
+        code_highlight_themes_dir: None,
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,

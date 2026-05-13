@@ -117,6 +117,10 @@ pub enum BridgeError {
         #[source]
         source: CollectionError,
     },
+    /// Pipeline configuration failed (e.g. loading a `themesDir` before the
+    /// walk starts).
+    #[error("{0}")]
+    PipelineConfig(String),
 }
 
 /// Pipeline-shape configuration for [`build_snapshot_with_config`].
@@ -139,6 +143,14 @@ pub struct SnapshotPipelineConfig {
     /// [`Pipeline::with_defaults_and_theme`]. `None` keeps the built-in
     /// default theme.
     pub code_highlight_theme: Option<String>,
+    /// Optional absolute path to a directory of `.tmTheme` files.
+    /// Forwarded to
+    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`].
+    /// `None` keeps syntect's bundled themes only.
+    ///
+    /// MUST match `BundlerInput::code_highlight_themes_dir` so the
+    /// snapshot ↔ bundler `content_hash` values stay byte-identical.
+    pub code_highlight_themes_dir: Option<std::path::PathBuf>,
     /// When true, append [`Pipeline::add_strip_md_ext`] to every
     /// per-collection pipeline. Match the bundler's `strip_md_ext`
     /// flag exactly.
@@ -196,6 +208,7 @@ impl Default for SnapshotPipelineConfig {
     fn default() -> Self {
         Self {
             code_highlight_theme: None,
+            code_highlight_themes_dir: None,
             strip_md_ext: false,
             resolve_source_map: None,
             gfm_constructs: super::pipeline::ResolvedGfmConstructs::default(),
@@ -209,12 +222,21 @@ impl Default for SnapshotPipelineConfig {
 impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
-    fn build_pipeline(&self) -> Pipeline {
-        let mut p = Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-            self.code_highlight_theme.as_deref(),
-            self.gfm_constructs,
-            self.cjk_friendly,
-        );
+    fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
+        let mut p = if let Some(dir) = self.code_highlight_themes_dir.as_deref() {
+            Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
+                self.code_highlight_theme.as_deref(),
+                self.gfm_constructs,
+                dir,
+            )
+            .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?
+        } else {
+            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
+                self.code_highlight_theme.as_deref(),
+                self.gfm_constructs,
+                self.cjk_friendly,
+            )
+        };
         if self.strip_md_ext {
             p.add_strip_md_ext();
         }
@@ -227,7 +249,7 @@ impl SnapshotPipelineConfig {
         if let Some((cfg, site)) = self.external_links.as_ref() {
             p.add_external_links(cfg.clone(), site.as_deref());
         }
-        p
+        Ok(p)
     }
 }
 
@@ -309,7 +331,7 @@ pub fn build_snapshot_with_config(
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
-        let mut pipeline = pipeline_config.build_pipeline();
+        let mut pipeline = pipeline_config.build_pipeline()?;
 
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
@@ -653,6 +675,7 @@ mod tests {
         let err = build_snapshot(&[cfg]).expect_err("malformed YAML must fail");
         match err {
             BridgeError::Walk { collection, .. } => assert_eq!(collection, "blog"),
+            other => panic!("expected BridgeError::Walk, got: {other:?}"),
         }
     }
 

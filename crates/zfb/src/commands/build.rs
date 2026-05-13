@@ -803,6 +803,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
         // `<pre data-zfb-content-fallback>` block. See zfb#188.
         let snapshot_config = zfb_content::SnapshotPipelineConfig {
             code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
+            code_highlight_themes_dir: config
+                .code_highlight
+                .as_ref()
+                .and_then(|c| c.themes_dir.as_ref())
+                .map(|td| project_root.join(td)),
             strip_md_ext: config.strip_md_ext,
             resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
             gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
@@ -1001,6 +1006,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // parses the same constructs the snapshot walker uses. Both are
     // resolved from the same source, so `content_hash` inputs stay
     // byte-identical (the snapshot ↔ bundler land mine called out
+    // Thread the optional `codeHighlight.themesDir` (resolved to an
+    // absolute path here) so the bundler loads custom .tmTheme files
+    // before constructing the SyntectPlugin.  MUST stay in sync with
+    // the snapshot wiring above so both content_hash inputs agree.
+    bundler_input.code_highlight_themes_dir = config
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.themes_dir.as_ref())
+        .map(|td| project_root.join(td));
+    // Thread the optional `markdown.gfm` config into the bundler so
+    // the hoisted MDX pre-compile pipeline parses the same GFM
+    // constructs the snapshot walker uses. The snapshot wiring above
+    // resolves from the same source, so both `content_hash` inputs
+    // stay byte-identical (the snapshot ↔ bundler land mine called out
     // at `crates/zfb-content/src/content_bridge.rs:118-153`).
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(config.markdown.as_ref());

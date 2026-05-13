@@ -611,6 +611,17 @@ fn boot_dev_renderer(
     // Thread `markdown.gfm` and `markdown.cjkFriendly` through to the
     // bundler so dev rendering and the build agree on the parser
     // construct set. Mirrors the `commands/build.rs` wiring.
+    // Thread the optional `codeHighlight.themesDir` so dev rendering
+    // loads custom .tmTheme files just like the production build.
+    // Mirrors the `commands/build.rs` wiring.
+    bundler_input.code_highlight_themes_dir = cfg
+        .code_highlight
+        .as_ref()
+        .and_then(|c| c.themes_dir.as_ref())
+        .map(|td| project_root.join(td));
+    // Thread `markdown.gfm` through to the bundler so dev rendering
+    // and the build agree on the parser construct set. Mirrors the
+    // `commands/build.rs` wiring.
     bundler_input.gfm_constructs =
         crate::config::resolve_gfm_constructs(cfg.markdown.as_ref());
     // Thread the optional `site` canonical-origin URL so `zfb dev` emits

@@ -419,9 +419,12 @@ pub struct TailwindConfig {
 /// `"base16-ocean.dark"` (default), `"base16-ocean.light"`,
 /// `"InspiredGitHub"`, `"Solarized (dark)"`, `"Solarized (light)"`.
 ///
-/// **Note:** These are NOT Shiki theme names. Names like `"dracula"` or
-/// `"github-dark"` are not part of syntect's bundled set and will
-/// produce an `unknown theme` error at build time.
+/// To use a custom theme (e.g. Dracula), drop the `.tmTheme` file into
+/// a directory and set `themesDir` to point at it.  The theme name to
+/// pass in `theme` is the name declared inside the `.tmTheme` plist
+/// (its `name` key).
+///
+/// **Note:** These are NOT Shiki theme names.
 ///
 /// Unknown theme names are rejected with a clear error rather than
 /// silently falling back — this matches the behaviour of
@@ -429,10 +432,22 @@ pub struct TailwindConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeHighlightConfig {
-    /// Syntect built-in theme name.  When absent the pipeline defaults to
-    /// `"base16-ocean.dark"`.
+    /// Syntect built-in or user-loaded theme name.  When absent the
+    /// pipeline defaults to `"base16-ocean.dark"`.
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Path to a directory of `.tmTheme` files, relative to the
+    /// project root.  Every `.tmTheme` file in the directory is loaded
+    /// and becomes available by its declared `name` via `theme`.
+    ///
+    /// When absent only syntect's bundled themes are available.
+    ///
+    /// The path must be relative and must not escape the project root
+    /// via `..`.  A missing directory is reported as an error at build
+    /// start (before any pages are rendered).
+    #[serde(default)]
+    pub themes_dir: Option<std::path::PathBuf>,
 }
 
 /// What to do when a `.md`/`.mdx` link cannot be found in the source map.
@@ -1286,6 +1301,12 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         ensure_path_in_root(&c.path, dir)
             .with_context(|| format!("collection {:?}", c.name))?;
     }
+    if let Some(ch) = &cfg.code_highlight {
+        if let Some(td) = &ch.themes_dir {
+            ensure_path_in_root(td, dir)
+                .context("codeHighlight.themesDir")?;
+        }
+    }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {
             ensure_path_in_root(&rml.docs_dir, dir)
@@ -1723,6 +1744,70 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg.code_highlight, None);
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_loads_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "./themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("./themes")));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_and_theme_together() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "theme": "Dracula", "themesDir": "themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme.as_deref(), Some("Dracula"));
+        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("themes")));
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_absolute_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "/absolute/path" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path()).await.expect_err("must reject absolute path");
+        // anyhow chains context messages; use {:#} to get the full chain.
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.themesDir"),
+            "error should mention field; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_highlight_themes_dir_dotdot_escape_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themesDir": "../../etc" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path()).await.expect_err("must reject .. escape");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.themesDir"),
+            "error should mention field; got: {msg}"
+        );
     }
 
     #[tokio::test]
