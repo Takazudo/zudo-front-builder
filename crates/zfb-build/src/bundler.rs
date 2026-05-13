@@ -2158,47 +2158,51 @@ fn run_esbuild(
     // map without any per-subpath wiring.
     cmd.arg("--alias:zfb=@takazudo/zfb");
 
-    // Plugin-registered virtual modules (#268). Each virtual module's source
-    // is written to a `.mjs` temp file inside the shadow dir (so esbuild's
-    // upward node_modules walk finds the right packages), then an
-    // `--alias:<specifier>=<path>` flag redirects bare imports to that file.
-    // Temp files are held alive in `vm_temp_files` until after the subprocess
-    // returns; their Drop impl removes them from disk.
+    // Plugin-registered aliases + virtual modules (#269). Both surface
+    // through the synthetic `compilerOptions.paths` map esbuild reads
+    // via `--tsconfig=<tsconfig.json>` above, NOT as `--alias` flags.
     //
-    // Mirrors the equivalent pattern in `crates/zfb-islands/src/esbuild.rs`
-    // (bundle_one_entry, ~line 652-693).
-    let mut vm_temp_files: Vec<(String, tempfile::NamedTempFile)> = Vec::new();
-    for (specifier, source) in &input.plugin_virtual_modules {
-        let vm_tmp = tempfile::Builder::new()
-            .prefix(".zfb-virtual-")
-            .suffix(".mjs")
-            .tempfile_in(shadow)
-            .with_context(|| {
-                format!(
-                    "bundler: failed to allocate virtual-module temp file for `{specifier}`"
-                )
-            })?;
-        std::fs::write(vm_tmp.path(), source.as_bytes()).with_context(|| {
-            format!(
-                "bundler: failed to write virtual-module source for specifier `{specifier}`"
-            )
-        })?;
-        vm_temp_files.push((specifier.clone(), vm_tmp));
-    }
+    // Why not `--alias`: esbuild's `--alias:<from>=<to>` is
+    // prefix-with-slash — registering `@/foo` would silently also
+    // rewrite `@/foo/bar`, contradicting the documented exact-match
+    // contract honored by the embedded V8 host
+    // (`zfb-render::BundleModuleLoader::resolve_alias`). A
+    // `compilerOptions.paths` entry without the wildcard suffix is a
+    // literal exact match in the TypeScript / esbuild path-mapping
+    // pipeline.
+    //
+    // `zfb_plugin_resolver::build_resolver_inputs` materializes each
+    // virtual module to a `.zfb-virtual-*.mjs` temp file inside
+    // `shadow` (so esbuild's upward `node_modules` walk still finds
+    // the right packages) and returns POSIX-normalized
+    // `(specifier, absolute-path)` pairs. The `NamedTempFile` handles
+    // live inside `resolver_inputs._temp_files` and are dropped after
+    // the subprocess returns.
+    let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+        &input.plugin_alias_entries,
+        &input.plugin_virtual_modules,
+        shadow,
+    )
+    .context("bundler: failed materializing plugin resolver inputs")?;
 
-    // Plugin-registered aliases + virtual-module redirects. Each becomes
-    // `--alias:<from>=<to>` on the esbuild command line.
-    //
-    // Prefix-with-slash caveat from --alias inherited here; Wave 2 /
-    // sub-task #269 will switch to exact-match. See docs/src/content/docs/
-    // concepts/plugins.mdx:55 for the user-facing caveat.
-    for (from, to) in &input.plugin_alias_entries {
-        cmd.arg(OsString::from(format!("--alias:{from}={to}")));
-    }
-    for (specifier, vm_tmp) in &vm_temp_files {
-        let path_str = vm_tmp.path().to_string_lossy();
-        cmd.arg(OsString::from(format!("--alias:{specifier}={path_str}")));
-    }
+    // Rewrite the synthetic tsconfig with the merged path map. Step 4
+    // above already wrote a tsconfig honouring `input.tsconfig_paths`
+    // alone; merge plugin entries on top (user-wins on key collision —
+    // see `merge_into_tsconfig_paths` doc) and rewrite. The mock-
+    // subprocess path skips this whole function, so the no-plugin /
+    // unit-test path is byte-identical to the previous behaviour.
+    let mut merged_paths = input.tsconfig_paths.clone();
+    zfb_plugin_resolver::merge_into_tsconfig_paths(
+        &mut merged_paths,
+        &resolver_inputs.paths_entries,
+    );
+    // Recreate the adapter to get `jsx_import_source` — cheap (ADR-002
+    // adapters are zero-state) and avoids threading another parameter
+    // through `run_esbuild`. Stays in sync with step 4 above so a
+    // future framework switch can't make the two writes diverge.
+    let jsx_import_source = make_adapter(input.framework).jsx_import_source().to_string();
+    write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
+        .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
 
     // import.meta.env.{PROD,DEV} — always emitted, driven by mode.
     let prod = input.mode.is_prod();
@@ -2256,10 +2260,12 @@ fn run_esbuild(
     let output = cmd
         .output()
         .with_context(|| format!("failed to spawn {}", bin.display()))?;
-    // Drop vm_temp_files now — the subprocess has finished. Explicit
-    // drop makes the lifetime intent visible; temp files are removed
-    // from disk by their Drop impl.
-    drop(vm_temp_files);
+    // Drop `resolver_inputs` now — the subprocess has finished and
+    // esbuild no longer needs the virtual-module `.mjs` temp files.
+    // Explicit drop makes the lifetime intent visible; the
+    // `NamedTempFile`s inside `_temp_files` delete themselves via
+    // their Drop impl.
+    drop(resolver_inputs);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
