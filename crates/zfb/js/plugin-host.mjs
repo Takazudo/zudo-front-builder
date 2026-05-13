@@ -157,6 +157,11 @@ async function runBuildHook(id, hookName, ctx) {
       options: p.options,
       logger: makeLogger(p.name),
     };
+    // Thread the routes manifest through when present (#262). The Rust
+    // side omits the field on preBuild so `ctx.routes` is undefined there.
+    if (ctx.routes !== undefined && ctx.routes !== null) {
+      hookCtx.routes = ctx.routes;
+    }
     try {
       await fn.call(p.mod, hookCtx);
     } catch (err) {
