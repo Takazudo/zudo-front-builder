@@ -113,12 +113,71 @@ Markdown extensibility lives **inside** zfb's tree as in-tree Rust visitors (TOC
 
 ## `preBuild(ctx)` and `postBuild(ctx)`
 
-These are unchanged from the v1 plugin contract.
-
 - `preBuild` runs after `setup` and before the bundler / renderer / CSS / islands work. Use it to emit files the downstream stages will see.
 - `postBuild` runs after `dist/` has been fully written (including any adapter wrapping). Use it for finalisation steps that need a complete tree on disk.
 
-Both hooks receive `{ projectRoot, outDir, config, options, logger }`. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
+Both hooks receive `{ projectRoot, outDir, config, options, logger }`. `postBuild` additionally receives `ctx.routes` — the complete route manifest for the build. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
+
+### `ctx.routes` — the route manifest (postBuild only)
+
+`postBuild` plugins receive a `ctx.routes` object describing every URL the build emitted. The field is **absent (`undefined`)** during `preBuild` — the manifest is not available until rendering finishes.
+
+```ts
+interface ZfbRouteManifest {
+  routes: ZfbRouteEntry[];
+}
+
+interface ZfbRouteEntry {
+  url: string;         // emitted URL path, e.g. "/blog/hello/"
+  output: string;      // path under outDir, e.g. "blog/hello/index.html"
+  extension: string;   // file extension: "html", "xml", "rss", "txt", "json", …
+  source: string;      // source page module, e.g. "pages/blog/[slug].tsx"
+  params?: Record<string, string | string[]>; // absent for static routes;
+                       // dynamic params are strings, catchall params are string[]
+}
+```
+
+Routes are sorted by `url` for byte-stable output across runs. Non-HTML routes (`sitemap.xml.tsx`, `feed.rss.tsx`, `llms.txt.tsx`) appear with their actual extension and output path.
+
+### Worked example: generating a `sitemap.xml` in `postBuild`
+
+A plugin that writes a `sitemap.xml` from every HTML route the build produced.
+
+```ts
+// plugins/sitemap.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "sitemap",
+  postBuild({ outDir, routes }) {
+    if (!routes) return; // guard: absent on preBuild
+    const siteUrl = "https://example.com";
+    const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...htmlRoutes.map(
+        (r) => `  <url><loc>${siteUrl}${r.url}</loc></url>`,
+      ),
+      "</urlset>",
+    ].join("\n");
+    writeFileSync(join(outDir, "sitemap.xml"), xml, "utf-8");
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/sitemap.ts" }],
+});
+```
+
+The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
 
 ## `devMiddleware(ctx)`
 

@@ -33,10 +33,44 @@ export type ZfbPluginLogger = {
 };
 
 /**
+ * One emitted route in the `postBuild` route manifest (#262).
+ * Present on `ctx.routes.routes` so a `postBuild` plugin can iterate
+ * every URL the build produced (e.g. to write a `sitemap.xml`).
+ */
+export type ZfbRouteEntry = {
+  /** Emitted URL path, e.g. `/`, `/blog/hello/`, `/sitemap.xml`. */
+  url: string;
+  /** Path under `outDir`, e.g. `index.html`, `blog/hello/index.html`, `sitemap.xml`. */
+  output: string;
+  /** File extension: `html`, `xml`, `rss`, `txt`, `json`, … */
+  extension: string;
+  /** Source page module relative to the project root, e.g. `pages/blog/[slug].tsx`. */
+  source: string;
+  /**
+   * Bound route parameters. Absent for static routes.
+   * Dynamic (`[slug]`) params are string scalars; catchall (`[...rest]`)
+   * params are string arrays.
+   */
+  params?: Record<string, string | string[]>;
+};
+
+/**
+ * The route manifest exposed on `ctx.routes` during a `postBuild` callback
+ * (#262). Sorted by `url` for byte-stable output across runs.
+ */
+export type ZfbRouteManifest = {
+  routes: ZfbRouteEntry[];
+};
+
+/**
  * Context passed to `preBuild` and `postBuild`. `outDir` is the
  * resolved absolute path of the configured `outDir` (default
  * `<projectRoot>/dist`). `projectRoot` is the directory containing
  * `zfb.config.ts`.
+ *
+ * `routes` is **only present on `postBuild`** calls; it is `undefined`
+ * on `preBuild`. This is intentional: the route manifest is not
+ * available until the build finishes writing `dist/` (#262).
  */
 export type ZfbBuildHookContext = {
   /** Project root — the directory containing `zfb.config.ts`. */
@@ -49,6 +83,11 @@ export type ZfbBuildHookContext = {
   options: Record<string, unknown>;
   /** Logger that wraps the Rust-side `tracing` subscriber. */
   logger: ZfbPluginLogger;
+  /**
+   * All routes emitted by this build, sorted by URL (#262).
+   * Present only on `postBuild` calls; `undefined` on `preBuild`.
+   */
+  routes?: ZfbRouteManifest;
 };
 
 /**

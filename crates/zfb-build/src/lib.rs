@@ -81,7 +81,7 @@ pub use plugin_registries::{
 pub use plugin_runner::{
     annotate_with_plugin_error, extract_plugin_error, BuildHookContext, DevRegisterContext,
     DevRegistration, DevRequest, DevResponse, PluginError, PluginHost, PluginSpec,
-    SetupHookContext,
+    PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
 };
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
