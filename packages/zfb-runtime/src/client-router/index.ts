@@ -28,4 +28,10 @@ export { swapFunctions, swap } from "./swap-functions.js";
 export { navigate, supportsViewTransitions, transitionEnabledOnThisPage, init } from "./router.js";
 export type { InitOptions } from "./router.js";
 
+// Prefetch public surface (#276).
+// `init` from prefetch.ts is re-exported as `prefetchInit` to avoid colliding
+// with the router's `init` above.
+export { prefetch, init as prefetchInit } from "./prefetch.js";
+export type { PrefetchStrategy, PrefetchInitOptions, PrefetchOptions } from "./prefetch.js";
+
 // (cssesc is an internal helper, not part of the public surface — not re-exported.)
