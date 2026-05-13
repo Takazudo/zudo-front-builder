@@ -46,6 +46,24 @@
 //! registered at plugin `setup` time after the bundle entry is
 //! already determined).
 //!
+//! Transitive `./sibling.js` imports from an aliased file are also
+//! disk-loaded: any `file://` URL whose path sits in the same
+//! directory as a registered alias target is permitted. This is the
+//! minimum scope needed to support multi-file aliased libraries
+//! without widening disk access to the entire filesystem.
+//!
+//! ### TS/TSX caveat (v1 limitation)
+//!
+//! The V8 host expects ESM-compatible JavaScript at this layer; it
+//! does NOT route alias targets through the SWC pipeline. Aliases
+//! that point at `.ts` / `.tsx` source files will fail to parse
+//! inside V8. The expected pattern is to alias to already-emitted
+//! `.js` modules (or have the esbuild bundler pre-process them at
+//! bundle time before the V8 host sees them). A follow-up may extend
+//! this loader to run alias targets through SWC; until then the
+//! loader emits a targeted error for `.ts` / `.tsx` paths so the
+//! failure mode is clear.
+//!
 //! Every other specifier is rejected with a clear error so the host
 //! does not silently absorb a typo'd import.
 
@@ -304,6 +322,19 @@ impl ModuleLoader for BundleModuleLoader {
         // 4. Alias-resolved file URL (plugin-registered)?
         //    `resolve()` rewrote the bare alias to a `file://` URL; the
         //    URL's path component is the absolute filesystem path.
+        //
+        //    Disk reads are permitted for:
+        //      (a) the alias's exact target file, and
+        //      (b) any file in the **same directory** as a registered
+        //          alias target — so a top-level alias to
+        //          `/proj/src/lib/foo.js` can transitively `import
+        //          './bar.js'` and have `bar.js` resolve via disk.
+        //
+        //    (b) is the minimum scope needed to support multi-file
+        //    aliased libraries without widening disk access to the
+        //    entire filesystem. Aliases are trusted (registered by
+        //    plugin `setup`, not user data), so sibling-file reads
+        //    inherit that trust.
         if spec_str.starts_with("file://") {
             // First check the in-memory map (registered modules and the
             // bundle's own entry take precedence over disk).
@@ -312,47 +343,43 @@ impl ModuleLoader for BundleModuleLoader {
                 return ok_js(module_specifier, src.as_str());
             }
             drop(modules);
-            // For file:// specifiers that came from an alias, attempt a
-            // disk read. Non-alias file:// URLs (e.g. the bundle's own
-            // synthetic specifier) are in the in-memory map and were
-            // already served above.
             if let Some(hooks) = &self.hooks {
-                // Check if this file URL corresponds to any alias target.
-                let is_alias_target = hooks.aliases.values().any(|entry| {
-                    url_from_path(&entry.target)
-                        .map(|u| u == spec_str)
-                        .unwrap_or(false)
-                });
-                if is_alias_target {
+                if let Some(plugin_name) = alias_disk_read_authority(hooks, module_specifier) {
                     let path = match module_specifier.to_file_path() {
                         Ok(p) => p,
                         Err(_) => {
                             return ModuleLoadResponse::Sync(Err(
                                 ModuleLoaderError::generic(format!(
-                                    "embedded V8 host: alias target `{spec_str}` \
+                                    "embedded V8 host: alias-rooted target `{spec_str}` \
                                      is not a valid file:// URL"
                                 )),
                             ));
                         }
                     };
-                    // Find plugin name for diagnostics.
-                    let plugin_name = hooks
-                        .aliases
-                        .values()
-                        .find(|e| {
-                            url_from_path(&e.target)
-                                .map(|u| u == spec_str)
-                                .unwrap_or(false)
-                        })
-                        .map(|e| e.plugin.as_str())
-                        .unwrap_or("<unknown>");
+                    // v1 limitation: the V8 host does not transpile
+                    // TS/TSX. Reject these targets with a clear error
+                    // rather than letting V8 cough up an opaque syntax
+                    // error on the user's source.
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        if matches!(ext, "ts" | "tsx" | "mts" | "cts") {
+                            return ModuleLoadResponse::Sync(Err(
+                                ModuleLoaderError::generic(format!(
+                                    "embedded V8 host: alias target `{}` (plugin `{plugin_name}`) \
+                                     has a TypeScript extension, but the V8 host only accepts \
+                                     pre-compiled ESM JavaScript. Point the alias at a `.js` \
+                                     file or have your bundler pre-process the target.",
+                                    path.display()
+                                )),
+                            ));
+                        }
+                    }
                     let src = match std::fs::read_to_string(&path) {
                         Ok(s) => s,
                         Err(e) => {
                             return ModuleLoadResponse::Sync(Err(
                                 ModuleLoaderError::generic(format!(
-                                    "embedded V8 host: alias target `{}` registered by \
-                                     plugin `{plugin_name}` could not be read: {e}",
+                                    "embedded V8 host: alias-rooted file `{}` (under plugin \
+                                     `{plugin_name}`'s alias) could not be read: {e}",
                                     path.display()
                                 )),
                             ));
@@ -361,8 +388,8 @@ impl ModuleLoader for BundleModuleLoader {
                     return ok_js(module_specifier, &src);
                 }
             }
-            // file:// URL that is neither in-memory nor an alias target
-            // — fall through to the catch-all error below.
+            // file:// URL that is neither in-memory nor reachable from
+            // an alias target — fall through to the catch-all below.
         }
         // 5. In-memory module (the main bundle, etc.)?
         let modules = self.modules.borrow();
@@ -413,4 +440,37 @@ fn url_from_path(path: &std::path::Path) -> Option<String> {
     // (which is `url::Url`) to avoid a separate `url` dep.
     let url = ModuleSpecifier::from_file_path(path).ok()?;
     Some(url.to_string())
+}
+
+/// Decide whether a `file://` URL is within an alias's authority — i.e.
+/// the URL points at an alias target file or any file in the same
+/// directory as a target. Returns the plugin name of the closest matching
+/// alias when authorised, so error messages can attribute disk-read
+/// failures to the plugin that effectively owns the directory.
+///
+/// Why parent-directory (not deeper-subtree) match: the conservative
+/// scope handles the common case ("alias points at one entry file, which
+/// imports siblings in the same folder") without expanding disk access
+/// to arbitrary descendants. If a real-world case needs deeper reach,
+/// widen this in a follow-up — but document the trust boundary first.
+fn alias_disk_read_authority(
+    hooks: &PluginRegistryHooks,
+    module_specifier: &ModuleSpecifier,
+) -> Option<String> {
+    let candidate_path = module_specifier.to_file_path().ok()?;
+    let candidate_dir = candidate_path.parent()?;
+    for entry in hooks.aliases.values() {
+        // Exact-target match takes precedence in attribution.
+        if entry.target == candidate_path {
+            return Some(entry.plugin.clone());
+        }
+        // Same-directory match (transitive imports inside the
+        // alias-rooted module folder).
+        if let Some(target_dir) = entry.target.parent() {
+            if target_dir == candidate_dir {
+                return Some(entry.plugin.clone());
+            }
+        }
+    }
+    None
 }

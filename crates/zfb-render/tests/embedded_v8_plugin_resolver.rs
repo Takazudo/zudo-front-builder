@@ -166,6 +166,86 @@ async fn alias_missing_target_file_surfaces_error_with_plugin_name() {
     );
 }
 
+#[tokio::test]
+async fn alias_transitively_loads_sibling_files() {
+    // Codex P1: a top-level alias to `lib.js` whose source imports
+    // `./helper.js` must successfully load both via disk. Without
+    // sibling-directory disk-read support, the transitive import
+    // would fail with "no in-memory source".
+    let dir = TempDir::new().expect("tempdir");
+    let _helper = write_temp_file(
+        &dir,
+        "helper.js",
+        r#"export const help = "from helper";"#,
+    );
+    let lib_path = write_temp_file(
+        &dir,
+        "lib.js",
+        // Use relative import so deno_core resolves it against the
+        // file:// URL of lib.js.
+        r#"
+        import { help } from "./helper.js";
+        export const greeting = "lib + " + help;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@multi/lib", lib_path, "multi-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@multi/lib", "greeting");
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("lib + from helper"));
+}
+
+#[tokio::test]
+async fn alias_to_tsx_extension_rejected_with_clear_error() {
+    // Codex P1: aliases to TS/TSX source files would fail with an
+    // opaque V8 syntax error since the host does not transpile. We
+    // reject at load time with a targeted error so the failure mode
+    // is actionable.
+    let dir = TempDir::new().expect("tempdir");
+    let lib_path = write_temp_file(
+        &dir,
+        "comp.tsx",
+        // Content doesn't matter — we reject on extension before reading.
+        r#"export const x: number = 1;"#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@ts/comp", lib_path, "ts-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = r#"
+        import { x } from "@ts/comp";
+        export default { fetch() { return new Response(String(x), { status: 200 }); } };
+    "#;
+    let err = host
+        .execute_module("bundle.mjs", bundle)
+        .await
+        .expect_err("TSX alias target must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ts-plugin"),
+        "expected plugin name in TS-rejection error, got: {msg}"
+    );
+    assert!(
+        msg.contains("TypeScript extension"),
+        "expected explanation of the TS limitation, got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Virtual module tests
 // ---------------------------------------------------------------------------
