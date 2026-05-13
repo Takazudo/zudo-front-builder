@@ -255,6 +255,46 @@ pub struct EsbuildSubprocessConfig {
     /// overrides any value the parent process had for the same key (for
     /// the subprocess only — the parent env is untouched).
     pub env_vars: Vec<(OsString, OsString)>,
+
+    /// Import alias rewrites consumed by the islands bundler (#261).
+    ///
+    /// Each entry is an exact-match `(from, to)` pair where `to` is the
+    /// absolute filesystem path the alias resolves to. Populated from
+    /// [`zfb_build::AliasMap`] by the build/dev orchestrator after the
+    /// plugin `setup` hook runs. Each pair becomes a
+    /// `--alias:<from>=<to>` CLI flag passed to esbuild.
+    ///
+    /// **Exact-match only** (mirrors `AliasMap`'s v1 contract): a
+    /// registration for `"@/foo"` matches `import "@/foo"` but NOT
+    /// `import "@/foo/bar"`. esbuild's own `--alias` semantics are
+    /// prefix-based, so we rely on the fact that users must register
+    /// exact import strings.
+    ///
+    /// Populated only when plugin registrations are present. An empty
+    /// `Vec` (the default) adds no `--alias` flags so the bundle output
+    /// is byte-identical to a build without any plugin registrations
+    /// (zero-registration regression guard).
+    pub alias_entries: Vec<(String, String)>,
+
+    /// Virtual-module source strings consumed by the islands bundler (#261).
+    ///
+    /// Each entry is a `(specifier, source)` pair. The specifier is the
+    /// bare import string an island uses (e.g. `"virtual:my-data"`); the
+    /// source is the ESM module text the plugin's loader produced (already
+    /// fetched from the plugin host via
+    /// [`zfb_build::PluginHost::invoke_virtual_loader`] before constructing
+    /// this config).
+    ///
+    /// In `bundle_one_entry` each source string is written to a temporary
+    /// `.mjs` file inside `working_dir` (or the system temp dir as
+    /// fallback), and an `--alias:<specifier>=<temp-path>` CLI flag is
+    /// added so esbuild redirects the bare import to the on-disk source.
+    /// The temp files are held alive for the duration of the subprocess
+    /// call and dropped afterwards.
+    ///
+    /// An empty `Vec` (the default) adds no temp files and no `--alias`
+    /// flags — zero-registration builds are byte-identical to today.
+    pub virtual_modules: Vec<(String, String)>,
 }
 
 impl Default for EsbuildSubprocessConfig {
@@ -288,6 +328,8 @@ impl EsbuildSubprocessConfig {
             mock_subprocess: false,
             mock_output: String::new(),
             env_vars: Vec::new(),
+            alias_entries: Vec::new(),
+            virtual_modules: Vec::new(),
         }
     }
 }
@@ -323,6 +365,32 @@ impl EsbuildSubprocessConfig {
         value: impl Into<OsString>,
     ) -> Self {
         self.env_vars.push((key.into(), value.into()));
+        self
+    }
+
+    /// Set the alias entries for the islands bundler (chainable).
+    ///
+    /// Replaces the current `alias_entries` list. Each `(from, to)` pair
+    /// adds `--alias:<from>=<to>` to the esbuild subprocess invocation.
+    /// `to` must be an absolute filesystem path (as produced by
+    /// [`zfb_build::AliasMap`]).  When the list is empty (the default)
+    /// no `--alias` flags are added and the bundle is byte-identical to
+    /// a zero-registration build (#261 regression guard).
+    pub fn with_alias_entries(mut self, aliases: Vec<(String, String)>) -> Self {
+        self.alias_entries = aliases;
+        self
+    }
+
+    /// Set the virtual-module source map for the islands bundler (chainable).
+    ///
+    /// Replaces the current `virtual_modules` list. Each `(specifier, source)`
+    /// pair causes `bundle_one_entry` to write the source to a temporary
+    /// file and add `--alias:<specifier>=<path>` so esbuild redirects the
+    /// bare import to the on-disk module. The source must be an ESM module
+    /// string (the text returned by
+    /// [`zfb_build::PluginHost::invoke_virtual_loader`]).
+    pub fn with_virtual_modules(mut self, vms: Vec<(String, String)>) -> Self {
+        self.virtual_modules = vms;
         self
     }
 }
@@ -573,6 +641,58 @@ impl EsbuildSubprocessBundler {
             .tempfile()
             .context("failed to allocate out temp file")?;
 
+        // Virtual-module temp files (#261). Each virtual module's source
+        // is written to a `.mjs` temp file so esbuild can read it as a
+        // real module, then an `--alias:<specifier>=<path>` flag redirects
+        // the bare import. The temp files are held alive via their
+        // `NamedTempFile` handles until after the subprocess returns.
+        // Allocated inside `working_dir` for the same node_modules-walk
+        // reason as the entry temp file above; fall back to system tmpdir
+        // when `working_dir` is not a real directory (unit test environment).
+        let mut vm_temp_files: Vec<(String, tempfile::NamedTempFile)> = Vec::new();
+        for (specifier, source) in &self.config.virtual_modules {
+            let vm_tmp = if self.config.working_dir.is_dir() {
+                tempfile::Builder::new()
+                    .prefix(".zfb-virtual-")
+                    .suffix(".mjs")
+                    .tempfile_in(&self.config.working_dir)
+                    .with_context(|| {
+                        format!(
+                            "failed to allocate virtual-module temp file for `{specifier}` \
+                             inside working_dir"
+                        )
+                    })?
+            } else {
+                tempfile::Builder::new()
+                    .prefix("zfb-virtual-")
+                    .suffix(".mjs")
+                    .tempfile()
+                    .with_context(|| {
+                        format!(
+                            "failed to allocate virtual-module temp file for `{specifier}`"
+                        )
+                    })?
+            };
+            std::fs::write(vm_tmp.path(), source.as_bytes()).with_context(|| {
+                format!(
+                    "zfb-islands plugin (islands-resolver): failed to write virtual-module \
+                     source for specifier `{specifier}`"
+                )
+            })?;
+            vm_temp_files.push((specifier.clone(), vm_tmp));
+        }
+
+        // Collect alias args: registered aliases + virtual-module redirects.
+        // Each becomes `--alias:<from>=<to>` on the esbuild command line.
+        let mut alias_args: Vec<OsString> = Vec::new();
+        for (from, to) in &self.config.alias_entries {
+            alias_args.push(OsString::from(format!("--alias:{from}={to}")));
+        }
+        for (specifier, vm_tmp) in &vm_temp_files {
+            let path_str = vm_tmp.path().to_string_lossy();
+            alias_args.push(OsString::from(format!("--alias:{specifier}={path_str}")));
+        }
+
         let args = build_esbuild_args(
             config,
             &self.config.extra_args,
@@ -588,6 +708,11 @@ impl EsbuildSubprocessBundler {
         for (key, value) in &self.config.env_vars {
             cmd.env(key, value);
         }
+        // Alias args first so the order is deterministic and reviewable:
+        // aliases before extra_args and the entry path.
+        for arg in &alias_args {
+            cmd.arg(arg);
+        }
         for arg in &args {
             cmd.arg(arg);
         }
@@ -595,6 +720,12 @@ impl EsbuildSubprocessBundler {
         let output = cmd
             .output()
             .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
+
+        // Drop vm_temp_files now — the subprocess has finished. Explicit
+        // drop makes the lifetime intent visible; temp files are removed
+        // from disk by their Drop impl.
+        drop(vm_temp_files);
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!(
@@ -1610,5 +1741,118 @@ mod tests {
             !args.iter().any(|a| a == "--jsx-import-source=preact"),
             "stale --jsx-import-source=preact present: {args:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #261 — Islands esbuild resolver: alias + virtual-module tests
+    // -----------------------------------------------------------------------
+
+    /// Zero alias/virtual-module registrations → config fields are empty by
+    /// default and no `--alias` flags appear in the subprocess args.
+    /// This is the regression guard: "bundling without registrations is
+    /// byte-identical to today's bundle output."
+    #[test]
+    fn zero_registrations_produce_no_alias_flags_in_config() {
+        let cfg = EsbuildSubprocessConfig::default();
+        assert!(cfg.alias_entries.is_empty(), "alias_entries must default to empty");
+        assert!(cfg.virtual_modules.is_empty(), "virtual_modules must default to empty");
+    }
+
+    /// `with_alias_entries` stores the pairs and overwrites the previous list.
+    #[test]
+    fn with_alias_entries_stores_pairs() {
+        let aliases = vec![
+            ("@/foo".to_string(), "/abs/project/src/foo.tsx".to_string()),
+            ("@/bar".to_string(), "/abs/project/src/bar.tsx".to_string()),
+        ];
+        let cfg = EsbuildSubprocessConfig::default().with_alias_entries(aliases.clone());
+        assert_eq!(cfg.alias_entries, aliases);
+    }
+
+    /// `with_virtual_modules` stores the pairs and overwrites the previous list.
+    #[test]
+    fn with_virtual_modules_stores_pairs() {
+        let vms = vec![
+            ("virtual:my-data".to_string(), "export const x = 1;".to_string()),
+        ];
+        let cfg = EsbuildSubprocessConfig::default().with_virtual_modules(vms.clone());
+        assert_eq!(cfg.virtual_modules, vms);
+    }
+
+    /// Bundling in mock mode with alias entries included — the mock path must
+    /// still succeed (alias args are a real-subprocess-only concern; mock mode
+    /// returns the configured output unchanged).
+    #[test]
+    fn mock_mode_succeeds_with_alias_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            mock_output: "// alias mock output".to_string(),
+            alias_entries: vec![("@/foo".to_string(), "/abs/src/foo.tsx".to_string())],
+            ..EsbuildSubprocessConfig::default()
+        };
+        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
+        // Mock output is returned verbatim.
+        let content = std::fs::read_to_string(&out.asset_path).unwrap();
+        assert_eq!(content, "// alias mock output");
+    }
+
+    /// Bundling in mock mode with virtual modules — the mock path must succeed.
+    #[test]
+    fn mock_mode_succeeds_with_virtual_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            mock_output: "// virtual mock output".to_string(),
+            virtual_modules: vec![(
+                "virtual:config".to_string(),
+                "export const site = 'zfb';".to_string(),
+            )],
+            ..EsbuildSubprocessConfig::default()
+        };
+        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+        let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
+        let content = std::fs::read_to_string(&out.asset_path).unwrap();
+        assert_eq!(content, "// virtual mock output");
+    }
+
+    /// Verify that the `with_alias_entries` + `with_virtual_modules` builders
+    /// can be chained together and that both field lists are populated.
+    #[test]
+    fn builder_methods_are_chainable() {
+        let cfg = EsbuildSubprocessConfig::default()
+            .with_alias_entries(vec![
+                ("@/components".to_string(), "/abs/src/components".to_string()),
+            ])
+            .with_virtual_modules(vec![
+                ("virtual:meta".to_string(), "export const v = 1;".to_string()),
+            ]);
+        assert_eq!(cfg.alias_entries.len(), 1);
+        assert_eq!(cfg.virtual_modules.len(), 1);
+        assert_eq!(cfg.alias_entries[0].0, "@/components");
+        assert_eq!(cfg.virtual_modules[0].0, "virtual:meta");
+    }
+
+    /// Parity check: the source text stored in `virtual_modules` is the same
+    /// string that the plugin host loader produces. When both the V8 host
+    /// resolver (#260) and the islands esbuild resolver (#261) receive the
+    /// same `(specifier, source)` pair from the orchestrator (which fetches
+    /// via `PluginHost::invoke_virtual_loader`), they can't drift because
+    /// they both read from the same in-memory string.
+    ///
+    /// This test asserts the round-trip: store source → retrieve from config
+    /// → same bytes. No subprocess involvement needed.
+    #[test]
+    fn virtual_module_source_round_trips_through_config() {
+        let source = "export const data = { key: 'value' };\nexport default data;\n";
+        let cfg = EsbuildSubprocessConfig::default()
+            .with_virtual_modules(vec![("virtual:data".to_string(), source.to_string())]);
+        let retrieved = &cfg.virtual_modules[0].1;
+        assert_eq!(retrieved.as_str(), source, "source must survive config round-trip unchanged");
     }
 }

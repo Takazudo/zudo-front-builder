@@ -186,8 +186,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .collect();
         Some(zfb_server::InjectedRouteSet::new(records))
     };
-    // Bind `_setup_registries` so the unused `aliases` / `virtual_modules`
-    // pieces don't warn until Wave 2 picks them up.
+    // #261 — build mode wires `aliases` + `virtual_modules` into the esbuild
+    // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev-mode
+    // per-island bundling (`run_islands`) is not yet wired in the orchestrator
+    // (`run_islands: None` below); that wiring will land in a follow-up wave.
+    // Keep the variable in scope so it stays live for the session duration.
     let _setup_registries = setup_registries;
 
     // 2. Stand up the long-lived renderer state if the project looks
