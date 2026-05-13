@@ -1160,6 +1160,14 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // so the bundler emits `globalThis.__zfb.site` in `entry.mjs` for
     // layout-side canonical tag, OG URL, and sitemap construction (sub #254).
     bundler_input.site = config.site.clone();
+    // Thread `prefetch.disabled` so `zfb build` emits
+    // `globalThis.__zfb.prefetchDisabled = true` in `entry.mjs` when the
+    // user sets `prefetch: { disabled: true }` in `zfb.config.ts` (sub #277).
+    bundler_input.prefetch_disabled = config
+        .prefetch
+        .as_ref()
+        .and_then(|p| p.disabled)
+        .unwrap_or(false);
     bundler_input.toc = config.markdown.as_ref().and_then(|m| m.toc.clone());
     // Thread `markdown.externalLinks` into the bundler so the hoisted MDX
     // pre-compile pipeline appends `ExternalLinksPlugin`. MUST mirror
