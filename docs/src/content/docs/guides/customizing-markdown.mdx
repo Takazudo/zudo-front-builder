@@ -114,6 +114,73 @@ walks through the surface.
 
 </Tip>
 
+## Table of Contents (TOC)
+
+zfb ships a `remark-toc`-equivalent as an opt-in hast visitor. When enabled,
+it scans the rendered heading tree for a heading whose text matches a
+configured anchor string (default `"TOC"`, case-insensitive) and inserts a
+nested `<ul>/<li>` list of the **subsequent** headings as the next sibling.
+
+Because the visitor runs in the **hast phase after `HeadingLinksPlugin`**, it
+reads the final deduplicated `id` attributes that plugin already placed on
+every `<h2>`–`<h6>`. Links in the generated list are guaranteed to match the
+rendered anchor IDs — including documents that repeat the same heading text
+(e.g. multiple "Overview" sections), where `HeadingLinksPlugin` produces
+`overview`, `overview-1`, `overview-2`, …
+
+To enable, add a `toc` key inside the `markdown` block in `zfb.config.ts`:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    toc: {
+      heading: "TOC",   // optional; default "TOC" (case-insensitive)
+      maxDepth: 2,       // optional; default 2 (h2 + h3)
+    },
+  },
+});
+```
+
+Then place a heading with that text anywhere in your Markdown body:
+
+```md
+## TOC
+
+## Introduction
+
+### Getting started
+
+## Advanced usage
+```
+
+zfb inserts the TOC list immediately after the `## TOC` heading:
+
+```html
+<h2 id="toc">TOC …</h2>
+<ul>
+  <li><a href="#introduction">Introduction</a>
+    <ul>
+      <li><a href="#getting-started">Getting started</a></li>
+    </ul>
+  </li>
+  <li><a href="#advanced-usage">Advanced usage</a></li>
+</ul>
+<h2 id="introduction">Introduction …</h2>
+…
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `heading` | `string` | `"TOC"` | Heading text that triggers insertion (case-insensitive). |
+| `maxDepth` | `number` | `2` | Levels to include from `<h2>`. `1` → h2 only, `2` → h2+h3, `3` → h2–h4, max `5`. |
+
+Omitting the `toc` key entirely leaves the build byte-for-byte identical —
+no visitor is registered and no output changes.
+
 ## See also
 
 - [Custom Directives](/concepts/custom-directives) — register new

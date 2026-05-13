@@ -20,6 +20,8 @@ pub use pipeline::{
     constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
 };
 
+pub use plugins::toc::TocConfig;
+
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,

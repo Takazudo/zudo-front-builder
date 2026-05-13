@@ -423,6 +423,7 @@ fn make_full_fixture_input(
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        toc: None,
     }
 }
 

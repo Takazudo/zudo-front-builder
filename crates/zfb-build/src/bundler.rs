@@ -411,6 +411,17 @@ pub struct BundlerInput {
     /// The value is validated as an absolute HTTP/HTTPS URL by the
     /// config loader before reaching here. Default: `None`.
     pub site: Option<String>,
+
+    /// Optional TOC config. When `Some`, a [`TocPlugin`] is appended to
+    /// the hast phase immediately after `HeadingLinksPlugin` so it reads
+    /// final deduplicated `id` attributes. `None` (the default) leaves
+    /// the build byte-for-byte identical to the pre-TOC build.
+    ///
+    /// Mirrors `zfb::config::Config::markdown.toc`. Threaded alongside
+    /// `gfm_constructs` so the snapshot walker and bundler agree on the
+    /// same pipeline shape and produce byte-identical JSX `content_hash`
+    /// values.
+    pub toc: Option<zfb_content::TocConfig>,
 }
 
 impl BundlerInput {
@@ -458,6 +469,7 @@ impl BundlerInput {
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
+            toc: None,
         }
     }
 }
@@ -634,6 +646,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
             &mut broken,
         )
         .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
@@ -667,6 +680,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.code_highlight_theme.as_deref(),
                 if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                 input.gfm_constructs,
+                input.toc.clone(),
                 &mut broken,
             )
             .with_context(|| {
@@ -693,6 +707,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
             &mut broken,
         )
         .with_context(|| {
@@ -715,6 +730,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
             &mut broken,
         )
         .with_context(|| {
@@ -736,6 +752,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.code_highlight_theme.as_deref(),
             if resolve_links_enabled { Some(&resolve_source_map) } else { None },
             input.gfm_constructs,
+            input.toc.clone(),
             &mut broken,
         )
         .with_context(|| {
@@ -791,6 +808,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     input.code_highlight_theme.as_deref(),
                     if resolve_links_enabled { Some(&resolve_source_map) } else { None },
                     input.gfm_constructs,
+                    input.toc.clone(),
                     &mut broken,
                 )
                 .with_context(|| {
@@ -970,6 +988,7 @@ fn materialise_shadow(
     code_highlight_theme: Option<&str>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    toc: Option<zfb_content::TocConfig>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1018,6 +1037,9 @@ fn materialise_shadow(
         code_highlight_theme,
         gfm_constructs,
     );
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -1259,6 +1281,7 @@ fn materialise_collection(
     code_highlight_theme: Option<&str>,
     resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
     gfm_constructs: zfb_content::ResolvedGfmConstructs,
+    toc: Option<zfb_content::TocConfig>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1285,6 +1308,9 @@ fn materialise_collection(
         code_highlight_theme,
         gfm_constructs,
     );
+    if let Some(toc_cfg) = toc {
+        pipeline.add_toc(toc_cfg);
+    }
     if strip_md_ext {
         pipeline.add_strip_md_ext();
     }
@@ -2173,6 +2199,7 @@ mod tests {
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
+            toc: None,
         }
     }
 
@@ -2468,6 +2495,7 @@ mod tests {
             None,
             None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2599,6 +2627,7 @@ mod tests {
             None,
             None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2804,6 +2833,7 @@ mod tests {
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
+            toc: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -2921,6 +2951,7 @@ mod tests {
             None,
             None,
             zfb_content::ResolvedGfmConstructs::default(),
+            None,
             &mut Vec::new(),
         )
         .unwrap();

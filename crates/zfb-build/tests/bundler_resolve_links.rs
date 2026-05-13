@@ -155,6 +155,7 @@ fn make_input_with_resolve(
         }),
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        toc: None,
     }
 }
 
@@ -195,6 +196,7 @@ fn make_input_without_resolve(
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        toc: None,
     }
 }
 

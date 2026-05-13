@@ -26,7 +26,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use crate::plugins::{
     AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
     HeadingLinksPlugin, ImageEnlargePlugin, MermaidPlugin, ResolveLinksPlugin,
-    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin,
+    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin, TocConfig, TocPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -395,6 +395,34 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.set_source_dir(dir);
         }
+    }
+
+    /// Append a [`TocPlugin`] to the hast phase.
+    ///
+    /// The TOC visitor runs **after** [`HeadingLinksPlugin`] (which is always
+    /// first in the hast chain) so it can read the final deduplicated `id`
+    /// attributes that plugin placed on each `<h2>`–`<h6>`. Callers should
+    /// invoke this after [`Pipeline::with_defaults_and_theme_and_gfm`] — the
+    /// insertion order is preserved, so TOC ends up scheduled after
+    /// heading-links but before code-title and syntect.
+    ///
+    /// Not in `with_defaults()` because the feature is opt-in: absence of
+    /// `markdown.toc` in `zfb.config.ts` must leave the build byte-for-byte
+    /// identical.
+    pub fn add_toc(&mut self, cfg: TocConfig) -> &mut Self {
+        // Insert at position 1 in the hast visitors list so TOC runs
+        // immediately after HeadingLinksPlugin (index 0) and before all
+        // subsequent hast visitors. This guarantees ids are already set.
+        //
+        // If the list is empty (e.g. in a bare pipeline built without
+        // with_defaults), append normally so the visitor still runs.
+        let toc = Box::new(TocPlugin::new(cfg)) as Box<dyn HastVisitor>;
+        if self.hast_visitors.is_empty() {
+            self.hast_visitors.push(toc);
+        } else {
+            self.hast_visitors.insert(1, toc);
+        }
+        self
     }
 
     /// Drain broken-link diagnostics from the wired [`ResolveLinksPlugin`].

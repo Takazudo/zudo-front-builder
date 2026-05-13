@@ -17,6 +17,7 @@ pub mod mermaid;
 pub mod resolve_links;
 pub mod strip_md_ext;
 pub mod syntect_plugin;
+pub mod toc;
 pub mod util;
 
 pub use admonitions::{AdmonitionsPlugin, default_admonition_directives};
@@ -29,3 +30,4 @@ pub use mermaid::MermaidPlugin;
 pub use resolve_links::{BrokenLinkDiagnostic, ResolveLinksPlugin, ResolveMarkdownLinksOptions};
 pub use strip_md_ext::StripMdExtensionPlugin;
 pub use syntect_plugin::SyntectPlugin;
+pub use toc::{TocConfig, TocPlugin};

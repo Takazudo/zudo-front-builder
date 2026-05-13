@@ -617,6 +617,7 @@ fn boot_dev_renderer(
     // `globalThis.__zfb.site` the same way `zfb build` does. Mirrors the
     // `commands/build.rs` wiring (sub #254).
     bundler_input.site = cfg.site.clone();
+    bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
     // Sub #212 follow-up — same embedded-esbuild wiring as
     // `commands/build.rs`. Without this, dev mode would also blow up on
     // consumer projects without `crates/zfb/binaries/esbuild/`.

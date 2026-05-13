@@ -211,11 +211,40 @@ export type ZfbConfig = {
 };
 
 /**
+ * Table-of-contents options. Wire via `markdown.toc` in `zfb.config.ts`.
+ *
+ * When present, a TOC `<ul>/<li>` list is inserted as the next sibling
+ * of the first heading whose text matches `heading` (case-insensitive).
+ * Each `<a href="#id">` links to the deduplicated `id` that
+ * `HeadingLinksPlugin` placed on the corresponding heading.
+ *
+ * Mirrors `TocConfig` in `crates/zfb-content/src/plugins/toc.rs`.
+ */
+export type TocConfig = {
+  /**
+   * Heading text that triggers TOC insertion. Matched
+   * case-insensitively after whitespace trimming. Default: `"TOC"`.
+   */
+  heading?: string;
+
+  /**
+   * Number of heading levels to include starting from `<h2>`.
+   *
+   * - `1` — h2 only
+   * - `2` (default) — h2 + h3
+   * - `3` — h2, h3, h4
+   * - …up to `5` (h2 through h6)
+   */
+  maxDepth?: number;
+};
+
+/**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the only field
- * is [`gfm`](MarkdownConfig.gfm); future markdown knobs (e.g. CommonMark
- * variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Today the knobs are
+ * [`gfm`](MarkdownConfig.gfm) and [`toc`](MarkdownConfig.toc); future
+ * markdown knobs (e.g. CommonMark variants, custom extensions) would
+ * also live here.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -239,6 +268,19 @@ export type MarkdownConfig = {
    * the full GFM surface should opt in with `gfm: true`.
    */
   gfm?: GfmFlag;
+
+  /**
+   * Table-of-contents options. When present, a `<ul>/<li>` list is
+   * inserted after the first heading whose text matches `heading`
+   * (default `"TOC"`, case-insensitive). Each link points to the
+   * deduplicated `id` that `HeadingLinksPlugin` placed on the heading.
+   *
+   * Omitting this field entirely leaves the build byte-for-byte identical
+   * to the pre-TOC build. See [`TocConfig`] for the available options.
+   *
+   * Mirrors `MarkdownConfig::toc` in crates/zfb/src/config.rs.
+   */
+  toc?: TocConfig;
 };
 
 /**

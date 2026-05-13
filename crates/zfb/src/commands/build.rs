@@ -806,6 +806,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
             strip_md_ext: config.strip_md_ext,
             resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
             gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
+            toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
         };
         match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
             Ok(snap) => match serde_json::to_string(&snap) {
@@ -998,6 +999,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(args: BuildArgsResolved<'_, R, A>
     // so the bundler emits `globalThis.__zfb.site` in `entry.mjs` for
     // layout-side canonical tag, OG URL, and sitemap construction (sub #254).
     bundler_input.site = config.site.clone();
+    bundler_input.toc = config.markdown.as_ref().and_then(|m| m.toc.clone());
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,

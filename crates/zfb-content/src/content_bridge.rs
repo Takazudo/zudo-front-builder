@@ -164,6 +164,15 @@ pub struct SnapshotPipelineConfig {
     /// tests + fixtures that don't construct this struct manually keep
     /// the same effective behaviour as before this field landed.
     pub gfm_constructs: super::pipeline::ResolvedGfmConstructs,
+
+    /// When `Some`, wire [`TocPlugin`] into the hast phase immediately after
+    /// `HeadingLinksPlugin`. MUST match the bundler's `markdown.toc` setting
+    /// exactly — divergence shifts the JSX `content_hash` and every
+    /// `<Content />` lookup falls back to `<pre data-zfb-content-fallback>`.
+    ///
+    /// `Default` is `None` (visitor not wired) for byte-for-byte parity with
+    /// the pre-TOC build.
+    pub toc: Option<super::plugins::toc::TocConfig>,
 }
 
 impl SnapshotPipelineConfig {
@@ -179,6 +188,9 @@ impl SnapshotPipelineConfig {
         }
         if let Some(map) = self.resolve_source_map.as_ref() {
             p.add_resolve_links(map.clone());
+        }
+        if let Some(toc_cfg) = self.toc.clone() {
+            p.add_toc(toc_cfg);
         }
         p
     }

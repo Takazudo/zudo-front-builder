@@ -132,6 +132,7 @@ fn make_input(
         resolve_markdown_links: None,
         gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
+        toc: None,
     }
 }
 
