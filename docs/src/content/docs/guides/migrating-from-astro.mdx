@@ -117,3 +117,334 @@ Some features have no current equivalent: an integrations marketplace, Astro
 DB, and server endpoints. If your site relies on these, evaluate whether
 the zfb plugin system or an adapter covers your use case before committing
 to a port.
+
+### Engine additions since v0
+
+The following capabilities were not part of the initial zfb release but are
+available today. If your Astro site used the equivalent patterns, here is
+where to reach in zfb:
+
+**Canonical site URL (`site`)**
+
+Astro's `site` config key maps directly to zfb's top-level `site` option:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  site: "https://example.com",
+});
+```
+
+When set, `globalThis.__zfb.site` is available at render time so layouts can
+build canonical `<link>` tags and OpenGraph meta. See
+[`defineConfig`](/api/define-config).
+
+**Plugin lifecycle: `setup`, `addAlias`, `addVirtualModule`, `injectRoute`**
+
+Astro integrations expose `updateConfig`, `addWatchFile`, and `injectRoute`
+during the `astro:config:setup` hook. zfb's equivalent is the `setup` hook in
+the plugin lifecycle:
+
+```ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  setup({ command, addAlias, addVirtualModule, injectRoute }) {
+    addAlias("@/components/foo", "./src/components/foo.tsx");
+    addVirtualModule("virtual:my-data", () =>
+      `export default ${JSON.stringify({ key: "value" })}`,
+    );
+    if (command === "dev") {
+      injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+    }
+  },
+});
+```
+
+`addAlias` performs exact-match import rewrites (prefix matching is a future
+revision). `addVirtualModule` exposes a synthetic ESM module by specifier.
+`injectRoute` is dev-only; calling it during `zfb build` is an error.
+See [Plugins](/concepts/plugins) for the full contract.
+
+**Route manifest in `postBuild` (`ctx.routes`)**
+
+Astro exposes a `injectRoute` + `astro:build:done` pattern for post-build
+work. In zfb, `postBuild` plugins receive `ctx.routes` — the complete manifest
+of every URL the build emitted:
+
+```ts
+postBuild({ outDir, routes }) {
+  const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+  // write sitemap, feed, etc.
+},
+```
+
+See the [Plugins](/concepts/plugins) page for the full `ZfbRouteManifest`
+shape and a worked sitemap example.
+
+**Markdown: Table of Contents, external links, CJK-friendly emphasis**
+
+Astro users often reach for `remark-toc`, `rehype-external-links`, or CJK
+patches as integrations. In zfb, these are built-in opt-ins inside the
+`markdown` config block:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    toc: { heading: "TOC", maxDepth: 2 },
+    externalLinks: { target: "_blank", rel: ["noopener", "noreferrer"] },
+    cjkFriendly: true, // on by default
+  },
+});
+```
+
+See [Customizing Markdown](/guides/customizing-markdown) for full details.
+
+**Custom theme files for syntax highlighting (`codeHighlight.themesDir`)**
+
+Astro's `shiki` integration accepts any Shiki theme name. zfb uses syntect
+(Sublime Text–compatible `.tmTheme` files). Point `codeHighlight.themesDir`
+at a directory containing your `.tmTheme` files:
+
+```ts
+export default defineConfig({
+  codeHighlight: {
+    themesDir: "./themes",
+    theme: "Dracula",
+  },
+});
+```
+
+See [Syntax Highlighting](/guides/syntax-highlighting).
+
+## Patterns that move to user space
+
+zfb deliberately omits some Astro features. This is not oversight — these
+patterns have clean userland solutions in a pure-JSX/Preact model that do
+not need engine support. The sections below show the recommended recipe for
+each.
+
+### `client:media` — conditional hydration by media query
+
+Astro's `client:media="(max-width: 768px)"` defers hydration until a media
+query matches. zfb's `"use client"` directive always hydrates on load.
+
+The Preact equivalent is an early return inside the component itself:
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "preact/hooks";
+
+interface Props {
+  children: preact.ComponentChildren;
+}
+
+/** Renders children only on viewports that match the query. */
+export default function MediaMount({ children }: Props) {
+  const [matches, setMatches] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    setMatches(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  if (!matches) return null;
+  return <>{children}</>;
+}
+```
+
+Use this as a wrapper: `<MediaMount><MobileMenu /></MediaMount>`. The wrapped
+component only mounts when the query matches; it unmounts when the query stops
+matching.
+
+### Per-page `<head>` additions (Astro's `<Fragment slot="head">`)
+
+Astro lets pages inject arbitrary `<head>` elements via `<Fragment slot="head">`.
+zfb does not have a slot mechanism at the engine level.
+
+<Note>
+
+  `PageMeta` currently rejects unknown fields; if that constraint relaxes in a
+  future ADR, this recipe will get simpler.
+
+</Note>
+
+The userland pattern is a **Preact context-based helmet**. The layout renders
+the page body first (populating the collector), then emits the collected head
+nodes. This avoids a second render pass:
+
+```tsx
+// components/head-context.tsx
+import { createContext } from "preact";
+import { useContext, useRef } from "preact/hooks";
+
+interface HeadContextValue {
+  nodes: preact.VNode[];
+  add(node: preact.VNode): void;
+}
+
+export const HeadContext = createContext<HeadContextValue>({
+  nodes: [],
+  add() {},
+});
+
+export function useHead() {
+  return useContext(HeadContext);
+}
+```
+
+```tsx
+// components/head.tsx — drop inside a page to register head nodes
+import { useHead } from "./head-context";
+
+interface Props {
+  children: preact.VNode | preact.VNode[];
+}
+
+export function Head({ children }: Props) {
+  const { add } = useHead();
+  const registered = useRef(false);
+  if (!registered.current) {
+    registered.current = true;
+    const nodes = Array.isArray(children) ? children : [children];
+    nodes.forEach(add);
+  }
+  return null; // renders nothing inline
+}
+```
+
+```tsx
+// layouts/base.tsx
+import { useState } from "preact/hooks";
+import { HeadContext } from "../components/head-context";
+
+export default function BaseLayout({ children }: { children: preact.ComponentChildren }) {
+  const [nodes] = useState<preact.VNode[]>([]);
+  const ctx = { nodes, add: (n: preact.VNode) => nodes.push(n) };
+
+  // Render children first so Head calls populate `nodes` before we emit <head>.
+  const body = <main>{children}</main>;
+
+  return (
+    <HeadContext.Provider value={ctx}>
+      <html>
+        <head>
+          <meta charSet="utf-8" />
+          {nodes}
+        </head>
+        {body}
+      </html>
+    </HeadContext.Provider>
+  );
+}
+```
+
+```tsx
+// pages/blog/[slug].tsx
+import { Head } from "../../components/head";
+
+export default function BlogPost({ post }) {
+  return (
+    <>
+      <Head>
+        <title>{post.data.title}</title>
+        <meta name="description" content={post.data.description} />
+      </Head>
+      <article>{/* ... */}</article>
+    </>
+  );
+}
+```
+
+<Warning title="SSR render order">
+
+  This pattern relies on Preact rendering children before siblings in the same
+  pass. It works for zfb's static-build SSR (top-down rendering, children
+  before parent `{nodes}` emission). If you add a streaming SSR adapter,
+  verify that the head is flushed after body rendering completes.
+
+</Warning>
+
+### Preact-compat aliases (`@/components/svg`, `@/components/responsive-image`)
+
+Some Astro projects register aliases like `@/components/svg` and
+`@/components/responsive-image` to work around Astro's component model —
+for example, bridging `.astro` SVG components into JSX islands.
+
+In zfb every component is `.tsx` from the start; the bridging layer those
+aliases provided does not exist. During migration, **remove these aliases and
+import the components directly** by their file path (or by a simpler alias
+pointing straight at the `.tsx` file):
+
+```ts
+// Before (Astro workaround — remove):
+// addAlias("@/components/svg", "./src/components/astro-svg-bridge");
+
+// After (zfb — import directly or use a simple alias):
+addAlias("@/svg", "./components/svg.tsx");
+```
+
+If the aliased file was an Astro component (`.astro`) you will need to
+rewrite it as a `.tsx` component first.
+
+### Custom hydration with `data-island` markers
+
+Astro islands serialize component props as JSON in `<script type="application/json">`
+tags next to the rendered HTML. Some projects extend this with custom
+`data-island` attributes for fine-grained control.
+
+This pattern ports **byte-for-byte** to zfb — you own the full hydration
+strategy. Ship your own `<script>` that queries the markers and calls
+Preact's `hydrate()`:
+
+```tsx
+"use client";
+
+// components/island-hydrator.tsx — add to your root layout as a "use client" island
+import { hydrate } from "preact";
+import { useEffect } from "preact/hooks";
+import MyWidget from "./my-widget";
+
+const REGISTRY: Record<string, preact.ComponentType> = {
+  "my-widget": MyWidget,
+  // add more components here
+};
+
+export default function IslandHydrator() {
+  useEffect(() => {
+    document.querySelectorAll<HTMLElement>("[data-island]").forEach((el) => {
+      const name = el.dataset.island!;
+      const Component = REGISTRY[name];
+      if (!Component) return;
+      const props = JSON.parse(el.dataset.props ?? "{}");
+      hydrate(<Component {...props} />, el);
+    });
+  }, []);
+  return null;
+}
+```
+
+Then in server-rendered markup, emit `<div data-island="my-widget" data-props='{"label":"Click me"}' />`.
+
+### Custom remark / rehype plugins
+
+Astro accepts arbitrary remark and rehype plugins via
+`remarkPlugins` / `rehypePlugins` in `astro.config.mjs`.
+
+zfb's Markdown pipeline is Rust-backed. There is no npm-level plugin loader for
+remark or rehype. Markdown-level customisation ships as an in-tree Rust
+visitor — a `MdastVisitor` or `HastVisitor` implementation compiled into the
+binary.
+
+For most sites this is not a migration blocker: the common built-in remark
+plugins (TOC, external links, CJK fixing) are already available as first-class
+options in `zfb.config.ts`. If you relied on a custom plugin for something
+more specific, see
+[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) for
+the in-tree Rust visitor path.
