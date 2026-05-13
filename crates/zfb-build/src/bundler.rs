@@ -426,6 +426,13 @@ pub struct BundlerInput {
     /// config loader before reaching here. Default: `None`.
     pub site: Option<String>,
 
+    /// When `true`, the bundler emits `globalThis.__zfb.prefetchDisabled = true`
+    /// in the synthetic `entry.mjs` so `<ClientRouter />` renders the disable
+    /// meta tag and the prefetch-core module short-circuits at `init()` time.
+    ///
+    /// Mirrors `zfb::config::Config::prefetch.disabled`. Default: `false`.
+    pub prefetch_disabled: bool,
+
     /// Optional TOC config. When `Some`, a [`TocPlugin`] is appended to
     /// the hast phase immediately after `HeadingLinksPlugin` so it reads
     /// final deduplicated `id` attributes. `None` (the default) leaves
@@ -531,6 +538,7 @@ impl BundlerInput {
             resolve_markdown_links: None,
             gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
+            prefetch_disabled: false,
             toc: None,
             external_links: None,
             cjk_friendly: true,
@@ -991,6 +999,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         input.content_snapshot_json.as_deref(),
         &content_imports,
         input.site.as_deref(),
+        input.prefetch_disabled,
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -1807,6 +1816,7 @@ fn write_entry_module(
     content_snapshot_json: Option<&str>,
     content_imports: &[ContentImport],
     site: Option<&str>,
+    prefetch_disabled: bool,
 ) -> Result<()> {
     use std::fmt::Write as _;
     let mut src = String::new();
@@ -1960,6 +1970,23 @@ fn write_entry_module(
             "globalThis.__zfb.site = {};\n\n",
             json_str(site_url)
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // Prefetch-disabled flag (#277).
+    //
+    // When `prefetch.disabled === true` in `zfb.config.ts`, emit
+    // `globalThis.__zfb.prefetchDisabled = true` so that
+    // `<ClientRouter />` renders `<meta name="zfb-prefetch-disabled"
+    // content="true">` and the runtime's prefetch-core short-circuits
+    // at `init()` time.  The flag is site-wide and static — emitted
+    // once at bundle time, never per-page.  When absent, zero bytes
+    // are added so the build output is byte-for-byte identical to the
+    // pre-`prefetch` build.
+    // ---------------------------------------------------------------
+    if prefetch_disabled {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str("globalThis.__zfb.prefetchDisabled = true;\n\n");
     }
 
     // ---------------------------------------------------------------
@@ -2431,7 +2458,7 @@ mod tests {
                 entry_key: "/about".to_string(),
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[], None).unwrap();
+        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[], None, false).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2504,7 +2531,7 @@ mod tests {
                 shadow_rel_path: "content/docs-ja/intro.mdx".to_string(),
             },
         ];
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports, None).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports, None, false).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -2568,7 +2595,7 @@ mod tests {
         // `entry.mjs` without the bridge symbols).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -2598,6 +2625,7 @@ mod tests {
             None,
             &[],
             Some("https://example.com"),
+            false,
         )
         .unwrap();
 
@@ -2634,12 +2662,74 @@ mod tests {
         // pre-`site` build (sub #254 acceptance criterion).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None).unwrap();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
             !body.contains("globalThis.__zfb.site"),
             "site=None → no site setter; got:\n{body}"
+        );
+    }
+
+    // --- prefetch_disabled flag tests (#277) ---------------------------------
+
+    #[test]
+    fn entry_module_emits_prefetch_disabled_when_true() {
+        // When `prefetch_disabled` is `true`, the entry module must emit
+        // `globalThis.__zfb.prefetchDisabled = true` before `createPageRouter`
+        // so `<ClientRouter />` can read it during the first SSR call.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            true,
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "prefetch_disabled branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.prefetchDisabled = true;"),
+            "prefetch_disabled setter must be present; got:\n{body}"
+        );
+
+        // The flag must precede createPageRouter so SSR code that reads
+        // `globalThis.__zfb.prefetchDisabled` on the first request already
+        // sees the value.
+        let flag_idx = body
+            .find("globalThis.__zfb.prefetchDisabled")
+            .expect("prefetchDisabled setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            flag_idx < router_idx,
+            "prefetch_disabled setter must precede createPageRouter; flag at {flag_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_prefetch_disabled_when_false() {
+        // When `prefetch_disabled` is `false`, zero bytes related to the
+        // prefetch flag are emitted — preserving byte-for-byte parity with
+        // the pre-`prefetch` build (sub #277 acceptance criterion).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("globalThis.__zfb.prefetchDisabled"),
+            "prefetch_disabled=false → no prefetch setter; got:\n{body}"
         );
     }
 
@@ -2835,7 +2925,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None, &[], None).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None, &[], None, false).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -2850,7 +2940,7 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None, false).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
