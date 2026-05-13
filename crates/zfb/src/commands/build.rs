@@ -200,6 +200,21 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // context where blocking is not allowed`. Telling the outer
     // runtime up-front that the next stretch of work is blocking is
     // the supported escape hatch.
+    // Derive the alias / virtual-module lists for the main bundler from the
+    // same sources used for the islands path. The islands path consumed these
+    // via `IslandsPluginConfig`; here we produce the same `Vec<(String,
+    // String)>` shape expected by `BundlerInput::plugin_alias_entries` /
+    // `plugin_virtual_modules` (#268).
+    let main_bundler_alias_entries: Vec<(String, String)> = setup_registries
+        .aliases
+        .iter()
+        .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
+        .collect();
+    let main_bundler_virtual_modules: Vec<(String, String)> = virtual_sources
+        .iter()
+        .map(|(spec, src)| (spec.clone(), src.clone()))
+        .collect();
+
     let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
         run_build(BuildArgsResolved {
             project_root: &project_root,
@@ -211,6 +226,8 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
                 v8_plugin_hooks,
             },
             adapter_runner: &DefaultAdapterRunner,
+            plugin_alias_entries: main_bundler_alias_entries,
+            plugin_virtual_modules: main_bundler_virtual_modules,
         })
     })?;
 
@@ -260,6 +277,17 @@ struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     /// Indirection over `pnpm exec <adapter-bin>` so unit tests can
     /// assert dispatch shape without spawning a real subprocess.
     adapter_runner: &'a A,
+    /// Plugin-registered import aliases to thread into the main bundler's
+    /// esbuild invocation. Each `(from, to)` pair becomes `--alias:<from>=<to>`.
+    /// Sourced from `setup_registries.aliases`; empty vec when no plugins are
+    /// active. Mirrors what `IslandsPluginConfig::alias_entries` provides for
+    /// the islands path.
+    plugin_alias_entries: Vec<(String, String)>,
+    /// Plugin-registered virtual-module `(specifier, source)` pairs to thread
+    /// into the main bundler's esbuild invocation. Sourced from
+    /// `setup_registries.virtual_modules` (sources pre-fetched before
+    /// `block_in_place`). Empty vec when no plugins are active.
+    plugin_virtual_modules: Vec<(String, String)>,
 }
 
 /// Indirection seam over the heavy bundler + renderer calls.
@@ -848,6 +876,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         routes,
         runner,
         adapter_runner,
+        plugin_alias_entries,
+        plugin_virtual_modules,
     } = args;
 
     // Resolve the adapter choice up front so we can fail fast if the
@@ -1144,6 +1174,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .map(|el| (el.into_content_config(), config.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
+    // #268 — thread plugin-registered aliases and virtual modules into the
+    // main bundler's esbuild invocation so page / layout / shared SSR-only
+    // modules can consume them. The SAME data already feeds the islands path
+    // via `IslandsPluginConfig`; here we plumb it into `BundlerInput` so the
+    // main SSR bundle path gets identical resolution behaviour.
+    bundler_input.plugin_alias_entries = plugin_alias_entries;
+    bundler_input.plugin_virtual_modules = plugin_virtual_modules;
     // Sub #212 follow-up — extend the embedded-binary extraction tier to
     // the bundler step. `crates/zfb-build/src/bundler.rs::resolve_esbuild_binary_with_env`
     // previously walked only `input.esbuild_binary`, then `ZFB_ESBUILD_BIN`,
@@ -2144,6 +2181,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -2193,6 +2232,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -2246,6 +2287,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
         // Only the static route reaches the renderer; the dynamic one
@@ -2301,6 +2344,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
         // 1 static + 2 expanded dynamic.
@@ -2342,6 +2387,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
         assert_eq!(pages, 0);
@@ -2421,6 +2468,8 @@ mod tests {
             routes: &routes,
             runner: &FailingRunner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -2457,6 +2506,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
         assert!(
@@ -2499,6 +2550,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -2556,6 +2609,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
         let calls = fake_adapter.calls.borrow();
@@ -2591,6 +2646,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -2631,6 +2688,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -2824,6 +2883,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -2918,6 +2979,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -3018,6 +3081,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
@@ -3396,6 +3461,8 @@ mod tests {
             routes: &routes,
             runner: &runner,
             adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
         })
         .unwrap();
 
