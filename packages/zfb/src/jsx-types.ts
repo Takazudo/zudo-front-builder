@@ -17,9 +17,17 @@
  * HTML attribute values (strings, numbers, booleans). All fields are widened
  * to `unknown` so the type stays opaque to callers that don't know which
  * framework produced the value.
+ *
+ * `type` accepts BOTH function components (call signature) AND class
+ * components (construct signature). Preact and React both expose
+ * `ComponentType = FunctionComponent | ComponentClass`, and the JSX runtime
+ * stores either on `.type`. Without the construct signature, valid Preact
+ * `<MyComponent />` expressions fail to assign to `VNode` at the framework
+ * boundary (e.g. inside `<Island>` children) — even though class components
+ * are rare in modern Preact, the `ComponentType` union includes them.
  */
 export type VNodeObject = {
-  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly type: string | ((...args: unknown[]) => unknown) | (new (...args: unknown[]) => unknown);
   readonly props: Readonly<Record<string, unknown>>;
   readonly key: unknown;
 };
