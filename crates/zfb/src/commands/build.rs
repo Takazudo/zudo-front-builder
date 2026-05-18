@@ -1300,7 +1300,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         manifest: bundler_out.manifest.clone(),
         dist_dir: outdir.to_path_buf(),
         route_universe: static_routes,
-        prerender_map,
+        prerender_map: prerender_map.clone(),
         backend,
         request_timeout: None,
         // S4: inject the stable URLs for any asset slot that produced
@@ -1431,13 +1431,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // - statically-expanded dynamic routes (params from `expansion`),
     // - runtime-expanded dynamic routes (params from `runtime_expansion`).
     //
-    // Only routes that actually appear in the renderer's ssg_files_written
-    // (i.e. emitted to disk) are included, to avoid surfacing SSR-only pages.
+    // The manifest now includes BOTH prerendered (SSG) routes — which
+    // appear in `render_out.ssg_files_written` — AND SSR routes (those
+    // with `export const prerender = false`), which have no on-disk
+    // artifact but ARE valid runtime URLs. Each entry carries a
+    // `prerender` boolean derived from the build-time `prerender_map` so
+    // plugins that should only enumerate on-disk URLs (sitemap.xml,
+    // search-index.json) can filter `r.prerender !== false`.
     let manifest = build_post_build_manifest(
         routes,
         project_root,
         &expansion.resolved_with_params,
         &runtime_expansion.resolved_with_params,
+        &prerender_map,
     );
 
     Ok((render_out.ssg_files_written.len(), manifest))
@@ -1448,11 +1454,18 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 /// output path is a plain HTML or non-HTML page are included (adapter-specific
 /// artefacts like `_worker.js` are not). The manifest is sorted by `url` for
 /// byte-stable output across runs (#262 AC: "Manifest byte-stable across runs").
+///
+/// `prerender_map` is the same build-time map produced by
+/// [`crate::render_pipeline::build_prerender_map`] and keyed by
+/// `route_key` (the route template). Each emitted [`PostBuildRouteEntry`]
+/// carries the resolved `prerender` boolean so consumer plugins can
+/// distinguish SSG (on-disk) and SSR routes.
 fn build_post_build_manifest(
     routes: &[zfb_router::Route],
     project_root: &Path,
     static_expansion_params: &[DynamicResolvedEntry],
     runtime_expansion_params: &[DynamicResolvedEntry],
+    prerender_map: &std::collections::BTreeMap<String, bool>,
 ) -> zfb_build::PostBuildRouteManifest {
     use std::collections::BTreeMap;
     use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
@@ -1478,11 +1491,16 @@ fn build_post_build_manifest(
             .unwrap_or(&route.source_path)
             .to_string_lossy()
             .into_owned();
+        // Default to SSG (`prerender = true`) when the map has no entry —
+        // matches the rest of the build's interpretation of a missing
+        // `export const prerender` (e.g. lines 1001 / 1019 above).
+        let prerender = prerender_map.get(&template).copied().unwrap_or(true);
         entries.push(PostBuildRouteEntry {
             url: template,
             output: output_path.to_string_lossy().into_owned(),
             extension: ext,
             source,
+            prerender,
             params: None,
         });
     }
@@ -1515,11 +1533,17 @@ fn build_post_build_manifest(
             Some(map)
         };
 
+        let prerender = prerender_map
+            .get(&dyn_entry.route_key)
+            .copied()
+            .unwrap_or(true);
+
         entries.push(PostBuildRouteEntry {
             url: dyn_entry.url_path.clone(),
             output: dyn_entry.output_path.to_string_lossy().into_owned(),
             extension: dyn_entry.extension.clone(),
             source,
+            prerender,
             params,
         });
     }

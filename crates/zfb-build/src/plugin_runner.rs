@@ -112,6 +112,13 @@ pub struct PluginSpec {
 /// For static routes `params` is absent. For dynamic / catchall routes
 /// `params` contains the bound parameter values: scalar strings for
 /// `[slug]` segments, string arrays for `[...rest]` segments.
+///
+/// `prerender` mirrors the page module's `export const prerender = ...`:
+/// `true` for SSG routes that produced an on-disk HTML/asset under
+/// `outDir`, `false` for SSR routes whose response is computed by the
+/// runtime adapter and has no on-disk artifact. Plugins that emit
+/// indexes of "URLs the build wrote to disk" (sitemap.xml,
+/// search-index.json, etc.) should filter `r.prerender !== false`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PostBuildRouteEntry {
@@ -124,6 +131,11 @@ pub struct PostBuildRouteEntry {
     /// Source page module, relative to the project root,
     /// e.g. `pages/blog/[slug].tsx`.
     pub source: String,
+    /// True when the page is prerendered to disk (default / SSG);
+    /// false when the page exports `prerender = false` and is served
+    /// by the runtime adapter (SSR). Populated for both static and
+    /// dynamic routes.
+    pub prerender: bool,
     /// Bound route params. `None` for static routes. Dynamic params are
     /// `String` scalars; catchall params are `Vec<String>`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1422,6 +1434,7 @@ mod tests {
                 output: "index.html".to_string(),
                 extension: "html".to_string(),
                 source: "pages/index.tsx".to_string(),
+                prerender: true,
                 params: None,
             }],
         };
@@ -1505,6 +1518,7 @@ mod tests {
                     output: "blog/hello-world/index.html".to_string(),
                     extension: "html".to_string(),
                     source: "pages/blog/[slug].tsx".to_string(),
+                    prerender: true,
                     params: Some(dyn_params),
                 },
                 PostBuildRouteEntry {
@@ -1512,6 +1526,7 @@ mod tests {
                     output: "docs/a/b/index.html".to_string(),
                     extension: "html".to_string(),
                     source: "pages/docs/[...rest].tsx".to_string(),
+                    prerender: true,
                     params: Some(catchall_params),
                 },
                 PostBuildRouteEntry {
@@ -1519,6 +1534,7 @@ mod tests {
                     output: "sitemap.xml".to_string(),
                     extension: "xml".to_string(),
                     source: "pages/sitemap.xml.tsx".to_string(),
+                    prerender: true,
                     params: None,
                 },
             ],
@@ -1553,5 +1569,94 @@ mod tests {
         assert_eq!(xml_r["output"], "sitemap.xml");
         assert!(xml_r.get("params").is_none() || xml_r["params"].is_null(),
             "non-HTML static route must not carry params, got: {}", xml_r);
+
+        // prerender field is present on all routes and serialises as a
+        // boolean (not omitted, not null).
+        for r in routes {
+            assert!(r["prerender"].is_boolean(),
+                "prerender must be a boolean, got: {}", r);
+        }
+    }
+
+    /// Mixed SSG + SSR routes round-trip through the JS plugin boundary
+    /// with the `prerender` field preserved on each entry. Locks the new
+    /// contract: SSG (`prerender = true`) and SSR (`prerender = false`)
+    /// stay distinguishable end-to-end so consumer plugins can filter
+    /// `r.prerender !== false` to enumerate only on-disk URLs.
+    #[tokio::test]
+    async fn post_build_route_manifest_preserves_prerender_field() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("prerender-probe.mjs");
+        let marker = tmp.path().join("routes.json");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            export default {{
+              name: "prerender-probe",
+              postBuild(ctx) {{
+                writeFileSync({marker:?}, JSON.stringify(ctx.routes));
+              }},
+            }};
+            "#,
+            marker = marker.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "prerender-probe".into(),
+                module: module_url,
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        let manifest = PostBuildRouteManifest {
+            routes: vec![
+                PostBuildRouteEntry {
+                    url: "/".to_string(),
+                    output: "index.html".to_string(),
+                    extension: "html".to_string(),
+                    source: "pages/index.tsx".to_string(),
+                    prerender: true,
+                    params: None,
+                },
+                PostBuildRouteEntry {
+                    url: "/api/search".to_string(),
+                    output: "api/search/index.html".to_string(),
+                    extension: "html".to_string(),
+                    source: "pages/api/search.tsx".to_string(),
+                    prerender: false,
+                    params: None,
+                },
+            ],
+        };
+        let ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: Some(manifest),
+        };
+        host.run_post_build(&ctx).await.expect("postBuild ok");
+        host.shutdown().await.ok();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&marker).await.unwrap()).unwrap();
+        let routes = json["routes"].as_array().unwrap();
+        assert_eq!(routes.len(), 2);
+
+        let ssg = routes.iter().find(|r| r["url"] == "/").unwrap();
+        assert_eq!(ssg["prerender"], serde_json::json!(true),
+            "SSG route must have prerender=true, got: {}", ssg);
+
+        let ssr = routes.iter().find(|r| r["url"] == "/api/search").unwrap();
+        assert_eq!(ssr["prerender"], serde_json::json!(false),
+            "SSR route must have prerender=false, got: {}", ssr);
     }
 }

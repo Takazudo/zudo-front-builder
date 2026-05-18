@@ -47,6 +47,16 @@ export type ZfbRouteEntry = {
   /** Source page module relative to the project root, e.g. `pages/blog/[slug].tsx`. */
   source: string;
   /**
+   * `true` when the page is prerendered to disk (default / SSG); `false`
+   * when the page exports `prerender = false` and is served by the
+   * runtime adapter (SSR — no on-disk artifact under `outDir`).
+   *
+   * Indexes that enumerate on-disk URLs (sitemap.xml, search-index.json,
+   * etc.) should filter `r.prerender !== false` to avoid surfacing SSR
+   * routes that have no static output.
+   */
+  prerender: boolean;
+  /**
    * Bound route parameters. Absent for static routes.
    * Dynamic (`[slug]`) params are string scalars; catchall (`[...rest]`)
    * params are string arrays.
