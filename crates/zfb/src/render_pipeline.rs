@@ -381,6 +381,11 @@ pub struct DynamicResolvedEntry {
     pub source_path: PathBuf,
     /// Output extension (`html`, `xml`, `rss`, …).
     pub extension: String,
+    /// Route template the resolved URL came from, e.g. `/blog/[slug]`.
+    /// Join key against the build-time `prerender_map` so the postBuild
+    /// manifest builder can populate `PostBuildRouteEntry::prerender`
+    /// for dynamic entries. Mirrors `RouteUniverseEntry::route_key`.
+    pub route_key: String,
     /// Resolved params for the URL.
     pub params: ResolvedRouteParams,
 }
@@ -544,6 +549,7 @@ fn try_expand_one(
             output_path,
             source_path: route.source_path.clone(),
             extension: extension.clone(),
+            route_key: route.template.clone(),
             params: ResolvedRouteParams { scalars, arrays },
         });
     }
@@ -935,6 +941,7 @@ fn resolve_json_paths(
             output_path,
             source_path: route.source_path.clone(),
             extension: extension.clone(),
+            route_key: route.template.clone(),
             params: ResolvedRouteParams { scalars, arrays },
         });
     }
