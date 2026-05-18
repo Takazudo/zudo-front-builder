@@ -10,6 +10,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -129,11 +130,205 @@ pub enum CollectionError {
     Schema { path: PathBuf, report: String },
     #[error("MDX compile error in {path}: {message}", path = path.display())]
     Mdx { path: PathBuf, message: String },
+    #[error("invalid collection filter glob {pattern:?}: {message}")]
+    BadGlob { pattern: String, message: String },
     #[error("multiple errors:\n{summary}")]
     Multiple {
         summary: String,
         errors: Vec<CollectionError>,
     },
+}
+
+/// Optional per-collection filter applied during the walk.
+///
+/// All three fields are independent and optional:
+///
+/// - `include`: keep an entry only if its path (relative to the
+///   collection root, forward-slash-normalised) matches at least one
+///   glob. `None` / empty means no include filtering.
+/// - `exclude`: drop an entry whose relative path matches any glob.
+///   Evaluated AFTER include.
+/// - `id_strip_suffix`: when an entry's derived slug ends with this
+///   string, strip the suffix from both [`Entry::slug`] and
+///   [`Entry::module_specifier`]. Other entries pass through unchanged.
+///
+/// Globs use the `globset` dialect (Unix-style, with `**` for
+/// recursive segment matching). Patterns are evaluated against the
+/// posix-style relative path, so a pattern like `subdir/*.mdx` works
+/// portably on Windows too.
+///
+/// A [`CollectionFilter::default`] / `Filter::none` value applies no
+/// filtering — equivalent to today's pre-filter walker behaviour.
+#[derive(Debug, Clone, Default)]
+pub struct CollectionFilter {
+    /// Pre-compiled `globset` matcher for include patterns. `None`
+    /// means "no include filter" (every entry passes the include
+    /// stage). An empty matcher should be expressed by passing `None`,
+    /// not an empty `GlobSet`.
+    include: Option<GlobSet>,
+    /// Pre-compiled `globset` matcher for exclude patterns.
+    exclude: Option<GlobSet>,
+    /// Suffix stripped from each kept entry's slug + module specifier.
+    id_strip_suffix: Option<String>,
+}
+
+impl CollectionFilter {
+    /// Construct a filter from raw inputs. Empty input vectors are
+    /// treated as `None` (no filtering at that stage). An empty
+    /// `id_strip_suffix` (after trimming) is treated as `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectionError::BadGlob`] when any pattern fails to
+    /// compile through `globset::Glob::new` (e.g. unbalanced brackets).
+    pub fn new(
+        include: Option<&[String]>,
+        exclude: Option<&[String]>,
+        id_strip_suffix: Option<&str>,
+    ) -> Result<Self, CollectionError> {
+        let include = compile_globset(include)?;
+        let exclude = compile_globset(exclude)?;
+        // Treat an empty / whitespace suffix as None — a stray empty
+        // string from a JSON config would otherwise no-op-strip every
+        // entry (since "foo".ends_with("") is true), which is a foot
+        // gun even though the resulting slug is unchanged.
+        let id_strip_suffix = id_strip_suffix
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        Ok(Self {
+            include,
+            exclude,
+            id_strip_suffix,
+        })
+    }
+
+    /// A no-op filter — `Default::default()` with an inherent name for
+    /// readability at call sites that mean "no filter".
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// `true` when no filtering happens (every entry passes, no slug
+    /// rewriting). Lets fast paths skip the per-entry filter check.
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.include.is_none() && self.exclude.is_none() && self.id_strip_suffix.is_none()
+    }
+
+    /// `true` when the relative path passes the include + exclude
+    /// stages. Paths must already be normalised to forward slashes.
+    fn matches(&self, rel_posix: &str) -> bool {
+        if let Some(inc) = &self.include {
+            if !inc.is_match(rel_posix) {
+                return false;
+            }
+        }
+        if let Some(exc) = &self.exclude {
+            if exc.is_match(rel_posix) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Public flavour of [`Self::matches`] for the bundler's parallel
+    /// shadow-tree walk. Pass a POSIX-style (forward-slash) relative
+    /// path. The two surfaces share one matcher so the include /
+    /// exclude verdict per file is byte-identical on both sides.
+    #[must_use]
+    pub fn matches_relative(&self, rel_posix: &str) -> bool {
+        self.matches(rel_posix)
+    }
+
+    /// Borrow the suffix-strip rule for use by [`parse_entry`].
+    fn id_strip_suffix(&self) -> Option<&str> {
+        self.id_strip_suffix.as_deref()
+    }
+}
+
+fn compile_globset(patterns: Option<&[String]>) -> Result<Option<GlobSet>, CollectionError> {
+    let patterns = match patterns {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(None),
+    };
+    let mut builder = GlobSetBuilder::new();
+    for pat in patterns {
+        let glob = Glob::new(pat).map_err(|e| CollectionError::BadGlob {
+            pattern: pat.clone(),
+            message: e.to_string(),
+        })?;
+        builder.add(glob);
+    }
+    let set = builder.build().map_err(|e| CollectionError::BadGlob {
+        pattern: patterns.join(","),
+        message: e.to_string(),
+    })?;
+    Ok(Some(set))
+}
+
+/// Render a relative path as a forward-slash POSIX string. The walker
+/// emits paths in `std::path::PathBuf` shape; globset patterns are
+/// authored against POSIX-style relative paths so a single pattern
+/// like `subdir/*.mdx` works portably across operating systems.
+fn rel_to_posix(rel: &Path) -> String {
+    let lossy = rel.to_string_lossy();
+    if std::path::MAIN_SEPARATOR == '/' {
+        lossy.into_owned()
+    } else {
+        lossy.replace(std::path::MAIN_SEPARATOR, "/")
+    }
+}
+
+/// Apply [`CollectionFilter::id_strip_suffix`] to a slug, returning the
+/// stripped slug when the suffix matches and the original otherwise.
+/// Pure helper — shared between the walker and the bundler's parallel
+/// shadow-tree pass so the two surfaces stay in lock-step.
+#[must_use]
+pub fn maybe_strip_slug_suffix<'a>(slug: &'a str, suffix: Option<&str>) -> &'a str {
+    match suffix {
+        Some(s) if !s.is_empty() => slug.strip_suffix(s).unwrap_or(slug),
+        _ => slug,
+    }
+}
+
+/// Apply [`CollectionFilter::id_strip_suffix`] to a `<scheme>://<col>/<slug>#<hash>`
+/// specifier, leaving the scheme, collection, and hash untouched.
+///
+/// Pure helper — shared with the bundler's bridge-import construction
+/// in `crates/zfb-build/src/bundler.rs` so the snapshot specifier and
+/// the bundler's bridge map key stay byte-identical after suffix
+/// stripping. The MDX/TSX `compile_mdx_to_jsx_module_cached` call site
+/// hashes JSX (not slug), so rewriting the slug segment is safe — the
+/// `#<hash8>` fragment stays stable.
+#[must_use]
+pub fn maybe_strip_specifier_suffix(specifier: &str, suffix: Option<&str>) -> String {
+    let suffix = match suffix {
+        Some(s) if !s.is_empty() => s,
+        _ => return specifier.to_string(),
+    };
+    // Format: `<scheme>://<col>/<slug>#<hash>`. We rewrite just the
+    // `<slug>` segment. Anything that doesn't parse to that shape is
+    // returned verbatim — defensive belt-and-braces.
+    let (scheme_and_path, hash) = match specifier.split_once('#') {
+        Some(pair) => pair,
+        None => return specifier.to_string(),
+    };
+    let (scheme, rest) = match scheme_and_path.split_once("://") {
+        Some(pair) => pair,
+        None => return specifier.to_string(),
+    };
+    let (col, slug) = match rest.split_once('/') {
+        Some(pair) => pair,
+        None => return specifier.to_string(),
+    };
+    let stripped_slug = slug.strip_suffix(suffix).unwrap_or(slug);
+    if stripped_slug.as_ptr() == slug.as_ptr() && stripped_slug.len() == slug.len() {
+        // No change — return the original string to avoid allocating.
+        return specifier.to_string();
+    }
+    format!("{scheme}://{col}/{stripped_slug}#{hash}")
 }
 
 /// Walk a collection directory, parsing + validating each `.md`, `.mdx`,
@@ -162,7 +357,7 @@ pub fn walk_collection<T>(
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
-    walk_collection_with_cache(dir, None, pipeline)
+    walk_collection_with_cache_and_filter(dir, None, pipeline, &CollectionFilter::none())
 }
 
 /// Walk a collection directory like [`walk_collection`], reusing `cache`
@@ -190,7 +385,37 @@ where
 pub fn walk_collection_with_cache<T>(
     dir: &Path,
     cache: Option<&MdxModuleCache>,
+    pipeline: Option<&mut Pipeline>,
+) -> Result<Vec<Entry<T>>, CollectionError>
+where
+    T: DeserializeOwned + garde::Validate<Context = ()>,
+{
+    walk_collection_with_cache_and_filter(dir, cache, pipeline, &CollectionFilter::none())
+}
+
+/// Walk a collection like [`walk_collection_with_cache`], but apply the
+/// supplied [`CollectionFilter`] to the candidate file list AND to the
+/// per-entry slug + module specifier.
+///
+/// The filter is applied at two distinct moments:
+///
+/// 1. After [`collect_collection_files`] returns its candidate list and
+///    BEFORE `parse_entry` runs. Files whose POSIX-style relative path
+///    fails the include / exclude check are dropped without being read
+///    from disk.
+/// 2. Inside `parse_entry`, after the slug is derived from the relative
+///    path, the configured `id_strip_suffix` is applied to both
+///    [`Entry::slug`] and the `<scheme>://<col>/<slug>#<hash>` segment
+///    of [`Entry::module_specifier`].
+///
+/// Pass `CollectionFilter::none()` (or use the legacy
+/// [`walk_collection_with_cache`] helper) to get the pre-filter walker
+/// behaviour byte-for-byte.
+pub fn walk_collection_with_cache_and_filter<T>(
+    dir: &Path,
+    cache: Option<&MdxModuleCache>,
     mut pipeline: Option<&mut Pipeline>,
+    filter: &CollectionFilter,
 ) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -201,6 +426,17 @@ where
         source: e,
     })?;
     files.sort();
+
+    // Apply include + exclude globs against POSIX-normalised relative
+    // paths. The fast-path skips the per-entry check entirely when no
+    // filtering is configured so today's byte-for-byte behaviour is
+    // preserved for every existing call site.
+    if filter.include.is_some() || filter.exclude.is_some() {
+        files.retain(|p| {
+            let rel = p.strip_prefix(dir).unwrap_or(p);
+            filter.matches(&rel_to_posix(rel))
+        });
+    }
 
     let mut entries: Vec<Entry<T>> = Vec::new();
     let mut errors: Vec<CollectionError> = Vec::new();
@@ -232,7 +468,7 @@ where
                 p.set_resolve_links_source_dir(parent.to_path_buf());
             }
         }
-        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut()) {
+        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut(), filter) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
         }
@@ -466,6 +702,7 @@ fn parse_entry<T>(
     path: &Path,
     cache: Option<&MdxModuleCache>,
     pipeline: Option<&mut Pipeline>,
+    filter: &CollectionFilter,
 ) -> Result<Entry<T>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -534,6 +771,15 @@ where
     } = uf;
 
     let (collection_seg, slug_seg) = collection_and_slug_from_path(path);
+    // Apply `idStripSuffix` to BOTH the user-facing slug (the long
+    // posix relative path with extension stripped) AND the specifier's
+    // <slug> segment (the bare file stem). The two are independent
+    // derivations from different roots — strip both so a call like
+    // `getEntry('notes-en', 'col003-mixers')` and a bridge lookup of
+    // `mdx://notes-en/col003-mixers#hash` both resolve.
+    let strip = filter.id_strip_suffix();
+    let slug = maybe_strip_slug_suffix(&slug, strip).to_string();
+    let slug_seg = maybe_strip_slug_suffix(&slug_seg, strip).to_string();
 
     let kind = entry_kind_from_path(path);
     let (body, compiled_jsx_source, module_specifier) = match kind {
@@ -940,6 +1186,7 @@ mod tests {
                         CollectionError::Schema { .. } => "schema",
                         CollectionError::Io { .. } => "io",
                         CollectionError::Mdx { .. } => "mdx",
+                        CollectionError::BadGlob { .. } => "bad-glob",
                         CollectionError::Multiple { .. } => "multiple",
                     })
                     .collect();
@@ -1156,6 +1403,193 @@ declare module \"zfb/content\" {\n\
                 "blog: { slug: string; data: {\n      date: string;\n      tags?: string[];\n      title: string;\n    }; body: string };"
             ),
             "blog interface drifted:\n{actual}",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // CollectionFilter (include / exclude / idStripSuffix) tests
+    // -------------------------------------------------------------------
+
+    fn filter(
+        include: Option<&[&str]>,
+        exclude: Option<&[&str]>,
+        id_strip: Option<&str>,
+    ) -> CollectionFilter {
+        let inc = include.map(|v| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        let exc = exclude.map(|v| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        CollectionFilter::new(inc.as_deref(), exc.as_deref(), id_strip).expect("compile globs")
+    }
+
+    /// `include` keeps only entries matching at least one pattern.
+    /// Mirrors zzmod's `notes-en` collection (only `.en.mdx` siblings).
+    #[test]
+    fn walk_with_include_keeps_only_matching_entries() {
+        let tmp = TmpDir::new("inc");
+        tmp.write("a.mdx", &valid_md("A"));
+        tmp.write("a.en.mdx", &valid_md("AEn"));
+        tmp.write("b.mdx", &valid_md("B"));
+        tmp.write("b.en.mdx", &valid_md("BEn"));
+        let filter = filter(Some(&["*.en.mdx"]), None, None);
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let slugs: Vec<&str> = out.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["a.en", "b.en"]);
+    }
+
+    /// `exclude` drops entries matching any pattern. Mirrors zzmod's
+    /// JA collections (everything *except* the `.en.mdx` siblings).
+    #[test]
+    fn walk_with_exclude_drops_matching_entries() {
+        let tmp = TmpDir::new("exc");
+        tmp.write("a.mdx", &valid_md("A"));
+        tmp.write("a.en.mdx", &valid_md("AEn"));
+        tmp.write("b.mdx", &valid_md("B"));
+        tmp.write("b.en.mdx", &valid_md("BEn"));
+        let filter = filter(None, Some(&["*.en.mdx"]), None);
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let slugs: Vec<&str> = out.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["a", "b"]);
+    }
+
+    /// `include` runs first, then `exclude` removes from the included
+    /// set. With `include=['*.mdx']` + `exclude=['*.en.mdx']` we keep
+    /// only the JA `.mdx` files (the `.en.mdx` ones are included by
+    /// the first pattern but kicked out by the second).
+    #[test]
+    fn walk_with_include_and_exclude_chains() {
+        let tmp = TmpDir::new("inc-exc");
+        tmp.write("a.mdx", &valid_md("A"));
+        tmp.write("a.en.mdx", &valid_md("AEn"));
+        tmp.write("b.md", &valid_md("B"));
+        tmp.write("notes.txt", "skipped by extension already");
+        let filter = filter(Some(&["*.mdx"]), Some(&["*.en.mdx"]), None);
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let slugs: Vec<&str> = out.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["a"], "only `a.mdx` survives include∩¬exclude");
+    }
+
+    /// `idStripSuffix` rewrites both `Entry::slug` and the `<slug>`
+    /// segment of `Entry::module_specifier`. Non-matching entries are
+    /// untouched.
+    #[test]
+    fn walk_with_id_strip_suffix_rewrites_slug_and_specifier() {
+        let tmp = TmpDir::new("strip");
+        tmp.write("col003-mixers.en.mdx", &valid_md("Mixers EN"));
+        tmp.write("col004-osc.mdx", &valid_md("Osc"));
+        let filter = filter(None, None, Some(".en"));
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let by_slug: std::collections::HashMap<&str, &Entry<TestSchema>> =
+            out.iter().map(|e| (e.slug.as_str(), e)).collect();
+
+        // EN file's `.en` suffix is stripped from BOTH slug + specifier.
+        let mixers = by_slug.get("col003-mixers").expect("mixers entry");
+        assert!(
+            mixers.module_specifier.contains("/col003-mixers#"),
+            "specifier slug not stripped: {}",
+            mixers.module_specifier,
+        );
+        assert!(
+            !mixers.module_specifier.contains("col003-mixers.en"),
+            "specifier still contains pre-strip slug: {}",
+            mixers.module_specifier,
+        );
+
+        // Non-matching file's slug is untouched.
+        let osc = by_slug.get("col004-osc").expect("osc entry");
+        assert!(
+            osc.module_specifier.contains("/col004-osc#"),
+            "specifier slug accidentally rewritten: {}",
+            osc.module_specifier,
+        );
+    }
+
+    /// `CollectionFilter::none()` is the no-op default — same number of
+    /// entries, same slugs as the legacy unfiltered walker.
+    #[test]
+    fn walk_with_noop_filter_matches_unfiltered_walker() {
+        let tmp = TmpDir::new("noop");
+        tmp.write("a.mdx", &valid_md("A"));
+        tmp.write("nested/b.md", &valid_md("B"));
+        let baseline: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        let filtered: Vec<Entry<TestSchema>> = walk_collection_with_cache_and_filter(
+            tmp.path(),
+            None,
+            None,
+            &CollectionFilter::none(),
+        )
+        .unwrap();
+        let baseline_slugs: Vec<&str> = baseline.iter().map(|e| e.slug.as_str()).collect();
+        let filtered_slugs: Vec<&str> = filtered.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(baseline_slugs, filtered_slugs);
+        assert_eq!(baseline.len(), 2);
+    }
+
+    /// Globs are evaluated against the RELATIVE path (POSIX-form), not
+    /// the absolute path. A pattern like `nested/*.mdx` matches a file
+    /// that lives under a subdirectory regardless of where the
+    /// collection root sits on disk.
+    #[test]
+    fn walk_filter_uses_relative_posix_paths() {
+        let tmp = TmpDir::new("rel");
+        tmp.write("nested/a.mdx", &valid_md("A"));
+        tmp.write("nested/b.mdx", &valid_md("B"));
+        tmp.write("other/c.mdx", &valid_md("C"));
+        let filter = filter(Some(&["nested/*.mdx"]), None, None);
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let mut slugs: Vec<String> = out.iter().map(|e| e.slug.clone()).collect();
+        slugs.sort();
+        assert_eq!(slugs, vec!["nested/a".to_string(), "nested/b".to_string()]);
+    }
+
+    /// Invalid glob patterns surface as `CollectionError::BadGlob` at
+    /// filter-build time (before any file IO).
+    #[test]
+    fn collection_filter_rejects_invalid_glob() {
+        let err = CollectionFilter::new(Some(&["[unbalanced".to_string()]), None, None)
+            .expect_err("unbalanced bracket should fail");
+        match err {
+            CollectionError::BadGlob { pattern, .. } => {
+                assert_eq!(pattern, "[unbalanced");
+            }
+            other => panic!("expected BadGlob, got {other:?}"),
+        }
+    }
+
+    /// `maybe_strip_specifier_suffix` is the pure helper shared with
+    /// the bundler's bridge-import code path. It rewrites only the
+    /// `<slug>` segment of `<scheme>://<col>/<slug>#<hash>` and leaves
+    /// scheme + collection + hash bytes untouched.
+    #[test]
+    fn maybe_strip_specifier_suffix_rewrites_slug_only() {
+        let stripped = maybe_strip_specifier_suffix(
+            "mdx://notes-en/col003-mixers.en#deadbeef",
+            Some(".en"),
+        );
+        assert_eq!(stripped, "mdx://notes-en/col003-mixers#deadbeef");
+
+        // Non-matching suffix → returned unchanged.
+        let unchanged =
+            maybe_strip_specifier_suffix("mdx://notes/col004-osc#cafebabe", Some(".en"));
+        assert_eq!(unchanged, "mdx://notes/col004-osc#cafebabe");
+
+        // `None` / empty suffix → no-op.
+        assert_eq!(
+            maybe_strip_specifier_suffix("mdx://a/b#01234567", None),
+            "mdx://a/b#01234567",
+        );
+        assert_eq!(
+            maybe_strip_specifier_suffix("mdx://a/b#01234567", Some("")),
+            "mdx://a/b#01234567",
+        );
+
+        // TSX scheme works identically.
+        assert_eq!(
+            maybe_strip_specifier_suffix("tsx://feeds/a.en#11111111", Some(".en")),
+            "tsx://feeds/a#11111111",
         );
     }
 }

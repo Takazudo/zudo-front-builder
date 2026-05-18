@@ -415,6 +415,42 @@ pub struct CollectionDef {
     /// dialect.
     #[serde(default)]
     pub schema: Option<JsonSchema>,
+    /// Optional glob patterns (evaluated relative to `path`). When set
+    /// and non-empty, an entry is kept only if at least one pattern
+    /// matches its path relative to `path`. When `None` or empty, no
+    /// include-filtering happens (every candidate file is kept).
+    ///
+    /// Mirrors Astro's content-collection `glob({ pattern })` include
+    /// shape. Patterns use the `globset` dialect (Unix-style globs:
+    /// `*`, `**`, `?`, `[…]`).
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    /// Optional glob patterns (evaluated relative to `path`). When set
+    /// and non-empty, an entry is dropped if any pattern matches its
+    /// path relative to `path`. Evaluated AFTER `include` — the
+    /// effective set is `(include ∪ all) ∩ ¬exclude`.
+    ///
+    /// Mirrors Astro's `['**/*.mdx', '!**/*.en.mdx']` pattern. zfb
+    /// splits the negative side into its own field.
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
+    /// Optional suffix to strip from each kept entry's slug. When the
+    /// slug (filename minus extension) ends with the given suffix, the
+    /// suffix is stripped from both `Entry::slug` and
+    /// `Entry::module_specifier`. Other entries are unchanged.
+    ///
+    /// Example: with `idStripSuffix: ".en"`, `col003-mixers.en.mdx` ->
+    /// slug `col003-mixers`, specifier
+    /// `mdx://notes-en/col003-mixers#<hash>`. Consumer code calls
+    /// `getEntry('notes-en', 'col003-mixers')` without knowing about
+    /// the suffix.
+    ///
+    /// Useful for multi-locale layouts where one source directory
+    /// holds both `foo.mdx` (default locale) and `foo.en.mdx` (locale
+    /// override). Pair with `include` / `exclude` to route each locale
+    /// into its own collection.
+    #[serde(default)]
+    pub id_strip_suffix: Option<String>,
 }
 
 /// Tailwind options. Empty by default (Tailwind enabled); users can flip

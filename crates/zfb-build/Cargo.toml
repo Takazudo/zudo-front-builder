@@ -39,6 +39,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
+# Glob filter for the bundler's parallel collection walk. MUST match the
+# zfb-content walker's filter shape byte-for-byte so the snapshot's
+# `module_specifier` and the bridge map key agree on which files were
+# kept (and on what slug each one got, post `idStripSuffix`).
+globset = { workspace = true }
 # Sub 3 / #108: `process` + `io-util` + `fs` add the long-lived plugin
 # host subprocess with newline-delimited JSON over stdio. `process`
 # brings `tokio::process::Command`, `io-util` brings `AsyncBufReadExt`

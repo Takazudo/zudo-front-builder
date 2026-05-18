@@ -157,14 +157,29 @@ pub struct ContentCollectionSpec {
     pub name: String,
     /// Source directory (project-relative or absolute).
     pub root: PathBuf,
+    /// Optional include globs (Astro-style). MUST match
+    /// `zfb_content::CollectionConfig::include` exactly so the snapshot ↔
+    /// bridge keys agree on which files survive.
+    pub include: Option<Vec<String>>,
+    /// Optional exclude globs. MUST match the snapshot side.
+    pub exclude: Option<Vec<String>>,
+    /// Optional suffix to strip from the `<slug>` segment of the
+    /// `mdx://` / `tsx://` specifier the bridge installer emits for
+    /// each kept entry. MUST match the snapshot side — otherwise
+    /// every `globalThis.__zfb.content.get(spec)` misses.
+    pub id_strip_suffix: Option<String>,
 }
 
 impl ContentCollectionSpec {
-    /// Convenience constructor.
+    /// Convenience constructor (no filters). Use struct-init shorthand
+    /// to set the filter fields directly when needed.
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         Self {
             name: name.into(),
             root: root.into(),
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         }
     }
 }
@@ -801,6 +816,9 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                col.include.as_deref(),
+                col.exclude.as_deref(),
+                col.id_strip_suffix.as_deref(),
                 &mut broken,
             )
             .with_context(|| {
@@ -1466,6 +1484,7 @@ struct ContentImport {
 /// A missing source root is non-fatal — the caller may have a stale
 /// config entry pointing at a deleted directory; the build should
 /// proceed with zero entries from that collection rather than aborting.
+#[allow(clippy::too_many_arguments)]
 fn materialise_collection(
     src: &Path,
     dest: &Path,
@@ -1479,6 +1498,9 @@ fn materialise_collection(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    include: Option<&[String]>,
+    exclude: Option<&[String]>,
+    id_strip_suffix: Option<&str>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1486,6 +1508,33 @@ fn materialise_collection(
     }
     fs::create_dir_all(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
+
+    // Compile the include / exclude globs once per collection. The
+    // shared `CollectionFilter` MUST match `CollectionConfig::*` on the
+    // snapshot side byte-for-byte — both surfaces feed the same JSON
+    // bridge, so any divergence in which files survive (or which slug
+    // each gets) silently turns every consumer-side `getCollection` /
+    // `<Content />` lookup into a `<pre data-zfb-content-fallback>`
+    // block.
+    let filter = zfb_content::collection::CollectionFilter::new(
+        include,
+        exclude,
+        id_strip_suffix,
+    )
+    .with_context(|| {
+        format!(
+            "bundler: failed to compile collection filter for `{}`",
+            collection_name
+        )
+    })?;
+    let has_glob_filter = include.map(|p| !p.is_empty()).unwrap_or(false)
+        || exclude.map(|p| !p.is_empty()).unwrap_or(false);
+    // Re-derive the same suffix `CollectionFilter` would have stored
+    // (empty / whitespace → None) so the bundler's specifier rewrite
+    // and the walker's rewrite agree on whether to strip.
+    let strip_suffix = id_strip_suffix
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
     // walk loop so the seven default plugins fire on every collection
@@ -1557,6 +1606,28 @@ fn materialise_collection(
         }
         if !entry.file_type().is_file() {
             continue;
+        }
+
+        // Apply include / exclude globs to recognised content extensions
+        // only (md / mdx / tsx). Non-content siblings (images, css,
+        // json, …) pass through unchanged — they live in the shadow
+        // tree purely for esbuild's resolver and never reach the
+        // snapshot or bridge map, so filtering them would just diverge
+        // from the walker's coverage.
+        let is_content_ext = matches!(
+            from.extension().and_then(|s| s.to_str()),
+            Some("md") | Some("mdx") | Some("tsx")
+        );
+        if is_content_ext && has_glob_filter {
+            let rel_posix = path_to_posix_string(rel);
+            if !filter.matches_relative(&rel_posix) {
+                // Filtered out — neither materialise the shadow file
+                // nor record a bridge import. The walker on the
+                // snapshot side reaches the identical decision via
+                // `CollectionFilter::matches`, keeping the two
+                // surfaces in lock-step.
+                continue;
+            }
         }
 
         let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
@@ -1644,8 +1715,19 @@ fn materialise_collection(
 
             let rel_str = path_to_posix_string(rel);
             let shadow_rel_path = format!("content/{}/{}", collection_name, rel_str);
+            // Apply `idStripSuffix` to the specifier's slug segment
+            // so the bundler's bridge-map key matches the snapshot's
+            // `EntrySnapshot::module_specifier` after stripping. The
+            // shared helper lives in `zfb-content` so both surfaces
+            // share one implementation — divergence here is what the
+            // snapshot↔bridge byte-for-byte invariant exists to
+            // prevent.
+            let specifier = zfb_content::collection::maybe_strip_specifier_suffix(
+                &compiled.specifier,
+                strip_suffix,
+            );
             imports.push(ContentImport {
-                specifier: compiled.specifier.clone(),
+                specifier,
                 shadow_rel_path,
             });
         } else {
@@ -2857,6 +2939,9 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -2992,6 +3077,9 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
+            None,
             &mut Vec::new(),
         )
         .unwrap();

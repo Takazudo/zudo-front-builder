@@ -639,7 +639,13 @@ fn boot_dev_renderer(
     bundler_input.content_collections = cfg
         .collections
         .iter()
-        .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
+        .map(|c| zfb_build::ContentCollectionSpec {
+            name: c.name.clone(),
+            root: c.path.clone(),
+            include: c.include.clone(),
+            exclude: c.exclude.clone(),
+            id_strip_suffix: c.id_strip_suffix.clone(),
+        })
         .collect();
     // Thread the opt-in `stripMdExt` flag through so the dev-mode
     // bundler (which feeds the embedded V8 host) honours the same setting as

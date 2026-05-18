@@ -39,7 +39,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::collection::{walk_collection, CollectionError, Entry};
+use crate::collection::{
+    walk_collection_with_cache_and_filter, CollectionError, CollectionFilter, Entry,
+};
 use crate::pipeline::Pipeline;
 
 /// A single content entry, in the shape the JS bridge sees.
@@ -85,21 +87,60 @@ pub struct ContentSnapshot {
 /// [`EntrySnapshot`]. A non-existent `root` is treated as an empty
 /// collection (matches [`walk_collection`] today; documented on
 /// [`build_snapshot`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CollectionConfig {
     /// Public collection name (the key in [`ContentSnapshot::collections`]).
     pub name: String,
     /// Directory containing the collection's source files.
     pub root: PathBuf,
+    /// Optional include globs (Astro-style). When `Some` and non-empty,
+    /// the walker keeps only entries whose relative path matches at
+    /// least one pattern. See [`crate::collection::CollectionFilter`]
+    /// for the full semantics.
+    pub include: Option<Vec<String>>,
+    /// Optional exclude globs. Applied AFTER `include`. See
+    /// [`crate::collection::CollectionFilter`].
+    pub exclude: Option<Vec<String>>,
+    /// Optional suffix to strip from each kept entry's slug + module
+    /// specifier. MUST match the bundler's
+    /// `ContentCollectionSpec::id_strip_suffix` exactly so the snapshot
+    /// specifier and the bundler's bridge-map key stay byte-identical.
+    pub id_strip_suffix: Option<String>,
 }
 
 impl CollectionConfig {
-    /// Convenience constructor.
+    /// Convenience constructor (no filters). Use field-init shorthand
+    /// (`CollectionConfig { name, root, include: Some(..), .. }`) or
+    /// the with_* builders for filtered collections.
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         Self {
             name: name.into(),
             root: root.into(),
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         }
+    }
+
+    /// Builder: replace `include` globs.
+    #[must_use]
+    pub fn with_include(mut self, patterns: Option<Vec<String>>) -> Self {
+        self.include = patterns;
+        self
+    }
+
+    /// Builder: replace `exclude` globs.
+    #[must_use]
+    pub fn with_exclude(mut self, patterns: Option<Vec<String>>) -> Self {
+        self.exclude = patterns;
+        self
+    }
+
+    /// Builder: replace `id_strip_suffix`.
+    #[must_use]
+    pub fn with_id_strip_suffix(mut self, suffix: Option<String>) -> Self {
+        self.id_strip_suffix = suffix;
+        self
     }
 }
 
@@ -339,18 +380,31 @@ pub fn build_snapshot_with_config(
         // why the parallel walker is implemented as a `T` substitution
         // rather than a duplicate FS traversal.
         //
-        // `walk_collection_with_cache` resets the pipeline's per-entry
-        // state before each file (zfb#188-followup), so any stateful
-        // plugin in the chain — `HeadingLinksPlugin`'s slug counter
-        // included — starts fresh per document, matching the bundler's
-        // `materialise_*` walk loop.
+        // `walk_collection_with_cache_and_filter` resets the pipeline's
+        // per-entry state before each file (zfb#188-followup), so any
+        // stateful plugin in the chain — `HeadingLinksPlugin`'s slug
+        // counter included — starts fresh per document, matching the
+        // bundler's `materialise_*` walk loop.
+        //
+        // The configured include / exclude / idStripSuffix MUST match
+        // the bundler's `ContentCollectionSpec` exactly — otherwise
+        // the snapshot's `module_specifier` and the bundler's bridge
+        // map key disagree and every `bridge.get(spec)` lookup misses.
+        let filter = CollectionFilter::new(
+            cfg.include.as_deref(),
+            cfg.exclude.as_deref(),
+            cfg.id_strip_suffix.as_deref(),
+        )
+        .map_err(|source| BridgeError::Walk {
+            collection: cfg.name.clone(),
+            source,
+        })?;
         let entries: Vec<Entry<UntypedFrontmatter>> =
-            walk_collection(&cfg.root, Some(&mut pipeline)).map_err(|source| {
-                BridgeError::Walk {
+            walk_collection_with_cache_and_filter(&cfg.root, None, Some(&mut pipeline), &filter)
+                .map_err(|source| BridgeError::Walk {
                     collection: cfg.name.clone(),
                     source,
-                }
-            })?;
+                })?;
 
         let mut snapshots: Vec<EntrySnapshot> = entries
             .into_iter()

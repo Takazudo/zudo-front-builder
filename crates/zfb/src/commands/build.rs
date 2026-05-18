@@ -925,7 +925,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         let collections: Vec<zfb_content::CollectionConfig> = config
             .collections
             .iter()
-            .map(|c| zfb_content::CollectionConfig::new(c.name.clone(), project_root.join(&c.path)))
+            .map(|c| zfb_content::CollectionConfig {
+                name: c.name.clone(),
+                root: project_root.join(&c.path),
+                include: c.include.clone(),
+                exclude: c.exclude.clone(),
+                id_strip_suffix: c.id_strip_suffix.clone(),
+            })
             .collect();
         // Mirror the bundler's pipeline shape (theme, strip-md-ext,
         // resolve-links). Every plugin the bundler appends to its
@@ -1105,7 +1111,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     bundler_input.content_collections = config
         .collections
         .iter()
-        .map(|c| zfb_build::ContentCollectionSpec::new(c.name.clone(), c.path.clone()))
+        .map(|c| zfb_build::ContentCollectionSpec {
+            name: c.name.clone(),
+            root: c.path.clone(),
+            include: c.include.clone(),
+            exclude: c.exclude.clone(),
+            id_strip_suffix: c.id_strip_suffix.clone(),
+        })
         .collect();
     // Thread the opt-in `stripMdExt` flag from `zfb.config.ts` into the
     // bundler so the hoisted MDX pre-compile pipeline appends
@@ -1931,7 +1943,13 @@ fn maybe_probe_content_snapshot(project_root: &Path, config: &Config) {
     let collections: Vec<zfb_content::CollectionConfig> = config
         .collections
         .iter()
-        .map(|c| zfb_content::CollectionConfig::new(c.name.clone(), project_root.join(&c.path)))
+        .map(|c| zfb_content::CollectionConfig {
+            name: c.name.clone(),
+            root: project_root.join(&c.path),
+            include: c.include.clone(),
+            exclude: c.exclude.clone(),
+            id_strip_suffix: c.id_strip_suffix.clone(),
+        })
         .collect();
     if let Err(err) = zfb_content::build_snapshot(&collections) {
         output::warn(format!("ZFB_DEBUG_SNAPSHOT: snapshot probe failed: {err}"));
