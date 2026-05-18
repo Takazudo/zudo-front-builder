@@ -322,6 +322,8 @@ fn make_input(
             cjk_friendly: true,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
+        worker_only_routes: None,
+        bundle_basename: None,
     }
 }
 

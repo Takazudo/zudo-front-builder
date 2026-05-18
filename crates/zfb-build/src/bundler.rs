@@ -490,6 +490,44 @@ pub struct BundlerInput {
     ///
     /// Mirrors `zfb_islands::EsbuildSubprocessConfig::virtual_modules`.
     pub plugin_virtual_modules: Vec<(String, String)>,
+
+    /// When `Some(set)`, the synthetic `entry.mjs` only imports + registers
+    /// the routes whose [`RouteEntry::entry_key`] appears in the set. All
+    /// other discovered routes are still visible to `BundlerOutput::manifest`
+    /// (so build-time bookkeeping continues to know about them) but they
+    /// are unreachable from the entry — esbuild's tree-shaker drops them
+    /// and their transitive deps from the final bundle.
+    ///
+    /// Intended for "runtime-only" bundle passes consumed by deploy
+    /// adapters whose dispatch path serves prerendered routes from a
+    /// separate static-asset server (e.g. Cloudflare Pages' `ASSETS first,
+    /// inner on 404` shape). Pass the set of routes with `prerender =
+    /// false`; the resulting bundle ships only the SSR code path.
+    ///
+    /// `None` (the default) preserves the existing single-bundle behavior:
+    /// every discovered route is imported into the entry. SSG render
+    /// pipelines must keep this `None` because the embedded V8 host walks
+    /// every route to write static HTML.
+    ///
+    /// Additional side-effects when `Some`:
+    /// - `content_imports` is emptied for the entry — getCollection()
+    ///   bridge entries do not reach the runtime bundle. Combined with
+    ///   the content snapshot suppression below, this drops MDX-derived
+    ///   data (incl. inline image / blurhash data URIs) from the worker.
+    /// - [`Self::content_snapshot_json`] is treated as if it were `None`,
+    ///   so `getCollection(...)` inside SSR routes resolves against an
+    ///   empty snapshot. Refine if a real consumer needs SSR-time content
+    ///   access.
+    pub worker_only_routes: Option<std::collections::BTreeSet<String>>,
+
+    /// Filename (not full path) of the emitted bundle inside [`Self::outdir`].
+    /// `None` defaults to `"bundle.mjs"` for backward compatibility.
+    ///
+    /// Allows two consecutive `bundle()` calls in the same `outdir` to
+    /// produce distinct artifacts — e.g. a full `bundle.mjs` for SSG
+    /// render and a `bundle-runtime.mjs` for the deploy adapter. The
+    /// sourcemap suffix `.map` is appended automatically.
+    pub bundle_basename: Option<String>,
 }
 
 impl BundlerInput {
@@ -544,6 +582,8 @@ impl BundlerInput {
             cjk_friendly: true,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            worker_only_routes: None,
+            bundle_basename: None,
         }
     }
 }
@@ -992,12 +1032,45 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
+    //
+    // When `worker_only_routes` is set, narrow the entry's static-import
+    // set to that subset and drop `content_imports` + the content snapshot
+    // (see `BundlerInput::worker_only_routes` for the contract). This
+    // makes prerendered-only routes unreachable from the entry so esbuild's
+    // tree-shaker can drop them and their transitive deps (page modules,
+    // MDX namespaces, inline data URIs) from the final bundle. The full
+    // `routes` vec is preserved for `BundlerOutput::manifest.routes` —
+    // build-time bookkeeping (route table, post-build manifest) must keep
+    // seeing every discovered route regardless of this filter.
+    let entry_routes_filtered_storage: Vec<RouteEntry>;
+    let entry_routes_for_write: &[RouteEntry];
+    let entry_content_imports_for_write: &[ContentImport];
+    let entry_snapshot_for_write: Option<&str>;
+    if let Some(filter) = input.worker_only_routes.as_ref() {
+        entry_routes_filtered_storage = routes
+            .iter()
+            .filter(|r| filter.contains(&r.entry_key))
+            .cloned()
+            .collect();
+        entry_routes_for_write = &entry_routes_filtered_storage;
+        // Content imports + snapshot are intentionally dropped from the
+        // runtime bundle slice; see field docs for the rationale and the
+        // listed follow-up if/when an SSR route legitimately needs
+        // getCollection(...).
+        entry_content_imports_for_write = &[];
+        entry_snapshot_for_write = None;
+    } else {
+        // No filter — preserve the existing single-bundle behavior verbatim.
+        entry_routes_for_write = &routes;
+        entry_content_imports_for_write = &content_imports;
+        entry_snapshot_for_write = input.content_snapshot_json.as_deref();
+    }
     write_entry_module(
         shadow,
-        &routes,
+        entry_routes_for_write,
         adapter.render_to_string_module(),
-        input.content_snapshot_json.as_deref(),
-        &content_imports,
+        entry_snapshot_for_write,
+        entry_content_imports_for_write,
         input.site.as_deref(),
         input.prefetch_disabled,
     )
@@ -1006,8 +1079,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // 6. Resolve and run esbuild (or the mock).
     fs::create_dir_all(&outdir)
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
-    let bundle_path = outdir.join("bundle.mjs");
-    let sourcemap_path = outdir.join("bundle.mjs.map");
+    // Bundle filename — `bundle_basename` lets callers run two bundle()
+    // passes in the same outdir (full SSG vs runtime-only) without clobber.
+    let bundle_filename: &str = input
+        .bundle_basename
+        .as_deref()
+        .unwrap_or("bundle.mjs");
+    let bundle_path = outdir.join(bundle_filename);
+    let sourcemap_path = outdir.join(format!("{bundle_filename}.map"));
 
     if let Some(mock) = input.mock_subprocess_output.as_ref() {
         fs::write(&bundle_path, mock).with_context(|| {
@@ -2414,6 +2493,8 @@ mod tests {
             cjk_friendly: true,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            worker_only_routes: None,
+            bundle_basename: None,
         }
     }
 
@@ -3026,6 +3107,116 @@ mod tests {
     }
 
     #[test]
+    fn for_project_defaults_worker_only_routes_and_bundle_basename_to_none() {
+        // Defaults for the runtime-trim fields (zfb#283). `None` keeps
+        // legacy single-bundle behavior — write_entry_module imports every
+        // discovered route, and the bundle filename stays `bundle.mjs`.
+        let input = BundlerInput::for_project(
+            PathBuf::from("/tmp/dummy"),
+            Framework::Preact,
+            BundleMode::Production,
+            PathBuf::from("/tmp/dummy/dist"),
+            None,
+        );
+        assert!(
+            input.worker_only_routes.is_none(),
+            "worker_only_routes should default to None"
+        );
+        assert!(
+            input.bundle_basename.is_none(),
+            "bundle_basename should default to None (so callers see legacy bundle.mjs filename)"
+        );
+    }
+
+    #[test]
+    fn bundle_basename_override_changes_emitted_filename() {
+        // The bundle filename is selectable so two passes (full SSG +
+        // runtime-only) can coexist in the same outdir without clobber.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.bundle_basename = Some("bundle-runtime.mjs".to_string());
+
+        let out = bundle(input).expect("mock bundle with custom basename should succeed");
+
+        assert_eq!(
+            out.bundle_path.file_name().and_then(|s| s.to_str()),
+            Some("bundle-runtime.mjs"),
+            "bundle_path should honor bundle_basename"
+        );
+        assert!(out.bundle_path.exists(), "renamed bundle should be on disk");
+        assert_eq!(
+            out.sourcemap_path.file_name().and_then(|s| s.to_str()),
+            Some("bundle-runtime.mjs.map"),
+            "sourcemap suffix should track the renamed bundle"
+        );
+        // Manifest's bundle_basename is derived from the on-disk filename
+        // — it must reflect the override too.
+        assert_eq!(out.manifest.bundle_basename, "bundle-runtime.mjs");
+    }
+
+    #[test]
+    fn worker_only_routes_preserves_full_manifest_routes() {
+        // The filter only narrows what `write_entry_module` imports into
+        // the synthetic entry — `BundlerOutput.manifest.routes` continues
+        // to report every discovered route so build-time bookkeeping
+        // (post-build manifest, route-table dumps) sees the full picture.
+        // This is the documented contract on the field.
+        let tmp = tempfile::tempdir().unwrap();
+        // Fixture: two pages. `pages/index.tsx` (SSG) + `pages/api.tsx`
+        // (SSR-only, by intent in this test).
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("pages/api.tsx"),
+            "export const prerender = false;\n\
+             export default function Api() { return null; }\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("content")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        let mut input = make_minimal_input(&tmp);
+        // make_minimal_input only created pages/index.tsx; re-point the
+        // input at our two-page tree above.
+        input.project_root = root.clone();
+        input.outdir = root.join("dist");
+        let mut filter: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        filter.insert("/api".to_string());
+        input.worker_only_routes = Some(filter);
+
+        let out = bundle(input).expect("mock bundle with filter should succeed");
+
+        let route_keys: Vec<&str> = out
+            .manifest
+            .routes
+            .iter()
+            .map(|r| r.route.as_str())
+            .collect();
+        assert!(
+            route_keys.contains(&"/"),
+            "manifest.routes must still include the prerendered route, got {:?}",
+            route_keys
+        );
+        assert!(
+            route_keys.contains(&"/api"),
+            "manifest.routes must still include the SSR route, got {:?}",
+            route_keys
+        );
+        assert_eq!(
+            route_keys.len(),
+            2,
+            "manifest.routes should report every discovered route regardless of worker_only_routes"
+        );
+    }
+
+    #[test]
     fn server_secrets_are_not_bundled() {
         // Real esbuild test (gated). Verifies a SECRET_ env var never
         // appears in the output, while a PUBLIC_ var does.
@@ -3123,6 +3314,8 @@ mod tests {
             cjk_friendly: true,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            worker_only_routes: None,
+            bundle_basename: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
