@@ -1006,6 +1006,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .collect();
     ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
 
+    // Capture the SSR route key set for the deploy-adapter's runtime-only
+    // bundle pass (zfb#283). The set is computed from the same source as
+    // `ssr_route_refs` above; keeping it as an owned `BTreeSet` lets the
+    // borrow above end before the runtime bundle (built much later in the
+    // function) consumes the data. The set is keyed by the same
+    // `RouteUniverseEntry::route_key` that `BundlerInput::worker_only_routes`
+    // filters against (`RouteEntry::entry_key`); both are the route
+    // template string, so the filter matches by exact key.
+    let ssr_route_keys_for_runtime_bundle: std::collections::BTreeSet<String> = static_routes
+        .iter()
+        .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
+        .map(|entry| entry.route_key.clone())
+        .collect();
+
     // Fail fast if the runtime npm package isn't on disk — the renderer
     // will fail later anyway, but we can give the user an actionable
     // hint right at build start.
@@ -1220,6 +1234,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } else {
         _embedded_esbuild_handle = None;
     }
+    // Snapshot the bundler input before consuming it so the runtime-only
+    // bundle pass (zfb#283) can run later in this function with the same
+    // shadow setup / esbuild handle / node_modules / plugin wiring, just
+    // narrowed to SSR-only routes via `worker_only_routes`.
+    //
+    // Clones are cheap relative to the bundle step itself; the heavy
+    // tempdir handles (`_embedded_esbuild_handle`, `_embedded_nm_handle`)
+    // live in this function's scope and are NOT cloned — the cloned
+    // `esbuild_binary` / `node_modules_dir` `PathBuf`s reference paths
+    // those handles keep alive.
+    let bundler_input_for_runtime = bundler_input.clone();
     let bundler_out = runner
         .bundle(bundler_input)
         .context("bundler step failed")?;
@@ -1336,19 +1361,34 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 
     // 3. Adapter dispatch.
     //
-    // When an adapter is configured, hand the same ESM bundle to the
-    // adapter package's CLI so it can wrap it into a deploy-target-
-    // shaped entry (e.g. `dist/_worker.js` for Cloudflare Pages). The
-    // current contract feeds the WHOLE bundle (SSG + SSR routes) to
-    // the adapter — for Cloudflare Pages this is fine because static
-    // assets short-circuit the worker, so SSG routes in the worker
-    // bundle are dead code on the request path. A future optimization
-    // could trim the bundle to SSR-only routes; tracked as a follow-up
-    // (see this module's docs).
+    // When an adapter is configured, run a SECOND bundle pass narrowed to
+    // SSR-only routes (zfb#283) and hand that smaller bundle to the
+    // adapter. Rationale: deploy targets like Cloudflare Pages serve
+    // prerendered routes through a static-asset server (ASSETS first,
+    // inner worker on 404). SSG route code in the inner worker bundle is
+    // dead code on the request path AND counts against the platform's
+    // worker-size cap (CF Pages: 3 MiB free / 10 MiB paid). Trimming the
+    // bundle to SSR-only routes via `BundlerInput::worker_only_routes`
+    // makes prerendered routes unreachable from the synthetic entry; the
+    // resulting esbuild output is much smaller after tree-shake.
+    //
+    // The full SSG bundle from the first pass (`bundler_out.bundle_path`)
+    // is still needed by `render_all` above for SSG render. After this
+    // function returns, both bundles live under `.zfb-build/` but only
+    // the runtime-narrowed one reaches the adapter (and therefore `dist/`).
     if !adapter.is_none() {
+        let mut runtime_bundler_input = bundler_input_for_runtime;
+        runtime_bundler_input.worker_only_routes =
+            Some(ssr_route_keys_for_runtime_bundle);
+        runtime_bundler_input.bundle_basename =
+            Some("bundle-runtime.mjs".to_string());
+        let runtime_bundler_out = runner
+            .bundle(runtime_bundler_input)
+            .context("runtime-only bundler step (for deploy adapter) failed")?;
+
         let adapter_in = AdapterBundleInput {
             project_root: project_root.to_path_buf(),
-            input_bundle: bundler_out.bundle_path.clone(),
+            input_bundle: runtime_bundler_out.bundle_path.clone(),
             outdir: outdir.to_path_buf(),
         };
         let adapter_out: AdapterBundleOutput =

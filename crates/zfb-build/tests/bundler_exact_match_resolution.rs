@@ -132,6 +132,8 @@ fn make_input(
         cjk_friendly: true,
         plugin_alias_entries,
         plugin_virtual_modules,
+        worker_only_routes: None,
+        bundle_basename: None,
     }
 }
 
