@@ -23,6 +23,29 @@ export type CollectionDef = {
   path: string;
   /** Optional schema. Reserved for v1.1 — accepted but not enforced today. */
   schema?: Record<string, unknown>;
+  /**
+   * Optional include globs (Astro-style, evaluated relative to `path`).
+   * When set and non-empty, an entry is kept only if at least one
+   * pattern matches its relative path. When omitted or empty, no
+   * include-filtering happens. Patterns use the `globset` dialect
+   * (Unix-style: `*`, `**`, `?`, `[…]`).
+   */
+  include?: string[];
+  /**
+   * Optional exclude globs. When set, an entry is dropped if any
+   * pattern matches its relative path. Evaluated AFTER `include`.
+   * Together they mirror Astro's `['**\/*.mdx', '!**\/*.en.mdx']`
+   * convention (zfb splits the negative side into its own field).
+   */
+  exclude?: string[];
+  /**
+   * Optional suffix to strip from each kept entry's slug + module
+   * specifier. Use with multi-locale layouts where one source
+   * directory holds both `foo.mdx` (default locale) and `foo.en.mdx`
+   * (locale override) — set `idStripSuffix: ".en"` so the EN
+   * collection's slugs round-trip as `foo` instead of `foo.en`.
+   */
+  idStripSuffix?: string;
 };
 
 export type TailwindConfig = {

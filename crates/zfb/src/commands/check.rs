@@ -122,6 +122,34 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
     })?;
     files.sort();
 
+    // Honour the same include / exclude filter the walker / bundler
+    // apply so a frontmatter check doesn't fire schema errors against
+    // sibling files that wouldn't have made it into the collection in
+    // the first place (e.g. EN siblings under a JA collection with an
+    // `*.en.mdx` exclude pattern).
+    let filter = zfb_content::collection::CollectionFilter::new(
+        collection.include.as_deref(),
+        collection.exclude.as_deref(),
+        collection.id_strip_suffix.as_deref(),
+    )
+    .with_context(|| {
+        format!("collection {:?}: invalid filter glob", collection.name)
+    })?;
+    if !filter.is_noop() {
+        files.retain(|p| {
+            let rel = p.strip_prefix(&dir).unwrap_or(p);
+            // Render to forward-slash form because the filter
+            // patterns are authored against POSIX paths.
+            let rel_posix = if std::path::MAIN_SEPARATOR == '/' {
+                rel.to_string_lossy().into_owned()
+            } else {
+                rel.to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            };
+            filter.matches_relative(&rel_posix)
+        });
+    }
+
     let mut issues = Vec::new();
     for path in &files {
         let raw = match std::fs::read_to_string(path) {
@@ -329,6 +357,9 @@ mod tests {
                 }))
                 .unwrap(),
             ),
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -361,6 +392,9 @@ mod tests {
                 }))
                 .unwrap(),
             ),
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -394,6 +428,9 @@ mod tests {
                 }))
                 .unwrap(),
             ),
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -417,6 +454,9 @@ mod tests {
             name: "blog".into(),
             path: PathBuf::from("content/blog"),
             schema: None,
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -439,6 +479,9 @@ mod tests {
             name: "blog".into(),
             path: PathBuf::from("content/blog"),
             schema: None,
+            include: None,
+            exclude: None,
+            id_strip_suffix: None,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();

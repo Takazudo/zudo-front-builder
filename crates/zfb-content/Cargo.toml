@@ -17,6 +17,11 @@ thiserror = { workspace = true }
 syntect = { workspace = true }
 garde = { workspace = true }
 
+# Glob matcher for the collection walker's include/exclude filters
+# (zzmod Wave 13 + CollectionDef filters). Same crate ripgrep uses;
+# one GlobSet compiles many patterns into one matcher.
+globset = { workspace = true }
+
 # Hashing for the per-module content hash that drives `mdx://` specifiers
 # and the in-memory compile cache. Same crate+version pair used by
 # `zfb-css::pipeline::hash_8` so the project speaks one hashing dialect.

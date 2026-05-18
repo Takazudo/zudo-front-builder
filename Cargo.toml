@@ -14,6 +14,10 @@ garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
 walkdir = "2"
 async-trait = "0.1"
+# Glob pattern matching for content-collection include/exclude filters.
+# `globset` is the BurntSushi crate used by ripgrep — single GlobSet
+# compiles many patterns into one matcher.
+globset = "0.4"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and
