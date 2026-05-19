@@ -846,6 +846,26 @@ pub(crate) fn build_esbuild_args(
             "--define:process.env.NODE_ENV=\"development\"",
         ));
     }
+    // Inline `import.meta.env.{PROD,DEV}` so consumer `'use client'`
+    // code that references either expression (e.g. `if
+    // (import.meta.env.DEV) console.log(…)`) is folded at bundle time
+    // instead of leaving the literal expression in the shipped bundle.
+    // The shared-bundle path (`crates/zfb-build/src/bundler.rs::2395`)
+    // already does this for the SSR/runtime bundle; mirroring here
+    // keeps both pipelines aligned. Without these defines,
+    // `import.meta.env` is `undefined` at module-init time in the
+    // browser and `import.meta.env.DEV` throws
+    // `TypeError: Cannot read properties of undefined (reading 'DEV')`
+    // before any island can hydrate (issue #287).
+    let prod = config.minify;
+    args.push(OsString::from(format!(
+        "--define:import.meta.env.PROD={}",
+        prod
+    )));
+    args.push(OsString::from(format!(
+        "--define:import.meta.env.DEV={}",
+        !prod
+    )));
     for extra in extra_args {
         args.push(extra.clone());
     }
@@ -1801,6 +1821,52 @@ mod tests {
             .expect("--jsx-import-source=preact present");
         assert!(jsx_idx < entry_idx);
         assert!(import_idx < entry_idx);
+    }
+
+    /// Regression for issue #287 (zudolab/zzmod#154).
+    ///
+    /// `--define:import.meta.env.PROD=…` and `--define:import.meta.env.DEV=…`
+    /// MUST appear in the islands esbuild arg list so consumer `'use client'`
+    /// source code referencing either expression (e.g. `if
+    /// (import.meta.env.DEV) console.log(…)`) is folded at bundle time
+    /// rather than shipped to the browser where `import.meta.env` is
+    /// `undefined` and `import.meta.env.DEV` throws at module init.
+    ///
+    /// Production mode (`config.minify == true`) → `PROD=true`,
+    /// `DEV=false`. The values are JS literal booleans, not quoted
+    /// strings, matching the form already used by
+    /// `crates/zfb-build/src/bundler.rs::2395`.
+    #[test]
+    fn build_esbuild_args_defines_import_meta_env_in_prod() {
+        let cfg = BundleConfig::default().with_minify(true);
+        let args = args_as_strings(&cfg);
+        assert!(
+            args.iter().any(|a| a == "--define:import.meta.env.PROD=true"),
+            "missing --define:import.meta.env.PROD=true in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--define:import.meta.env.DEV=false"),
+            "missing --define:import.meta.env.DEV=false in args: {args:?}"
+        );
+    }
+
+    /// Dev mode (`config.minify == false`) flips both flags so the
+    /// `if (import.meta.env.DEV) …` branch is preserved in unminified
+    /// builds. Mirrors the `bundler.rs` semantics so consumers see the
+    /// same `PROD`/`DEV` substitution in both pipelines.
+    #[test]
+    fn build_esbuild_args_defines_import_meta_env_in_dev() {
+        let cfg = BundleConfig::default();
+        assert!(!cfg.minify, "default BundleConfig must be dev mode");
+        let args = args_as_strings(&cfg);
+        assert!(
+            args.iter().any(|a| a == "--define:import.meta.env.PROD=false"),
+            "missing --define:import.meta.env.PROD=false in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--define:import.meta.env.DEV=true"),
+            "missing --define:import.meta.env.DEV=true in args: {args:?}"
+        );
     }
 
     /// `BundleConfig::jsx_import_source` is honoured verbatim — the
