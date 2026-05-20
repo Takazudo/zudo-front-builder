@@ -5,17 +5,36 @@ sidebar_position: 6
 ---
 
 This guide covers what is realistic today when you want to embed a zfb site
-inside a desktop app. The short answer is: **the `dist/` output requires no
-Node.js at runtime**, so shipping a pre-built site is straightforward. Enabling
-live content edits inside the app is a different, harder problem.
+inside a desktop app. There are four distinct composition modes between zfb and
+Tauri — each is the right answer for a different project. Choose deliberately:
 
-## The simple case: ship the static output
+- **Mode A** wins when content is authored at build time and bundled with each
+  release.
+- **Mode B** wins when you want zfb's full runtime dynamism with minimal
+  Tauri-side code.
+- **Mode C** wins when the dynamic part of your app is Rust-doable without zfb
+  in the process.
+- **Mode D** is the future mode once the in-process embed API ships.
 
-`zfb build` produces a fully static site in `dist/` — HTML, CSS, and JavaScript
-files with no server-side dependency at runtime. A desktop app can serve that
-directory directly using the framework's built-in asset server.
+The core invariant that governs all four modes:
 
-For **Tauri**, the relevant `tauri.conf.json` keys are:
+> **Build time = Node.js required. Runtime = no Node.js, ever.**
+
+zfb's static output is deliberately runtime-agnostic. The build tooling is not.
+Plan your architecture around that boundary rather than against it.
+
+## Mode A — Ship `dist/` only
+
+**What it is.** `zfb build` produces a fully static site in `dist/` — HTML, CSS,
+and JavaScript files with no server-side dependency at runtime. A desktop app
+can serve that directory directly using the framework's built-in asset server.
+zfb is invisible at runtime; the packaged app is just files on disk.
+
+**When to pick it.** Documentation apps, help systems, and any desktop app where
+the content is authored at build time and bundled with the release. If users do
+not need to edit content inside the running app, Mode A is the right choice.
+
+**What's involved.** For Tauri, the relevant `tauri.conf.json` keys are:
 
 ```json
 {
@@ -28,12 +47,7 @@ For **Tauri**, the relevant `tauri.conf.json` keys are:
 
 Point `distDir` at your `dist/` folder (adjust the relative path to match your
 project layout). Tauri's built-in static file server handles the rest. There is
-no Node.js process and no HTTP server required in the packaged app — just files
-on disk.
-
-This is the **recommended approach** for documentation apps, help systems, and
-any desktop app where the content is authored at build time and bundled with the
-release:
+no Node.js process and no HTTP server required in the packaged app.
 
 1. Run `zfb build` on the developer machine (or in CI).
 2. Include the resulting `dist/` in your Tauri app bundle.
@@ -43,42 +57,107 @@ See the [Tauri `tauri.conf.json` reference](https://tauri.app/v1/api/config/) fo
 the full set of asset-serving options, including custom protocols and security
 policies.
 
+**Tradeoff.** Updating content requires a new app release. There is no mechanism
+for users to see fresh content without a new build.
+
+---
+
+## Mode B — zfb binary as Tauri sidecar
+
+**What it is.** Tauri spawns the `zfb` binary as a child process; the WebView
+points at `localhost:<port>`. zfb handles request-time MDX rendering, resource
+discovery, and so on from inside that child process. The sidecar binary is Rust —
+no Node.js required in the packaged app.
+
+**When to pick it.** You want zfb's full dynamism — `prerender = false` routes,
+MDX rendering at request time, content reloading without a rebuild — but you do
+not need the zfb server to live inside the Tauri process itself.
+
+**What's involved.** Ship the `zfb` binary alongside your Tauri app as a
+[Tauri sidecar](https://tauri.app/v1/guides/building/sidecar/). Write a thin IPC
+bridge so the Tauri frontend can start the sidecar, discover the port, and open
+the WebView to `http://127.0.0.1:<port>`. The boundary between sidecar and Tauri
+is clean; the integration glue is not provided out of the box.
+
+**Tradeoff.** You carry extra moving parts: child process lifecycle management,
+port discovery, and IPC plumbing between Tauri and the sidecar. In exchange you
+get zfb's full render pipeline at runtime with no Node.js dependency.
+
+---
+
+## Mode C — Custom Rust crates that use zfb at build-time only
+
+**What it is.** zfb compiles the Preact shell to `dist/` once, at build time.
+After that, all runtime dynamism — resource discovery, markdown rendering, serving
+— is hand-rolled Rust code, typically an Axum server that reads files from disk
+and substitutes content into the pre-built shell. zfb is not present at runtime
+at all; it is purely a build-time tool.
+
+**When to pick it.** The dynamic part of your app is markdown rendering or
+something else that straightforward Rust libraries already handle well, and you
+would rather write focused Rust server code than carry the full zfb render
+pipeline into your binary. You want the smallest possible runtime footprint.
+
+**What's involved.** Build the Preact shell with `zfb build`. Then write a
+purpose-built Rust server (or add Axum routes to an existing Tauri app) that
+reads markdown files at request time, renders them with a Rust markdown crate,
+and splices the result into the static shell via sentinel substitution or a
+similar pattern. [CCResDoc](https://github.com/Takazudo/ccresdoc) is a concrete,
+working example of this pattern: zfb compiles the Preact shell once and a
+hand-rolled Rust backend delivers content at runtime.
+
+**Tradeoff.** You write more Rust glue code, and you give up TSX-level page
+components at runtime. In exchange you get the smallest possible binary, full
+control over the runtime behaviour, and zero V8 dependency in the packaged app.
+
+---
+
+## Mode D — Embed zfb as a Rust crate inside Tauri (FUTURE)
+
+**What it is.** Tauri's `setup` hook would spawn a zfb server on a Tokio thread
+inside the Tauri process — no child process, no port management, in-process
+Rust-to-Rust handoff for `prerender = false` routes and Tauri IPC calls. The
+WebView would talk directly to the embedded server without a network port.
+
+**When to pick it (once it ships).** You want zfb's full runtime dynamism and
+tight Tauri integration — IPC, filesystem access, hot content reload — without
+the sidecar lifecycle plumbing of Mode B.
+
+**What's involved.** The embed API does not exist yet. When it ships it will
+require depending on `zfb-core` or a similar crate and calling an initialization
+function in the Tauri `setup` hook. The exact surface is still being designed.
+
+**This mode does NOT work today.** Follow the research issue for progress:
+[https://github.com/Takazudo/zudo-front-builder/issues/346](https://github.com/Takazudo/zudo-front-builder/issues/346)
+
+**Tradeoff.** Once it ships: no sidecar plumbing, tighter IPC, cleaner packaging.
+Until it ships: not an option.
+
+---
+
 ## The harder case: rebuild content inside the app
 
-Some desktop apps want to let users edit Markdown files locally and see a live
-preview inside the app — essentially running `zfb dev` from within a packaged
-Tauri or Electron window.
+If you need a user to edit Markdown files locally and see a live preview inside
+the running app — essentially running `zfb dev` from within a packaged window —
+the right approach depends on what you need:
 
-This is where the current constraint surfaces: **zfb's build and dev tooling
-requires Node.js**. The dev CLI (`zfb dev` / `zfb build`) is a Node.js process;
-the embedded V8 worker that evaluates your TSX pages runs inside the Rust binary,
-but the outer toolchain still requires Node.js to be present on the build machine.
+- **Mode B** (sidecar) is the best path today if you need full MDX rendering.
+  The sidecar keeps the file-watch / incremental-rebuild loop running in the
+  background; the WebView reflects changes without an app restart.
+- **Mode D** (in-process embed) will be the preferred path once it ships —
+  no child process, no port, tighter integration with Tauri IPC and the
+  filesystem.
+- **Mode A or C** do not help here: both assume content is static at the point
+  the packaged app runs.
 
-If you need in-app rebuilds today, the realistic options are:
+If you need Node.js in the runtime — for example, to run custom `zfb` plugins
+that have Node.js dependencies — consider Electron instead. **Electron** embeds
+Node.js, so `zfb dev` runs naturally inside the main process; the cost is a
+significant binary size increase and a more complex packaging story. This is not
+a zfb mode per se; it is a framework choice driven by the Node.js-at-runtime
+requirement.
 
-**Bundle Node.js with the app.** Tauri does not officially support shipping a
-Node.js sidecar, but Electron does — the entire framework runs on Node.js, so
-`zfb dev` runs naturally inside an Electron process. The cost is a significant
-binary size increase and a more complex packaging story.
-
-**Bundle the zfb binary as a Tauri sidecar.** Because the render pipeline runs
-inside an embedded V8 host (the `zfb` Rust binary), you can ship the binary as a
-Tauri sidecar and invoke it for incremental rebuilds. This requires writing a
-thin IPC bridge between the sidecar and your Tauri frontend — that integration is
-not provided out of the box, but the boundary is clean.
-
-**Pre-build on the developer machine; embed the result.** Rather than rebuilding
-inside the app, keep the rebuild workflow on developer machines and ship only
-the `dist/` artifacts. The packaged app delivers a snapshot; users who need
-updated content get a new app release. This is the most conservative option and
-the easiest to reason about.
-
-The core invariant to keep in mind:
-
-> **Build time = Node.js required. Runtime = no Node.js, ever.**
-
-zfb's static output is deliberately runtime-agnostic. The build tooling is not.
-Plan your architecture around that boundary rather than against it.
+---
 
 ## What about Electron, Wails, or other desktop frameworks?
 
