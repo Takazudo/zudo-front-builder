@@ -3,6 +3,26 @@ import { z } from "astro/zod";
 import { glob } from "astro/loaders";
 import { settings } from "./config/settings";
 
+// Recipes catalog metadata — see issue #348 / research/348-recipes-catalog.md.
+// Required when a doc declares itself a recipe (top-level `recipe:` key);
+// the strict() ensures stale fields cannot be silently tolerated.
+const recipeSchema = z
+  .object({
+    // Project this recipe was first authored in / extracted from.
+    provenance: z.string(),
+    // YYYY-MM. The month the author last manually re-ran the recipe end-to-end.
+    verified: z.string().regex(/^\d{4}-\d{2}$/, "verified must be YYYY-MM"),
+    // npm-style semver range like ">=0.1 <0.2" — not a single version.
+    applies_to_zfb_version: z.string(),
+    // One short paragraph naming the costs and the alternatives considered.
+    tradeoffs: z.string(),
+    // Known break conditions; readers should scan this before adopting.
+    breaks_if: z.array(z.string()).min(1),
+    // Lifecycle marker. "seed" = drafted without end-to-end re-verification.
+    status: z.enum(["seed", "verified", "deprecated"]).optional(),
+  })
+  .strict();
+
 const docsSchema = z.object({
   title: z.string(),
   description: z.string().optional(),
@@ -20,6 +40,8 @@ const docsSchema = z.object({
   standalone: z.boolean().optional(),
   slug: z.string().optional(),
   generated: z.boolean().optional(),
+  // Recipes catalog: when present, all sub-fields are required. See #348.
+  recipe: recipeSchema.optional(),
 });
 
 const docs = defineCollection({

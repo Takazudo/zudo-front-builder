@@ -1,0 +1,165 @@
+---
+title: Build-time metadata DB via addVirtualModule
+description: Scan a content tree at preBuild, expose the result as a virtual module, and import it from any page — no runtime fetch, no JSON file on disk.
+sidebar_position: 30
+category: Recipes
+recipe:
+  provenance: zzmod (takazudomodular.com source) — distilled from concepts/plugins.mdx worked example
+  verified: 2026-05
+  applies_to_zfb_version: ">=0.1 <0.2"
+  tradeoffs: |
+    Couples the index shape to the producer plugin — every consumer page must
+    agree on the schema. Alternative: a content collection (see
+    concepts/content-collections) gives you a typed loader and the index for free.
+    Reach for the virtual module when you have an index over things that aren't
+    content-collection entries (image files, generated thumbnails, route slugs
+    you want pre-resolved), or when the index needs custom shape that the
+    collection schema would not match.
+  breaks_if:
+    - The addVirtualModule contract changes (e.g. loader signature).
+    - Two plugins register the same specifier — VirtualModuleConflict aborts the build.
+    - The frontmatter parser used here drifts from the one the rest of the build uses.
+    - You import the virtual module from a non-page module that runs outside the bundler-resolved graph.
+  status: seed
+---
+
+<Warning title="Seed recipe — needs zzmod verification">
+
+This recipe is distilled from issue [#348](https://github.com/Takazudo/zudo-front-builder/issues/348) and the worked example in [concepts/plugins.mdx](/docs/concepts/plugins#worked-example-virtualmetadata-db). It has not been re-run end-to-end. Please update `verified` and flip `status` to `verified` after a re-run.
+
+</Warning>
+
+## When to reach for this
+
+You want every page (or a sidebar, or an index page) to have a flat list of all your content — titles, slugs, dates, tags — without:
+
+- Reading the filesystem at request time (this is a static build).
+- Committing a generated `index.json` to the tree.
+- Hand-rolling a typed loader that re-implements what Astro content collections already give you.
+
+If your content fits cleanly into a content collection, **prefer that** ([Content Collections](/docs/concepts/content-collections)). Reach for this recipe when:
+
+- The index is over assets that aren't a content collection — image variants, generated OG cards, post-build artefacts.
+- The shape diverges from the collection schema (e.g. you want a computed `wordCount` field).
+- You want the same data shared between a TSX `pages/sitemap.xml.tsx` and a runtime island, with one source of truth.
+
+## The plugin
+
+```ts title="plugins/metadata-db.ts"
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+interface MetadataEntry {
+  slug: string;
+  title: string;
+  description: string;
+  publishedAt: string; // ISO date
+  wordCount: number;
+}
+
+function parseFrontmatter(body: string): Record<string, string> {
+  // tiny, dependency-free; replace with your preferred parser for real use.
+  const match = body.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return {};
+  const out: Record<string, string> = {};
+  for (const line of match[1].split("\n")) {
+    const m = line.match(/^(\w+):\s*(.*)$/);
+    if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+  return out;
+}
+
+function walk(dir: string, root = dir): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...walk(full, root));
+    else if (full.endsWith(".mdx")) out.push(full.slice(root.length + 1));
+  }
+  return out;
+}
+
+export default definePlugin({
+  name: "metadata-db",
+  setup({ projectRoot, addVirtualModule }) {
+    addVirtualModule("virtual:metadata-db", () => {
+      const root = join(projectRoot, "src/content/blog");
+      const entries: MetadataEntry[] = walk(root).map((relPath) => {
+        const body = readFileSync(join(root, relPath), "utf-8");
+        const fm = parseFrontmatter(body);
+        const wordCount = body.replace(/^---[\s\S]*?---/, "").split(/\s+/).length;
+        return {
+          slug: relPath.replace(/\.mdx$/, ""),
+          title: fm.title ?? "",
+          description: fm.description ?? "",
+          publishedAt: fm.publishedAt ?? "",
+          wordCount,
+        };
+      });
+      entries.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+      return `export default ${JSON.stringify(entries)};`;
+    });
+  },
+});
+```
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/metadata-db.ts" }],
+});
+```
+
+## Consuming the virtual module
+
+Any page can import it like a normal ESM module:
+
+```tsx title="pages/index.tsx"
+import posts from "virtual:metadata-db";
+
+export default function Home() {
+  return (
+    <html lang="en">
+      <body>
+        <h1>Recent posts</h1>
+        <ul>
+          {posts.slice(0, 10).map((p) => (
+            <li key={p.slug}>
+              <a href={`/blog/${p.slug}`}>{p.title}</a>
+              <span> · {p.wordCount} words</span>
+            </li>
+          ))}
+        </ul>
+      </body>
+    </html>
+  );
+}
+```
+
+The loader runs **exactly once per build** at the moment the specifier is first imported; subsequent imports reuse the cached source. Consult [Plugins → `addVirtualModule`](/docs/concepts/plugins) for the full contract.
+
+## Typing the import
+
+The virtual module has no `.d.ts` next to it by default — add one if you want autocomplete:
+
+```ts title="src/types/virtual-metadata-db.d.ts"
+declare module "virtual:metadata-db" {
+  interface MetadataEntry {
+    slug: string;
+    title: string;
+    description: string;
+    publishedAt: string;
+    wordCount: number;
+  }
+  const entries: MetadataEntry[];
+  export default entries;
+}
+```
+
+Add the file to your `tsconfig.json`'s `include` and the import is fully typed.
+
+## When this is the wrong shape
+
+If you find yourself adding a second virtual module to expose a *different* slice of the same data — `virtual:tag-index`, `virtual:archive-by-year` — you've outgrown the recipe. Move to a content collection and pre-compute slices in the consuming pages, or write one plugin that exposes a richer object the consumers index into.

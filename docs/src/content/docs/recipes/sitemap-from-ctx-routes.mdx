@@ -1,0 +1,106 @@
+---
+title: Sitemap from postBuild ctx.routes
+description: Emit a sitemap.xml from the postBuild route manifest. Single plugin, no extra build step, byte-stable output.
+sidebar_position: 10
+category: Recipes
+recipe:
+  provenance: zzmod (takazudomodular.com source) — distilled from concepts/plugins.mdx worked example
+  verified: 2026-05
+  applies_to_zfb_version: ">=0.1 <0.2"
+  tradeoffs: |
+    Couples the sitemap to whichever extension filter you pick (here, "html"). If you
+    later add non-HTML routes that should be indexed — feed.rss, llms.txt — they will
+    be silently dropped. Alternative: ship a sitemap.xml.tsx page (see
+    concepts/non-html-pages) and skip the plugin entirely. The page form is more
+    discoverable; the plugin form is one fewer route to render.
+  breaks_if:
+    - The ZfbRouteManifest interface changes — routes[] entries gain or drop fields.
+    - prerender behaviour changes (e.g. a route is emitted but should not be indexed).
+    - The site URL is hard-coded here; deploying to a preview env will leak the prod URL.
+    - Adapter wrapping rewrites output paths after postBuild — verify the manifest matches what landed on disk.
+  status: seed
+---
+
+<Warning title="Seed recipe — needs zzmod verification">
+
+This recipe was distilled from issue [#348](https://github.com/Takazudo/zudo-front-builder/issues/348) and the worked example in [concepts/plugins.mdx](/docs/concepts/plugins). It has not yet been re-run end-to-end against the current `zfb` build. If you adopt it, please open a PR updating the `verified` date and flipping `status` to `verified`.
+
+</Warning>
+
+## When to reach for this
+
+You want a `sitemap.xml` that mirrors every HTML route your build emitted, with zero per-page bookkeeping. The route manifest already knows every URL; this recipe just stringifies it.
+
+If you also want `lastmod`, `changefreq`, or per-route exclusion, you'll extend the filter — the manifest's per-route `params` are available too.
+
+## The plugin
+
+```ts title="plugins/sitemap.ts"
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const SITE_URL = process.env.SITE_URL ?? "https://example.com";
+
+export default definePlugin({
+  name: "sitemap",
+  postBuild({ outDir, routes, logger }) {
+    if (!routes) return; // route manifest is absent during preBuild; guard for safety.
+
+    const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...htmlRoutes.map((r) => `  <url><loc>${SITE_URL}${r.url}</loc></url>`),
+      "</urlset>",
+    ].join("\n");
+
+    writeFileSync(join(outDir, "sitemap.xml"), xml, "utf-8");
+    logger.info(`sitemap: wrote ${htmlRoutes.length} URLs`);
+  },
+});
+```
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/sitemap.ts" }],
+});
+```
+
+## What you get
+
+After `zfb build`, `dist/sitemap.xml` contains every HTML route:
+
+```xml title="dist/sitemap.xml"
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/</loc></url>
+  <url><loc>https://example.com/blog/hello/</loc></url>
+  <url><loc>https://example.com/about/</loc></url>
+</urlset>
+```
+
+Routes are pre-sorted by `url` in the manifest, so the output is byte-stable across runs.
+
+## Excluding routes
+
+Two clean options:
+
+1. **Filter in the plugin.** Drop URLs by prefix:
+   ```ts
+   const htmlRoutes = routes.routes
+     .filter((r) => r.extension === "html")
+     .filter((r) => !r.url.startsWith("/internal/"));
+   ```
+2. **Per-route opt-out via frontmatter.** Add a `sitemap_exclude` field to your pages and read it from `routes.routes[].source`. The manifest gives you the source module path but not its frontmatter — you'd need a sibling preBuild plugin to stash a `Set<string>` of excluded routes in a virtual module and re-import it here.
+
+For most sites, the prefix filter is enough.
+
+## Tip: prefer a `sitemap.xml.tsx` page if you can
+
+zfb has [non-HTML pages](/docs/concepts/non-html-pages) — you can write `pages/sitemap.xml.tsx` that returns the same XML string, and skip the plugin entirely. The page form participates in normal routing and shows up in the manifest like any other route, which is closer to zfb's grain.
+
+The plugin form survives when you need the *complete* manifest at emission time (e.g. you want the sitemap to enumerate every other route, including dynamic ones, after they've all been generated). That's the case the recipe is really for.

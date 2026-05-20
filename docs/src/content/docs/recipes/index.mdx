@@ -1,0 +1,69 @@
+---
+title: Recipes
+description: Self-contained, dated, honestly-annotated patterns for using zfb. Each recipe links its provenance, the zfb versions it applies to, and the known break conditions.
+sidebar_position: 1
+category: Recipes
+---
+
+<Info title="What lives here">
+
+Each recipe is a small, self-contained pattern for solving one problem with zfb — usually by composing the primitives (`addVirtualModule`, `postBuild` + `ctx.routes`, non-HTML pages, MDX components) that the [Concepts](/docs/concepts) section documents.
+
+</Info>
+
+<Warning title="Seed catalog — verify before adopting">
+
+The v0 seed recipes were drafted from issue [#348](https://github.com/Takazudo/zudo-front-builder/issues/348) without an end-to-end re-run against the current `zfb` build. Every recipe here is marked `status: seed` in its frontmatter until a maintainer has reproduced it. Treat them as starting points, not as battle-tested code. If you re-run one, please open a PR updating `verified` and flipping `status` to `verified`.
+
+</Warning>
+
+## What a recipe is (and isn't)
+
+A recipe is:
+
+- **Self-contained.** Copy-pasteable; no missing prerequisite hidden three pages away.
+- **Dated.** Every recipe carries a `verified: YYYY-MM` field — the month an author last re-ran it end-to-end.
+- **Honest about tradeoffs.** Every recipe declares one short paragraph of `tradeoffs` and a `breaks_if` bullet list. If a recipe stops working, the `breaks_if` list is the first place to look.
+- **Pinned to a zfb version range.** `applies_to_zfb_version` is a semver range like `">=0.1 <0.2"`. Outside that range, the recipe may need adjustment.
+
+A recipe is not:
+
+- A plugin we ship in the engine. zfb's stance is "recipes over plugins" — see [Plugins](/docs/concepts/plugins) and the [engine-vs-framework](/docs/concepts/engine-vs-framework) discussion.
+- A guarantee. The catalog is community-curated; recipes age. Read the `verified` date before you commit to one.
+
+## Frontmatter contract
+
+Each recipe page declares a top-level `recipe:` object in its frontmatter. The schema is enforced in [`docs/src/content.config.ts`](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/src/content.config.ts) — a recipe page with a missing or unknown field fails the build.
+
+```yaml
+---
+title: Sitemap from postBuild ctx.routes
+description: Emit sitemap.xml from the route manifest in a postBuild plugin.
+sidebar_position: 10
+category: Recipes
+recipe:
+  provenance: zzmod (the takazudomodular.com source)
+  verified: "2026-05"
+  applies_to_zfb_version: ">=0.1 <0.2"
+  tradeoffs: |
+    Couples the sitemap to whichever extension you decide is "HTML enough".
+    Alternative: ship a sitemap.xml.tsx page (see concepts/non-html-pages)
+    and skip the plugin entirely.
+  breaks_if:
+    - The route manifest interface changes (ZfbRouteEntry fields renamed or removed).
+    - You add non-HTML routes that should appear in the sitemap; the filter excludes them.
+  status: seed
+---
+```
+
+## Curation cadence
+
+- **Re-verification:** every recipe is re-verified at the start of each zfb minor-version release. The release PR updates `verified` and bumps `applies_to_zfb_version`. Recipes whose `verified` date is older than two minor releases (~six months at the current cadence) are flipped to `status: deprecated` in the same pass and dropped from the sidebar.
+- **Pruning:** quarterly low-effort sweep — anyone with write access opens a "recipe sweep" issue, fixes obvious rot, and closes it. No formal owner.
+- **New recipes:** PR-only. Reviewers reject recipes that don't carry every required field or that paper over `breaks_if` to look cleaner.
+
+## Cross-links
+
+- [Plugins](/docs/concepts/plugins) — the contract behind most recipes.
+- [Non-HTML Pages](/docs/concepts/non-html-pages) — the primitive several recipes prefer over a plugin.
+- [Migrating from Astro](/docs/guides/migrating-from-astro) — for the "I used to do this in `getStaticPaths`" → "I now do this in a recipe" rosetta.
