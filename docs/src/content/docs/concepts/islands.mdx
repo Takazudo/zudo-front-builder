@@ -30,7 +30,7 @@ export default function Counter() {
 
 That single directive is the whole opt-in. Files without it are pure server components — they render once at build time and never reach the browser.
 
-The `examples/basic-blog/components/theme-toggle.tsx` component is the canonical real-world example: it reads `localStorage` and `matchMedia`, manages its own state, and mirrors the active theme to `document.documentElement.dataset.theme`. The key pattern is that it renders a deterministic SSR-safe default on first paint, then syncs to the user preference inside `useEffect`:
+The `theme-toggle.tsx` component from the [zfb-example-blog standalone repo](https://github.com/Takazudo/zfb-example-blog) is the canonical real-world example: it reads `localStorage` and `matchMedia`, manages its own state, and mirrors the active theme to `document.documentElement.dataset.theme`. The key pattern is that it renders a deterministic SSR-safe default on first paint, then syncs to the user preference inside `useEffect`:
 
 ```tsx
 "use client";
