@@ -48,6 +48,39 @@ jobs:
           path: docs/dist/
           retention-days: 1
 
+  audit:
+    name: pnpm audit (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm audit (production deps)
+        run: |
+          for attempt in 1 2; do
+            if pnpm audit --prod --audit-level=high; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 2 ]; then
+              echo "audit failed, retrying in 30s..."
+              sleep 30
+            fi
+          done
+          exit 1
+
   deploy-preview:
     name: Deploy PR preview to Cloudflare Pages
     needs: build
