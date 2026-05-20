@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.",
+  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. SDK with islands, content collections, pagination, and config helpers.",
   "keywords": [
     "zfb",
     "static-site-generator",

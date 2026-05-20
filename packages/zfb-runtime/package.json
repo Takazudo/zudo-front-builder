@@ -3,7 +3,7 @@
   "version": "0.2.0-migration.0",
   "private": true,
   "type": "module",
-  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.",
+  "description": "JavaScript runtime for zfb static sites — Hono-backed page router, content snapshots, and client-side hydration.",
   "keywords": [
     "zfb",
     "zfb-runtime",
