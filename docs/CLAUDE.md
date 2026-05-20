@@ -64,14 +64,16 @@ Do NOT use h1 (`#`) in doc content — the page title from frontmatter is render
 - Japanese: `/ja/docs/...` — content in `src/content/docs-ja/`
 - Japanese docs should mirror the English directory structure
 
-## Enabled Features
+## Active Settings Flags
 
-- **search** — Full-text search via Pagefind
-- **sidebarFilter** — Real-time sidebar filtering
-- **claudeResources** — Auto-generated docs for Claude Code resources
+The following boolean flags are set in `src/config/settings.ts` and are currently enabled (`true`):
+
+- **mermaid** — Renders Mermaid diagrams in MDX content
+- **sitemap** — Generates `sitemap.xml` via `@astrojs/sitemap`
+- **docMetainfo** — Shows document metadata (word count, reading time, etc.) below the title
+- **cjkFriendly** — Applies `remark-cjk-friendly` for better CJK line-breaking
+- **llmsTxt** — Generates `llms.txt` for LLM consumption
+- **docHistory** — Shows document edit history on each page
 - **sidebarResizer** — Draggable sidebar width
-- **sidebarToggle** — Show/hide desktop sidebar
-- **versioning** — Multi-version documentation support
-- **docHistory** — Document edit history
-- **llmsTxt** — Generates llms.txt for LLM consumption
-- **changelog** — Changelog page at `/docs/changelog`
+- **sidebarToggle** — Show/hide desktop sidebar button
+- **claudeResources** — Auto-generated docs for Claude Code resources (skills, commands)
