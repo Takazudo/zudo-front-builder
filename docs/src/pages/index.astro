@@ -43,7 +43,7 @@ const tagCount = collectTags(
       >
       </div>
       <div>
-        <h1 class="text-heading font-bold mb-vsp-2xs">{settings.siteName}</h1>
+        <h1 class="text-heading font-futura font-normal mb-vsp-2xs">{settings.siteName}</h1>
         <p class="text-muted text-small mb-vsp-sm">
           {settings.siteDescription}
         </p>
@@ -98,7 +98,7 @@ const tagCount = collectTags(
   {
     settings.docTags && tagCount > 0 && (
       <section class="mt-vsp-xl">
-        <h2 class="text-subheading font-bold mb-vsp-md">
+        <h2 class="text-subheading font-futura font-normal mb-vsp-md">
           {t("doc.allTags", defaultLocale)}
         </h2>
         <TagNav variant="all" docs={tagDocs} locale={defaultLocale} />
