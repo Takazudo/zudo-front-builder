@@ -48,7 +48,7 @@ export default function BlogPostPage({ post }: Props) {
             `<Note title="…">…</Note>` in the post body actually render.
 
           Outside the production renderer (unit tests, dev sandboxes,
-          and the v0 CLI before ADR-001), `Content` falls back to a
+          and the v0 CLI), `Content` falls back to a
           `<pre data-zfb-content-fallback>` block printing the raw body
           with a `[zfb fallback render]` marker. That keeps the example
           self-explanatory even when the bridge is absent.

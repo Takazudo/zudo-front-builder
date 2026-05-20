@@ -4,12 +4,9 @@
 //! build into the JS runtime so TSX page modules can call
 //! `getCollection("docs")` and `getEntry("docs", "slug")` synchronously
 //! during SSR. The actual JS-side wiring (embedding the snapshot into
-//! `globalThis.__zfb.content` via the embedded V8 host per ADR-007)
-//! lands in a follow-up epic — this sub delivers ONLY the Rust contract
+//! `globalThis.__zfb.content` via the embedded V8 host)
+//! lands in a follow-up epic — this module delivers ONLY the Rust contract
 //! and the TypeScript surface.
-//!
-//! See `docs/architecture/adr-004-content-bridge.md` for the JS-side
-//! contract spec.
 //!
 //! # Determinism
 //!

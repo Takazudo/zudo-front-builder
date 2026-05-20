@@ -1219,7 +1219,7 @@ mod tests {
     /// Golden test: pin the exact textual output of `emit_types_dts` so
     /// any change to the declaration shape is loud. The string below is
     /// the canonical contract — when it changes, the bridge consumers
-    /// (and the JS-side spec in adr-004) need to change with it.
+    /// (and the JS-side spec) need to change with it.
     #[test]
     fn emit_types_dts_matches_golden() {
         let tmp = TmpDir::new("dts-golden");
