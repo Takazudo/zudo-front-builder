@@ -1,7 +1,7 @@
 //! `RenderHost` trait — the abstraction boundary between the renderer and the
 //! underlying JS runtime.
 //!
-//! ADR-007 describes the production path: build-time TSX→HTML rendering is
+//! In production, build-time TSX→HTML rendering is
 //! delegated to an embedded V8 host (`deno_core` in-process) driven by
 //! `@takazudo/zfb-runtime`. The concrete host implementation lives in
 //! [`crate::embedded_v8`]. The Rust side communicates with the host via the
@@ -52,7 +52,7 @@ impl ModuleHandle {
 
 /// Abstraction over the JS runtime.
 ///
-/// Production target (per ADR-007) is the embedded V8 host
+/// Production target is the embedded V8 host
 /// ([`crate::embedded_v8::EmbeddedV8RenderHost`]); tests in this crate use
 /// in-process fakes. Add a new impl by satisfying these three operations.
 ///

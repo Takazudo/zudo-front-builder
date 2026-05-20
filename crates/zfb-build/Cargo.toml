@@ -14,9 +14,9 @@ zfb-graph = { path = "../zfb-graph" }
 # We reuse `compile_mdx_to_jsx_module_cached` rather than re-wrapping MDX
 # compilation so the bundler speaks the same MDX dialect as `zfb-render`.
 zfb-content = { path = "../zfb-content" }
-# Read-only consumption of the framework adapter contract (ADR-002).
+# Read-only consumption of the framework adapter contract.
 # The bundler only touches `Framework`, `make_adapter`, and the adapter's
-# `hydrate_shim_*` accessors. Per ADR-005 the JS runtime is no longer
+# `hydrate_shim_*` accessors. The JS runtime is no longer
 # embedded (deno_core was retired), so `zfb-render` is compile-cheap and
 # carries no V8 / native-runtime cost into `zfb-build`'s dependency
 # surface.
@@ -44,7 +44,7 @@ walkdir = { workspace = true }
 # `module_specifier` and the bridge map key agree on which files were
 # kept (and on what slug each one got, post `idStripSuffix`).
 globset = { workspace = true }
-# Sub 3 / #108: `process` + `io-util` + `fs` add the long-lived plugin
+# `process` + `io-util` + `fs` add the long-lived plugin
 # host subprocess with newline-delimited JSON over stdio. `process`
 # brings `tokio::process::Command`, `io-util` brings `AsyncBufReadExt`
 # / `AsyncWriteExt`, `fs` brings `tokio::fs::write` for staging the

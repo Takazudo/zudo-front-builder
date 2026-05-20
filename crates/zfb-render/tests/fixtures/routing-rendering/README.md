@@ -30,7 +30,7 @@ snapshots/
 └── react/                   # populated by INSANE_UPDATE_SNAPSHOTS=1
 ```
 
-## Portable-component contract (ADR-002)
+## Portable-component contract
 
 Every component / page / layout in this fixture is **portable** — it
 relies only on JSX and plain props, never on Preact-only or React-only

@@ -47,7 +47,7 @@ pub struct Route {
     /// `api.v2.json.tsx` → `Some("json")`, `about.tsx` → `None`).
     /// `None` means "no extension hint — default to `html`".
     ///
-    /// **Precedence** (also documented in ADR-003 and in
+    /// **Precedence** (also pinned in
     /// [`crate::route::Route::output_filename`]): frontmatter `extension`
     /// override > filename convention (this field) > the `html` default.
     pub output_extension: Option<String>,

@@ -7,7 +7,7 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 
 [lib]
 
-# Sub 3 / sub-issue #163 records the cargo-feature-gate decision: the
+# Cargo-feature-gate decision: the
 # in-process V8 host is opt-in via the `embed_v8` feature, default-on
 # so the typical workspace `cargo build`/`cargo test` exercises it, but
 # downstream tooling that wants a deno-free build (e.g. CI image that
@@ -23,9 +23,8 @@ zfb-types = { path = "../zfb-types" }
 
 # === In-process V8 host (feature `embed_v8`) ===
 #
-# Versions are PINNED and act as the `compatibilityDate` replacement
-# per ADR-007 (Sub 1, sub-issue #161). Bumping is a coordinated change
-# — see ADR-007's "version bump procedure" section.
+# Versions are PINNED and act as the `compatibilityDate` replacement.
+# Bumping is a coordinated change — keep the pins below in lock-step.
 #
 # Selection rationale (state at the time of writing):
 # - `deno_core 0.399`: the latest line that builds on the workspace's
@@ -34,7 +33,7 @@ zfb-types = { path = "../zfb-types" }
 #   on 0.399 until the toolchain bump happens in lock-step.
 #
 # We deliberately do NOT depend on `deno_fetch` / `deno_web` /
-# `deno_url` / `deno_console` here, even though the sub-162 spec
+# `deno_url` / `deno_console` here, even though the original spec
 # mentions them. Reasons documented in `embedded_v8/mod.rs` "Why a
 # polyfill instead of deno_fetch/deno_web" section:
 # 1. Those crates ship Request/Response/URL/etc. as
@@ -45,8 +44,7 @@ zfb-types = { path = "../zfb-types" }
 #    folded into `deno_web`; the spec list is historical.
 # 3. The SSG path never makes outgoing network requests, so
 #    `deno_fetch`'s hyper / rustls / tower / h2 stack is dead
-#    weight — and ADR-001 documented the 15-30 minute first-build
-#    cost it imposes.
+#    weight — and it imposes a 15-30 minute first-build cost.
 # 4. A pure-JS polyfill of Request/Response/Headers/URL/fetch/
 #    TextEncoder/TextDecoder/atob/btoa/structuredClone/crypto.subtle
 #    is ~250 lines and lives in `embedded_v8/js/web_polyfills.js`,

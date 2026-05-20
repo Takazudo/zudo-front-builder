@@ -8,10 +8,6 @@
 //! - Render-to-string module: `"preact-render-to-string"`.
 //! - Pre-render setup: installs `globalThis.__zfbRenderToString` so the
 //!   orchestrator can call into the framework without branching on it.
-//!
-//! See `docs/architecture/adr-002-framework-adapters.md` for the
-//! portable-component contract that constrains what users can write
-//! against this adapter.
 
 use async_trait::async_trait;
 
@@ -45,7 +41,7 @@ const PREACT_HYDRATE_SHIM_SPECIFIER: &str = "zfb:internal/adapters/preact-hydrat
 /// `hydrateIsland(Component, props, element)` the framework-agnostic
 /// hydration runtime in `zfb-islands` calls to drive Preact. Uses `h` +
 /// `hydrate` from bare `preact` (not `preact/compat`) because zfb's
-/// portable-component contract targets bare Preact — see ADR-002.
+/// portable-component contract targets bare Preact.
 const PREACT_HYDRATE_SHIM_SOURCE: &str = r#"import { h, hydrate } from "preact";
 export function hydrateIsland(Component, props, element) {
   hydrate(h(Component, props), element);

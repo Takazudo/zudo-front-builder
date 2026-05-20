@@ -1,7 +1,7 @@
 //! Synthetic ESM source for the `node:*` stubs and the host-bridge
 //! globals shim.
 //!
-//! ADR-007 (sub-issue #161) tracks the design rationale: user bundles
+//! Design rationale: user bundles
 //! produced by arbitrary developer code may include top-level
 //! `import "node:fs"` (or `node:path`, etc.) for branches that only
 //! fire under Workers / production SSR. Those imports must

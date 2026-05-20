@@ -3,10 +3,7 @@
 //! zfb supports two JSX frameworks: Preact (default) and React. The
 //! choice is made once at config-load time via the `framework` field in
 //! `zfb.config.ts` and is centralized through SWC's `transform-react`
-//! configuration — *not* per-file pragmas. See
-//! `docs/architecture/adr-002-framework-adapters.md` for the contract a
-//! portable component must follow and for the gotchas that arise from
-//! this two-track design.
+//! configuration — *not* per-file pragmas.
 //!
 //! An [`Adapter`] is responsible for four things and four things only:
 //!
@@ -22,14 +19,14 @@
 //! 4. Exposing a tiny client-side **hydration shim** that the islands
 //!    bundler folds into the islands bundle's entry. The shim exports a
 //!    single `hydrateIsland(Component, props, element)` function so the
-//!    framework-agnostic hydration runtime (`zfb-islands` JS, Sub 3) can
+//!    framework-agnostic hydration runtime (`zfb-islands` JS) can
 //!    hydrate any island without branching on the framework
 //!    (see [`Adapter::hydrate_shim_specifier`] and
 //!    [`Adapter::hydrate_shim_source`]).
 //!
 //! ## Hydration: per-adapter shim, not per-call JS expression
 //!
-//! For Sub 3 we considered two designs:
+//! We considered two designs:
 //!
 //! - **`hydrate_call()` returning a JS expression string** that the
 //!   runtime would template into a per-page generated module.
@@ -45,8 +42,7 @@
 //! Preact or React.
 //!
 //! Anything beyond these four hooks — hook semantics, signal interop,
-//! event delegation strategy — is intentionally out of scope. ADR-002
-//! documents why.
+//! event delegation strategy — is intentionally out of scope.
 
 use async_trait::async_trait;
 

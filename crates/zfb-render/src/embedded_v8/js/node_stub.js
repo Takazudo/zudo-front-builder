@@ -1,6 +1,6 @@
 // Shared sentinel implementation for the `node:*` stub modules.
 //
-// ADR-007 (sub-issue #161): user bundles may include top-level
+// User bundles may include top-level
 // `import "node:fs"` for code paths that only fire under Workers /
 // production SSR. We resolve the import at module-load time so the
 // bundle evaluates, but every property access / call throws so any

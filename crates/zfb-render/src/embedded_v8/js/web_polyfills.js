@@ -201,7 +201,7 @@
   // userinfo, and accepts inputs that would round-trip differently
   // through Chrome. The SSG renderer always feeds it
   // already-validated URLs from the route table, so the relaxed
-  // parser is safe in practice. ADR-007 documents the tradeoff.
+  // parser is safe in practice.
   class URL {
     constructor(input, base) {
       let resolved;
