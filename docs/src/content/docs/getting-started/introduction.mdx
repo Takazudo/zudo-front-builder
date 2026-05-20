@@ -10,6 +10,8 @@ If you can read a `pages/` directory tree and write a TSX component, you already
 
 ## What zfb provides
 
+For the "why this shape" answer — narrow scope, recipes-over-plugins, no middleware layer — see [Design philosophy](/concepts/design-philosophy).
+
 - **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime. No separate Node process is required at build time.
 - **Atomic writes** — the build never leaves the output directory in a partially-written state. Each `zfb build` run either completes fully or leaves `dist/` unchanged.
 - **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
@@ -46,7 +48,7 @@ What is different: zfb has no component syntax of its own — everything is TSX.
 | `public/` for static assets | `public/` — same semantics |
 | Layout components wrapping pages | Layout components wrapping pages — plain TSX composition |
 
-What is different: zfb produces only static HTML — there is no server runtime, no API routes, and no SSR at request time. Think of it as Next.js with `output: "export"` only, but with a faster build engine and no Node.js required in the build environment. The App Router, server components, and middleware are outside zfb's scope.
+What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Pages via [`@takazudo/zfb-adapter-cloudflare`](/guides/ssr-and-cloudflare-bindings)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
 
 ## Client router and view transitions
 

@@ -73,11 +73,13 @@ module resolution.
 zfb is the wrong choice in several cases — be honest with yourself
 before committing.
 
-**Your site is primarily server-rendered or driven by dynamic data.**
-zfb is an SSG engine. Every page is computed at build time and written
-to `dist/` as static HTML. There is no per-request rendering, no API
-routes, and no database-query layer. If your pages change per-user or
-on every request, you need a full SSR framework.
+**Most or every page on your site is dynamic.** zfb is SSG-by-default:
+every page is computed at build time into static HTML. Routes that need
+request-time behavior can opt out with `prerender = false` and be served
+by an adapter (see [SSR and Cloudflare bindings](/guides/ssr-and-cloudflare-bindings)).
+That covers a sprinkle of dynamic routes on an otherwise-static site. If
+*every* page is dynamic — per-user, per-request — zfb is the wrong tool,
+and a full SSR framework is the right one.
 
 **You need broad multi-framework support.** Astro's adapter ecosystem
 lets you swap between React, Vue, Svelte, Solid, and others inside the
@@ -137,6 +139,7 @@ lives in the [README scaling note](https://github.com/Takazudo/zudo-front-builde
 ## Where to go next
 
 - [Getting started](/getting-started) — scaffold your first site.
+- [Design philosophy](/concepts/design-philosophy) — the "narrow on purpose" stance and the recipes-over-plugins framing that explain why this set of trade-offs.
 - [Architecture: Build engine](/architecture/build-engine) — how the
   Rust crates, the JS host, and the snapshot fit together.
 - [Engine vs Framework](/concepts/engine-vs-framework) — the six
