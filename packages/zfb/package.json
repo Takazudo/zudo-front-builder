@@ -3,8 +3,29 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "zfb public SDK — islands, content collections, pagination, config, plugins, and frontmatter helpers",
+  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.",
+  "keywords": [
+    "zfb",
+    "static-site-generator",
+    "ssg",
+    "islands",
+    "mdx",
+    "content-collections",
+    "preact",
+    "react",
+    "rust"
+  ],
   "license": "MIT",
+  "author": "Takeshi Takatsudo <takazudo@gmail.com> (https://github.com/Takazudo)",
+  "homepage": "https://takazudomodular.com/pj/zudo-front-builder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/zfb"
+  },
+  "bugs": {
+    "url": "https://github.com/Takazudo/zudo-front-builder/issues"
+  },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -36,6 +57,18 @@
       "types": "./src/frontmatter.ts",
       "default": "./src/frontmatter.ts"
     }
+  },
+  "files": [
+    "src",
+    "!src/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "vitest run",
