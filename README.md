@@ -1,75 +1,52 @@
-# zudo-front-builder
+# zudo-front-builder (zfb)
 
-`zfb` (zudo-front-builder) is a Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
+`zfb` is a Rust-built static-site engine for TypeScript/JSX projects — millisecond rebuilds, single binary, no cargo needed by end users.
+
+## Install
+
+```sh
+# Scaffold a new site
+pnpm create zfb@latest my-site
+
+# Or add zfb to an existing project
+pnpm add -D @takazudo/zfb
+```
+
+`@takazudo/zfb` ships a prebuilt Rust binary per platform via npm optional-deps — no cargo or Rust toolchain required.
+
+## Why Rust?
+
+Rust makes the framework itself fast, memory-safe, and distributable as a single binary — see the [architecture doc](./docs/src/content/docs/architecture/why-rust.mdx) (or the [docs site](https://takazudomodular.com/pj/zudo-front-builder/)) for the full rationale.
 
 ## What zfb is
 
-zfb is the **engine**: router, renderer, content pipeline, and the
-small set of build-time primitives (frontmatter extraction, content
-collections, `paths()`, MDX directive registry, non-HTML page emission,
-and the `PageMeta` head/asset contract) that a framework can build
-on. Frameworks like a future `zudo-doc-v2` sit on top of these
-primitives and own the opinionated layer — sidebar generation, search,
-theming, blog conventions, i18n routing, versioning UI, and so on.
+zfb is the **engine**: router, renderer, content pipeline, and the small set of build-time primitives (frontmatter extraction, content collections, `paths()`, MDX directive registry, non-HTML page emission, and the `PageMeta` head/asset contract) that a framework can build on. Frameworks like a future `zudo-doc-v2` sit on top of these primitives and own the opinionated layer — sidebar generation, search, theming, blog conventions, i18n routing, versioning UI, and so on.
 
-The docs site is published at <https://takazudomodular.com/pj/zudo-front-builder/>.
+The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 
 ## Docs site
 
-The documentation site lives under [`docs/`](./docs) and is built with [zudo-doc](https://github.com/zudolab/zudo-doc) (Astro + MDX + Tailwind v4). Once published, it is served at <https://takazudomodular.com/pj/zudo-front-builder/>.
-
-Local commands (run from the repo root):
-
-```sh
-pnpm docs:install        # install docs workspace deps
-pnpm docs:dev            # start the Astro dev server
-pnpm docs:build          # static build into docs/dist/
-pnpm docs:preview        # preview the built site
-pnpm docs:check          # astro check (type/content validation)
-```
+The documentation site lives under [`docs/`](./docs) and is published at <https://takazudomodular.com/pj/zudo-front-builder/>.
 
 ## Limits
 
-`zfb build` reads every configured content collection, builds an
-in-memory `ContentSnapshot` (one entry per `.md` / `.mdx` / `.tsx`
-under each collection root), and embeds it into the worker bundle that
-the embedded V8 host loads at build time. The full snapshot lives in V8 RAM for
-the duration of the render pass — there is no streaming or sharding
-today.
+`zfb build` reads every configured content collection and builds an in-memory `ContentSnapshot` embedded into the worker bundle that the V8 host loads at build time. For typical project sizes (documentation sites, blogs, hundreds of MDX files) this fits comfortably in default memory. Very large content sets (tens of thousands of entries or entries with multi-megabyte bodies) will push V8 RSS up linearly with snapshot size.
 
-For the project sizes the engine targets (the docs site, blogs,
-typical `zudo-doc`-scale content sets — hundreds of MDX files with
-short bodies) this fits comfortably in default Node + workerd memory.
-Very large content sets (tens of thousands of entries, or entries
-with multi-megabyte bodies) will push V8 RSS up linearly with snapshot
-size; if you are headed in that direction, you should monitor the
-snapshot size and plan for the streaming / per-collection sharding
-work tracked as future engine roadmap.
-
-To inspect the snapshot footprint of a build, set `ZFB_DEBUG_SNAPSHOT`
-to `1` (or `true`):
+To inspect the snapshot footprint of a build:
 
 ```sh
 ZFB_DEBUG_SNAPSHOT=1 pnpm exec zfb build
+# prints: content snapshot: 187 entries / 412 KB
 ```
 
-zfb will print one line to stderr while building:
+## Contributing
 
-```
-content snapshot: 187 entries / 412 KB
-```
+See [BUILDING.md](./BUILDING.md) for the toolchain, first-build setup, and local development workflow.
 
-`entries` is the total number of content entries across all
-collections. `KB` is the byte size of the deterministic JSON
-serialization of the snapshot — a useful proxy for the V8 heap cost,
-since that is the shape the embedded V8 host receives. Any other value (`0`,
-unset, `yes`, etc.) leaves the build silent so a stray export does
-not change CI output.
+This repo uses git worktrees for parallel development. **Pushing from a worktree is forbidden** — child agents commit locally and the manager session merges and pushes from the repo root. See [CLAUDE.md](./CLAUDE.md) for the full worktree-push policy.
 
-## Building locally
-
-See [BUILDING.md](./BUILDING.md) for the toolchain, the one-time `pnpm fetch:tailwind` setup, and the `ZFB_TAILWIND_BIN` override.
+For general contribution guidelines (formatting, CI, toolchain requirements), see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE). Copyright (c) 2026 Takeshi Takatsudo.
