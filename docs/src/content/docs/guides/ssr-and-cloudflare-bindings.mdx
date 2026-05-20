@@ -13,6 +13,18 @@ read Cloudflare Worker bindings — secrets, environment variables, and a
 
 </Info>
 
+<Info title="Two kinds of Worker — disambiguate first">
+
+There are two distinct concepts both called "Worker" in a zfb + Cloudflare project. Blurring them is the most common source of confusion.
+
+**zfb's emitted `dist/_worker.js`** — produced by the Cloudflare adapter for every route that exports `prerender = false`. It runs inside the same TSX pipeline as static pages: shared layouts, components, and MDX virtual modules all work exactly as they do for SSG routes.
+
+**External standalone Workers** — your own wrangler-built Worker bundles deployed separately (e.g. an auth Worker, a photo-upload Worker, a payment-webhook Worker). zfb has no awareness of them. The seam between zfb and an external Worker is always HTTP/JSON: either a `pages/api/*.tsx` proxy route that `fetch()`'s the external Worker, or a `prerender = false` page that calls `fetch()` directly.
+
+Why this matters: AI agents and human readers often try to import shared layout TSX directly into an external Worker. That doesn't work — an external Worker has a different bundler, a different runtime, and no access to zfb's virtual-module layer. If you find yourself trying to `import` a layout into a wrangler project, you are crossing the wrong boundary.
+
+</Info>
+
 ## SSG vs SSR in zfb
 
 By default every page in zfb is rendered **once at build time** into
@@ -35,6 +47,29 @@ to your configured adapter.
 If a route exports `prerender = false` but no adapter is configured,
 the build fails fast with an error naming the offending route — zfb
 will not silently drop a route it cannot deploy.
+
+<Warning title="prerender = false must be a literal export">
+
+zfb detects `prerender` via **static AST inspection at build time**, not runtime evaluation. The export must be a **literal `export const`** declaration:
+
+```tsx
+export const prerender = false;  // ✅ detected correctly
+```
+
+These forms are **not** detected and silently fall back to SSG:
+
+```tsx
+// ❌ indirect assignment — not a literal export const
+const flags = { prerender: false };
+export const prerender = flags.prerender;
+
+// ❌ function call — not a literal export const
+export const prerender = computeFlag();
+```
+
+The same restriction applies to the `frontmatter` export — see [Frontmatter](/concepts/frontmatter) for the literal-only contract.
+
+</Warning>
 
 ## Configuring the Cloudflare adapter
 
