@@ -1372,6 +1372,29 @@ const CLIENT_ROUTER_EXPORT: &str = "ClientRouter";
 /// one would risk shipping the runtime to projects that never touch
 /// `<ClientRouter />` (acceptance criterion 2 — zero new bytes for
 /// non-users).
+///
+/// TypeScript type-only forms are skipped entirely. `import type { … }`,
+/// per-specifier `{ type ClientRouter }`, and `export type { … }` are
+/// compile-time-erased — they emit zero runtime code — so counting them
+/// would ship the client-router runtime to a consumer that only imports
+/// `ClientRouter` as a type, again breaking acceptance criterion 2.
+///
+/// The `@takazudo/zfb-runtime/client-router` subpath is a side-effect
+/// entrypoint: importing it runs `init()` at module-eval time (see issue
+/// #289 Background). Any import of that subpath — even for a non-router
+/// helper like `navigate`/`prefetch` — opts the project into the runtime,
+/// so detection on the subpath is deliberately not narrowed to
+/// `ClientRouter`.
+///
+/// Known scope limitation: `export * from "@takazudo/zfb-runtime"` (the
+/// barrel, NOT the `/client-router` subpath) is NOT treated as
+/// `ClientRouter` usage. A project that re-exports the whole runtime
+/// barrel through a local barrel and then imports `ClientRouter` from
+/// that local barrel will not be detected. Treating any barrel
+/// `export *` as a hit would be over-broad (it would ship the runtime to
+/// projects re-exporting only non-router helpers); a correct fix needs
+/// cross-module symbol-usage tracking. Tracked as a follow-up — see the
+/// `agent-found` GitHub issue referencing #289 / PR #306.
 fn module_uses_client_router(module: &Module) -> bool {
     for item in &module.body {
         let ModuleItem::ModuleDecl(decl) = item else {
@@ -1379,13 +1402,26 @@ fn module_uses_client_router(module: &Module) -> bool {
         };
         match decl {
             ModuleDecl::Import(import_decl) => {
-                let src = atom_to_string(&import_decl.src.value);
-                if src == ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
+                // `import type { … }` is erased at compile time — no
+                // runtime code, so it can never opt into the runtime.
+                if import_decl.type_only {
+                    continue;
+                }
+                // Compare the borrowed atom against the `&'static str`
+                // constants directly — no `String` allocation on this
+                // hot path (run for every reachable module's DFS walk).
+                let src = &import_decl.src.value;
+                if *src == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
                     return true;
                 }
-                if src == ZFB_RUNTIME_SPECIFIER {
+                if *src == *ZFB_RUNTIME_SPECIFIER {
                     for spec in &import_decl.specifiers {
                         if let ImportSpecifier::Named(named) = spec {
+                            // Per-specifier `{ type ClientRouter }` is
+                            // also erased — skip it.
+                            if named.is_type_only {
+                                continue;
+                            }
                             // `imported` is `Some` for renamed imports
                             // (`{ ClientRouter as CR }`); `None` means the
                             // local binding IS the imported name.
@@ -1401,18 +1437,28 @@ fn module_uses_client_router(module: &Module) -> bool {
                 }
             }
             ModuleDecl::ExportNamed(named) => {
+                // `export type { … }` is erased at compile time.
+                if named.type_only {
+                    continue;
+                }
                 let Some(src) = &named.src else {
                     // `export { … }` with no `from` is a local re-export,
                     // not a module pull-in.
                     continue;
                 };
-                let src = atom_to_string(&src.value);
-                if src == ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
+                // Borrowed compare — no allocation on the hot path.
+                let src = &src.value;
+                if *src == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
                     return true;
                 }
-                if src == ZFB_RUNTIME_SPECIFIER {
+                if *src == *ZFB_RUNTIME_SPECIFIER {
                     for spec in &named.specifiers {
                         if let ExportSpecifier::Named(export_named) = spec {
+                            // Per-specifier `{ type ClientRouter }` re-export
+                            // is erased — skip it.
+                            if export_named.is_type_only {
+                                continue;
+                            }
                             // `orig` is the name in the source module.
                             if module_export_name(&export_named.orig) == CLIENT_ROUTER_EXPORT {
                                 return true;
@@ -1422,7 +1468,11 @@ fn module_uses_client_router(module: &Module) -> bool {
                 }
             }
             ModuleDecl::ExportAll(all) => {
-                if atom_to_string(&all.src.value) == ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
+                // Only the `/client-router` subpath counts here. A barrel
+                // `export * from "@takazudo/zfb-runtime"` is deliberately
+                // NOT a trigger — see the known-scope-limitation note in
+                // this function's doc comment.
+                if all.src.value == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
                     return true;
                 }
             }
@@ -2178,8 +2228,8 @@ mod tests {
     }
 
     #[test]
-    fn client_router_not_detected_without_usage() {
-        // A project that never touches `<ClientRouter />` must report
+    fn client_router_not_detected_when_not_imported() {
+        // A project that never imports `ClientRouter` at all must report
         // `uses_client_router = false` (acceptance criterion 2 — the
         // bundler stays byte-identical).
         let resolver = InMemoryResolver::new()
@@ -2241,6 +2291,63 @@ mod tests {
         assert!(
             !meta.uses_client_router,
             "a non-ClientRouter named import must not trigger detection"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_type_only_import_declaration() {
+        // `import type { ClientRouter } from "…"` is compile-time-erased —
+        // it emits zero runtime code, so it must NOT ship the runtime
+        // (acceptance criterion 2).
+        let resolver = InMemoryResolver::new().with_file(
+            root().join("pages/home.tsx"),
+            r#"import type { ClientRouter } from "@takazudo/zfb-runtime";
+            export default function Home() {}
+            "#,
+        );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a type-only `import type` of ClientRouter must not trigger detection"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_inline_type_only_specifier() {
+        // `import { type ClientRouter }` — the per-specifier `type` marker
+        // erases just this binding; still zero runtime code.
+        let resolver = InMemoryResolver::new().with_file(
+            root().join("pages/home.tsx"),
+            r#"import { type ClientRouter } from "@takazudo/zfb-runtime";
+            export default function Home() {}
+            "#,
+        );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a per-specifier `type ClientRouter` import must not trigger detection"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_type_only_reexport() {
+        // `export type { ClientRouter } from "…"` is compile-time-erased.
+        let resolver = InMemoryResolver::new().with_file(
+            root().join("pages/home.tsx"),
+            r#"export type { ClientRouter } from "@takazudo/zfb-runtime";
+            export default function Home() {}
+            "#,
+        );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a type-only `export type` re-export of ClientRouter must not trigger detection"
         );
     }
 
