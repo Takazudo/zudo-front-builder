@@ -43,6 +43,9 @@
   "files": [
     "src",
     "bin",
+    "!src/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
