@@ -38,8 +38,11 @@ The Rust orchestrator loads this bundle into an embedded V8 isolate
 and drives it with synthetic HTTP requests — one request per page
 URL. Each synthetic request produces an HTML `Response`. The orchestrator writes
 those responses to `dist/` as plain `.html` files. When the build finishes, the
-isolate is torn down. The worker bundle never leaves your machine; it is the
-*tool* that produces the static output, not the output itself.
+isolate is torn down. At build time the worker bundle never leaves your machine — it is the
+*tool* the Rust orchestrator drives to produce the static output. (The
+same bundle shape also deploys unchanged to Cloudflare Workers for any
+`prerender = false` routes; that production path is covered later in
+this page and in the [SSR guide](/guides/ssr-and-cloudflare-bindings).)
 
 **Island bundles — shipped to the browser, on-demand.**
 

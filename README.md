@@ -22,6 +22,8 @@ Rust makes the framework itself fast, memory-safe, and distributable as a single
 
 zfb is the **engine**: router, renderer, content pipeline, and the small set of build-time primitives (frontmatter extraction, content collections, `paths()`, MDX directive registry, non-HTML page emission, and the `PageMeta` head/asset contract) that a framework can build on. Frameworks like a future `zudo-doc-v2` sit on top of these primitives and own the opinionated layer — sidebar generation, search, theming, blog conventions, i18n routing, versioning UI, and so on.
 
+zfb is the engine for content sites whose hard parts live outside page rendering — build-time data pipelines, custom content collections, project-specific glue. For sites whose hard parts are page rendering itself (multi-framework, ISR, RSC, server actions), use Astro or Next. See [`concepts/choosing-zfb.mdx`](./docs/src/content/docs/concepts/choosing-zfb.mdx) for the longer answer.
+
 The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 
 ## Docs site
