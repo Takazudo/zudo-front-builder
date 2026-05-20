@@ -108,6 +108,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     }
 }
 

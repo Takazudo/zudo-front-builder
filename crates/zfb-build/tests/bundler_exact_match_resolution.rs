@@ -134,6 +134,7 @@ fn make_input(
         plugin_virtual_modules,
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     }
 }
 
