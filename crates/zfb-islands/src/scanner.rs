@@ -1751,17 +1751,11 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                     match spec {
                         ExportSpecifier::Named(n) => {
                             let pick = n.exported.as_ref().unwrap_or(&n.orig);
-                            let name = match pick {
-                                ModuleExportName::Ident(id) => id.sym.to_string(),
-                                ModuleExportName::Str(s) => atom_to_string(&s.value),
-                            };
+                            let name = module_export_name(pick);
                             // For named re-exports the local ident is
                             // `n.orig` — that's what the body-marker
                             // table is keyed on.
-                            let local = match &n.orig {
-                                ModuleExportName::Ident(id) => id.sym.to_string(),
-                                ModuleExportName::Str(s) => atom_to_string(&s.value),
-                            };
+                            let local = module_export_name(&n.orig);
                             let marker = body_markers
                                 .get(&local)
                                 .cloned()
@@ -1779,10 +1773,7 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                             });
                         }
                         ExportSpecifier::Namespace(n) => {
-                            let name = match &n.name {
-                                ModuleExportName::Ident(id) => id.sym.to_string(),
-                                ModuleExportName::Str(s) => atom_to_string(&s.value),
-                            };
+                            let name = module_export_name(&n.name);
                             out.push(IslandRecord {
                                 component_name: name.clone(),
                                 marker_name: name,
