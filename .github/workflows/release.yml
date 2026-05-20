@@ -138,7 +138,7 @@ jobs:
           else
             DIST_TAG="latest"
           fi
-          echo "DIST_TAG=$DIST_TAG" >> $GITHUB_ENV
+          echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
           echo "Resolved dist-tag: $DIST_TAG (from tag: $TAG)"
 
       - name: DRY RUN — skip publish
@@ -163,6 +163,6 @@ jobs:
 
       - name: Publish to npm
         if: ${{ inputs.dry_run != true }}
-        run: pnpm -r publish --tag $DIST_TAG --no-git-checks --access public
+        run: pnpm -r publish --tag "$DIST_TAG" --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
