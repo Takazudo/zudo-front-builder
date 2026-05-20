@@ -1,0 +1,21 @@
+{
+  "name": "@takazudo/zfb-darwin-x64",
+  "version": "0.1.0-next.0",
+  "description": "Platform-specific zfb binary (darwin-x64)",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "zfb",
+  "files": [
+    "zfb"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/zfb-darwin-x64"
+  }
+}
