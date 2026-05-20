@@ -145,6 +145,10 @@ esbuild is shipped as a Go-built standalone CLI binary that release engineering 
 
 The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
 
+## Supply chain
+
+Runtime deps on publishable packages are supply-chain liabilities for downstream users. See [SECURITY-DEPS.md](./SECURITY-DEPS.md) for the full policy, the current runtime-dep audit, and the checklist to follow before adding a new runtime dependency.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE).
