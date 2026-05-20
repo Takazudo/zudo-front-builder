@@ -1,7 +1,7 @@
 {
   "name": "@takazudo/zfb",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-next.0",
+  "private": false,
   "type": "module",
   "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. SDK with islands, content collections, pagination, and config helpers.",
   "keywords": [
@@ -59,22 +59,53 @@
     }
   },
   "files": [
-    "src",
-    "!src/__tests__",
-    "!src/**/*.test.ts",
-    "!src/**/*.test.tsx",
+    "dist",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./runtime": {
+        "types": "./dist/runtime.d.ts",
+        "default": "./dist/runtime.js"
+      },
+      "./content": {
+        "types": "./dist/content.d.ts",
+        "default": "./dist/content.js"
+      },
+      "./paginate": {
+        "types": "./dist/paginate.d.ts",
+        "default": "./dist/paginate.js"
+      },
+      "./config": {
+        "types": "./dist/config.d.ts",
+        "default": "./dist/config.js"
+      },
+      "./plugins": {
+        "types": "./dist/plugins.d.ts",
+        "default": "./dist/plugins.js"
+      },
+      "./frontmatter": {
+        "types": "./dist/frontmatter.d.ts",
+        "default": "./dist/frontmatter.js"
+      }
+    }
   },
   "engines": {
     "node": ">=22.0.0",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "pnpm build && pnpm test",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
