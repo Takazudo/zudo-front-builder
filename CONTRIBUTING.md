@@ -5,7 +5,7 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: **Node 20 or later and pnpm 10 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engine-strict=true` in `.npmrc`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install.
+- **Node / pnpm**: **Node 22 or later and pnpm 10 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engine-strict=true` in `.npmrc`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22 is required (not 20) because `@mermaid-js/parser` (transitive dep of the docs site) pulls in `chevrotain@12` which declares `engines.node >=22`.
 
 ## First build expectation
 

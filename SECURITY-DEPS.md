@@ -52,7 +52,7 @@ issue number._
 
 ## Before adding a runtime dep
 
-- [ ] Can a Node built-in (≥ 20) do this?
+- [ ] Can a Node built-in (≥ 22) do this?
 - [ ] Can this be a `devDependency` instead?
 - [ ] Can this be `pnpm dlx`'d at build time?
 - [ ] Is the dep on the OpenSSF best-practices list / has a recent release / has an active maintainer?
