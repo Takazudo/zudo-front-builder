@@ -124,8 +124,8 @@ export const settings = {
     {
       label: "Claude",
       labelKey: "nav.claude",
-      path: "/docs/claude-skills",
-      categoryMatch: "claude-skills",
+      path: "/docs/claude",
+      categoryMatch: "claude",
     },
     {
       label: "Changelog",
