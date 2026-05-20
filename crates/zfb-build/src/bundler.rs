@@ -543,6 +543,32 @@ pub struct BundlerInput {
     /// render and a `bundle-runtime.mjs` for the deploy adapter. The
     /// sourcemap suffix `.map` is appended automatically.
     pub bundle_basename: Option<String>,
+
+    /// CSS Modules class-name maps, keyed by the **absolute** path of
+    /// each `.module.css` file on disk. Each value is the
+    /// original-class → scoped-class map produced by
+    /// [`zfb_css::CssPipelineOutput::class_maps`].
+    ///
+    /// This is how the build-time CSS Modules JSX rewrite is wired
+    /// (see the `lib.rs` "CSS Modules JS-side rewrite contract" in
+    /// `zfb-css`). When a `.module.css` file under one of the
+    /// materialised source roots has an entry here, the bundler
+    /// writes a JS module — `export default { "orig": "scoped", … }`
+    /// — into the shadow tree in place of the raw CSS bytes, and adds
+    /// `--loader:.module.css=js` so esbuild parses it as JS. A user's
+    /// `import styles from "./x.module.css"; styles.foo` then resolves
+    /// to the scoped class string at bundle time.
+    ///
+    /// The raw CSS bytes are NOT lost — the scoped CSS itself is
+    /// emitted into `dist/assets/styles-<hash>.css` by
+    /// `CssPipeline::build_emitter`. Only the *import* is redirected
+    /// to the map.
+    ///
+    /// Empty by default — projects with no `.module.css` files (or
+    /// callers that do not run the CSS pipeline first) get the
+    /// previous behaviour, where `.module.css` falls through to the
+    /// `.css=empty` loader.
+    pub css_module_class_maps: HashMap<PathBuf, HashMap<String, String>>,
 }
 
 impl BundlerInput {
@@ -599,6 +625,7 @@ impl BundlerInput {
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
             bundle_basename: None,
+            css_module_class_maps: HashMap::new(),
         }
     }
 }
@@ -674,10 +701,10 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 /// - `.mdx=jsx` — `.mdx` files were rewritten to JSX text by
 ///   `materialise_shadow`; tell esbuild to parse them as JSX so the
 ///   `.mdx` extension keeps working for user import paths.
-/// - `.css=empty` — `.css` imports inside JS modules are converted to
-///   no-op modules at compile time. The Worker bundle must NOT carry
-///   user CSS bytes — `ProductionAssetPipeline` writes the real
-///   hashed `dist/assets/styles-<hash>.css` from
+/// - `.css=empty` — plain `.css` imports inside JS modules are
+///   converted to no-op modules at compile time. The Worker bundle
+///   must NOT carry user CSS bytes — `ProductionAssetPipeline` writes
+///   the real hashed `dist/assets/styles-<hash>.css` from
 ///   `CssPipeline::build_emitter` (S2) and the renderer injects a
 ///   `<link rel=stylesheet>` pointing at that file (S1+S4). With
 ///   esbuild's default `.css` loader the import would either (a) emit
@@ -689,7 +716,23 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   crash the Worker at module load. The alternative
 ///   `--external:*.css` was REJECTED because esbuild can leave runtime
 ///   `import` statements that workerd cannot resolve.
-pub const ESBUILD_LOADER_ARGS: &[&str] = &["--loader:.mdx=jsx", "--loader:.css=empty"];
+/// - `.module.css=js` — CSS Modules support. A `.module.css` file
+///   imported as `import styles from "./x.module.css"` must yield the
+///   *scoped class-name map*, not empty. The bundler rewrites each
+///   such file in the shadow tree to a JS module
+///   (`export default { "orig": "scoped", … }`) using the maps in
+///   [`BundlerInput::css_module_class_maps`]; this loader tells
+///   esbuild to parse that rewritten file as JS. esbuild matches the
+///   **longest** file extension, so `.module.css` wins over `.css`
+///   here — plain `.css` still routes to `=empty`. The scoped CSS
+///   itself is shipped externally via `styles-<hash>.css` exactly
+///   like Tailwind output. When a `.module.css` file has no map entry
+///   (e.g. the CSS pipeline was not run), the shadow file keeps its
+///   raw CSS bytes and this loader makes esbuild fail with a clear
+///   parse error rather than silently dropping the import — which is
+///   the correct fail-fast signal for a misconfigured build.
+pub const ESBUILD_LOADER_ARGS: &[&str] =
+    &["--loader:.mdx=jsx", "--loader:.css=empty", "--loader:.module.css=js"];
 
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
@@ -1034,6 +1077,16 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             }
         }
     }
+
+    // 2d. CSS Modules — rewrite every `.module.css` file in the shadow
+    //     tree to a JS module that re-exports its scoped class-name
+    //     map as the default export. Paired with the
+    //     `--loader:.module.css=js` esbuild flag, this makes a user's
+    //     `import styles from "./x.module.css"; styles.foo` resolve to
+    //     the scoped class string at bundle time. See the module-level
+    //     `ESBUILD_LOADER_ARGS` doc and `BundlerInput::css_module_class_maps`.
+    rewrite_css_modules_in_shadow(shadow, &input.project_root, &input.css_module_class_maps)
+        .context("bundler: failed rewriting CSS Modules in shadow tree")?;
 
     // 3. Hydration shim.
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
@@ -1435,6 +1488,98 @@ fn strip_yaml_frontmatter(input: &str) -> &str {
         return after_close;
     }
     input
+}
+
+/// Walk the shadow tree and rewrite every `*.module.css` file into a JS
+/// module exporting its scoped class-name map as the default export.
+///
+/// The shadow tree mirrors the project's directory layout
+/// (`pages/`, `components/`, `layouts/`, `content/`, plus any extra
+/// project-root dir such as `styles/`), so a shadow file at
+/// `<shadow>/<rel>` corresponds to the original `<project_root>/<rel>`.
+/// We reconstruct that original path and look it up in `class_maps`
+/// (which `zfb-css` keys by the absolute `.module.css` path).
+///
+/// Behaviour per file:
+///
+/// - **Map present** — write `export default { "orig": "scoped", … }`.
+///   Keys are emitted in sorted order for deterministic output. A
+///   user's `import styles from "./x.module.css"; styles.foo` then
+///   resolves to the scoped class string.
+/// - **Map absent** — write `export default {};`. This happens when
+///   the CSS pipeline did not see the file (e.g. it is reached only
+///   through a deep TSX→TSX import chain the flat scanner misses, or
+///   the caller never ran the CSS pipeline). The build does not crash;
+///   `styles.foo` is `undefined` and the markup ships without that
+///   class — a graceful degradation rather than a hard failure.
+///
+/// Either way the file content becomes valid JS, so the
+/// `--loader:.module.css=js` esbuild flag always parses successfully.
+/// The raw CSS bytes are not needed here — the scoped CSS is emitted
+/// separately by `CssPipeline::build_emitter` into the hashed global
+/// stylesheet.
+fn rewrite_css_modules_in_shadow(
+    shadow: &Path,
+    project_root: &Path,
+    class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+) -> Result<()> {
+    for entry in WalkDir::new(shadow).follow_links(false) {
+        let entry = entry.with_context(|| format!("walking shadow {}", shadow.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        // Match the `.module.css` double-extension exactly.
+        if !path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.ends_with(".module.css"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Reconstruct the original project path: shadow-relative path
+        // joined onto the project root.
+        let rel = path.strip_prefix(shadow).map_err(|_| {
+            anyhow!(
+                "bundler: shadow file {} is not under shadow root {}",
+                path.display(),
+                shadow.display()
+            )
+        })?;
+        let original = project_root.join(rel);
+
+        let names = class_maps.get(&original);
+        let js = render_css_module_js(names);
+        fs::write(path, js.as_bytes()).with_context(|| {
+            format!(
+                "bundler: failed writing CSS Modules JS shim to {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Render the JS source for a CSS Modules shim file.
+///
+/// `Some(map)` → `export default { "orig": "scoped", … };` with keys
+/// sorted for deterministic output. `None` → `export default {};`.
+fn render_css_module_js(names: Option<&HashMap<String, String>>) -> String {
+    match names {
+        Some(map) if !map.is_empty() => {
+            let mut sorted: Vec<(&String, &String)> = map.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            let body = sorted
+                .into_iter()
+                .map(|(k, v)| format!("  {}: {}", json_str(k), json_str(v)))
+                .collect::<Vec<_>>()
+                .join(",\n");
+            format!("export default {{\n{body}\n}};\n")
+        }
+        _ => "export default {};\n".to_string(),
+    }
 }
 
 /// One MDX entry materialised under `shadow/content/<collection>/`,
@@ -2528,6 +2673,78 @@ where
 mod tests {
     use super::*;
 
+    #[test]
+    fn render_css_module_js_emits_sorted_default_export() {
+        let mut map = HashMap::new();
+        map.insert("btn".to_string(), "h1_btn".to_string());
+        map.insert("btn-primary".to_string(), "h1_btn-primary".to_string());
+        let js = render_css_module_js(Some(&map));
+        // Default export, keys sorted, values JSON-quoted.
+        assert!(js.starts_with("export default {"));
+        let btn_at = js.find("\"btn\"").expect("btn key present");
+        let primary_at = js.find("\"btn-primary\"").expect("btn-primary key present");
+        assert!(btn_at < primary_at, "keys must be emitted sorted: {js}");
+        assert!(js.contains("\"h1_btn\""));
+        assert!(js.contains("\"h1_btn-primary\""));
+    }
+
+    #[test]
+    fn render_css_module_js_empty_map_and_none_yield_empty_object() {
+        assert_eq!(render_css_module_js(None), "export default {};\n");
+        assert_eq!(
+            render_css_module_js(Some(&HashMap::new())),
+            "export default {};\n"
+        );
+    }
+
+    #[test]
+    fn rewrite_css_modules_in_shadow_rewrites_mapped_and_unmapped() {
+        let proj = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let project_root = proj.path();
+        let shadow_root = shadow.path();
+
+        // Shadow mirrors project layout: components/card.module.css and
+        // styles/orphan.module.css.
+        fs::create_dir_all(shadow_root.join("components")).unwrap();
+        fs::create_dir_all(shadow_root.join("styles")).unwrap();
+        fs::write(
+            shadow_root.join("components/card.module.css"),
+            ".card { color: red; }",
+        )
+        .unwrap();
+        fs::write(
+            shadow_root.join("styles/orphan.module.css"),
+            ".x { color: blue; }",
+        )
+        .unwrap();
+        // A plain .css file must be left untouched.
+        fs::write(shadow_root.join("styles/global.css"), ".g{}").unwrap();
+
+        // Map keyed by the ORIGINAL project path of the mapped module.
+        let mut names = HashMap::new();
+        names.insert("card".to_string(), "sc0_card".to_string());
+        let mut maps = HashMap::new();
+        maps.insert(
+            project_root.join("components/card.module.css"),
+            names,
+        );
+
+        rewrite_css_modules_in_shadow(shadow_root, project_root, &maps).unwrap();
+
+        let mapped =
+            fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
+        assert!(mapped.contains("sc0_card"), "mapped module: {mapped}");
+        assert!(!mapped.contains("color: red"), "raw CSS must be gone");
+
+        let orphan =
+            fs::read_to_string(shadow_root.join("styles/orphan.module.css")).unwrap();
+        assert_eq!(orphan, "export default {};\n", "unmapped module degrades to {{}}");
+
+        let global = fs::read_to_string(shadow_root.join("styles/global.css")).unwrap();
+        assert_eq!(global, ".g{}", "plain .css must be untouched");
+    }
+
     fn make_minimal_input(tmp: &tempfile::TempDir) -> BundlerInput {
         let root = tmp.path().to_path_buf();
         // pages/index.tsx
@@ -2577,6 +2794,7 @@ mod tests {
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
             bundle_basename: None,
+            css_module_class_maps: HashMap::new(),
         }
     }
 
@@ -3404,6 +3622,7 @@ mod tests {
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
             bundle_basename: None,
+            css_module_class_maps: HashMap::new(),
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");

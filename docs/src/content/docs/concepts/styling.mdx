@@ -57,9 +57,57 @@ Tailwind v4's CSS-first configuration is supported through `@theme` directives i
 
 ## Component-scoped styling
 
-The recommended pattern is **global CSS for site-wide concerns plus Tailwind utility classes for component-level styling**. This keeps the build fast and the runtime trivial, and it maps cleanly onto Tailwind v4's design-token model.
+There are two well-supported patterns for component-level styling: Tailwind utility classes, and CSS Modules.
 
-CSS Modules are not integrated. The integration point, if added, will live in `crates/zfb-css`.
+### Tailwind utility classes
+
+The simplest pattern is **global CSS for site-wide concerns plus Tailwind utility classes for component-level styling**. This keeps the build fast and the runtime trivial, and it maps cleanly onto Tailwind v4's design-token model.
+
+### CSS Modules
+
+For genuinely component-scoped CSS — class names that must not collide across components — zfb supports CSS Modules. Any file named `*.module.css` is a CSS Module: its class names are rewritten to scoped, file-stable identifiers at build time, so two components can both define a `.button` class without clashing.
+
+Author the styles in a `.module.css` file:
+
+```css title="components/card.module.css"
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.title {
+  font-weight: 700;
+}
+```
+
+Import the module with a **default import** and read class names off the imported object:
+
+```tsx title="components/Card.tsx"
+import styles from "./card.module.css";
+
+export default function Card() {
+  return (
+    <div className={styles.card}>
+      <h3 className={styles.title}>Hello</h3>
+    </div>
+  );
+}
+```
+
+At build time zfb resolves `styles.card` to the scoped class name (e.g. `KdPA9G_card`) — the rendered HTML carries that scoped class, and the scoped CSS is folded into the same hashed `dist/assets/styles-<hash>.css` stylesheet as the rest of your CSS. There is no separate `.css` file per module and no runtime cost: the lookup is resolved during the build.
+
+How it works:
+
+- `import styles from "./x.module.css"` must be a **default import**. `styles` is a plain object mapping your original class names to the scoped ones.
+- Access a class with member access — `styles.card` or `styles["card"]`. Both work; computed access with a dynamic key does not, because the rewrite happens at build time.
+- Plain `.css` imports (a file *not* ending in `.module.css`) are still treated as global CSS — only the `.module.css` suffix opts a file into scoping.
+- The `.module.css` file is discovered when it is imported from a `.tsx`/`.ts`/`.jsx`/`.js` file under `pages/`, `components/`, `layouts/`, or `content/`.
+
+Limitations:
+
+- CSS Modules imported by **bare specifier** from `node_modules` (e.g. `import s from "@org/pkg/x.module.css"`) are not scoped — only project-relative `./` / `../` imports are.
+- The `:export` block and `composes` directive are not supported; use plain class selectors.
 
 ## What lands in `dist/`
 

@@ -205,6 +205,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     };
 
     let out = bundle(input).expect("end-to-end bundle should succeed");

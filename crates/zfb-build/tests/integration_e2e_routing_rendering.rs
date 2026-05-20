@@ -326,6 +326,7 @@ fn build_bundle(
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");
