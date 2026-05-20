@@ -27,7 +27,6 @@ fi
 SKILL_DIR="$DOCS_DIR/.claude/skills/$SKILL_NAME"
 DOCS_CONTENT_DIR="$DOCS_DIR/src/content/docs"
 DOCS_JA_CONTENT_DIR="$DOCS_DIR/src/content/docs-ja"
-ARCHITECTURE_DIR="$REPO_ROOT/docs/architecture"
 GLOBAL_SKILLS_DIR="$HOME/.claude/skills"
 
 echo ""
@@ -63,11 +62,6 @@ HAS_JA=""
 if [ -d "$DOCS_JA_CONTENT_DIR" ]; then
   HAS_JA="true"
   ensure_symlink "$SKILL_DIR/docs-ja" "$REPO_ROOT/docs/src/content/docs-ja"
-fi
-
-# Symlink architecture/ → docs/architecture/ (ADR directory)
-if [ -d "$ARCHITECTURE_DIR" ]; then
-  ensure_symlink "$SKILL_DIR/architecture" "$ARCHITECTURE_DIR"
 fi
 
 # Discover top-level doc categories dynamically for the SKILL.md index
@@ -109,7 +103,7 @@ Strip the flag from the remaining argument to get the topic keyword.
 
 1. Find the relevant article(s) from the \`docs/\` directory based on the topic
 2. Read ONLY the specific article(s) you need — do NOT load all articles at once
-3. For architecture questions, also check \`architecture/\` for ADR files
+3. For architecture questions, look under \`docs/architecture/\` for the relevant page
 4. Apply the information from the article when answering the user's question
 5. Mention the source article path so the user can find it for further reading
 
@@ -144,8 +138,6 @@ The documentation is organized in MDX files under \`docs/\`:
 
 \`\`\`
 ${DOC_TREE}\`\`\`
-
-Architecture Decision Records (ADRs) are in \`architecture/\`.
 
 Browse the \`docs/\` directory to discover available articles. Each \`.mdx\` file
 has YAML frontmatter with \`title\` and \`description\` fields that help identify
