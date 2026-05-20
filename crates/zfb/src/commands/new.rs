@@ -345,7 +345,7 @@ mod tests {
             "name": "fixture",
             "dependencies": {
                 "preact": "^10.22.0",
-                "zfb": "workspace:*",
+                "@takazudo/zfb": "workspace:*",
             },
             "devDependencies": {
                 "internal-tool": "workspace:^",
@@ -367,7 +367,7 @@ mod tests {
             "non-workspace deps must be untouched"
         );
         assert_eq!(
-            obj["dependencies"]["zfb"].as_str().unwrap(),
+            obj["dependencies"]["@takazudo/zfb"].as_str().unwrap(),
             WORKSPACE_DEP_PLACEHOLDER
         );
         assert_eq!(
@@ -397,7 +397,7 @@ mod tests {
             r#"{
   "name": "template-default",
   "dependencies": {
-    "zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*"
   }
 }
 "#,
@@ -410,7 +410,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&after).unwrap();
         assert_eq!(parsed["name"].as_str().unwrap(), "my-site");
         assert_eq!(
-            parsed["dependencies"]["zfb"].as_str().unwrap(),
+            parsed["dependencies"]["@takazudo/zfb"].as_str().unwrap(),
             WORKSPACE_DEP_PLACEHOLDER
         );
         assert!(after.ends_with('\n'), "trailing newline preserved");

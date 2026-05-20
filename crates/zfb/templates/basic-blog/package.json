@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "preact": "^10.22.0",
-    "zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
