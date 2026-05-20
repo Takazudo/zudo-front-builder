@@ -39,7 +39,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 | Tool | Role | Trait boundary |
 | --- | --- | --- |
 | **esbuild** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the per-island client bundles (`zfb-islands`). Fast, handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
-| **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen by [ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md). | `RenderHost` (in `zfb-render`) |
+| **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](/architecture/js-runtime) for the rationale. | `RenderHost` (in `zfb-render`) |
 | **SWC** | Compiles TSX source to JavaScript before handing it off to esbuild or the render host. Lives inside `zfb-render`. | Internal to `zfb-render`; swappable by replacing that crate's transform step |
 | **lol_html** | Streaming HTML rewriter used to inject hydration entry-point `<script>` tags and island mount markers into the rendered HTML without a full parse. | Used inside `zfb-build/head_inject.rs`; no public trait needed — it is a low-level utility |
 
