@@ -116,6 +116,12 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/create-zfb:
+    dependencies:
+      '@takazudo/zfb':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb
+
   packages/zfb:
     devDependencies:
       '@types/node':
