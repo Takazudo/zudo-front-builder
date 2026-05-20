@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in `zudo-front-builder`. The full build pipeline is shipping — embedded V8 host (ADR-007), islands bundler, CSS pipeline, content collections, client router, and dev-server are all wired. The toolchain and pre-commit pipeline below are active.
+Thanks for your interest in `zudo-front-builder`. The full build pipeline is shipping — embedded V8 host, islands bundler, CSS pipeline, content collections, client router, and dev-server are all wired. The toolchain and pre-commit pipeline below are active.
 
 ## Toolchain
 
