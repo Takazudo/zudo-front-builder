@@ -1,5 +1,7 @@
 # Building zfb locally
 
+> **Contributors only.** This document is for contributors building zfb from source. End users who just want to install and use the CLI should follow the [installation guide](https://takazudomodular.com/pj/zudo-front-builder/docs/getting-started/installation) instead.
+
 This document covers the toolchain and one-time setup needed to build, test, and develop the `zfb` workspace locally. For the project mission and architecture, see [README.md](./README.md).
 
 ## Required toolchains
@@ -97,3 +99,7 @@ pnpm docs:dev             # Astro dev server for the docs site
 pnpm docs:build           # static build into docs/dist/
 pnpm fetch:tailwind       # (re-)materialize the Tailwind v4 binary
 ```
+
+## Release builds and cross-compilation
+
+The per-platform binaries shipped on npm (`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform.
