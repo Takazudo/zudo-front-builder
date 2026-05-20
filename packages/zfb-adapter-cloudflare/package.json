@@ -3,8 +3,28 @@
   "version": "0.1.0-migration.0",
   "private": true,
   "type": "module",
-  "description": "Cloudflare Pages adapter for zfb — wraps the zfb-runtime page router into a CF Worker entry (dist/_worker.js).",
+  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. Cloudflare Pages adapter.",
+  "keywords": [
+    "zfb",
+    "zfb-adapter",
+    "cloudflare",
+    "cloudflare-pages",
+    "cloudflare-workers",
+    "ssg",
+    "static-site-generator",
+    "adapter"
+  ],
   "license": "MIT",
+  "author": "Takeshi Takatsudo <takazudo@gmail.com> (https://github.com/Takazudo)",
+  "homepage": "https://takazudomodular.com/pj/zudo-front-builder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/zfb-adapter-cloudflare"
+  },
+  "bugs": {
+    "url": "https://github.com/Takazudo/zudo-front-builder/issues"
+  },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -19,6 +39,16 @@
   },
   "bin": {
     "zfb-adapter-cloudflare": "./bin/cli.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "vitest run",
