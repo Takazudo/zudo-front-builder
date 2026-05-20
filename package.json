@@ -32,6 +32,9 @@
     "wrangler": "4.85.0"
   },
   "pnpm": {
+    "overrides": {
+      "devalue": "^5.8.1"
+    },
     "onlyBuiltDependencies": [
       "lefthook",
       "wrangler"
