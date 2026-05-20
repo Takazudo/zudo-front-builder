@@ -58,7 +58,7 @@ use zfb_css::{
     TailwindSubprocessEngine,
 };
 use zfb_islands::{
-    build_production_islands_asset, scan_islands, BundleConfig, EsbuildSubprocessBundler,
+    build_production_islands_asset, scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler,
     EsbuildSubprocessConfig, FsResolver,
 };
 use zfb_router::Router;
@@ -742,8 +742,8 @@ fn build_default_islands_payload(
     }
 
     let resolver = FsResolver::new();
-    let islands_set = match scan_islands(&entries, &resolver) {
-        Ok(set) => set,
+    let (islands_set, scan_meta) = match scan_islands_with_meta(&entries, &resolver) {
+        Ok(result) => result,
         Err(e) => {
             output::warn(format!(
                 "islands scanner failed ({e}); skipping islands asset emission"
@@ -751,7 +751,13 @@ fn build_default_islands_payload(
             return Ok(None);
         }
     };
-    if islands_set.is_empty() {
+    // Issue #289: a project may use `<ClientRouter />` without any
+    // `"use client"` islands (a static page that only wants View
+    // Transitions). When the scanner detected client-router usage, the
+    // islands asset still has to be emitted so the runtime's side-effect
+    // import ships — so the empty-islands short-circuit below only fires
+    // when client-router is NOT in play.
+    if islands_set.is_empty() && !scan_meta.uses_client_router {
         // Issue #122 / #117: this branch used to be silent, which made
         // pnpm-workspace consumers with `"use client"` islands inside a
         // workspace package look "fine" while shipping no client
@@ -852,7 +858,13 @@ fn build_default_islands_payload(
     }
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
-    let bundle_cfg = BundleConfig::production().with_outdir(outdir.to_path_buf());
+    // Thread the scanner's `<ClientRouter />` detection (#289) into the
+    // bundler so the synthetic islands entry picks up the client-router
+    // runtime's side-effect import. When false the generated entry is
+    // byte-identical to a pre-#289 build.
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(outdir.to_path_buf())
+        .with_client_router(scan_meta.uses_client_router);
 
     match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
         Some(asset) => Ok(Some(AssetEmitterPayload {
