@@ -56,7 +56,8 @@
     "./frontmatter": {
       "types": "./src/frontmatter.ts",
       "default": "./src/frontmatter.ts"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "zfb": "./bin/zfb.mjs"
@@ -106,7 +107,8 @@
       "./frontmatter": {
         "types": "./dist/frontmatter.d.ts",
         "default": "./dist/frontmatter.js"
-      }
+      },
+      "./package.json": "./package.json"
     }
   },
   "engines": {
