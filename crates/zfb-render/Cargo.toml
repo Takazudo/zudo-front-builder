@@ -33,7 +33,7 @@ zfb-types = { path = "../zfb-types" }
 #   on 0.399 until the toolchain bump happens in lock-step.
 #
 # We deliberately do NOT depend on `deno_fetch` / `deno_web` /
-# `deno_url` / `deno_console` here, even though the sub-162 spec
+# `deno_url` / `deno_console` here, even though the original spec
 # mentions them. Reasons documented in `embedded_v8/mod.rs` "Why a
 # polyfill instead of deno_fetch/deno_web" section:
 # 1. Those crates ship Request/Response/URL/etc. as
