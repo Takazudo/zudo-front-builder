@@ -102,4 +102,4 @@ pnpm fetch:tailwind       # (re-)materialize the Tailwind v4 binary
 
 ## Release builds and cross-compilation
 
-The per-platform binaries shipped on npm (`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform.
+The per-platform binaries shipped on npm (`linux-x64-gnu`, `darwin-x64`, `darwin-arm64`, `win32-x64-msvc`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform. `linux-arm64-gnu` is on the roadmap but deferred past v0.1.0.
