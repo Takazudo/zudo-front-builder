@@ -62,7 +62,7 @@ See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binar
 
 To bump a framework-runtime version:
 
-1. Update the dependency in the relevant `package.json` (e.g. `packages/zfb-runtime/package.json` for `hono`, `examples/basic-blog/package.json` for `preact`/`preact-render-to-string`).
+1. Update the dependency in the relevant `package.json` (e.g. `packages/zfb-runtime/package.json` for `hono`, or in a standalone demo repo's `package.json` for `preact`/`preact-render-to-string`).
 2. Run `pnpm install` so `pnpm-lock.yaml` re-resolves.
 3. Update the corresponding `*_VERSION` constant in `crates/zfb/build.rs` to match the new lockfile entry.
 4. Rebuild — the build script re-snapshots the new tree.

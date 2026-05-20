@@ -84,8 +84,8 @@ struct StagedFixture {
     pages_dir: PathBuf,
 }
 
-/// Stage a tiny self-contained project under a tempdir. The real
-/// `examples/basic-blog` would also work but pulls in the example's
+/// Stage a tiny self-contained project under a tempdir. A real
+/// basic-blog project would also work but pulls in the full
 /// content/MDX surface (slow, and noisy for the purpose of this
 /// test); a minimal page with a Tailwind utility class is enough to
 /// drive `CssPipeline::build_emitter` through every stage.
