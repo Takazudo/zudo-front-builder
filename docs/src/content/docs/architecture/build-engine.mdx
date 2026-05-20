@@ -34,7 +34,7 @@ The win is granularity. A 2,000-page site rebuilds the affected pages in millise
 
 ## Tools the engine uses (and why they're swappable)
 
-zfb is the orchestrator. It owns the dependency graph, the per-page rebuild contract, and the data flowing between crates. The external tools it calls are an implementation detail — each sits behind a Rust trait, so a future ADR can replace any one of them without touching the rest of the pipeline.
+zfb is the orchestrator. It owns the dependency graph, the per-page rebuild contract, and the data flowing between crates. The external tools it calls are an implementation detail — each sits behind a Rust trait, so any one of them can be replaced without touching the rest of the pipeline.
 
 | Tool | Role | Trait boundary |
 | --- | --- | --- |

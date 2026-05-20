@@ -75,4 +75,4 @@ pub trait RenderHost {
 }
 ```
 
-That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. A future ADR can swap the implementation without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
+That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.

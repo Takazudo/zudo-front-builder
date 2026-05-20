@@ -10,7 +10,7 @@ If you can read a `pages/` directory tree and write a TSX component, you already
 
 ## What zfb provides
 
-- **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime (ADR-007). No separate Node process is required at build time.
+- **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime. No separate Node process is required at build time.
 - **Atomic writes** — the build never leaves the output directory in a partially-written state. Each `zfb build` run either completes fully or leaves `dist/` unchanged.
 - **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
 - **Opt-in islands** — components are server-rendered by default. Add `"use client"` to a component file to opt into client-side hydration. Pages with no islands ship zero JavaScript.
