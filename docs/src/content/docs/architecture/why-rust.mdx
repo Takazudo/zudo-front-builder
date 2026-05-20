@@ -28,7 +28,7 @@ The same code in Node would need worker threads or child processes for equivalen
 
 ## Distribution
 
-zfb is a single binary. `cargo install --path crates/zfb` produces an executable; that executable is the framework. No `node_modules` for zfb itself, no transitive tree to audit, no npm-install hop on every bootstrap. Your project still brings its own `pnpm` for the dependencies you import (TypeScript, npm packages, lockfiles), but the framework is not in that tree.
+zfb is a single binary distributed via npm. `@takazudo/zfb` pulls a prebuilt platform binary via npm optional-deps — that executable is the framework. No `node_modules` for zfb itself, no transitive tree to audit. Your project still brings its own `pnpm` for the dependencies you import (TypeScript, npm packages, lockfiles), but the framework is not in that tree. (Contributors who need to build from source can follow the steps in [From source](/getting-started/installation#from-source-contributors).)
 
 A single binary pins cleanly. CI installs the version it needs; production deploys ship the same binary that ran in dev. The version your team is on is one number, not a constellation of `package.json` ranges.
 
