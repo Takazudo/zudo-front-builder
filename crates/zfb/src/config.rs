@@ -1261,8 +1261,8 @@ async fn load_ts_via_subprocess(
     // Alias both the bare `zfb/config` form (the documented convention in
     // the zfb docs) and the full npm-package form `@takazudo/zfb/config`
     // (what users naturally write when they know the package is published
-    // as `@takazudo/zfb`). Both spellings must work because the canonical
-    // example (examples/basic-blog/zfb.config.ts) uses the scoped form.
+    // as `@takazudo/zfb`). Both spellings must work; the scoped form is
+    // the convention used in real zfb projects (e.g. the standalone demo).
     let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
     let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
     let outfile_arg = format!("--outfile={}", bundle_path.display());
@@ -2499,47 +2499,6 @@ mod tests {
             "msg should name the file: {msg}"
         );
         assert!(msg.contains("received"), "msg should echo the payload: {msg}");
-    }
-
-    /// Real subprocess flow: esbuild + node against the canonical
-    /// `examples/basic-blog/zfb.config.ts` example. Gated behind
-    /// `--include-ignored` because the staged esbuild slot is empty in
-    /// CI today (see crates/zfb/binaries/esbuild/README.md) and the
-    /// test will fail to find the binary. Run locally with
-    /// `ZFB_ESBUILD_BIN=$(which esbuild) cargo test ts_real_subprocess
-    /// --include-ignored -p zfb`.
-    #[tokio::test]
-    #[ignore = "requires real esbuild + node; opt in via --include-ignored"]
-    async fn ts_real_subprocess_loads_basic_blog_ts() {
-        // Locate the example file via CARGO_MANIFEST_DIR to be cwd-
-        // independent.
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let example_ts = manifest_dir
-            .join("../../examples/basic-blog/zfb.config.ts")
-            .canonicalize()
-            .expect("example zfb.config.ts must exist");
-
-        // Copy the file into a fresh tmp project root so the loader
-        // takes the TS branch (no sibling JSON).
-        let tmp = TempDir::new().unwrap();
-        let dst = tmp.path().join("zfb.config.ts");
-        tokio::fs::copy(&example_ts, &dst).await.unwrap();
-
-        let cfg = load_from_dir(tmp.path())
-            .await
-            .expect("real subprocess load should succeed");
-        // Spot-check fields the example pins.
-        assert_eq!(cfg.framework, Framework::Preact);
-        assert_eq!(
-            cfg.tailwind,
-            Some(TailwindConfig { enabled: true })
-        );
-        assert_eq!(cfg.collections.len(), 1);
-        assert_eq!(cfg.collections[0].name, "blog");
-        assert_eq!(
-            cfg.collections[0].path,
-            PathBuf::from("content/blog")
-        );
     }
 
     // --- MarkdownConfig / GFM resolution tests ----------------------------

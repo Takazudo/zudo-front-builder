@@ -1,0 +1,199 @@
+---
+title: SSR and Cloudflare Bindings
+description: Serve dynamic routes with the Cloudflare adapter and read Worker bindings — secrets, KV, and D1 databases — from inside an SSR handler.
+sidebar_position: 7
+---
+
+<Info title="What this page covers">
+
+How to opt a route out of build-time static rendering, deploy it as a
+Cloudflare Pages Worker with `@takazudo/zfb-adapter-cloudflare`, and
+read Cloudflare Worker bindings — secrets, environment variables, and a
+**D1 database** — from inside the route's SSR handler.
+
+</Info>
+
+## SSG vs SSR in zfb
+
+By default every page in zfb is rendered **once at build time** into
+static HTML (SSG). That is the right default for content sites — it is
+fast, cacheable, and needs no server.
+
+A route that must run **per request** — reading a database, checking a
+session cookie, handling a `POST` — opts out of SSG with a single
+export:
+
+```tsx
+// pages/api/products.tsx
+export const prerender = false;
+```
+
+`prerender = false` tells `zfb build` to skip this page during static
+rendering and instead include it in the **SSR bundle** that is handed
+to your configured adapter.
+
+If a route exports `prerender = false` but no adapter is configured,
+the build fails fast with an error naming the offending route — zfb
+will not silently drop a route it cannot deploy.
+
+## Configuring the Cloudflare adapter
+
+Install the adapter and name it in `zfb.config.json`:
+
+```sh
+pnpm add -D @takazudo/zfb-adapter-cloudflare
+```
+
+```jsonc
+{
+  "framework": "preact",
+  "adapter": "@takazudo/zfb-adapter-cloudflare"
+}
+```
+
+`zfb build` then produces, under `dist/`:
+
+- the static HTML for every SSG page, and
+- `_worker.js` + `_zfb_inner.mjs` — a Cloudflare Pages **advanced-mode**
+  Worker entry that serves your `prerender = false` routes.
+
+Deploy `dist/` to Cloudflare Pages as usual. The Worker handles dynamic
+routes; the static asset server handles everything else.
+
+## Reading the Worker `env` from an SSR handler
+
+A Cloudflare Worker's `fetch` handler receives `(request, env, ctx)`.
+The adapter threads `env` and `ctx` to your page through a per-request
+[`AsyncLocalStorage`][als] scope, so an SSR route reads them with
+`getCloudflareContext()`:
+
+```tsx
+// pages/api/whoami.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  ANTHROPIC_API_KEY: string;
+}
+
+export default async function WhoAmI() {
+  const { env, ctx } = getCloudflareContext<Env>();
+  ctx.waitUntil(reportToAnalytics()); // fire-and-forget background work
+  return new Response(env.ANTHROPIC_API_KEY ? "ok" : "missing key");
+}
+```
+
+The `Env` generic narrows the bindings shape so TypeScript catches a
+typo like `env.ANTRHOPIC_KEY`.
+
+<Warning title="Call it only inside an SSR request">
+
+`getCloudflareContext()` throws if called outside a Worker request
+scope — for example during build-time SSG. That is by design: a route
+that needs bindings **must** export `prerender = false`. If you want a
+route to work in both modes, catch the error and branch on it.
+
+</Warning>
+
+## Reading a D1 database (`env.DB`)
+
+[D1][d1] is Cloudflare's serverless SQLite. A D1 binding is exposed on
+`env` exactly like any other binding — the adapter does not treat it
+specially. Declare the binding's TypeScript shape and query it:
+
+```tsx
+// pages/api/products.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  // `D1Database` comes from `@cloudflare/workers-types`. Install it as
+  // a devDependency if you want the full typed surface; otherwise a
+  // minimal structural shape like the one below works too.
+  DB: D1Database;
+}
+
+export default async function Products() {
+  const { env } = getCloudflareContext<Env>();
+
+  // Always use `.bind(...)` for user input — D1 prepared statements
+  // are parameterised, which prevents SQL injection.
+  const { results } = await env.DB
+    .prepare("SELECT id, name, price_cents FROM products ORDER BY id")
+    .all();
+
+  return new Response(JSON.stringify({ products: results }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+```
+
+Single-row reads use `.first()`:
+
+```tsx
+const product = await env.DB
+  .prepare("SELECT * FROM products WHERE id = ?")
+  .bind(productId)
+  .first();
+```
+
+Writes (`INSERT`/`UPDATE`/`DELETE`) use `.run()`:
+
+```tsx
+await env.DB
+  .prepare("INSERT INTO orders (user_id, total_cents) VALUES (?, ?)")
+  .bind(userId, totalCents)
+  .run();
+```
+
+## Wiring up the D1 binding
+
+D1 is bound to your Pages project through `wrangler.toml`. The binding
+**name** (`DB` below) is the property you read on `env`:
+
+```toml
+# wrangler.toml
+[[d1_databases]]
+binding = "DB"               # → env.DB inside the Worker
+database_name = "webshop"
+database_id = "<uuid>"       # printed by `wrangler d1 create`
+```
+
+The lifecycle, end to end:
+
+1. **Create the database** — `wrangler d1 create webshop`. This prints
+   the `database_id`; paste it into `wrangler.toml`.
+2. **Write migrations** — put `.sql` files under `migrations/` (the
+   wrangler default). Each migration is plain SQL — `CREATE TABLE`, etc.
+3. **Apply migrations** — `wrangler d1 migrations apply webshop`
+   (add `--local` for the local dev database, `--remote` for the
+   deployed one).
+4. **Deploy** — `zfb build` then deploy `dist/` to Cloudflare Pages.
+
+For a **preview vs production** split, declare the binding under a
+named environment so each gets its own database:
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "webshop"
+database_id = "<production-uuid>"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "webshop-preview"
+database_id = "<preview-uuid>"
+```
+
+## Local development
+
+`wrangler pages dev dist/` runs the built `_worker.js` locally with a
+**local** D1 database (a SQLite file under `.wrangler/`). Apply your
+migrations to it with `wrangler d1 migrations apply webshop --local`
+before the first run.
+
+[als]: https://nodejs.org/api/async_context.html
+[d1]: https://developers.cloudflare.com/d1/

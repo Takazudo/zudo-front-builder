@@ -1,5 +1,4 @@
-//! Real-bundle smoke against `examples/basic-blog` for
-//! `EmbeddedV8RenderHost` (sub-issue #162).
+//! Real-bundle smoke for `EmbeddedV8RenderHost` (sub-issue #162).
 //!
 //! ## Purpose
 //!
@@ -8,15 +7,14 @@
 //! globals. They cannot catch a bundle that uses an API we forgot to
 //! polyfill (e.g. a Hono middleware that pokes `crypto.subtle` or a
 //! user lib that calls `structuredClone` on a Map). This file boots
-//! the host against the *actual* bundle that
-//! `zfb build examples/basic-blog` produces and dispatches a
-//! representative request set covering home, blog index, dynamic
-//! post, and a non-HTML route.
+//! the host against the *actual* bundle produced by a real zfb project
+//! and dispatches a representative request set covering home, blog
+//! index, dynamic post, and a non-HTML route.
 //!
 //! ## Worktree gap (acceptance criterion follow-up)
 //!
 //! The acceptance criteria in sub-issue #162 require this smoke to
-//! be runnable against `examples/basic-blog`'s actual built bundle.
+//! be runnable against a real built bundle.
 //! In the worktree state where this code lands, **no built bundle
 //! exists** — the bundler runs as part of the orchestrator and the
 //! sub-162 implementation is intentionally decoupled from it (Sub 4
@@ -80,9 +78,8 @@ async fn real_bundle_dispatches_representative_request_set() {
         .unwrap_or_else(|e| panic!("real bundle failed to load: {e}"));
 
     // Representative request set: home, blog index, dynamic post,
-    // non-HTML route. The exact route shapes mirror the
-    // `examples/basic-blog` page tree at the time of writing —
-    // adjust if that example's routes are reshuffled.
+    // non-HTML route. The exact route shapes mirror a basic-blog-style
+    // page tree — adjust when the target project's routes change.
     let cases: &[(&str, u16)] = &[
         ("http://zfb.local/", 200),
         ("http://zfb.local/blog", 200),

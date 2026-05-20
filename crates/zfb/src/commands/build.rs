@@ -596,10 +596,13 @@ fn build_default_css_payload(
 
     let pipe_cfg = CssPipelineConfig {
         sources,
-        // Keep CSS Modules class-map writes off this version of the
-        // wiring — the bundler-side rewrite that consumes those JSONs
-        // is the next step (S5's audit). Once that lands the build
-        // will pass a real `class_map_dir` here.
+        // The on-disk class-map JSON writer is not used: the build-time
+        // CSS Modules rewrite consumes the maps in-memory instead.
+        // `compute_css_module_class_maps` runs `CssModulesProcessor`
+        // directly (same default config this emitter uses, so scoped
+        // names agree) and feeds `BundlerInput::css_module_class_maps`,
+        // which the bundler applies in the shadow tree. No JSON channel
+        // is needed, so `class_map_dir` stays `None`.
         class_map_dir: None,
         // `output_root` is unused by `build_emitter` (it does not
         // write the hashed asset itself) but is read by the
@@ -692,6 +695,70 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+/// Compute the CSS Modules class-name maps for a project: discover
+/// `.module.css` imports under the conventional source roots, compile
+/// each with `lightningcss`, and return the
+/// `absolute .module.css path → (original class → scoped class)` map.
+///
+/// This is the producer half of the build-time CSS Modules JSX
+/// rewrite. The map is fed into [`BundlerInput::css_module_class_maps`]
+/// so the bundler can rewrite each `import styles from "./x.module.css"`
+/// to the scoped class names (see `zfb-build`'s `bundler.rs`).
+///
+/// The scoped class names produced here MUST be byte-identical to the
+/// ones in the emitted `styles-<hash>.css` — both sides run
+/// `CssModulesProcessor` with `CssModulesConfig::default()` (the same
+/// config `CssPipeline` uses inside `build_emitter`), so the scoped
+/// names agree without a shared channel.
+///
+/// Returns an empty map when Tailwind/CSS is disabled or no
+/// `.module.css` files are reachable — the build then behaves exactly
+/// as before.
+pub(crate) fn compute_css_module_class_maps(
+    project_root: &Path,
+    config: &Config,
+) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
+    use std::collections::HashMap;
+
+    // CSS Modules processing is independent of Tailwind, but the CSS
+    // emitter is gated on `tailwind.enabled`. When CSS is disabled
+    // entirely there is no stylesheet to carry the scoped CSS, so a
+    // class-map rewrite would point at classes that never ship. Keep
+    // the two sides consistent: skip the rewrite when CSS is off.
+    let css_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
+    if !css_enabled {
+        return Ok(HashMap::new());
+    }
+
+    let sources = discover_css_source_files(project_root);
+    if sources.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let scan = zfb_css::scan_css_module_imports(&sources)
+        .context("CSS Modules import scan failed")?;
+
+    // Auto-discovered modules: keep only resolved paths that exist on
+    // disk — mirrors `CssPipeline::collect_modules`. Bare specifiers
+    // (`@org/pkg/x.module.css`) cannot be compiled by lightningcss and
+    // are dropped here too.
+    let module_files: Vec<PathBuf> = scan
+        .modules
+        .into_iter()
+        .filter(|m| m.exists())
+        .collect();
+    if module_files.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let processor =
+        zfb_css::CssModulesProcessor::new(zfb_css::modules::CssModulesConfig::default());
+    let out = processor
+        .process(&module_files)
+        .context("CSS Modules compilation failed")?;
+    Ok(out.class_maps)
 }
 
 /// Run the real `build_production_islands_asset` against the
@@ -1258,6 +1325,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } else {
         _embedded_esbuild_handle = None;
     }
+    // CSS Modules — compute the scoped class-name maps and hand them
+    // to the bundler so `import styles from "./x.module.css"` resolves
+    // to the scoped class strings at bundle time. The scoped CSS bytes
+    // themselves are emitted later by the CSS asset emitter (step 2.5)
+    // into `dist/assets/styles-<hash>.css`; both sides run
+    // `CssModulesProcessor` with the default config so the scoped
+    // names match. Empty for projects with no `.module.css` files.
+    bundler_input.css_module_class_maps =
+        compute_css_module_class_maps(project_root, config)
+            .context("CSS Modules class-map computation failed")?;
+
     // Snapshot the bundler input before consuming it so the runtime-only
     // bundle pass (zfb#283) can run later in this function with the same
     // shadow setup / esbuild handle / node_modules / plugin wiring, just
@@ -3404,8 +3482,8 @@ mod tests {
         );
     }
 
-    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on
-    /// `examples/basic-blog` and asserts the post pages, paginated
+    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on a
+    /// basic-blog project and asserts the post pages, paginated
     /// indexes, and tag pages exist with non-empty `<main>`. Heavy:
     /// shells out to cargo + esbuild + embedded V8. Gated behind
     /// `--ignored` so day-to-day `cargo test` stays fast.
@@ -3415,6 +3493,8 @@ mod tests {
     /// "T7-sibling worker-wrapping sub-task" referenced in the
     /// build-command module docs. The test stays here so once that
     /// sibling lands, flipping the gate is a one-line change.
+    /// The standalone demo (https://github.com/Takazudo/zfb-example-blog)
+    /// is the intended target once a local checkout is wired in.
     #[test]
     #[ignore = "spawns esbuild + embedded V8; run with --include-ignored once worker wrapping lands"]
     fn end_to_end_basic_blog_build() {

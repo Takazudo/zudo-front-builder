@@ -41,7 +41,7 @@ __inbox/
 # bundle (`bundle.mjs` + `bundle.mjs.map`) the renderer loads.
 # Relocated out of `dist/.zfb-build/` (zfb#231) into the project root
 # so it doesn't ship to deploy uploads. Created in user project roots
-# AND in dogfood examples (e.g. `examples/basic-blog/.zfb-build/`).
+# and in any local zfb project (e.g. a standalone demo repo).
 # Never committed.
 .zfb-build/
 

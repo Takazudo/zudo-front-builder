@@ -34,24 +34,35 @@ In `zfb.config.json`:
 }
 ```
 
-Then in any page that needs Cloudflare bindings:
+Then in any page that needs Cloudflare bindings — secrets, KV, or a
+D1 database:
 
 ```ts
-// pages/api/whoami.tsx
+// pages/api/products.tsx
 import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
 
 export const prerender = false; // opt out of build-time SSG
 
 interface Env {
   ANTHROPIC_API_KEY: string;
+  DB: D1Database; // a `wrangler.toml` D1 binding named "DB"
 }
 
-export default async function WhoAmI() {
+export default async function Products() {
   const { env, ctx } = getCloudflareContext<Env>();
   ctx.waitUntil(reportToAnalytics());
-  return new Response(env.ANTHROPIC_API_KEY ? "ok" : "missing key");
+  // A D1 binding is just-another-object on `env` — query it directly.
+  const { results } = await env.DB.prepare("SELECT * FROM products").all();
+  return new Response(JSON.stringify(results), {
+    headers: { "content-type": "application/json" },
+  });
 }
 ```
+
+See the [SSR and Cloudflare Bindings guide][ssr-guide] for the full D1
+lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
+
+[ssr-guide]: https://takazudomodular.com/pj/zudo-front-builder/guides/ssr-and-cloudflare-bindings/
 
 `zfb build` will:
 

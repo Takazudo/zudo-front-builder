@@ -164,6 +164,7 @@ fn make_input_with_resolve(
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     }
 }
 
@@ -213,6 +214,7 @@ fn make_input_without_resolve(
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     }
 }
 

@@ -34,8 +34,8 @@ does not run a compiler.
 ```
 
 That choice is intentional — the package's only first-party consumers today
-are workspace siblings (the `examples/basic-blog` dogfood site, and the
-zfb runtime itself once it lands), and the zfb dev pipeline strips TS at
+are workspace siblings (the zfb runtime, and standalone demo repos such as
+https://github.com/Takazudo/zfb-example-blog), and the zfb dev pipeline strips TS at
 load time. So the workspace pays no cost for raw `.ts` consumption.
 
 If/when `zfb` is published to a public registry for non-workspace consumers,

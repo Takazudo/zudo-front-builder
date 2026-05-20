@@ -108,6 +108,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
         bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
     }
 }
 
@@ -397,7 +398,7 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // #[ignore = "requires sub-162 (Backend::EmbeddedV8) — un-ignore after merge"]
 // fn embedded_v8_renders_page_with_snapshot_data() {
 //     // Locate esbuild (required for real bundle).
-//     // Build fixture at examples/basic-blog.
+//     // Build a basic-blog fixture (or a minimal fixture project).
 //     // Call bundle() with Backend::EmbeddedV8 and content_snapshot_json
 //     //   set from build_snapshot(blog_collection_config).
 //     // Call render_all() with a route universe containing "/".

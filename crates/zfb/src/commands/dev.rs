@@ -646,6 +646,25 @@ fn boot_dev_renderer(
             id_strip_suffix: c.id_strip_suffix.clone(),
         })
         .collect();
+    // CSS Modules — mirror the production-build wiring so dev preview
+    // resolves `import styles from "./x.module.css"` to the same scoped
+    // class names `zfb build` produces. The scoped names are
+    // deterministic (both sides use `CssModulesConfig::default()`), so
+    // the dev stylesheet and dev-rendered HTML agree. A failure here is
+    // non-fatal: log it and continue with empty maps (`.module.css`
+    // imports then degrade to `{}` rather than aborting the dev boot).
+    bundler_input.css_module_class_maps =
+        match crate::commands::build::compute_css_module_class_maps(project_root, cfg) {
+            Ok(maps) => maps,
+            Err(e) => {
+                crate::output::warn(format!(
+                    "CSS Modules class-map computation failed ({e}); \
+                     `.module.css` imports will resolve to empty maps in dev"
+                ));
+                std::collections::HashMap::new()
+            }
+        };
+
     // Thread the opt-in `stripMdExt` flag through so the dev-mode
     // bundler (which feeds the embedded V8 host) honours the same setting as
     // `zfb build`. The dev loader at `crates/zfb-render/src/loader.rs`

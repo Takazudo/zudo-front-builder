@@ -43,8 +43,8 @@ pub struct NewArgs {
     pub name: String,
 
     /// Template to scaffold from. v0 ships a single template:
-    /// `basic-blog`, sourced from `examples/basic-blog/` and baked
-    /// into the binary at compile time.
+    /// `basic-blog`, sourced from `crates/zfb/templates/basic-blog/` and
+    /// baked into the binary at compile time.
     #[arg(long, default_value = "basic-blog")]
     pub template: String,
 }
