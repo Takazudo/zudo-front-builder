@@ -37,7 +37,7 @@ export const settings = {
   trailingSlash: false as boolean,
   noindex: false as boolean,
   editUrl: false as string | false,
-  siteUrl: "https://takazudomodular.com/pj/zudo-front-builder/" as string,
+  siteUrl: "https://takazudomodular.com" as string,
   docsDir: "src/content/docs",
   locales: {
     ja: { label: "JA", dir: "src/content/docs-ja" },
