@@ -12,6 +12,35 @@ The V8 embedding decision came through a measured evaluation of available JS hos
 
 The stable production contract throughout has been the _bundle shape_ (`export default { fetch }`), not the build-time engine. The same bundle that zfb renders at build time deploys unchanged to Cloudflare Workers for runtime SSR.
 
+## Why a JS engine at all — and why V8 specifically
+
+zfb uses a JS engine not because TSX requires one, but because *evaluating* the compiled output does. The distinction matters.
+
+### Layer 1 — JSX is just syntax
+
+SWC, oxc, and esbuild all compile JSX to `h(...)` calls — none of them need a JS engine to do it. Parsing and transforming TSX is a pure syntax operation. So "we support TSX" does not logically imply "we need V8." The question is what happens after the transform.
+
+### Layer 2 — The compiled JS still needs to run
+
+Once JSX becomes `h(...)`, something must _evaluate_ that code: walk the call tree to produce a VDOM, then invoke `renderToString` to produce HTML. Evaluation needs a JS engine somewhere — but not necessarily V8. Two lightweight alternatives exist:
+
+- **Boa** (pure Rust, ~30 s incremental build) — an ECMA-spec-faithful JS engine written entirely in Rust; no C++ toolchain.
+- **rquickjs** (Rust bindings to QuickJS, ~210 KB binary contribution) — fast to compile, minimal footprint.
+
+Both work well for SSR of a simple, self-contained Preact component. The problem is "any frontend dev's TSX with whatever npm packages they imported." The moment a user adds a calendar library, an i18n helper, or a component that uses a Proxy-based state store, Boa's ECMA gaps and QuickJS's limited ES2022+ surface start producing silent wrong output or hard panics — failure modes that are extremely hard to diagnose. V8 is the safe bet for arbitrary ecosystem code because it is the same engine Node.js and Chromium run against.
+
+Research is open on both lighter-engine paths — see [#344 — feature-gated V8 in the production runtime](https://github.com/Takazudo/zudo-front-builder/issues/344) and [#345 — Boa / QuickJS as the SSG-only JS engine](https://github.com/Takazudo/zudo-front-builder/issues/345).
+
+### Layer 3 — Rust templating compiles out the JS entirely
+
+Leptos and Yew take JSX-like syntax (RSX) and compile it to Rust at build time. No JS engine is needed at runtime or build time. The catch: they borrowed the syntax, not the language. There is no `import` for arbitrary npm packages, no JS closures over runtime values, and no drop-in Preact component from GitHub. A Leptos project is a Rust project — you write Rust, you depend on Rust crates. That breaks the core audience promise: a frontend developer's existing TSX and npm knowledge would not transfer.
+
+### The audience tradeoff
+
+zfb's target audience is frontend developers who already know TSX. V8 is the price of admission for that audience — it is what makes "your existing component just works" a true statement rather than a best-effort approximation. The [design philosophy](/concepts/design-philosophy) section explains this audience-first framing in full.
+
+Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real future directions — see [#344](https://github.com/Takazudo/zudo-front-builder/issues/344) and [#345](https://github.com/Takazudo/zudo-front-builder/issues/345) — but they are optimizations on top of the default, not the default itself.
+
 ## What runs today
 
 At `zfb build` / `zfb dev` / `zfb preview`, the Rust orchestrator creates an in-process V8 isolate via `deno_core`. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
