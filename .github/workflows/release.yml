@@ -148,6 +148,19 @@ jobs:
           echo "DRY RUN — would have published all workspace packages with tag $DIST_TAG"
           echo "Set dry_run=false to perform an actual publish."
 
+      # Guard: a manual workflow_dispatch on a branch (not a v* tag) must not
+      # accidentally publish a branch head to the registry. dry_run=true is the
+      # only safe way to exercise this workflow from a branch.
+      - name: Verify publish context (tag ref required)
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            echo "::error::Publish requires a v* tag ref. Got: $GITHUB_REF."
+            echo "::error::For manual smoke tests, re-run workflow_dispatch with dry_run=true."
+            exit 1
+          fi
+
       - name: Publish to npm
         if: ${{ inputs.dry_run != true }}
         run: pnpm -r publish --tag $DIST_TAG --no-git-checks --access public
