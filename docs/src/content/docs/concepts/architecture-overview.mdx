@@ -114,15 +114,12 @@ embedded V8 isolate (ADR-007). The production host is workerd. The contract —
 Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
 wraps it in the thin shell that `wrangler deploy` expects.
 
-The full rationale for this design, including the sequence of decisions that
-arrived at it, lives in
-[ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md)
-(the embedded V8 host design and why the bundle contract is engine-agnostic).
-The predecessor decisions are
-[ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)
-(SSG-first, the Hono/Workers bundle shape) and
-[ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)
-(the original in-process `deno_core` design, superseded by ADR-007).
+The full rationale for this design is in [JS Runtime](/architecture/js-runtime):
+the embedded V8 host design and why the bundle contract is engine-agnostic.
+The SSG-first, Hono/Workers bundle shape was chosen to keep the build-time
+and production execution environments interchangeable, and the original
+in-process `deno_core` approach was superseded by the embedded V8 isolate
+once performance and isolation requirements became clear.
 
 ## Layering summary
 
