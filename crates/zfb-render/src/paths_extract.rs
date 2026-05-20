@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn await_import_reported_as_non_literal() {
-        // Mirrors the real basic-blog usage. We can't statically follow
+        // Mirrors the bundled basic-blog template usage. We can't statically follow
         // `await import(...)`; this should report NonLiteral so the
         // caller defers to runtime evaluation.
         let src = r#"

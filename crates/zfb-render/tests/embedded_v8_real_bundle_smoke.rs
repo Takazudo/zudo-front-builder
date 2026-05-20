@@ -78,7 +78,7 @@ async fn real_bundle_dispatches_representative_request_set() {
         .unwrap_or_else(|e| panic!("real bundle failed to load: {e}"));
 
     // Representative request set: home, blog index, dynamic post,
-    // non-HTML route. The exact route shapes mirror a basic-blog-style
+    // non-HTML route. The exact route shapes mirror a bundled-basic-blog-template-style
     // page tree — adjust when the target project's routes change.
     let cases: &[(&str, u16)] = &[
         ("http://zfb.local/", 200),

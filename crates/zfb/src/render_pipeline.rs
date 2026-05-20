@@ -1344,7 +1344,8 @@ mod tests {
             .join("@takazudo")
             .join("zfb-runtime");
         std::fs::create_dir_all(&runtime).unwrap();
-        let nested = dir.path().join("examples/basic-blog");
+        // Arbitrary nested path; simulates a project that lives inside a parent dir.
+        let nested = dir.path().join("projects/my-site");
         std::fs::create_dir_all(&nested).unwrap();
         // Force `embedded_has_runtime=false` so this test exercises the
         // ancestor-walk path in isolation, regardless of what the test
@@ -1612,7 +1613,7 @@ mod tests {
 
     #[test]
     fn expand_dynamic_routes_defers_non_literal_paths_with_reason() {
-        // Mirrors the real basic-blog page: `paths()` does an
+        // Mirrors the bundled basic-blog template page: `paths()` does an
         // `await import` + collection query, which is not statically
         // resolvable. Must defer with a reason that the build can
         // surface verbatim.
@@ -1856,7 +1857,8 @@ mod tests {
         // This test intentionally left as a skeleton to be filled in by the
         // integration manager after Sub 2 is merged. The shape is:
         //
-        //   1. Build a basic-blog bundle (e.g. from the standalone demo) or a fixture.
+        //   1. Build a basic-blog bundle from a fixture or the standalone demo
+        //      (https://github.com/Takazudo/zfb-example-blog).
         //   2. Construct EmbeddedV8RenderHost::new(&bundle_path).
         //   3. Build a DeferredDynamicRoute for `/blog/:slug` (non-literal
         //      paths() that reads the blog content collection).
