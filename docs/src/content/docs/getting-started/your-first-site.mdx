@@ -4,27 +4,36 @@ description: Scaffold, run, and build a zfb project in about five minutes.
 sidebar_position: 3
 ---
 
-This walkthrough takes you from an empty directory to a running dev server and a built site. It assumes you already [installed the zfb CLI](/getting-started/installation).
+This walkthrough takes you from an empty directory to a running dev server and a built site. No global CLI install is required — the scaffold command fetches everything on demand.
 
 ## Scaffold a new project
 
 ```bash
-zfb new my-site
+pnpm create zfb@latest my-site
+# or
+npm create zfb@latest my-site
+```
+
+This runs the `create-zfb` initializer, which calls `zfb new` under the hood and copies the bundled `basic-blog` template into `my-site/`. If pnpm is on your `PATH`, zfb runs `pnpm install` automatically right after copying the template; otherwise it prints a short note telling you to run it yourself.
+
+```bash
 cd my-site
 ```
 
-`zfb new` copies the `basic-blog` template into `my-site/`. If pnpm is on your `PATH`, zfb runs `pnpm install` automatically right after copying the template; otherwise it prints a short note telling you to run it yourself.
-
-Pass `--template` to select a different template if additional ones are available:
+If you already have the zfb CLI installed globally (see [Installation](/getting-started/installation)), you can invoke `zfb new` directly with the same result:
 
 ```bash
 zfb new my-site --template basic-blog
 ```
 
+`--template basic-blog` is the default and currently the only available template, so you can omit it.
+
 ## Start the dev server
 
 ```bash
-zfb dev
+pnpm zfb dev
+# or
+npx zfb dev
 ```
 
 You'll see a "ready" banner with the host and port (defaults: `http://localhost:3000`). zfb watches the project directory; saving any file in `pages/`, `layouts/`, `components/`, `content/`, or `styles/` triggers a live-reload broadcast to connected browsers. The server also serves anything you drop into `public/`.
@@ -32,7 +41,9 @@ You'll see a "ready" banner with the host and port (defaults: `http://localhost:
 You can override host and port from the CLI — they always win over `zfb.config.ts`:
 
 ```bash
-zfb dev --port 4000 --host 0.0.0.0
+pnpm zfb dev --port 4000 --host 0.0.0.0
+# or
+npx zfb dev --port 4000 --host 0.0.0.0
 ```
 
 ## Build and preview
@@ -40,11 +51,18 @@ zfb dev --port 4000 --host 0.0.0.0
 To produce a static build of the site:
 
 ```bash
-zfb build
-zfb preview
+pnpm zfb build
+pnpm zfb preview
+# or
+npx zfb build
+npx zfb preview
 ```
 
 `zfb build` resolves the output directory (defaulting to `dist/`), enumerates routes via the file-system router, and writes one HTML file per static route. `zfb preview` then serves that directory over HTTP on port `4321` by default. CLI flags (`--outdir`, `--port`) win over the config file in both commands.
+
+## A working example
+
+A fully built site using `basic-blog` is available at [https://github.com/Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog).
 
 ## What to read next
 
