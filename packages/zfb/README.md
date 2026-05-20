@@ -12,9 +12,9 @@ import { Island } from "zfb";
 ```
 
 Full documentation: <https://takazudomodular.com/pj/zudo-front-builder/>.
+Source: <https://github.com/Takazudo/zudo-front-builder>.
 
 [zfb-site]: https://takazudomodular.com/pj/zudo-front-builder/
-[zfb-repo]: https://github.com/Takazudo/zudo-front-builder
 
 ## Install
 

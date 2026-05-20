@@ -12,9 +12,9 @@ targets (Node, Netlify, …) will land as sibling `@takazudo/zfb-adapter-*`
 packages with the same shape.
 
 Full documentation: <https://takazudomodular.com/pj/zudo-front-builder/>.
+Source: <https://github.com/Takazudo/zudo-front-builder>.
 
 [zfb-site]: https://takazudomodular.com/pj/zudo-front-builder/
-[zfb-repo]: https://github.com/Takazudo/zudo-front-builder
 
 ## Install
 

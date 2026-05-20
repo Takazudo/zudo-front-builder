@@ -10,9 +10,9 @@ router at build time to emit static HTML; the same handler also serves
 SSR requests at the edge.
 
 Full documentation: <https://takazudomodular.com/pj/zudo-front-builder/>.
+Source: <https://github.com/Takazudo/zudo-front-builder>.
 
 [zfb-site]: https://takazudomodular.com/pj/zudo-front-builder/
-[zfb-repo]: https://github.com/Takazudo/zudo-front-builder
 
 ## Install
 
