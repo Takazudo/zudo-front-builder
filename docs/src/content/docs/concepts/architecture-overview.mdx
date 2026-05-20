@@ -34,7 +34,7 @@ export default {
 };
 ```
 
-The Rust orchestrator loads this bundle into an embedded V8 isolate (ADR-007)
+The Rust orchestrator loads this bundle into an embedded V8 isolate
 and drives it with synthetic HTTP requests — one request per page
 URL. Each synthetic request produces an HTML `Response`. The orchestrator writes
 those responses to `dist/` as plain `.html` files. When the build finishes, the
@@ -63,7 +63,7 @@ flowchart TD
 
     subgraph build["zfb build — your machine"]
         esbuild_worker["esbuild\n(worker bundle)"]
-        v8["embedded V8 (ADR-007)\n(synthetic HTTP requests → HTML)"]
+        v8["embedded V8\n(synthetic HTTP requests → HTML)"]
         esbuild_islands["esbuild\n(island bundles)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/\nisland JS files"]
@@ -107,22 +107,19 @@ router itself does not know which adapter is driving it.
 
 This is the portability bet: by fixing the bundle shape as the stable contract,
 zfb stays decoupled from which JS engine executes it. The build-time host is an
-embedded V8 isolate (ADR-007). The production host is workerd. The contract —
+embedded V8 isolate. The production host is workerd. The contract —
 `export default { fetch }` — is the same in both contexts.
 
 `packages/zfb-adapter-cloudflare` is the deployment adapter for Cloudflare
 Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
 wraps it in the thin shell that `wrangler deploy` expects.
 
-The full rationale for this design, including the sequence of decisions that
-arrived at it, lives in
-[ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md)
-(the embedded V8 host design and why the bundle contract is engine-agnostic).
-The predecessor decisions are
-[ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)
-(SSG-first, the Hono/Workers bundle shape) and
-[ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)
-(the original in-process `deno_core` design, superseded by ADR-007).
+The full rationale for this design is in [JS Runtime](/architecture/js-runtime):
+the embedded V8 host design and why the bundle contract is engine-agnostic.
+The SSG-first, Hono/Workers bundle shape was chosen to keep the build-time
+and production execution environments interchangeable, and the original
+in-process `deno_core` approach was superseded by the embedded V8 isolate
+once performance and isolation requirements became clear.
 
 ## Layering summary
 

@@ -65,4 +65,4 @@ The function signature lives in [`getCollection`](/api/get-collection).
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge contract.
+The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side; the Rust↔JS bridge contract is an internal stable interface between the `zfb-content` crate and the page renderer.

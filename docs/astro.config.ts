@@ -2,6 +2,7 @@ import { defineConfig } from "astro/config";
 import { fileURLToPath } from "node:url";
 import mdx from "@astrojs/mdx";
 import preact from "@astrojs/preact";
+import sitemap from "@astrojs/sitemap";
 import { transformerMetaHighlight, transformerMetaWordHighlight } from "@shikijs/transformers";
 import tailwindcss from "@tailwindcss/vite";
 import { colorSchemes } from "./src/config/color-schemes";
@@ -49,6 +50,7 @@ export default defineConfig({
     ...(settings.llmsTxt ? [llmsTxtIntegration()] : []),
     ...(settings.docHistory ? [docHistoryIntegration()] : []),
     ...(settings.claudeResources ? [claudeResourcesIntegration(settings.claudeResources)] : []),
+    ...(settings.sitemap ? [sitemap()] : []),
   ],
   i18n: {
     defaultLocale: "en",

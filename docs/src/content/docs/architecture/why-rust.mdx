@@ -34,7 +34,7 @@ A single binary pins cleanly. CI installs the version it needs; production deplo
 
 ## Honest counterpoint: build cost
 
-The first `cargo build` of zfb's workspace is slow. The V8 source bundle (pulled in by `zfb-render` via `deno_core`) compiles for 15 to 30 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts. See [JS runtime](/architecture/js-runtime) for the runtime details and [ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md) for why this cost is accepted.
+The first `cargo build` of zfb's workspace is slow. The V8 source bundle (pulled in by `zfb-render` via `deno_core`) compiles for 15 to 30 minutes on a typical contributor machine. Incremental builds are fast; the first one hurts. This cost is accepted because Tauri distribution requires a single binary with no Node dependency on end-user machines — embedding `deno_core` is the only way to meet that constraint. See [JS runtime](/architecture/js-runtime) for the full rationale.
 
 zfb gates the V8 build behind a default-on `embed_v8` cargo feature on `zfb-render`. Crates that do not need JavaScript rendering never pull in V8. A contributor running `cargo test -p zfb-content` compiles in seconds. End users do not pay this cost — they install the prebuilt binary.
 

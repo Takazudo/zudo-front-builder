@@ -60,4 +60,4 @@ export default function BlogPost({ params }: { params: { slug: string } }) {
 }
 ```
 
-`paths()` is evaluated by the embedded V8 host (ADR-007) during the build. `zfb build` discovers static, dynamic, and catchall routes and evaluates `paths()` for each dynamic and catchall route to enumerate the concrete URLs to render. Static routes require no `paths()` export.
+`paths()` is evaluated by the embedded V8 host during the build. `zfb build` discovers static, dynamic, and catchall routes and evaluates `paths()` for each dynamic and catchall route to enumerate the concrete URLs to render. Static routes require no `paths()` export.

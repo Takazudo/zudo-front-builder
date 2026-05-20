@@ -95,7 +95,7 @@ The dependency graph is not the bottleneck. Even with a perfect dirty set (one p
 
 **1. Per-rebuild engine boot.**
 
-zfb renders pages by loading a worker bundle into the embedded V8 host (ADR-007). Each rebuild reloads the renderer — the V8 isolate spins up, evaluates the worker bundle, and then tears down when the dirty pages are rendered. This overhead is constant regardless of how many pages are dirty. The graph saves you from rendering 500 pages, but it cannot save you from the isolate boot cost that happens before any page renders.
+zfb renders pages by loading a worker bundle into the embedded V8 host. Each rebuild reloads the renderer — the V8 isolate spins up, evaluates the worker bundle, and then tears down when the dirty pages are rendered. This overhead is constant regardless of how many pages are dirty. The graph saves you from rendering 500 pages, but it cannot save you from the isolate boot cost that happens before any page renders.
 
 This is not a graph problem. It is a separate optimization axis — keeping the isolate warm between ticks, or switching to a persistent renderer host — that is on the roadmap but not implemented today.
 

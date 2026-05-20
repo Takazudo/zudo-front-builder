@@ -1,13 +1,27 @@
-# `@takazudo/zfb-adapter-cloudflare`
+# @takazudo/zfb-adapter-cloudflare
 
-Cloudflare Pages adapter for the [zfb](../../README.md) framework. Wraps the
-zfb-runtime page router into a Cloudflare Pages advanced-mode `_worker.js`
-entry, threading `(env, ctx)` through to user code via
+> Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
+
+The Cloudflare Pages adapter for [zfb][zfb-site]. Wraps the
+`@takazudo/zfb-runtime` page router into a Cloudflare Pages advanced-mode
+`_worker.js` entry, threading `(env, ctx)` through to user code via
 `AsyncLocalStorage`.
 
 This package is the Cloudflare half of the SSR adapter contract. Other
 targets (Node, Netlify, …) will land as sibling `@takazudo/zfb-adapter-*`
 packages with the same shape.
+
+Full documentation: <https://takazudomodular.com/pj/zudo-front-builder/>.
+Source: <https://github.com/Takazudo/zudo-front-builder>.
+
+[zfb-site]: https://takazudomodular.com/pj/zudo-front-builder/
+
+## Install
+
+```sh
+npm install --save-dev @takazudo/zfb-adapter-cloudflare
+# or: pnpm add -D @takazudo/zfb-adapter-cloudflare
+```
 
 ## Usage
 

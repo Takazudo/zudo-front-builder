@@ -4,7 +4,7 @@ description: How zfb supports both Preact and React behind a single renderer, an
 sidebar_position: 3
 ---
 
-zfb renders TSX. JSX is a syntax — the *runtime* that turns it into HTML is supplied by a framework. zfb supports two: **Preact** (default) and **React**. This page is the user-readable companion to ADR-002.
+zfb renders TSX. JSX is a syntax — the *runtime* that turns it into HTML is supplied by a framework. zfb supports two: **Preact** (default) and **React**.
 
 ## The need
 
@@ -62,4 +62,4 @@ The React adapter uses **synchronous** `renderToString`, not `renderToReadableSt
 
 Solid, Vue SSR, Svelte SSR — none ship today. The `Adapter` trait is small enough that adding one is purely additive: a new adapter file, a new `Framework` enum variant, a new `make_adapter` arm. The render orchestrator does not change.
 
-If a future framework cannot satisfy the trait — for example, it requires an async render entry that does not fit `renderToString → string` — that is a reason to widen the trait deliberately, in a follow-on ADR, not to special-case it.
+If a future framework cannot satisfy the trait — for example, it requires an async render entry that does not fit `renderToString → string` — that is a reason to widen the trait deliberately, not to special-case it.

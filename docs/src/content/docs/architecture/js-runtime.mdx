@@ -1,20 +1,16 @@
 ---
 title: JS runtime
-description: How zfb hosts JavaScript execution server-side via an embedded V8 isolate (ADR-007), the ADR evolution, and why the runtime is fixed by the binary.
+description: How zfb hosts JavaScript execution server-side via an embedded V8 isolate, and why the runtime is fixed by the binary.
 sidebar_position: 2
 ---
 
-zfb renders TSX server-side via an embedded V8 host ([ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md)) — a Rust-hosted V8 isolate running a Hono-style worker bundle built from `@takazudo/zfb-runtime`. This page is the user-readable companion to the ADR evolution.
+zfb renders TSX server-side via an embedded V8 isolate — a Rust-hosted V8 engine running a Hono-style worker bundle built from `@takazudo/zfb-runtime`.
 
-## The ADR evolution
+## How the runtime choice was reached
 
-The runtime decision evolved through three ADRs:
+The V8 embedding decision came through a measured evaluation of available JS hosts. Early iterations used an in-process `deno_core` isolate (ratified after spiking three candidates: `deno_core`, `ssr_rs`, and `rquickjs`), then moved to a Node-hosted miniflare worker to achieve runtime parity with the Cloudflare Workers production target. Tauri distribution ultimately reversed that choice: shipping zfb as a desktop app requires a single binary with no Node.js dependency on end-user machines, and miniflare is a Node package. V8 embedding via `deno_core` was re-adopted — accepting the binary-size and first-build-time costs — because it is the only path that satisfies the no-Node single-binary constraint.
 
-- **[ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md)** — in-process `deno_core`. V8 embedded directly in the Rust binary. Ratified after a measured spike across three candidates (`deno_core`, `ssr_rs`, `rquickjs`).
-- **[ADR-005](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-005-ssg-first.md)** — Node-hosted miniflare worker. Superseded ADR-001 to achieve runtime parity with the Cloudflare Workers production target and shed V8 binary footprint from the CLI.
-- **[ADR-007](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-007-embedded-v8.md)** — embedded V8 via `deno_core`. Superseded ADR-005. Tauri distribution requires a single binary with no Node dependency on end-user machines; miniflare is a Node package, making the subprocess approach untenable. ADR-007 re-embeds `deno_core`, accepts the binary-size and first-build-time costs, and carries ADR-005's core insight — the stable production contract is the _bundle shape_ (`export default { fetch }`), not the build-time engine.
-
-**ADR-007 is the current binding decision.**
+The stable production contract throughout has been the _bundle shape_ (`export default { fetch }`), not the build-time engine. The same bundle that zfb renders at build time deploys unchanged to Cloudflare Workers for runtime SSR.
 
 ## What runs today
 
@@ -31,13 +27,13 @@ zfb's renderer compiles a page's TSX through SWC, hands the resulting ESM to a J
 - surface thrown errors with **source-accurate** locations — the stack-trace line must match the line in the user's TSX file, not an offset into a wrapped script,
 - evaluate the same module repeatedly across a build of hundreds of pages without leaking memory.
 
-## Evaluation that led to ADR-007
+## Runtime candidate evaluation
 
-The spike crate (`crates/zfb-runtime-spike/`) implemented the same `RenderHost` trait against three candidates, gated behind cargo features so the heavy V8 build was opt-in. The following table is historical context — this evaluation informed the chain of ADRs that concluded at ADR-007.
+The spike crate (`crates/zfb-runtime-spike/`) implemented the same `RenderHost` trait against three candidates, gated behind cargo features so the heavy V8 build was opt-in. The following table is historical context — this evaluation informed the runtime choice.
 
 ### Candidates
 
-- **`deno_core`** — V8 wrapped by Deno's reusable core. Ships an ES module loader, an event loop for top-level await, and source-mapped errors out of the box. **The current choice (ADR-007).**
+- **`deno_core`** — V8 wrapped by Deno's reusable core. Ships an ES module loader, an event loop for top-level await, and source-mapped errors out of the box. **The current choice.**
 - **`ssr_rs`** — a thin V8 wrapper specialised for Preact / React SSR. Narrower scope, single-bundle entry-point model.
 - **`rquickjs`** — Rust bindings around QuickJS. Small footprint, fast to compile, single-threaded.
 
@@ -57,7 +53,7 @@ The spike's bench harness loaded five representative scenarios — static page, 
 | Source maps     | native      | partial   | offsets only       |
 | Build cost      | ~3 minutes  | similar   | ~30 seconds        |
 
-The full table, raw samples, and methodology live in [ADR-001](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-001-js-runtime.md). The V8-class engines win on the correctness axes; QuickJS wins on footprint and build cost. `ssr_rs`'s default per-render isolate creation dominates everything else and accumulates memory under load.
+The V8-class engines win on the correctness axes; QuickJS wins on footprint and build cost. `ssr_rs`'s default per-render isolate creation dominates everything else and accumulates memory under load.
 
 ## Constraints zfb imposes
 
@@ -79,6 +75,4 @@ pub trait RenderHost {
 }
 ```
 
-That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. A future ADR can swap the implementation without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
-
-See [Future directions: JS runtime exploration](/architecture/future-directions-js-runtime) for a thinking-out-loud sketch of alternative hosts captured for future contributors.
+That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.

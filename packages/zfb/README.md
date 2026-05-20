@@ -1,15 +1,28 @@
-# zfb
+# @takazudo/zfb
 
-Public SDK module for [zudo-front-builder][zfb-repo]. User pages reach this
-package through the bare specifier `"zfb"` — the `zfb-render` runtime
-loader registers the source under that name at build time so user TSX can
-write:
+> Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
+
+The public SDK module for [zfb][zfb-site]: islands, content collections,
+pagination, config, plugins, and frontmatter helpers. User pages reach this
+package through the bare specifier `"zfb"` — the `zfb-render` runtime loader
+registers the source under that name at build time so user TSX can write:
 
 ```tsx
 import { Island } from "zfb";
 ```
 
-[zfb-repo]: https://github.com/Takazudo/zudo-front-builder
+Full documentation: <https://takazudomodular.com/pj/zudo-front-builder/>.
+Source: <https://github.com/Takazudo/zudo-front-builder>.
+
+[zfb-site]: https://takazudomodular.com/pj/zudo-front-builder/
+
+## Install
+
+```sh
+npm install @takazudo/zfb
+# or: pnpm add @takazudo/zfb
+# or: yarn add @takazudo/zfb
+```
 
 ## What lives here
 
@@ -19,7 +32,7 @@ surface. Today it covers:
 - `<Island when="visible|idle|load">` — JSX wrapper that marks a region
   for client-side hydration.
 - `scheduleHydrate(target, when, fire)` — the runtime branching helper
-  consumed by the hydration runtime (Sub 3).
+  consumed by the hydration runtime.
 - `When`, `WHEN_VALUES`, `DEFAULT_WHEN`, `isWhen`, `resolveWhen` — type
   and runtime utilities pinning the spelling of the three modes.
 - `getCollection(name)`, `parseFrontmatter(raw)` — content collection
@@ -102,7 +115,7 @@ call site, `<Island when="visible">{children}</Island>` renders as:
 ```
 
 The `data-zfb-island` attribute is empty here. The hydration emit step
-(`zfb-render` runtime, Sub 3) walks rendered HTML and replaces it with
+in the `zfb-render` runtime walks rendered HTML and replaces it with
 `data-zfb-island="ComponentName"` so the client-side hydration runtime
 can look up the right module to call.
 

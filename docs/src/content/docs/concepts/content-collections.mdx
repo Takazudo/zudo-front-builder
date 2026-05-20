@@ -60,9 +60,9 @@ export default function FeaturedPost() {
 
 Both calls are **synchronous**. The entire content snapshot is built
 in Rust before any TSX module runs and embedded on `globalThis.__zfb`,
-so there's no I/O at call time and no `await` to thread through. See
-[ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge
-contract that backs this surface.
+so there's no I/O at call time and no `await` to thread through. The
+Rust↔JS bridge contract that backs this surface is stable and versioned
+with the `zfb` package.
 
 Each entry has three things you can rely on:
 
@@ -71,11 +71,10 @@ Each entry has three things you can rely on:
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
 The function signatures live in [`getCollection`](/api/get-collection)
-and the matching `getEntry`. The Rust↔JS surface they read through is
-specified in [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md).
+and the matching `getEntry`.
 
 ## How parsing works
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side and [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) for the Rust↔JS bridge contract.
+The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side.

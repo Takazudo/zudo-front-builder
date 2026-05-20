@@ -80,8 +80,8 @@ export default function BlogPost({ params, props }) {
 
 A few things worth noting:
 
-- `getCollection` and `getEntry` are synchronous (see
-  [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md)). `paths()` doesn't
+- `getCollection` and `getEntry` are synchronous — the full content
+  snapshot is pre-built in Rust before any TSX runs. `paths()` doesn't
   need `async`, and neither does the page component.
 - `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
   becomes `/blog/hello-zfb`.
@@ -153,6 +153,5 @@ this when it builds the route table — see
 
 - [Routing](/concepts/routing) — static-route fundamentals.
 - [Content Collections](/concepts/content-collections) — the data
-  source most `paths()` calls draw from.
-- [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md) — the synchronous
-  content bridge that backs `getCollection` / `getEntry`.
+  source most `paths()` calls draw from; also documents the synchronous
+  `getCollection` / `getEntry` API.
