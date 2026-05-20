@@ -1,6 +1,6 @@
 // `zfb/paginate` — paginate an array of items into per-page route entries.
 //
-// Mirrors the shape of Astro's `paginate()` so the basic-blog example can
+// Mirrors the shape of Astro's `paginate()` so the bundled basic-blog template can
 // emit one route per page from a `paths()` export. The renderer treats
 // each returned object as `{ params, props }`, the same convention used
 // elsewhere by the routing engine.

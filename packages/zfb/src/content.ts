@@ -2,7 +2,7 @@
 //
 // Reads `*.md` files from a content collection directory, parses YAML
 // frontmatter, and returns typed entries. This is a deliberately small
-// stub so the basic-blog example can call `getCollection("blog")` today;
+// stub so the bundled basic-blog template can call `getCollection("blog")` today;
 // the production path lives in `crates/zfb-content` and will replace this
 // once the JS-runtime decision (ADR-001) lands and the renderer wires the
 // Rust pipeline back through to user code.

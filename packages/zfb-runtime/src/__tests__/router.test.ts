@@ -582,7 +582,7 @@ describe("createPageRouter — __paths__ endpoint", () => {
 
   it("can read content via getCollection() inside paths()", async () => {
     // Simulate a page whose paths() calls getCollection — the canonical
-    // basic-blog pattern. The snapshot must be registered before paths()
+    // bundled basic-blog template pattern. The snapshot must be registered before paths()
     // runs; createPageRouter registers it on construction.
     const contentPage: PageModule & { paths: () => Promise<unknown[]> } = {
       default: () => null,

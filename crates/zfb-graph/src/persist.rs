@@ -539,7 +539,7 @@ mod tests {
 
     /// Acceptance evidence (sub-task 5 of issue #55): a non-trivial
     /// previously-persisted graph reloads from disk in well under
-    /// 50ms when nothing has changed. Modelled on a basic-blog-sized
+    /// 50ms when nothing has changed. Modelled on a typical zfb-site-sized
     /// site (~50 pages, modest dep counts each) — comfortably
     /// larger than the example we ship while still fast to set up.
     #[test]
