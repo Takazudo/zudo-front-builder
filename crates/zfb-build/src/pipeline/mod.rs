@@ -25,7 +25,7 @@
 //!   forever. No SSE — `dist/` is a static tree the user uploads to a
 //!   CDN.
 //! - **SSR / edge**: skip writing HTML to disk; emit it into a
-//!   workerd-shaped runtime bundle (see ADR-005).
+//!   workerd-shaped runtime bundle.
 //!
 //! Locking the orchestrator to a concrete struct now would force a
 //! refactor when production-build lands. Locking to a trait costs a
@@ -36,7 +36,7 @@
 //! The orchestrator deliberately doesn't depend on `zfb-render`,
 //! `zfb-css`, or `zfb-islands` directly:
 //!
-//! - `zfb-render` carries the SWC TSX→JS pipeline and (per ADR-007) the
+//! - `zfb-render` carries the SWC TSX→JS pipeline and the
 //!   embedded V8 render host. Keeping that out of the
 //!   orchestrator's surface lets `zfb-build` compile cheaply for tests
 //!   and for callers that only need orchestration types.
@@ -186,7 +186,7 @@ impl BuildMode {
 /// `output_path` is relative to the dist root and must be a safe
 /// subpath (no `..`).
 ///
-/// ## Output extension precedence (Sub 49)
+/// ## Output extension precedence
 ///
 /// `output_path` is the load-bearing carrier of the page's output
 /// extension — the pipeline does not re-derive it. The producer
@@ -200,7 +200,7 @@ impl BuildMode {
 ///
 /// See `zfb_router::route::Route::output_filename` and
 /// `zfb_render::meta::derive_output_extension` for the canonical
-/// helpers. ADR-003 (Sub 7) documents the same rule for users.
+/// helpers.
 ///
 /// ## Stale-output cleanup
 ///

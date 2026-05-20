@@ -183,6 +183,20 @@ pub struct BundleConfig {
     /// [`FrameworkKind::Preact`]) routes the JSX transform through
     /// `preact/jsx-runtime` so no `React` symbol is ever emitted.
     pub jsx_import_source: String,
+
+    /// When `true`, the islands bundler injects a side-effect
+    /// `import "@takazudo/zfb-runtime/client-router";` into the synthetic
+    /// shared-bundle entry so the `<ClientRouter />` View Transitions
+    /// runtime (`init()`) ships in `assets/islands.js` with no
+    /// `"use client"` boilerplate on the consumer's side (issue #289).
+    ///
+    /// The build command sets this from the islands scanner's
+    /// [`crate::ScanMeta::uses_client_router`].
+    ///
+    /// Default `false` — when unset the generated entry source is
+    /// byte-identical to a pre-#289 build, so a project not using
+    /// `<ClientRouter />` sees zero new bytes in its islands bundle.
+    pub client_router: bool,
 }
 
 impl Default for BundleConfig {
@@ -193,6 +207,7 @@ impl Default for BundleConfig {
             outdir: PathBuf::from("dist"),
             base_url: "/".to_string(),
             jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
+            client_router: false,
         }
     }
 }
@@ -244,6 +259,14 @@ impl BundleConfig {
     /// the value rather than hardcoding a literal at the call site.
     pub fn with_jsx_import_source(mut self, jsx_import_source: impl Into<String>) -> Self {
         self.jsx_import_source = jsx_import_source.into();
+        self
+    }
+
+    /// Toggle auto-inclusion of the `<ClientRouter />` runtime (chainable).
+    ///
+    /// See [`BundleConfig::client_router`].
+    pub fn with_client_router(mut self, client_router: bool) -> Self {
+        self.client_router = client_router;
         self
     }
 }
@@ -455,13 +478,19 @@ pub struct ProductionIslandsAsset {
 /// Run `bundler` over `islands` and return a bytes-only adapter payload
 /// suitable for `ProductionAssetPipeline`.
 ///
-/// **Empty input is a no-op.** When `islands` is empty (project carries
-/// no `"use client"` components) this returns `Ok(None)` *without*
+/// **Empty input is a no-op** (with one exception). When `islands` is
+/// empty (project carries no `"use client"` components) *and*
+/// `config.client_router` is `false`, this returns `Ok(None)` *without*
 /// invoking the bundler — so esbuild is never asked to write a
 /// zero-entry-points bundle, no empty `dist/assets/islands.js` lands on
 /// disk, and the rendered HTML stays free of a `<script>` tag pointing
 /// at a non-existent asset (S3 acceptance criterion: islands emitter is
 /// a no-op when the project has no islands).
+///
+/// The exception: when `config.client_router` is `true` the bundler runs
+/// even on an empty `islands` slice, because the synthetic entry still
+/// has to carry the `<ClientRouter />` runtime's side-effect import
+/// (issue #289).
 ///
 /// On a non-empty `islands` slice the bundler writes the stable
 /// `<outdir>/assets/islands.js` file as part of its normal contract;
@@ -475,7 +504,12 @@ pub fn build_production_islands_asset(
     islands: &[Island],
     config: &BundleConfig,
 ) -> Result<Option<ProductionIslandsAsset>> {
-    if islands.is_empty() {
+    // Empty input is a no-op — UNLESS the project opts into
+    // `<ClientRouter />` (issue #289). A purely static page that wants
+    // View Transitions has no `"use client"` islands but still needs the
+    // client-router runtime bundled, so the islands asset must be emitted
+    // for the side-effect import alone.
+    if islands.is_empty() && !config.client_router {
         return Ok(None);
     }
 
@@ -652,6 +686,32 @@ mod tests {
             !dir.path().join(zfb_types::DIST_ASSETS_DIR).exists(),
             "no-islands case must not touch dist/assets/"
         );
+    }
+
+    #[test]
+    fn build_production_islands_asset_runs_bundler_for_client_router_with_no_islands() {
+        // Issue #289: a project that uses `<ClientRouter />` but has no
+        // `"use client"` islands still needs the islands asset emitted so
+        // the client-router runtime's side-effect import ships. The
+        // empty-islands no-op must NOT fire when `config.client_router`
+        // is true.
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"import \"@takazudo/zfb-runtime/client-router\";\n".to_vec();
+        let bundler = RecordingBundler::new(payload.clone());
+        let cfg = BundleConfig::default()
+            .with_outdir(dir.path().to_path_buf())
+            .with_client_router(true);
+
+        let asset = build_production_islands_asset(&bundler, &[], &cfg)
+            .unwrap()
+            .expect("client_router=true → adapter runs even with zero islands");
+
+        assert_eq!(
+            bundler.call_count(),
+            1,
+            "bundler must run for a client-router-only project"
+        );
+        assert_eq!(asset.bytes, payload);
     }
 
     #[test]

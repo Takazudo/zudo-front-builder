@@ -1,7 +1,7 @@
 //! End-to-end routing + rendering integration test for `zfb-build`.
 //!
 //! Exercises the full pipeline from bundler through the embedded V8 host
-//! (ADR-007) across every routing pattern the framework supports:
+//! across every routing pattern the framework supports:
 //!
 //!   - static index (`/`)
 //!   - static named (`/about`)
@@ -17,7 +17,7 @@
 //! every concrete URL through the embedded V8 host, captures or
 //! compares HTML snapshots under
 //! `tests/snapshots/e2e_routing_rendering/`, and (for the portable-
-//! component contract — ADR-002) asserts that the Preact and React
+//! component contract) asserts that the Preact and React
 //! outputs are byte-identical.
 //!
 //! ## Skip conditions
@@ -338,20 +338,20 @@ fn build_bundle(
 // Main test
 // ---------------------------------------------------------------------------
 
-/// End-to-end routing + rendering test using the embedded V8 host (ADR-007).
+/// End-to-end routing + rendering test using the embedded V8 host.
 ///
 /// This test bundles the routing-rendering fixture with Preact and renders
 /// every route through the embedded V8 host. Requires esbuild and a running
 /// embedded V8 host wired via `ZFB_E2E_BASE_URL`.
 ///
-/// Gated `#[ignore]` until Sub 6 (ADR-007 embedded V8 host) is merged and
+/// Gated `#[ignore]` until the embedded V8 host is merged and
 /// the base URL can be resolved automatically. Kick with:
 ///
 ///     ZFB_E2E_BASE_URL=http://127.0.0.1:PORT \
 ///       cargo test --package zfb-build -- --include-ignored \
 ///         e2e_routing_rendering_with_embedded_host
 #[test]
-#[ignore = "requires embedded V8 host (ADR-007); see Sub 6"]
+#[ignore = "requires embedded V8 host"]
 fn e2e_routing_rendering_with_embedded_host() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

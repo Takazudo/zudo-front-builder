@@ -1,7 +1,7 @@
 //! Build-time **bundler stage** — produces a single ESM bundle from the
 //! user's `pages/`, `content/`, `components/`, and `layouts/` source
-//! roots, suitable for the embedded V8 host (ADR-007, Wave 2 / T6) and the
-//! runtime SSR adapter (T2 `@takazudo/zfb-runtime`).
+//! roots, suitable for the embedded V8 host and the
+//! runtime SSR adapter (`@takazudo/zfb-runtime`).
 //!
 //! ## Why this lives in `zfb-build` (not `zfb-islands`)
 //!
@@ -65,7 +65,7 @@
 //!   to import-and-introspect to know what routes the bundle serves.
 //! - `hydrateIsland` — re-exported from the framework adapter shim;
 //!   the Worker entry bundle expects this symbol so the same bundle
-//!   can also feed the islands hydration runtime per ADR-002.
+//!   can also feed the islands hydration runtime.
 //! - `default` — a Workers-style `{ fetch }` object whose `fetch` field
 //!   is a `(Request) => Promise<Response>` constructed by passing
 //!   `routes`, an embedded `ContentSnapshot` placeholder, and an inline
@@ -278,7 +278,7 @@ pub struct BundlerInput {
     /// Directory of layout components.
     pub layouts_dir: PathBuf,
     /// Which JSX framework's hydration shim to fold into the bundle.
-    /// Drives [`make_adapter`] selection (ADR-002).
+    /// Drives [`make_adapter`] selection.
     pub framework: Framework,
     /// Build-time `--define` substitutions. The bundler **filters** this
     /// map: only keys starting with `PUBLIC_` are forwarded to esbuild
@@ -632,7 +632,7 @@ pub struct BundleManifest {
     /// [`zfb_render::adapters::Adapter::jsx_import_source`].
     pub jsx_import_source: String,
     /// Synthetic `zfb:internal/...` specifier that **identifies** the
-    /// hydration shim per ADR-002. The bundle itself does not import
+    /// hydration shim. The bundle itself does not import
     /// the shim under this specifier (the CLI cannot resolve URL
     /// schemes; we use a relative import internally). Consumers (T6,
     /// docs) use this string for tracing / diagnostics.
@@ -1035,7 +1035,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         }
     }
 
-    // 3. Hydration shim (per ADR-002).
+    // 3. Hydration shim.
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
     fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
         format!("bundler: failed writing hydration shim to {}", shim_path.display())
@@ -2329,7 +2329,7 @@ fn run_esbuild(
     // through unchanged. So when the project's framework is Preact, we
     // rewrite `react/jsx-runtime` (and the dev-runtime sibling) to the
     // Preact equivalents at the bundler level. This is the same trick
-    // the Preact ecosystem uses with bundlers like Vite — see ADR-002.
+    // the Preact ecosystem uses with bundlers like Vite.
     if matches!(input.framework, Framework::Preact) {
         cmd.arg("--alias:react/jsx-runtime=preact/jsx-runtime");
         cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
@@ -2384,8 +2384,8 @@ fn run_esbuild(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
     );
-    // Recreate the adapter to get `jsx_import_source` — cheap (ADR-002
-    // adapters are zero-state) and avoids threading another parameter
+    // Recreate the adapter to get `jsx_import_source` — cheap (adapters
+    // are zero-state) and avoids threading another parameter
     // through `run_esbuild`. Stays in sync with step 4 above so a
     // future framework switch can't make the two writes diverge.
     let jsx_import_source = make_adapter(input.framework).jsx_import_source().to_string();

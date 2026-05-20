@@ -33,8 +33,7 @@
 //! Project configuration is loaded via [`crate::config::load_from_dir`]
 //! at startup. Today this resolves to a `zfb.config.json` if present, or
 //! sensible defaults otherwise; encountering a `zfb.config.ts` produces a
-//! clear "not yet supported" error (the TS pipeline is blocked on
-//! ADR-001's runtime decision).
+//! clear "not yet supported" error.
 //!
 //! **Precedence rule:** CLI args (`--host`, `--port`) override the
 //! corresponding config values when supplied.
@@ -123,7 +122,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
     let pages = PageCache::new();
 
-    // Sub 3 / #108 — plugin lifecycle. Spawn the host once at boot so
+    // Plugin lifecycle. Spawn the host once at boot so
     // `preBuild` runs before the bundler/renderer start, and so dev-
     // middleware registrations can be installed into the dev server.
     // The host is dropped when this `run` returns (Ctrl+C path), which
@@ -318,7 +317,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css: None,
         run_islands: None,
-        // The bundle-rebuild + renderer-reload wiring (Sub 10) lands
+        // The bundle-rebuild + renderer-reload wiring lands
         // here once the dev-mode bundler is available on a per-tick
         // basis; for now leave the hook empty so existing behaviour
         // is preserved (the renderer state stays bound to the
@@ -381,7 +380,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         session.shutdown_explicit();
     }
 
-    // Sub 3 / #108 — tear down the plugin host before exit so the Node
+    // Tear down the plugin host before exit so the Node
     // subprocess doesn't outlive `zfb dev`. Best-effort: a kill via
     // `kill_on_drop` covers the panic / Ctrl+C path; the explicit
     // shutdown is the graceful one.

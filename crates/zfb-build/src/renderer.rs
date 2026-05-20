@@ -126,7 +126,7 @@ pub struct HttpResponseLike {
 
 /// Trait object boundary for the in-process V8 render host.
 ///
-/// Sub-162 (`EmbeddedV8RenderHost`) is the sole production impl. The
+/// `EmbeddedV8RenderHost` is the sole production impl. The
 /// trait is intentionally thin — only `dispatch_fetch` is needed by
 /// this crate; the full `RenderHost` trait lives in `zfb-render` for
 /// the higher-level render orchestration.
@@ -689,8 +689,7 @@ pub fn shutdown(state: RendererState) -> Result<(), RendererError> {
 ///
 /// **Reload latency expectation:** the embedded V8 host destroy + recreate
 /// is expected to take 200–800 ms per bundle because every reload
-/// re-parses the bundle. This is accepted for v1 per ADR-007's documented
-/// consequences.
+/// re-parses the bundle. This is accepted for v1.
 ///
 /// Callers should invoke this whenever a TSX page edit, a layout edit, or
 /// an exported handler change has rebuilt the worker bundle on disk —
@@ -866,10 +865,10 @@ impl EmbeddedV8Guard {
     /// host has already been terminated or when it produced no output.
     fn collect_logs(&self) -> String {
         // The embedded host captures console output through the V8
-        // console extension. Sub 2 decides the exact retrieval API;
-        // for now we return an empty string. When Sub 2 exposes a
-        // `drain_console_logs() -> String` method on the trait, add it
-        // to `EmbeddedV8Host` and call it here.
+        // console extension. The exact retrieval API is not yet
+        // defined; for now we return an empty string. Once the host
+        // exposes a `drain_console_logs() -> String` method on the
+        // trait, add it to `EmbeddedV8Host` and call it here.
         String::new()
     }
 }

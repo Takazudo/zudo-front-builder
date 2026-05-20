@@ -1,7 +1,7 @@
 # zfb-render runtime assets
 
 This directory holds JS/TS assets that the `zfb-render` Rust crate ships
-alongside its compiled binary. The runtime loader (Sub 3) registers these
+alongside its compiled binary. The runtime loader registers these
 modules so user TSX pages can import them as bare specifiers.
 
 ## Files
@@ -34,17 +34,13 @@ before any of the Rust crates have been scaffolded:
 node --test crates/zfb-render/runtime/__tests__/zfb-sdk.test.mjs
 ```
 
-Use Node 20+ (the project's engines pin a newer Node toolchain). Per
-ADR-007 the production execution path runs the SDK through the embedded
+Use Node 20+ (the project's engines pin a newer Node toolchain). The
+production execution path runs the SDK through the embedded
 V8 host driven by `@takazudo/zfb-runtime`; the Node tests here stay as
 the fast feedback loop for SDK-only changes and do not exercise the host
 boundary.
 
 ## Coordination notes
 
-- The `zfb-render` Cargo crate is owned by Sub 3 and is not yet
-  scaffolded in this branch. The runtime files live under
-  `crates/zfb-render/runtime/` so they merge cleanly when Sub 3's crate
-  skeleton lands.
 - Do not add npm/npx dependencies for these tests — the project is
   pnpm-only and these tests are intentionally zero-dependency.

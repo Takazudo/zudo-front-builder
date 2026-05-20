@@ -55,6 +55,6 @@ pub use hydration::{
 };
 pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
-    is_bare_specifier, normalize_path_lexical, scan_islands, FsResolver, InMemoryResolver,
-    IslandsSet, Resolver, ScanError, ScanResult,
+    is_bare_specifier, normalize_path_lexical, scan_islands, scan_islands_with_meta, FsResolver,
+    InMemoryResolver, IslandsSet, Resolver, ScanError, ScanMeta, ScanResult,
 };

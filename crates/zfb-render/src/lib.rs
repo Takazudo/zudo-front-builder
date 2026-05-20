@@ -2,18 +2,18 @@
 //! render orchestrator.
 //!
 //! Module slots:
-//! - [`render_host`] — `RenderHost` trait (abstraction seam; per ADR-007 the
+//! - [`render_host`] — `RenderHost` trait (abstraction seam; the
 //!   production host is an embedded V8 host wired in by the build orchestrator).
 //! - [`embedded_v8`] — in-process V8 host (`embed_v8` cargo feature, default-on).
 //! - [`swc_pipeline`] — SWC parse + transform (TS strip + JSX) into ES module JS.
 //! - [`loader`] — module resolver (compiles + caches imported modules).
 //! - [`render`] — `Renderer` orchestrator: compile → load → execute → render.
-//! - [`adapters`] — preact / react JSX runtime adapters (Sub 4).
-//! - [`paths`] — `paths()` runtime resolution (Sub 5).
+//! - [`adapters`] — preact / react JSX runtime adapters.
+//! - [`paths`] — `paths()` runtime resolution.
 //! - [`paths_extract`] — static `paths()` literal extractor; the
 //!   build-time fast path that pairs with [`paths::resolve_paths`] when
 //!   the page's `paths()` return value is statically analyzable.
-//! - [`meta`] — `meta` export extraction (Sub 6).
+//! - [`meta`] — `meta` export extraction.
 //! - [`error`] — crate-wide `RenderError`.
 
 pub mod adapters;

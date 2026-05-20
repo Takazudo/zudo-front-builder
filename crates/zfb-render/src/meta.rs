@@ -72,7 +72,7 @@ pub struct ResolvedMeta {
     /// the page output directly".
     pub layout_path: Option<PathBuf>,
     /// Output-file extension override extracted from
-    /// `export const extension = "…"` on the page module (Sub 1's TSX
+    /// `export const extension = "…"` on the page module (the TSX
     /// frontmatter extractor). Beats the filename convention; both fall
     /// through to the `html` default. See [`derive_output_extension`]
     /// for the precedence rule.
@@ -161,7 +161,7 @@ pub fn resolve_meta(
 
 /// Same as [`resolve_meta`] but also threads through the
 /// `extension` / `contentType` overrides extracted from the page's TSX
-/// frontmatter (see Sub 1's `zfb_content::tsx_frontmatter::extract`).
+/// frontmatter (see `zfb_content::tsx_frontmatter::extract`).
 ///
 /// The orchestrator uses this entry point because the layout
 /// resolution and the output-extension / content-type resolution share
@@ -220,8 +220,7 @@ pub const DEFAULT_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 ///
 /// This rule is also pinned in `zfb_router::route::Route::output_filename`
 /// (the router crate doesn't depend on this one, so the rule lives in
-/// both places). Keep the two in sync when changing it, and reflect any
-/// change in ADR-003 (Sub 7).
+/// both places). Keep the two in sync when changing it.
 pub fn derive_output_extension(
     frontmatter_extension: Option<&str>,
     route_extension: Option<&str>,
@@ -256,7 +255,7 @@ pub fn derive_content_type(
         return ct.to_string();
     }
     // Mirror of zfb_server::routes::content_type_for_extension; keep both
-    // in sync (and ADR-003). Differs in the catch-all only: pages emitted
+    // in sync. Differs in the catch-all only: pages emitted
     // by the SSG renderer default to HTML when the extension is unknown,
     // because the build pipeline only writes route outputs the user
     // declared (a missing extension on a known page is HTML).
@@ -697,7 +696,7 @@ mod tests {
 
     // ---- end-to-end through parse_meta + resolve_meta ---------------------
 
-    // ---- output extension / content-type precedence (Sub 49) -----------
+    // ---- output extension / content-type precedence -----------------
 
     #[test]
     fn derive_extension_frontmatter_beats_route() {

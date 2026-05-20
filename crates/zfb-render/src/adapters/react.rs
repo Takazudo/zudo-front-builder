@@ -14,11 +14,11 @@
 //! - Pre-render setup: installs `globalThis.__zfbRenderToString` so the
 //!   orchestrator can call into the framework without branching on it.
 //!
-//! See `docs/architecture/adr-002-framework-adapters.md` for the
-//! portable-component contract that constrains what users can write
-//! against this adapter, and for the documented divergences between
-//! Preact and React (aria casing, controlled inputs, hydrate vs
-//! hydrateRoot, bundle size).
+//! Components written against this adapter must stay inside the
+//! portable-component contract (plain JSX + props, no framework-specific
+//! APIs); divergences between Preact and React (aria casing, controlled
+//! inputs, hydrate vs hydrateRoot, bundle size) are handled by the
+//! adapter layer.
 
 use async_trait::async_trait;
 
