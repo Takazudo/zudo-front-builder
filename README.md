@@ -1,6 +1,6 @@
 # zudo-front-builder
 
-`zfb` (zudo-front-builder) is a Rust-built static-site engine for Astro / Next.js (and other frontend framework) users who want millisecond rebuilds and a single binary. The full pipeline is shipping: embedded V8 host (ADR-007), `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
+`zfb` (zudo-front-builder) is a Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 
 ## What zfb is
 
@@ -11,8 +11,6 @@ and the `PageMeta` head/asset contract) that a framework can build
 on. Frameworks like a future `zudo-doc-v2` sit on top of these
 primitives and own the opinionated layer — sidebar generation, search,
 theming, blog conventions, i18n routing, versioning UI, and so on.
-
-The boundary between the two is fixed in [ADR-003: Engine vs framework boundary](./docs/architecture/adr-003-engine-vs-framework.md).
 
 The docs site is published at <https://takazudomodular.com/pj/zudo-front-builder/>.
 
