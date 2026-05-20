@@ -1,0 +1,114 @@
+---
+title: Design Philosophy
+description: Why zfb stays narrow on purpose, and why the AI era tips the balance further toward recipes over plugins.
+sidebar_position: -0.7
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+Two design principles that run through every decision in zfb: the deliberate
+choice to stay narrow rather than grow the surface area, and why — in an era
+where LLMs are in every workflow — recipes beat plugins for nearly everything
+outside a small universal core.
+
+</Info>
+
+zfb's surface area is intentionally small. That choice has a cost, and it has
+benefits. This page makes both explicit, then explains why the LLM-in-loop
+shift makes the recipe path even more attractive than it was before.
+
+## Narrow on purpose
+
+zfb is the SSG + SSR version of esbuild: a fast, focused engine that does
+exactly what it commits to and stops there. Just as esbuild deliberately
+avoids becoming a full application bundler with its own plugin ecosystem for
+every possible transformation, zfb deliberately avoids growing a thick API
+surface to cover every site-building pattern.
+
+The [six engine primitives](/concepts/engine-vs-framework) are the complete
+public contract of zfb v1. Adding a seventh primitive — even a useful one —
+means a new API to design, document, maintain, and version across future
+releases. It means answering "is this possible?" questions about edge cases
+on the new surface. And it means that framework authors building on top of
+zfb must now reason about one more axis.
+
+**The cost of staying narrow** is real: the consumer carries the glue. When
+zfb does not ship sidebar generation or i18n routing or a built-in search
+hook, the framework author — or the consumer directly — writes that code. In
+a pre-generated ecosystem, that would mean searching for recipes, reading
+through them, and adapting them to the project's shape. That adaptation cost
+was genuine.
+
+**The benefit** is the absence of an uncertainty tax. When the surface is
+narrow and stable, the question "does zfb support this?" has a fast answer:
+look at the six primitives. If the feature maps onto them, it works. If it
+does not, it belongs in a framework sitting on top of zfb, not inside the
+engine. There is no thick API to audit, no plugin point that might break in
+the next minor version, and no dependency on the engine team keeping up with
+every downstream use case.
+
+[Astro](https://astro.build) and [Next.js](https://nextjs.org) make a
+different trade. They offer broad multi-framework support, rich plugin
+ecosystems, and first-party adapters for many patterns. That is the right
+call for a general-purpose framework aimed at the widest possible audience.
+zfb's bet is the opposite: that a narrower, faster engine with a smaller
+stable contract is a better foundation for the specific case of
+content-heavy statically generated sites targeting Cloudflare's edge.
+
+The engine-promotion test captures the boundary precisely: `"if two frameworks
+built on zfb would do this differently, it's not engine."` If there is any
+legitimate reason two downstream frameworks would make different choices, the
+feature does not belong in zfb's surface area. It belongs in the frameworks.
+
+## Recipes over plugins in the AI era
+
+Before LLMs were part of every workflow, the recipe vs. plugin choice had a
+real asymmetry.
+
+**Pre-LLM recipe cost.** Finding a recipe meant a search, a scan through
+Stack Overflow answers or blog posts, a judgment call about whether the
+recipe matched the current project's version and structure, and then manual
+adaptation. Each of those steps took time and attention. A well-packaged
+plugin that solved the same problem was genuinely faster to reach for.
+
+**The LLM-in-loop shift.** With an LLM available, the adaptation cost
+collapses. A recipe that would have taken thirty minutes to understand and
+adapt now takes a prompt. More importantly, the recipe is now *transparent*:
+it runs in the consumer's project, it uses the consumer's imports, it ages
+alongside the consumer's codebase, and it is debuggable without peering into
+a dependency's internals. A plugin, by contrast, hides the implementation
+behind a version-pinned package, requires the plugin author to keep pace with
+the engine, and adds an indirection layer the LLM has to reason around.
+
+This does not mean plugins are obsolete. It means the bar for promoting
+something into a plugin has risen. The right question is no longer "would a
+recipe here be annoying to find and adapt?" — the LLM handles that. The right
+question is "is this something 100% of zfb consumers would use the same way,
+with no legitimate reason to deviate?"
+
+**The narrow plugin API zfb ships today** — the four lifecycle hooks, virtual
+modules, import aliases, and dev-only injected routes documented in
+[Plugins](/concepts/plugins) — is exactly that narrow exception. The `setup`
+hook's virtual module and alias registrations, the `preBuild` / `postBuild`
+file-generation hooks, and the `devMiddleware` handler cover patterns that
+are structurally inseparable from the build pipeline: things a consumer
+cannot implement as a recipe without forking the engine itself. The surface is
+deliberately closed elsewhere — no `addRemarkPlugin`, no `addModuleTransform`,
+no `onModuleLoad` — because those patterns belong in recipes, not in a stable
+engine API.
+
+The plugin-promotion test states the threshold: `"don't extract until the same
+recipe has been written by hand in three different zfb consumer projects."` One
+project's convenience is a recipe. Three independent projects converging on the
+same solution is evidence of a universal need. At that point, and only at that
+point, the extraction into a plugin API earns its maintenance cost.
+
+## Where to go next
+
+- [Engine vs Framework](/concepts/engine-vs-framework) — the six primitives
+  zfb commits to, and the line between engine and framework concerns.
+- [Plugins](/concepts/plugins) — the narrow exception: the four lifecycle hooks
+  and what they do and do not cover.
+- [Choosing zfb](/concepts/choosing-zfb) — when the narrow-on-purpose tradeoff
+  is the right call for your project, and when it is not.
