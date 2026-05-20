@@ -6,6 +6,10 @@
   "license": "MIT",
   "description": "zudo-front-builder — frontend build orchestrator (private workspace)",
   "packageManager": "pnpm@10.30.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=10.0.0"
+  },
   "scripts": {
     "//// === ROOT ===": "",
     "prepare": "lefthook install --reset-hooks-path && bash scripts/install-git-hooks.sh",
