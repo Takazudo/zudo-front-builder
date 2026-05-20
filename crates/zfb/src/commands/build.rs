@@ -596,10 +596,13 @@ fn build_default_css_payload(
 
     let pipe_cfg = CssPipelineConfig {
         sources,
-        // Keep CSS Modules class-map writes off this version of the
-        // wiring — the bundler-side rewrite that consumes those JSONs
-        // is the next step (S5's audit). Once that lands the build
-        // will pass a real `class_map_dir` here.
+        // The on-disk class-map JSON writer is not used: the build-time
+        // CSS Modules rewrite consumes the maps in-memory instead.
+        // `compute_css_module_class_maps` runs `CssModulesProcessor`
+        // directly (same default config this emitter uses, so scoped
+        // names agree) and feeds `BundlerInput::css_module_class_maps`,
+        // which the bundler applies in the shadow tree. No JSON channel
+        // is needed, so `class_map_dir` stays `None`.
         class_map_dir: None,
         // `output_root` is unused by `build_emitter` (it does not
         // write the hashed asset itself) but is read by the
