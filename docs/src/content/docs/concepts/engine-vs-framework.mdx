@@ -9,8 +9,7 @@ category: Concepts
 
 How zfb's surface area is split between **engine primitives** (the six
 things zfb commits to) and **framework concerns** (sidebars, search,
-blog conventions, theming) that live outside the engine. The decision
-itself is fixed in [ADR-003](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-003-engine-vs-framework.md).
+blog conventions, theming) that live outside the engine.
 
 </Info>
 
@@ -40,8 +39,8 @@ them; nothing else in zfb is part of the public surface contract.
    directories of markdown content, walked at build time.
 3. **Build-time content query bridge** — a deterministic Rust→JS
    snapshot that powers synchronous `getCollection` / `getEntry` calls
-   from your pages. Contract pinned by
-   [ADR-004](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-004-content-bridge.md).
+   from your pages. The contract is stable and documented in
+   [Content Collections](/concepts/content-collections).
 4. **[Dynamic routes](/concepts/dynamic-routes)** — `paths()` enumerates
    the concrete URLs to build for `[slug].tsx` / `[...slug].tsx` pages.
 5. **[Custom directives](/concepts/custom-directives)** — register
@@ -73,10 +72,9 @@ this differently?"* is yes, it belongs in a framework, not in zfb.
 
 ## A small example: a layout consumes the engine's `meta`
 
-The engine threads page metadata through `PageMeta` (see
-[ADR-003 → Head / asset-injection contract](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-003-engine-vs-framework.md)).
-Layouts — which are *your* code, not the engine's — read `meta` and
-project it into the `<head>`. Here's a tiny default layout:
+The engine threads page metadata through `PageMeta`. Layouts — which
+are *your* code, not the engine's — read `meta` and project it into
+the `<head>`. Here's a tiny default layout:
 
 ```tsx
 // layouts/default.tsx
@@ -120,8 +118,6 @@ typed `PageMeta`."
 
 ## Where to look next
 
-- The decision itself: [ADR-003: Engine vs framework boundary](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/architecture/adr-003-engine-vs-framework.md).
 - For each engine primitive, the linked concept page above.
-- For the head/meta surface specifically, the **Head / asset-injection
-  contract** section in ADR-003 spells out which fields are
-  first-class and how `extra` carries the rest.
+- For the head/meta surface specifically, [`meta` export](/api/meta-export)
+  documents which fields are first-class and how `extra` carries the rest.
