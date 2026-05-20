@@ -13,6 +13,7 @@
 // The CLI is intentionally tiny and dependency-free. It imports the
 // wrapper string from the canonical `src/worker-wrapper.mjs` (plain JS,
 // no TypeScript loader required) so there is a single source of truth.
+// invariant: no runtime npm deps — see SECURITY-DEPS.md
 
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";

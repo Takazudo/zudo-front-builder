@@ -7,10 +7,10 @@ This document covers the toolchain and one-time setup needed to build, test, and
 | Tool   | Version            | Notes                                             |
 | ------ | ------------------ | ------------------------------------------------- |
 | Rust   | stable             | `rustup install stable && rustup default stable`  |
-| Node   | ≥ 20 (LTS)         | The fetch script and Node-side glue use ESM + `fetch`. |
+| Node   | ≥ 22 (LTS)         | The fetch script and Node-side glue use ESM + `fetch`; `engine-strict=true` is set, and the docs site's transitive `chevrotain@12` declares `engines.node >=22`. |
 | pnpm   | as pinned          | The repo declares `packageManager` in `package.json`; use Corepack (`corepack enable`) or install the matching pnpm version directly. |
 
-CI uses Node 20 and Rust stable on `ubuntu-latest`.
+CI uses Node 22 and Rust stable on `ubuntu-latest`.
 
 ## First build is slow
 

@@ -53,6 +53,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

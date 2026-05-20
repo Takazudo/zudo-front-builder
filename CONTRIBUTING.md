@@ -5,7 +5,7 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically.
+- **Node / pnpm**: **Node 22 or later and pnpm 10 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engine-strict=true` in `.npmrc`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22 is required (not 20) because `@mermaid-js/parser` (transitive dep of the docs site) pulls in `chevrotain@12` which declares `engines.node >=22`.
 
 ## First build expectation
 
@@ -144,6 +144,10 @@ esbuild is shipped as a Go-built standalone CLI binary that release engineering 
 6. Drop the new binary into `crates/zfb/binaries/esbuild/esbuild` locally to test the end-to-end gate, but do not commit it (`.gitignore` already excludes the path).
 
 The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
+
+## Supply chain
+
+Runtime deps on publishable packages are supply-chain liabilities for downstream users. See [SECURITY-DEPS.md](./SECURITY-DEPS.md) for the full policy, the current runtime-dep audit, and the checklist to follow before adding a new runtime dependency.
 
 ## License
 
