@@ -689,8 +689,7 @@ pub fn shutdown(state: RendererState) -> Result<(), RendererError> {
 ///
 /// **Reload latency expectation:** the embedded V8 host destroy + recreate
 /// is expected to take 200–800 ms per bundle because every reload
-/// re-parses the bundle. This is accepted for v1 per ADR-007's documented
-/// consequences.
+/// re-parses the bundle. This is accepted for v1.
 ///
 /// Callers should invoke this whenever a TSX page edit, a layout edit, or
 /// an exported handler change has rebuilt the worker bundle on disk —
