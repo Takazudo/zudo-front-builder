@@ -1,0 +1,21 @@
+{
+  "name": "@takazudo/zfb-win32-x64-msvc",
+  "version": "0.1.0-next.0",
+  "description": "Platform-specific zfb binary (win32-x64-msvc)",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "zfb.exe",
+  "files": [
+    "zfb.exe"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/zfb-win32-x64-msvc"
+  }
+}

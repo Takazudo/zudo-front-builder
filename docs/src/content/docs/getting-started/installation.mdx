@@ -1,42 +1,41 @@
 ---
 title: Installation
-description: Build and install the zfb CLI from source.
+description: Install the zfb CLI from npm.
 sidebar_position: 2
 ---
 
-zfb (zudo-front-builder) ships as a single Rust binary. Build it from this repository and install it into your Cargo bin directory.
+`@takazudo/zfb` ships as an npm package that pulls a prebuilt platform binary via npm optional-deps — no Rust toolchain required.
 
 ## Prerequisites
 
 You will need:
 
-- **Rust toolchain** — install via [rustup](https://rustup.rs/). Stable 1.75 or newer is fine.
-- **Node.js ≥ 20** — the config loader and some build steps invoke Node. See [BUILDING.md](https://github.com/Takazudo/zudo-front-builder/blob/main/BUILDING.md) for the full requirement list.
+- **Node.js ≥ 22** — the config loader and some build steps invoke Node.
 - **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
 
-## Build and install the CLI
+## Install the CLI
 
-Clone the repository and install the `zfb` binary into your Cargo bin directory:
+Install `@takazudo/zfb` as a dev dependency in your project:
 
-```bash
-git clone https://github.com/Takazudo/zudo-front-builder.git
-cd zudo-front-builder
-cargo install --path crates/zfb
-```
+<Tabs>
 
-`cargo install` puts the binary at `~/.cargo/bin/zfb`. Make sure that directory is on your `PATH` (rustup configures this for you on a fresh install).
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add -D @takazudo/zfb
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install -D @takazudo/zfb
+    ```
+  </TabItem>
 
-If you would rather not install globally — for example, while hacking on the framework itself — build in place and call the binary directly:
-
-```bash
-cargo build -p zfb
-./target/debug/zfb --help
-```
+</Tabs>
 
 ## Verify the install
 
 ```bash
-zfb --help
+npx zfb --help
 ```
 
 You should see four subcommands:
@@ -46,4 +45,16 @@ You should see four subcommands:
 - `zfb build` — produce a static build
 - `zfb preview` — serve the build output
 
-If `zfb --help` prints all four, you're ready to move on to [Your first site](/getting-started/your-first-site).
+If `npx zfb --help` prints all four, you're ready to move on to [Your first site](/getting-started/your-first-site).
+
+## From source (contributors)
+
+If you are contributing to zfb itself and need to build the CLI from source, see [BUILDING.md](https://github.com/Takazudo/zudo-front-builder/blob/main/BUILDING.md) for full instructions including the Rust toolchain prerequisites.
+
+The short path:
+
+```bash
+git clone https://github.com/Takazudo/zudo-front-builder.git
+cd zudo-front-builder
+cargo install --path crates/zfb
+```

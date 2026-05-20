@@ -398,7 +398,7 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // #[ignore = "requires sub-162 (Backend::EmbeddedV8) — un-ignore after merge"]
 // fn embedded_v8_renders_page_with_snapshot_data() {
 //     // Locate esbuild (required for real bundle).
-//     // Build a basic-blog fixture (or a minimal fixture project).
+//     // Build a bundled-basic-blog-template fixture (or a minimal fixture project).
 //     // Call bundle() with Backend::EmbeddedV8 and content_snapshot_json
 //     //   set from build_snapshot(blog_collection_config).
 //     // Call render_all() with a route universe containing "/".

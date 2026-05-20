@@ -116,6 +116,12 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/create-zfb:
+    dependencies:
+      '@takazudo/zfb':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb
+
   packages/zfb:
     devDependencies:
       '@types/node':
@@ -130,6 +136,19 @@ importers:
       vitest:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
+    optionalDependencies:
+      '@takazudo/zfb-darwin-arm64':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb-darwin-arm64
+      '@takazudo/zfb-darwin-x64':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb-darwin-x64
+      '@takazudo/zfb-linux-x64-gnu':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb-linux-x64-gnu
+      '@takazudo/zfb-win32-x64-msvc':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb-win32-x64-msvc
 
   packages/zfb-adapter-cloudflare:
     devDependencies:
@@ -142,6 +161,12 @@ importers:
       vitest:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
+
+  packages/zfb-darwin-arm64: {}
+
+  packages/zfb-darwin-x64: {}
+
+  packages/zfb-linux-x64-gnu: {}
 
   packages/zfb-runtime:
     dependencies:
@@ -164,6 +189,8 @@ importers:
       vitest:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
+
+  packages/zfb-win32-x64-msvc: {}
 
 packages:
 

@@ -1,0 +1,7 @@
+# Enforce LF line endings for JS/TS source and shell scripts to prevent
+# CRLF issues on Windows checkouts. The bin shim must be LF-only so the
+# shebang line is interpreted correctly on Unix systems.
+*.mjs text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.sh text eol=lf

@@ -1,0 +1,37 @@
+{
+  "name": "create-zfb",
+  "version": "0.1.0-next.0",
+  "private": false,
+  "type": "module",
+  "description": "Scaffold a new zfb static-site project: `npm create zfb@latest my-site`",
+  "license": "MIT",
+  "author": "Takeshi Takatsudo <takazudo@gmail.com> (https://github.com/Takazudo)",
+  "homepage": "https://takazudomodular.com/pj/zudo-front-builder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/create-zfb"
+  },
+  "bugs": {
+    "url": "https://github.com/Takazudo/zudo-front-builder/issues"
+  },
+  "keywords": [
+    "zfb",
+    "scaffold",
+    "create",
+    "init",
+    "static-site-generator"
+  ],
+  "bin": {
+    "create-zfb": "./bin/create-zfb.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@takazudo/zfb": "workspace:0.1.0-next.0"
+  }
+}
