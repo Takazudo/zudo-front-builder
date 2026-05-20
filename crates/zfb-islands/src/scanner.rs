@@ -117,13 +117,17 @@ pub type IslandsSet = Vec<Island>;
 pub struct ScanMeta {
     /// True when some file reachable from a page opts the project into
     /// `<ClientRouter />` (issue #289). Detected from import / re-export
-    /// declarations — see [`module_uses_client_router`]:
+    /// declarations — see [`collect_client_router_facts`] and
+    /// [`resolve_client_router_usage`]:
     ///
     /// - a named `ClientRouter` import from the `@takazudo/zfb-runtime`
     ///   barrel (covers both the `<ClientRouter />` JSX tag and the
     ///   function-call `{ClientRouter() as ...}` form), or
     /// - a direct import / re-export of the
-    ///   `@takazudo/zfb-runtime/client-router` subpath.
+    ///   `@takazudo/zfb-runtime/client-router` subpath, or
+    /// - a named `ClientRouter` import / re-export from a *local* barrel
+    ///   that transitively re-exports `@takazudo/zfb-runtime` through one
+    ///   or more `export *` hops (issue #307).
     ///
     /// When set, the islands bundler injects a side-effect
     /// `import "@takazudo/zfb-runtime/client-router";` into the synthetic
@@ -1270,8 +1274,11 @@ pub fn scan_islands_with_meta<R: Resolver>(
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // DFS stack.
     let mut stack: Vec<PathBuf> = pages.to_vec();
-    // Side-channel: set once any reachable file opts into `<ClientRouter />`.
-    let mut uses_client_router = false;
+    // Per-module `<ClientRouter />` opt-in facts (#289, #307), keyed by
+    // resolved path — the same key space as `visited`. The cross-module
+    // verdict (following `export *` re-export edges) is computed from
+    // these once the walk completes.
+    let mut client_router_facts: HashMap<PathBuf, ClientRouterFacts> = HashMap::new();
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current.clone()) {
@@ -1297,12 +1304,21 @@ pub fn scan_islands_with_meta<R: Resolver>(
 
         let module = parse_module(&current, &source)?;
 
-        // `<ClientRouter />` opt-in detection (#289). Checked on every
-        // reachable module, not just `"use client"` files — the import
-        // typically lives in an SSR-only layout that carries no directive.
-        if !uses_client_router && module_uses_client_router(&module) {
-            uses_client_router = true;
-        }
+        // Directory of the importer — used to resolve this module's own
+        // specifiers, both for `<ClientRouter />` fact collection below
+        // and for the import walk further down.
+        let importer_dir = current
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // `<ClientRouter />` opt-in fact collection (#289, #307).
+        // Gathered for every reachable module, not just `"use client"`
+        // files — the import typically lives in an SSR-only layout that
+        // carries no directive.
+        let cr_facts = collect_client_router_facts(&module, |spec| {
+            resolver.resolve(&importer_dir, spec)
+        });
 
         if has_use_client_directive(&module) {
             for record in exported_island_records(&module) {
@@ -1324,10 +1340,6 @@ pub fn scan_islands_with_meta<R: Resolver>(
         // workspace probe disabled) return `None` and the specifier is
         // silently skipped, matching the pre-#122 behaviour for
         // genuinely runtime-only specifiers like `preact/hooks`.
-        let importer_dir = current
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
         for specifier in collect_import_specifiers(&module) {
             if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
                 if !visited.contains(&resolved) {
@@ -1335,11 +1347,15 @@ pub fn scan_islands_with_meta<R: Resolver>(
                 }
             }
         }
+
+        client_router_facts.insert(current, cr_facts);
     }
 
     Ok((
         found.into_values().collect(),
-        ScanMeta { uses_client_router },
+        ScanMeta {
+            uses_client_router: resolve_client_router_usage(&client_router_facts),
+        },
     ))
 }
 
@@ -1353,31 +1369,74 @@ const ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER: &str = "@takazudo/zfb-runtime/client-
 /// The named export the `<ClientRouter />` API is published under.
 const CLIENT_ROUTER_EXPORT: &str = "ClientRouter";
 
-/// Return true iff this module imports / re-exports something that opts
-/// the project into `<ClientRouter />` (issue #289).
+/// Per-module facts the `<ClientRouter />` opt-in detection needs
+/// (issues #289, #307).
 ///
-/// Two shapes count:
+/// Gathered once per reachable module by [`collect_client_router_facts`]
+/// during the shared DFS in [`scan_islands_with_meta`]; the project-wide
+/// verdict — which has to follow `export *` re-export edges across
+/// modules — is computed afterwards by [`resolve_client_router_usage`].
+#[derive(Default)]
+struct ClientRouterFacts {
+    /// The module on its own conclusively opts the project into
+    /// `<ClientRouter />`: a named `ClientRouter` import / re-export from
+    /// the `@takazudo/zfb-runtime` barrel, or any pull-in of the
+    /// `@takazudo/zfb-runtime/client-router` subpath.
+    direct_hit: bool,
+    /// The module has a (non-type) `export * from "@takazudo/zfb-runtime"`
+    /// — it re-exports the runtime *barrel*, so it is itself a
+    /// "runtime-barrel proxy".
+    reexports_runtime_barrel: bool,
+    /// Resolved paths of every (non-type) `export * from "<local>"`.
+    /// These are the edges followed transitively to grow the proxy set:
+    /// a module that `export *`s a proxy is itself a proxy.
+    star_reexport_targets: Vec<PathBuf>,
+    /// Resolved paths from which this module pulls a (non-type) named
+    /// `ClientRouter` binding — `import { ClientRouter [as X] } from
+    /// "<local>"` or `export { ClientRouter [as X] } from "<local>"`.
+    /// If any such path is a runtime-barrel proxy, the project uses
+    /// `<ClientRouter />` (issue #307).
+    client_router_pulls: Vec<PathBuf>,
+}
+
+/// Gather the per-module [`ClientRouterFacts`] for one module.
+///
+/// `resolve` maps a module specifier to the same resolved [`PathBuf`] key
+/// the DFS `visited` set uses, so the local proxy modules and the paths
+/// recorded here share a single key space.
+///
+/// **Direct opt-in** (`direct_hit`) — conclusive on its own — covers:
 ///
 /// - Anything pulling in the `@takazudo/zfb-runtime/client-router`
-///   subpath directly — a plain `import`, a side-effect `import "…"`, a
+///   subpath directly: a plain `import`, a side-effect `import "…"`, a
 ///   named re-export `export { … } from "…"`, or `export * from "…"`.
 /// - A named `ClientRouter` binding imported from — or re-exported out
-///   of — the `@takazudo/zfb-runtime` barrel. Renamed imports
-///   (`import { ClientRouter as CR }`) are matched on the *imported*
-///   name, not the local binding.
+///   of — the `@takazudo/zfb-runtime` barrel. Renamed forms
+///   (`import { ClientRouter as CR }`) match on the *imported* name, not
+///   the local binding.
 ///
-/// A bare `import * as rt from "@takazudo/zfb-runtime"` namespace import
-/// of the barrel is intentionally NOT a trigger: it cannot be tied to
-/// `ClientRouter` without member-expression analysis, and treating it as
-/// one would risk shipping the runtime to projects that never touch
-/// `<ClientRouter />` (acceptance criterion 2 — zero new bytes for
-/// non-users).
+/// **Cross-module opt-in** — issue #307. A project can reach
+/// `<ClientRouter />` through a local barrel: `src/lib/runtime.ts` does
+/// `export * from "@takazudo/zfb-runtime"`, and app code then does
+/// `import { ClientRouter } from "../lib/runtime"`. Neither module is a
+/// direct hit, so this function records the structural facts
+/// (`reexports_runtime_barrel`, `star_reexport_targets`,
+/// `client_router_pulls`) and [`resolve_client_router_usage`] computes
+/// the transitive verdict after the DFS finishes.
 ///
-/// TypeScript type-only forms are skipped entirely. `import type { … }`,
-/// per-specifier `{ type ClientRouter }`, and `export type { … }` are
-/// compile-time-erased — they emit zero runtime code — so counting them
-/// would ship the client-router runtime to a consumer that only imports
-/// `ClientRouter` as a type, again breaking acceptance criterion 2.
+/// A bare `import * as rt from "…"` namespace import — and its
+/// export-side mirror `export * as rt from "…"` — is intentionally NOT a
+/// trigger and NOT a proxy edge: it cannot be tied to `ClientRouter`
+/// without member-expression analysis, and treating it as one would risk
+/// shipping the runtime to projects that never touch `<ClientRouter />`
+/// (issue #289 acceptance criterion 2 — zero new bytes for non-users).
+///
+/// TypeScript type-only forms are skipped entirely — `import type { … }`,
+/// per-specifier `{ type ClientRouter }`, `export type { … }`, and a
+/// type-only `export type * from "…"`. They are compile-time-erased (zero
+/// runtime code), so counting them would ship the client-router runtime
+/// to a consumer that only references `ClientRouter` as a type, again
+/// breaking acceptance criterion 2.
 ///
 /// The `@takazudo/zfb-runtime/client-router` subpath is a side-effect
 /// entrypoint: importing it runs `init()` at module-eval time (see issue
@@ -1385,17 +1444,11 @@ const CLIENT_ROUTER_EXPORT: &str = "ClientRouter";
 /// helper like `navigate`/`prefetch` — opts the project into the runtime,
 /// so detection on the subpath is deliberately not narrowed to
 /// `ClientRouter`.
-///
-/// Known scope limitation: `export * from "@takazudo/zfb-runtime"` (the
-/// barrel, NOT the `/client-router` subpath) is NOT treated as
-/// `ClientRouter` usage. A project that re-exports the whole runtime
-/// barrel through a local barrel and then imports `ClientRouter` from
-/// that local barrel will not be detected. Treating any barrel
-/// `export *` as a hit would be over-broad (it would ship the runtime to
-/// projects re-exporting only non-router helpers); a correct fix needs
-/// cross-module symbol-usage tracking. Tracked as a follow-up — see the
-/// `agent-found` GitHub issue referencing #289 / PR #306.
-fn module_uses_client_router(module: &Module) -> bool {
+fn collect_client_router_facts(
+    module: &Module,
+    mut resolve: impl FnMut(&str) -> Option<PathBuf>,
+) -> ClientRouterFacts {
+    let mut facts = ClientRouterFacts::default();
     for item in &module.body {
         let ModuleItem::ModuleDecl(decl) = item else {
             continue;
@@ -1407,32 +1460,39 @@ fn module_uses_client_router(module: &Module) -> bool {
                 if import_decl.type_only {
                     continue;
                 }
-                // Compare the borrowed atom against the `&'static str`
-                // constants directly — no `String` allocation on this
-                // hot path (run for every reachable module's DFS walk).
                 let src = &import_decl.src.value;
                 if *src == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
-                    return true;
+                    facts.direct_hit = true;
+                    continue;
                 }
-                if *src == *ZFB_RUNTIME_SPECIFIER {
-                    for spec in &import_decl.specifiers {
-                        if let ImportSpecifier::Named(named) = spec {
-                            // Per-specifier `{ type ClientRouter }` is
-                            // also erased — skip it.
-                            if named.is_type_only {
-                                continue;
-                            }
-                            // `imported` is `Some` for renamed imports
-                            // (`{ ClientRouter as CR }`); `None` means the
-                            // local binding IS the imported name.
-                            let imported = match &named.imported {
-                                Some(name) => module_export_name(name),
-                                None => named.local.sym.to_string(),
-                            };
-                            if imported == CLIENT_ROUTER_EXPORT {
-                                return true;
-                            }
-                        }
+                let is_runtime_barrel = *src == *ZFB_RUNTIME_SPECIFIER;
+                for spec in &import_decl.specifiers {
+                    // Namespace (`import * as rt`) and default imports
+                    // cannot be tied to `ClientRouter` — skip them.
+                    let ImportSpecifier::Named(named) = spec else {
+                        continue;
+                    };
+                    // Per-specifier `{ type ClientRouter }` is erased.
+                    if named.is_type_only {
+                        continue;
+                    }
+                    // `imported` is `Some` for renamed imports
+                    // (`{ ClientRouter as CR }`); `None` means the local
+                    // binding IS the imported name.
+                    let imported = match &named.imported {
+                        Some(name) => module_export_name(name),
+                        None => named.local.sym.to_string(),
+                    };
+                    if imported != CLIENT_ROUTER_EXPORT {
+                        continue;
+                    }
+                    if is_runtime_barrel {
+                        facts.direct_hit = true;
+                    } else if let Some(path) = resolve(&atom_to_string(src)) {
+                        // `ClientRouter` pulled from a non-runtime
+                        // specifier — a trigger only if that module turns
+                        // out to be a runtime-barrel proxy (#307).
+                        facts.client_router_pulls.push(path);
                     }
                 }
             }
@@ -1446,40 +1506,107 @@ fn module_uses_client_router(module: &Module) -> bool {
                     // not a module pull-in.
                     continue;
                 };
-                // Borrowed compare — no allocation on the hot path.
                 let src = &src.value;
                 if *src == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
-                    return true;
+                    facts.direct_hit = true;
+                    continue;
                 }
-                if *src == *ZFB_RUNTIME_SPECIFIER {
-                    for spec in &named.specifiers {
-                        if let ExportSpecifier::Named(export_named) = spec {
-                            // Per-specifier `{ type ClientRouter }` re-export
-                            // is erased — skip it.
-                            if export_named.is_type_only {
-                                continue;
-                            }
-                            // `orig` is the name in the source module.
-                            if module_export_name(&export_named.orig) == CLIENT_ROUTER_EXPORT {
-                                return true;
-                            }
-                        }
+                let is_runtime_barrel = *src == *ZFB_RUNTIME_SPECIFIER;
+                for spec in &named.specifiers {
+                    // `export * as ns from "…"` is a namespace re-export
+                    // (the export-side mirror of `import * as`) — not a
+                    // `ClientRouter` pull. Default re-exports likewise.
+                    let ExportSpecifier::Named(export_named) = spec else {
+                        continue;
+                    };
+                    // Per-specifier `{ type ClientRouter }` is erased.
+                    if export_named.is_type_only {
+                        continue;
+                    }
+                    // `orig` is the name in the source module.
+                    if module_export_name(&export_named.orig) != CLIENT_ROUTER_EXPORT {
+                        continue;
+                    }
+                    if is_runtime_barrel {
+                        facts.direct_hit = true;
+                    } else if let Some(path) = resolve(&atom_to_string(src)) {
+                        facts.client_router_pulls.push(path);
                     }
                 }
             }
             ModuleDecl::ExportAll(all) => {
-                // Only the `/client-router` subpath counts here. A barrel
-                // `export * from "@takazudo/zfb-runtime"` is deliberately
-                // NOT a trigger — see the known-scope-limitation note in
-                // this function's doc comment.
-                if all.src.value == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
-                    return true;
+                // `export type * from "…"` is compile-time-erased — never
+                // a runtime pull, never a proxy edge.
+                if all.type_only {
+                    continue;
+                }
+                let src = &all.src.value;
+                if *src == *ZFB_RUNTIME_CLIENT_ROUTER_SPECIFIER {
+                    facts.direct_hit = true;
+                } else if *src == *ZFB_RUNTIME_SPECIFIER {
+                    // `export * from "@takazudo/zfb-runtime"` — this
+                    // module re-exports the runtime barrel: it is a proxy.
+                    facts.reexports_runtime_barrel = true;
+                } else if let Some(path) = resolve(&atom_to_string(src)) {
+                    // `export * from "<local>"` — a proxy-set edge,
+                    // resolved transitively after the DFS.
+                    facts.star_reexport_targets.push(path);
                 }
             }
             _ => {}
         }
     }
-    false
+    facts
+}
+
+/// Compute the project-wide `<ClientRouter />` verdict from the per-module
+/// [`ClientRouterFacts`] gathered during the scan (issues #289, #307).
+///
+/// A `direct_hit` on any reachable module is conclusive. Otherwise the
+/// project still opts in when a `ClientRouter` name is pulled from a
+/// *runtime-barrel proxy* — a module that transitively re-exports
+/// `@takazudo/zfb-runtime` through one or more `export *` hops.
+///
+/// The proxy set is grown to a fixpoint with a worklist that re-scans
+/// every module each pass and only ever *adds* modules. That terminates
+/// even when barrels `export *` each other cyclically: a pass either
+/// flips at least one new module into the set or makes no change and the
+/// loop ends.
+fn resolve_client_router_usage(facts: &HashMap<PathBuf, ClientRouterFacts>) -> bool {
+    if facts.values().any(|f| f.direct_hit) {
+        return true;
+    }
+    // Seed with the modules that directly re-export the runtime barrel,
+    // then follow `export *` edges until the set stops growing.
+    let mut proxies: HashSet<PathBuf> = facts
+        .iter()
+        .filter(|(_, f)| f.reexports_runtime_barrel)
+        .map(|(path, _)| path.clone())
+        .collect();
+    loop {
+        let mut changed = false;
+        for (path, f) in facts {
+            if proxies.contains(path) {
+                continue;
+            }
+            if f
+                .star_reexport_targets
+                .iter()
+                .any(|target| proxies.contains(target))
+            {
+                proxies.insert(path.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    facts.values().any(|f| {
+        f.client_router_pulls
+            .iter()
+            .any(|path| proxies.contains(path))
+    })
 }
 
 /// Extract the textual name from a [`ModuleExportName`] (an identifier or
@@ -2339,6 +2466,256 @@ mod tests {
         assert!(
             !meta.uses_client_router,
             "a type-only `export type` re-export of ClientRouter must not trigger detection"
+        );
+    }
+
+    // --- cross-module barrel re-export indirection (issue #307) ---------
+
+    #[test]
+    fn client_router_detected_via_local_barrel_reexporting_runtime() {
+        // Issue #307 literal scenario: a local barrel `export *`s the
+        // whole runtime barrel, and app code imports `ClientRouter` from
+        // that local barrel. Neither module is a direct hit on its own.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter } from "../lib/runtime";
+                export default function Home() { return <ClientRouter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.uses_client_router,
+            "ClientRouter imported through a local barrel that `export *`s \
+             the runtime barrel must be detected"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_when_local_barrel_used_only_for_non_router_helper() {
+        // Acceptance criterion 2 (issue #289): a project that re-exports
+        // the runtime barrel through a local barrel but only imports a
+        // NON-router helper from it must still ship zero new bytes.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { navigate } from "../lib/runtime";
+                export default function Home() { navigate("/x"); }
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "importing only a non-router helper through a runtime-barrel \
+             proxy must not trigger detection"
+        );
+    }
+
+    #[test]
+    fn client_router_detected_via_transitive_barrel_chain() {
+        // A multi-hop `export *` chain: app → barrel-a → barrel-b →
+        // runtime. The proxy fixpoint must follow every hop.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter } from "../lib/a";
+                export default function Home() { return <ClientRouter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/a.ts"),
+                r#"export * from "./b";
+                "#,
+            )
+            .with_file(
+                root().join("lib/b.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.uses_client_router,
+            "ClientRouter imported through a transitive `export *` barrel \
+             chain must be detected"
+        );
+    }
+
+    #[test]
+    fn client_router_detected_via_renamed_import_through_local_barrel() {
+        // `import { ClientRouter as CR }` through a proxy — matched on the
+        // imported name, not the local binding.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter as CR } from "../lib/runtime";
+                export default function Home() { return <CR/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.uses_client_router,
+            "a renamed ClientRouter import through a runtime-barrel proxy \
+             must be detected"
+        );
+    }
+
+    #[test]
+    fn client_router_detected_via_named_reexport_through_local_barrel() {
+        // `export { ClientRouter } from "<proxy>"` is the export-side
+        // mirror of the import form and must trigger symmetrically.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"export { ClientRouter } from "../lib/runtime";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.uses_client_router,
+            "a named ClientRouter re-export through a runtime-barrel proxy \
+             must be detected"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_namespace_import_through_local_barrel() {
+        // `import * as rt from "<proxy>"` cannot be tied to `ClientRouter`
+        // — it stays a non-trigger even when the source is a proxy.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import * as rt from "../lib/runtime";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a namespace import of a runtime-barrel proxy must not trigger \
+             detection"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_type_only_import_through_local_barrel() {
+        // `import type { ClientRouter } from "<proxy>"` is erased — zero
+        // runtime code, so it must not ship the runtime.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import type { ClientRouter } from "../lib/runtime";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a type-only ClientRouter import through a proxy must not \
+             trigger detection"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_type_only_star_reexport_of_runtime() {
+        // `export type * from "@takazudo/zfb-runtime"` is compile-time
+        // erased — the local barrel is NOT a runtime-barrel proxy.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter } from "../lib/runtime";
+                export default function Home() { return <ClientRouter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/runtime.ts"),
+                r#"export type * from "@takazudo/zfb-runtime";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "a type-only `export type *` of the runtime barrel must not \
+             make the module a proxy"
+        );
+    }
+
+    #[test]
+    fn client_router_detection_terminates_on_cyclic_barrels() {
+        // Two barrels `export *` each other; one also re-exports the
+        // runtime barrel. The proxy fixpoint must terminate on the cycle
+        // and still reach the correct verdict.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter } from "../lib/a";
+                export default function Home() { return <ClientRouter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/a.ts"),
+                r#"export * from "./b";
+                export * from "@takazudo/zfb-runtime";
+                "#,
+            )
+            .with_file(
+                root().join("lib/b.ts"),
+                r#"export * from "./a";
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.uses_client_router,
+            "cyclic `export *` barrels must terminate and still detect \
+             ClientRouter usage"
         );
     }
 
