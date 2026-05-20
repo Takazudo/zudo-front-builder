@@ -132,6 +132,8 @@ interface ZfbRouteEntry {
   output: string;      // path under outDir, e.g. "blog/hello/index.html"
   extension: string;   // file extension: "html", "xml", "rss", "txt", "json", …
   source: string;      // source page module, e.g. "pages/blog/[slug].tsx"
+  prerender: boolean;  // true = SSG (written to disk under outDir);
+                       // false = SSR (no on-disk artifact, served by the adapter)
   params?: Record<string, string | string[]>; // absent for static routes;
                        // dynamic params are strings, catchall params are string[]
 }
@@ -139,9 +141,29 @@ interface ZfbRouteEntry {
 
 Routes are sorted by `url` for byte-stable output across runs. Non-HTML routes (`sitemap.xml.tsx`, `feed.rss.tsx`, `llms.txt.tsx`) appear with their actual extension and output path.
 
+The manifest includes **both** SSG routes (`prerender: true`) and SSR routes (`prerender: false`). SSR routes are valid runtime URLs served by the adapter — but they have no on-disk artifact under `outDir`. Indexes that enumerate "URLs the build wrote to disk" (sitemap.xml, search-index.json, …) should filter `r.prerender !== false` to avoid surfacing those.
+
+### On-disk access — `dist/__zfb/routes.json`
+
+The same manifest is also written to `<outDir>/__zfb/routes.json` at the end of every `zfb build` (#347). The on-disk file mirrors the in-memory `ctx.routes` shape one-for-one — same fields, same url-sorted order — so any script wired into `pnpm build` (a sibling sitemap generator, an OGP indexer, a search-shard builder) can read the manifest without writing a zfb plugin.
+
+```json
+{
+  "routes": [
+    { "url": "/", "output": "index.html", "extension": "html",
+      "source": "pages/index.tsx", "prerender": true },
+    { "url": "/blog/hello/", "output": "blog/hello/index.html",
+      "extension": "html", "source": "pages/blog/[slug].tsx",
+      "prerender": true, "params": { "slug": "hello" } }
+  ]
+}
+```
+
+The plugin `ctx.routes` and the on-disk `routes.json` are two access shapes over the same data, not two contracts. Opt out by setting `emitRoutesManifest: false` in `zfb.config.ts` for projects that strip everything but shipped assets out of `dist/` before deploy.
+
 ### Worked example: generating a `sitemap.xml` in `postBuild`
 
-A plugin that writes a `sitemap.xml` from every HTML route the build produced.
+A plugin that writes a `sitemap.xml` from every HTML route the build produced. The filter combines `extension === "html"` (skip `.xml` / `.rss` / `.txt` routes) with `prerender !== false` (skip SSR routes that have no on-disk artifact).
 
 ```ts
 // plugins/sitemap.ts
@@ -154,7 +176,9 @@ export default definePlugin({
   postBuild({ outDir, routes }) {
     if (!routes) return; // guard: absent on preBuild
     const siteUrl = "https://example.com";
-    const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+    const htmlRoutes = routes.routes.filter(
+      (r) => r.extension === "html" && r.prerender !== false,
+    );
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
