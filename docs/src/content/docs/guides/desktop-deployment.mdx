@@ -74,7 +74,7 @@ MDX rendering at request time, content reloading without a rebuild — but you d
 not need the zfb server to live inside the Tauri process itself.
 
 **What's involved.** Ship the `zfb` binary alongside your Tauri app as a
-[Tauri sidecar](https://tauri.app/v1/guides/building/sidecar/). Write a thin IPC
+[Tauri sidecar](https://v2.tauri.app/develop/sidecar/). Write a thin IPC
 bridge so the Tauri frontend can start the sidecar, discover the port, and open
 the WebView to `http://127.0.0.1:<port>`. The boundary between sidecar and Tauri
 is clean; the integration glue is not provided out of the box.

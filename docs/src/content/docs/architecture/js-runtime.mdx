@@ -24,7 +24,7 @@ SWC, oxc, and esbuild all compile JSX to `h(...)` calls — none of them need a 
 
 Once JSX becomes `h(...)`, something must _evaluate_ that code: walk the call tree to produce a VDOM, then invoke `renderToString` to produce HTML. Evaluation needs a JS engine somewhere — but not necessarily V8. Two lightweight alternatives exist:
 
-- **Boa** (pure Rust, ~30 s incremental build) — an ECMA-spec-faithful JS engine written entirely in Rust; no C++ toolchain.
+- **Boa** (pure Rust, ~30 s incremental build) — a JS engine written entirely in Rust with no C++ toolchain; tracks the ECMA spec but trails V8 on coverage of newer features.
 - **rquickjs** (Rust bindings to QuickJS, ~210 KB binary contribution) — fast to compile, minimal footprint.
 
 Both work well for SSR of a simple, self-contained Preact component. The problem is "any frontend dev's TSX with whatever npm packages they imported." The moment a user adds a calendar library, an i18n helper, or a component that uses a Proxy-based state store, Boa's ECMA gaps and QuickJS's limited ES2022+ surface start producing silent wrong output or hard panics — failure modes that are extremely hard to diagnose. V8 is the safe bet for arbitrary ecosystem code because it is the same engine Node.js and Chromium run against.
