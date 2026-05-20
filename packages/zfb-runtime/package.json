@@ -3,8 +3,30 @@
   "version": "0.2.0-migration.0",
   "private": true,
   "type": "module",
-  "description": "zfb SSG runtime — Hono-based page router with embedded ContentSnapshot, driven by the embedded V8 host at build time (ADR-007).",
+  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.",
+  "keywords": [
+    "zfb",
+    "zfb-runtime",
+    "ssg",
+    "static-site-generator",
+    "hono",
+    "page-router",
+    "content-snapshot",
+    "preact",
+    "react",
+    "view-transitions"
+  ],
   "license": "MIT",
+  "author": "Takeshi Takatsudo <takazudo@gmail.com> (https://github.com/Takazudo)",
+  "homepage": "https://takazudomodular.com/pj/zudo-front-builder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "packages/zfb-runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/Takazudo/zudo-front-builder/issues"
+  },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -20,6 +42,15 @@
       "types": "./src/client-router/index.ts",
       "default": "./src/client-router/index.ts"
     }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "vitest run",
