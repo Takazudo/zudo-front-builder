@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-next.0
+## 0.1.0-next.1
 
 Initial public prerelease on npm.
 
