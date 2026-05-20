@@ -1,79 +1,81 @@
 ---
-title: zfb-wisdom skill
-description: Give Claude Code lookup access to the zfb documentation so AI agents can answer questions about routing, build pipeline, content collections, and architecture without leaving the editor.
-sidebar_position: 1
+title: zfb-wisdom
+description: Search and reference documentation from the zfb (zudo-front-builder) project. Use when answering questions about zfb features, CLI usage, configuration, content collections, routing, build pipeline, o...
+sidebar_label: zfb-wisdom
+generated: true
 ---
 
-<Info>
+# zfb Documentation Reference
 
-AI agents working on zfb — writing features, debugging, or updating docs —
-benefit from having this skill installed. It lets Claude Code read the
-project's documentation directly without switching context or searching the
-web.
+Look up documentation from the zfb (zudo-front-builder) project.
+Documentation base path: `docs/src/content/docs` (relative to repo root)
 
-</Info>
+## Mode Detection
 
-## What it does
+Parse the argument string for flags:
 
-`/zfb-wisdom` is a Claude Code skill that gives any AI agent instant,
-lookup-only access to the zfb documentation tree. When installed, the agent
-can browse `docs/src/content/docs/` and `docs/architecture/` directly from
-within a Claude Code session — no browser, no copy-paste.
+- If args start with `-u` or `--update`: enter **Update mode** (see below)
+- Otherwise: enter **Lookup mode** (default)
 
-Typical use cases:
+Strip the flag from the remaining argument to get the topic keyword.
 
-- "How does zfb's routing work?" — agent reads `concepts/routing.mdx`
-- "What did ADR-003 decide?" — agent reads `architecture/adr-003-*.md`
-- "Show me the build pipeline overview" — agent reads `concepts/build-pipeline.mdx`
+## Lookup Mode (default)
 
-The skill also has an **update mode** (`-u`) for adding or editing
-documentation from within Claude Code.
+1. Find the relevant article(s) from the `docs/` directory based on the topic
+2. Read ONLY the specific article(s) you need — do NOT load all articles at once
+3. For architecture questions, also check `architecture/` for ADR files
+4. Apply the information from the article when answering the user's question
+5. Mention the source article path so the user can find it for further reading
 
-## Setup
+## Update Mode (`-u` / `--update`)
 
-Run the setup script once from the repo root:
+The user has new information and wants to add or update documentation in this repo.
 
-```bash
-bash docs/scripts/setup-zfb-wisdom.sh
+### Workflow
+
+1. **Understand the new info**: Ask the user what they learned or want to
+   document. The topic keyword (if provided) hints at the subject area.
+2. **Find existing docs**: Search the `docs/` directory for articles related to
+   the topic. Read them to understand what is already covered.
+3. **Decide create vs update**: If an existing article covers the topic, update
+   it. Otherwise, create a new `.mdx` file in the appropriate subdirectory.
+4. **Write the content**: Follow the doc-authoring rules in `docs/CLAUDE.md`:
+   - Required frontmatter: `title` (string). Always set `sidebar_position`.
+     Optional: `description`, `sidebar_label`, `tags`, etc.
+   - Do NOT use `# h1` in content — the frontmatter `title` renders as h1.
+     Start with `## h2` headings.
+   - Use available MDX components (`<Note>`, `<Tip>`, `<Info>`, `<Warning>`,
+     `<Danger>`) where appropriate.
+5. **Update Japanese docs**: Create or update the corresponding file under
+   `docs-ja/` mirroring the English directory structure. Keep code blocks and
+   diagrams identical — only translate surrounding prose.
+6. **Format**: Run `pnpm format:md` inside `docs/` to format the changed files.
+7. **Verify**: Run `pnpm build` inside `docs/` to confirm the site builds correctly.
+
+## Documentation Structure
+
+The documentation is organized in MDX files under `docs/`:
+
+```
+- api/
+- architecture/
+- changelog/
+- claude-md/
+- claude-skills/
+- claude/
+- concepts/
+- dogfood/
+- getting-started/
+- guides/
 ```
 
-The script:
+Architecture Decision Records (ADRs) are in `architecture/`.
 
-1. Creates `docs/.claude/skills/zfb-wisdom/` with a generated `SKILL.md`
-2. Symlinks `docs/src/content/docs/` → `skill/docs/`
-3. Symlinks `docs/src/content/docs-ja/` → `skill/docs-ja/` (Japanese content)
-4. Symlinks `docs/architecture/` → `skill/architecture/` (ADR files)
-5. Symlinks the skill directory into `~/.claude/skills/zfb-wisdom` so it is
-   available globally in all Claude Code sessions
+Browse the `docs/` directory to discover available articles. Each `.mdx` file
+has YAML frontmatter with `title` and `description` fields that help identify
+the right article to read.
 
-The script is **idempotent** — safe to re-run after pulling new commits.
+## Japanese Documentation
 
-## Invocation
-
-```
-/zfb-wisdom <topic>
-```
-
-Examples:
-
-```
-/zfb-wisdom routing
-/zfb-wisdom build-pipeline
-/zfb-wisdom content-collections
-/zfb-wisdom adr-003
-/zfb-wisdom -u new-feature-name
-```
-
-Pass `-u` or `--update` as the first token to enter update mode, which
-writes or edits a documentation article instead of just reading one.
-
-## What gets indexed
-
-| Symlink in skill dir | Points to |
-|---|---|
-| `docs/` | `docs/src/content/docs/` |
-| `docs-ja/` | `docs/src/content/docs-ja/` |
-| `architecture/` | `docs/architecture/` |
-
-The skill reads live files through symlinks — no copy step, always
-up-to-date with the working tree.
+Japanese translations are available under `docs-ja/`. When the user is working
+in Japanese or asks for Japanese content, prefer articles from `docs-ja/`.
