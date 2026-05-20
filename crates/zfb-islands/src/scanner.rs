@@ -1444,6 +1444,20 @@ struct ClientRouterFacts {
 /// helper like `navigate`/`prefetch` — opts the project into the runtime,
 /// so detection on the subpath is deliberately not narrowed to
 /// `ClientRouter`.
+///
+/// Accepted over-approximation: if a runtime-barrel proxy *also* declares
+/// its own export named `ClientRouter` (a local `export const/function`
+/// or a named re-export from a non-runtime module), an explicit export
+/// shadows the `export *` re-export under ES module semantics — so a
+/// `ClientRouter` pull from that barrel would not bind the runtime's
+/// `ClientRouter`. This detection does not track that shadowing and would
+/// still treat the pull as a trigger. The miss is benign: the only cost
+/// is shipping a few unused KB of runtime to a project that named its own
+/// component `ClientRouter` inside a barrel re-exporting the zfb runtime —
+/// an extraordinarily unlikely shape — never a broken build. Contrast the
+/// issue #307 false *negative* this function fixes, which left a genuinely
+/// used runtime un-bundled. Same trade-off the unused-import note on
+/// [`ScanMeta::uses_client_router`] already accepts.
 fn collect_client_router_facts(
     module: &Module,
     mut resolve: impl FnMut(&str) -> Option<PathBuf>,
@@ -1554,6 +1568,13 @@ fn collect_client_router_facts(
                 }
             }
             _ => {}
+        }
+        // A direct hit is conclusive for this module — and the project
+        // verdict short-circuits on any direct hit — so the remaining
+        // declarations (and their resolver calls) cannot change the
+        // outcome. Stop scanning, matching the pre-#307 early return.
+        if facts.direct_hit {
+            break;
         }
     }
     facts
@@ -2716,6 +2737,33 @@ mod tests {
             meta.uses_client_router,
             "cyclic `export *` barrels must terminate and still detect \
              ClientRouter usage"
+        );
+    }
+
+    #[test]
+    fn client_router_not_detected_for_local_module_with_own_client_router() {
+        // A local module that declares its OWN `ClientRouter` and never
+        // reaches the runtime barrel is not a proxy — importing that
+        // unrelated `ClientRouter` must not ship the runtime.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ClientRouter } from "../lib/widgets";
+                export default function Home() { return <ClientRouter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("lib/widgets.ts"),
+                r#"export function ClientRouter() { return null; }
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            !meta.uses_client_router,
+            "importing a same-named `ClientRouter` from a module unrelated \
+             to the runtime barrel must not trigger detection"
         );
     }
 
