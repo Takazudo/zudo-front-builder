@@ -30,7 +30,7 @@
 //   build-time renderer.
 // - `ReadableStream` beyond what `Response.arrayBuffer()` needs.
 //
-// If `examples/basic-blog`'s real bundle surfaces a missing API,
+// If a real zfb project bundle surfaces a missing API,
 // fix it here, not at the call site.
 
 (function installWebPolyfills(globalThis) {

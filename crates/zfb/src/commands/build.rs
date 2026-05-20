@@ -3482,8 +3482,8 @@ mod tests {
         );
     }
 
-    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on
-    /// `examples/basic-blog` and asserts the post pages, paginated
+    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on a
+    /// basic-blog project and asserts the post pages, paginated
     /// indexes, and tag pages exist with non-empty `<main>`. Heavy:
     /// shells out to cargo + esbuild + embedded V8. Gated behind
     /// `--ignored` so day-to-day `cargo test` stays fast.
@@ -3493,6 +3493,8 @@ mod tests {
     /// "T7-sibling worker-wrapping sub-task" referenced in the
     /// build-command module docs. The test stays here so once that
     /// sibling lands, flipping the gate is a one-line change.
+    /// The standalone demo (https://github.com/Takazudo/zfb-example-blog)
+    /// is the intended target once a local checkout is wired in.
     #[test]
     #[ignore = "spawns esbuild + embedded V8; run with --include-ignored once worker wrapping lands"]
     fn end_to_end_basic_blog_build() {

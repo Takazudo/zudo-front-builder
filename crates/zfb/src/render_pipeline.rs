@@ -1856,7 +1856,7 @@ mod tests {
         // This test intentionally left as a skeleton to be filled in by the
         // integration manager after Sub 2 is merged. The shape is:
         //
-        //   1. Build the examples/basic-blog bundle (or a fixture).
+        //   1. Build a basic-blog bundle (e.g. from the standalone demo) or a fixture.
         //   2. Construct EmbeddedV8RenderHost::new(&bundle_path).
         //   3. Build a DeferredDynamicRoute for `/blog/:slug` (non-literal
         //      paths() that reads the blog content collection).
