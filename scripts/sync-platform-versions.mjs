@@ -104,11 +104,17 @@ function main() {
     for (const key of Object.keys(optionalDeps)) {
       if (!key.startsWith(OPTIONAL_DEP_PREFIX)) continue;
       const previousValue = optionalDeps[key];
-      optionalDeps[key] = srcVersion;
+      // Preserve "workspace:" prefix if present — pnpm 10 needs it for the
+      // workspace link to resolve during dev. pnpm publish rewrites it to the
+      // bare version at publish time.
+      const next = String(previousValue).startsWith("workspace:")
+        ? `workspace:${srcVersion}`
+        : srcVersion;
+      optionalDeps[key] = next;
       if (optionalDeps[key] !== previousValue) {
-        process.stdout.write(`    ${key}: ${previousValue} -> ${srcVersion}\n`);
+        process.stdout.write(`    ${key}: ${previousValue} -> ${next}\n`);
       } else {
-        process.stdout.write(`    ${key}: already ${srcVersion} (no change)\n`);
+        process.stdout.write(`    ${key}: already ${next} (no change)\n`);
       }
     }
   }
