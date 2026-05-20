@@ -1,6 +1,6 @@
 //! `node:*` stub tests for `EmbeddedV8RenderHost` (sub-issue #162).
 //!
-//! ADR-007: user bundles produced by arbitrary developer code may
+//! User bundles produced by arbitrary developer code may
 //! include top-level `import "node:fs"` (or `node:path`, etc.) for
 //! branches that only fire under Workers / production SSR. The host
 //! must:

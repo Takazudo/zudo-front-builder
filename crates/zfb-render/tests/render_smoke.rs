@@ -2,8 +2,8 @@
 //!
 //! These exercise the SWC pipeline end-to-end and prove the `Renderer`
 //! orchestration plumbs everything correctly. We swap in a `TestHost` for
-//! the JS runtime side because the production host (per ADR-007, the
-//! embedded V8 host wired in by the build orchestrator in T6)
+//! the JS runtime side because the production host (the
+//! embedded V8 host wired in by the build orchestrator)
 //! is not in-process and would needlessly slow these unit-shape tests.
 //!
 //! The test host inspects the compiled JS that SWC produced, confirms the
@@ -16,8 +16,8 @@ use serde_json::Value as JsonValue;
 use zfb_render::{JsxRuntime, ModuleHandle, RenderHost, RenderRequest, Renderer, Result};
 
 /// In-process host that asserts the SWC output looks transformed and then
-/// returns a fixed render-to-string result. Plays the role Sub 4's adapter
-/// + Sub 1's runtime will play once both land.
+/// returns a fixed render-to-string result. Plays the role the real
+/// framework adapter + runtime will play.
 struct TestHost {
     last_module: Option<(ModuleHandle, String)>,
 }

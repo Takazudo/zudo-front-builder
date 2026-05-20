@@ -1,7 +1,7 @@
 //! In-process V8 host for the SSG renderer.
 //!
-//! ADR-007 (sub-issue #161) introduces an in-process JS runtime to
-//! replace the external Node.js subprocess from the build-time render
+//! This host is an in-process JS runtime that replaces the external
+//! Node.js subprocess from the build-time render
 //! path. The host loads a workerd-shape bundle (`export default { fetch }`)
 //! produced by `zfb-build`'s bundler, drives its `fetch` export per
 //! request, and surfaces V8 stack traces in a shape that
@@ -61,9 +61,9 @@
 //! `Error("node:* is not available under the SSG runtime")` so user
 //! code that imports a Node namespace for a code path that only fires
 //! under Workers / production SSR continues to *load*; only actual
-//! invocation fails. ADR-007 documents the rationale (allows
+//! invocation fails. This allows
 //! Workers-targeted user code to opt into SSG mode without bundler-
-//! time conditional compilation).
+//! time conditional compilation.
 //!
 //! ## Panic safety
 //!
@@ -159,7 +159,7 @@ impl EmbeddedV8RenderHost {
     ///
     /// First-call cost is dominated by V8's snapshot warmup. The host
     /// is intended to be created **once per build** and reused across
-    /// all routes. See ADR-007 for the lifecycle contract.
+    /// all routes.
     pub fn new() -> Result<Self> {
         Self::with_loader(BundleModuleLoader::new())
     }
