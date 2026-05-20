@@ -1,7 +1,7 @@
 {
   "name": "@takazudo/zfb-runtime",
-  "version": "0.2.0-migration.0",
-  "private": true,
+  "version": "0.1.0-next.0",
+  "private": false,
   "type": "module",
   "description": "JavaScript runtime for zfb static sites — Hono-backed page router, content snapshots, and client-side hydration.",
   "keywords": [
@@ -44,23 +44,37 @@
     }
   },
   "files": [
-    "src",
-    "!src/__tests__",
-    "!src/**/__tests__",
-    "!src/**/*.test.ts",
-    "!src/**/*.test.tsx",
+    "dist",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./snapshot": {
+        "types": "./dist/snapshot.d.ts",
+        "default": "./dist/snapshot.js"
+      },
+      "./client-router": {
+        "types": "./dist/client-router/index.d.ts",
+        "default": "./dist/client-router/index.js"
+      }
+    }
   },
   "engines": {
     "node": ">=22.0.0",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "pnpm build && pnpm test",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
