@@ -11,9 +11,9 @@
 //! 2. Any dependency value matching `workspace:*` is rewritten to
 //!    [`WORKSPACE_DEP_PLACEHOLDER`]. The template ships its workspace deps
 //!    using pnpm's `workspace:*` protocol so the rewrite has something to
-//!    bite on; the published-version placeholder is intentionally a TODO
-//!    until E2 sub-task 11 (npm publish + SDK rename) lands and we can
-//!    point at a real version on the registry.
+//!    bite on; the placeholder is now a real published-version caret range
+//!    (`^0.1.0-next.0`) that resolves to whatever's currently on the
+//!    `@takazudo/zfb` npm tag the user installs from.
 //!
 //! After patching we attempt to run `pnpm install`; if pnpm is missing we
 //! print a friendly notice and continue successfully so the user can run
@@ -43,14 +43,11 @@ static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 /// Replacement value applied to any `workspace:*` dependency found in a
 /// scaffolded `package.json`.
 ///
-/// TODO(E2-sub11): once `@takazudo/zfb` (and any sibling SDK packages) are
-/// published to npm — see super-epic [zudolab/zudo-doc#473][1] — replace this
-/// constant with the real published semver range (e.g. `^0.1.0`). The
-/// rewrite logic itself is intentionally already wired so this is a one-line
-/// change at publish time.
-///
-/// [1]: https://github.com/zudolab/zudo-doc/issues/473
-const WORKSPACE_DEP_PLACEHOLDER: &str = "^0.0.0-migration.0";
+/// Caret range tracks the `@takazudo/zfb` v0.1.x line — npm/pnpm semver
+/// resolves this to whatever prerelease or stable version is on the user's
+/// chosen dist-tag (`next` or `latest`). Bump the lower-bound when the
+/// major moves (e.g. to `^0.2.0-next.0` for 0.2.x, or `^1.0.0` for 1.x).
+const WORKSPACE_DEP_PLACEHOLDER: &str = "^0.1.0-next.0";
 
 /// Dependency-section keys we walk inside `package.json` when rewriting
 /// `workspace:*` ranges. Kept as a constant so the rewriter and its tests
