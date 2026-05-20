@@ -1,7 +1,7 @@
 {
   "name": "@takazudo/zfb-adapter-cloudflare",
-  "version": "0.1.0-migration.0",
-  "private": true,
+  "version": "0.1.0-next.0",
+  "private": false,
   "type": "module",
   "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. Cloudflare Pages adapter.",
   "keywords": [
@@ -41,23 +41,35 @@
     "zfb-adapter-cloudflare": "./bin/cli.mjs"
   },
   "files": [
-    "src",
+    "dist",
     "bin",
-    "!src/__tests__",
-    "!src/**/*.test.ts",
-    "!src/**/*.test.tsx",
+    "src/worker-wrapper.mjs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./build": {
+        "types": "./dist/build.d.ts",
+        "default": "./dist/build.js"
+      }
+    }
   },
   "engines": {
     "node": ">=22.0.0",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "build": "tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs",
+    "prepublishOnly": "pnpm build && pnpm test",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
