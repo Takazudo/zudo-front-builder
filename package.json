@@ -16,6 +16,7 @@
     "init-worktree": "bash scripts/install-git-hooks.sh",
     "//// === BINARIES ===": "",
     "fetch:tailwind": "node scripts/fetch-tailwind.mjs",
+    "sync:platform-versions": "node scripts/sync-platform-versions.mjs",
     "//// === DOCS ===": "",
     "docs:install": "pnpm --filter docs install",
     "docs:dev": "pnpm --filter docs dev",
