@@ -9,6 +9,15 @@ zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. T
 
 This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](/api/define-config).
 
+## When you actually need a plugin
+
+Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-dont--write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](/concepts/design-philosophy).
+
+- **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
+- **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
+- **Dev-only injected route that lives outside `pages/`.** `injectRoute` registers a TSX/TS file under a URL pattern the dev server recognises — a synthetic page that has no counterpart in the on-disk `pages/` tree, gated on `command === "dev"` so it never escapes into a production build.
+- **Dev middleware HTTP handler.** `devMiddleware` is for responses that aren't pages at all: a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
+
 ## The four hooks
 
 ```ts
@@ -179,6 +188,12 @@ export default defineConfig({
 
 The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
 
+<Note title="SSR route over-inclusion gap">
+
+The filter `r.extension === "html"` above will over-include server-rendered (SSR) routes — routes where `prerender` is `false` — once SSR ships. Today `ctx.routes[].prerender` does not exist on `ZfbRouteEntry`. When it does, the correct filter will be `r.extension === "html" && r.prerender !== false`. Do not use that expression yet; the field is not there. Tracked in [zudo-front-builder#347](https://github.com/Takazudo/zudo-front-builder/issues/347).
+
+</Note>
+
 ## `devMiddleware(ctx)`
 
 Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, handler)`; handlers return `{ status, headers, body }` (or `undefined` to fall through to zfb's built-in dev routes).
@@ -247,6 +262,17 @@ When two plugins clash on a registration, zfb aborts the build/dev with one of t
 - `InjectRouteConflict` — same URL pattern, different plugins.
 
 `InjectRouteInBuildMode` is raised when any plugin calls `injectRoute` during `zfb build` (regardless of who registered first).
+
+## When you don't — write a recipe
+
+Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no dev middleware), a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](/concepts/design-philosophy) and [Engine vs Framework](/concepts/engine-vs-framework) pages explain the broader principle.
+
+Common candidates that do not need a plugin:
+
+- **Sitemap generation.** `postBuild` gives you `ctx.routes` — but you can read the same `dist/` tree from a standalone script. No module graph access needed; wire it into `pnpm build`.
+- **OGP image emission.** Rendering open-graph images from page metadata is a pure data-in / image-out transform. A standalone script that reads built HTML or a JSON manifest and calls a canvas/puppeteer/satori pipeline needs no plugin hook; wire it into `pnpm build`.
+- **Search-index builds.** Tools like Pagefind or Lunr crawl the finished `dist/` tree. They need no access to zfb internals — just a path to the output directory; wire it into `pnpm build`.
+- **Build-end manifests.** If you need a custom JSON manifest (asset list, version map, route catalog) derived from the emitted files, a script that reads `dist/` after the build is self-contained; wire it into `pnpm build`.
 
 ## See also
 
