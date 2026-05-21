@@ -31,7 +31,11 @@ path = "src/lib.rs"
 # TOP of this feature; that work is out of scope here.
 [features]
 default = ["embed_v8"]
-embed_v8 = ["zfb-render/embed_v8", "zfb-build/embed_v8"]
+embed_v8 = [
+    "zfb-render/embed_v8",
+    "zfb-build/embed_v8",
+    "zfb-server/embed_v8",
+]
 
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }

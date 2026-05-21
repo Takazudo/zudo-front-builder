@@ -7,8 +7,23 @@ description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
 
 [lib]
 
+# Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
+#
+# `zfb-server` is a leaf consumer of `zfb-build` — it doesn't touch any
+# V8-bearing surface itself (no `EmbeddedV8Host`, no `Backend::EmbeddedV8`),
+# but cargo's workspace-wide feature unification means that if this
+# crate enables `zfb-build`'s default features, the `embed_v8` cascade
+# turns on for every other consumer too — defeating the V8-off path
+# at the workspace level.
+#
+# Default features off here; the top-level `zfb` crate is the single
+# place that decides V8 inclusion via its own `embed_v8` feature.
+[features]
+default = []
+embed_v8 = ["zfb-build/embed_v8"]
+
 [dependencies]
-zfb-build = { path = "../zfb-build" }
+zfb-build = { path = "../zfb-build", default-features = false }
 zfb-islands = { path = "../zfb-islands" }
 # Issue #229: shared `base` → mount-prefix normalisation lives in
 # zfb-types (the lowest-dep leaf) so the build-time link rewriter
