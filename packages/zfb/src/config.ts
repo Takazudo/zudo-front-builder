@@ -257,6 +257,25 @@ export type ZfbConfig = {
    * Mirrors `Config::markdown` in crates/zfb/src/config.rs.
    */
   markdown?: MarkdownConfig;
+
+  /**
+   * Whether `zfb build` writes the post-build route manifest to disk
+   * at `<outDir>/__zfb/routes.json` (#347).
+   *
+   * The on-disk file mirrors the in-memory `ctx.routes` shape that the
+   * plugin API hands to `postBuild` hooks — same fields, same
+   * url-sorted order — so any consumer script wired into `pnpm build`
+   * can read the manifest without writing a zfb plugin. The plugin
+   * `ctx.routes` and the on-disk `routes.json` are two access shapes
+   * over the same data, not two contracts.
+   *
+   * Default: emit (`undefined` is treated as `true`). Set `false` to
+   * skip the write — useful for projects that strip everything but
+   * shipped assets out of `dist/` before deploy.
+   *
+   * Mirrors `Config::emit_routes_manifest` in crates/zfb/src/config.rs.
+   */
+  emitRoutesManifest?: boolean;
 };
 
 /**
