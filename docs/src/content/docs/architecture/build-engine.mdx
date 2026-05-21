@@ -54,6 +54,33 @@ zfb owns orchestration, the dependency graph, and the per-page contract. The too
 
 This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/concepts/incremental-rebuild) for how the dependency graph feeds the per-page policy.
 
+## V8-mode gate: `output` and auto-detection
+
+`zfb-render` exposes the embedded V8 host behind a default-on `embed_v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.
+
+The decision is driven by two inputs:
+
+- `Config.output` in `zfb.config.ts` (`"static"` / `"hybrid"` / `"auto"`, default `"auto"`).
+- The detected set of routes that export `prerender = false`. The same data the no-SSR-without-adapter precondition already uses — one walk over `prerender_map`, one decision point.
+
+| `output`   | SSR routes present | result        |
+| ---------- | ------------------ | ------------- |
+| `"static"` | no                 | `V8Mode::Off` |
+| `"static"` | yes                | **error**     |
+| `"hybrid"` | any                | `V8Mode::On`  |
+| `"auto"`   | no                 | `V8Mode::Off` |
+| `"auto"`   | yes                | `V8Mode::On`  |
+
+The error fires before the bundler runs, names both the `output` setting and the first offending route, and counts the rest if there are more. So a project that declares itself static can't accidentally pick up an SSR route as a result of a copy-paste — the build refuses the contradiction instead of silently flipping the route's deploy shape.
+
+The two manual overrides (`"static"`, `"hybrid"`) and the default (`"auto"`) cover three distinct intents:
+
+- `"auto"` — let the route table decide. Best default for projects that already match.
+- `"static"` — declare intent up front. Useful on SSG-only sites where the failure mode of "someone adds `prerender = false` to a page" should be loud, not silent.
+- `"hybrid"` — declare intent the other way. Useful for projects that will add SSR routes later and want the build topology stable in the meantime.
+
+What `V8Mode::Off` does today is the part to be honest about: it is observational on the shipping `zfb` binary. The build machine's `zfb` always boots V8 to render SSG pages — that's how the pipeline works — and `embed_v8 = off` is already a hard error at `zfb build`. The mode is wired so the future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can read the same decision without re-deriving it. The load-bearing user-visible role today is the `"static"` precondition error.
+
 ## Atomic writes
 
 Every file in `dist/` is written through `atomic_write_string` (in `zfb-build`'s `atomic.rs`): write to a sibling temp file in the same directory, then `rename` over the destination. `rename` is atomic on POSIX for same-disk files, and Windows has the same guarantee through `MoveFileExW`'s replace-existing semantics.

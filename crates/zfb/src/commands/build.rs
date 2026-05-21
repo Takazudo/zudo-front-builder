@@ -74,7 +74,7 @@ use zfb_render::paths::PathsCache;
 
 use crate::cli::BuildArgs;
 use crate::commands::resolve::resolve_outdir;
-use crate::config::Config;
+use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
@@ -301,6 +301,101 @@ pub async fn run(_args: &BuildArgs) -> Result<()> {
          to render SSG pages. Rebuild with default features \
          (`cargo build`) or with `--features embed_v8` to enable this command."
     )
+}
+
+// ---------------------------------------------------------------------------
+// V8 mode resolution (sub-task 4.1b / issue #373)
+// ---------------------------------------------------------------------------
+
+/// Resolved V8-mode decision for the current build.
+///
+/// Derived from [`Config::output`] and the set of `prerender = false`
+/// routes by [`resolve_v8_mode`]. See [`OutputMode`] for the field-level
+/// docs.
+///
+/// **Today's load-bearing role** is the precondition error returned by
+/// [`resolve_v8_mode`] when `output: "static"` collides with detected SSR
+/// routes. The value itself is computed and surfaced (so tests can pin
+/// the decision tree) but the SSG render path still boots the embedded
+/// V8 host unconditionally on the V8-on `zfb` binary — there is no
+/// V8-less SSG renderer in this workspace today. `embed_v8 = off` is
+/// already a hard fail at `pub async fn run` because the V8-off binary
+/// can't render SSG pages.
+///
+/// The flag exists as infrastructure for the future shipping path
+/// (Tauri sidecar / standalone SSR server) where a V8-less Rust runtime
+/// is conceivable. See `research/344-v8-feature-gate.md` for the
+/// rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V8Mode {
+    /// V8-on: build assumes a V8-bearing runtime is part of the deploy
+    /// shape (today: SSR routes through the adapter; future: any
+    /// V8-bearing standalone runtime).
+    On,
+    /// V8-off: build proceeds as if no V8 runtime ships with the
+    /// deploy artifact. Today this is observational; the binary still
+    /// needs V8 for SSG rendering on the build machine.
+    Off,
+}
+
+/// Resolve the V8-mode decision from the user's `output` choice and the
+/// detected SSR-route set.
+///
+/// Decision tree (mirrors the table on [`OutputMode`]):
+///
+/// | `output`   | `ssr_routes` non-empty | result        |
+/// | ---------- | ---------------------- | ------------- |
+/// | `"static"` | no                     | `V8Mode::Off` |
+/// | `"static"` | yes                    | **error**     |
+/// | `"hybrid"` | any                    | `V8Mode::On`  |
+/// | `"auto"`   | no                     | `V8Mode::Off` |
+/// | `"auto"`   | yes                    | `V8Mode::On`  |
+///
+/// The error path is the load-bearing user-visible behaviour today —
+/// it fires before the bundle step so a contradicting config doesn't
+/// silently flip a route's deploy shape. The other branches resolve to
+/// a `V8Mode` value that future shipping paths will read; SSG rendering
+/// on the build machine continues to use V8 unconditionally on a V8-on
+/// binary.
+pub(crate) fn resolve_v8_mode(
+    output: OutputMode,
+    ssr_routes: &[SsrRouteRef<'_>],
+) -> Result<V8Mode> {
+    match output {
+        OutputMode::Static => {
+            if ssr_routes.is_empty() {
+                Ok(V8Mode::Off)
+            } else {
+                let first = ssr_routes
+                    .first()
+                    .expect("checked non-empty above");
+                let extra = if ssr_routes.len() > 1 {
+                    format!(" (and {} more)", ssr_routes.len() - 1)
+                } else {
+                    String::new()
+                };
+                Err(anyhow!(
+                    "config sets `output: \"static\"` but route {route} \
+                     exports `prerender = false`{extra}, which requires \
+                     a V8-bearing runtime. Either remove `output: \"static\"` \
+                     from zfb.config.ts (defaults to detection-driven `auto`) \
+                     or change the route to `prerender = true`. \
+                     See https://github.com/Takazudo/zudo-front-builder/blob/main/docs/src/content/docs/architecture/build-engine.mdx \
+                     for the gate decision table.",
+                    route = first.route_key,
+                    extra = extra,
+                ))
+            }
+        }
+        OutputMode::Hybrid => Ok(V8Mode::On),
+        OutputMode::Auto => {
+            if ssr_routes.is_empty() {
+                Ok(V8Mode::Off)
+            } else {
+                Ok(V8Mode::On)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1225,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // shaped wrapper. If the user has SSR routes but no adapter
     // configured, fail fast HERE (before the expensive bundle +
     // renderer boot) with a pointer at the offending route.
+    //
+    // We have to look in TWO places:
+    //
+    // 1. `static_routes` — the resolved static + statically-expanded
+    //    dynamic routes whose `paths()` returned a literal array.
+    // 2. `still_deferred` — dynamic routes whose `paths()` couldn't
+    //    be statically extracted (they need V8 runtime evaluation).
+    //    A page with `prerender = false` AND a non-literal `paths()`
+    //    sits here, and the prerender_map join still finds it because
+    //    both sides key by the route template.
+    //
+    // Missing the deferred set would let `output: "static"` /
+    // `adapter = "none"` proceed on a project that obviously needs
+    // SSR — exactly the contradiction these checks exist to catch.
     let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
         .iter()
         .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
@@ -1137,8 +1246,38 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             route_key: entry.route_key.as_str(),
             url_path: entry.url_path.as_str(),
         })
+        .chain(still_deferred.iter().filter_map(|entry| {
+            if prerender_map.get(&entry.template).copied().unwrap_or(true) {
+                None
+            } else {
+                Some(SsrRouteRef {
+                    route_key: entry.template.as_str(),
+                    // Deferred routes have no concrete URL yet — the template
+                    // IS the most specific identifier we can offer to a user
+                    // reading the error message.
+                    url_path: entry.template.as_str(),
+                })
+            }
+        }))
         .collect();
     ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
+
+    // Resolve the V8-mode decision from `config.output` + the detected
+    // SSR-route set (sub-task 4.1b / issue #373). The load-bearing
+    // behaviour today is the precondition error returned when
+    // `output: "static"` collides with detected SSR routes — this
+    // fires BEFORE the expensive bundle + V8 host boot so the user
+    // sees a clear, actionable error pointing at both the config
+    // setting and the offending route.
+    //
+    // The resolved `_v8_mode` value is otherwise observational on the
+    // shipping binary: the SSG render path always boots V8 (it's the
+    // only renderer in this workspace), and `embed_v8 = off` is
+    // already a hard `bail!` at `pub async fn run`. The mode is
+    // computed here so future shipping paths (Tauri sidecar /
+    // standalone SSR server) and the unit tests can read the same
+    // decision; see `resolve_v8_mode` for the full decision tree.
+    let _v8_mode = resolve_v8_mode(config.output, &ssr_route_refs)?;
 
     // Capture the SSR route key set for the deploy-adapter's runtime-only
     // bundle pass (zfb#283). The set is computed from the same source as
@@ -3904,5 +4043,226 @@ mod tests {
         assert_eq!(by_url["/"]["prerender"], serde_json::json!(true));
         assert_eq!(by_url["/api/me"]["prerender"], serde_json::json!(false));
         assert_eq!(by_url["/blog/hello/"]["prerender"], serde_json::json!(true));
+    }
+
+    // --- resolve_v8_mode (sub-task 4.1b / issue #373) ----------------------
+    //
+    // The decision tree is the load-bearing surface for the V8-mode gate.
+    // Tests target the pure function so the four scenarios from the
+    // sub-issue's acceptance criteria are exercised without spawning a
+    // bundler or V8 host.
+
+    fn ssr_route(key: &'static str, url: &'static str) -> SsrRouteRef<'static> {
+        SsrRouteRef {
+            route_key: key,
+            url_path: url,
+        }
+    }
+
+    /// AC: default `output: "auto"` on a pure-SSG project resolves to
+    /// V8-off (no SSR routes → no V8 needed in the future-runtime sense).
+    #[test]
+    fn resolve_v8_mode_auto_on_pure_ssg_is_off() {
+        let mode = resolve_v8_mode(OutputMode::Auto, &[])
+            .expect("auto + no SSR routes resolves");
+        assert_eq!(mode, V8Mode::Off);
+    }
+
+    /// AC: default `output: "auto"` with `prerender = false` routes
+    /// resolves to V8-on — detection-driven.
+    #[test]
+    fn resolve_v8_mode_auto_with_ssr_routes_is_on() {
+        let routes = [ssr_route("/api/me", "/api/me")];
+        let mode = resolve_v8_mode(OutputMode::Auto, &routes)
+            .expect("auto + SSR route resolves");
+        assert_eq!(mode, V8Mode::On);
+    }
+
+    /// AC: explicit `output: "hybrid"` on a pure-SSG project forces
+    /// V8-on regardless of detection.
+    #[test]
+    fn resolve_v8_mode_hybrid_on_pure_ssg_forces_on() {
+        let mode = resolve_v8_mode(OutputMode::Hybrid, &[])
+            .expect("hybrid + no SSR routes resolves");
+        assert_eq!(mode, V8Mode::On);
+        // Mirror with a project that already has SSR routes — same
+        // result, just confirming hybrid is "always on" not "on when
+        // SSR routes happen to be present".
+        let routes = [ssr_route("/api/me", "/api/me")];
+        let mode = resolve_v8_mode(OutputMode::Hybrid, &routes)
+            .expect("hybrid + SSR route resolves");
+        assert_eq!(mode, V8Mode::On);
+    }
+
+    /// Explicit `output: "static"` on a pure-SSG project resolves
+    /// cleanly to V8-off. Mirror of the auto+SSG path; the difference
+    /// from auto is that the user has declared intent.
+    #[test]
+    fn resolve_v8_mode_static_on_pure_ssg_is_off() {
+        let mode = resolve_v8_mode(OutputMode::Static, &[])
+            .expect("static + no SSR routes resolves");
+        assert_eq!(mode, V8Mode::Off);
+    }
+
+    /// AC: explicit `output: "static"` on a project with `prerender =
+    /// false` routes errors with a clear message naming both the
+    /// config setting and the offending route.
+    #[test]
+    fn resolve_v8_mode_static_with_ssr_routes_errors() {
+        let routes = [ssr_route("/api/me", "/api/me")];
+        let err = resolve_v8_mode(OutputMode::Static, &routes)
+            .expect_err("static + SSR route must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("output: \"static\""),
+            "error must name the config setting; got: {msg}"
+        );
+        assert!(
+            msg.contains("/api/me"),
+            "error must name the offending route; got: {msg}"
+        );
+        assert!(
+            msg.contains("prerender = false"),
+            "error must name the route-side knob; got: {msg}"
+        );
+    }
+
+    /// The error message should mention the "and N more" suffix when
+    /// multiple SSR routes are present — mirrors the
+    /// `ensure_no_ssr_without_adapter` shape so the user knows fixing
+    /// just one route won't be enough.
+    #[test]
+    fn resolve_v8_mode_static_error_counts_extra_routes() {
+        let routes = [
+            ssr_route("/api/me", "/api/me"),
+            ssr_route("/api/sessions", "/api/sessions"),
+            ssr_route("/api/health", "/api/health"),
+        ];
+        let err = resolve_v8_mode(OutputMode::Static, &routes)
+            .expect_err("static + multiple SSR routes must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("(and 2 more)"),
+            "multi-route message should count the extras; got: {msg}"
+        );
+    }
+
+    /// Codex review (4.1b PR) flagged a missing case: a dynamic route
+    /// with `prerender = false` AND a non-literal `paths()` lives in
+    /// `still_deferred`, not `static_routes`. The detection seam must
+    /// include both surfaces or `output: "static"` + `adapter: "none"`
+    /// would slip through for projects using runtime-expanded SSR
+    /// dynamic pages.
+    ///
+    /// This test exercises the run_build path with a synthetic dynamic
+    /// SSR route whose source file does not exist on disk — the static
+    /// `paths()` extractor fails and the route ends up deferred. The
+    /// build must still refuse adapter: none.
+    #[test]
+    fn run_build_with_adapter_none_rejects_deferred_dynamic_ssr_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        // Page source exports `prerender = false` AND a `paths()` that
+        // cannot be statically extracted — call into a non-literal value
+        // (a function-returned array). The static extractor gives up,
+        // build_route_universe + expand_dynamic_routes place this route in
+        // `still_deferred`, and the precondition check must STILL fire.
+        std::fs::write(
+            project_root.join("pages/api/[slug].tsx"),
+            "export const frontmatter = { title: \"Slug\" };\n\
+             export const prerender = false;\n\
+             export function paths() { return makePaths(); }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![zfb_router::Route {
+            source_path: PathBuf::from("pages/api/[slug].tsx"),
+            segments: vec![
+                zfb_router::Segment::Static("api".into()),
+                zfb_router::Segment::Dynamic("slug".into()),
+            ],
+            kind: zfb_router::RouteKind::Dynamic,
+            specificity: 0,
+            output_extension: None,
+        }];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default(); // adapter is None
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        // The error must reach the user via the same path the static-route
+        // case takes — `ensure_no_ssr_without_adapter` first, then resolve_v8_mode
+        // if an adapter is configured. With adapter:none, the adapter check fires
+        // and names the route template.
+        assert!(msg.contains("/api/:slug"), "{msg}");
+        assert!(msg.contains("SSR"), "{msg}");
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
+    }
+
+    /// Mirrors the test above but uses `output: "static"` + adapter set.
+    /// With an adapter configured the no-adapter check passes; the
+    /// `output: "static"` gate must catch the deferred-dynamic SSR
+    /// route through `resolve_v8_mode`.
+    #[test]
+    fn run_build_with_output_static_rejects_deferred_dynamic_ssr_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/[slug].tsx"),
+            "export const frontmatter = { title: \"Slug\" };\n\
+             export const prerender = false;\n\
+             export function paths() { return makePaths(); }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+        let routes = vec![zfb_router::Route {
+            source_path: PathBuf::from("pages/api/[slug].tsx"),
+            segments: vec![
+                zfb_router::Segment::Static("api".into()),
+                zfb_router::Segment::Dynamic("slug".into()),
+            ],
+            kind: zfb_router::RouteKind::Dynamic,
+            specificity: 0,
+            output_extension: None,
+        }];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        cfg.output = OutputMode::Static;
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("output: \"static\""), "{msg}");
+        assert!(msg.contains("/api/:slug"), "{msg}");
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
     }
 }
