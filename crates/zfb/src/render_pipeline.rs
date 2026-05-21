@@ -59,6 +59,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
+#[cfg(feature = "embed_v8")]
 use zfb_build::EmbeddedV8Host;
 use zfb_content::extract_tsx_frontmatter;
 use zfb_render::paths::{resolve_paths, PathsCache, PathsError, Segment as PathsSegment};
@@ -656,14 +657,43 @@ pub enum WorkerDispatch<'h> {
     Http {
         /// Base URL of the running worker (e.g. `http://127.0.0.1:54321/`).
         base_url: String,
+        /// PhantomData carrying the `'h` lifetime so the enum's
+        /// lifetime parameter stays in use even when the V8-only
+        /// `EmbeddedV8` variant is feature-gated off (issue #371,
+        /// sub-task 4.1a). Construct with `WorkerDispatch::http(...)`.
+        #[doc(hidden)]
+        _marker: std::marker::PhantomData<&'h ()>,
     },
     /// In-process V8 host (Sub 2 — `EmbeddedV8RenderHost`).
+    ///
+    /// Compiled in only when the `embed_v8` cargo feature is on
+    /// (issue #371, sub-task 4.1a). On the V8-off path the variant
+    /// disappears from the enum entirely so the `EmbeddedV8Host`
+    /// trait is not referenced.
+    #[cfg(feature = "embed_v8")]
     EmbeddedV8 {
         /// Mutable reference to the live host. The caller retains
         /// ownership; this function borrows it only for the duration of
         /// the call.
         host: &'h mut dyn EmbeddedV8Host,
     },
+}
+
+impl<'h> WorkerDispatch<'h> {
+    /// Construct a `WorkerDispatch::Http` value.
+    ///
+    /// Prefer this over a struct literal because the variant carries a
+    /// hidden `PhantomData<&'h ()>` field needed to keep the lifetime
+    /// parameter in use when the V8-only `EmbeddedV8` variant is
+    /// feature-gated out (issue #371, sub-task 4.1a). Using this
+    /// constructor lets callers stay source-compatible across the
+    /// feature toggle.
+    pub fn http(base_url: String) -> Self {
+        WorkerDispatch::Http {
+            base_url,
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Evaluate non-literal `paths()` exports by querying the running worker's
@@ -704,9 +734,10 @@ pub fn eval_deferred_paths_via_worker(
     }
 
     match dispatch {
-        WorkerDispatch::Http { base_url } => {
+        WorkerDispatch::Http { base_url, .. } => {
             eval_deferred_paths_http(deferred, base_url, cache, timeout)
         }
+        #[cfg(feature = "embed_v8")]
         WorkerDispatch::EmbeddedV8 { host } => eval_deferred_paths_embedded(deferred, *host, cache),
     }
 }
@@ -779,6 +810,7 @@ fn eval_deferred_paths_http(
 }
 
 /// Embedded V8 path: calls `host.dispatch_fetch` for each route.
+#[cfg(feature = "embed_v8")]
 fn eval_deferred_paths_embedded(
     deferred: &[DeferredDynamicRoute],
     host: &mut dyn EmbeddedV8Host,
@@ -849,6 +881,7 @@ fn eval_one_deferred_path_http(
 
 /// Query one route's `paths()` via the embedded V8 host and resolve it.
 /// Returns `(universe_entries, manifest_entries)`, or a one-line reason string on any failure.
+#[cfg(feature = "embed_v8")]
 fn eval_one_deferred_path_embedded(
     host: &mut dyn EmbeddedV8Host,
     route: &DeferredDynamicRoute,

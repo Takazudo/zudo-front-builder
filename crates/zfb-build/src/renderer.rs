@@ -218,6 +218,12 @@ pub enum Backend {
     /// `EmbeddedV8RenderHost::new(bundle_path)`. Wrapping in `Arc`
     /// keeps `Backend` cheaply clone-able even though the factory is
     /// a closure.
+    ///
+    /// Compiled in only when the `embed_v8` cargo feature is on
+    /// (issue #371, sub-task 4.1a). On the V8-off path the variant
+    /// is absent and callers that want SSR/SSG dispatch must use the
+    /// `Existing` or `Stub` backends instead.
+    #[cfg(feature = "embed_v8")]
     EmbeddedV8 { host_factory: EmbeddedV8HostFactory },
     /// In-process stub handler for unit tests.
     ///
@@ -239,6 +245,7 @@ impl std::fmt::Debug for Backend {
             Backend::Existing { base_url } => {
                 write!(f, "Backend::Existing {{ base_url: {base_url:?} }}")
             }
+            #[cfg(feature = "embed_v8")]
             Backend::EmbeddedV8 { .. } => write!(f, "Backend::EmbeddedV8 {{ .. }}"),
             Backend::Stub { .. } => write!(f, "Backend::Stub {{ .. }}"),
         }
@@ -282,6 +289,9 @@ enum BackendHandle {
     /// Dispatch calls `guard.host.as_mut().unwrap().dispatch_fetch(…)`.
     /// `terminate()` calls `guard.terminate()` which drops the host (and
     /// thus the V8 isolate) synchronously.
+    ///
+    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a).
+    #[cfg(feature = "embed_v8")]
     EmbeddedV8 {
         guard: EmbeddedV8Guard,
     },
@@ -319,6 +329,7 @@ impl BackendHandle {
                     .to_vec();
                 Ok(HttpResponseLike { status, content_type, body })
             }
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => {
                 let host = guard.host.as_mut().expect(
                     "EmbeddedV8 host has been terminated; dispatch called after shutdown"
@@ -334,6 +345,7 @@ impl BackendHandle {
     fn collect_logs(&self) -> String {
         match self {
             BackendHandle::Http { .. } => String::new(),
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.collect_logs(),
             BackendHandle::Stub { .. } => String::new(),
         }
@@ -342,6 +354,7 @@ impl BackendHandle {
     fn terminate(&mut self) {
         match self {
             BackendHandle::Http { .. } => {}
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.terminate(),
             BackendHandle::Stub { .. } => {}
         }
@@ -625,6 +638,7 @@ impl std::fmt::Debug for BackendHandle {
             BackendHandle::Http { base_url, .. } => {
                 write!(f, "BackendHandle::Http {{ base_url: {base_url:?} }}")
             }
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { .. } => write!(f, "BackendHandle::EmbeddedV8 {{ .. }}"),
             BackendHandle::Stub { .. } => write!(f, "BackendHandle::Stub {{ .. }}"),
         }
@@ -650,6 +664,11 @@ impl RendererState {
     /// Returns `None` when the backend is not `EmbeddedV8` (i.e. when
     /// it is `Http` or `Stub`), or when the host has already been
     /// terminated via [`shutdown`].
+    ///
+    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a). When the
+    /// feature is off the embedded V8 backend is unavailable and this
+    /// accessor does not exist.
+    #[cfg(feature = "embed_v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
             BackendHandle::EmbeddedV8 { guard } => {
@@ -869,10 +888,15 @@ fn join_url(base: &str, path: &str) -> String {
 ///
 /// `terminate()` is idempotent — calling it after the host has already
 /// been taken out is a no-op.
+///
+/// Gated behind `embed_v8` (issue #371, sub-task 4.1a) — when V8 is off
+/// there is no isolate to guard.
+#[cfg(feature = "embed_v8")]
 struct EmbeddedV8Guard {
     host: Option<Box<dyn EmbeddedV8Host>>,
 }
 
+#[cfg(feature = "embed_v8")]
 impl EmbeddedV8Guard {
     fn new(host: Box<dyn EmbeddedV8Host>) -> Self {
         Self { host: Some(host) }
@@ -900,6 +924,7 @@ impl EmbeddedV8Guard {
     }
 }
 
+#[cfg(feature = "embed_v8")]
 impl Drop for EmbeddedV8Guard {
     fn drop(&mut self) {
         self.terminate();
@@ -913,7 +938,7 @@ impl Drop for EmbeddedV8Guard {
 /// in-process V8 host. For `Stub` it simply wraps the closure.
 fn launch(
     backend: &Backend,
-    bundle_path: &Path,
+    #[cfg_attr(not(feature = "embed_v8"), allow(unused_variables))] bundle_path: &Path,
     timeout: Duration,
 ) -> Result<BackendHandle, RendererError> {
     match backend {
@@ -924,6 +949,7 @@ fn launch(
                 client,
             })
         }
+        #[cfg(feature = "embed_v8")]
         Backend::EmbeddedV8 { host_factory } => {
             // Resolve the bundle path to an absolute path before calling
             // the factory, so the factory impl never needs to handle

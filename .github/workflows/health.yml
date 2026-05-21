@@ -55,3 +55,38 @@ jobs:
 
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
+
+  # V8-off feature matrix (issue #371, sub-task 4.1a).
+  #
+  # Without this job the cfg(feature = "embed_v8") gates can rot
+  # silently — a missing gate on a new V8 reference would still pass
+  # the V8-on health job above, leaving the V8-off path broken until
+  # a downstream consumer notices.
+  #
+  # We build the `zfb` binary with --no-default-features here as the
+  # primary V8-off acceptance check. zfb-render --no-default-features
+  # is implied by the propagation chain (default-features = false on
+  # every consumer), so building zfb alone proves both ends.
+  build-no-v8:
+    name: build (no-v8)
+    runs-on: ubuntu-latest
+    # No V8 to compile, so this job is fast — but we keep a generous
+    # budget while the cache primes on the first run.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache key from the V8-on job — the target/ trees
+          # are not interchangeable (different feature set, different
+          # rmeta).
+          prefix-key: "v2-zfb-no-v8"
+
+      - name: cargo build (zfb, --no-default-features)
+        run: cargo build --release --no-default-features -p zfb
+
+      - name: cargo check (zfb --no-default-features --tests)
+        run: cargo check --no-default-features -p zfb --tests

@@ -13,6 +13,30 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+# Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
+#
+# The `embed_v8` cargo feature toggles inclusion of the embedded V8
+# isolate (via `deno_core`). Default is V8-on so existing workspace
+# builds (`cargo build`, `cargo build --release`) keep producing a
+# binary that can dispatch SSR pages in-process. Opt out at the top
+# level with `cargo build --no-default-features -p zfb` to produce a
+# meaningfully smaller binary that supports SSG-only projects.
+#
+# We pull `default-features = false` on every `zfb-render` and
+# `zfb-build` dependency in this crate so the toggle here is the only
+# place the V8 inclusion is decided — nothing in the graph
+# silently re-enables it.
+#
+# Detection / `output` config (sub-task 4.1b, issue #373) layers ON
+# TOP of this feature; that work is out of scope here.
+[features]
+default = ["embed_v8"]
+embed_v8 = [
+    "zfb-render/embed_v8",
+    "zfb-build/embed_v8",
+    "zfb-server/embed_v8",
+]
+
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
@@ -47,7 +71,10 @@ url = "2"
 # Tailwind's content scanner, and the islands scanner takes the same
 # shape as DFS entry points.
 walkdir = { workspace = true }
-zfb-build = { path = "../zfb-build" }
+# `default-features = false` for the V8 gate (issue #371, sub-task
+# 4.1a). The `embed_v8` feature defined above pass-throughs to both
+# crates so V8 inclusion is decided in exactly one place.
+zfb-build = { path = "../zfb-build", default-features = false }
 zfb-content = { path = "../zfb-content" }
 # Production asset emit path (S4): `DefaultRunner::emit_prod_assets`
 # constructs a `CssPipeline` + `EsbuildSubprocessBundler` and feeds
@@ -55,7 +82,9 @@ zfb-content = { path = "../zfb-content" }
 zfb-css = { path = "../zfb-css" }
 zfb-graph = { path = "../zfb-graph" }
 zfb-islands = { path = "../zfb-islands" }
-zfb-render = { path = "../zfb-render" }
+# See `default-features = false` note on `zfb-build` above — same
+# rationale (issue #371, sub-task 4.1a).
+zfb-render = { path = "../zfb-render", default-features = false }
 zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
 zfb-watcher = { path = "../zfb-watcher" }
