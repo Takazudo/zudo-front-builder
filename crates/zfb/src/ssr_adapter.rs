@@ -58,20 +58,18 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
     async fn dispatch(&self, request: SsrRequest) -> Result<SsrResponse, SsrDispatchError> {
         let state = Arc::clone(&self.state);
         let url_for_err = request.url_path.clone();
-        // `dispatch_fetch` is sync (it blocks on `mpsc::recv` waiting
-        // for the V8 thread's reply); hop to a blocking task so the
-        // axum worker thread stays unwedged.
+        // `dispatch_fetch_full` is sync (it blocks on `mpsc::recv`
+        // waiting for the V8 thread's reply); hop to a blocking task
+        // so the axum worker thread stays unwedged.
         //
-        // The embedded V8 host's `dispatch_fetch` signature today is
-        // `(url_path: &str) -> HttpResponseLike` — it does NOT take
-        // method/headers/body. The path-and-query carries the URL
-        // shape the bundle's fetch handler needs (the bundle wraps
-        // the path in `http://localhost<path>` before constructing
-        // a `Request`). Threading the method/headers/body through
-        // requires extending the trait; we leave that for the
-        // follow-up that wires non-GET prerender=false routes (the
-        // current public surface in `crates/zfb-render/` only
-        // supports GET-shape dispatches from the SSG path).
+        // The full-fidelity dispatch path (added for issue #367) takes
+        // method, headers, and body alongside the URL path so a
+        // `prerender = false` page can implement non-GET endpoints
+        // exactly the way it would in Cloudflare. The default trait
+        // impl on `EmbeddedV8Host` falls back to `dispatch_fetch` for
+        // hosts that don't know how to forward the full request shape
+        // (test stubs); `ThreadedV8Host` overrides the default and
+        // threads everything through.
         let dispatch_result: std::result::Result<
             HttpResponseLike,
             zfb_build::renderer::RendererError,
@@ -94,7 +92,12 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
                         "renderer is not backed by an embedded V8 host".into(),
                     )
                 })?;
-            host.dispatch_fetch(&request.url_path)
+            host.dispatch_fetch_full(
+                &request.url_path,
+                &request.method,
+                &request.headers,
+                &request.body,
+            )
         })
         .await
         .map_err(|join_err| SsrDispatchError {

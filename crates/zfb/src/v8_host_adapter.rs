@@ -34,6 +34,18 @@ use zfb_render::{
 /// Request sent from the caller thread to the V8 host thread.
 struct DispatchRequest {
     url_path: String,
+    /// HTTP method. Defaults to `"GET"` for the legacy
+    /// [`EmbeddedV8Host::dispatch_fetch`] path; the full-fidelity
+    /// [`EmbeddedV8Host::dispatch_fetch_full`] path (issue #367) sets
+    /// this from the caller.
+    method: String,
+    /// Request headers — empty map on the legacy GET path. Keys are
+    /// stored lower-case on the wire; the V8 host normalises them
+    /// before constructing the JS `Headers` object.
+    headers: std::collections::BTreeMap<String, String>,
+    /// Request body. Empty for GET/HEAD; carries POST/PUT/PATCH
+    /// payload bytes on the full-fidelity path.
+    body: Vec<u8>,
     /// One-shot reply channel.
     reply: mpsc::SyncSender<Result<HttpResponseLike, RendererError>>,
 }
@@ -163,12 +175,30 @@ impl ThreadedV8Host {
 
                     // Request loop: serve one dispatch at a time.
                     for req in rx {
-                        // Construct the request shape expected by dispatch_fetch.
+                        // Construct the request shape expected by
+                        // dispatch_fetch. The legacy GET path keeps
+                        // method = "GET" + empty headers/body via
+                        // `DispatchRequest`'s defaults; the
+                        // `dispatch_fetch_full` path (issue #367)
+                        // forwards method/headers/body verbatim.
+                        let body_opt = if req.body.is_empty() {
+                            None
+                        } else {
+                            Some(req.body)
+                        };
+                        // Issue #367: lower-case headers on the way
+                        // into the V8 host so the JS `Headers` object
+                        // sees a canonical shape regardless of the
+                        // axum casing the caller passed in.
+                        let mut headers = std::collections::BTreeMap::new();
+                        for (k, v) in req.headers {
+                            headers.insert(k.to_ascii_lowercase(), v);
+                        }
                         let http_req = HttpRequestLike {
                             url: format!("http://localhost{}", req.url_path),
-                            method: "GET".into(),
-                            headers: Default::default(),
-                            body: None,
+                            method: req.method,
+                            headers,
+                            body: body_opt,
                         };
                         let result = host
                             .dispatch_fetch(http_req)
@@ -218,12 +248,51 @@ impl ThreadedV8Host {
 
 impl EmbeddedV8Host for ThreadedV8Host {
     fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError> {
+        self.send_request(
+            url_path.to_string(),
+            "GET".to_string(),
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+        )
+    }
+
+    fn dispatch_fetch_full(
+        &mut self,
+        url_path: &str,
+        method: &str,
+        headers: &std::collections::BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<HttpResponseLike, RendererError> {
+        self.send_request(
+            url_path.to_string(),
+            method.to_string(),
+            headers.clone(),
+            body.to_vec(),
+        )
+    }
+}
+
+impl ThreadedV8Host {
+    /// Shared transport for both [`Self::dispatch_fetch`] and
+    /// [`Self::dispatch_fetch_full`]. Builds the [`DispatchRequest`],
+    /// sends it across the channel to the V8 thread, and blocks on the
+    /// reply channel.
+    fn send_request(
+        &mut self,
+        url_path: String,
+        method: String,
+        headers: std::collections::BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<HttpResponseLike, RendererError> {
         let tx = self.tx.as_ref().ok_or_else(|| {
             RendererError::EmbeddedV8("V8 host has already been shut down".into())
         })?;
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let req = DispatchRequest {
-            url_path: url_path.to_string(),
+            url_path,
+            method,
+            headers,
+            body,
             reply: reply_tx,
         };
         // Send the request; if the channel is broken the thread died.

@@ -151,6 +151,33 @@ pub trait EmbeddedV8Host: Send {
     /// Only infrastructure-level failures (isolate crash, OOM, etc.)
     /// return `Err`.
     fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError>;
+
+    /// Dispatch a synthetic HTTP request with full method / headers /
+    /// body against the loaded bundle (issue #367 / Gap 1).
+    ///
+    /// `url_path` is the same path-and-query shape `dispatch_fetch`
+    /// takes (e.g. `/api/submit?since=42`). `headers` keys are
+    /// case-insensitive on the wire; the host normalises them. `body`
+    /// is the raw bytes the client sent — empty for GET/HEAD, the
+    /// POST/PUT payload for write methods.
+    ///
+    /// Default implementation forwards to [`Self::dispatch_fetch`]
+    /// for backwards compatibility — implementers that can carry the
+    /// full request shape (the production `ThreadedV8Host`) override
+    /// it. The default lets `Backend::Stub` and test doubles keep
+    /// working unchanged.
+    fn dispatch_fetch_full(
+        &mut self,
+        url_path: &str,
+        method: &str,
+        headers: &std::collections::BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<HttpResponseLike, RendererError> {
+        // Silence unused warnings on the default path — the override
+        // in `ThreadedV8Host` is the load-bearing implementation.
+        let _ = (method, headers, body);
+        self.dispatch_fetch(url_path)
+    }
 }
 
 /// Factory type for constructing an [`EmbeddedV8Host`] from a bundle path.

@@ -660,7 +660,15 @@ async fn serve_page(
     if let Some(set) = state.ssr_routes.as_ref() {
         let path_only = format!("/{trimmed}");
         if set.find_match(&path_only).is_some() {
-            return dispatch_ssr(set, &path_only, uri, &method, &headers, &body, lr_prefix, state.trailing_slash).await;
+            // Strip the dev server's mount prefix from the URL before
+            // dispatching so the SSR handler sees the same shape
+            // Cloudflare delivers in production. Without this fix a
+            // request to `/<base>/dynamic?x=1` would reach the V8 host
+            // as `/<base>/dynamic?x=1`, diverging from prod where the
+            // adapter serves the route at `/dynamic?x=1`.
+            let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                .unwrap_or_else(|| path_only.clone());
+            return dispatch_ssr(set, &full, &method, &headers, &body, lr_prefix, state.trailing_slash).await;
         }
     }
 
@@ -1009,24 +1017,20 @@ async fn dispatch_plugin(
 /// gain the live-reload `<script>` automatically. Non-HTML content
 /// types (`application/json`, RSS, etc.) skip injection — mirrors the
 /// page-cache content-type sniffing in [`serve_page`].
+/// `url_path` must be the path-and-query with the dev server's mount
+/// prefix (issue #229) already stripped. Production Cloudflare routes
+/// never see the dev prefix, so dev parity requires the same shape
+/// here.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_ssr(
     set: &SsrRouteSet,
-    path_only: &str,
-    uri: &Uri,
+    url_path: &str,
     method: &Method,
     headers: &HeaderMap,
     body: &Bytes,
     lr_prefix: &str,
     add_trailing_slash: bool,
 ) -> Response {
-    // Use the full path-and-query so the SSR handler can read the
-    // query string (`?since=42` etc.). The mount prefix is already
-    // stripped — `path_only` is the unprefixed path-only.
-    let full_url = uri
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| path_only.to_string());
     let mut req_headers: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     for (name, value) in headers.iter() {
@@ -1036,14 +1040,14 @@ async fn dispatch_ssr(
     }
     let req = SsrRequest {
         method: method.as_str().to_string(),
-        url_path: full_url,
+        url_path: url_path.to_string(),
         headers: req_headers,
         body: body.to_vec(),
     };
     let resp = match set.dispatcher.dispatch(req).await {
         Ok(r) => r,
         Err(e) => {
-            return ssr_error_response(path_only, &e.message);
+            return ssr_error_response(url_path, &e.message);
         }
     };
     // Pick the content-type from the SSR response headers (case-

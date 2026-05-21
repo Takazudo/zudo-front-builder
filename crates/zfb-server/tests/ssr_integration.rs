@@ -94,9 +94,10 @@ impl DevMiddlewareDispatcher for AlwaysRespondingPluginDispatcher {
     }
 }
 
-async fn boot(
+async fn boot_with_base(
     ssr_routes: Option<SsrRouteSet>,
     plugin_set: Option<DevMiddlewareSet>,
+    base: Option<String>,
 ) -> (
     SocketAddr,
     PageCache,
@@ -126,7 +127,7 @@ async fn boot(
         plugins: plugin_set,
         injected_routes: None,
         ssr_routes,
-        base: None,
+        base,
         trailing_slash: false,
     };
     let server = tokio::spawn(async move {
@@ -134,6 +135,18 @@ async fn boot(
     });
     tokio::task::yield_now().await;
     (addr, pages, server, tmp)
+}
+
+async fn boot(
+    ssr_routes: Option<SsrRouteSet>,
+    plugin_set: Option<DevMiddlewareSet>,
+) -> (
+    SocketAddr,
+    PageCache,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
+    boot_with_base(ssr_routes, plugin_set, None).await
 }
 
 fn ssr_set(pattern: &str, dispatcher: Arc<dyn SsrDispatcher>) -> SsrRouteSet {
@@ -309,6 +322,41 @@ async fn dispatcher_error_surfaces_as_500() {
     assert!(
         body.contains("simulated SSR failure"),
         "error body should include the underlying message: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn base_prefix_stripped_from_url_path_dispatched_to_ssr() {
+    // When the project sets `base: "/docs/"`, dev requests come in as
+    // `/docs/dynamic?x=1` but the SSR handler must see `/dynamic?x=1`
+    // — the same shape Cloudflare delivers in production. Without the
+    // prefix strip, the V8 host's `request.url.pathname` would diverge
+    // between dev and prod for any `prerender = false` page that
+    // inspects the path.
+    let canned = SsrResponse {
+        status: 200,
+        headers: BTreeMap::new(),
+        body: b"ok".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = ssr_set("/dynamic", dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, _pages, server, _tmp) =
+        boot_with_base(Some(set), None, Some("/docs/".to_string())).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/docs/dynamic?x=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let captured = dispatcher.last.lock().await.clone().unwrap();
+    assert_eq!(
+        captured.url_path, "/dynamic?x=1",
+        "dev base prefix must be stripped before dispatching to the SSR handler"
     );
 
     server.abort();

@@ -75,24 +75,18 @@ What this means in practice:
   the SSR layer sits between plugin middleware and the static page
   cache.
 
-Two intentional limitations of the dev-side SSR path today:
+One intentional limitation of the dev-side SSR path today:
 
-1. **No live reload of the SSR bundle.** Editing a `prerender = false`
-   page's source during a `zfb dev` session does not re-evaluate the
-   bundle inside the running V8 host. Restart `zfb dev` to pick up
-   the new code. (Live reload of the static-HTML cache works
-   unchanged — only the SSR bundle path is restart-only.)
-2. **GET-shape dispatch.** The embedded V8 host's request surface
-   currently passes the URL path and query string through to your
-   `fetch` handler; method, headers, and body are not yet forwarded.
-   Non-GET endpoints work end-to-end against the deployed Cloudflare
-   adapter; the dev-server forwarding of method/headers/body is a
-   follow-up.
+**No live reload of the SSR bundle.** Editing a `prerender = false`
+page's source during a `zfb dev` session does not re-evaluate the
+bundle inside the running V8 host. Restart `zfb dev` to pick up the
+new code. (Live reload of the static-HTML cache works unchanged —
+only the SSR bundle path is restart-only.)
 
-Neither limitation applies to the **production** Cloudflare adapter —
-which is what the dev server is mirroring. The point of dev parity is
-that the rendered HTML matches, not that every dev feature is the
-final shipping shape.
+This limitation does not apply to the **production** Cloudflare
+adapter — which is what the dev server is mirroring. The point of
+dev parity is that the rendered output matches, not that every dev
+feature is the final shipping shape.
 
 <Warning title="prerender = false must be a literal export">
 
