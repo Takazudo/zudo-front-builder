@@ -110,16 +110,33 @@ pub struct RouteUniverseEntry {
 /// and by the [`Backend::Stub`] handler closure.
 ///
 /// Carries the minimal surface the renderer needs: body bytes, HTTP
-/// status code, and content-type header. The `content_type` field is
-/// informational only — the renderer does not parse or branch on it
-/// beyond HEAD injection (which reads for `</head>`).
-#[derive(Debug, Clone)]
+/// status code, content-type header, and any additional response
+/// headers the V8 bundle wants to set. `content_type` is duplicated
+/// from `headers["content-type"]` because the renderer's HEAD-injection
+/// path reads it on the hot path.
+///
+/// Response headers travel as a `BTreeMap<String, String>` — multi-
+/// valued headers (most notably `Set-Cookie`, which Cloudflare allows
+/// multiple of in a single response) collapse to the last value seen.
+/// This is a preexisting design limitation of the seam; a fix would
+/// switch every layer to `Vec<(String, String)>` or an `http::HeaderMap`
+/// and is deferred to a follow-up. Cloudflare prod, by contrast,
+/// forwards headers through `Response.headers.entries()` which preserves
+/// each entry verbatim.
+#[derive(Debug, Clone, Default)]
 pub struct HttpResponseLike {
     /// HTTP status code (e.g. 200, 404, 500).
     pub status: u16,
     /// Value of the `Content-Type` response header, or an empty string
     /// when absent.
     pub content_type: String,
+    /// All other response headers from the V8 bundle's `Response`.
+    /// Keys are lowercase to mirror the canonicalisation
+    /// `EmbeddedV8RenderHost::dispatch_fetch` performs on the way out.
+    /// `content-type` may or may not appear here — callers should
+    /// prefer the dedicated [`Self::content_type`] field on the hot
+    /// path and merge `headers` afterwards.
+    pub headers: std::collections::BTreeMap<String, String>,
     /// Full response body bytes.
     pub body: Vec<u8>,
 }
@@ -320,6 +337,19 @@ impl BackendHandle {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .to_string();
+                // Forward ALL response headers (lowercase keys) so the
+                // SSR seam can mirror Cloudflare's response shape:
+                // Cache-Control, Set-Cookie, Location, CORS, X-*, etc.
+                // Multi-valued headers collapse to the last value (see
+                // the HttpResponseLike doc-comment); fixing that needs a
+                // wider seam change.
+                let mut headers: std::collections::BTreeMap<String, String> =
+                    std::collections::BTreeMap::new();
+                for (name, value) in resp.headers().iter() {
+                    if let Ok(v) = value.to_str() {
+                        headers.insert(name.as_str().to_ascii_lowercase(), v.to_string());
+                    }
+                }
                 let body = resp
                     .bytes()
                     .map_err(|e| RendererError::Http {
@@ -327,7 +357,7 @@ impl BackendHandle {
                         source: e,
                     })?
                     .to_vec();
-                Ok(HttpResponseLike { status, content_type, body })
+                Ok(HttpResponseLike { status, content_type, headers, body })
             }
             #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => {
@@ -1091,6 +1121,7 @@ mod tests {
             status: 200,
             content_type: "text/html; charset=utf-8".into(),
             body: body.as_bytes().to_vec(),
+            ..Default::default()
         }
     }
 
@@ -1111,21 +1142,25 @@ mod tests {
                 status: 200,
                 content_type: "text/html; charset=utf-8".into(),
                 body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
+                ..Default::default()
             },
             "/about" => HttpResponseLike {
                 status: 200,
                 content_type: "text/html; charset=utf-8".into(),
                 body: b"<html><body>About</body></html>".to_vec(),
+                ..Default::default()
             },
             "/feed.xml" => HttpResponseLike {
                 status: 200,
                 content_type: "application/xml".into(),
                 body: b"<rss/>".to_vec(),
+                ..Default::default()
             },
             _ => HttpResponseLike {
                 status: 404,
                 content_type: "text/plain".into(),
                 body: b"nope".to_vec(),
+                ..Default::default()
             },
         });
 
@@ -1238,6 +1273,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"Error: boom\n  at fetch (bundle.mjs:42:7)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,
@@ -1278,6 +1314,7 @@ mod tests {
                     status: 200,
                     content_type: "text/html; charset=utf-8".into(),
                     body: raw_html_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1314,6 +1351,7 @@ mod tests {
                     status: 200,
                     content_type: "text/html; charset=utf-8".into(),
                     body: raw_html_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1359,6 +1397,7 @@ mod tests {
                     status: 200,
                     content_type: "application/xml".into(),
                     body: xml_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1454,6 +1493,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"Error: explode\n  at fetch (bundle.mjs:1:1)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,
@@ -1510,6 +1550,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"RenderError: oops\n  at render (bundle.mjs:42:10)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,

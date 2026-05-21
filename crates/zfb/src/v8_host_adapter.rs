@@ -203,14 +203,31 @@ impl ThreadedV8Host {
                         let result = host
                             .dispatch_fetch(http_req)
                             .await
-                            .map(|resp| HttpResponseLike {
-                                status: resp.status,
-                                content_type: resp
+                            .map(|resp| {
+                                // Deep-review fix (PR #376): forward ALL
+                                // response headers (Cache-Control, Set-
+                                // Cookie, Location, CORS, X-Trace-Id, …)
+                                // so the dev SSR seam matches Cloudflare
+                                // prod parity. `content_type` is duplicated
+                                // out as the renderer's hot-path field;
+                                // `headers` retains everything else.
+                                //
+                                // Multi-valued headers (notably Set-Cookie)
+                                // still collapse to the last value through
+                                // this BTreeMap shape — preexisting design
+                                // limit of the seam, doc'd on
+                                // `HttpResponseLike`.
+                                let content_type = resp
                                     .headers
                                     .get("content-type")
                                     .cloned()
-                                    .unwrap_or_default(),
-                                body: resp.body,
+                                    .unwrap_or_default();
+                                HttpResponseLike {
+                                    status: resp.status,
+                                    content_type,
+                                    headers: resp.headers,
+                                    body: resp.body,
+                                }
                             })
                             .map_err(|e| RendererError::EmbeddedV8(e.to_string()));
                         // Best-effort: the caller may have already timed out;

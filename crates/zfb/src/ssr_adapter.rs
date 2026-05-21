@@ -110,14 +110,113 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
             message: e.to_string(),
         })?;
 
-        let mut headers = std::collections::BTreeMap::new();
-        if !resp.content_type.is_empty() {
-            headers.insert("content-type".into(), resp.content_type.clone());
-        }
-        Ok(SsrResponse {
-            status: resp.status,
+        Ok(http_response_to_ssr(resp))
+    }
+}
+
+/// Convert a build-side [`HttpResponseLike`] into a server-side
+/// [`SsrResponse`], preserving every header the V8 bundle set.
+///
+/// Deep-review fix (PR #376): earlier this seam forwarded only
+/// `content-type` and silently dropped Cache-Control, Set-Cookie,
+/// Location, CORS, and X-* headers — breaking dev/prod parity for
+/// `prerender = false` pages. Now ALL headers flow through; the
+/// `content_type` field on `HttpResponseLike` is preferred when the
+/// header map didn't already carry one (the renderer duplicates
+/// content-type out to a typed field for its own hot path).
+///
+/// Multi-valued headers (notably `Set-Cookie`) still collapse to the
+/// last value via `BTreeMap<String, String>` — a preexisting design
+/// limit of the seam documented on `HttpResponseLike`. Fixing that
+/// needs a wider switch to `Vec<(String, String)>` or `http::HeaderMap`
+/// and is intentionally deferred.
+fn http_response_to_ssr(resp: HttpResponseLike) -> SsrResponse {
+    let mut headers = resp.headers;
+    if !resp.content_type.is_empty() {
+        headers
+            .entry("content-type".into())
+            .or_insert(resp.content_type);
+    }
+    SsrResponse {
+        status: resp.status,
+        headers,
+        body: resp.body,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Deep-review regression (PR #376): every header the V8 bundle
+    /// sets must reach the SsrResponse — earlier only content-type
+    /// survived. Pin Cache-Control + a custom X-Trace-Id to mirror the
+    /// classes of header Cloudflare's adapter forwards.
+    #[test]
+    fn http_response_to_ssr_forwards_all_headers() {
+        let mut headers = BTreeMap::new();
+        headers.insert("cache-control".into(), "no-store".into());
+        headers.insert("x-trace-id".into(), "abc-123".into());
+        headers.insert("location".into(), "/elsewhere".into());
+        let resp = HttpResponseLike {
+            status: 302,
+            content_type: "text/html; charset=utf-8".into(),
             headers,
-            body: resp.body,
-        })
+            body: b"redirected".to_vec(),
+        };
+        let ssr = http_response_to_ssr(resp);
+        assert_eq!(ssr.status, 302);
+        assert_eq!(ssr.body, b"redirected");
+        assert_eq!(
+            ssr.headers.get("cache-control").map(String::as_str),
+            Some("no-store"),
+        );
+        assert_eq!(
+            ssr.headers.get("x-trace-id").map(String::as_str),
+            Some("abc-123"),
+        );
+        assert_eq!(
+            ssr.headers.get("location").map(String::as_str),
+            Some("/elsewhere"),
+        );
+        assert_eq!(
+            ssr.headers.get("content-type").map(String::as_str),
+            Some("text/html; charset=utf-8"),
+        );
+    }
+
+    /// When the rich `headers` map already carries content-type, it
+    /// wins over the duplicated `content_type` field — the JS bundle's
+    /// own Header is the source of truth.
+    #[test]
+    fn http_response_to_ssr_prefers_header_map_content_type() {
+        let mut headers = BTreeMap::new();
+        headers.insert("content-type".into(), "application/json".into());
+        let resp = HttpResponseLike {
+            status: 200,
+            content_type: "text/html".into(),
+            headers,
+            body: b"{}".to_vec(),
+        };
+        let ssr = http_response_to_ssr(resp);
+        assert_eq!(
+            ssr.headers.get("content-type").map(String::as_str),
+            Some("application/json"),
+        );
+    }
+
+    /// An empty `content_type` field with no header-map entry yields
+    /// no content-type header (defensive parity with the old behaviour).
+    #[test]
+    fn http_response_to_ssr_omits_content_type_when_empty() {
+        let resp = HttpResponseLike {
+            status: 204,
+            content_type: String::new(),
+            headers: BTreeMap::new(),
+            body: Vec::new(),
+        };
+        let ssr = http_response_to_ssr(resp);
+        assert!(ssr.headers.is_empty());
     }
 }

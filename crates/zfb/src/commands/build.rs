@@ -2452,6 +2452,7 @@ mod tests {
                         status: 200,
                         content_type: "text/html".into(),
                         body: b"<html/>".to_vec(),
+                        ..Default::default()
                     }),
                 },
                 WorkerHandle(None),
@@ -2858,6 +2859,7 @@ mod tests {
                             status: 200,
                             content_type: "text/html".into(),
                             body: b"<html/>".to_vec(),
+                            ..Default::default()
                         }),
                     },
                     WorkerHandle(None),
