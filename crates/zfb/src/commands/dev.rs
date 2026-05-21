@@ -75,14 +75,18 @@ use zfb_build::{
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
-use zfb_server::{outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts};
+use zfb_server::{
+    outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts, SsrDispatcher, SsrRouteRecord,
+    SsrRouteSet,
+};
 
 use crate::cli::DevArgs;
 use crate::commands::resolve::{resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
-    build_route_universe, cfg_framework_to_render, check_runtime_installed, embedded_node_modules,
+    build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
+    embedded_node_modules,
 };
 
 /// Default source directories the watcher follows.
@@ -347,6 +351,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // pipeline stamps onto asset URLs. Without this the dev HTML emits
     // `<link href="/<base>/assets/styles.css">` while the dev server
     // only knew about unprefixed `/assets/...` — every request 404s.
+    // Issue #367 — build the SSR route set from the dev session's
+    // `prerender = false` pages, backed by the embedded V8 host the
+    // SSG pipeline already owns. None when no session (renderer
+    // disabled) or when the project has zero SSR pages.
+    let ssr_route_set = build_ssr_route_set(dev_session.as_ref());
+
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -356,6 +366,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         broadcast: tx,
         plugins: plugin_set,
         injected_routes: injected_route_set,
+        ssr_routes: ssr_route_set,
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
     };
@@ -469,11 +480,27 @@ struct DevRenderInner {
     /// Mapped from the page module's project-relative source path
     /// (which is what the dependency graph keys on) to the renderer
     /// entry. Built once at boot from the router scan.
+    ///
+    /// Issue #367: only pages with `prerender != false` are kept
+    /// here. Pages that opted out of SSG go into [`ssr_routes`]
+    /// instead and reach the V8 host at request time.
     routes_by_source: HashMap<PathBuf, RouteUniverseEntry>,
+    /// URL patterns for `prerender = false` pages (issue #367 /
+    /// Gap 1). Empty when every page in the project SSGs. The dev
+    /// server reads this list (via [`DevRenderSession::ssr_patterns`])
+    /// and builds an [`zfb_server::SsrRouteSet`] from it.
+    ssr_routes: Vec<RouteUniverseEntry>,
     /// Mutex-wrapped renderer state. The orchestrator's callback runs
     /// on the watcher's thread; render_one is sync and short, so a
     /// global lock is fine here.
-    renderer: Mutex<Option<RendererState>>,
+    ///
+    /// Wrapped in an outer Arc (in addition to the surrounding
+    /// `Arc<DevRenderInner>`) so the SSR adapter (#367) can hold a
+    /// separate handle into the same V8 host without taking a
+    /// dependency on `DevRenderInner` itself. The adapter clones
+    /// this Arc once at construction and goes through it via
+    /// `spawn_blocking` per request.
+    renderer: Arc<Mutex<Option<RendererState>>>,
 }
 
 impl DevRenderSession {
@@ -508,6 +535,26 @@ impl DevRenderSession {
             html,
             content_type: None,
         }))
+    }
+
+    /// Clone the shared handle to the embedded V8 host so the SSR
+    /// adapter can dispatch requests through the same renderer state
+    /// that drives build-time SSG (#367). Cheap — the underlying
+    /// renderer is wrapped in an `Arc<Mutex<...>>` already.
+    fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
+        Arc::clone(&self.inner.renderer)
+    }
+
+    /// Return the URL patterns of every page that exports
+    /// `prerender = false` (issue #367 / Gap 1). Used by the dev
+    /// command to build the [`zfb_server::SsrRouteSet`] handed to
+    /// the dev router.
+    fn ssr_patterns(&self) -> Vec<String> {
+        self.inner
+            .ssr_routes
+            .iter()
+            .map(|e| e.route_key.clone())
+            .collect()
     }
 
     /// Return all known page IDs (source paths) from the router scan.
@@ -782,24 +829,48 @@ fn boot_dev_renderer(
     .map_err(anyhow::Error::from)
     .context("renderer start failed")?;
 
+    // Issue #367 — extract `export const prerender = …` per page so
+    // we can keep SSG-eligible pages in `routes_by_source` (the SSG
+    // render callback's lookup table) while routing `prerender =
+    // false` pages into the request-time SSR set instead. Without this
+    // split the SSG callback would stamp a stale snapshot to disk on
+    // every watcher tick and the dist fallback would shadow the SSR
+    // handler.
+    let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
+        crate::output::warn(msg.to_string())
+    });
+
     // Build the source-path → entry map once. Router source paths are
     // project-relative; PageId keys on the same value (the orchestrator
     // tracks pages by their source path).
     let mut routes_by_source: HashMap<PathBuf, RouteUniverseEntry> = HashMap::new();
+    let mut ssr_routes: Vec<RouteUniverseEntry> = Vec::new();
     for route in router.routes() {
         if let Some(entry) = plan
             .static_routes
             .iter()
             .find(|e| e.route_key == route.template())
         {
-            routes_by_source.insert(route.source_path.clone(), entry.clone());
+            // Default to SSG when the prerender map has no entry
+            // (matches `crates/zfb/src/commands/build.rs` and the
+            // `prerender_map`'s documented default).
+            let is_prerender = prerender_map
+                .get(&route.template())
+                .copied()
+                .unwrap_or(true);
+            if is_prerender {
+                routes_by_source.insert(route.source_path.clone(), entry.clone());
+            } else {
+                ssr_routes.push(entry.clone());
+            }
         }
     }
 
     Ok(DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes_by_source,
-            renderer: Mutex::new(Some(state)),
+            ssr_routes,
+            renderer: Arc::new(Mutex::new(Some(state))),
         }),
     })
 }
@@ -833,6 +904,39 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         }
         Ok(out)
     })
+}
+
+/// Build the [`SsrRouteSet`] for the dev server from the dev session
+/// (issue #367 / Gap 1).
+///
+/// Returns `None` when the dev session is absent (renderer disabled —
+/// the SSR layer would have no V8 host to dispatch through) or when
+/// every page in the project is SSG (no `prerender = false` routes).
+/// Otherwise constructs an [`crate::ssr_adapter::EmbeddedV8SsrAdapter`]
+/// over the same renderer mutex the SSG callback uses, so the V8 host
+/// is shared across build-time and request-time dispatches.
+///
+/// Live-reload of SSR page sources: editing a `prerender = false` page
+/// during a `zfb dev` session does NOT currently re-evaluate the bundle
+/// inside the running V8 host — `BuildContext::reload_renderer` is
+/// `None` in dev today. The next dev-server restart picks up the new
+/// code. Wiring `reload_renderer` is a follow-up for a future sub-task.
+fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRouteSet> {
+    let session = session?;
+    let patterns = session.ssr_patterns();
+    if patterns.is_empty() {
+        return None;
+    }
+    let renderer_handle = session.renderer_handle();
+    let dispatcher: Arc<dyn SsrDispatcher> =
+        Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
+            renderer_handle,
+        ));
+    let records = patterns
+        .into_iter()
+        .map(|pattern| SsrRouteRecord { pattern })
+        .collect();
+    Some(SsrRouteSet::new(records, dispatcher))
 }
 
 const DEFAULT_DEV_HOST: &str = "localhost";
@@ -891,7 +995,8 @@ mod tests {
         let session = DevRenderSession {
             inner: Arc::new(DevRenderInner {
                 routes_by_source: HashMap::new(),
-                renderer: Mutex::new(None),
+                ssr_routes: Vec::new(),
+                renderer: Arc::new(Mutex::new(None)),
             }),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
@@ -917,7 +1022,8 @@ mod tests {
         let session = DevRenderSession {
             inner: Arc::new(DevRenderInner {
                 routes_by_source: routes,
-                renderer: Mutex::new(None),
+                ssr_routes: Vec::new(),
+                renderer: Arc::new(Mutex::new(None)),
             }),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
