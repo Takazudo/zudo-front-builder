@@ -113,6 +113,7 @@ async fn boot_with_dispatcher(
         broadcast: tx,
         plugins: Some(plugin_set),
         injected_routes: None,
+        ssr_routes: None,
         base: None,
         trailing_slash: false,
     };

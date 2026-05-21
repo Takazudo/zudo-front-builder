@@ -90,6 +90,7 @@ use crate::plugin_middleware::{
     DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
     PluginResponseEncoding,
 };
+use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
 ///
@@ -346,6 +347,12 @@ pub struct AppState {
     /// to surface the matched entrypoint (full evaluation through
     /// the page renderer lands in a follow-up).
     pub injected_routes: Option<crate::injected_routes::InjectedRouteSet>,
+    /// Request-time SSR routes (issue #367 / Gap 1). `None` when the
+    /// project has no `prerender = false` pages. When `Some`, the page
+    /// handler dispatches matched URLs through this set BEFORE
+    /// consulting the page cache — see the precedence contract on
+    /// [`crate::ssr`] for the full ordering.
+    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
     /// Build output directory, used as a disk fallback when a page is
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
@@ -640,6 +647,20 @@ async fn serve_page(
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
             }
+        }
+    }
+
+    // Issue #367 (Gap 1) — request-time SSR for `prerender = false`
+    // pages. Slots in between plugin dev-middleware and the page-cache
+    // fallback so plugins keep their override capability, but pages
+    // that opted out of prerender always reach the V8 host instead of
+    // falling through to a stale dist snapshot. Like the plugin layer
+    // we accept every HTTP method here — the page's `fetch` handler
+    // decides whether to allow `POST`/`PUT`/etc. (mirroring Cloudflare).
+    if let Some(set) = state.ssr_routes.as_ref() {
+        let path_only = format!("/{trimmed}");
+        if set.find_match(&path_only).is_some() {
+            return dispatch_ssr(set, &path_only, uri, &method, &headers, &body, lr_prefix, state.trailing_slash).await;
         }
     }
 
@@ -976,6 +997,122 @@ async fn dispatch_plugin(
     }
 }
 
+/// Dispatch one request through the SSR layer (issue #367 / Gap 1).
+///
+/// `path_only` is the URL path without the dev-server mount prefix —
+/// the V8 host receives URLs in their CF-adapter shape, not in their
+/// dev-server-mounted shape. Headers/body are forwarded verbatim so a
+/// `prerender = false` page can implement non-GET endpoints exactly
+/// the way it would in production.
+///
+/// The response is built via [`page_response_bytes`] so HTML bodies
+/// gain the live-reload `<script>` automatically. Non-HTML content
+/// types (`application/json`, RSS, etc.) skip injection — mirrors the
+/// page-cache content-type sniffing in [`serve_page`].
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_ssr(
+    set: &SsrRouteSet,
+    path_only: &str,
+    uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &Bytes,
+    lr_prefix: &str,
+    add_trailing_slash: bool,
+) -> Response {
+    // Use the full path-and-query so the SSR handler can read the
+    // query string (`?since=42` etc.). The mount prefix is already
+    // stripped — `path_only` is the unprefixed path-only.
+    let full_url = uri
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| path_only.to_string());
+    let mut req_headers: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            req_headers.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    let req = SsrRequest {
+        method: method.as_str().to_string(),
+        url_path: full_url,
+        headers: req_headers,
+        body: body.to_vec(),
+    };
+    let resp = match set.dispatcher.dispatch(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            return ssr_error_response(path_only, &e.message);
+        }
+    };
+    // Pick the content-type from the SSR response headers (case-
+    // insensitive) and default to HTML when the handler didn't set
+    // one — most prerender=false pages return HTML.
+    let content_type = resp
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "text/html; charset=utf-8".to_string());
+    let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
+    let status =
+        StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut out = page_response_bytes(
+        status,
+        resp.body,
+        &content_type,
+        is_html,
+        lr_prefix,
+        add_trailing_slash,
+    );
+    // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
+    // …). Skip headers `page_response_bytes` already wrote
+    // (`content-type`, `cache-control`) so a handler that explicitly
+    // sets `cache-control: public,max-age=60` doesn't silently lose to
+    // our no-store default — instead the SSR header wins.
+    for (k, v) in resp.headers.iter() {
+        let lower = k.to_ascii_lowercase();
+        if lower == "content-type" {
+            continue;
+        }
+        if let Ok(name) = header::HeaderName::try_from(k.as_str()) {
+            if let Ok(value) = HeaderValue::try_from(v) {
+                // For Cache-Control we let the handler override the
+                // default no-store; for all other headers we insert
+                // (replace). Multi-valued headers like Set-Cookie
+                // would need append semantics, but the BTreeMap shape
+                // upstream already collapses duplicates.
+                out.headers_mut().insert(name, value);
+            }
+        }
+    }
+    out
+}
+
+/// Build the HTML 5xx response served when [`SsrDispatcher::dispatch`]
+/// returns an error. Surfaces the underlying message so the developer
+/// sees the V8 stack trace instead of an empty 500.
+fn ssr_error_response(url_path: &str, message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} ssr error</title></head><body><h1>SSR error at <code>{}</code></h1><pre>{}</pre></body></html>",
+        html_escape(url_path),
+        html_escape(message),
+    );
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
 /// Build the `405 Method Not Allowed` response returned when a non-GET
 /// request reaches the page-cache fallback (i.e. no plugin claimed the
 /// URL or a plugin returned `Passthrough`). Mirrors what axum used to
@@ -1167,6 +1304,7 @@ mod tests {
             broadcast: tx,
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
@@ -1181,6 +1319,7 @@ mod tests {
             broadcast: tx,
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
@@ -1621,6 +1760,7 @@ mod tests {
             broadcast: tx,
             plugins: Some(set),
             injected_routes: None,
+            ssr_routes: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,

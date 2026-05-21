@@ -46,6 +46,7 @@ pub mod inject;
 pub mod livereload;
 pub mod plugin_middleware;
 pub mod routes;
+pub mod ssr;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -68,6 +69,9 @@ pub use plugin_middleware::{
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
+};
+pub use ssr::{
+    SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
 };
 
 /// Options for [`serve`].
@@ -117,6 +121,15 @@ pub struct ServeOpts {
     /// matched entrypoint is visible to follow-up renderer work
     /// without re-plumbing.
     pub injected_routes: Option<InjectedRouteSet>,
+
+    /// Request-time SSR routes (issue #367 / Gap 1). `None` = the
+    /// project has no `prerender = false` pages. When `Some`, the
+    /// dev router checks every page-cache miss against this set —
+    /// a hit dispatches through the V8 host and returns the rendered
+    /// HTML at request time, matching the Cloudflare adapter's
+    /// production semantics. See [`crate::ssr`] for the wire shape
+    /// and precedence contract.
+    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
 
     /// User-supplied `base` config value from `zfb.config.ts` (issue
     /// #229). Passed through verbatim — the dev server normalises it
@@ -209,6 +222,7 @@ where
         broadcast: opts.broadcast,
         plugins: opts.plugins,
         injected_routes: opts.injected_routes,
+        ssr_routes: opts.ssr_routes,
         dist_root: opts.dist_root.clone(),
         public_root: opts.public_root.clone(),
         base_prefix,

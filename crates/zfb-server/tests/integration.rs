@@ -73,6 +73,7 @@ impl Harness {
             broadcast: tx.clone(),
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
             base: None,
             trailing_slash: false,
         };
