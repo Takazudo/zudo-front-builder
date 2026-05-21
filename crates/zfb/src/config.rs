@@ -2100,6 +2100,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extra_watch_paths_accepts_absolute_path() {
+        // The path does NOT need to exist at load time — existence is
+        // checked when the dev watcher canonicalises each entry. The
+        // config loader only enforces "absolute or bust".
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["/this/path/need/not/exist/at/load/time"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("absolute path should be accepted");
+        assert_eq!(cfg.extra_watch_paths.len(), 1);
+        assert_eq!(
+            cfg.extra_watch_paths[0],
+            PathBuf::from("/this/path/need/not/exist/at/load/time")
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_rejects_relative_path() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["./relative/sibling"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("relative path should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("extraWatchPaths"),
+            "error should name the field: {msg}"
+        );
+        assert!(
+            msg.contains("absolute"),
+            "error should mention the absolute-path requirement: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{}"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.unwrap();
+        assert!(cfg.extra_watch_paths.is_empty());
+    }
+
+    #[tokio::test]
     async fn rejects_parent_dir_escape() {
         let tmp = TempDir::new().unwrap();
         let json = r#"{
