@@ -5086,6 +5086,7 @@ dependencies = [
  "zfb-graph",
  "zfb-islands",
  "zfb-types",
+ "zfb-watcher",
 ]
 
 [[package]]

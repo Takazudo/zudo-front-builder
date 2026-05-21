@@ -37,6 +37,10 @@ lol_html = "2.8.1"
 
 [dev-dependencies]
 zfb-graph = { path = "../zfb-graph" }
+# Combined Gap 1+2 integration test (sub-task 2.3 / #369): the server
+# test boots both the SSR router and the watcher side-by-side to prove
+# the two features interoperate.
+zfb-watcher = { path = "../zfb-watcher" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
