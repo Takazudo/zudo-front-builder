@@ -618,11 +618,20 @@ impl DevRenderSession {
     /// `prerender = false` (issue #367 / Gap 1). Used by the dev
     /// command to build the [`zfb_server::SsrRouteSet`] handed to
     /// the dev router.
+    ///
+    /// `zfb_router::Route::template()` emits Hono-style colon syntax
+    /// (`/blog/:slug`, `/docs/:slug{.+}`), but `SsrRouteSet`'s matcher
+    /// is `pages/`-style (`/blog/[slug]`, `/docs/[...slug]`). Translate
+    /// here so dev SSR matches dynamic-route URLs at all. The two public
+    /// grammars (this one via SSR + `with_ssr_handler`'s axum-style via
+    /// `embed_handlers`) diverge by historical accident — see the TODO
+    /// in `crates/zfb-server/src/embed_handlers.rs` for the unify-later
+    /// follow-up.
     fn ssr_patterns(&self) -> Vec<String> {
         self.inner
             .ssr_routes
             .iter()
-            .map(|e| e.route_key.clone())
+            .map(|e| colon_template_to_bracket(&e.route_key))
             .collect()
     }
 
@@ -938,6 +947,29 @@ fn boot_dev_renderer(
             }
         }
     }
+    // Deep-review regression (PR #376): also pick up `prerender = false`
+    // routes that live in `plan.deferred_dynamic` — dynamic routes whose
+    // `paths()` couldn't be statically expanded. Without this, dev SSR
+    // would 404 a `[slug]` route with `export const prerender = false`
+    // (the SsrRouteSet has no record for it). Mirrors the build-side
+    // chain in `crates/zfb/src/commands/build.rs` for `ssr_route_refs` /
+    // `ssr_route_keys_for_runtime_bundle`.
+    //
+    // The deferred entry has no concrete URL — the template IS the most
+    // specific identifier we have. We synthesise a RouteUniverseEntry
+    // whose URL fields mirror the template; only the route pattern is
+    // load-bearing for SsrRouteSet (output_path / url_path are never
+    // touched by the SSR dispatch path).
+    for deferred in &plan.deferred_dynamic {
+        if prerender_map.get(&deferred.template).copied().unwrap_or(true) {
+            continue;
+        }
+        ssr_routes.push(RouteUniverseEntry {
+            url_path: deferred.template.clone(),
+            output_path: PathBuf::new(),
+            route_key: deferred.template.clone(),
+        });
+    }
 
     Ok(DevRenderSession {
         inner: Arc::new(DevRenderInner {
@@ -1014,6 +1046,43 @@ fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRouteSet
         .map(|pattern| SsrRouteRecord { pattern })
         .collect();
     Some(SsrRouteSet::new(records, dispatcher))
+}
+
+/// Translate Hono-style colon-syntax templates emitted by
+/// `zfb_router::Route::template()` into the `pages/`-style bracket
+/// grammar consumed by `zfb_server::SsrRouteSet`'s matcher (which calls
+/// into `crate::injected_routes::pattern_matches`).
+///
+/// Grammar:
+/// - `:name`        → `[name]`        (single-segment dynamic param)
+/// - `:name{.+}`    → `[...name]`     (catchall — Hono regex quantifier)
+/// - literal segments are preserved unchanged
+///
+/// The root `/` is preserved as `/`.
+fn colon_template_to_bracket(template: &str) -> String {
+    let segments: Vec<&str> = template.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return "/".to_string();
+    }
+    let mut out = String::with_capacity(template.len() + 4);
+    for seg in &segments {
+        out.push('/');
+        if let Some(rest) = seg.strip_prefix(':') {
+            // Catchall (Hono `:name{.+}`) wins over single-segment.
+            if let Some(name) = rest.strip_suffix("{.+}") {
+                out.push_str("[...");
+                out.push_str(name);
+                out.push(']');
+            } else {
+                out.push('[');
+                out.push_str(rest);
+                out.push(']');
+            }
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
 }
 
 const DEFAULT_DEV_HOST: &str = "localhost";
@@ -1107,5 +1176,51 @@ mod tests {
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
         let out = cb(&pages).unwrap();
         assert!(out.is_empty(), "errors must yield empty list, not panic");
+    }
+
+    /// Deep-review regression (PR #376): `Route::template()` emits
+    /// Hono-style colon syntax (`/blog/:slug`, `/docs/:slug{.+}`), but
+    /// `SsrRouteSet`'s matcher consumes `pages/`-style brackets
+    /// (`/blog/[slug]`, `/docs/[...slug]`). Without translation,
+    /// dynamic-route SSR matches never fire in dev.
+    #[test]
+    fn colon_template_to_bracket_translates_dynamic_and_catchall() {
+        assert_eq!(colon_template_to_bracket("/"), "/");
+        assert_eq!(colon_template_to_bracket("/about"), "/about");
+        assert_eq!(colon_template_to_bracket("/blog/:slug"), "/blog/[slug]");
+        assert_eq!(
+            colon_template_to_bracket("/docs/:rest{.+}"),
+            "/docs/[...rest]",
+        );
+        assert_eq!(
+            colon_template_to_bracket("/a/:b/c/:d"),
+            "/a/[b]/c/[d]",
+        );
+    }
+
+    /// `ssr_patterns()` must hand the SsrRouteSet bracket-grammar
+    /// patterns so dynamic SSR routes match in dev.
+    #[test]
+    fn ssr_patterns_emit_bracket_grammar_for_dynamic_routes() {
+        let session = DevRenderSession {
+            inner: Arc::new(DevRenderInner {
+                routes_by_source: HashMap::new(),
+                ssr_routes: vec![
+                    RouteUniverseEntry {
+                        url_path: "/blog/:slug".into(),
+                        output_path: PathBuf::new(),
+                        route_key: "/blog/:slug".into(),
+                    },
+                    RouteUniverseEntry {
+                        url_path: "/api/x".into(),
+                        output_path: PathBuf::new(),
+                        route_key: "/api/x".into(),
+                    },
+                ],
+                renderer: Arc::new(Mutex::new(None)),
+            }),
+        };
+        let patterns = session.ssr_patterns();
+        assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
     }
 }

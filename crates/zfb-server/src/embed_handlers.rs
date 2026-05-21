@@ -30,6 +30,23 @@
 //! params) — the matcher returns `None` rather than handing the handler
 //! a value the caller could not have written intentionally.
 //!
+//! ## Grammar divergence (TODO — deep-review PR #376)
+//!
+//! `zfb_server` exposes TWO public route-pattern grammars by historical
+//! accident:
+//!
+//! - **embed handlers** (this module / `with_ssr_handler`): axum/Hono-
+//!   style `:name` / `*tail`.
+//! - **SSR route set** ([`crate::ssr::SsrRouteSet`], via
+//!   [`crate::injected_routes::pattern_matches`]): `pages/`-style
+//!   `[name]` / `[...tail]`.
+//!
+//! The dev orchestrator translates between the two at the seam (see
+//! `crates/zfb/src/commands/dev.rs::colon_template_to_bracket`), but
+//! unifying the two grammars at the public API surface is a larger
+//! design decision (see the deep-review structure finding on PR #376)
+//! and intentionally deferred to a follow-up.
+//!
 //! ## Storage shape
 //!
 //! Handlers are erased to a single function-pointer type
