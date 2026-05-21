@@ -679,6 +679,23 @@ pub enum WorkerDispatch<'h> {
     },
 }
 
+impl<'h> WorkerDispatch<'h> {
+    /// Construct a `WorkerDispatch::Http` value.
+    ///
+    /// Prefer this over a struct literal because the variant carries a
+    /// hidden `PhantomData<&'h ()>` field needed to keep the lifetime
+    /// parameter in use when the V8-only `EmbeddedV8` variant is
+    /// feature-gated out (issue #371, sub-task 4.1a). Using this
+    /// constructor lets callers stay source-compatible across the
+    /// feature toggle.
+    pub fn http(base_url: String) -> Self {
+        WorkerDispatch::Http {
+            base_url,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
 /// Evaluate non-literal `paths()` exports by querying the running worker's
 /// synthetic `/__paths__/<encoded-route-key>` endpoint.
 ///
