@@ -335,6 +335,15 @@ pub fn resolve_content_type(entry: &CachedPage, url_path: &str) -> String {
 /// Shared state for the route handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// Server mode — gates Dev-only behaviour at request time
+    /// (live-reload script injection, `/__zfb/reload` SSE endpoint,
+    /// `/__zfb/livereload.js` script endpoint, default
+    /// `Cache-Control: no-store` on HTML). Defaults to
+    /// [`crate::ServerMode::Dev`] for parity with the historical
+    /// behaviour of `serve_with_listener` callers (the `zfb dev` and
+    /// integration-test paths). The embed builder threads its own
+    /// `mode` value through verbatim.
+    pub mode: crate::ServerMode,
     /// Page cache that renderers populate.
     pub pages: PageCache,
     /// Live-reload broadcast sender — cloned per SSE subscription.
@@ -448,6 +457,7 @@ pub fn build_router(state: AppState) -> Router {
     // outside-base 404 fallback.
     let redirect_target = format!("{prefix}/");
     let prefix_for_404 = prefix.clone();
+    let mode_for_404 = state.mode;
 
     build_core_router(state, &prefix)
         // Bare `/` lands the developer on the home page — but only `/`
@@ -467,7 +477,7 @@ pub fn build_router(state: AppState) -> Router {
         // the developer follows the hint.
         .fallback(get(move |uri: Uri| {
             let prefix = prefix_for_404.clone();
-            async move { unprefixed_404_response(&prefix, uri.path()) }
+            async move { unprefixed_404_response(&prefix, uri.path(), mode_for_404) }
         }))
         .layer(TraceLayer::new_for_http())
 }
@@ -490,9 +500,22 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
     let root_path = format!("{prefix}/");
     let wild_path = format!("{prefix}/{{*path}}");
 
-    Router::new()
-        .route(&livereload_path, get(livereload_js))
-        .route(&sse_path, get(sse_handler))
+    // Live-reload surface (`/__zfb/livereload.js` SSE script,
+    // `/__zfb/reload` SSE stream) is Dev-only. In Preview/Embed modes
+    // these endpoints stay unmounted so an embedder doesn't accidentally
+    // expose dev-server infrastructure on a production-shaped server.
+    // The HTML body never injects the script in those modes either —
+    // see [`page_response_bytes`] for the response-shaping side of the
+    // gate.
+    let is_dev = matches!(state.mode, crate::ServerMode::Dev);
+
+    let mut router = Router::new();
+    if is_dev {
+        router = router
+            .route(&livereload_path, get(livereload_js))
+            .route(&sse_path, get(sse_handler));
+    }
+    router
         .nest_service(&assets_mount, assets_service)
         // `any` (vs `get`) on the page-renderer mounts so user-registered
         // devMiddleware handlers can serve every HTTP method (zfb#230).
@@ -510,7 +533,7 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
 ///
 /// The hint is HTML-escaped — `prefix` and `path` come from request
 /// data and could otherwise smuggle markup into the response.
-fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
+fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
         html_escape(prefix),
@@ -524,12 +547,14 @@ fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
         "text/html; charset=utf-8",
         // Inject the live-reload script with the prefix so the
         // 404 page silently upgrades when the developer fixes the URL
-        // and the matching page becomes reachable.
+        // and the matching page becomes reachable. `page_response_bytes`
+        // will silently drop the injection when `mode != Dev`.
         true,
         prefix,
         // Static 404 body — its `href="{prefix}/"` already ends in `/`,
         // so the trailing-slash post-process is a no-op either way.
         false,
+        mode,
     )
 }
 
@@ -703,7 +728,17 @@ async fn serve_page(
             // adapter serves the route at `/dynamic?x=1`.
             let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
                 .unwrap_or_else(|| path_only.clone());
-            return dispatch_ssr(set, &full, &method, &headers, &body, lr_prefix, state.trailing_slash).await;
+            return dispatch_ssr(
+                set,
+                &full,
+                &method,
+                &headers,
+                &body,
+                lr_prefix,
+                state.trailing_slash,
+                state.mode,
+            )
+            .await;
         }
     }
 
@@ -731,6 +766,7 @@ async fn serve_page(
                 is_html,
                 lr_prefix,
                 state.trailing_slash,
+                state.mode,
             );
         }
     }
@@ -787,6 +823,7 @@ async fn serve_page(
             is_html,
             lr_prefix,
             state.trailing_slash,
+            state.mode,
         );
     }
 
@@ -816,6 +853,7 @@ async fn serve_page(
                 is_html,
                 lr_prefix,
                 state.trailing_slash,
+                state.mode,
             );
         }
     }
@@ -829,6 +867,7 @@ async fn serve_page(
         true,
         lr_prefix,
         state.trailing_slash,
+        state.mode,
     )
 }
 
@@ -1065,6 +1104,7 @@ async fn dispatch_ssr(
     body: &Bytes,
     lr_prefix: &str,
     add_trailing_slash: bool,
+    mode: crate::ServerMode,
 ) -> Response {
     let mut req_headers: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
@@ -1104,6 +1144,7 @@ async fn dispatch_ssr(
         is_html,
         lr_prefix,
         add_trailing_slash,
+        mode,
     );
     // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
     // …). Skip headers `page_response_bytes` already wrote
@@ -1355,7 +1396,14 @@ fn page_response_bytes(
     inject_reload: bool,
     base_prefix: &str,
     add_trailing_slash: bool,
+    mode: crate::ServerMode,
 ) -> Response {
+    // Live-reload script injection and the default `Cache-Control: no-
+    // store` shaping are Dev-only — Preview and Embed callers want
+    // production-shaped HTML responses (no SSE script, no aggressive
+    // cache busting that would defeat a host's own caching policy).
+    let is_dev = matches!(mode, crate::ServerMode::Dev);
+    let inject_reload = inject_reload && is_dev;
     let body_out: Vec<u8> = if inject_reload {
         // HTML should always be valid UTF-8; fall back to raw bytes on
         // the rare occasion it isn't so we don't panic in dev mode.
@@ -1400,8 +1448,14 @@ fn page_response_bytes(
         .unwrap_or_else(|_| HeaderValue::from_static("text/html; charset=utf-8"));
 
     let mut resp = (status, [(header::CONTENT_TYPE, ct_header)], body_out).into_response();
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if is_dev {
+        // `no-store` is a dev-server-only default — Preview / Embed
+        // callers want browsers (and their own host caches) to respect
+        // whatever cache policy the underlying handler set (or the
+        // production CDN downstream will set).
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     resp
 }
 
@@ -1418,6 +1472,7 @@ mod tests {
     fn test_state() -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
@@ -1434,6 +1489,7 @@ mod tests {
     fn test_state_with_base(prefix: &str) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
@@ -1876,6 +1932,7 @@ mod tests {
                 as Arc<dyn crate::plugin_middleware::DevMiddlewareDispatcher>,
         };
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: Some(set),

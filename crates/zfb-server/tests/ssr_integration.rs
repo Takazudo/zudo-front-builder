@@ -129,6 +129,7 @@ async fn boot_with_base(
         ssr_routes,
         base,
         trailing_slash: false,
+        mode: zfb_server::ServerMode::Dev,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

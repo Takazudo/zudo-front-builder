@@ -76,6 +76,7 @@ impl Harness {
             ssr_routes: None,
             base: None,
             trailing_slash: false,
+            mode: zfb_server::ServerMode::Dev,
         };
 
         let server = tokio::spawn(async move {

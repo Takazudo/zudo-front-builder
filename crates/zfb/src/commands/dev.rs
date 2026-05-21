@@ -385,6 +385,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         ssr_routes: ssr_route_set,
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
+        mode: zfb_server::ServerMode::Dev,
     };
 
     output::ready(&format!("http://{host}:{port}"));

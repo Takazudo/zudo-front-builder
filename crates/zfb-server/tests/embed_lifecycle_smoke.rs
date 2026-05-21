@@ -42,20 +42,26 @@ fn make_project() -> (TempDir, PathBuf) {
     (tmp, config)
 }
 
-/// Hit `GET http://<addr>/` and return `(status, body)`. The endpoint
-/// is intentionally one the dev server is guaranteed to answer (the
-/// `__zfb/livereload.js` route) so the test doesn't depend on having
-/// a populated page cache.
-async fn probe_livereload_js(addr: SocketAddr) -> (u16, String) {
+/// Hit `GET http://<addr>/<path>` and return `(status, body)`. Used by
+/// every smoke test to confirm the server is running and the route
+/// table is mounted. Endpoint is provided by caller so each scenario
+/// picks one that fits its mode (e.g. Dev probes `/__zfb/livereload.js`
+/// directly; Embed probes any URL and accepts the dev 404 body as proof
+/// the router is up).
+async fn probe(addr: SocketAddr, path: &str) -> (u16, String) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
-    let url = format!("http://{addr}/__zfb/livereload.js");
+    let url = format!("http://{addr}{path}");
     let resp = client.get(&url).send().await.expect("GET request");
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     (status, body)
+}
+
+async fn probe_livereload_js(addr: SocketAddr) -> (u16, String) {
+    probe(addr, "/__zfb/livereload.js").await
 }
 
 /// Top-level scenario: build + bind + serve + shutdown + double-shutdown.
@@ -83,11 +89,31 @@ fn serve_in_thread_lifecycle_round_trip() {
         .worker_threads(2)
         .build()
         .unwrap();
-    let (status, body) = rt.block_on(probe_livereload_js(addr));
-    assert_eq!(status, 200, "livereload.js should respond 200");
+    // Embed mode does NOT mount `/__zfb/livereload.js` — the dev-only
+    // surface is gated off (deep-review fix, PR #376). Probe a regular
+    // URL instead: with an empty page cache the dev 404 body comes back,
+    // proving the router is up and the wildcard page handler runs.
+    let (status, body) = rt.block_on(probe(addr, "/"));
+    assert_eq!(status, 404, "empty cache, no public/, no dist → 404");
+    assert!(!body.is_empty(), "404 body should still be non-empty");
+    // The livereload script must NOT be injected into HTML in Embed
+    // mode.
     assert!(
-        body.contains("EventSource") || !body.is_empty(),
-        "livereload.js body should be non-empty"
+        !body.contains("/__zfb/livereload.js"),
+        "Embed mode must not inject the live-reload script; body: {body}",
+    );
+
+    // The `/__zfb/livereload.js` endpoint must NOT be mounted at all.
+    let (lr_status, _lr_body) = rt.block_on(probe_livereload_js(addr));
+    assert_eq!(
+        lr_status, 404,
+        "Embed mode must not mount /__zfb/livereload.js",
+    );
+    // The `/__zfb/reload` SSE endpoint must also not be mounted.
+    let (sse_status, _sse_body) = rt.block_on(probe(addr, "/__zfb/reload"));
+    assert_eq!(
+        sse_status, 404,
+        "Embed mode must not mount /__zfb/reload",
     );
 
     // Idempotent shutdown — first call signals, second is a no-op.
@@ -136,10 +162,14 @@ fn with_request_extension_does_not_require_axum_extension_extractor() {
     // sanity-check that the route under the embedded server still
     // serves the dev 404 body for an unknown path (i.e. the
     // middleware layer hasn't broken the existing route table).
-    let (status, _body) = rt.block_on(probe_livereload_js(addr));
+    //
+    // Embed mode has no live-reload endpoint; probe a regular URL and
+    // accept the dev 404 as proof the router is up + the middleware
+    // hasn't broken routing (deep-review fix, PR #376).
+    let (status, _body) = rt.block_on(probe(addr, "/"));
     assert_eq!(
-        status, 200,
-        "embedded server with request-extension middleware still serves built-in routes"
+        status, 404,
+        "embedded server with request-extension middleware still serves built-in routes",
     );
 
     // Direct proof of the extension-injection mechanism is in the
@@ -223,6 +253,10 @@ fn serve_async_terminal_on_caller_runtime() {
         // `current_thread`-runtime variant is not in play here; this
         // is the foreign-runtime path. A short retry loop with a
         // sensible budget is enough for CI.
+        //
+        // Embed mode does not mount `/__zfb/livereload.js` (deep-review
+        // fix, PR #376), so probe `/` and accept the dev 404 body as
+        // proof the route table is up.
         let mut got_status = None;
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -230,7 +264,7 @@ fn serve_async_terminal_on_caller_runtime() {
                 .timeout(Duration::from_millis(500))
                 .build()
                 .unwrap()
-                .get(format!("http://{addr}/__zfb/livereload.js"))
+                .get(format!("http://{addr}/"))
                 .send()
                 .await;
             if let Ok(resp) = r {
@@ -238,7 +272,7 @@ fn serve_async_terminal_on_caller_runtime() {
                 break;
             }
         }
-        assert_eq!(got_status, Some(200), "async serve should bind and respond");
+        assert_eq!(got_status, Some(404), "async serve should bind and respond");
 
         let _ = shutdown_tx.send(());
         let result = tokio::time::timeout(Duration::from_secs(5), serve_task)

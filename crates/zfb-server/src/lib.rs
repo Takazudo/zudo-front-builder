@@ -158,6 +158,19 @@ pub struct ServeOpts {
     /// absolute hrefs the same way the production build does
     /// (sub #234 / zudolab/zudo-doc#1579).
     pub trailing_slash: bool,
+
+    /// Server mode (Dev/Preview/Embed). Threaded through to
+    /// [`crate::routes::AppState::mode`] so the router can gate Dev-only
+    /// surface — `/__zfb/livereload.js`, `/__zfb/reload`, the
+    /// livereload `<script>` injection into HTML, and the default
+    /// `Cache-Control: no-store` shaping — to Dev only.
+    ///
+    /// Defaults to [`crate::ServerMode::Dev`] for byte-for-byte parity
+    /// with the historical `serve_with_listener` shape used by `zfb dev`
+    /// and the integration-test surface. Embed builds bypass this
+    /// struct entirely (they go through [`crate::ServerBuilder`]).
+    #[doc(alias = "ServerMode")]
+    pub mode: crate::ServerMode,
 }
 
 impl ServeOpts {
@@ -225,6 +238,7 @@ where
     // leading-slash, no-trailing-slash kind.
     let base_prefix = zfb_types::dev_mount_prefix(opts.base.as_deref());
     let state = AppState {
+        mode: opts.mode,
         pages: opts.pages,
         broadcast: opts.broadcast,
         plugins: opts.plugins,

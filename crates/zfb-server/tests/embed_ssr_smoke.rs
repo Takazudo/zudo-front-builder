@@ -115,6 +115,7 @@ async fn boot_with_plugins(
     let addr = listener.local_addr().unwrap();
 
     let state = AppState {
+        mode: zfb_server::ServerMode::Dev,
         pages,
         broadcast: tx,
         plugins,

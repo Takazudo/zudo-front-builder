@@ -257,6 +257,7 @@ impl Server {
     {
         let base_prefix = zfb_types::dev_mount_prefix(self.base.as_deref());
         let state = AppState {
+            mode: self.mode,
             pages: self.pages,
             broadcast: self.broadcast,
             plugins: self.plugins,
