@@ -92,6 +92,16 @@ pub enum PathClass {
     /// `package.json`, …) but the graph will return an empty dirty set
     /// and nothing happens.
     Unclassified,
+
+    /// A file change outside the project root that came in via the
+    /// `extraWatchPaths` channel (issue #368). The user explicitly
+    /// opted in to watching that path; the watcher fires on ANY change
+    /// there regardless of extension, so we trigger a conservative
+    /// rebuild instead of consulting the graph (which has no edges for
+    /// out-of-root files and would silently no-op for anything except
+    /// the whitelisted extensions — e.g. `logo.png`, `schema.graphql`,
+    /// `*.lock`). Deep-review regression fix (PR #376).
+    External,
 }
 
 /// Classify a path against the standard zfb project layout.
@@ -132,14 +142,27 @@ pub fn classify_change(
     // under a directory called `public`, `styles`, `components`, etc.
     //
     // For out-of-root paths we skip the root-segment scan entirely and
-    // drop straight to the extension sniff. The orchestrator then
-    // routes via the dependency graph; since the graph has no edges
-    // for out-of-root paths, the resolver falls back to
-    // `PageSelection::All` (a broader, conservative rebuild). This
-    // is the documented contract for `extraWatchPaths`.
+    // try the extension sniff. Whitelisted extensions still classify
+    // as Content/Style/Module/Data (the Page/Module/Content/Data branch
+    // in `plan_for_changes` already falls back to `PageSelection::All`
+    // when the graph has no edges, so those re-render).
+    //
+    // Non-whitelisted extensions (`.png`, `.graphql`, `.lock`, …) used
+    // to classify as `Unclassified`, which `plan_for_changes` then
+    // silently no-op'd — the user explicitly opted in to watching that
+    // path but the watcher tick produced zero rebuild. Re-route those
+    // through `External` instead so the orchestrator triggers a
+    // conservative full rebuild. Deep-review fix (PR #376).
     let project_relative = match path.strip_prefix(project_root) {
         Ok(rel) => rel,
-        Err(_) => return classify_by_extension(lower_ext.as_deref()),
+        Err(_) => {
+            let class = classify_by_extension(lower_ext.as_deref());
+            return if class == PathClass::Unclassified {
+                PathClass::External
+            } else {
+                class
+            };
+        }
     };
     let mut comps = project_relative.components().peekable();
 
@@ -506,17 +529,65 @@ mod tests {
             ),
             PathClass::Data,
         );
-        // Unknown extension on an out-of-root path stays Unclassified —
-        // that is the documented edge (the orchestrator's broader
-        // rebuild still applies via dirty_pages → All when graph has
-        // no edges for the path).
+        // Unknown extension on an out-of-root path used to classify as
+        // `Unclassified` — but the `Unclassified` branch in
+        // `plan_for_changes` does NOT fall back to `PageSelection::All`,
+        // so edits to e.g. `logo.png` or `schema.graphql` under an
+        // extra watch root silently produced no rebuild. Deep-review
+        // fix (PR #376) re-routes those to `External`, which the
+        // orchestrator maps to a conservative full rebuild.
         assert_eq!(
             classify_change(
                 Path::new("/srv/shared/pages/notes.bin"),
                 proj(),
                 never_global,
             ),
-            PathClass::Unclassified,
+            PathClass::External,
+        );
+    }
+
+    /// Deep-review regression (PR #376): files under an extra watch
+    /// path with non-whitelisted extensions classify as `External`.
+    /// Cover the documented cases — `logo.png`, `schema.graphql`,
+    /// `*.lock` files — that the previous Unclassified behaviour
+    /// silently no-op'd in `plan_for_changes`.
+    #[test]
+    fn out_of_root_non_whitelisted_extensions_are_external() {
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/assets/logo.png"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/api/schema.graphql"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/lockfiles/pnpm-lock.yaml"),
+                proj(),
+                never_global,
+            ),
+            // .yaml IS in the whitelist (Data), so this stays Data. The
+            // assertion confirms whitelisted extensions are unaffected
+            // by the External re-route.
+            PathClass::Data,
+        );
+        // No extension at all under an extra watch root → External.
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/Makefile"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
         );
     }
 }

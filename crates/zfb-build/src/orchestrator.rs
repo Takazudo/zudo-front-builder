@@ -253,6 +253,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
                     plan.mark_pages(dirty);
                 }
+                PathClass::External => {
+                    // An out-of-root file change from the
+                    // `extraWatchPaths` channel (issue #368). The user
+                    // opted in to watching that path; the graph has no
+                    // edges for it so consulting `dirty_pages` is a
+                    // no-op. Trigger a conservative `PageSelection::All`
+                    // rebuild so edits to e.g. `logo.png` or
+                    // `schema.graphql` under an extra watch root
+                    // actually re-render. Deep-review fix (PR #376).
+                    plan.mark_pages(PageSelection::All);
+                }
             }
         }
 
@@ -492,5 +503,36 @@ mod tests {
         let orch = make_orch(CountingPipeline::default());
         let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/some-random-thing")]);
         assert!(plan.is_noop());
+    }
+
+    /// Deep-review regression (PR #376): a file change OUTSIDE the
+    /// project root with a non-whitelisted extension (e.g. `logo.png`,
+    /// `schema.graphql`) used to silently no-op because the
+    /// `Unclassified` branch in `plan_for_changes` doesn't fall back to
+    /// `PageSelection::All`. The `External` variant added in the same
+    /// fix triggers a conservative full rebuild so the
+    /// `extraWatchPaths` feature actually fires when the watcher does.
+    #[test]
+    fn external_change_with_non_whitelisted_extension_triggers_full_rebuild() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/assets/logo.png")]);
+        assert!(
+            plan.pages.is_all(),
+            "external file with non-whitelisted extension must trigger PageSelection::All; got {:?}",
+            plan.pages,
+        );
+        // The orchestrator's policy doesn't decide CSS/islands re-runs
+        // for External — only pages. CSS / islands stay false unless
+        // the user's other changes set them.
+    }
+
+    /// Sister regression: a file with NO extension at all under an
+    /// extra watch root (e.g. `Makefile`, `Dockerfile`) also re-routes
+    /// through `External` and triggers a full rebuild.
+    #[test]
+    fn external_change_with_no_extension_triggers_full_rebuild() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/Makefile")]);
+        assert!(plan.pages.is_all());
     }
 }
