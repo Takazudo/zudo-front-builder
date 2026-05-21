@@ -394,6 +394,20 @@ pub struct AppState {
     /// hrefs after prefixing, so dev preview matches the canonical
     /// trailing-slash URL shape that `zfb build` emits to disk.
     pub trailing_slash: bool,
+
+    /// Optional shared handle to the current dev-mode islands bundle URL
+    /// (issue #377). When `Some` and the inner lock holds `Some(url)`,
+    /// every served HTML response in [`crate::ServerMode::Dev`] mode
+    /// has a `<script type="module" src="<url>"></script>` spliced into
+    /// `<head>` via [`zfb_build::head_inject::inject_prod_head_assets`].
+    /// `None` (outer) or `None` inside the lock both fall back to "no
+    /// injection" — projects without `"use client"` components must
+    /// not ship a script tag pointing at a non-existent bundle.
+    ///
+    /// Gated to Dev mode at the response-shaping site: Preview / Embed
+    /// callers never inject even if they accidentally pass a non-`None`
+    /// handle, so the production-shaped response contract is preserved.
+    pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
 }
 
 /// Build the axum router for the dev server.
@@ -533,6 +547,26 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
 ///
 /// The hint is HTML-escaped — `prefix` and `path` come from request
 /// data and could otherwise smuggle markup into the response.
+/// Read the current dev-mode islands bundle URL from the shared
+/// state handle, if any. Returns the locked string by clone so the
+/// caller can hold the result across the response build without
+/// keeping the read lock alive. A poisoned lock (writer panicked) is
+/// recovered into a non-poisoned guard rather than re-panicking — a
+/// dev-server crash on a stale lock would be the worst possible UX
+/// for a feature whose whole purpose is to make islands "just work"
+/// in dev.
+fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Option<String> {
+    let arc = handle.as_ref()?;
+    let guard = arc.read().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "AppState.islands_bundle_url",
+            "rwlock poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    guard.clone()
+}
+
 fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
@@ -555,6 +589,11 @@ fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) ->
         // so the trailing-slash post-process is a no-op either way.
         false,
         mode,
+        // The unprefixed 404 page is a static body with no `<head>`
+        // anchor, so the islands splicer would no-op anyway. Pass None
+        // to keep the surface tight — this handler has no AppState in
+        // scope.
+        None,
     )
 }
 
@@ -737,6 +776,7 @@ async fn serve_page(
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
             )
             .await;
         }
@@ -767,6 +807,7 @@ async fn serve_page(
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
             );
         }
     }
@@ -824,6 +865,7 @@ async fn serve_page(
             lr_prefix,
             state.trailing_slash,
             state.mode,
+            current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
         );
     }
 
@@ -854,6 +896,7 @@ async fn serve_page(
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
             );
         }
     }
@@ -868,6 +911,7 @@ async fn serve_page(
         lr_prefix,
         state.trailing_slash,
         state.mode,
+        current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
     )
 }
 
@@ -1105,6 +1149,7 @@ async fn dispatch_ssr(
     lr_prefix: &str,
     add_trailing_slash: bool,
     mode: crate::ServerMode,
+    islands_bundle_url: Option<&str>,
 ) -> Response {
     let mut req_headers: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
@@ -1145,6 +1190,7 @@ async fn dispatch_ssr(
         lr_prefix,
         add_trailing_slash,
         mode,
+        islands_bundle_url,
     );
     // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
     // …). Skip headers `page_response_bytes` already wrote
@@ -1389,7 +1435,8 @@ fn lookup_keys(path: &str) -> Vec<String> {
 /// `add_trailing_slash` mirrors `zfb.config.ts`'s `trailingSlash` field
 /// so the dev-mode rewrite shape matches the canonical build-mode
 /// shape (sub #234 / zudolab/zudo-doc#1579).
-fn page_response_bytes(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn page_response_bytes(
     status: StatusCode,
     body: Vec<u8>,
     content_type: &str,
@@ -1397,6 +1444,7 @@ fn page_response_bytes(
     base_prefix: &str,
     add_trailing_slash: bool,
     mode: crate::ServerMode,
+    islands_bundle_url: Option<&str>,
 ) -> Response {
     // Live-reload script injection and the default `Cache-Control: no-
     // store` shaping are Dev-only — Preview and Embed callers want
@@ -1404,6 +1452,22 @@ fn page_response_bytes(
     // cache busting that would defeat a host's own caching policy).
     let is_dev = matches!(mode, crate::ServerMode::Dev);
     let inject_reload = inject_reload && is_dev;
+    // Issue #377: dev-mode initial-load injection of the islands
+    // `<script type="module">` tag. Gated to Dev mode so Preview/Embed
+    // callers never ship the unhashed `/assets/islands.js` URL — that
+    // would defeat production hashing for embedders running this server
+    // off a built `dist/`. Also gated to HTML responses (`inject_reload`
+    // doubles as the is-HTML signal — both flips are set by the same
+    // call-site logic). When the bundle URL is empty/whitespace it is
+    // treated as absent (the bin crate seeds the handle with `None`
+    // when no `"use client"` islands exist).
+    let islands_script_url = if is_dev && inject_reload {
+        islands_bundle_url
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    } else {
+        None
+    };
     let body_out: Vec<u8> = if inject_reload {
         // HTML should always be valid UTF-8; fall back to raw bytes on
         // the rare occasion it isn't so we don't panic in dev mode.
@@ -1433,7 +1497,25 @@ fn page_response_bytes(
                         Err(_) => Cow::Borrowed(html),
                     }
                 };
-                inject_livereload_with_prefix(&rewritten, base_prefix).into_bytes()
+                // Splice the islands `<script type="module">` tag into
+                // `<head>` first (so livereload's `</body>`-anchored
+                // tag still trails the rest of the body markup). The
+                // shared helper is idempotent and a passthrough for
+                // bodies that have no `</head>`.
+                let with_islands = match islands_script_url {
+                    Some(url) => {
+                        let assets = zfb_build::head_inject::ProdHeadAssets {
+                            css_url: None,
+                            island_module_urls: vec![url.to_string()],
+                        };
+                        Cow::Owned(
+                            zfb_build::head_inject::inject_prod_head_assets(&rewritten, &assets)
+                                .into_owned(),
+                        )
+                    }
+                    None => rewritten,
+                };
+                inject_livereload_with_prefix(&with_islands, base_prefix).into_bytes()
             }
             Err(_) => body,
         }
@@ -1483,6 +1565,7 @@ mod tests {
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 
@@ -1500,6 +1583,7 @@ mod tests {
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 
@@ -1943,6 +2027,7 @@ mod tests {
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 

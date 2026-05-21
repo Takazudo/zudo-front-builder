@@ -54,10 +54,29 @@ pub mod ssr;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
+
+/// Shared handle to the currently-emitted dev-mode islands bundle URL
+/// (issue #377).
+///
+/// `None` (outer) means "no islands path configured for this server"
+/// — the page handler skips head injection entirely. `Some(url)`
+/// inside the lock carries the public URL the dev orchestrator wrote
+/// last (`/assets/islands.js` for projects without a base prefix, or
+/// `/foo/assets/islands.js` when `base: "/foo/"` is configured).
+///
+/// Reads happen on every served HTML response in dev mode; writes happen
+/// once at boot and again on every islands-rebuild tick. The contention
+/// is one writer thread vs many short-lived readers — [`RwLock`] is
+/// the right shape (not a plain `Mutex`).
+///
+/// Cloning the [`Arc`] is cheap; the [`AppState`] holds one clone and the
+/// bin crate's `run_islands` callback holds another.
+pub type IslandsBundleUrl = Arc<RwLock<Option<String>>>;
 
 pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use embed_handlers::{
@@ -171,6 +190,28 @@ pub struct ServeOpts {
     /// struct entirely (they go through [`crate::ServerBuilder`]).
     #[doc(alias = "ServerMode")]
     pub mode: crate::ServerMode,
+
+    /// Shared handle to the current dev-mode islands bundle URL
+    /// (issue #377). `None` for projects with no `"use client"`
+    /// components (or when the bin crate has not seeded a bundle yet);
+    /// `Some(<arc>)` carrying a URL like `/assets/islands.js` that the
+    /// page handler splices into every served HTML response's `<head>`
+    /// via the byte-level helper in
+    /// [`zfb_build::head_inject::inject_prod_head_assets`].
+    ///
+    /// Dev-only: the page handler only consults this field when
+    /// `mode == ServerMode::Dev`. In Preview and Embed modes the dev
+    /// orchestrator does not seed the bundle URL anyway, but the gate
+    /// is also enforced at the response-shaping side
+    /// (see [`crate::routes::page_response_bytes`]) so an Embed caller
+    /// that accidentally passes a non-None value still gets
+    /// production-shaped output.
+    ///
+    /// The bin crate (`zfb dev`) builds this handle once at boot, hands
+    /// the same `Arc` to the orchestrator's `run_islands` callback (so
+    /// rebuild ticks rewrite the URL), and threads it into `ServeOpts`
+    /// before calling [`serve`].
+    pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
 }
 
 impl ServeOpts {
@@ -253,6 +294,7 @@ where
         public_root: opts.public_root.clone(),
         base_prefix,
         trailing_slash: opts.trailing_slash,
+        islands_bundle_url: opts.islands_bundle_url,
     };
     let router = build_router(state);
 

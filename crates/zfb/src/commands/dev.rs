@@ -386,6 +386,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
         mode: zfb_server::ServerMode::Dev,
+        // Wired up in commit 3 once `run_islands` is built; for now the
+        // dev server keeps the pre-#377 behaviour of emitting no head
+        // script tag, but the field exists so the struct literal stays
+        // exhaustive.
+        islands_bundle_url: None,
     };
 
     output::ready(&format!("http://{host}:{port}"));

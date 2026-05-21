@@ -276,6 +276,11 @@ impl Server {
             public_root: self.public_root.clone(),
             base_prefix,
             trailing_slash: self.trailing_slash,
+            // Embed callers do not get the dev-mode islands head
+            // injection — the response shaper in `page_response_bytes`
+            // is gated to `ServerMode::Dev` anyway, but leaving the
+            // handle absent makes the no-injection contract obvious.
+            islands_bundle_url: None,
         };
         let router = build_router(state);
         let router = apply_request_extension_layer(router, self.request_extensions);
