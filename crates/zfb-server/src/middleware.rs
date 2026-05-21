@@ -44,13 +44,23 @@ pub(crate) type RequestExtensionInjector =
 /// each incoming request's extensions. `T: Clone + Send + Sync +
 /// 'static` is the minimum bound that lets the embed builder accept
 /// arbitrary host context types.
+///
+/// `T` is cloned per request. Hosts that hand a heavy value here (e.g.
+/// a large config struct, a connection pool) should wrap it themselves
+/// — `Arc<MyHeavyCtx>` or `Arc<MyPool>` — so each per-request clone is
+/// just a refcount bump. The middleware does not Arc-wrap on the
+/// caller's behalf because that would force handlers to dereference
+/// `req.extensions().get::<Arc<T>>()` instead of `get::<T>()`, leaking
+/// the wrapper into the public handler surface. Deep-review fix
+/// (PR #376) — earlier this closure called `Arc::new(value)` then
+/// `T::clone(&arc)`, which auto-deref'd back to T's clone and made
+/// the outer Arc dead code.
 pub(crate) fn make_injector<T>(value: T) -> RequestExtensionInjector
 where
     T: Clone + Send + Sync + 'static,
 {
-    let value = Arc::new(value);
     Arc::new(move |exts: &mut Extensions| {
-        exts.insert(T::clone(&value));
+        exts.insert(value.clone());
     })
 }
 

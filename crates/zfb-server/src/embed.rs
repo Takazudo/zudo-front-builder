@@ -206,9 +206,17 @@ impl Server {
                         }
                     };
 
+                    // Once `bind()` has returned Ok the listener is
+                    // accepting on a real port — `local_addr()` is a
+                    // syscall against an open fd that has never been
+                    // observed to fail in practice. `expect()` here
+                    // surfaces the impossible case loudly instead of
+                    // silently reporting port 0 back to the embed
+                    // caller's ServerHandle::addr (deep-review fix,
+                    // PR #376).
                     let actual = listener
                         .local_addr()
-                        .unwrap_or(bind);
+                        .expect("listener.local_addr() must succeed after bind");
                     // Signal boot success with the actual bound address
                     // before entering the serve loop.
                     let _ = boot_tx.send(Ok(actual));
@@ -272,9 +280,14 @@ impl Server {
         let router = build_router(state);
         let router = apply_request_extension_layer(router, self.request_extensions);
 
+        // See the matching expect() in `serve_in_thread` above —
+        // local_addr() against an Ok-bound listener is essentially
+        // infallible, and silently falling back to the requested
+        // `self.bind` (which may carry port 0 for an ephemeral bind)
+        // makes log/metrics noise.
         let actual = listener
             .local_addr()
-            .unwrap_or(self.bind);
+            .expect("listener.local_addr() must succeed after bind");
         info!(
             addr = %actual,
             mode = ?self.mode,
@@ -395,10 +408,25 @@ impl ServerBuilder {
     /// Multiple calls accumulate. Patterns are matched in registration
     /// order on every request, and the **first** pattern that matches
     /// claims the request — subsequent registrations with overlapping
-    /// patterns are unreachable. Registered handlers short-circuit the
-    /// server's other request-time and static-file fall-throughs (see
-    /// the `with_ssr_handler` section of the embed-as-library guide for
-    /// the full precedence table).
+    /// patterns are unreachable.
+    ///
+    /// ## Precedence
+    ///
+    /// On every page-shaped request the router consults handlers in
+    /// this order (highest priority first):
+    ///
+    /// 1. plugin dev-middleware (longest-prefix match),
+    /// 2. **embed handlers registered here** (`with_ssr_handler`),
+    /// 3. request-time JS SSR ([`crate::ssr::SsrRouteSet`]),
+    /// 4. in-memory page cache (SSG output),
+    /// 5. `<dist>/...` on-disk fallback,
+    /// 6. `<public>/...` on-disk fallback,
+    /// 7. dev 404 body.
+    ///
+    /// So a Rust handler wins over the JS SSR dispatcher and the static
+    /// file fall-throughs but is shadowed by a plugin that claims the
+    /// same path. Deep-review doc fix (PR #376) — the previous comment
+    /// implied only "Rust > SSR" and didn't mention the plugin layer.
     pub fn with_ssr_handler<F, Fut, R>(mut self, pattern: impl Into<String>, handler: F) -> Self
     where
         F: Fn(Request<Body>, RouteParams) -> Fut + Send + Sync + 'static,
