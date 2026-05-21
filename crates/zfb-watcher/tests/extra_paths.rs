@@ -37,12 +37,23 @@ async fn extra_absolute_path_fires_rebuild_on_write() {
     )
     .expect("start watcher with extras");
 
+    // Nest the edited file under a sub-directory with a deliberately
+    // neutral name (no collision with any in-tree root names such as
+    // `pages` / `content` / `styles` / `public` / `components` /
+    // `src` / `data` / `layouts` / `lib`). The watcher itself does not
+    // care about the path shape, but this keeps the test future-proof
+    // against downstream classifier changes (issue #368 fix added a
+    // strip-prefix check that would have made an unlucky `tempXXX`
+    // dir name interact with this test).
+    let notes_dir = extra_canonical.join("notes");
+    fs::create_dir_all(&notes_dir).expect("create notes dir");
+
     // Give notify a beat to register its OS-level watch on the extra
     // path before we mutate it. Otherwise on slower CI machines the
     // first event can race the kernel-side registration.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let target = extra_canonical.join("note.md");
+    let target = notes_dir.join("a.md");
     fs::write(&target, b"# extra-path edit\n").expect("write extra-path file");
 
     // Assertion: a rebuild event fires. We do NOT assert exact kind or

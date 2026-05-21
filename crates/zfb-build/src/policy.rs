@@ -118,14 +118,34 @@ pub fn classify_change(
         return PathClass::Global;
     }
 
-    // Anchor at project_root when possible. Absolute paths from notify
-    // typically start with the project root; relative paths and paths
-    // outside the root fall through to the unstripped walk.
-    let project_relative = path.strip_prefix(project_root).unwrap_or(path);
+    let lower_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    // Out-of-root paths (the `extraWatchPaths` channel — issue #368)
+    // must NOT walk their absolute components looking for in-tree root
+    // names. An external path like `/srv/shared/public/foo.md` would
+    // otherwise match the `public` segment and silently classify as
+    // `Asset` (no rebuild fires), making the advertised feature
+    // unreliable for any user whose external tree happens to nest
+    // under a directory called `public`, `styles`, `components`, etc.
+    //
+    // For out-of-root paths we skip the root-segment scan entirely and
+    // drop straight to the extension sniff. The orchestrator then
+    // routes via the dependency graph; since the graph has no edges
+    // for out-of-root paths, the resolver falls back to
+    // `PageSelection::All` (a broader, conservative rebuild). This
+    // is the documented contract for `extraWatchPaths`.
+    let project_relative = match path.strip_prefix(project_root) {
+        Ok(rel) => rel,
+        Err(_) => return classify_by_extension(lower_ext.as_deref()),
+    };
     let mut comps = project_relative.components().peekable();
 
     // Skip leading `/` / drive prefixes / `RootDir` components (only
-    // possible when strip_prefix did not fire).
+    // possible when the relative path itself started with one — rare
+    // but defensible).
     while let Some(c) = comps.peek() {
         if matches!(c, Component::Prefix(_) | Component::RootDir) {
             comps.next();
@@ -133,11 +153,6 @@ pub fn classify_change(
             break;
         }
     }
-
-    let lower_ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase());
 
     // Walk components looking for the first root we recognise.
     for comp in comps {
@@ -167,7 +182,14 @@ pub fn classify_change(
     }
 
     // Fall back to extension sniffing.
-    match lower_ext.as_deref() {
+    classify_by_extension(lower_ext.as_deref())
+}
+
+/// Classify a path by its extension alone, without any directory-name
+/// inspection. Shared between the in-tree root-segment-walk fallback
+/// and the out-of-root extra-watch-path branch.
+fn classify_by_extension(ext: Option<&str>) -> PathClass {
+    match ext {
         Some("css") => PathClass::Style,
         Some("md") | Some("mdx") => PathClass::Content,
         Some("ts") | Some("tsx") | Some("js") | Some("jsx") => PathClass::Module,
@@ -441,5 +463,60 @@ mod tests {
         assert!(pol.is_islands_candidate(Path::new("/proj/components/Counter.tsx")));
         assert!(!pol.is_islands_candidate(Path::new("/proj/pages/index.tsx")));
         assert!(!pol.is_islands_candidate(Path::new("/proj/content/x.md")));
+    }
+
+    #[test]
+    fn out_of_root_paths_skip_root_segment_walk() {
+        // Issue #368 regression: an `extraWatchPaths` entry like
+        // `/srv/shared/public/foo.md` is OUTSIDE the project root, and
+        // the segment named `public` in its absolute path must NOT
+        // make the classifier return `PathClass::Asset` — that branch
+        // does nothing in the orchestrator and the live reload never
+        // fires. The classifier must skip the root-segment walk for
+        // out-of-root paths and drop straight to extension sniff.
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/public/foo.md"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Content,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/styles/site.css"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Style,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/components/Widget.tsx"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Module,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/data/site.json"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Data,
+        );
+        // Unknown extension on an out-of-root path stays Unclassified —
+        // that is the documented edge (the orchestrator's broader
+        // rebuild still applies via dirty_pages → All when graph has
+        // no edges for the path).
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/pages/notes.bin"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Unclassified,
+        );
     }
 }
