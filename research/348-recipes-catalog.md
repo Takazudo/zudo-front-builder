@@ -162,3 +162,28 @@ Files touched outside the primary `research/348-recipes-catalog.md` deliverable.
 `docs/astro.config.ts` was **not** modified. The sidebar is driven by `_category_.json` files plus per-file `sidebar_position` — no `astro.config.ts` entry is required for a new top-level section.
 
 The task prompt referred to `docs/astro.config.mjs`; the actual file in this repo is `docs/astro.config.ts`. Same role, different extension. No edit was needed either way.
+
+## 8. Post-investigation revision (maintainer direction)
+
+After the investigation completed, the maintainer revised the scope: the catalog should ship in a **WIP-only state** for now, with the actual recipe content authored later in a different format than the seed-recipe drafts produced here.
+
+Reasoning (paraphrased):
+
+- Recipe content needs to be **written as standalone explanation articles** — "1 topic, 1 article" — for someone who has not seen the source project the pattern came from.
+- The zzmod-derived seed drafts were too close to "code snippets with frontmatter" and not enough like the explanation-shaped articles the maintainer wants. Re-authoring later is cheaper than retrofitting.
+- The strict Zod schema is **deferred** for the same reason: shape it when the first real recipe is being written, not before.
+
+### What was kept
+
+- `docs/src/content/docs/recipes/` — the category directory
+- `docs/src/content/docs/recipes/_category_.json` — sidebar label + position
+- `docs/src/content/docs/recipes/index.mdx` — rewritten as a short placeholder that announces the WIP status, frames the eventual style (1 topic per article, explanation-shaped, maintainer-curated), and explicitly states the section is empty for now
+
+### What was dropped
+
+- The three seed recipes (`sitemap-from-ctx-routes.mdx`, `ogp-suffix-convention.mdx`, `virtual-metadata-db.mdx`) — removed in the same revision
+- The strict `recipe` Zod object in `docs/src/content.config.ts` — reverted (the schema can return when real recipes are authored)
+
+### What this means for the PR
+
+The PR's deliverable narrows from "3 seed recipes + strict schema + policy doc" to "category slot + WIP index placeholder." The discipline analysis in §3 of this findings doc is preserved as a record of the trade-off space — it informs the future content but does not gate it.
