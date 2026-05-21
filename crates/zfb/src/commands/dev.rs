@@ -58,6 +58,14 @@
 //! for the detailed gap analysis. Today the dev renderer reuses the
 //! same plumbing and inherits the same limitations.
 
+// V8-off (issue #371, sub-task 4.1a): on the `!feature = "embed_v8"`
+// path the `pub async fn run` body and the V8-bearing helpers below
+// are compiled out. The imports, helper functions, and types they
+// reference then look unused — silence the lints in that
+// configuration so V8-off builds stay warning-clean. The V8-on path
+// continues to surface real unused-item warnings.
+#![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
+
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -103,6 +111,12 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
 ];
 
 /// Entry point for `zfb dev`.
+///
+/// Available only when the `embed_v8` cargo feature is on (issue #371,
+/// sub-task 4.1a). The V8-off counterpart lives at the bottom of this
+/// file and surfaces a clear runtime error explaining that this binary
+/// was built without V8 support.
+#[cfg(feature = "embed_v8")]
 pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
@@ -419,6 +433,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     result
 }
 
+/// V8-off stub for `zfb dev` (issue #371, sub-task 4.1a).
+///
+/// `zfb dev` needs the embedded V8 host to render pages. When the
+/// `embed_v8` cargo feature is off this binary was built without that
+/// host, so we surface a clear error at the call site instead of
+/// compiling a partial pipeline that would silently hand back empty
+/// pages.
+#[cfg(not(feature = "embed_v8"))]
+pub async fn run(_args: &DevArgs) -> Result<()> {
+    anyhow::bail!(
+        "zfb was built without V8 support (`--no-default-features` / \
+         `embed_v8 = off`); `zfb dev` requires the embedded V8 host to \
+         render pages. Rebuild with default features (`cargo build`) \
+         or with `--features embed_v8` to enable this command."
+    )
+}
+
 /// Compute the manifest digest for the current project, or return
 /// `None` if the digest itself could not be computed (e.g. permission
 /// denied while walking sources). On `None` the caller should bypass
@@ -639,6 +670,10 @@ impl Drop for DevRenderInner {
 /// fall back to a noop renderer or hard-fail. Today the dev command
 /// chooses to fall back so the user still gets a reachable HTTP server
 /// while they fix the underlying issue.
+// `boot_dev_renderer` constructs the long-lived dev RendererState
+// backed by the in-process V8 host. Compiled in only when the
+// `embed_v8` feature is on (issue #371, sub-task 4.1a).
+#[cfg(feature = "embed_v8")]
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
@@ -959,6 +994,10 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 /// inside the running V8 host — `BuildContext::reload_renderer` is
 /// `None` in dev today. The next dev-server restart picks up the new
 /// code. Wiring `reload_renderer` is a follow-up for a future sub-task.
+///
+/// Compiled in only when the `embed_v8` feature is on (issue #371,
+/// sub-task 4.1a) — the SSR adapter requires the V8 host.
+#[cfg(feature = "embed_v8")]
 fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRouteSet> {
     let session = session?;
     let patterns = session.ssr_patterns();
