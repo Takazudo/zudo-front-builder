@@ -26,4 +26,9 @@ path = "src/main.rs"
 zfb-server = { path = "../../" }
 anyhow = "1"
 axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+# `net` + `io-util` are required for `tokio::net::TcpStream` and
+# `tokio::io::{AsyncReadExt, AsyncWriteExt}` in src/main.rs. Cargo's
+# workspace feature unification often turns these on transitively via
+# zfb-server, but declaring them explicitly here makes the example
+# manifest a complete copy-paste recipe.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net", "io-util"] }
