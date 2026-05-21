@@ -41,9 +41,11 @@
 //! a different runtime (Cloudflare Workers, an edge CDN, …) and must
 //! not pull in `zfb-server`.
 
+pub mod embed;
 pub mod injected_routes;
 pub mod inject;
 pub mod livereload;
+pub mod middleware;
 pub mod plugin_middleware;
 pub mod routes;
 pub mod ssr;
@@ -56,6 +58,7 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
 
+pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use injected_routes::{
     pattern_matches, InjectedRouteRecord, InjectedRouteSet,
