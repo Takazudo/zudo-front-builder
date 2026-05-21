@@ -30,6 +30,34 @@ All keys are camelCase and mirror `crates/zfb/src/config.rs`.
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
 - `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
 - `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs.
+- `extraWatchPaths?: string[]` — extra absolute filesystem paths the dev watcher follows in addition to the in-project source roots. See [Watching paths outside the project root](#watching-paths-outside-the-project-root).
+
+## Watching paths outside the project root
+
+`extraWatchPaths` lets `zfb dev` live-reload when files outside the project tree change — useful when a project reads content from a sibling repo, a `file:` dep that ships content alongside code, or a shared filesystem directory.
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  extraWatchPaths: [
+    "/home/me/knowledge-base",
+    "/srv/shared-content",
+  ],
+});
+```
+
+Semantics:
+
+- **Absolute paths only.** Each entry must be an absolute path. Relative paths are rejected at config-load with an `extraWatchPaths[N]: ... must be an absolute path` error — the dev watcher registers each entry verbatim, outside the project root, so it has no anchor to resolve a relative path against.
+- **Canonicalisation.** Each entry is canonicalised (`Path::canonicalize`) once when `zfb dev` boots. Symlinks are resolved; downstream events reach the rebuild logic with the canonical form, so the path the watcher emits matches the form you'd see by running `realpath` on the configured value.
+- **Missing-at-boot.** If a configured path does not exist at the moment `zfb dev` starts, it is skipped with a warning. The watcher does **not** poll for the path to appear later — if you create the directory after the dev server is already running, restart `zfb dev` to pick it up.
+- **Recursive.** Each entry is watched recursively. Sub-directories created after boot are picked up automatically by the OS-level recursive watch.
+- **Rebuild scope.** Events from these paths fall outside the dependency graph's coverage (the graph only tracks in-tree edges), so they conservatively trigger broader rebuilds than equivalent in-tree edits. The trade-off is intentional: correctness over precision for out-of-root sources.
+
+**Security note.** Opt-in only — do **not** point this at unbounded directories like `$HOME` or `/`. On Linux the recursive watcher registers every subdirectory and can quickly hit the inotify `max_user_watches` ceiling (default ~8192 on many distributions) on a large tree. If you need to watch a sprawling source, watch the narrowest sub-tree that contains the files you actually edit.
+
+This is a dev-mode feature. Production builds (`zfb build`) snapshot the filesystem once and do not rely on watcher events, so `extraWatchPaths` has no effect on shipped output.
 
 ## Examples
 
