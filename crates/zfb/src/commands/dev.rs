@@ -78,8 +78,8 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, OrchestratorConfig,
-    PageRenderer, RelDistPath, RenderedPage,
+    BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, IslandsBundleInfo,
+    IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -206,9 +206,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Some(zfb_server::InjectedRouteSet::new(records))
     };
     // #261 — build mode wires `aliases` + `virtual_modules` into the esbuild
-    // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev-mode
-    // per-island bundling (`run_islands`) is not yet wired in the orchestrator
-    // (`run_islands: None` below); that wiring will land in a follow-up wave.
+    // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev mode
+    // (#377 wiring below) reuses the same setup_registries-derived alias /
+    // virtual-module lists to drive its own islands bundle so dev and build
+    // agree on plugin-registered resolution.
 
     // #260 — pre-fetch all virtual-module sources once so the embedded V8 host
     // can resolve plugin-registered virtual modules at runtime. Each
@@ -269,8 +270,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &project_root,
         &cfg,
         v8_plugin_hooks,
-        dev_plugin_alias_entries,
-        dev_plugin_virtual_modules,
+        dev_plugin_alias_entries.clone(),
+        dev_plugin_virtual_modules.clone(),
     ) {
         Ok(s) => Some(s),
         Err(err) => {
@@ -332,11 +333,132 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         None => Arc::new(|_pages: &[PageId]| Ok(Vec::new())),
     };
 
+    // Issue #377 — dev-mode initial-load islands bundling.
+    //
+    // Build the same IslandsPluginConfig the production runner uses so dev
+    // and build resolve aliases / virtual modules identically inside the
+    // islands esbuild invocation. Then:
+    //
+    // 1. Run an initial bundle eagerly here, before the dev server starts
+    //    accepting requests, so the FIRST GET on a page with an island
+    //    already sees a `<script type="module" src="/assets/islands.js">`
+    //    in the served HTML (the bug the issue reports — without this
+    //    initial pass the orchestrator would only emit the bundle on
+    //    the first file-change tick, leaving cold-boot page loads silent).
+    // 2. Seed `islands_bundle_url` with the result (or leave it `None` when
+    //    the project has no `"use client"` components — projects without
+    //    islands must not ship a `<script>` tag pointing at a non-existent
+    //    bundle).
+    // 3. Wire the same wrapper as the orchestrator's `run_islands` callback
+    //    so a watcher tick re-bundles, rewrites the shared URL handle, and
+    //    surfaces an `IslandsBundleInfo` that flows through the existing
+    //    `outcome_to_events` -> SSE `Islands` event path (the dev livereload
+    //    client then re-imports the new bundle in place).
+    // Reuse the alias / virtual-module lists already derived from
+    // `setup_registries` higher up (so the islands esbuild and the main
+    // dev bundler resolve plugin-registered modules identically).
+    let islands_plugin_config = crate::commands::build::IslandsPluginConfig {
+        alias_entries: dev_plugin_alias_entries.clone(),
+        virtual_modules: dev_plugin_virtual_modules.clone(),
+    };
+    let asset_url_prefix = crate::config::asset_url_base_prefix(cfg.base.as_deref());
+    let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
+        Arc::new(std::sync::RwLock::new(None));
+
+    // Eager initial bundle. Failures are non-fatal — we warn and let the
+    // dev server boot anyway. The hot-rebuild path will retry on the next
+    // file change so a transient esbuild hiccup at boot doesn't strand the
+    // user. Pre-existing islands assets on disk from a previous build are
+    // also overwritten by this call (the bundler always writes to the
+    // stable path), keeping dev's view of `/assets/islands.js` consistent
+    // with the source tree.
+    match crate::commands::build::build_default_islands_payload(
+        &project_root,
+        &dist_root,
+        &islands_plugin_config,
+    ) {
+        Ok(Some(payload)) => {
+            let url = if asset_url_prefix.is_empty() {
+                payload.stable_url
+            } else {
+                format!("{asset_url_prefix}{}", payload.stable_url)
+            };
+            if let Ok(mut guard) = islands_bundle_url_handle.write() {
+                *guard = Some(url);
+            }
+        }
+        Ok(None) => {
+            // No `"use client"` islands in the project. Leave the handle
+            // at `None` so the server skips head injection entirely.
+        }
+        Err(err) => {
+            output::warn(format!(
+                "initial islands bundle failed (no <script type=\"module\"> \
+                 will be injected until the next successful rebuild): {err:#}"
+            ));
+        }
+    }
+
+    let run_islands: Option<IslandsRunner> = {
+        let project_root = project_root.clone();
+        let dist_root_for_islands = dist_root.clone();
+        let plugin_cfg = islands_plugin_config.clone();
+        let asset_url_prefix = asset_url_prefix.clone();
+        let url_handle = Arc::clone(&islands_bundle_url_handle);
+        Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
+            let payload = match crate::commands::build::build_default_islands_payload(
+                &project_root,
+                &dist_root_for_islands,
+                &plugin_cfg,
+            )? {
+                Some(p) => p,
+                None => return Ok(None),
+            };
+            let bundle_url = if asset_url_prefix.is_empty() {
+                payload.stable_url
+            } else {
+                format!("{asset_url_prefix}{}", payload.stable_url)
+            };
+            // Rewrite the shared handle so the next initial GET (a fresh
+            // browser tab, or a page that has not yet hydrated) sees the
+            // current bundle URL. The dev server holds the same Arc, so
+            // this is visible without re-routing through ServeOpts.
+            //
+            // Treat lock poisoning as a soft event: a writer panic should
+            // not abort the watcher loop. Recover the inner and continue.
+            let mut guard = url_handle.write().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "dev.run_islands.url_handle",
+                    "rwlock poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            // The bundler does not currently surface a "bytes-changed" bit
+            // back through `build_default_islands_payload` — the URL stays
+            // stable (`/assets/islands.js`) on every rebuild, the bytes on
+            // disk update in place. Report `changed = true` so the SSE
+            // layer always emits a reload event after a successful
+            // re-bundle; the browser then re-imports the URL with a
+            // cache-busting `?v=…` query that picks up the new bytes.
+            // `components` is empty because the build-side payload doesn't
+            // carry per-island names; the livereload client's empty-
+            // component path handles "unknown components" by reloading the
+            // whole bundle.
+            let info = IslandsBundleInfo {
+                changed: true,
+                bundle_url: bundle_url.clone(),
+                components: Vec::new(),
+            };
+            *guard = Some(bundle_url);
+            Ok(Some(info))
+        }))
+    };
+
     let ctx = BuildContext {
         dist_root: dist_root.clone(),
         render_pages,
         run_css: None,
-        run_islands: None,
+        run_islands,
         // The bundle-rebuild + renderer-reload wiring lands
         // here once the dev-mode bundler is available on a per-tick
         // basis; for now leave the hook empty so existing behaviour
@@ -386,11 +508,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         base: cfg.base.clone(),
         trailing_slash: cfg.trailing_slash,
         mode: zfb_server::ServerMode::Dev,
-        // Wired up in commit 3 once `run_islands` is built; for now the
-        // dev server keeps the pre-#377 behaviour of emitting no head
-        // script tag, but the field exists so the struct literal stays
-        // exhaustive.
-        islands_bundle_url: None,
+        // Issue #377: the dev server holds the same Arc as the
+        // `run_islands` callback above; rebuild ticks rewrite the
+        // inner Option, page responses read it on every served HTML
+        // request. Cloning the Arc is cheap (refcount bump).
+        islands_bundle_url: Some(Arc::clone(&islands_bundle_url_handle)),
     };
 
     output::ready(&format!("http://{host}:{port}"));

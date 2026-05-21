@@ -524,15 +524,15 @@ impl Drop for WorkerHandle {
 /// the islands bundler then produces output byte-identical to a build without
 /// any plugin hooks.
 #[derive(Debug, Default, Clone)]
-struct IslandsPluginConfig {
+pub(crate) struct IslandsPluginConfig {
     /// Alias entries derived from `SetupRegistries::aliases`. Each `(from, to)`
     /// pair becomes `--alias:<from>=<to>` on the esbuild subprocess.
-    alias_entries: Vec<(String, String)>,
+    pub(crate) alias_entries: Vec<(String, String)>,
     /// Virtual-module `(specifier, source)` pairs. The source text has been
     /// fetched from `PluginHost::invoke_virtual_loader` before this struct is
     /// constructed. Each entry causes a temp `.mjs` file to be written and an
     /// `--alias:<specifier>=<path>` flag to be added to esbuild.
-    virtual_modules: Vec<(String, String)>,
+    pub(crate) virtual_modules: Vec<(String, String)>,
 }
 
 /// Production runner — straight pass-throughs to the real bundler /
@@ -923,7 +923,7 @@ pub(crate) fn compute_css_module_class_maps(
 /// stable-named `dist/assets/islands.js` as a side effect; the
 /// renderer's HTML never references that stable file directly
 /// because the rewrite step swaps it for the hashed URL.
-fn build_default_islands_payload(
+pub(crate) fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
     plugin_config: &IslandsPluginConfig,
