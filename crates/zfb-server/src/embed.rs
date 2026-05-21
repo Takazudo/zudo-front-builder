@@ -285,11 +285,11 @@ impl Server {
 
 /// Builder for [`Server`]. Construct via [`Server::builder`].
 ///
-/// Required: a [`config_path`](ServerBuilder::config_path) call OR a
-/// pre-populated set of low-level options (the lower-level
-/// [`crate::serve_with_listener`] entry remains available for callers
-/// that need full control — see the doc-hidden helpers in this
-/// module).
+/// Required: a [`config_path`](ServerBuilder::config_path) call before
+/// [`build`](Self::build). Callers that need more control than
+/// `config_path` exposes (custom page cache, plugin host wiring, …)
+/// can drop to the lower-level [`crate::serve_with_listener`] entry
+/// directly — that path remains public and stable.
 pub struct ServerBuilder {
     bind: Option<SocketAddr>,
     mode: ServerMode,
@@ -361,25 +361,22 @@ impl ServerBuilder {
     }
 
     /// Finalise the builder into a [`Server`]. Reads
-    /// [`config_path`](Self::config_path) if set; otherwise the embed
-    /// caller must supply all fields via the lower-level escape hatch
-    /// (see [`Self::from_serve_opts`]).
+    /// [`config_path`](Self::config_path) if set.
     ///
     /// Errors when:
     ///
+    /// - `config_path` was not called (no way to resolve `dist_root`
+    ///   / `public_root`),
     /// - `config_path` is set but the file does not exist or fails to
     ///   parse (JSON only in this milestone; `.ts` is not yet loadable
-    ///   from this crate),
-    /// - neither `config_path` nor `from_serve_opts` was supplied (no
-    ///   way to resolve `dist_root` / `public_root`).
+    ///   from this crate).
     pub fn build(self) -> anyhow::Result<Server> {
         let config_path = self
             .config_path
             .ok_or_else(|| {
                 anyhow!(
                     "ServerBuilder::build: missing project source — call \
-                     `.config_path(...)` (or the doc-hidden \
-                     `from_serve_opts` helper) before `.build()`"
+                     `.config_path(...)` before `.build()`"
                 )
             })?;
 
@@ -407,35 +404,6 @@ impl ServerBuilder {
         })
     }
 
-    /// Doc-hidden escape hatch for tests and the bin crate: construct
-    /// a [`Server`] from a pre-populated [`crate::ServeOpts`] without
-    /// going through [`config_path`](Self::config_path). This is the
-    /// glue that lets the embed-API lifecycle smoke test run without
-    /// writing a fixture `zfb.config.json` to disk.
-    ///
-    /// Not counted toward the public-method budget for this sub-task
-    /// — it lives behind `#[doc(hidden)]` and is intended only for
-    /// internal callers. The supported public-facing entry stays
-    /// [`Self::config_path`].
-    #[doc(hidden)]
-    pub fn from_serve_opts(self, opts: crate::ServeOpts) -> Server {
-        let bind = self.bind.unwrap_or(opts.addr);
-        Server {
-            bind,
-            mode: self.mode,
-            project_root: opts.project_root,
-            dist_root: opts.dist_root,
-            public_root: opts.public_root,
-            base: opts.base,
-            trailing_slash: opts.trailing_slash,
-            pages: opts.pages,
-            broadcast: opts.broadcast,
-            plugins: opts.plugins,
-            injected_routes: opts.injected_routes,
-            ssr_routes: opts.ssr_routes,
-            request_extensions: self.request_extensions,
-        }
-    }
 }
 
 /// Runtime handle for a server started by [`Server::serve_in_thread`].
