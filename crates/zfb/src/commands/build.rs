@@ -1287,10 +1287,28 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `RouteUniverseEntry::route_key` that `BundlerInput::worker_only_routes`
     // filters against (`RouteEntry::entry_key`); both are the route
     // template string, so the filter matches by exact key.
+    //
+    // We must consult BOTH sources, mirroring `ssr_route_refs`:
+    //
+    // 1. `static_routes` — keyed by `route_key`.
+    // 2. `still_deferred` — keyed by `template` (the template IS the
+    //    route key for deferred entries; both sides of the prerender_map
+    //    join key by the route template string).
+    //
+    // Missing `still_deferred` would tree-shake deferred dynamic
+    // `prerender = false` routes out of the deploy adapter's runtime
+    // worker bundle — same shape as the #373 gate regression.
     let ssr_route_keys_for_runtime_bundle: std::collections::BTreeSet<String> = static_routes
         .iter()
         .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
         .map(|entry| entry.route_key.clone())
+        .chain(still_deferred.iter().filter_map(|entry| {
+            if prerender_map.get(&entry.template).copied().unwrap_or(true) {
+                None
+            } else {
+                Some(entry.template.clone())
+            }
+        }))
         .collect();
 
     // Fail fast if the runtime npm package isn't on disk — the renderer
@@ -4264,5 +4282,89 @@ mod tests {
         assert!(msg.contains("/api/:slug"), "{msg}");
         assert!(runner.bundle_calls.borrow().is_empty());
         assert!(runner.render_calls.borrow().is_empty());
+    }
+
+    /// Deep-review regression (PR #376): the SSR-route-key set handed to
+    /// the deploy adapter's runtime-only bundle pass must include
+    /// deferred-dynamic `prerender = false` routes. Mirrors the #373
+    /// gate fix one level down: a dynamic route with a non-literal
+    /// `paths()` sits in `still_deferred`, not `static_routes`. Earlier
+    /// versions of `ssr_route_keys_for_runtime_bundle` only iterated
+    /// `static_routes`, so the runtime worker bundle's tree-shake
+    /// dropped the deferred SSR page entirely — breaking the deploy
+    /// surface for projects that use runtime-expanded SSR.
+    #[test]
+    fn run_build_runtime_bundle_includes_deferred_dynamic_ssr_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        // SSG page so the build proceeds past the "no static routes"
+        // short-circuit and reaches adapter dispatch.
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+        // Dynamic [slug] page with prerender=false AND a non-literal
+        // paths() — the static extractor defers it, and the FakeRunner's
+        // eval_deferred_paths leaves it deferred (no V8 host in unit
+        // tests). The runtime-bundle SSR key set must STILL pick it up.
+        std::fs::write(
+            project_root.join("pages/api/[slug].tsx"),
+            "export const frontmatter = { title: \"Slug\" };\n\
+             export const prerender = false;\n\
+             export function paths() { return makePaths(); }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            zfb_router::Route {
+                source_path: PathBuf::from("pages/api/[slug].tsx"),
+                segments: vec![
+                    zfb_router::Segment::Static("api".into()),
+                    zfb_router::Segment::Dynamic("slug".into()),
+                ],
+                kind: zfb_router::RouteKind::Dynamic,
+                specificity: 0,
+                output_extension: None,
+            },
+        ];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+        // Two bundle calls: the full SSG bundle, then the runtime-only
+        // bundle for the adapter. The second carries worker_only_routes.
+        let calls = runner.bundle_calls.borrow();
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected one SSG bundle pass + one runtime-only bundle pass"
+        );
+        let worker_only = calls[1]
+            .worker_only_routes
+            .as_ref()
+            .expect("runtime-only bundle pass must set worker_only_routes");
+        assert!(
+            worker_only.contains("/api/:slug"),
+            "deferred-dynamic SSR route must reach the runtime bundle's \
+             worker_only_routes; got {:?}",
+            worker_only
+        );
     }
 }
