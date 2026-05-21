@@ -384,6 +384,41 @@ pub struct Config {
     /// the JSON / TS form `site` 1:1.
     #[serde(default)]
     pub site: Option<String>,
+
+    /// Extra absolute filesystem paths watched by the dev server in
+    /// addition to the project-root tree.
+    ///
+    /// Use this when project content sources its data from outside the
+    /// project root (a sibling knowledge-base repo, a shared filesystem
+    /// directory, a `file:` dep that ships content alongside code, etc.)
+    /// and you want `zfb dev` to live-reload when those external files
+    /// change.
+    ///
+    /// **Semantics (validated at config-load + applied by the dev
+    /// command):**
+    ///
+    /// - Each entry MUST be an absolute path. Relative paths are
+    ///   rejected at config-load with a clear error message.
+    /// - Each entry is canonicalised (`Path::canonicalize`) when the
+    ///   watcher boots — events match the canonical form.
+    /// - A path that does NOT exist at boot is skipped with a
+    ///   warning; the watcher does NOT re-watch the path if it
+    ///   appears later. Restart `zfb dev` after creating the path.
+    /// - Each entry is watched recursively.
+    /// - Events from outside the project root bypass fine-grained
+    ///   graph classification and may trigger a broader rebuild
+    ///   than equivalent in-tree edits (the dependency graph only
+    ///   tracks in-tree edges).
+    ///
+    /// **Security note:** opt-in only — do NOT point this at unbounded
+    /// directories like `$HOME` or `/`. The recursive watch will try to
+    /// register every subdirectory and (on Linux) hit the inotify
+    /// `max_user_watches` ceiling on large trees.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `extraWatchPaths` into this field.
+    #[serde(default)]
+    pub extra_watch_paths: Vec<PathBuf>,
 }
 
 impl Default for Config {
@@ -407,6 +442,7 @@ impl Default for Config {
             markdown: None,
             site: None,
             emit_routes_manifest: None,
+            extra_watch_paths: Vec::new(),
         }
     }
 }
@@ -1413,6 +1449,17 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             bail!(
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
                 b
+            );
+        }
+    }
+    for (i, p) in cfg.extra_watch_paths.iter().enumerate() {
+        if !p.is_absolute() {
+            bail!(
+                "extraWatchPaths[{i}]: {:?} must be an absolute path \
+                 (e.g. \"/home/user/notes\" or \"/srv/shared-content\"); \
+                 relative paths are not accepted because the dev watcher \
+                 registers each entry verbatim, outside the project root",
+                p
             );
         }
     }

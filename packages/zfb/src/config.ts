@@ -259,6 +259,38 @@ export type ZfbConfig = {
   markdown?: MarkdownConfig;
 
   /**
+   * Extra absolute filesystem paths watched by the dev server in
+   * addition to the project-root tree.
+   *
+   * Use this when project content reads from outside the project root
+   * (a sibling knowledge-base repo, a shared filesystem directory, a
+   * `file:` dep that ships content alongside code, etc.) and you want
+   * `zfb dev` to live-reload when those external files change.
+   *
+   * Semantics:
+   *
+   * - Each entry MUST be an absolute path. Relative paths are
+   *   rejected at config-load time with a clear error message.
+   * - Paths are canonicalised when the watcher boots; events match
+   *   the canonical form.
+   * - A path that does NOT exist at boot is skipped with a warning;
+   *   the watcher does NOT re-watch the path if it appears later.
+   *   Restart `zfb dev` after creating the path.
+   * - Each entry is watched recursively.
+   * - Events from outside the project root bypass fine-grained graph
+   *   classification and may trigger a broader rebuild than equivalent
+   *   in-tree edits.
+   *
+   * **Security note:** opt-in only — do NOT point this at unbounded
+   * directories like `$HOME` or `/`. On Linux the recursive watcher
+   * registers every subdirectory and can hit the inotify
+   * `max_user_watches` ceiling on large trees.
+   *
+   * Mirrors `Config::extra_watch_paths` in crates/zfb/src/config.rs.
+   */
+  extraWatchPaths?: string[];
+
+  /**
    * Whether `zfb build` writes the post-build route manifest to disk
    * at `<outDir>/__zfb/routes.json` (#347).
    *
