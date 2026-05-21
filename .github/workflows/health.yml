@@ -76,6 +76,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -84,6 +91,11 @@ jobs:
           # are not interchangeable (different feature set, different
           # rmeta).
           prefix-key: "v2-zfb-no-v8"
+
+      # crates/zfb/build.rs vendors framework npm packages (preact, react,
+      # etc.) from node_modules/.pnpm at compile time. Without this, the
+      # build script panics with "framework package preact@X.Y.Z not found".
+      - run: pnpm install --frozen-lockfile
 
       - name: cargo build (zfb, --no-default-features)
         run: cargo build --release --no-default-features -p zfb
