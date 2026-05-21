@@ -4914,6 +4914,7 @@ dependencies = [
  "zfb-router",
  "zfb-server",
  "zfb-toolchain-pins",
+ "zfb-types",
  "zfb-watcher",
 ]
 
@@ -5086,6 +5087,7 @@ dependencies = [
  "zfb-graph",
  "zfb-islands",
  "zfb-types",
+ "zfb-watcher",
 ]
 
 [[package]]

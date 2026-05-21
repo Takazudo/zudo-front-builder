@@ -74,9 +74,9 @@ use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
@@ -90,6 +90,8 @@ use crate::plugin_middleware::{
     DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
     PluginResponseEncoding,
 };
+use crate::embed_handlers::EmbedHandlerSet;
+use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
 ///
@@ -333,6 +335,15 @@ pub fn resolve_content_type(entry: &CachedPage, url_path: &str) -> String {
 /// Shared state for the route handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// Server mode — gates Dev-only behaviour at request time
+    /// (live-reload script injection, `/__zfb/reload` SSE endpoint,
+    /// `/__zfb/livereload.js` script endpoint, default
+    /// `Cache-Control: no-store` on HTML). Defaults to
+    /// [`crate::ServerMode::Dev`] for parity with the historical
+    /// behaviour of `serve_with_listener` callers (the `zfb dev` and
+    /// integration-test paths). The embed builder threads its own
+    /// `mode` value through verbatim.
+    pub mode: crate::ServerMode,
     /// Page cache that renderers populate.
     pub pages: PageCache,
     /// Live-reload broadcast sender — cloned per SSE subscription.
@@ -346,6 +357,19 @@ pub struct AppState {
     /// to surface the matched entrypoint (full evaluation through
     /// the page renderer lands in a follow-up).
     pub injected_routes: Option<crate::injected_routes::InjectedRouteSet>,
+    /// Request-time SSR routes (issue #367 / Gap 1). `None` when the
+    /// project has no `prerender = false` pages. When `Some`, the page
+    /// handler dispatches matched URLs through this set BEFORE
+    /// consulting the page cache — see the precedence contract on
+    /// [`crate::ssr`] for the full ordering.
+    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
+    /// Embed-API handler set populated by
+    /// [`crate::ServerBuilder::with_ssr_handler`] (#372). `None` in the
+    /// `zfb dev` / `zfb preview` paths; `Some` when a Rust host
+    /// registered one or more handlers. Dispatched in [`serve_page`]
+    /// after plugin dev-middleware but before the SSR dispatcher, so a
+    /// handler claiming the same path as a runtime-rendered page wins.
+    pub embed_handlers: Option<EmbedHandlerSet>,
     /// Build output directory, used as a disk fallback when a page is
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
@@ -370,6 +394,20 @@ pub struct AppState {
     /// hrefs after prefixing, so dev preview matches the canonical
     /// trailing-slash URL shape that `zfb build` emits to disk.
     pub trailing_slash: bool,
+
+    /// Optional shared handle to the current dev-mode islands bundle URL
+    /// (issue #377). When `Some` and the inner lock holds `Some(url)`,
+    /// every served HTML response in [`crate::ServerMode::Dev`] mode
+    /// has a `<script type="module" src="<url>"></script>` spliced into
+    /// `<head>` via [`zfb_build::head_inject::inject_prod_head_assets`].
+    /// `None` (outer) or `None` inside the lock both fall back to "no
+    /// injection" — projects without `"use client"` components must
+    /// not ship a script tag pointing at a non-existent bundle.
+    ///
+    /// Gated to Dev mode at the response-shaping site: Preview / Embed
+    /// callers never inject even if they accidentally pass a non-`None`
+    /// handle, so the production-shaped response contract is preserved.
+    pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
 }
 
 /// Build the axum router for the dev server.
@@ -433,6 +471,7 @@ pub fn build_router(state: AppState) -> Router {
     // outside-base 404 fallback.
     let redirect_target = format!("{prefix}/");
     let prefix_for_404 = prefix.clone();
+    let mode_for_404 = state.mode;
 
     build_core_router(state, &prefix)
         // Bare `/` lands the developer on the home page — but only `/`
@@ -452,7 +491,7 @@ pub fn build_router(state: AppState) -> Router {
         // the developer follows the hint.
         .fallback(get(move |uri: Uri| {
             let prefix = prefix_for_404.clone();
-            async move { unprefixed_404_response(&prefix, uri.path()) }
+            async move { unprefixed_404_response(&prefix, uri.path(), mode_for_404) }
         }))
         .layer(TraceLayer::new_for_http())
 }
@@ -475,9 +514,22 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
     let root_path = format!("{prefix}/");
     let wild_path = format!("{prefix}/{{*path}}");
 
-    Router::new()
-        .route(&livereload_path, get(livereload_js))
-        .route(&sse_path, get(sse_handler))
+    // Live-reload surface (`/__zfb/livereload.js` SSE script,
+    // `/__zfb/reload` SSE stream) is Dev-only. In Preview/Embed modes
+    // these endpoints stay unmounted so an embedder doesn't accidentally
+    // expose dev-server infrastructure on a production-shaped server.
+    // The HTML body never injects the script in those modes either —
+    // see [`page_response_bytes`] for the response-shaping side of the
+    // gate.
+    let is_dev = matches!(state.mode, crate::ServerMode::Dev);
+
+    let mut router = Router::new();
+    if is_dev {
+        router = router
+            .route(&livereload_path, get(livereload_js))
+            .route(&sse_path, get(sse_handler));
+    }
+    router
         .nest_service(&assets_mount, assets_service)
         // `any` (vs `get`) on the page-renderer mounts so user-registered
         // devMiddleware handlers can serve every HTTP method (zfb#230).
@@ -495,7 +547,27 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
 ///
 /// The hint is HTML-escaped — `prefix` and `path` come from request
 /// data and could otherwise smuggle markup into the response.
-fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
+/// Read the current dev-mode islands bundle URL from the shared
+/// state handle, if any. Returns the locked string by clone so the
+/// caller can hold the result across the response build without
+/// keeping the read lock alive. A poisoned lock (writer panicked) is
+/// recovered into a non-poisoned guard rather than re-panicking — a
+/// dev-server crash on a stale lock would be the worst possible UX
+/// for a feature whose whole purpose is to make islands "just work"
+/// in dev.
+fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Option<String> {
+    let arc = handle.as_ref()?;
+    let guard = arc.read().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "AppState.islands_bundle_url",
+            "rwlock poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    guard.clone()
+}
+
+fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
         html_escape(prefix),
@@ -509,12 +581,19 @@ fn unprefixed_404_response(prefix: &str, path: &str) -> Response {
         "text/html; charset=utf-8",
         // Inject the live-reload script with the prefix so the
         // 404 page silently upgrades when the developer fixes the URL
-        // and the matching page becomes reachable.
+        // and the matching page becomes reachable. `page_response_bytes`
+        // will silently drop the injection when `mode != Dev`.
         true,
         prefix,
         // Static 404 body — its `href="{prefix}/"` already ends in `/`,
         // so the trailing-slash post-process is a no-op either way.
         false,
+        mode,
+        // The unprefixed 404 page is a static body with no `<head>`
+        // anchor, so the islands splicer would no-op anyway. Pass None
+        // to keep the surface tight — this handler has no AppState in
+        // scope.
+        None,
     )
 }
 
@@ -551,9 +630,10 @@ pub async fn page_root(
     method: Method,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    serve_page(&state, "/", &uri, method, headers, body).await
+    serve_page(&state, "/", &uri, method, headers, extensions, body).await
 }
 
 /// Handler for `/*path` — serve any other rendered page or dispatch
@@ -565,9 +645,10 @@ pub async fn page_handler(
     method: Method,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    serve_page(&state, &path, &uri, method, headers, body).await
+    serve_page(&state, &path, &uri, method, headers, extensions, body).await
 }
 
 async fn serve_page(
@@ -576,6 +657,7 @@ async fn serve_page(
     uri: &Uri,
     method: Method,
     headers: HeaderMap,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
     // Strip any leading slash from the captured wildcard so we can
@@ -643,6 +725,63 @@ async fn serve_page(
         }
     }
 
+    // Issue #372 — Rust-side handlers registered through the embed API
+    // (`ServerBuilder::with_ssr_handler`). Dispatched after plugin
+    // dev-middleware (plugins always win) but before request-time SSR,
+    // so a Rust handler claiming a path that also has a JS
+    // runtime-rendered page short-circuits the JS dispatch. The handler
+    // signature is HTTP-shaped and domain-agnostic — see
+    // [`crate::embed_handlers`] for the dispatch contract.
+    if let Some(set) = state.embed_handlers.as_ref() {
+        let path_only = format!("/{trimmed}");
+        if let Some((handler, params)) = set.find_match(&path_only) {
+            return dispatch_embed_handler(
+                handler,
+                params,
+                uri,
+                &method,
+                &headers,
+                &extensions,
+                body.clone(),
+                state.base_prefix.as_deref(),
+            )
+            .await;
+        }
+    }
+
+    // Issue #367 (Gap 1) — request-time SSR for `prerender = false`
+    // pages. Slots in between plugin dev-middleware and the page-cache
+    // fallback so plugins keep their override capability, but pages
+    // that opted out of prerender always reach the V8 host instead of
+    // falling through to a stale dist snapshot. Like the plugin layer
+    // we accept every HTTP method here — the page's `fetch` handler
+    // decides whether to allow `POST`/`PUT`/etc. (mirroring Cloudflare).
+    if let Some(set) = state.ssr_routes.as_ref() {
+        let path_only = format!("/{trimmed}");
+        if set.find_match(&path_only).is_some() {
+            // Strip the dev server's mount prefix from the URL before
+            // dispatching so the SSR handler sees the same shape
+            // Cloudflare delivers in production. Without this fix a
+            // request to `/<base>/dynamic?x=1` would reach the V8 host
+            // as `/<base>/dynamic?x=1`, diverging from prod where the
+            // adapter serves the route at `/dynamic?x=1`.
+            let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                .unwrap_or_else(|| path_only.clone());
+            return dispatch_ssr(
+                set,
+                &full,
+                &method,
+                &headers,
+                &body,
+                lr_prefix,
+                state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+            )
+            .await;
+        }
+    }
+
     // No plugin handled this request. The dev page-cache fallback is
     // GET/HEAD-only — anything else 405s here so a misrouted POST does
     // not silently get treated as a page lookup.
@@ -667,6 +806,8 @@ async fn serve_page(
                 is_html,
                 lr_prefix,
                 state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
             );
         }
     }
@@ -723,6 +864,8 @@ async fn serve_page(
             is_html,
             lr_prefix,
             state.trailing_slash,
+            state.mode,
+            current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
         );
     }
 
@@ -752,6 +895,8 @@ async fn serve_page(
                 is_html,
                 lr_prefix,
                 state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
             );
         }
     }
@@ -765,6 +910,8 @@ async fn serve_page(
         true,
         lr_prefix,
         state.trailing_slash,
+        state.mode,
+        current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
     )
 }
 
@@ -976,6 +1123,201 @@ async fn dispatch_plugin(
     }
 }
 
+/// Dispatch one request through the SSR layer (issue #367 / Gap 1).
+///
+/// `path_only` is the URL path without the dev-server mount prefix —
+/// the V8 host receives URLs in their CF-adapter shape, not in their
+/// dev-server-mounted shape. Headers/body are forwarded verbatim so a
+/// `prerender = false` page can implement non-GET endpoints exactly
+/// the way it would in production.
+///
+/// The response is built via [`page_response_bytes`] so HTML bodies
+/// gain the live-reload `<script>` automatically. Non-HTML content
+/// types (`application/json`, RSS, etc.) skip injection — mirrors the
+/// page-cache content-type sniffing in [`serve_page`].
+/// `url_path` must be the path-and-query with the dev server's mount
+/// prefix (issue #229) already stripped. Production Cloudflare routes
+/// never see the dev prefix, so dev parity requires the same shape
+/// here.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_ssr(
+    set: &SsrRouteSet,
+    url_path: &str,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &Bytes,
+    lr_prefix: &str,
+    add_trailing_slash: bool,
+    mode: crate::ServerMode,
+    islands_bundle_url: Option<&str>,
+) -> Response {
+    let mut req_headers: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            req_headers.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    let req = SsrRequest {
+        method: method.as_str().to_string(),
+        url_path: url_path.to_string(),
+        headers: req_headers,
+        body: body.to_vec(),
+    };
+    let resp = match set.dispatcher.dispatch(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            return ssr_error_response(url_path, &e.message);
+        }
+    };
+    // Pick the content-type from the SSR response headers (case-
+    // insensitive) and default to HTML when the handler didn't set
+    // one — most prerender=false pages return HTML.
+    let content_type = resp
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "text/html; charset=utf-8".to_string());
+    let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
+    let status =
+        StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut out = page_response_bytes(
+        status,
+        resp.body,
+        &content_type,
+        is_html,
+        lr_prefix,
+        add_trailing_slash,
+        mode,
+        islands_bundle_url,
+    );
+    // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
+    // …). Skip headers `page_response_bytes` already wrote
+    // (`content-type`, `cache-control`) so a handler that explicitly
+    // sets `cache-control: public,max-age=60` doesn't silently lose to
+    // our no-store default — instead the SSR header wins.
+    for (k, v) in resp.headers.iter() {
+        let lower = k.to_ascii_lowercase();
+        if lower == "content-type" {
+            continue;
+        }
+        if let Ok(name) = header::HeaderName::try_from(k.as_str()) {
+            if let Ok(value) = HeaderValue::try_from(v) {
+                // For Cache-Control we let the handler override the
+                // default no-store; for all other headers we insert
+                // (replace). Multi-valued headers like Set-Cookie
+                // would need append semantics, but the BTreeMap shape
+                // upstream already collapses duplicates.
+                out.headers_mut().insert(name, value);
+            }
+        }
+    }
+    out
+}
+
+/// Dispatch one request through a Rust-side embed handler registered
+/// via [`crate::ServerBuilder::with_ssr_handler`] (issue #372).
+///
+/// The handler receives an [`axum::http::Request<Body>`] reconstructed
+/// from the captured method, URL, headers, and body, plus the
+/// pattern's captured params. The handler's response goes through
+/// `IntoResponse` (already applied at registration time by
+/// [`crate::embed_handlers::erase_handler`]), so handlers can return
+/// strings, tuples, or full responses without further conversion at
+/// the dispatch site.
+///
+/// The URL the handler sees has the dev-server mount prefix stripped —
+/// matching the URL shape a production deployment would observe —
+/// because handlers are expected to encode their patterns in the
+/// no-prefix shape.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_embed_handler(
+    handler: crate::embed_handlers::EmbedHandlerFn,
+    params: crate::embed_handlers::RouteParams,
+    uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    body: Bytes,
+    base_prefix: Option<&str>,
+) -> Response {
+    // Rebuild the inbound request so the handler sees a plain
+    // `http::Request<Body>` — no axum-specific extractors required.
+    // The URL is path-and-query with the dev server's mount prefix
+    // stripped (mirrors the SSR dispatch shape).
+    //
+    // Per-request `Extensions` injected by
+    // [`crate::middleware::apply_request_extension_layer`] are
+    // forwarded verbatim so the handler can read host-supplied values
+    // via `req.extensions().get::<T>()`.
+    let stripped = strip_prefix_from_full_uri(uri, base_prefix)
+        .unwrap_or_else(|| uri.path().to_string());
+
+    let mut builder = Request::builder().method(method.clone()).uri(&stripped);
+    for (name, value) in headers.iter() {
+        builder = builder.header(name, value);
+    }
+    let mut req = match builder.body(Body::from(body)) {
+        Ok(r) => r,
+        Err(e) => {
+            return embed_handler_error_response(&format!(
+                "failed to rebuild request for embed handler: {e}"
+            ));
+        }
+    };
+    *req.extensions_mut() = extensions.clone();
+
+    handler(req, params).await
+}
+
+/// Build the HTML 5xx response served when reconstructing the request
+/// for an embed handler fails. Should be unreachable in practice — the
+/// inbound request was already a valid axum request — but the explicit
+/// fallback avoids a panic if some future header/value combination
+/// trips the `http::Request::builder` checks.
+fn embed_handler_error_response(message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} handler error</title></head><body><h1>Handler dispatch error</h1><pre>{}</pre></body></html>",
+        html_escape(message),
+    );
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Build the HTML 5xx response served when [`SsrDispatcher::dispatch`]
+/// returns an error. Surfaces the underlying message so the developer
+/// sees the V8 stack trace instead of an empty 500.
+fn ssr_error_response(url_path: &str, message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} ssr error</title></head><body><h1>SSR error at <code>{}</code></h1><pre>{}</pre></body></html>",
+        html_escape(url_path),
+        html_escape(message),
+    );
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
 /// Build the `405 Method Not Allowed` response returned when a non-GET
 /// request reaches the page-cache fallback (i.e. no plugin claimed the
 /// URL or a plugin returned `Passthrough`). Mirrors what axum used to
@@ -1093,14 +1435,39 @@ fn lookup_keys(path: &str) -> Vec<String> {
 /// `add_trailing_slash` mirrors `zfb.config.ts`'s `trailingSlash` field
 /// so the dev-mode rewrite shape matches the canonical build-mode
 /// shape (sub #234 / zudolab/zudo-doc#1579).
-fn page_response_bytes(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn page_response_bytes(
     status: StatusCode,
     body: Vec<u8>,
     content_type: &str,
     inject_reload: bool,
     base_prefix: &str,
     add_trailing_slash: bool,
+    mode: crate::ServerMode,
+    islands_bundle_url: Option<&str>,
 ) -> Response {
+    // Live-reload script injection and the default `Cache-Control: no-
+    // store` shaping are Dev-only — Preview and Embed callers want
+    // production-shaped HTML responses (no SSE script, no aggressive
+    // cache busting that would defeat a host's own caching policy).
+    let is_dev = matches!(mode, crate::ServerMode::Dev);
+    let inject_reload = inject_reload && is_dev;
+    // Issue #377: dev-mode initial-load injection of the islands
+    // `<script type="module">` tag. Gated to Dev mode so Preview/Embed
+    // callers never ship the unhashed `/assets/islands.js` URL — that
+    // would defeat production hashing for embedders running this server
+    // off a built `dist/`. Also gated to HTML responses (`inject_reload`
+    // doubles as the is-HTML signal — both flips are set by the same
+    // call-site logic). When the bundle URL is empty/whitespace it is
+    // treated as absent (the bin crate seeds the handle with `None`
+    // when no `"use client"` islands exist).
+    let islands_script_url = if is_dev && inject_reload {
+        islands_bundle_url
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    } else {
+        None
+    };
     let body_out: Vec<u8> = if inject_reload {
         // HTML should always be valid UTF-8; fall back to raw bytes on
         // the rare occasion it isn't so we don't panic in dev mode.
@@ -1130,7 +1497,25 @@ fn page_response_bytes(
                         Err(_) => Cow::Borrowed(html),
                     }
                 };
-                inject_livereload_with_prefix(&rewritten, base_prefix).into_bytes()
+                // Splice the islands `<script type="module">` tag into
+                // `<head>` first (so livereload's `</body>`-anchored
+                // tag still trails the rest of the body markup). The
+                // shared helper is idempotent and a passthrough for
+                // bodies that have no `</head>`.
+                let with_islands = match islands_script_url {
+                    Some(url) => {
+                        let assets = zfb_build::head_inject::ProdHeadAssets {
+                            css_url: None,
+                            island_module_urls: vec![url.to_string()],
+                        };
+                        Cow::Owned(
+                            zfb_build::head_inject::inject_prod_head_assets(&rewritten, &assets)
+                                .into_owned(),
+                        )
+                    }
+                    None => rewritten,
+                };
+                inject_livereload_with_prefix(&with_islands, base_prefix).into_bytes()
             }
             Err(_) => body,
         }
@@ -1145,8 +1530,14 @@ fn page_response_bytes(
         .unwrap_or_else(|_| HeaderValue::from_static("text/html; charset=utf-8"));
 
     let mut resp = (status, [(header::CONTENT_TYPE, ct_header)], body_out).into_response();
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if is_dev {
+        // `no-store` is a dev-server-only default — Preview / Embed
+        // callers want browsers (and their own host caches) to respect
+        // whatever cache policy the underlying handler set (or the
+        // production CDN downstream will set).
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     resp
 }
 
@@ -1163,28 +1554,36 @@ mod tests {
     fn test_state() -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 
     fn test_state_with_base(prefix: &str) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 
@@ -1617,14 +2016,18 @@ mod tests {
                 as Arc<dyn crate::plugin_middleware::DevMiddlewareDispatcher>,
         };
         AppState {
+            mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: Some(set),
             injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
+            islands_bundle_url: None,
         }
     }
 

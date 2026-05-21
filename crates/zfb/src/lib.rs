@@ -9,6 +9,14 @@ pub mod config;
 pub mod diagnostics;
 pub(crate) mod output;
 pub mod render_pipeline;
+// V8-bearing adapters (issue #371, sub-task 4.1a). Compiled in only
+// when the `embed_v8` cargo feature is on; without the feature, the
+// dispatch sites in `commands::dev` / `commands::build` /
+// `render_pipeline` fall back to feature-gated stubs that fail loudly
+// if a project unexpectedly hits an SSR-requiring path.
+#[cfg(feature = "embed_v8")]
+pub(crate) mod ssr_adapter;
+#[cfg(feature = "embed_v8")]
 pub(crate) mod v8_host_adapter;
 
 // Re-export the public dynamic-route planning types so adapter authors can

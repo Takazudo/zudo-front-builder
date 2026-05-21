@@ -20,7 +20,7 @@ zfb is a Rust workspace. Each crate owns one slice of the build, and the data fl
 - **`zfb-css`** processes CSS modules and global styles.
 - **`zfb-islands`** scans for `client:*` directives, bundles the per-island JS, and emits the hydration entry.
 - **`zfb-content`** parses Markdown / MDX content collections and runs the unified plugin chain.
-- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, and the live-reload SSE stream.
+- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, the live-reload SSE stream, and a request-time SSR dispatcher for `prerender = false` pages.
 
 The crates depend downward: the orchestrator knows about render, css, islands, content. The renderer does not know about the orchestrator. The server only reads.
 
@@ -54,6 +54,33 @@ zfb owns orchestration, the dependency graph, and the per-page contract. The too
 
 This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/concepts/incremental-rebuild) for how the dependency graph feeds the per-page policy.
 
+## V8-mode gate: `output` and auto-detection
+
+`zfb-render` exposes the embedded V8 host behind a default-on `embed_v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.
+
+The decision is driven by two inputs:
+
+- `Config.output` in `zfb.config.ts` (`"static"` / `"hybrid"` / `"auto"`, default `"auto"`).
+- The detected set of routes that export `prerender = false`. The same data the no-SSR-without-adapter precondition already uses — one walk over `prerender_map`, one decision point.
+
+| `output`   | SSR routes present | result        |
+| ---------- | ------------------ | ------------- |
+| `"static"` | no                 | `V8Mode::Off` |
+| `"static"` | yes                | **error**     |
+| `"hybrid"` | any                | `V8Mode::On`  |
+| `"auto"`   | no                 | `V8Mode::Off` |
+| `"auto"`   | yes                | `V8Mode::On`  |
+
+The error fires before the bundler runs, names both the `output` setting and the first offending route, and counts the rest if there are more. So a project that declares itself static can't accidentally pick up an SSR route as a result of a copy-paste — the build refuses the contradiction instead of silently flipping the route's deploy shape.
+
+The two manual overrides (`"static"`, `"hybrid"`) and the default (`"auto"`) cover three distinct intents:
+
+- `"auto"` — let the route table decide. Best default for projects that already match.
+- `"static"` — declare intent up front. Useful on SSG-only sites where the failure mode of "someone adds `prerender = false` to a page" should be loud, not silent.
+- `"hybrid"` — declare intent the other way. Useful for projects that will add SSR routes later and want the build topology stable in the meantime.
+
+What `V8Mode::Off` does today is the part to be honest about: it is observational on the shipping `zfb` binary. The build machine's `zfb` always boots V8 to render SSG pages — that's how the pipeline works — and `embed_v8 = off` is already a hard error at `zfb build`. The mode is wired so the future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can read the same decision without re-deriving it. The load-bearing user-visible role today is the `"static"` precondition error.
+
 ## Atomic writes
 
 Every file in `dist/` is written through `atomic_write_string` (in `zfb-build`'s `atomic.rs`): write to a sibling temp file in the same directory, then `rename` over the destination. `rename` is atomic on POSIX for same-disk files, and Windows has the same guarantee through `MoveFileExW`'s replace-existing semantics.
@@ -78,4 +105,35 @@ The dev server (`zfb-server`) is a thin reader on top of the orchestrator's outp
 
 The wiring point is `outcome_to_events` in `zfb-server`'s `livereload.rs`. Every non-noop `BuildOutcome` is translated into `ReloadEvent`s and broadcast. CSS-only changes emit a `css` event so the browser swaps stylesheets without losing client state; everything else emits a `page` event and triggers `location.reload()`.
 
-The server is dev-only. Production emits static files for an edge CDN. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+### Request-time SSR for `prerender = false` routes
+
+The dev server also serves `prerender = false` routes through the **same** embedded V8 host that drives build-time SSG — not from a stamped static snapshot. The dev router's per-request precedence is:
+
+1. plugin dev-middleware (longest-prefix match wins),
+2. **request-time SSR** for any URL matched by an `SsrRouteSet`,
+3. in-memory page cache (SSG output),
+4. on-disk fallback to `dist/`,
+5. on-disk fallback to `public/`,
+6. dev 404.
+
+The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bin crate (`crates/zfb/src/commands/dev.rs`) provides the concrete implementation via `EmbeddedV8SsrAdapter`, which clones a handle to the renderer's `Arc<Mutex<Option<RendererState>>>` and dispatches through `EmbeddedV8Host::dispatch_fetch` on a `spawn_blocking` task. The V8 isolate stays on its dedicated OS thread; the adapter doesn't spawn a second thread.
+
+This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. The shared V8 host means there is no second renderer to drift.
+
+The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+
+### Embed-as-library: host-supplied HTTP handlers
+
+A Rust host (a Tauri desktop app, a CLI tool, a containerised service) can run `zfb-server` in-process via the `Server::builder()` API. That builder also exposes `with_ssr_handler(pattern, handler)`, which registers a host-owned async function for a URL pattern.
+
+Registered handlers slot into the dev router's precedence chain **between plugin dev-middleware and the runtime SSR dispatcher**:
+
+1. plugin dev-middleware,
+2. **host-registered Rust handler** (new — embed-as-library only),
+3. request-time SSR for any URL matched by an `SsrRouteSet`,
+4. in-memory page cache (SSG output),
+5. on-disk fallback to `dist/`,
+6. on-disk fallback to `public/`,
+7. dev 404.
+
+The host handler wins over any same-path runtime-SSR page — that is the whole point of the seam. See the [Embed-as-library guide](/guides/embed-as-library) for the builder shape, the handler signature, and the precedence contract in code.

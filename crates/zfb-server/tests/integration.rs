@@ -73,8 +73,11 @@ impl Harness {
             broadcast: tx.clone(),
             plugins: None,
             injected_routes: None,
+            ssr_routes: None,
             base: None,
             trailing_slash: false,
+            mode: zfb_server::ServerMode::Dev,
+            islands_bundle_url: None,
         };
 
         let server = tokio::spawn(async move {

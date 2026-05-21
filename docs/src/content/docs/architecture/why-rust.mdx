@@ -38,6 +38,8 @@ The first `cargo build` of zfb's workspace is slow. The V8 source bundle (pulled
 
 zfb gates the V8 build behind a default-on `embed_v8` cargo feature on `zfb-render`. Crates that do not need JavaScript rendering never pull in V8. A contributor running `cargo test -p zfb-content` compiles in seconds. End users do not pay this cost — they install the prebuilt binary.
 
+The gate is not a free lunch on the linked `zfb` binary itself: V8 dominates the artifact (the bundled `v8` rlib is ~169 MiB on its own, and the rest of the `deno_*` tree adds another ~13 MiB), so a V8-off `zfb` is roughly 82 MiB smaller stripped than the V8-on shipping binary. Today that lighter binary is only useful for V8-less consumers of the `zfb-render` library — there is no V8-less `zfb` build step yet, because SSG rendering needs V8 to run user pages. The feature is wired so a future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can opt into the smaller artifact without re-architecting the workspace.
+
 ## Compared to JS-based alternatives
 
 Vite, Next, Astro, SvelteKit — all great tools. zfb's bet is different, not better in every direction: **what if the framework was Rust and only the user code was JS / TS?**

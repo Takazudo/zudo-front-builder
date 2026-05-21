@@ -259,6 +259,38 @@ export type ZfbConfig = {
   markdown?: MarkdownConfig;
 
   /**
+   * Extra absolute filesystem paths watched by the dev server in
+   * addition to the project-root tree.
+   *
+   * Use this when project content reads from outside the project root
+   * (a sibling knowledge-base repo, a shared filesystem directory, a
+   * `file:` dep that ships content alongside code, etc.) and you want
+   * `zfb dev` to live-reload when those external files change.
+   *
+   * Semantics:
+   *
+   * - Each entry MUST be an absolute path. Relative paths are
+   *   rejected at config-load time with a clear error message.
+   * - Paths are canonicalised when the watcher boots; events match
+   *   the canonical form.
+   * - A path that does NOT exist at boot is skipped with a warning;
+   *   the watcher does NOT re-watch the path if it appears later.
+   *   Restart `zfb dev` after creating the path.
+   * - Each entry is watched recursively.
+   * - Events from outside the project root bypass fine-grained graph
+   *   classification and may trigger a broader rebuild than equivalent
+   *   in-tree edits.
+   *
+   * **Security note:** opt-in only — do NOT point this at unbounded
+   * directories like `$HOME` or `/`. On Linux the recursive watcher
+   * registers every subdirectory and can hit the inotify
+   * `max_user_watches` ceiling on large trees.
+   *
+   * Mirrors `Config::extra_watch_paths` in crates/zfb/src/config.rs.
+   */
+  extraWatchPaths?: string[];
+
+  /**
    * Whether `zfb build` writes the post-build route manifest to disk
    * at `<outDir>/__zfb/routes.json` (#347).
    *
@@ -276,7 +308,46 @@ export type ZfbConfig = {
    * Mirrors `Config::emit_routes_manifest` in crates/zfb/src/config.rs.
    */
   emitRoutesManifest?: boolean;
+
+  /**
+   * Project output mode. Drives the V8-mode decision the build engine
+   * makes right after the no-SSR-without-adapter precondition check
+   * (sub-task 4.1b / issue #373):
+   *
+   * - `"static"` — declare a pure-static (SSG-only) project. Errors at
+   *   build start if any route exports `prerender = false`, pointing
+   *   at the offending route. Use this on projects that must never
+   *   accidentally pick up an SSR route as a result of a copy-paste.
+   * - `"hybrid"` — declare a project that may host SSR routes. V8-on
+   *   regardless of detection, even when no `prerender = false` route
+   *   currently exists. Useful for projects that will add SSR routes
+   *   later and want a stable build topology in the meantime.
+   * - `"auto"` (default) — detection-driven. Non-empty `prerender =
+   *   false` route set => V8-on; empty => V8-off.
+   *
+   * Today's load-bearing role is the `"static"` precondition check.
+   * The V8-off branch does NOT skip V8 host startup on the shipping
+   * `zfb` binary — SSG still needs V8 to render pages. The flag exists
+   * as infrastructure for the future shipping path (Tauri sidecar /
+   * standalone SSR server). See the
+   * [Build engine docs](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/src/content/docs/architecture/build-engine.mdx)
+   * for the gate decision table.
+   *
+   * Mirrors `Config::output` in crates/zfb/src/config.rs.
+   */
+  output?: OutputMode;
 };
+
+/**
+ * Project output mode.
+ *
+ * - `"static"` — pure-static (SSG-only); errors on detected SSR routes.
+ * - `"hybrid"` — may host SSR routes; V8-on regardless of detection.
+ * - `"auto"` — detection-driven; the default.
+ *
+ * Mirrors `OutputMode` in crates/zfb/src/config.rs.
+ */
+export type OutputMode = "static" | "hybrid" | "auto";
 
 /**
  * Table-of-contents options. Wire via `markdown.toc` in `zfb.config.ts`.

@@ -48,6 +48,46 @@ If a route exports `prerender = false` but no adapter is configured,
 the build fails fast with an error naming the offending route — zfb
 will not silently drop a route it cannot deploy.
 
+## dev-prod parity for `prerender = false`
+
+`zfb dev` runs `prerender = false` routes through the **same render
+code** Cloudflare runs in production. The dev server hosts an embedded
+V8 isolate (the same one that drives build-time SSG), and the dev
+router dispatches a `prerender = false` URL into that isolate at
+request time — not at build time, not from a static snapshot.
+
+The parity guarantee is **semantic, not byte-for-byte**: status code,
+response body, and `Content-Type` match between dev and the deployed
+Cloudflare adapter. Values that legitimately vary across runs
+(timestamps stamped into a response, randomly generated request IDs)
+are allowed to differ.
+
+What this means in practice:
+
+- A page that returns different HTML based on `?id=…` query
+  parameters renders the right HTML on every dev page reload —
+  no stale snapshot from the last build.
+- An SSR handler that throws shows you the V8 stack trace inline in
+  the browser at dev time, instead of failing only after `zfb build`
+  + deploy.
+- Plugin dev-middleware still claims its registered URL first (plugin
+  routes can override SSR for things like dev-only mock responses);
+  the SSR layer sits between plugin middleware and the static page
+  cache.
+
+One intentional limitation of the dev-side SSR path today:
+
+**No live reload of the SSR bundle.** Editing a `prerender = false`
+page's source during a `zfb dev` session does not re-evaluate the
+bundle inside the running V8 host. Restart `zfb dev` to pick up the
+new code. (Live reload of the static-HTML cache works unchanged —
+only the SSR bundle path is restart-only.)
+
+This limitation does not apply to the **production** Cloudflare
+adapter — which is what the dev server is mirroring. The point of
+dev parity is that the rendered output matches, not that every dev
+feature is the final shipping shape.
+
 <Warning title="prerender = false must be a literal export">
 
 zfb detects `prerender` via **static AST inspection at build time**, not runtime evaluation. The export must be a **literal `export const`** declaration:

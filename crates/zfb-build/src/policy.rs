@@ -92,6 +92,16 @@ pub enum PathClass {
     /// `package.json`, …) but the graph will return an empty dirty set
     /// and nothing happens.
     Unclassified,
+
+    /// A file change outside the project root that came in via the
+    /// `extraWatchPaths` channel (issue #368). The user explicitly
+    /// opted in to watching that path; the watcher fires on ANY change
+    /// there regardless of extension, so we trigger a conservative
+    /// rebuild instead of consulting the graph (which has no edges for
+    /// out-of-root files and would silently no-op for anything except
+    /// the whitelisted extensions — e.g. `logo.png`, `schema.graphql`,
+    /// `*.lock`). Deep-review regression fix (PR #376).
+    External,
 }
 
 /// Classify a path against the standard zfb project layout.
@@ -118,14 +128,47 @@ pub fn classify_change(
         return PathClass::Global;
     }
 
-    // Anchor at project_root when possible. Absolute paths from notify
-    // typically start with the project root; relative paths and paths
-    // outside the root fall through to the unstripped walk.
-    let project_relative = path.strip_prefix(project_root).unwrap_or(path);
+    let lower_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    // Out-of-root paths (the `extraWatchPaths` channel — issue #368)
+    // must NOT walk their absolute components looking for in-tree root
+    // names. An external path like `/srv/shared/public/foo.md` would
+    // otherwise match the `public` segment and silently classify as
+    // `Asset` (no rebuild fires), making the advertised feature
+    // unreliable for any user whose external tree happens to nest
+    // under a directory called `public`, `styles`, `components`, etc.
+    //
+    // For out-of-root paths we skip the root-segment scan entirely and
+    // try the extension sniff. Whitelisted extensions still classify
+    // as Content/Style/Module/Data (the Page/Module/Content/Data branch
+    // in `plan_for_changes` already falls back to `PageSelection::All`
+    // when the graph has no edges, so those re-render).
+    //
+    // Non-whitelisted extensions (`.png`, `.graphql`, `.lock`, …) used
+    // to classify as `Unclassified`, which `plan_for_changes` then
+    // silently no-op'd — the user explicitly opted in to watching that
+    // path but the watcher tick produced zero rebuild. Re-route those
+    // through `External` instead so the orchestrator triggers a
+    // conservative full rebuild. Deep-review fix (PR #376).
+    let project_relative = match path.strip_prefix(project_root) {
+        Ok(rel) => rel,
+        Err(_) => {
+            let class = classify_by_extension(lower_ext.as_deref());
+            return if class == PathClass::Unclassified {
+                PathClass::External
+            } else {
+                class
+            };
+        }
+    };
     let mut comps = project_relative.components().peekable();
 
     // Skip leading `/` / drive prefixes / `RootDir` components (only
-    // possible when strip_prefix did not fire).
+    // possible when the relative path itself started with one — rare
+    // but defensible).
     while let Some(c) = comps.peek() {
         if matches!(c, Component::Prefix(_) | Component::RootDir) {
             comps.next();
@@ -133,11 +176,6 @@ pub fn classify_change(
             break;
         }
     }
-
-    let lower_ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase());
 
     // Walk components looking for the first root we recognise.
     for comp in comps {
@@ -167,7 +205,14 @@ pub fn classify_change(
     }
 
     // Fall back to extension sniffing.
-    match lower_ext.as_deref() {
+    classify_by_extension(lower_ext.as_deref())
+}
+
+/// Classify a path by its extension alone, without any directory-name
+/// inspection. Shared between the in-tree root-segment-walk fallback
+/// and the out-of-root extra-watch-path branch.
+fn classify_by_extension(ext: Option<&str>) -> PathClass {
+    match ext {
         Some("css") => PathClass::Style,
         Some("md") | Some("mdx") => PathClass::Content,
         Some("ts") | Some("tsx") | Some("js") | Some("jsx") => PathClass::Module,
@@ -441,5 +486,108 @@ mod tests {
         assert!(pol.is_islands_candidate(Path::new("/proj/components/Counter.tsx")));
         assert!(!pol.is_islands_candidate(Path::new("/proj/pages/index.tsx")));
         assert!(!pol.is_islands_candidate(Path::new("/proj/content/x.md")));
+    }
+
+    #[test]
+    fn out_of_root_paths_skip_root_segment_walk() {
+        // Issue #368 regression: an `extraWatchPaths` entry like
+        // `/srv/shared/public/foo.md` is OUTSIDE the project root, and
+        // the segment named `public` in its absolute path must NOT
+        // make the classifier return `PathClass::Asset` — that branch
+        // does nothing in the orchestrator and the live reload never
+        // fires. The classifier must skip the root-segment walk for
+        // out-of-root paths and drop straight to extension sniff.
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/public/foo.md"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Content,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/styles/site.css"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Style,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/components/Widget.tsx"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Module,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/data/site.json"),
+                proj(),
+                never_global,
+            ),
+            PathClass::Data,
+        );
+        // Unknown extension on an out-of-root path used to classify as
+        // `Unclassified` — but the `Unclassified` branch in
+        // `plan_for_changes` does NOT fall back to `PageSelection::All`,
+        // so edits to e.g. `logo.png` or `schema.graphql` under an
+        // extra watch root silently produced no rebuild. Deep-review
+        // fix (PR #376) re-routes those to `External`, which the
+        // orchestrator maps to a conservative full rebuild.
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/pages/notes.bin"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
+    }
+
+    /// Deep-review regression (PR #376): files under an extra watch
+    /// path with non-whitelisted extensions classify as `External`.
+    /// Cover the documented cases — `logo.png`, `schema.graphql`,
+    /// `*.lock` files — that the previous Unclassified behaviour
+    /// silently no-op'd in `plan_for_changes`.
+    #[test]
+    fn out_of_root_non_whitelisted_extensions_are_external() {
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/assets/logo.png"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/api/schema.graphql"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/lockfiles/pnpm-lock.yaml"),
+                proj(),
+                never_global,
+            ),
+            // .yaml IS in the whitelist (Data), so this stays Data. The
+            // assertion confirms whitelisted extensions are unaffected
+            // by the External re-route.
+            PathClass::Data,
+        );
+        // No extension at all under an extra watch root → External.
+        assert_eq!(
+            classify_change(
+                Path::new("/srv/shared/Makefile"),
+                proj(),
+                never_global,
+            ),
+            PathClass::External,
+        );
     }
 }

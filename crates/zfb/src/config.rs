@@ -384,6 +384,63 @@ pub struct Config {
     /// the JSON / TS form `site` 1:1.
     #[serde(default)]
     pub site: Option<String>,
+
+    /// Extra absolute filesystem paths watched by the dev server in
+    /// addition to the project-root tree.
+    ///
+    /// Use this when project content sources its data from outside the
+    /// project root (a sibling knowledge-base repo, a shared filesystem
+    /// directory, a `file:` dep that ships content alongside code, etc.)
+    /// and you want `zfb dev` to live-reload when those external files
+    /// change.
+    ///
+    /// **Semantics (validated at config-load + applied by the dev
+    /// command):**
+    ///
+    /// - Each entry MUST be an absolute path. Relative paths are
+    ///   rejected at config-load with a clear error message.
+    /// - Each entry is canonicalised (`Path::canonicalize`) when the
+    ///   watcher boots — events match the canonical form.
+    /// - A path that does NOT exist at boot is skipped with a
+    ///   warning; the watcher does NOT re-watch the path if it
+    ///   appears later. Restart `zfb dev` after creating the path.
+    /// - Each entry is watched recursively.
+    /// - Events from outside the project root bypass fine-grained
+    ///   graph classification and may trigger a broader rebuild
+    ///   than equivalent in-tree edits (the dependency graph only
+    ///   tracks in-tree edges).
+    ///
+    /// **Security note:** opt-in only — do NOT point this at unbounded
+    /// directories like `$HOME` or `/`. The recursive watch will try to
+    /// register every subdirectory and (on Linux) hit the inotify
+    /// `max_user_watches` ceiling on large trees.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `extraWatchPaths` into this field.
+    #[serde(default)]
+    pub extra_watch_paths: Vec<PathBuf>,
+
+    /// Project output mode. Drives the V8-mode decision the build
+    /// engine makes at the detection seam (sub-task 4.1b / issue
+    /// #373) — see [`OutputMode`] for the decision tree.
+    ///
+    /// Default: [`OutputMode::Auto`] — detection-driven (non-empty
+    /// `prerender = false` route set => V8-on; empty => V8-off).
+    /// Explicit `"static"` and `"hybrid"` are the manual overrides.
+    ///
+    /// **Today's load-bearing role** is the precondition check —
+    /// `output: "static"` + detected SSR routes is a hard build error.
+    /// The V8-off branch does NOT skip V8 host startup yet; the
+    /// shipping `zfb` binary still needs V8 to render SSG pages. The
+    /// flag exists as infrastructure for the future shipping path
+    /// (Tauri sidecar / standalone SSR server) where a V8-less Rust
+    /// runtime would be possible — see
+    /// `research/344-v8-feature-gate.md` for the rationale.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `output` 1:1.
+    #[serde(default)]
+    pub output: OutputMode,
 }
 
 impl Default for Config {
@@ -407,8 +464,46 @@ impl Default for Config {
             markdown: None,
             site: None,
             emit_routes_manifest: None,
+            extra_watch_paths: Vec::new(),
+            output: OutputMode::default(),
         }
     }
+}
+
+/// Project output mode (`zfb.config.ts` field `output`).
+///
+/// Drives the V8-mode decision the build engine makes right after the
+/// no-SSR-without-adapter precondition check (see
+/// `crates/zfb/src/commands/build.rs`, function
+/// [`resolve_v8_mode`](crate::commands::build::resolve_v8_mode)).
+///
+/// Decision tree:
+///
+/// - [`OutputMode::Static`] — declare a pure-static (SSG-only) project.
+///   Errors at build start if any route exports `prerender = false`,
+///   pointing at the offending route so the user can either remove the
+///   `prerender = false` or switch to `output: "hybrid"`.
+/// - [`OutputMode::Hybrid`] — declare a project that may host SSR
+///   routes. V8-on regardless of detection, even when no `prerender =
+///   false` route currently exists. Useful for projects that will add
+///   SSR routes later and want a stable build topology in the
+///   meantime.
+/// - [`OutputMode::Auto`] — detection-driven (the v1 default). The
+///   build inspects the `prerender = false` route set: non-empty
+///   => V8-on, empty => V8-off.
+///
+/// See [`Config::output`] for the field-level docs and
+/// `research/344-v8-feature-gate.md` for the design rationale.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    /// Pure-static (SSG-only). Build errors if SSR routes are present.
+    Static,
+    /// May host SSR routes. V8-on regardless of route detection.
+    Hybrid,
+    /// Detection-driven (default).
+    #[default]
+    Auto,
 }
 
 /// JSX runtime selection. `Preact` is the v1 default.
@@ -1416,6 +1511,17 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             );
         }
     }
+    for (i, p) in cfg.extra_watch_paths.iter().enumerate() {
+        if !p.is_absolute() {
+            bail!(
+                "extraWatchPaths[{i}]: {:?} must be an absolute path \
+                 (e.g. \"/home/user/notes\" or \"/srv/shared-content\"); \
+                 relative paths are not accepted because the dev watcher \
+                 registers each entry verbatim, outside the project root",
+                p
+            );
+        }
+    }
     if let Some(s) = &cfg.site {
         // `site` must be an absolute HTTP/HTTPS URL — it is used to build
         // canonical hrefs, OG URLs, and sitemap entries, none of which make
@@ -2050,6 +2156,62 @@ mod tests {
             .expect_err("should reject absolute path");
         let msg = format!("{err:#}");
         assert!(msg.contains("relative"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_accepts_absolute_path() {
+        // The path does NOT need to exist at load time — existence is
+        // checked when the dev watcher canonicalises each entry. The
+        // config loader only enforces "absolute or bust".
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["/this/path/need/not/exist/at/load/time"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("absolute path should be accepted");
+        assert_eq!(cfg.extra_watch_paths.len(), 1);
+        assert_eq!(
+            cfg.extra_watch_paths[0],
+            PathBuf::from("/this/path/need/not/exist/at/load/time")
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_rejects_relative_path() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["./relative/sibling"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("relative path should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("extraWatchPaths"),
+            "error should name the field: {msg}"
+        );
+        assert!(
+            msg.contains("absolute"),
+            "error should mention the absolute-path requirement: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{}"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.unwrap();
+        assert!(cfg.extra_watch_paths.is_empty());
     }
 
     #[tokio::test]
@@ -2865,5 +3027,106 @@ mod tests {
         let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
             .expect("empty object deserialises");
         assert_eq!(cfg.cjk_friendly, None);
+    }
+
+    // --- OutputMode tests (sub-task 4.1b / issue #373) ---------------------
+
+    #[test]
+    fn output_mode_default_is_auto() {
+        // Default-derive on the enum picks the `#[default]` variant; the
+        // top-level `Config::default()` then propagates it.
+        assert_eq!(OutputMode::default(), OutputMode::Auto);
+        let cfg = Config::default();
+        assert_eq!(cfg.output, OutputMode::Auto);
+    }
+
+    #[test]
+    fn output_mode_serde_roundtrip_lowercase() {
+        // The serde `rename_all = "lowercase"` shape must round-trip the
+        // three variants verbatim — this is the wire contract zfb.config.ts
+        // / zfb.config.json hand to us.
+        for (variant, wire) in [
+            (OutputMode::Static, "static"),
+            (OutputMode::Hybrid, "hybrid"),
+            (OutputMode::Auto, "auto"),
+        ] {
+            let json = serde_json::to_string(&variant)
+                .expect("serialise OutputMode");
+            assert_eq!(json, format!("\"{wire}\""));
+            let parsed: OutputMode = serde_json::from_str(&json)
+                .expect("deserialise OutputMode");
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[tokio::test]
+    async fn output_absent_in_json_defaults_to_auto() {
+        // Existing configs that pre-date 4.1b have no `output` field — they
+        // must still load and resolve to Auto so the build picks the
+        // detection-driven path.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.output, OutputMode::Auto);
+    }
+
+    #[tokio::test]
+    async fn output_static_loads_from_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "output": "static" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.output, OutputMode::Static);
+    }
+
+    #[tokio::test]
+    async fn output_hybrid_loads_from_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "output": "hybrid" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.output, OutputMode::Hybrid);
+    }
+
+    #[tokio::test]
+    async fn output_auto_loads_from_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "output": "auto" }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.output, OutputMode::Auto);
+    }
+
+    #[tokio::test]
+    async fn output_unknown_variant_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "output": "ssr" }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("unknown output variant should be rejected at load time");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("ssr") || msg.contains("variant"),
+            "msg: {msg}"
+        );
     }
 }

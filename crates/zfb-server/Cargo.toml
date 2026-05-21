@@ -7,8 +7,23 @@ description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
 
 [lib]
 
+# Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
+#
+# `zfb-server` is a leaf consumer of `zfb-build` — it doesn't touch any
+# V8-bearing surface itself (no `EmbeddedV8Host`, no `Backend::EmbeddedV8`),
+# but cargo's workspace-wide feature unification means that if this
+# crate enables `zfb-build`'s default features, the `embed_v8` cascade
+# turns on for every other consumer too — defeating the V8-off path
+# at the workspace level.
+#
+# Default features off here; the top-level `zfb` crate is the single
+# place that decides V8 inclusion via its own `embed_v8` feature.
+[features]
+default = []
+embed_v8 = ["zfb-build/embed_v8"]
+
 [dependencies]
-zfb-build = { path = "../zfb-build" }
+zfb-build = { path = "../zfb-build", default-features = false }
 zfb-islands = { path = "../zfb-islands" }
 # Issue #229: shared `base` → mount-prefix normalisation lives in
 # zfb-types (the lowest-dep leaf) so the build-time link rewriter
@@ -37,6 +52,10 @@ lol_html = "2.8.1"
 
 [dev-dependencies]
 zfb-graph = { path = "../zfb-graph" }
+# Combined Gap 1+2 integration test (sub-task 2.3 / #369): the server
+# test boots both the SSR router and the watcher side-by-side to prove
+# the two features interoperate.
+zfb-watcher = { path = "../zfb-watcher" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }

@@ -1,0 +1,176 @@
+---
+title: Embed as library
+description: "Run zfb's HTTP server in-process from a Rust host (Tauri, CLI, service) via the Server builder API."
+sidebar_position: 7
+---
+
+The `zfb-server` crate ships a small builder API so a Rust host can run zfb's HTTP server in-process — no child sidecar, no extra binary. The same crate that powers `zfb dev` powers your embedded server; the only difference is who owns the lifecycle.
+
+This guide covers the public builder shape, the request-extension injection point, and the host-handler seam (`with_ssr_handler`).
+
+## When to reach for this
+
+Pick the embed-as-library path when the host needs to:
+
+- run zfb's full route table inside a desktop or CLI process,
+- attach per-process context (an `AppHandle`, an FS capability set, an auth token) that handlers should read on every request,
+- short-circuit specific URL patterns with a Rust-owned response (a markdown lookup, a database read, a sidecar API bridge) without round-tripping through any JS runtime.
+
+See [Desktop Deployment](/guides/desktop-deployment) for the composition matrix that decides between this mode and shipping a child sidecar.
+
+## Builder shape
+
+The public surface is small. The whole `Server` + `ServerBuilder` types together expose ≤ 10 methods.
+
+```rust
+use zfb_server::{Server, ServerHandle, ServerMode, RouteParams};
+use axum::http::{Request, StatusCode};
+use axum::body::Body;
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .bind("127.0.0.1:0".parse()?)
+    .with_request_extension(host_ctx.clone())
+    .with_ssr_handler(
+        "/api/echo/:msg",
+        |req: Request<Body>, params: RouteParams| async move {
+            let msg = params.get("msg").unwrap_or("(none)");
+            let ctx = req.extensions().get::<HostCtx>().cloned();
+            (StatusCode::OK, format!("ctx={ctx:?} msg={msg}"))
+        },
+    )
+    .build()?;
+
+let handle: ServerHandle = server.serve_in_thread()?;
+println!("listening on {}", handle.addr());
+// later:
+handle.shutdown()?;
+```
+
+Key choices the builder commits to:
+
+- **`ServerMode::Embed`** turns off the live-reload script injection and the `/__zfb/reload` SSE endpoint. The route table is otherwise identical to `zfb dev`.
+- **`bind("127.0.0.1:0")`** asks the OS for an ephemeral port; read the actual port back from `ServerHandle::addr()`.
+- **`serve_in_thread()`** spawns a dedicated OS thread with its own `current_thread` tokio runtime, so the host does not need a tokio runtime of its own (Tauri's synchronous `setup` callback works without changes).
+- **`ServerHandle::shutdown()`** is idempotent — calling it twice is a no-op.
+
+The async terminal `Server::serve(self, shutdown).await` is also available for hosts that already drive their own tokio runtime.
+
+## Request-extension injection
+
+`ServerBuilder::with_request_extension::<T>(value)` registers a per-process value to be cloned into every incoming request's `http::Extensions` map. The handler reads it via `req.extensions().get::<T>()`:
+
+```rust
+#[derive(Clone)]
+struct HostCtx { /* … */ }
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .with_request_extension(host_ctx)
+    .with_ssr_handler("/whoami", |req: Request<Body>, _params| async move {
+        let ctx = req.extensions().get::<HostCtx>().cloned();
+        format!("{ctx:?}")
+    })
+    .build()?;
+```
+
+The bound `T: Clone + Send + Sync + 'static` is the minimum any per-request context type needs. The handler never has to import `axum::Extension<T>` — that extractor type is deliberately kept off the public surface of `zfb-server`.
+
+Calling `with_request_extension` multiple times with different `T`s accumulates values; calling twice with the same `T` overwrites the first (this matches `http::Extensions::insert` semantics).
+
+## Handler signature
+
+`with_ssr_handler` takes a URL pattern and an async function with the shape:
+
+```rust
+async fn(http::Request<axum::body::Body>, zfb_server::RouteParams) -> impl IntoResponse
+```
+
+That is the whole contract. The handler:
+
+- Receives the inbound request as a plain `http::Request<Body>` — query string, headers, body, and extensions all accessible on the request itself.
+- Receives the captured route parameters as a `RouteParams` value with `params.get("name")` lookups.
+- Returns anything that implements `axum::response::IntoResponse` — a `String`, a tuple `(StatusCode, String)`, a full `http::Response<…>`, or a custom type.
+
+The signature is HTTP-shaped on purpose: it does not mention what the handler is for. The same primitive can back a markdown lookup, a database read, an IPC bridge, or any other request-time response — the server only sees bytes in and bytes out.
+
+### Route-pattern grammar
+
+Patterns are leading-slash paths. Each segment is one of:
+
+| Form | Matches | Captured under |
+| --- | --- | --- |
+| `foo` | the literal segment `foo` | — |
+| `:name` | exactly one non-empty segment | `params.get("name")` |
+| `*name` | one or more remaining segments joined with `/` | `params.get("name")` |
+
+A `*name` wildcard must be the final segment of the pattern. Empty captures (a bare `/` against a `:name` slot) are rejected.
+
+Examples:
+
+- `/health` matches only `/health`.
+- `/users/:id` matches `/users/42` with `id = "42"`.
+- `/files/*rest` matches `/files/a/b.txt` with `rest = "a/b.txt"`.
+- `/projects/:proj/refs/*rest` mixes both.
+
+## Precedence: host handlers win over runtime SSR
+
+This is the load-bearing rule of the embed seam. When the dev router receives a request, it tries layers in this order:
+
+1. **plugin dev-middleware** (longest-prefix match) — when a registered plugin claims the path,
+2. **host-registered Rust handler** (this builder method) — when one of the patterns above matches,
+3. **request-time SSR** — when an `SsrRouteSet` claims the path,
+4. in-memory page cache (SSG output),
+5. on-disk fallback to `dist/`,
+6. on-disk fallback to `public/`,
+7. dev 404.
+
+The host handler is **always preferred over a runtime-SSR page that claims the same URL**. If your project has both a Rust handler at `/dynamic` and a `prerender = false` page that would also serve `/dynamic`, the Rust handler wins and the SSR dispatcher is never invoked.
+
+Why this direction:
+
+- The host is the trusted owner of the process. If it registers a handler for a path, that is a deliberate override.
+- A handler that needs to fall through can choose not to register; precedence is decided at registration time, not by the handler returning a sentinel.
+- The reverse order would force every host that wants to override a runtime page to gate the page export behind a build-time flag — coupling two concerns that the embed seam intentionally separates.
+
+## Lifecycle and shutdown
+
+`Server::serve_in_thread()` returns a `ServerHandle`. The handle is `Clone` so the host can hand copies to multiple shutdown call-sites (Tauri's `on_window_event`, a Ctrl-C handler, an HTTP `/admin/stop` route). All clones share the same one-shot sender and join handle behind `Arc<Mutex<…>>`:
+
+```rust
+let handle = server.serve_in_thread()?;
+let h2 = handle.clone();
+
+ctrl_c_callback(move || {
+    let _ = h2.shutdown(); // idempotent
+});
+
+// On the main thread, wait for the server to exit:
+handle.join()??;
+```
+
+`shutdown()` sends the graceful-shutdown signal once; subsequent calls are no-ops. `join()` is single-shot — only one caller can wait for the thread.
+
+## Method budget
+
+The whole embed surface is intentionally small. The `Server` and `ServerBuilder` types combined expose nine methods: `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus six builder methods (`config_path`, `mode`, `bind`, `with_request_extension`, `with_ssr_handler`, `build`). `ServerHandle::addr`, `ServerHandle::shutdown`, and `ServerHandle::join` are deliberately on a separate type and are excluded from the budget.
+
+If a future feature needs to exceed ten total, the right move is a follow-up issue that re-shapes the seam — not a tenth method tacked on.
+
+## Example crate
+
+A minimal end-to-end example lives at `crates/zfb-server/examples/embed/`. Build it from the workspace root:
+
+```sh
+cargo build --manifest-path crates/zfb-server/examples/embed/Cargo.toml
+```
+
+Or run it (the example boots a server, issues one HTTP request to demonstrate the handler answers with the injected context, and shuts down):
+
+```sh
+cargo run --manifest-path crates/zfb-server/examples/embed/Cargo.toml
+```
+
+The example crate uses an empty `[workspace]` table to opt itself out of the parent workspace, so the root manifest doesn't have to list it as a member.

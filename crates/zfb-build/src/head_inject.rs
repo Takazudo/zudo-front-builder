@@ -1,13 +1,16 @@
-//! Prod-only `<head>` asset injection for the build-side renderer.
+//! `<head>` asset injection for the build- and dev-side renderers.
 //!
-//! `zfb dev` and `zfb-render` itself stay free of this concern: the dev
-//! pipeline ships HTML without `<link rel="stylesheet">` /
-//! `<script type="module">` because it never wires up a `CssRunner` or
-//! `IslandsRunner` and the dev server does not emit hashed assets.
-//! Putting injection inside the shared renderer flow would regress that
-//! contract, so the prod orchestrator hands the renderer a
-//! [`ProdHeadAssets`] instead — and `render_all` post-processes each
-//! HTML response before atomic-writing it to disk.
+//! Originally introduced as a prod-only helper: the production
+//! orchestrator hands the renderer a [`ProdHeadAssets`] and `render_all`
+//! post-processes each HTML response to splice the stable CSS / islands
+//! tags in before atomic-write to disk. The byte-level splicer is
+//! deliberately renderer-agnostic, so the dev server now reuses the
+//! same function in-flight to inject the islands `<script type="module">`
+//! tag on every served HTML page (issue #377). The dev path stays
+//! gated by [`crate::pipeline::BuildContext::run_islands`]: when the
+//! project has no `"use client"` components there is no bundle to point
+//! at, and the dev server simply has no URL to inject — matching the
+//! prior contract that ships HTML untouched in that case.
 //!
 //! ## What this module is, and is not
 //!
@@ -47,8 +50,9 @@
 
 use std::borrow::Cow;
 
-/// Optional prod-only head-asset URLs handed to the build-side
-/// renderer. When `None`, the renderer ships HTML untouched (dev /
+/// Optional head-asset URLs handed to the build-side renderer or
+/// spliced into a dev-server HTML response. When `None` or
+/// `is_empty()`, the renderer ships HTML untouched (dev /
 /// build-without-prod-pipeline parity).
 ///
 /// All URLs are embedded verbatim into the rendered page (after
@@ -76,8 +80,8 @@ impl ProdHeadAssets {
     }
 }
 
-/// Inject prod-only `<link>` / `<script>` tags into `html` immediately
-/// before the first `</head>` close tag.
+/// Inject `<link>` / `<script>` tags into `html` immediately before
+/// the first `</head>` close tag.
 ///
 /// Behaviour:
 ///

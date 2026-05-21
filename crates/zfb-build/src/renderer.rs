@@ -110,16 +110,33 @@ pub struct RouteUniverseEntry {
 /// and by the [`Backend::Stub`] handler closure.
 ///
 /// Carries the minimal surface the renderer needs: body bytes, HTTP
-/// status code, and content-type header. The `content_type` field is
-/// informational only — the renderer does not parse or branch on it
-/// beyond HEAD injection (which reads for `</head>`).
-#[derive(Debug, Clone)]
+/// status code, content-type header, and any additional response
+/// headers the V8 bundle wants to set. `content_type` is duplicated
+/// from `headers["content-type"]` because the renderer's HEAD-injection
+/// path reads it on the hot path.
+///
+/// Response headers travel as a `BTreeMap<String, String>` — multi-
+/// valued headers (most notably `Set-Cookie`, which Cloudflare allows
+/// multiple of in a single response) collapse to the last value seen.
+/// This is a preexisting design limitation of the seam; a fix would
+/// switch every layer to `Vec<(String, String)>` or an `http::HeaderMap`
+/// and is deferred to a follow-up. Cloudflare prod, by contrast,
+/// forwards headers through `Response.headers.entries()` which preserves
+/// each entry verbatim.
+#[derive(Debug, Clone, Default)]
 pub struct HttpResponseLike {
     /// HTTP status code (e.g. 200, 404, 500).
     pub status: u16,
     /// Value of the `Content-Type` response header, or an empty string
     /// when absent.
     pub content_type: String,
+    /// All other response headers from the V8 bundle's `Response`.
+    /// Keys are lowercase to mirror the canonicalisation
+    /// `EmbeddedV8RenderHost::dispatch_fetch` performs on the way out.
+    /// `content-type` may or may not appear here — callers should
+    /// prefer the dedicated [`Self::content_type`] field on the hot
+    /// path and merge `headers` afterwards.
+    pub headers: std::collections::BTreeMap<String, String>,
     /// Full response body bytes.
     pub body: Vec<u8>,
 }
@@ -151,6 +168,33 @@ pub trait EmbeddedV8Host: Send {
     /// Only infrastructure-level failures (isolate crash, OOM, etc.)
     /// return `Err`.
     fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError>;
+
+    /// Dispatch a synthetic HTTP request with full method / headers /
+    /// body against the loaded bundle (issue #367 / Gap 1).
+    ///
+    /// `url_path` is the same path-and-query shape `dispatch_fetch`
+    /// takes (e.g. `/api/submit?since=42`). `headers` keys are
+    /// case-insensitive on the wire; the host normalises them. `body`
+    /// is the raw bytes the client sent — empty for GET/HEAD, the
+    /// POST/PUT payload for write methods.
+    ///
+    /// Default implementation forwards to [`Self::dispatch_fetch`]
+    /// for backwards compatibility — implementers that can carry the
+    /// full request shape (the production `ThreadedV8Host`) override
+    /// it. The default lets `Backend::Stub` and test doubles keep
+    /// working unchanged.
+    fn dispatch_fetch_full(
+        &mut self,
+        url_path: &str,
+        method: &str,
+        headers: &std::collections::BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<HttpResponseLike, RendererError> {
+        // Silence unused warnings on the default path — the override
+        // in `ThreadedV8Host` is the load-bearing implementation.
+        let _ = (method, headers, body);
+        self.dispatch_fetch(url_path)
+    }
 }
 
 /// Factory type for constructing an [`EmbeddedV8Host`] from a bundle path.
@@ -191,6 +235,12 @@ pub enum Backend {
     /// `EmbeddedV8RenderHost::new(bundle_path)`. Wrapping in `Arc`
     /// keeps `Backend` cheaply clone-able even though the factory is
     /// a closure.
+    ///
+    /// Compiled in only when the `embed_v8` cargo feature is on
+    /// (issue #371, sub-task 4.1a). On the V8-off path the variant
+    /// is absent and callers that want SSR/SSG dispatch must use the
+    /// `Existing` or `Stub` backends instead.
+    #[cfg(feature = "embed_v8")]
     EmbeddedV8 { host_factory: EmbeddedV8HostFactory },
     /// In-process stub handler for unit tests.
     ///
@@ -212,6 +262,7 @@ impl std::fmt::Debug for Backend {
             Backend::Existing { base_url } => {
                 write!(f, "Backend::Existing {{ base_url: {base_url:?} }}")
             }
+            #[cfg(feature = "embed_v8")]
             Backend::EmbeddedV8 { .. } => write!(f, "Backend::EmbeddedV8 {{ .. }}"),
             Backend::Stub { .. } => write!(f, "Backend::Stub {{ .. }}"),
         }
@@ -255,6 +306,9 @@ enum BackendHandle {
     /// Dispatch calls `guard.host.as_mut().unwrap().dispatch_fetch(…)`.
     /// `terminate()` calls `guard.terminate()` which drops the host (and
     /// thus the V8 isolate) synchronously.
+    ///
+    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a).
+    #[cfg(feature = "embed_v8")]
     EmbeddedV8 {
         guard: EmbeddedV8Guard,
     },
@@ -283,6 +337,19 @@ impl BackendHandle {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .to_string();
+                // Forward ALL response headers (lowercase keys) so the
+                // SSR seam can mirror Cloudflare's response shape:
+                // Cache-Control, Set-Cookie, Location, CORS, X-*, etc.
+                // Multi-valued headers collapse to the last value (see
+                // the HttpResponseLike doc-comment); fixing that needs a
+                // wider seam change.
+                let mut headers: std::collections::BTreeMap<String, String> =
+                    std::collections::BTreeMap::new();
+                for (name, value) in resp.headers().iter() {
+                    if let Ok(v) = value.to_str() {
+                        headers.insert(name.as_str().to_ascii_lowercase(), v.to_string());
+                    }
+                }
                 let body = resp
                     .bytes()
                     .map_err(|e| RendererError::Http {
@@ -290,8 +357,9 @@ impl BackendHandle {
                         source: e,
                     })?
                     .to_vec();
-                Ok(HttpResponseLike { status, content_type, body })
+                Ok(HttpResponseLike { status, content_type, headers, body })
             }
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => {
                 let host = guard.host.as_mut().expect(
                     "EmbeddedV8 host has been terminated; dispatch called after shutdown"
@@ -307,6 +375,7 @@ impl BackendHandle {
     fn collect_logs(&self) -> String {
         match self {
             BackendHandle::Http { .. } => String::new(),
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.collect_logs(),
             BackendHandle::Stub { .. } => String::new(),
         }
@@ -315,6 +384,7 @@ impl BackendHandle {
     fn terminate(&mut self) {
         match self {
             BackendHandle::Http { .. } => {}
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.terminate(),
             BackendHandle::Stub { .. } => {}
         }
@@ -598,6 +668,7 @@ impl std::fmt::Debug for BackendHandle {
             BackendHandle::Http { base_url, .. } => {
                 write!(f, "BackendHandle::Http {{ base_url: {base_url:?} }}")
             }
+            #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { .. } => write!(f, "BackendHandle::EmbeddedV8 {{ .. }}"),
             BackendHandle::Stub { .. } => write!(f, "BackendHandle::Stub {{ .. }}"),
         }
@@ -623,6 +694,11 @@ impl RendererState {
     /// Returns `None` when the backend is not `EmbeddedV8` (i.e. when
     /// it is `Http` or `Stub`), or when the host has already been
     /// terminated via [`shutdown`].
+    ///
+    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a). When the
+    /// feature is off the embedded V8 backend is unavailable and this
+    /// accessor does not exist.
+    #[cfg(feature = "embed_v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
             BackendHandle::EmbeddedV8 { guard } => {
@@ -842,10 +918,15 @@ fn join_url(base: &str, path: &str) -> String {
 ///
 /// `terminate()` is idempotent — calling it after the host has already
 /// been taken out is a no-op.
+///
+/// Gated behind `embed_v8` (issue #371, sub-task 4.1a) — when V8 is off
+/// there is no isolate to guard.
+#[cfg(feature = "embed_v8")]
 struct EmbeddedV8Guard {
     host: Option<Box<dyn EmbeddedV8Host>>,
 }
 
+#[cfg(feature = "embed_v8")]
 impl EmbeddedV8Guard {
     fn new(host: Box<dyn EmbeddedV8Host>) -> Self {
         Self { host: Some(host) }
@@ -873,6 +954,7 @@ impl EmbeddedV8Guard {
     }
 }
 
+#[cfg(feature = "embed_v8")]
 impl Drop for EmbeddedV8Guard {
     fn drop(&mut self) {
         self.terminate();
@@ -886,7 +968,7 @@ impl Drop for EmbeddedV8Guard {
 /// in-process V8 host. For `Stub` it simply wraps the closure.
 fn launch(
     backend: &Backend,
-    bundle_path: &Path,
+    #[cfg_attr(not(feature = "embed_v8"), allow(unused_variables))] bundle_path: &Path,
     timeout: Duration,
 ) -> Result<BackendHandle, RendererError> {
     match backend {
@@ -897,6 +979,7 @@ fn launch(
                 client,
             })
         }
+        #[cfg(feature = "embed_v8")]
         Backend::EmbeddedV8 { host_factory } => {
             // Resolve the bundle path to an absolute path before calling
             // the factory, so the factory impl never needs to handle
@@ -1038,6 +1121,7 @@ mod tests {
             status: 200,
             content_type: "text/html; charset=utf-8".into(),
             body: body.as_bytes().to_vec(),
+            ..Default::default()
         }
     }
 
@@ -1058,21 +1142,25 @@ mod tests {
                 status: 200,
                 content_type: "text/html; charset=utf-8".into(),
                 body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
+                ..Default::default()
             },
             "/about" => HttpResponseLike {
                 status: 200,
                 content_type: "text/html; charset=utf-8".into(),
                 body: b"<html><body>About</body></html>".to_vec(),
+                ..Default::default()
             },
             "/feed.xml" => HttpResponseLike {
                 status: 200,
                 content_type: "application/xml".into(),
                 body: b"<rss/>".to_vec(),
+                ..Default::default()
             },
             _ => HttpResponseLike {
                 status: 404,
                 content_type: "text/plain".into(),
                 body: b"nope".to_vec(),
+                ..Default::default()
             },
         });
 
@@ -1185,6 +1273,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"Error: boom\n  at fetch (bundle.mjs:42:7)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,
@@ -1225,6 +1314,7 @@ mod tests {
                     status: 200,
                     content_type: "text/html; charset=utf-8".into(),
                     body: raw_html_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1261,6 +1351,7 @@ mod tests {
                     status: 200,
                     content_type: "text/html; charset=utf-8".into(),
                     body: raw_html_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1306,6 +1397,7 @@ mod tests {
                     status: 200,
                     content_type: "application/xml".into(),
                     body: xml_owned.clone(),
+                    ..Default::default()
                 }),
             },
             request_timeout: None,
@@ -1401,6 +1493,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"Error: explode\n  at fetch (bundle.mjs:1:1)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,
@@ -1457,6 +1550,7 @@ mod tests {
                 status: 500,
                 content_type: "text/plain".into(),
                 body: b"RenderError: oops\n  at render (bundle.mjs:42:10)\n".to_vec(),
+                ..Default::default()
             }),
             request_timeout: None,
             prod_head_assets: None,

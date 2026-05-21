@@ -122,6 +122,44 @@ impl Watcher {
         I: IntoIterator<Item = S>,
         S: AsRef<Path>,
     {
+        Self::start_with_extras(
+            project_root,
+            relative_paths,
+            std::iter::empty::<&Path>(),
+            debounce,
+        )
+    }
+
+    /// Variant of [`Watcher::start_with_debounce`] that additionally
+    /// registers each path in `extra_absolute_paths` verbatim (no join
+    /// against `project_root`).
+    ///
+    /// Each extra path:
+    ///
+    /// - MUST be absolute. The caller is responsible for verifying this
+    ///   (the config loader does so at parse time; the dev command
+    ///   layer canonicalises before reaching this fn). A non-absolute
+    ///   path here is a programming error — `notify` will still try to
+    ///   watch it relative to the process cwd, but events will be hard
+    ///   to interpret downstream.
+    /// - is watched recursively.
+    /// - skipped-with-warning if it does not exist at boot. The watcher
+    ///   does NOT poll for the path appearing later (consistent with
+    ///   how the in-tree relative paths are handled — see the
+    ///   module-level docs).
+    pub fn start_with_extras<P, I, S, J, T>(
+        project_root: P,
+        relative_paths: I,
+        extra_absolute_paths: J,
+        debounce: Duration,
+    ) -> notify::Result<(Self, mpsc::Receiver<Change>)>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<Path>,
+        J: IntoIterator<Item = T>,
+        T: AsRef<Path>,
+    {
         let root = project_root.as_ref();
 
         // notify hands us events on a sync channel from a thread it owns.
@@ -142,6 +180,26 @@ impl Watcher {
                 warn!(path = %full.display(), error = %e, "failed to watch path");
             } else {
                 debug!(path = %full.display(), "watching");
+            }
+        }
+
+        // Extra absolute paths — registered as-is, no `project_root.join(...)`.
+        // The caller (dev command layer) canonicalises before handing
+        // paths in here, so `notify` and downstream classifiers see the
+        // same form across boot + every later event.
+        for extra in extra_absolute_paths {
+            let extra = extra.as_ref();
+            if !extra.exists() {
+                warn!(
+                    path = %extra.display(),
+                    "extra watch target missing at boot; skipping (will not be re-watched if it appears later)"
+                );
+                continue;
+            }
+            if let Err(e) = notify_watcher.watch(extra, RecursiveMode::Recursive) {
+                warn!(path = %extra.display(), error = %e, "failed to watch extra path");
+            } else {
+                debug!(path = %extra.display(), "watching extra path");
             }
         }
 

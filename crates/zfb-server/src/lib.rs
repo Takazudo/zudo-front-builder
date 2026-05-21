@@ -41,20 +41,47 @@
 //! a different runtime (Cloudflare Workers, an edge CDN, …) and must
 //! not pull in `zfb-server`.
 
+pub mod embed;
+pub mod embed_handlers;
 pub mod injected_routes;
 pub mod inject;
 pub mod livereload;
+pub mod middleware;
 pub mod plugin_middleware;
 pub mod routes;
+pub mod ssr;
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
 
+/// Shared handle to the currently-emitted dev-mode islands bundle URL
+/// (issue #377).
+///
+/// `None` (outer) means "no islands path configured for this server"
+/// — the page handler skips head injection entirely. `Some(url)`
+/// inside the lock carries the public URL the dev orchestrator wrote
+/// last (`/assets/islands.js` for projects without a base prefix, or
+/// `/foo/assets/islands.js` when `base: "/foo/"` is configured).
+///
+/// Reads happen on every served HTML response in dev mode; writes happen
+/// once at boot and again on every islands-rebuild tick. The contention
+/// is one writer thread vs many short-lived readers — [`RwLock`] is
+/// the right shape (not a plain `Mutex`).
+///
+/// Cloning the [`Arc`] is cheap; the [`AppState`] holds one clone and the
+/// bin crate's `run_islands` callback holds another.
+pub type IslandsBundleUrl = Arc<RwLock<Option<String>>>;
+
+pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
+pub use embed_handlers::{
+    EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
+};
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use injected_routes::{
     pattern_matches, InjectedRouteRecord, InjectedRouteSet,
@@ -68,6 +95,9 @@ pub use plugin_middleware::{
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
+};
+pub use ssr::{
+    SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
 };
 
 /// Options for [`serve`].
@@ -118,6 +148,15 @@ pub struct ServeOpts {
     /// without re-plumbing.
     pub injected_routes: Option<InjectedRouteSet>,
 
+    /// Request-time SSR routes (issue #367 / Gap 1). `None` = the
+    /// project has no `prerender = false` pages. When `Some`, the
+    /// dev router checks every page-cache miss against this set —
+    /// a hit dispatches through the V8 host and returns the rendered
+    /// HTML at request time, matching the Cloudflare adapter's
+    /// production semantics. See [`crate::ssr`] for the wire shape
+    /// and precedence contract.
+    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
+
     /// User-supplied `base` config value from `zfb.config.ts` (issue
     /// #229). Passed through verbatim — the dev server normalises it
     /// internally via [`zfb_types::dev_mount_prefix`] into the
@@ -138,6 +177,41 @@ pub struct ServeOpts {
     /// absolute hrefs the same way the production build does
     /// (sub #234 / zudolab/zudo-doc#1579).
     pub trailing_slash: bool,
+
+    /// Server mode (Dev/Preview/Embed). Threaded through to
+    /// [`crate::routes::AppState::mode`] so the router can gate Dev-only
+    /// surface — `/__zfb/livereload.js`, `/__zfb/reload`, the
+    /// livereload `<script>` injection into HTML, and the default
+    /// `Cache-Control: no-store` shaping — to Dev only.
+    ///
+    /// Defaults to [`crate::ServerMode::Dev`] for byte-for-byte parity
+    /// with the historical `serve_with_listener` shape used by `zfb dev`
+    /// and the integration-test surface. Embed builds bypass this
+    /// struct entirely (they go through [`crate::ServerBuilder`]).
+    #[doc(alias = "ServerMode")]
+    pub mode: crate::ServerMode,
+
+    /// Shared handle to the current dev-mode islands bundle URL
+    /// (issue #377). `None` for projects with no `"use client"`
+    /// components (or when the bin crate has not seeded a bundle yet);
+    /// `Some(<arc>)` carrying a URL like `/assets/islands.js` that the
+    /// page handler splices into every served HTML response's `<head>`
+    /// via the byte-level helper in
+    /// [`zfb_build::head_inject::inject_prod_head_assets`].
+    ///
+    /// Dev-only: the page handler only consults this field when
+    /// `mode == ServerMode::Dev`. In Preview and Embed modes the dev
+    /// orchestrator does not seed the bundle URL anyway, but the gate
+    /// is also enforced at the response-shaping side
+    /// (see [`crate::routes::page_response_bytes`]) so an Embed caller
+    /// that accidentally passes a non-None value still gets
+    /// production-shaped output.
+    ///
+    /// The bin crate (`zfb dev`) builds this handle once at boot, hands
+    /// the same `Arc` to the orchestrator's `run_islands` callback (so
+    /// rebuild ticks rewrite the URL), and threads it into `ServeOpts`
+    /// before calling [`serve`].
+    pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
 }
 
 impl ServeOpts {
@@ -205,14 +279,22 @@ where
     // leading-slash, no-trailing-slash kind.
     let base_prefix = zfb_types::dev_mount_prefix(opts.base.as_deref());
     let state = AppState {
+        mode: opts.mode,
         pages: opts.pages,
         broadcast: opts.broadcast,
         plugins: opts.plugins,
         injected_routes: opts.injected_routes,
+        ssr_routes: opts.ssr_routes,
+        // Rust-side embed handlers are an embed-API only seam — the
+        // legacy `serve` / `serve_with_listener` entry points used by
+        // `zfb dev` / `zfb preview` never register any. The embed
+        // builder threads its own `AppState` directly.
+        embed_handlers: None,
         dist_root: opts.dist_root.clone(),
         public_root: opts.public_root.clone(),
         base_prefix,
         trailing_slash: opts.trailing_slash,
+        islands_bundle_url: opts.islands_bundle_url,
     };
     let router = build_router(state);
 

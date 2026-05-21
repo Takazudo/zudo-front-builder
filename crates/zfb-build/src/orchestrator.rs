@@ -63,6 +63,19 @@ pub struct OrchestratorConfig {
     /// "zfb.config.ts"]`.
     pub watch_roots: Vec<PathBuf>,
 
+    /// Extra absolute paths to watch in addition to `watch_roots`.
+    ///
+    /// Sourced from `Config::extra_watch_paths` and handed through
+    /// verbatim — the caller (the `zfb dev` command layer) is
+    /// responsible for canonicalisation + missing-at-boot policy
+    /// before populating this. See [`zfb_watcher::Watcher::start_with_extras`].
+    ///
+    /// Events from these paths fall outside the dependency graph's
+    /// coverage and conservatively trigger broader rebuilds — that is
+    /// the documented contract for the public `extraWatchPaths`
+    /// config field.
+    pub extra_watch_paths: Vec<PathBuf>,
+
     /// Granularity policy. Defaults to [`GranularityPolicy::default`].
     pub policy: GranularityPolicy,
 
@@ -73,11 +86,12 @@ pub struct OrchestratorConfig {
 
 impl OrchestratorConfig {
     /// Convenience: build a config from `(project_root, watch_roots)`
-    /// with the default policy and debounce.
+    /// with the default policy and debounce, and no extra watch paths.
     pub fn new(project_root: impl Into<PathBuf>, watch_roots: Vec<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
             watch_roots,
+            extra_watch_paths: Vec::new(),
             policy: GranularityPolicy::default(),
             debounce: None,
         }
@@ -92,6 +106,13 @@ impl OrchestratorConfig {
     /// Override the debounce window (chainable).
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = Some(debounce);
+        self
+    }
+
+    /// Set the extra (absolute) watch paths (chainable). Each entry is
+    /// expected to be absolute and already canonicalised by the caller.
+    pub fn with_extra_watch_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.extra_watch_paths = paths;
         self
     }
 }
@@ -232,6 +253,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
                     plan.mark_pages(dirty);
                 }
+                PathClass::External => {
+                    // An out-of-root file change from the
+                    // `extraWatchPaths` channel (issue #368). The user
+                    // opted in to watching that path; the graph has no
+                    // edges for it so consulting `dirty_pages` is a
+                    // no-op. Trigger a conservative `PageSelection::All`
+                    // rebuild so edits to e.g. `logo.png` or
+                    // `schema.graphql` under an extra watch root
+                    // actually re-render. Deep-review fix (PR #376).
+                    plan.mark_pages(PageSelection::All);
+                }
             }
         }
 
@@ -286,17 +318,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     where
         F: FnMut(&BuildOutcome) + Send + 'static,
     {
-        let (watcher, mut rx) = match self.config.debounce {
-            Some(d) => Watcher::start_with_debounce(
-                &self.config.project_root,
-                self.config.watch_roots.iter().map(|p| p.as_path()),
-                d,
-            )?,
-            None => Watcher::start(
-                &self.config.project_root,
-                self.config.watch_roots.iter().map(|p| p.as_path()),
-            )?,
-        };
+        let debounce = self
+            .config
+            .debounce
+            .unwrap_or(zfb_watcher::DEFAULT_DEBOUNCE);
+        let (watcher, mut rx) = Watcher::start_with_extras(
+            &self.config.project_root,
+            self.config.watch_roots.iter().map(|p| p.as_path()),
+            self.config.extra_watch_paths.iter().map(|p| p.as_path()),
+            debounce,
+        )?;
 
         info!(
             project_root = %self.config.project_root.display(),
@@ -472,5 +503,36 @@ mod tests {
         let orch = make_orch(CountingPipeline::default());
         let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/some-random-thing")]);
         assert!(plan.is_noop());
+    }
+
+    /// Deep-review regression (PR #376): a file change OUTSIDE the
+    /// project root with a non-whitelisted extension (e.g. `logo.png`,
+    /// `schema.graphql`) used to silently no-op because the
+    /// `Unclassified` branch in `plan_for_changes` doesn't fall back to
+    /// `PageSelection::All`. The `External` variant added in the same
+    /// fix triggers a conservative full rebuild so the
+    /// `extraWatchPaths` feature actually fires when the watcher does.
+    #[test]
+    fn external_change_with_non_whitelisted_extension_triggers_full_rebuild() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/assets/logo.png")]);
+        assert!(
+            plan.pages.is_all(),
+            "external file with non-whitelisted extension must trigger PageSelection::All; got {:?}",
+            plan.pages,
+        );
+        // The orchestrator's policy doesn't decide CSS/islands re-runs
+        // for External — only pages. CSS / islands stay false unless
+        // the user's other changes set them.
+    }
+
+    /// Sister regression: a file with NO extension at all under an
+    /// extra watch root (e.g. `Makefile`, `Dockerfile`) also re-routes
+    /// through `External` and triggers a full rebuild.
+    #[test]
+    fn external_change_with_no_extension_triggers_full_rebuild() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/Makefile")]);
+        assert!(plan.pages.is_all());
     }
 }

@@ -2,6 +2,12 @@
 /target/
 **/*.rs.bk
 
+# Cargo.lock for the embed-as-library example crate (#372). The example
+# crate opts itself out of the workspace via `[workspace]` and cargo
+# regenerates the lockfile on `cargo build` — committing it would just
+# create churn.
+crates/zfb-server/examples/embed/Cargo.lock
+
 # Node
 node_modules/
 .pnpm-store/

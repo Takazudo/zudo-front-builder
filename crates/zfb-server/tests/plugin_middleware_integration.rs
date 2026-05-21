@@ -113,8 +113,11 @@ async fn boot_with_dispatcher(
         broadcast: tx,
         plugins: Some(plugin_set),
         injected_routes: None,
+        ssr_routes: None,
         base: None,
         trailing_slash: false,
+        mode: zfb_server::ServerMode::Dev,
+        islands_bundle_url: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
