@@ -20,7 +20,7 @@ zfb is a Rust workspace. Each crate owns one slice of the build, and the data fl
 - **`zfb-css`** processes CSS modules and global styles.
 - **`zfb-islands`** scans for `client:*` directives, bundles the per-island JS, and emits the hydration entry.
 - **`zfb-content`** parses Markdown / MDX content collections and runs the unified plugin chain.
-- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, and the live-reload SSE stream.
+- **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, the live-reload SSE stream, and a request-time SSR dispatcher for `prerender = false` pages.
 
 The crates depend downward: the orchestrator knows about render, css, islands, content. The renderer does not know about the orchestrator. The server only reads.
 
@@ -78,4 +78,19 @@ The dev server (`zfb-server`) is a thin reader on top of the orchestrator's outp
 
 The wiring point is `outcome_to_events` in `zfb-server`'s `livereload.rs`. Every non-noop `BuildOutcome` is translated into `ReloadEvent`s and broadcast. CSS-only changes emit a `css` event so the browser swaps stylesheets without losing client state; everything else emits a `page` event and triggers `location.reload()`.
 
-The server is dev-only. Production emits static files for an edge CDN. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+### Request-time SSR for `prerender = false` routes
+
+The dev server also serves `prerender = false` routes through the **same** embedded V8 host that drives build-time SSG — not from a stamped static snapshot. The dev router's per-request precedence is:
+
+1. plugin dev-middleware (longest-prefix match wins),
+2. **request-time SSR** for any URL matched by an `SsrRouteSet`,
+3. in-memory page cache (SSG output),
+4. on-disk fallback to `dist/`,
+5. on-disk fallback to `public/`,
+6. dev 404.
+
+The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bin crate (`crates/zfb/src/commands/dev.rs`) provides the concrete implementation via `EmbeddedV8SsrAdapter`, which clones a handle to the renderer's `Arc<Mutex<Option<RendererState>>>` and dispatches through `EmbeddedV8Host::dispatch_fetch` on a `spawn_blocking` task. The V8 isolate stays on its dedicated OS thread; the adapter doesn't spawn a second thread.
+
+This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. The shared V8 host means there is no second renderer to drift.
+
+The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
