@@ -87,6 +87,11 @@ zfb-islands = { path = "../zfb-islands" }
 zfb-render = { path = "../zfb-render", default-features = false }
 zfb-router = { path = "../zfb-router" }
 zfb-server = { path = "../zfb-server" }
+# Source-of-truth for the `base` → dev-mount-prefix normalisation (used
+# by `commands/dev.rs` to decide what URL the islands `<script>` tag
+# should point at — absolute-URL bases must collapse to "no prefix"
+# because the dev server cannot serve assets on a different origin).
+zfb-types = { path = "../zfb-types" }
 zfb-watcher = { path = "../zfb-watcher" }
 
 [build-dependencies]

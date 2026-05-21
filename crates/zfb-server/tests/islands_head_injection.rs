@@ -234,6 +234,49 @@ async fn preview_mode_never_injects_islands_script_even_with_seeded_url() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_the_shared_handle_stops_head_injection_on_next_request() {
+    // Regression guard for the issue #377 codex review: when a project
+    // removes its last `"use client"` component the `run_islands`
+    // rebuild callback writes `None` back into the shared handle. The
+    // server MUST stop injecting on the next request — otherwise the
+    // previously-emitted bundle URL keeps appearing in HTML, leaving
+    // stale hydration code referenced after the bundle is gone.
+    let handle: zfb_server::IslandsBundleUrl =
+        Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
+    let h = Harness::start(zfb_server::ServerMode::Dev, Some(Arc::clone(&handle))).await;
+
+    h.pages
+        .insert(
+            "/",
+            "<!doctype html><html><head></head><body></body></html>",
+        )
+        .await;
+
+    let resp = reqwest::get(h.url("/")).await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("src=\"/assets/islands.js\""),
+        "baseline: script tag must be present when handle holds Some(url), body: {body}"
+    );
+
+    // Simulate the orchestrator's "no islands left" rebuild outcome.
+    *handle.write().unwrap() = None;
+
+    let resp = reqwest::get(h.url("/")).await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("/assets/islands.js"),
+        "after clearing the handle, the script tag must be gone, body: {body}"
+    );
+    // Livereload tag must still be there — clearing the islands URL
+    // must not regress the dev-server contract.
+    assert!(
+        body.contains("/__zfb/livereload.js"),
+        "livereload tag must still appear, body: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_mode_double_request_is_idempotent_on_head_injection() {
     // The body is read off the page cache verbatim on every request
     // — the splicer is also called every time. Idempotency at the

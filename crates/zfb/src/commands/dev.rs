@@ -361,7 +361,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         alias_entries: dev_plugin_alias_entries.clone(),
         virtual_modules: dev_plugin_virtual_modules.clone(),
     };
-    let asset_url_prefix = crate::config::asset_url_base_prefix(cfg.base.as_deref());
+    // The dev server only serves assets it mounted itself. For a path-
+    // shaped `base` (e.g. `/foo/`) the mount prefix is `Some("/foo")`
+    // and the bundle URL must include it. For an absolute-URL `base`
+    // (CDN deploy target — `https://cdn.example.com/`)
+    // `dev_mount_prefix` returns `None` because the dev server mounts
+    // at root; injecting the absolute URL would point the browser at
+    // an origin the dev server never serves, breaking first-load
+    // hydration for the CDN deploy scenario. Source the prefix from
+    // `dev_mount_prefix` (not `asset_url_base_prefix`) so absolute-URL
+    // bases collapse cleanly to "no prefix" here.
+    let dev_islands_url_prefix: String =
+        zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
     let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
         Arc::new(std::sync::RwLock::new(None));
 
@@ -372,17 +383,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // also overwritten by this call (the bundler always writes to the
     // stable path), keeping dev's view of `/assets/islands.js` consistent
     // with the source tree.
+    // Small helper closure to translate a stable_url into the prefixed
+    // form the dev server actually serves it at (`/assets/islands.js`
+    // for no-base, `/foo/assets/islands.js` for `base: "/foo/"`, plain
+    // `/assets/islands.js` for absolute-URL bases). Captures by clone
+    // so the run_islands callback below can own its own copy.
+    let prefix_for_init = dev_islands_url_prefix.clone();
+    let prefixed_islands_url = move |stable: String| -> String {
+        if prefix_for_init.is_empty() {
+            stable
+        } else {
+            format!("{prefix_for_init}{stable}")
+        }
+    };
     match crate::commands::build::build_default_islands_payload(
         &project_root,
         &dist_root,
         &islands_plugin_config,
     ) {
         Ok(Some(payload)) => {
-            let url = if asset_url_prefix.is_empty() {
-                payload.stable_url
-            } else {
-                format!("{asset_url_prefix}{}", payload.stable_url)
-            };
+            let url = prefixed_islands_url(payload.stable_url);
             if let Ok(mut guard) = islands_bundle_url_handle.write() {
                 *guard = Some(url);
             }
@@ -403,22 +423,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let project_root = project_root.clone();
         let dist_root_for_islands = dist_root.clone();
         let plugin_cfg = islands_plugin_config.clone();
-        let asset_url_prefix = asset_url_prefix.clone();
+        let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
-            let payload = match crate::commands::build::build_default_islands_payload(
+            let payload = crate::commands::build::build_default_islands_payload(
                 &project_root,
                 &dist_root_for_islands,
                 &plugin_cfg,
-            )? {
-                Some(p) => p,
-                None => return Ok(None),
-            };
-            let bundle_url = if asset_url_prefix.is_empty() {
-                payload.stable_url
-            } else {
-                format!("{asset_url_prefix}{}", payload.stable_url)
-            };
+            )?;
             // Rewrite the shared handle so the next initial GET (a fresh
             // browser tab, or a page that has not yet hydrated) sees the
             // current bundle URL. The dev server holds the same Arc, so
@@ -433,6 +445,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
                 p.into_inner()
             });
+            let Some(payload) = payload else {
+                // The project produced no islands bundle this tick. Clear
+                // the shared URL so the next served HTML response does
+                // NOT keep injecting a stale `<script type="module">`
+                // tag — without this, removing the last `"use client"`
+                // component would leave the previously-emitted bundle URL
+                // visible on every page until the dev server restarts.
+                *guard = None;
+                return Ok(None);
+            };
+            let bundle_url = if url_prefix.is_empty() {
+                payload.stable_url
+            } else {
+                format!("{url_prefix}{}", payload.stable_url)
+            };
             // The bundler does not currently surface a "bytes-changed" bit
             // back through `build_default_islands_payload` — the URL stays
             // stable (`/assets/islands.js`) on every rebuild, the bytes on
