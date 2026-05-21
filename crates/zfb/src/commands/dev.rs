@@ -308,7 +308,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();
-    let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone());
+    let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
+        .with_extra_watch_paths(extra_watch_paths);
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -462,6 +464,42 @@ fn load_persisted_graph(
             None
         }
     }
+}
+
+/// Canonicalise each entry in `cfg.extra_watch_paths`, dropping any
+/// entry that does not exist at boot with a user-visible warning.
+///
+/// The config loader already enforces "absolute path"; this function
+/// implements the rest of the documented contract:
+///
+/// - canonicalise (`Path::canonicalize`) — the watcher's events will
+///   match the canonical form, so downstream rebuild logic compares
+///   like for like.
+/// - skip-with-warning when the path does not exist. We do NOT
+///   re-watch later if it appears — the documented escape hatch is
+///   "restart `zfb dev`".
+///
+/// Canonicalisation also implicitly resolves symlinks; that is the
+/// behaviour we want for events-match-on-canonical-path. The dev
+/// command boots once per session, so this runs exactly once per
+/// configured entry.
+fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
+    let mut resolved = Vec::with_capacity(raw.len());
+    for p in raw {
+        match p.canonicalize() {
+            Ok(c) => resolved.push(c),
+            Err(err) => {
+                output::warn(format!(
+                    "extraWatchPaths: skipping {} (canonicalize failed: {}); \
+                     the path will NOT be re-watched if it appears later — \
+                     restart `zfb dev` after creating it",
+                    p.display(),
+                    err,
+                ));
+            }
+        }
+    }
+    resolved
 }
 
 // ---------------------------------------------------------------------------

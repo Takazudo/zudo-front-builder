@@ -384,6 +384,41 @@ pub struct Config {
     /// the JSON / TS form `site` 1:1.
     #[serde(default)]
     pub site: Option<String>,
+
+    /// Extra absolute filesystem paths watched by the dev server in
+    /// addition to the project-root tree.
+    ///
+    /// Use this when project content sources its data from outside the
+    /// project root (a sibling knowledge-base repo, a shared filesystem
+    /// directory, a `file:` dep that ships content alongside code, etc.)
+    /// and you want `zfb dev` to live-reload when those external files
+    /// change.
+    ///
+    /// **Semantics (validated at config-load + applied by the dev
+    /// command):**
+    ///
+    /// - Each entry MUST be an absolute path. Relative paths are
+    ///   rejected at config-load with a clear error message.
+    /// - Each entry is canonicalised (`Path::canonicalize`) when the
+    ///   watcher boots — events match the canonical form.
+    /// - A path that does NOT exist at boot is skipped with a
+    ///   warning; the watcher does NOT re-watch the path if it
+    ///   appears later. Restart `zfb dev` after creating the path.
+    /// - Each entry is watched recursively.
+    /// - Events from outside the project root bypass fine-grained
+    ///   graph classification and may trigger a broader rebuild
+    ///   than equivalent in-tree edits (the dependency graph only
+    ///   tracks in-tree edges).
+    ///
+    /// **Security note:** opt-in only — do NOT point this at unbounded
+    /// directories like `$HOME` or `/`. The recursive watch will try to
+    /// register every subdirectory and (on Linux) hit the inotify
+    /// `max_user_watches` ceiling on large trees.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `extraWatchPaths` into this field.
+    #[serde(default)]
+    pub extra_watch_paths: Vec<PathBuf>,
 }
 
 impl Default for Config {
@@ -407,6 +442,7 @@ impl Default for Config {
             markdown: None,
             site: None,
             emit_routes_manifest: None,
+            extra_watch_paths: Vec::new(),
         }
     }
 }
@@ -1416,6 +1452,17 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             );
         }
     }
+    for (i, p) in cfg.extra_watch_paths.iter().enumerate() {
+        if !p.is_absolute() {
+            bail!(
+                "extraWatchPaths[{i}]: {:?} must be an absolute path \
+                 (e.g. \"/home/user/notes\" or \"/srv/shared-content\"); \
+                 relative paths are not accepted because the dev watcher \
+                 registers each entry verbatim, outside the project root",
+                p
+            );
+        }
+    }
     if let Some(s) = &cfg.site {
         // `site` must be an absolute HTTP/HTTPS URL — it is used to build
         // canonical hrefs, OG URLs, and sitemap entries, none of which make
@@ -2050,6 +2097,62 @@ mod tests {
             .expect_err("should reject absolute path");
         let msg = format!("{err:#}");
         assert!(msg.contains("relative"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_accepts_absolute_path() {
+        // The path does NOT need to exist at load time — existence is
+        // checked when the dev watcher canonicalises each entry. The
+        // config loader only enforces "absolute or bust".
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["/this/path/need/not/exist/at/load/time"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("absolute path should be accepted");
+        assert_eq!(cfg.extra_watch_paths.len(), 1);
+        assert_eq!(
+            cfg.extra_watch_paths[0],
+            PathBuf::from("/this/path/need/not/exist/at/load/time")
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_rejects_relative_path() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "extraWatchPaths": ["./relative/sibling"]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("relative path should be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("extraWatchPaths"),
+            "error should name the field: {msg}"
+        );
+        assert!(
+            msg.contains("absolute"),
+            "error should mention the absolute-path requirement: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_watch_paths_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{}"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.unwrap();
+        assert!(cfg.extra_watch_paths.is_empty());
     }
 
     #[tokio::test]
