@@ -94,3 +94,19 @@ The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bi
 This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. The shared V8 host means there is no second renderer to drift.
 
 The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+
+### Embed-as-library: host-supplied HTTP handlers
+
+A Rust host (a Tauri desktop app, a CLI tool, a containerised service) can run `zfb-server` in-process via the `Server::builder()` API. That builder also exposes `with_ssr_handler(pattern, handler)`, which registers a host-owned async function for a URL pattern.
+
+Registered handlers slot into the dev router's precedence chain **between plugin dev-middleware and the runtime SSR dispatcher**:
+
+1. plugin dev-middleware,
+2. **host-registered Rust handler** (new — embed-as-library only),
+3. request-time SSR for any URL matched by an `SsrRouteSet`,
+4. in-memory page cache (SSG output),
+5. on-disk fallback to `dist/`,
+6. on-disk fallback to `public/`,
+7. dev 404.
+
+The host handler wins over any same-path runtime-SSR page — that is the whole point of the seam. See the [Embed-as-library guide](/guides/embed-as-library) for the builder shape, the handler signature, and the precedence contract in code.

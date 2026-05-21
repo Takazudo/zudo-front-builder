@@ -8,6 +8,7 @@
 //! - [`ServerBuilder`] chains: [`config_path`](ServerBuilder::config_path),
 //!   [`mode`](ServerBuilder::mode), [`bind`](ServerBuilder::bind),
 //!   [`with_request_extension`](ServerBuilder::with_request_extension),
+//!   [`with_ssr_handler`](ServerBuilder::with_ssr_handler),
 //!   [`build`](ServerBuilder::build).
 //! - [`Server`] terminals: [`serve`](Server::serve) (async, run-to-
 //!   completion) and [`serve_in_thread`](Server::serve_in_thread)
@@ -20,11 +21,11 @@
 //!
 //! Per the research at `research/346-embed-as-library-api.md` §3.2 the
 //! combined method count on `Server` + `ServerBuilder` must stay
-//! ≤ 10. This module ships 8 (`Server::builder` + 5 builder methods +
-//! `Server::serve` + `Server::serve_in_thread`); sub-task 3.1b adds
-//! `with_ssr_handler` for 9, leaving headroom. `ServerHandle`'s methods
-//! are deliberately on a different type and are excluded from the
-//! budget.
+//! ≤ 10. This module ships 9 — `Server::builder`, `Server::serve`,
+//! `Server::serve_in_thread`, plus six builder methods
+//! (`config_path`, `mode`, `bind`, `with_request_extension`,
+//! `with_ssr_handler`, `build`). `ServerHandle`'s methods are
+//! deliberately on a different type and are excluded from the budget.
 //!
 //! ## Threading: `serve_in_thread`
 //!
@@ -56,10 +57,15 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing::info;
 
+use crate::embed_handlers::{erase_handler, EmbedHandler, EmbedHandlerSet, RouteParams};
 use crate::middleware::{apply_request_extension_layer, make_injector, RequestExtensionInjector};
 use crate::routes::{build_router, AppState, PageCache};
 use crate::ssr::SsrRouteSet;
 use crate::{DevMiddlewareSet, InjectedRouteSet, ReloadEvent, ReloadTx};
+
+use axum::body::Body;
+use axum::http::Request;
+use axum::response::IntoResponse;
 
 /// Default bind address for an embedded server: `127.0.0.1:0` so the
 /// OS picks an ephemeral port. The actual port is readable from
@@ -119,6 +125,7 @@ pub struct Server {
     plugins: Option<DevMiddlewareSet>,
     injected_routes: Option<InjectedRouteSet>,
     ssr_routes: Option<SsrRouteSet>,
+    embed_handlers: Option<EmbedHandlerSet>,
     request_extensions: Vec<RequestExtensionInjector>,
 }
 
@@ -255,6 +262,7 @@ impl Server {
             plugins: self.plugins,
             injected_routes: self.injected_routes,
             ssr_routes: self.ssr_routes,
+            embed_handlers: self.embed_handlers,
             dist_root: self.dist_root.clone(),
             public_root: self.public_root.clone(),
             base_prefix,
@@ -295,6 +303,7 @@ pub struct ServerBuilder {
     mode: ServerMode,
     config_path: Option<PathBuf>,
     request_extensions: Vec<RequestExtensionInjector>,
+    handlers: Vec<EmbedHandler>,
 }
 
 impl ServerBuilder {
@@ -304,6 +313,7 @@ impl ServerBuilder {
             mode: ServerMode::Dev,
             config_path: None,
             request_extensions: Vec::new(),
+            handlers: Vec::new(),
         }
     }
 
@@ -360,6 +370,47 @@ impl ServerBuilder {
         self
     }
 
+    /// Register an async handler for HTTP requests whose URL path
+    /// matches `pattern`. The handler is invoked with the inbound
+    /// [`Request`] and the captured [`RouteParams`].
+    ///
+    /// `pattern` is a leading-slash path. Each segment is either a
+    /// literal (`/health`), a single-segment parameter (`/users/:id`)
+    /// captured under the name following the colon, or a wildcard tail
+    /// (`/files/*rest`) capturing the remaining segments under the
+    /// name following the asterisk. A wildcard segment must be the
+    /// final segment of the pattern. Empty captures are rejected.
+    ///
+    /// `handler` is `async fn(Request<Body>, RouteParams) -> impl
+    /// IntoResponse` (or any callable with that shape). The body type
+    /// returned by the handler is converted via
+    /// [`axum::response::IntoResponse`] so handlers can yield strings,
+    /// tuples (status, body), `http::Response<…>`, or any other
+    /// `IntoResponse` value. Per-request `http::Extensions` registered
+    /// via [`Self::with_request_extension`] are forwarded into the
+    /// request the handler sees, so values can be read with
+    /// `req.extensions().get::<T>()`.
+    ///
+    /// Multiple calls accumulate. Patterns are matched in registration
+    /// order on every request, and the **first** pattern that matches
+    /// claims the request — subsequent registrations with overlapping
+    /// patterns are unreachable. Registered handlers short-circuit the
+    /// server's other request-time and static-file fall-throughs (see
+    /// the `with_ssr_handler` section of the embed-as-library guide for
+    /// the full precedence table).
+    pub fn with_ssr_handler<F, Fut, R>(mut self, pattern: impl Into<String>, handler: F) -> Self
+    where
+        F: Fn(Request<Body>, RouteParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: IntoResponse + 'static,
+    {
+        self.handlers.push(EmbedHandler {
+            pattern: pattern.into(),
+            handler: erase_handler(handler),
+        });
+        self
+    }
+
     /// Finalise the builder into a [`Server`]. Reads
     /// [`config_path`](Self::config_path) if set.
     ///
@@ -387,6 +438,12 @@ impl ServerBuilder {
         let pages = PageCache::new();
         let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 
+        let embed_handlers = if self.handlers.is_empty() {
+            None
+        } else {
+            Some(EmbedHandlerSet::new(self.handlers))
+        };
+
         Ok(Server {
             bind,
             mode: self.mode,
@@ -400,6 +457,7 @@ impl ServerBuilder {
             plugins: None,
             injected_routes: None,
             ssr_routes: None,
+            embed_handlers,
             request_extensions: self.request_extensions,
         })
     }

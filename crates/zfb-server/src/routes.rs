@@ -74,9 +74,9 @@ use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
@@ -90,6 +90,7 @@ use crate::plugin_middleware::{
     DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
     PluginResponseEncoding,
 };
+use crate::embed_handlers::EmbedHandlerSet;
 use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
@@ -353,6 +354,13 @@ pub struct AppState {
     /// consulting the page cache — see the precedence contract on
     /// [`crate::ssr`] for the full ordering.
     pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
+    /// Embed-API handler set populated by
+    /// [`crate::ServerBuilder::with_ssr_handler`] (#372). `None` in the
+    /// `zfb dev` / `zfb preview` paths; `Some` when a Rust host
+    /// registered one or more handlers. Dispatched in [`serve_page`]
+    /// after plugin dev-middleware but before the SSR dispatcher, so a
+    /// handler claiming the same path as a runtime-rendered page wins.
+    pub embed_handlers: Option<EmbedHandlerSet>,
     /// Build output directory, used as a disk fallback when a page is
     /// not yet in the in-memory cache. `serve_page` reads
     /// `<dist_root>/<path>/index.html` when the cache misses.
@@ -558,9 +566,10 @@ pub async fn page_root(
     method: Method,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    serve_page(&state, "/", &uri, method, headers, body).await
+    serve_page(&state, "/", &uri, method, headers, extensions, body).await
 }
 
 /// Handler for `/*path` — serve any other rendered page or dispatch
@@ -572,9 +581,10 @@ pub async fn page_handler(
     method: Method,
     headers: HeaderMap,
     uri: Uri,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    serve_page(&state, &path, &uri, method, headers, body).await
+    serve_page(&state, &path, &uri, method, headers, extensions, body).await
 }
 
 async fn serve_page(
@@ -583,6 +593,7 @@ async fn serve_page(
     uri: &Uri,
     method: Method,
     headers: HeaderMap,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
     // Strip any leading slash from the captured wildcard so we can
@@ -647,6 +658,30 @@ async fn serve_page(
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
             }
+        }
+    }
+
+    // Issue #372 — Rust-side handlers registered through the embed API
+    // (`ServerBuilder::with_ssr_handler`). Dispatched after plugin
+    // dev-middleware (plugins always win) but before request-time SSR,
+    // so a Rust handler claiming a path that also has a JS
+    // runtime-rendered page short-circuits the JS dispatch. The handler
+    // signature is HTTP-shaped and domain-agnostic — see
+    // [`crate::embed_handlers`] for the dispatch contract.
+    if let Some(set) = state.embed_handlers.as_ref() {
+        let path_only = format!("/{trimmed}");
+        if let Some((handler, params)) = set.find_match(&path_only) {
+            return dispatch_embed_handler(
+                handler,
+                params,
+                uri,
+                &method,
+                &headers,
+                &extensions,
+                body.clone(),
+                state.base_prefix.as_deref(),
+            )
+            .await;
         }
     }
 
@@ -1094,6 +1129,85 @@ async fn dispatch_ssr(
     out
 }
 
+/// Dispatch one request through a Rust-side embed handler registered
+/// via [`crate::ServerBuilder::with_ssr_handler`] (issue #372).
+///
+/// The handler receives an [`axum::http::Request<Body>`] reconstructed
+/// from the captured method, URL, headers, and body, plus the
+/// pattern's captured params. The handler's response goes through
+/// `IntoResponse` (already applied at registration time by
+/// [`crate::embed_handlers::erase_handler`]), so handlers can return
+/// strings, tuples, or full responses without further conversion at
+/// the dispatch site.
+///
+/// The URL the handler sees has the dev-server mount prefix stripped —
+/// matching the URL shape a production deployment would observe —
+/// because handlers are expected to encode their patterns in the
+/// no-prefix shape.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_embed_handler(
+    handler: crate::embed_handlers::EmbedHandlerFn,
+    params: crate::embed_handlers::RouteParams,
+    uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    body: Bytes,
+    base_prefix: Option<&str>,
+) -> Response {
+    // Rebuild the inbound request so the handler sees a plain
+    // `http::Request<Body>` — no axum-specific extractors required.
+    // The URL is path-and-query with the dev server's mount prefix
+    // stripped (mirrors the SSR dispatch shape).
+    //
+    // Per-request `Extensions` injected by
+    // [`crate::middleware::apply_request_extension_layer`] are
+    // forwarded verbatim so the handler can read host-supplied values
+    // via `req.extensions().get::<T>()`.
+    let stripped = strip_prefix_from_full_uri(uri, base_prefix)
+        .unwrap_or_else(|| uri.path().to_string());
+
+    let mut builder = Request::builder().method(method.clone()).uri(&stripped);
+    for (name, value) in headers.iter() {
+        builder = builder.header(name, value);
+    }
+    let mut req = match builder.body(Body::from(body)) {
+        Ok(r) => r,
+        Err(e) => {
+            return embed_handler_error_response(&format!(
+                "failed to rebuild request for embed handler: {e}"
+            ));
+        }
+    };
+    *req.extensions_mut() = extensions.clone();
+
+    handler(req, params).await
+}
+
+/// Build the HTML 5xx response served when reconstructing the request
+/// for an embed handler fails. Should be unreachable in practice — the
+/// inbound request was already a valid axum request — but the explicit
+/// fallback avoids a panic if some future header/value combination
+/// trips the `http::Request::builder` checks.
+fn embed_handler_error_response(message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} handler error</title></head><body><h1>Handler dispatch error</h1><pre>{}</pre></body></html>",
+        html_escape(message),
+    );
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
 /// Build the HTML 5xx response served when [`SsrDispatcher::dispatch`]
 /// returns an error. Surfaces the underlying message so the developer
 /// sees the V8 stack trace instead of an empty 500.
@@ -1309,6 +1423,7 @@ mod tests {
             plugins: None,
             injected_routes: None,
             ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
@@ -1324,6 +1439,7 @@ mod tests {
             plugins: None,
             injected_routes: None,
             ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
@@ -1765,6 +1881,7 @@ mod tests {
             plugins: Some(set),
             injected_routes: None,
             ssr_routes: None,
+            embed_handlers: None,
             dist_root: std::env::temp_dir().join("zfb-test-dist"),
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,

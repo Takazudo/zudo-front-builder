@@ -42,6 +42,7 @@
 //! not pull in `zfb-server`.
 
 pub mod embed;
+pub mod embed_handlers;
 pub mod injected_routes;
 pub mod inject;
 pub mod livereload;
@@ -59,6 +60,9 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
+pub use embed_handlers::{
+    EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
+};
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use injected_routes::{
     pattern_matches, InjectedRouteRecord, InjectedRouteSet,
@@ -226,6 +230,11 @@ where
         plugins: opts.plugins,
         injected_routes: opts.injected_routes,
         ssr_routes: opts.ssr_routes,
+        // Rust-side embed handlers are an embed-API only seam — the
+        // legacy `serve` / `serve_with_listener` entry points used by
+        // `zfb dev` / `zfb preview` never register any. The embed
+        // builder threads its own `AppState` directly.
+        embed_handlers: None,
         dist_root: opts.dist_root.clone(),
         public_root: opts.public_root.clone(),
         base_prefix,
