@@ -231,6 +231,18 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         })
     })?;
 
+    // #347 — emit the on-disk route manifest before postBuild runs so
+    // any consumer script wired into `pnpm build` (sitemap generator,
+    // OGP indexer, search shard builder) can read the same data the
+    // plugin API exposes without writing a plugin. Default-on; opt out
+    // via `emitRoutesManifest: false` in `zfb.config.ts`. Disabling the
+    // emit does NOT affect `ctx.routes` — postBuild plugins still see
+    // the in-memory manifest below.
+    if config.emit_routes_manifest.unwrap_or(true) {
+        emit_routes_manifest_file(&outdir, &route_manifest)
+            .context("failed to emit dist/__zfb/routes.json")?;
+    }
+
     // postBuild fires AFTER the renderer has finished writing dist/
     // (and the adapter has wrapped any SSR output). Run it before the
     // success banner so a failure here surfaces as a build error
@@ -1654,6 +1666,39 @@ fn build_post_build_manifest(
     entries.sort_by(|a, b| a.url.cmp(&b.url));
 
     PostBuildRouteManifest { routes: entries }
+}
+
+/// Where the on-disk route manifest lives, relative to `outDir`. The
+/// `__zfb/` prefix matches the common "framework-private" directory
+/// convention (Next's `_next/`, Astro's `_astro/`) and pairs with the
+/// JS-side `globalThis.__zfb` runtime namespace, so the source-of-truth
+/// for "this is internal zfb metadata" reads the same on disk and in
+/// memory.
+const ROUTES_MANIFEST_REL_PATH: &str = "__zfb/routes.json";
+
+/// Emit the on-disk `routes.json` manifest under `<outdir>/__zfb/` (#347).
+///
+/// The serialised shape is **identical** to the in-memory `ctx.routes`
+/// the plugin API hands to `postBuild` hooks — same fields (`url`,
+/// `output`, `extension`, `source`, `prerender`, optional `params`),
+/// same url-sorted order. Two access shapes, one source of truth.
+///
+/// Output is JSON, pretty-printed with 2-space indents and a trailing
+/// newline so diffs read sensibly. A serialiser bug that swapped sort
+/// order between runs would break the byte-stability contract this
+/// shares with #262's in-memory manifest, so the entries are written
+/// verbatim — the caller is responsible for the sort.
+fn emit_routes_manifest_file(
+    outdir: &Path,
+    manifest: &zfb_build::PostBuildRouteManifest,
+) -> Result<()> {
+    let dest = outdir.join(ROUTES_MANIFEST_REL_PATH);
+    let mut json = serde_json::to_string_pretty(manifest)
+        .context("serialise postBuild route manifest to JSON")?;
+    json.push('\n');
+    zfb_build::atomic_write_string(&dest, &json)
+        .with_context(|| format!("failed to write {}", dest.display()))?;
+    Ok(())
 }
 
 /// Mount each emitter's `stable_url` under the project's configured
@@ -3660,5 +3705,163 @@ mod tests {
             logo_content,
             "file content must match the source",
         );
+    }
+
+    // ---------------------------------------------------------------
+    // #347 — on-disk routes.json manifest emission tests.
+    //
+    // The helper writes the same data that postBuild plugins see via
+    // `ctx.routes`, just at `<outdir>/__zfb/routes.json` instead of
+    // through a JS callback. These tests pin three things the issue
+    // body called out explicitly:
+    //
+    //   1. shape (field set, params shape, prerender boolean),
+    //   2. byte-stability across runs (#262 carry-over AC),
+    //   3. SSG / SSR routes both land with the correct `prerender` flag.
+    //
+    // The feature-flag wiring (default-on, opt-out via
+    // `emitRoutesManifest: false`) is exercised by Config::default()
+    // returning `emit_routes_manifest: None` — a missing field must
+    // emit, matching the documented default.
+    // ---------------------------------------------------------------
+
+    fn sample_post_build_manifest() -> zfb_build::PostBuildRouteManifest {
+        use std::collections::BTreeMap;
+        use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
+
+        let mut params = BTreeMap::new();
+        params.insert(
+            "slug".into(),
+            PostBuildParamValue::Scalar("hello".into()),
+        );
+
+        PostBuildRouteManifest {
+            routes: vec![
+                PostBuildRouteEntry {
+                    url: "/".into(),
+                    output: "index.html".into(),
+                    extension: "html".into(),
+                    source: "pages/index.tsx".into(),
+                    prerender: true,
+                    params: None,
+                },
+                PostBuildRouteEntry {
+                    url: "/api/me".into(),
+                    output: "api/me/index.html".into(),
+                    extension: "html".into(),
+                    source: "pages/api/me.tsx".into(),
+                    prerender: false,
+                    params: None,
+                },
+                PostBuildRouteEntry {
+                    url: "/blog/hello/".into(),
+                    output: "blog/hello/index.html".into(),
+                    extension: "html".into(),
+                    source: "pages/blog/[slug].tsx".into(),
+                    prerender: true,
+                    params: Some(params),
+                },
+            ],
+        }
+    }
+
+    /// Schema: every documented field must round-trip through the
+    /// on-disk JSON unchanged. `prerender` must be a boolean (NOT a
+    /// stringified value), `params` must be omitted for static routes
+    /// and present for dynamic ones, and the file must live exactly at
+    /// `<outdir>/__zfb/routes.json`.
+    #[test]
+    fn emit_routes_manifest_writes_documented_schema() {
+        let tmp = tempdir().unwrap();
+        let outdir = tmp.path();
+        let manifest = sample_post_build_manifest();
+
+        emit_routes_manifest_file(outdir, &manifest).unwrap();
+
+        let dest = outdir.join("__zfb/routes.json");
+        assert!(
+            dest.is_file(),
+            "routes.json must live at <outdir>/__zfb/routes.json, not at {}",
+            dest.display()
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+        let routes = parsed["routes"].as_array().expect("routes is an array");
+        assert_eq!(routes.len(), 3);
+
+        // Field set on a static SSG route.
+        let root = &routes[0];
+        assert_eq!(root["url"], "/");
+        assert_eq!(root["output"], "index.html");
+        assert_eq!(root["extension"], "html");
+        assert_eq!(root["source"], "pages/index.tsx");
+        assert_eq!(root["prerender"], serde_json::json!(true));
+        assert!(
+            root.get("params").is_none(),
+            "static route must omit params, got: {root}",
+        );
+
+        // SSR route must surface prerender:false verbatim.
+        let ssr = &routes[1];
+        assert_eq!(ssr["url"], "/api/me");
+        assert_eq!(ssr["prerender"], serde_json::json!(false));
+
+        // Dynamic route must carry params as a string map.
+        let blog = &routes[2];
+        assert_eq!(blog["url"], "/blog/hello/");
+        assert_eq!(blog["params"]["slug"], "hello");
+    }
+
+    /// Byte-stability: emitting the same manifest twice must produce
+    /// identical bytes — the same guarantee #262 made for the
+    /// in-memory manifest. Anything that breaks this (a timestamp, a
+    /// build-id field, non-deterministic JSON serialisation) would
+    /// regress consumer scripts that diff the file across runs.
+    #[test]
+    fn emit_routes_manifest_is_byte_stable_across_runs() {
+        let tmp = tempdir().unwrap();
+        let manifest = sample_post_build_manifest();
+
+        let outdir_a = tmp.path().join("a");
+        let outdir_b = tmp.path().join("b");
+        emit_routes_manifest_file(&outdir_a, &manifest).unwrap();
+        emit_routes_manifest_file(&outdir_b, &manifest).unwrap();
+
+        let a = std::fs::read(outdir_a.join("__zfb/routes.json")).unwrap();
+        let b = std::fs::read(outdir_b.join("__zfb/routes.json")).unwrap();
+        assert_eq!(
+            a, b,
+            "routes.json must be byte-stable across runs (mirrors #262)",
+        );
+
+        // Trailing newline so the file is well-behaved under POSIX
+        // line-oriented tools and CI diff viewers.
+        assert!(a.ends_with(b"\n"));
+    }
+
+    /// SSG-vs-SSR pinning: the in-memory `prerender_map` is the source
+    /// of truth, and the emit helper must surface both shapes without
+    /// dropping or coercing entries. Mirrors
+    /// `post_build_route_manifest_preserves_prerender_field` over in
+    /// `plugin_runner.rs`, but pins the on-disk surface.
+    #[test]
+    fn emit_routes_manifest_preserves_ssg_and_ssr_entries() {
+        let tmp = tempdir().unwrap();
+        let outdir = tmp.path();
+        emit_routes_manifest_file(outdir, &sample_post_build_manifest()).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(outdir.join("__zfb/routes.json")).unwrap(),
+        )
+        .unwrap();
+        let routes = parsed["routes"].as_array().unwrap();
+        let by_url: std::collections::HashMap<&str, &serde_json::Value> = routes
+            .iter()
+            .map(|r| (r["url"].as_str().unwrap(), r))
+            .collect();
+        assert_eq!(by_url["/"]["prerender"], serde_json::json!(true));
+        assert_eq!(by_url["/api/me"]["prerender"], serde_json::json!(false));
+        assert_eq!(by_url["/blog/hello/"]["prerender"], serde_json::json!(true));
     }
 }

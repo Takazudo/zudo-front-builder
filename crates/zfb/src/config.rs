@@ -344,6 +344,25 @@ pub struct Config {
     #[serde(default)]
     pub markdown: Option<MarkdownConfig>,
 
+    /// Whether `zfb build` writes the post-build route manifest to disk
+    /// at `<outDir>/__zfb/routes.json` (#347).
+    ///
+    /// The on-disk file mirrors the in-memory `ctx.routes` shape exposed
+    /// to `postBuild` plugins — same fields, same sort order — so any
+    /// build-pipeline consumer (a `pnpm build && custom-script` script,
+    /// a sibling generator, etc.) can read the manifest without writing
+    /// a zfb plugin. The two surfaces are two access shapes over the
+    /// same data, not two independent contracts.
+    ///
+    /// Default: emit (`None` is treated as `true`). Pass `false` to skip
+    /// the write — useful for projects that strip everything but
+    /// shipped assets out of `dist/` before deploy.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `emitRoutesManifest` into this field.
+    #[serde(default)]
+    pub emit_routes_manifest: Option<bool>,
+
     /// Canonical origin URL for the site (e.g. `"https://example.com"`).
     ///
     /// When set, the bundler emits `globalThis.__zfb.site = <value>` in
@@ -387,6 +406,7 @@ impl Default for Config {
             trailing_slash: false,
             markdown: None,
             site: None,
+            emit_routes_manifest: None,
         }
     }
 }
