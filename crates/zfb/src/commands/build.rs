@@ -1225,6 +1225,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // shaped wrapper. If the user has SSR routes but no adapter
     // configured, fail fast HERE (before the expensive bundle +
     // renderer boot) with a pointer at the offending route.
+    //
+    // We have to look in TWO places:
+    //
+    // 1. `static_routes` — the resolved static + statically-expanded
+    //    dynamic routes whose `paths()` returned a literal array.
+    // 2. `still_deferred` — dynamic routes whose `paths()` couldn't
+    //    be statically extracted (they need V8 runtime evaluation).
+    //    A page with `prerender = false` AND a non-literal `paths()`
+    //    sits here, and the prerender_map join still finds it because
+    //    both sides key by the route template.
+    //
+    // Missing the deferred set would let `output: "static"` /
+    // `adapter = "none"` proceed on a project that obviously needs
+    // SSR — exactly the contradiction these checks exist to catch.
     let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
         .iter()
         .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
@@ -1232,6 +1246,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             route_key: entry.route_key.as_str(),
             url_path: entry.url_path.as_str(),
         })
+        .chain(still_deferred.iter().filter_map(|entry| {
+            if prerender_map.get(&entry.template).copied().unwrap_or(true) {
+                None
+            } else {
+                Some(SsrRouteRef {
+                    route_key: entry.template.as_str(),
+                    // Deferred routes have no concrete URL yet — the template
+                    // IS the most specific identifier we can offer to a user
+                    // reading the error message.
+                    url_path: entry.template.as_str(),
+                })
+            }
+        }))
         .collect();
     ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
 
@@ -4118,5 +4145,124 @@ mod tests {
             msg.contains("(and 2 more)"),
             "multi-route message should count the extras; got: {msg}"
         );
+    }
+
+    /// Codex review (4.1b PR) flagged a missing case: a dynamic route
+    /// with `prerender = false` AND a non-literal `paths()` lives in
+    /// `still_deferred`, not `static_routes`. The detection seam must
+    /// include both surfaces or `output: "static"` + `adapter: "none"`
+    /// would slip through for projects using runtime-expanded SSR
+    /// dynamic pages.
+    ///
+    /// This test exercises the run_build path with a synthetic dynamic
+    /// SSR route whose source file does not exist on disk — the static
+    /// `paths()` extractor fails and the route ends up deferred. The
+    /// build must still refuse adapter: none.
+    #[test]
+    fn run_build_with_adapter_none_rejects_deferred_dynamic_ssr_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        // Page source exports `prerender = false` AND a `paths()` that
+        // cannot be statically extracted — call into a non-literal value
+        // (a function-returned array). The static extractor gives up,
+        // build_route_universe + expand_dynamic_routes place this route in
+        // `still_deferred`, and the precondition check must STILL fire.
+        std::fs::write(
+            project_root.join("pages/api/[slug].tsx"),
+            "export const frontmatter = { title: \"Slug\" };\n\
+             export const prerender = false;\n\
+             export function paths() { return makePaths(); }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![zfb_router::Route {
+            source_path: PathBuf::from("pages/api/[slug].tsx"),
+            segments: vec![
+                zfb_router::Segment::Static("api".into()),
+                zfb_router::Segment::Dynamic("slug".into()),
+            ],
+            kind: zfb_router::RouteKind::Dynamic,
+            specificity: 0,
+            output_extension: None,
+        }];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default(); // adapter is None
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        // The error must reach the user via the same path the static-route
+        // case takes — `ensure_no_ssr_without_adapter` first, then resolve_v8_mode
+        // if an adapter is configured. With adapter:none, the adapter check fires
+        // and names the route template.
+        assert!(msg.contains("/api/:slug"), "{msg}");
+        assert!(msg.contains("SSR"), "{msg}");
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
+    }
+
+    /// Mirrors the test above but uses `output: "static"` + adapter set.
+    /// With an adapter configured the no-adapter check passes; the
+    /// `output: "static"` gate must catch the deferred-dynamic SSR
+    /// route through `resolve_v8_mode`.
+    #[test]
+    fn run_build_with_output_static_rejects_deferred_dynamic_ssr_routes() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/[slug].tsx"),
+            "export const frontmatter = { title: \"Slug\" };\n\
+             export const prerender = false;\n\
+             export function paths() { return makePaths(); }\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+        let routes = vec![zfb_router::Route {
+            source_path: PathBuf::from("pages/api/[slug].tsx"),
+            segments: vec![
+                zfb_router::Segment::Static("api".into()),
+                zfb_router::Segment::Dynamic("slug".into()),
+            ],
+            kind: zfb_router::RouteKind::Dynamic,
+            specificity: 0,
+            output_extension: None,
+        }];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        cfg.output = OutputMode::Static;
+        let fake_adapter = FakeAdapterRunner::new();
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("output: \"static\""), "{msg}");
+        assert!(msg.contains("/api/:slug"), "{msg}");
+        assert!(runner.bundle_calls.borrow().is_empty());
+        assert!(runner.render_calls.borrow().is_empty());
     }
 }
