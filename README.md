@@ -14,6 +14,14 @@ pnpm add -D @takazudo/zfb
 
 `@takazudo/zfb` ships a prebuilt Rust binary per platform via npm optional-deps — no cargo or Rust toolchain required.
 
+## Install (Windows)
+
+```powershell
+irm https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.ps1 | iex
+```
+
+This downloads the `x86_64-pc-windows-msvc` binary, verifies its SHA-256 checksum, and installs `zfb.exe` to `%LOCALAPPDATA%\zfb\bin\zfb.exe`. Set `$env:ZFB_INSTALL` to change the install root. Set `$env:ZFB_VERSION` to pin a specific release tag (e.g. `v0.2.0`) or use `latest-prerelease` to opt into pre-releases.
+
 ## Why Rust?
 
 Rust makes the framework itself fast, memory-safe, and distributable as a single binary — see the [architecture doc](./docs/src/content/docs/architecture/why-rust.mdx) (or the [docs site](https://takazudomodular.com/pj/zudo-front-builder/)) for the full rationale.
