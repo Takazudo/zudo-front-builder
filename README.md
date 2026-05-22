@@ -2,6 +2,14 @@
 
 `zfb` is a Rust-built static-site engine for TypeScript/JSX projects — millisecond rebuilds, single binary, no cargo needed by end users.
 
+## Install (Linux/macOS via curl)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
+```
+
+Installs `zfb` to `$HOME/.local/bin/zfb`. Set `ZFB_INSTALL=/your/path` to change the prefix. Set `ZFB_VERSION=v0.X.Y` to pin a specific release.
+
 ## Install
 
 ```sh
