@@ -531,13 +531,14 @@ mod tests {
         let has_tsx_page = dir.get_file("node-free/pages/index.tsx").is_some();
         assert!(has_tsx_page, "node-free template must contain pages/index.tsx");
 
-        // Check for at least one .md content file other than README.md.
-        let has_md_content = dir
-            .get_file("node-free/content/posts/hello.md")
-            .is_some();
+        // Content collections currently require Node-only node:fs at build
+        // time (see issue #392), so the Node-free template intentionally
+        // omits the content/ directory until upstream gains a Node-free
+        // path. Assert that absence so a regression here gets caught.
         assert!(
-            has_md_content,
-            "node-free template must contain content/posts/hello.md"
+            dir.get_dir("node-free/content").is_none(),
+            "node-free template must NOT ship a content/ directory until \
+             content collections work without node:fs (see #392 / #390)"
         );
     }
 
@@ -613,11 +614,13 @@ mod tests {
         let has_tsx = walkdir_has_extension(&pages_dir, "tsx");
         assert!(has_tsx, "scaffolded pages/ must contain at least one .tsx file");
 
-        // At least one .md content file must be present somewhere under content/.
-        let content_dir = dest.join("content");
-        assert!(content_dir.exists(), "scaffolded site must have a content/ directory");
-        let has_md = walkdir_has_extension(&content_dir, "md");
-        assert!(has_md, "scaffolded content/ must contain at least one .md file");
+        // content/ is intentionally absent — see #392 (getCollection requires
+        // node:fs). The README explains how to add it back once that gap closes.
+        assert!(
+            !dest.join("content").exists(),
+            "scaffolded node-free site must NOT contain a content/ directory \
+             until content collections work without node:fs (see #392 / #390)"
+        );
     }
 
     #[test]

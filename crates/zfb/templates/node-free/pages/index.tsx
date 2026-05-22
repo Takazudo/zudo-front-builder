@@ -1,24 +1,13 @@
 /**
- * Home page — lists all posts from the `posts` content collection.
+ * Home page — single static page for the node-free template.
  *
- * `getStaticProps` is evaluated at build time by zfb. The component
- * receives the resolved data as plain props, so no Node / pnpm is needed
- * at runtime.
+ * Intentionally simple: no content collections, no getCollection() call.
+ * Content collections in @takazudo/zfb-runtime currently require Node-only
+ * `node:fs` at build time (see issue #392). Until that gap is closed, the
+ * Node-free template renders entirely from inline TSX, which the embedded
+ * esbuild Go binary + V8 host can build without any Node toolchain.
  */
-export async function getStaticProps() {
-  const { getCollection } = await import("zfb/content");
-  const posts = await getCollection("posts");
-  return { props: { posts } };
-}
-
-type Post = {
-  slug: string;
-  data: { title: string; date: string; description?: string };
-};
-
-type Props = { posts: Post[] };
-
-export default function HomePage({ posts }: Props) {
+export default function HomePage() {
   return (
     <html lang="en">
       <head>
@@ -28,15 +17,23 @@ export default function HomePage({ posts }: Props) {
       </head>
       <body>
         <h1>node-free</h1>
-        <p>A minimal zfb site — no Node, no pnpm required.</p>
-        <h2>Posts</h2>
+        <p>
+          A minimal <code>zfb</code> site — no Node, no pnpm required. The <code>zfb</code> binary
+          alone scaffolds, builds, and serves this page.
+        </p>
+        <h2>Next steps</h2>
         <ul>
-          {posts.map((post) => (
-            <li key={post.slug}>
-              <a href={`/posts/${post.slug}`}>{post.data.title}</a>
-              {post.data.description ? <> — {post.data.description}</> : null}
-            </li>
-          ))}
+          <li>
+            Edit <code>pages/index.tsx</code> to change this page.
+          </li>
+          <li>
+            Add more pages by dropping <code>.tsx</code> files into <code>pages/</code>.
+          </li>
+          <li>
+            See the docs at{" "}
+            <a href="https://github.com/Takazudo/zudo-front-builder">Takazudo/zudo-front-builder</a>
+            .
+          </li>
         </ul>
       </body>
     </html>

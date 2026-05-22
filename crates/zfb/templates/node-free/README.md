@@ -18,21 +18,26 @@ No `pnpm install`, no `pnpm dev`, no `pnpm exec` needed.
 ## Structure
 
 ```
-zfb.config.json        zfb configuration
+zfb.config.json   zfb configuration (JSON only — no .ts in this template)
 pages/
-  index.tsx            home page (lists posts)
-  posts/[slug].tsx     per-post page
-content/
-  posts/
-    hello.md           sample post
+  index.tsx       single home page
 ```
 
-## Adding content
+## Adding pages
 
-Drop `.md` or `.mdx` files into `content/posts/` — each file becomes a post
-with a URL at `/posts/<slug>`.
+Drop more `.tsx` files into `pages/`. Each becomes a route at the same path
+under `/` (so `pages/about.tsx` → `/about`).
+
+## Content collections (currently Node-only)
+
+Content collections (`getCollection("posts")` etc.) and Markdown sources under
+`content/` currently require Node-only `node:fs` at build time. The Node-free
+template intentionally omits them. Add them back once the upstream gap closes
+(tracking: [#392](https://github.com/Takazudo/zudo-front-builder/issues/392),
+[Tier 2 epic #390](https://github.com/Takazudo/zudo-front-builder/issues/390)).
 
 ## Configuration
 
-See `zfb.config.json` and the [zfb docs](https://github.com/Takazudo/zudo-front-builder)
-for available options.
+See `zfb.config.json` and the
+[zfb docs](https://github.com/Takazudo/zudo-front-builder) for available
+options.
