@@ -54,3 +54,21 @@ Each sha256 file contains exactly one line:
 Run `workflow_dispatch` with `dry_run: true` to exercise all build, tarball,
 and sha256 steps without uploading to a GH Release or publishing to npm.
 The `release-assets` job will list the collected files instead of uploading.
+
+## Homebrew tap update (added by issue #383)
+
+After the GitHub Release assets are published, regenerate and push the Homebrew
+tap formula. Requires a local checkout of `Takazudo/homebrew-tap` at the default
+path (`~/repos/myoss/homebrew-tap`):
+
+```sh
+./scripts/update-homebrew-formula.sh vX.Y.Z --push
+```
+
+The script fetches the sha256 checksums from the GH Release assets (the `.sha256`
+files produced by the release workflow), writes `Formula/zfb.rb` in the tap, and
+commits + pushes `"zfb X.Y.Z"`.
+
+**Note:** No seed commit is needed for the first release — running the command
+above on the first real `vX.Y.Z` tag will both create `Formula/zfb.rb` and push
+it to the tap for the first time.
