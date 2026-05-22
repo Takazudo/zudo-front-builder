@@ -7,9 +7,9 @@
 # ── Job topology ──────────────────────────────────────────────────────────
 #
 # PR + main push (ZFB_SMOKE_MODE=local):
-#   build-binary (amd64 on ubuntu-latest)
+#   build-binary (amd64 on ubuntu-22.04)
 #     └─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
-#   build-binary (arm64 on ubuntu-24.04-arm)
+#   build-binary (arm64 cross on ubuntu-22.04, mirrors release.yml)
 #     └─► smoke-arm64 (ubuntu-24.04-arm) — runs container in local mode
 #
 # Tag push — after release.yml has published GH Release assets
@@ -48,12 +48,20 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - runner: ubuntu-latest
+          # ubuntu-22.04 host ensures x86_64 binary links against GLIBC 2.35 — the project's floor.
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: smoke-binary-amd64
-          - runner: ubuntu-24.04-arm
+            use_cross: false
+          # arm64 uses cross on ubuntu-22.04 (mirroring release.yml) rather than native
+          # ubuntu-24.04-arm. Rationale: native arm ubuntu-24.04 produces a GLIBC 2.39 binary
+          # which cannot run inside the bookworm smoke container (GLIBC 2.36), causing the
+          # smoke to fail at zfb --version before any assertions. Cross on ubuntu-22.04 with
+          # the Cross.toml pin produces ≤ 2.35, matching the released binary.
+          - runner: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: smoke-binary-arm64
+            use_cross: true
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 30
     steps:
@@ -75,8 +83,41 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
-      - name: Build zfb binary
+      # Install cross-rs for the arm64 cross-compile target (same as release.yml).
+      # cross wraps cargo build inside a Docker container providing the aarch64 sysroot;
+      # Cross.toml at repo root pins the image to a GLIBC 2.23 base (≤ 2.35 floor).
+      - name: Install cross (arm64 only)
+        if: ${{ matrix.platform.use_cross == true }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build zfb binary (native)
+        if: ${{ matrix.platform.use_cross != true }}
         run: cargo build -p zfb --release --target ${{ matrix.platform.target }}
+
+      - name: Build zfb binary (cross — arm64)
+        if: ${{ matrix.platform.use_cross == true }}
+        run: cross build -p zfb --release --target ${{ matrix.platform.target }}
+
+      - name: Enforce GLIBC 2.35 floor on the built binary
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.platform.target }}/release/zfb"
+          MAX_GLIBC=$(objdump -T "$BIN" \
+            | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
+            | sort -V \
+            | tail -1)
+          echo "Highest required GLIBC symbol: $MAX_GLIBC"
+          if [[ -z "$MAX_GLIBC" ]]; then
+            echo "::error::No GLIBC symbols found via objdump — binary inspection failed."
+            exit 1
+          fi
+          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.35" | sort -V | tail -1)
+          if [[ "$WORST" != "GLIBC_2.35" ]]; then
+            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.35 floor."
+            exit 1
+          fi
 
       # Stage binary to a fixed path inside the smoke build context so that
       # Dockerfile COPY zfb-bin is always resolvable regardless of target triple.

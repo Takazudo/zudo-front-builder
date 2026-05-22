@@ -20,14 +20,10 @@
 #   zfb-bin   real binary (local mode) or placeholder (released mode)
 #   run.sh    assertion script
 #
-# Base image — must satisfy the binary's glibc requirement.  CI builds the zfb
-# binary on ubuntu-latest (currently 24.04), which links against GLIBC 2.39.
-# debian:bookworm-slim (Debian 12) ships GLIBC 2.36 and is therefore too old
-# (zfb errors with "libc.so.6: version `GLIBC_2.39' not found").  trixie-slim
-# (Debian 13, current stable as of 2025-06) ships GLIBC 2.41 and matches.
-# If the release.yml builders are downgraded to ubuntu-22.04 for broader user
-# glibc compatibility, this base can be rolled back to bookworm-slim.
-FROM debian:trixie-slim
+# Released binary targets GLIBC 2.35 (ubuntu-22.04 baseline). Smoke runs against
+# bookworm (Debian 12, GLIBC 2.36) to lock that floor in. Forward compatibility
+# to newer GLIBC is a property of glibc itself — no separate trixie smoke needed.
+FROM debian:bookworm-slim
 
 ARG ZFB_SMOKE_MODE=local
 

@@ -1,0 +1,17 @@
+# Cross.toml — configuration for cross-rs (https://github.com/cross-rs/cross)
+#
+# Pins the aarch64-unknown-linux-gnu cross-compilation image to a specific
+# version to guarantee a stable GLIBC sysroot floor.
+#
+# Verified: ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5 ships
+# Ubuntu 16.04 with GLIBC 2.23, which satisfies the project's ≤ 2.35 floor.
+# There is no upstream cross-rs image based on Ubuntu 22.04; Ubuntu 20.04
+# (GLIBC 2.31, tag "main") and Ubuntu 16.04 (GLIBC 2.23, tag "0.2.5") are the
+# available options. Both satisfy the floor; 0.2.5 is pinned here for
+# reproducibility (mutable "main" tag is intentionally avoided).
+#
+# TODO when ubuntu-22.04 GitHub Actions runner is deprecated: revisit this pin
+# in case cross-rs has published an Ubuntu 22.04-based image by then.
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5"
