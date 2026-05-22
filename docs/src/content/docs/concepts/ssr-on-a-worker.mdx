@@ -1,0 +1,232 @@
+---
+title: SSR on a Worker (adapter mode)
+description: How a prerender = false zfb page actually runs in production — the two-layer worker output, the ASSETS-first dispatch, and the AsyncLocalStorage trick behind getCloudflareContext().
+sidebar_position: 8
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+The mental model of what actually runs in production for a `prerender = false` zfb
+page: the two-layer worker output, how requests are dispatched to the right handler,
+and how `getCloudflareContext()` delivers Cloudflare bindings to any page component
+without prop-drilling.
+
+This page is the mental model. For hands-on setup — installing the adapter,
+wiring up `wrangler.toml`, querying D1, and configuring `compatibility_flags` —
+read [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings).
+This page is also specifically about zfb's emitted `dist/_worker.js`, not
+external Workers you deploy separately with wrangler.
+
+</Info>
+
+## Your page is just a function
+
+Strip away the framework vocabulary and a `prerender = false` zfb page is a plain
+`async function` that returns a `Response`. In the snippet below, `renderToString`,
+`getUser`, `updateProfile`, and `AccountLayout` are placeholder identifiers
+representing app-side code — they are not exports of zfb or
+`@takazudo/zfb-adapter-cloudflare`. The only framework-provided symbol the example
+uses is `getCloudflareContext`.
+
+```tsx
+// pages/account.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+import AccountLayout from "../layouts/account-layout";
+
+export const prerender = false;
+
+interface Env {
+  DB: D1Database;
+  SESSION_SECRET: string;
+}
+
+export default async function AccountPage(): Promise<Response> {
+  const { env, request } = getCloudflareContext<Env>();
+
+  if (request.method === "POST") {
+    const form = await request.formData();
+    await updateProfile(env, form);
+    return new Response(null, { status: 303, headers: { location: "/account" } });
+  }
+
+  const user = await getUser(env, request);
+  return new Response(
+    renderToString(<AccountLayout user={user} />),
+    { headers: { "content-type": "text/html" } },
+  );
+}
+```
+
+The function receives no arguments. Cloudflare's `(request, env, ctx)` tuple is
+available through `getCloudflareContext()` anywhere in the call tree — layouts,
+helpers, lib modules. A `POST` from a `<form method="post">` on the same page
+reaches the same handler; branching on `request.method` is the mutation path.
+
+Nothing special happens here that does not happen in a hand-written Worker. The
+rest of this page explains how `getCloudflareContext()` actually works, and what
+the build emits to make it possible.
+
+## What the build actually emits
+
+Running `zfb build` with `@takazudo/zfb-adapter-cloudflare` configured produces
+two files under `dist/`:
+
+**`dist/_worker.js`** — a small auto-generated stub written by the adapter. This
+is the Cloudflare Pages advanced-mode entry: the file Cloudflare loads when a
+request arrives. Its job is to set up an `AsyncLocalStorage` scope for
+`(env, ctx, request)` and then dispatch every request — either to the static asset
+server or to the inner bundle. It does not contain your application code.
+
+**`dist/_zfb_inner.mjs`** — the real application bundle: every `pages/*.tsx` file,
+layouts, components, and lib helpers compiled into a single Hono-shaped ESM module.
+This is what actually renders your pages.
+
+The two-file layout avoids a second esbuild pass inside the adapter. Workerd's
+module loader resolves relative ESM imports inside an advanced-mode `_worker.js`
+directory, so `_worker.js` can simply `import inner from "./_zfb_inner.mjs"` and
+both files stay independent.
+
+For the broader two-bundle mental model (worker bundle vs island bundles), read
+[Architecture overview](/concepts/architecture-overview).
+
+## The dispatch flow
+
+Every request to your Cloudflare Pages site hits `_worker.js` first. The stub
+applies a static-first, dynamic-second rule:
+
+| Request method | Dispatch order |
+|---|---|
+| GET, HEAD | Probe `env.ASSETS` first. The inner worker is invoked only if the asset server returns 404. Any other status — 200, 308, etc. — is returned to the client directly. |
+| POST, PUT, PATCH, DELETE | Skip `env.ASSETS` entirely. Go straight to the inner worker. |
+
+The fall-through rule is "404 only", not "non-200 only". This matters because
+Cloudflare Pages' asset server emits 308 redirects to canonicalise trailing
+slashes for prerendered routes (e.g. `/docs/account` →
+308 → `/docs/account/` → `dist/docs/account/index.html`), and the wrapper has to
+let those 308s reach the client so the browser can follow them to the index.html.
+Inspecting `worker-wrapper.mjs`: the wrapper calls `await env.ASSETS.fetch(request)`
+and returns the response untouched whenever `assetResponse.status !== 404`.
+
+**Why static-first for GET/HEAD:** the asset server is responsible for the
+trailing-slash canonicalisation described above, and it also serves the
+build-time head injection (`<link rel="stylesheet">`,
+`<script type="module" src="/assets/islands-<hash>.js">`) that makes island
+hydration work. If the inner Hono router handled prerendered routes first, it
+would re-render them at request time without those injected assets, and islands
+would not hydrate.
+
+**Why POST/PUT/PATCH/DELETE go straight through:** The asset server is read-only
+by definition. Probing it for a form submission would always return 404 or 405 —
+an unnecessary round-trip with no benefit. Form submissions, JSON API calls, and
+any mutation go directly to the inner worker.
+
+The result: static pages are not paying the SSR cost. A `prerender = true` page
+is served entirely by `env.ASSETS`, and the inner worker's `fetch` handler is
+not invoked. (The inner bundle is still loaded and evaluated on worker boot
+because `_worker.js` imports it at module scope — see
+[What is NOT in the worker output](#what-is-not-in-the-worker-output) for the
+precise wording.)
+
+## The `getCloudflareContext()` trick
+
+Cloudflare Workers can dispatch multiple requests concurrently inside the same
+V8 isolate. A naïve `globalThis.__env = env` write would race across those
+concurrent requests. The adapter solves this with `AsyncLocalStorage` from
+`node:async_hooks`.
+
+The mechanism in two steps:
+
+**Step 1 — the wrapper stores the context.** Before calling `inner.fetch(request)`,
+the generated `_worker.js` stub runs:
+
+```js
+als.run({ env, ctx, request }, () => inner.fetch(request));
+```
+
+This opens a per-request async scope. Every `await` inside that scope —
+across layouts, helpers, database calls — still sees the same stored value.
+
+**Step 2 — user code reads the context.** `getCloudflareContext<Env>()` calls
+`als.getStore()` on the same `AsyncLocalStorage` instance. Because the adapter
+module registers the storage instance on `globalThis` under a stable key, the
+wrapper file (`_worker.js`) and the user bundle (`_zfb_inner.mjs`) share the
+same instance even though they are separate ESM modules. `getStore()` returns
+the `{ env, ctx, request }` object the wrapper stored for this request, not for
+any other concurrent request.
+
+**Why this means `compatibility_flags = ["nodejs_compat"]` is mandatory.**
+`AsyncLocalStorage` lives in `node:async_hooks`. Workerd does not expose it
+by default — you must opt in with:
+
+```toml
+# wrangler.toml
+compatibility_flags = ["nodejs_compat"]
+```
+
+Without this flag, the Worker fails to boot. The error message names
+`node:async_hooks` as the missing module. See the
+[SSR and Cloudflare Bindings guide](/guides/ssr-and-cloudflare-bindings)
+for the full `wrangler.toml` configuration.
+
+**Why AsyncLocalStorage instead of prop-drilling.** Page handlers compose shared
+layouts and lib helpers freely. Threading `env` as an explicit parameter would
+force every component and helper to accept it — a leaky coupling between
+Cloudflare-specific infrastructure and generic UI code. ALS lets the framework
+boundary stay clean: the adapter owns the storage, user code reads it only where
+it's needed.
+
+<Info title="If you know Next.js or Remix">
+
+The concepts map like this:
+
+| Concept | Next.js App Router | Remix | zfb adapter-mode |
+|---|---|---|---|
+| File-based routing | `app/account/page.tsx` | `routes/account.tsx` | `pages/account.tsx` |
+| Server data fetch | `async function Page()` | `loader` | `async function AccountPage()` |
+| Mutation | Server Actions | `action` | Plain `<form method="post">` |
+| Layouts | `layout.tsx` | Nested route layouts | `layouts/*.tsx` (imported) |
+| Static vs dynamic | `dynamic = 'force-static'` / `'force-dynamic'` | (always dynamic) | `export const prerender = true` / `false` |
+
+Mechanically a Worker; ergonomically App-Router-style SSR; philosophically
+Remix-without-the-Remix-runtime. No RSC streaming, no Server Actions abstraction
+— just one bundle and a Web `fetch` handler.
+
+</Info>
+
+## What is NOT in the worker output
+
+Two categories of output are intentionally absent from `dist/_worker.js` and
+`dist/_zfb_inner.mjs`:
+
+**Islands** — components marked with `"use client"` are compiled by a separate
+esbuild step into a **single combined** browser-shipped bundle. In dev the bundle
+lands at `dist/assets/islands.js` (stable filename, no hash); in production
+`ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
+rewrites every reference in the rendered HTML to the hashed URL. The bundle is
+neither part of `dist/_worker.js` nor of `dist/_zfb_inner.mjs` — it is browser-shipped
+JavaScript, not server-executed Worker code. The Worker renders the static HTML
+shell; the browser downloads the islands bundle and its top-level hydration code
+walks every `[data-zfb-island]` element on the page. See
+[Islands](/concepts/islands) for the full mechanism.
+
+**Prerendered pages** — any page that exports `prerender = true` (or omits the
+export, which defaults to true) is rendered to static HTML at build time. At
+request time, Cloudflare Pages serves the `.html` file directly from `env.ASSETS`,
+so the inner Worker's `fetch` handler is **not invoked** for those routes. The
+inner bundle is still loaded and evaluated on worker boot, however —
+`_worker.js` does a static `import inner from "./_zfb_inner.mjs"`, so workerd
+pulls the inner module graph into memory regardless of which route the first
+request lands on. The optimisation is "static hits skip `inner.fetch()`", not
+"static-only deploys skip loading the inner bundle".
+
+## Related
+
+- [Architecture overview](/concepts/architecture-overview) — the two-bundle model
+  and how the worker bundle shape is the stable contract between build time and
+  production.
+- [Islands](/concepts/islands) — how `"use client"` opts a component into the
+  browser-shipped bundle that lives outside the Worker.
+- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — for
+  hands-on setup: `wrangler.toml`, D1 queries, secrets, and local development
+  with `wrangler pages dev`.
