@@ -58,7 +58,10 @@ fn skips_underscore_files() {
 }
 
 #[test]
-fn skips_non_tsx_files() {
+fn skips_non_page_extension_files() {
+    // Accepted page extensions: tsx, md, html. Any other extension must be
+    // skipped. The fixture pages/ dir contains only .tsx and a README.md.
+    let accepted = &["tsx", "md", "html"];
     let router = Router::scan(&fixture("pages")).expect("scan");
     for route in router.routes() {
         let ext = route
@@ -66,10 +69,18 @@ fn skips_non_tsx_files() {
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        assert_eq!(ext, "tsx");
+        assert!(
+            accepted.contains(&ext),
+            "unexpected extension {ext:?} for {:?}",
+            route.source_path,
+        );
     }
-    // README.md should not have produced any route.
-    assert!(!templates(router.routes()).iter().any(|t| t == "/README"));
+    // README.md in the fixture is a .md page source and now produces /README.
+    let tmpl = templates(router.routes());
+    assert!(
+        tmpl.iter().any(|t| t == "/README"),
+        "README.md should now produce /README route; got: {tmpl:?}"
+    );
 }
 
 #[test]

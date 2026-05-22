@@ -2018,11 +2018,11 @@ fn path_to_posix_string(p: &Path) -> String {
 ///
 /// Returns `None` for non-page files (e.g. an accidental `.txt` inside
 /// `pages/`). Recognised page extensions: `.tsx`, `.ts`, `.jsx`, `.js`,
-/// `.mdx`. Files starting with `_` are treated as private (skipped) to
-/// match the conventional Next/Astro/Remix behaviour.
+/// `.mdx`, `.md`, `.html`. Files starting with `_` are treated as private
+/// (skipped) to match the conventional Next/Astro/Remix behaviour.
 fn derive_route(rel: &Path) -> Option<String> {
     let ext = rel.extension().and_then(|s| s.to_str())?;
-    if !matches!(ext, "tsx" | "ts" | "jsx" | "js" | "mdx") {
+    if !matches!(ext, "tsx" | "ts" | "jsx" | "js" | "mdx" | "md" | "html") {
         return None;
     }
     // Skip `_private.tsx` style.
@@ -2825,7 +2825,16 @@ mod tests {
         // _private files are skipped.
         assert!(derive_route(Path::new("_dev.tsx")).is_none());
         // Unknown extensions are skipped.
-        assert!(derive_route(Path::new("README.md")).is_none());
+        assert!(derive_route(Path::new("README.txt")).is_none());
+        // .md and .html are now accepted page extensions.
+        assert_eq!(
+            derive_route(Path::new("about.md")).as_deref(),
+            Some("/about")
+        );
+        assert_eq!(
+            derive_route(Path::new("index.html")).as_deref(),
+            Some("/")
+        );
     }
 
     #[test]
@@ -4076,6 +4085,101 @@ mod tests {
         assert!(
             input.plugin_virtual_modules.is_empty(),
             "plugin_virtual_modules must default to empty"
+        );
+    }
+
+    // ---- .md / .html derive_route (Sub 406) --------------------------------
+
+    #[test]
+    fn derive_route_accepts_md_and_html() {
+        assert_eq!(
+            derive_route(Path::new("about.md")).as_deref(),
+            Some("/about"),
+            "about.md must derive /about"
+        );
+        assert_eq!(
+            derive_route(Path::new("index.html")).as_deref(),
+            Some("/"),
+            "index.html must derive /"
+        );
+    }
+
+    // ---- route collision tests for new extensions (Sub 406) ----------------
+
+    /// Helper: run materialise_shadow on a pages dir and return the error
+    /// message when a collision is detected. Panics if no error is returned.
+    fn assert_route_collision(pages_dir: &Path, root: &Path) -> String {
+        let shadow_pages_dest = root.join("shadow_coll").join("pages");
+        let mut routes = Vec::new();
+        let err = materialise_shadow(
+            pages_dir,
+            &shadow_pages_dest,
+            &mut routes,
+            root,
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .expect_err("expected a route collision error");
+        err.to_string()
+    }
+
+    #[test]
+    fn collision_tsx_and_md_same_stem() {
+        // pages/about.tsx + pages/about.md → both map to /about → error.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        let stub = "export default function P() { return null; }\n";
+        fs::write(pages.join("about.tsx"), stub).unwrap();
+        fs::write(pages.join("about.md"), "# about\n").unwrap();
+
+        let msg = assert_route_collision(&pages, root);
+        assert!(
+            msg.contains("route collision"),
+            "expected route collision message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn collision_tsx_and_html_same_stem() {
+        // pages/contact.tsx + pages/contact.html → both map to /contact → error.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        let stub = "export default function P() { return null; }\n";
+        fs::write(pages.join("contact.tsx"), stub).unwrap();
+        fs::write(pages.join("contact.html"), "<p>contact</p>\n").unwrap();
+
+        let msg = assert_route_collision(&pages, root);
+        assert!(
+            msg.contains("route collision"),
+            "expected route collision message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn collision_md_and_html_same_stem() {
+        // pages/page.md + pages/page.html → both map to /page → error.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(pages.join("page.md"), "# page\n").unwrap();
+        fs::write(pages.join("page.html"), "<p>page</p>\n").unwrap();
+
+        let msg = assert_route_collision(&pages, root);
+        assert!(
+            msg.contains("route collision"),
+            "expected route collision message; got: {msg}"
         );
     }
 }
