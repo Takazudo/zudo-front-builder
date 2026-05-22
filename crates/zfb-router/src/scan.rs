@@ -6,14 +6,18 @@
 //! |-------------------------------------|---------------|
 //! | `pages/index.tsx`                   | `/`           |
 //! | `pages/about.tsx`                   | `/about`      |
+//! | `pages/about.md`                    | `/about`      |
+//! | `pages/about.html`                  | `/about`      |
 //! | `pages/blog/index.tsx`              | `/blog`       |
 //! | `pages/blog/[slug].tsx`             | `/blog/:slug` |
 //! | `pages/blog/page/[page].tsx`        | `/blog/page/:page` |
 //! | `pages/docs/[...slug].tsx`          | `/docs/:slug{.+}` |
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug` |
 //!
-//! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) and any file
-//! whose extension is not `.tsx` are ignored.
+//! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
+//! Accepted page extensions: `.tsx`, `.md`, `.html`. Files with any other
+//! extension are skipped with a `tracing::warn!` so authors notice accidental
+//! mis-placements.
 
 use std::collections::HashMap;
 use std::path::{Component, Path};
@@ -22,6 +26,9 @@ use walkdir::WalkDir;
 
 use crate::error::RouterError;
 use crate::route::{Route, RouteKind, Segment};
+
+/// Extensions accepted as page source files.
+const ACCEPTED_PAGE_EXTENSIONS: &[&str] = &["tsx", "md", "html"];
 
 /// Maximum specificity points awarded per route segment. The exact value is an
 /// implementation detail; only relative ordering matters.
@@ -55,12 +62,10 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
 
         let path = entry.path();
 
-        // Only .tsx files participate.
-        if path.extension().and_then(|e| e.to_str()) != Some("tsx") {
-            continue;
-        }
+        let ext = path.extension().and_then(|e| e.to_str());
 
-        // Skip files whose stem starts with '_' (framework internals).
+        // Skip files whose stem starts with '_' (framework internals) before
+        // the extension check so we don't warn about private helper files.
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s,
             None => continue,
@@ -85,6 +90,20 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
             .any(|name| name.starts_with('_'))
         {
             continue;
+        }
+
+        // Accept .tsx, .md, .html as page sources. Warn on any other extension
+        // so authors notice accidental mis-placements in pages/.
+        match ext {
+            Some(e) if ACCEPTED_PAGE_EXTENSIONS.contains(&e) => {}
+            _ => {
+                tracing::warn!(
+                    path = %rel.display(),
+                    "pages/ file has an unrecognised extension and will be skipped; \
+                     accepted extensions are: tsx, md, html"
+                );
+                continue;
+            }
         }
 
         let route = parse_route(path, rel)?;
@@ -141,8 +160,14 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
             // files at every catchall URL (no `index.html`),
             // collapsing the directory layout downstream renderers
             // expect.
+            //
+            // `.md` and `.html` page sources always default to
+            // `output_extension = None` (directory-index HTML layout).
+            // Frontmatter extension overrides are not supported for
+            // these source types (out of scope for v1).
+            let is_tsx_or_ts = comp.ends_with(".tsx") || comp.ends_with(".ts");
             let stem_is_param = stem.starts_with('[');
-            if !stem_is_param {
+            if is_tsx_or_ts && !stem_is_param {
                 if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
                     if !before_dot.is_empty() && !after_dot.is_empty() {
                         output_extension = Some(after_dot.to_string());
@@ -194,19 +219,21 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
     })
 }
 
-/// Strip the source-language extension (`.tsx` or `.ts`) from a filename
-/// component. Returns the input unchanged when the component does not
-/// end with one of those extensions.
-///
-/// The router accepts only `.tsx` files today (the scan loop filters
-/// before calling [`parse_route`]); the `.ts` branch is here so the
-/// filename rule is honoured consistently if a future revision opens
-/// the door to `.ts` page sources.
+/// Strip the source-language extension from a filename component.
+/// Recognised source extensions: `.tsx`, `.ts`, `.md`, `.html`.
+/// Returns the input unchanged when the component does not end with
+/// one of those extensions.
 fn strip_source_extension(component: &str) -> &str {
     if let Some(stem) = component.strip_suffix(".tsx") {
         return stem;
     }
     if let Some(stem) = component.strip_suffix(".ts") {
+        return stem;
+    }
+    if let Some(stem) = component.strip_suffix(".md") {
+        return stem;
+    }
+    if let Some(stem) = component.strip_suffix(".html") {
         return stem;
     }
     component
@@ -568,6 +595,87 @@ mod tests {
         assert_eq!(
             r.output_filename(None),
             PathBuf::from("about/index.html"),
+        );
+    }
+
+    // ---- .md page sources (Sub 406) ----------------------------------------
+
+    #[test]
+    fn md_static_about() {
+        let r = route_from("about.md");
+        assert_eq!(r.template(), "/about");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+        assert_eq!(r.output_filename(None), PathBuf::from("about/index.html"));
+    }
+
+    #[test]
+    fn md_index_root() {
+        let r = route_from("index.md");
+        assert_eq!(r.template(), "/");
+        assert!(r.segments.is_empty());
+        assert_eq!(r.output_extension, None);
+    }
+
+    #[test]
+    fn md_nested_path() {
+        let r = route_from("blog/post.md");
+        assert_eq!(r.template(), "/blog/post");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+    }
+
+    // ---- .html page sources (Sub 406) --------------------------------------
+
+    #[test]
+    fn html_static_contact() {
+        let r = route_from("contact.html");
+        assert_eq!(r.template(), "/contact");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+        assert_eq!(r.output_filename(None), PathBuf::from("contact/index.html"));
+    }
+
+    #[test]
+    fn html_index_root() {
+        let r = route_from("index.html");
+        assert_eq!(r.template(), "/");
+        assert!(r.segments.is_empty());
+        assert_eq!(r.output_extension, None);
+    }
+
+    // ---- underscore-stem skipping for new extensions -----------------------
+
+    #[test]
+    fn md_underscore_stem_is_skipped_by_scan() {
+        // `_private.md` must be skipped by scan_pages.
+        // We test this via scan_pages with a temp dir.
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let pages = tmp.path();
+        fs::write(pages.join("_private.md"), "# private").unwrap();
+        let routes = scan_pages(pages).expect("scan");
+        assert!(routes.is_empty(), "underscore .md file should be skipped");
+    }
+
+    // ---- unknown-extension warning (Sub 406) --------------------------------
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn unknown_extension_emits_warning() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let pages = tmp.path();
+        fs::write(pages.join("notes.txt"), "hello").unwrap();
+        let routes = scan_pages(pages).expect("scan");
+        assert!(routes.is_empty(), "unknown extension file should be skipped");
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised extension"
         );
     }
 }

@@ -13,3 +13,9 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 walkdir = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = { workspace = true }
