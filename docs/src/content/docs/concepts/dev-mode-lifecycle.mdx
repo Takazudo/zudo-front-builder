@@ -1,0 +1,146 @@
+---
+title: Dev mode lifecycle
+description: What happens between hitting save on a .tsx file and seeing the change in the browser — watcher, rebundle, SSR refresh, and the three SSE event types.
+sidebar_position: 7.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+The save-to-pixel loop for `zfb dev`: how the watcher detects your change, how the
+orchestrator decides what to rebuild, and how three SSE event types let the browser
+react without an unnecessary full page reload. For the overall build step order read
+[Build pipeline](/concepts/build-pipeline); for how the dependency graph limits
+rebuilds to affected pages read [Incremental rebuild](/concepts/incremental-rebuild).
+
+This page describes the **SSG / static-HTML dev loop only**. For `prerender = false`
+SSR routes, source edits during a `zfb dev` session do **not** hot-reload — the V8
+SSR bundle is restart-only. See
+[No live reload of the SSR bundle](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
+in the SSR guide.
+
+</Info>
+
+## You save a `.tsx` file. Then what?
+
+The moment you save, the operating system fires a filesystem event on the file's
+path. `crates/zfb-watcher` is watching every relevant directory — `pages/`,
+`components/`, `content/`, `layouts/`, `styles/`, `data/`, `public/`, and
+`zfb.config.ts` — via the [`notify`](https://crates.io/crates/notify) crate.
+
+Editor saves are rarely a single clean event. vim renames a swap file over the
+original; VS Code emits several metadata-then-data events in quick succession; a
+`git checkout` fires hundreds at once. The watcher's debouncer coalesces everything
+within a 50ms quiet window into a single `Change { path, kind }` value. The `kind`
+field is one of `ChangeKind::Created`, `ChangeKind::Modified`, or
+`ChangeKind::Removed`; any event kind the OS cannot classify collapses to `Modified`
+so that a real change is never silently dropped.
+
+Once the burst settles and the debounce window closes, the build orchestrator
+(`crates/zfb-build`) receives the change. It calls into `crates/zfb-graph` with the
+changed path and gets back a `DirtySet` — either `All` (global files like
+`zfb.config.ts`) or `Specific(set_of_page_ids)` for the pages that actually import
+the changed file. Pages outside the dirty set are not touched. (The full dependency
+tracking story lives in [Incremental rebuild](/concepts/incremental-rebuild).)
+
+The orchestrator assembles a `RebuildPlan` from the dirty set. If the changed path
+is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag is
+set. If a CSS source changed, `rerun_css` is set. Then the
+`DevAssetPipeline::apply()` method runs, in this order:
+
+1. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
+   subprocess is invoked. It bundles every `"use client"` component and writes a
+   single combined module to a **stable filename** — `dist/assets/islands.js` (the
+   `STABLE_ISLANDS_FILENAME` constant in `crates/zfb-islands/src/bundler.rs`). No
+   content hash in the filename; see [Why filenames stay stable in dev](#why-filenames-stay-stable-in-dev).
+2. **SSR renderer reload.** Before pages are rendered, the embedded V8 host
+   (`deno_core`) is reloaded with the freshly-emitted bundle. This step runs
+   whenever the dirty page set is non-empty. It is constant-cost — one isolate
+   boot regardless of how many pages will be rendered — and is the main per-tick
+   overhead for small dirty sets.
+3. **Pages re-rendered.** The orchestrator calls the renderer for each page in the
+   dirty set. Each rendered `RenderedPage.html` is compared byte-for-byte against
+   the last-known output. If the bytes are identical (a pure refactor that produced
+   no semantic HTML change), no file is written and no reload signal is sent for
+   that page.
+4. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + PostCSS run. If the
+   CSS output is byte-identical to the previous tick, no `Css` event is emitted.
+5. **Build outcome broadcast.** The pipeline returns a `BuildOutcome` struct.
+   `outcome_to_events()` in `crates/zfb-server/src/livereload.rs` inspects the
+   outcome and maps it to `ReloadEvent` values that are broadcast over the SSE
+   channel at `/__zfb/reload`. Every browser tab that has your site open is
+   subscribed to that channel and reacts immediately.
+
+## The three SSE event types
+
+| Outcome trigger | Event | Browser behaviour |
+|---|---|---|
+| `pages_written.len() > 0` | `Page` | Full `location.reload()` |
+| `css_changed` | `Css` | Hot-swap every `<link rel="stylesheet">` — appends `?v=<timestamp>` to bust the browser cache without reloading the document |
+| `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`) and re-hydration of just that component — no document reload |
+
+When multiple events fire in the same tick, the server emits every applicable event.
+The browser processes them in the order they arrive. On receiving a `Page` event,
+the browser calls `location.reload()`, which discards the current document —
+this makes the in-place `Css` or `Islands` swaps moot for that tab. **But other
+tabs subscribed to the same SSE channel still benefit from the `Css` and `Islands`
+hot-swaps** — they receive those events independently and update without reloading.
+
+One detail on `Islands`: the server emits **one `Islands` event per re-bundled
+component**. If a save touches a shared utility consumed by two islands components,
+`outcome_to_events()` emits two separate events — one for each entry in
+`info.components`. Both events carry the same `bundle_url` (`/assets/islands.js`)
+because the output is a single combined bundle. The client script at
+`/__zfb/livereload.js` appends a fresh timestamp (`?v=<timestamp>`) to that URL
+before each `import()` call so the module cache is busted even though the URL is
+otherwise stable.
+
+## Why filenames stay stable in dev
+
+Production builds use content-hashed asset URLs (`/assets/islands-abc12345.js`) so
+that deployed CDN responses can be cached indefinitely and a new deploy's changed
+assets get fresh URLs. The hash is determined by file content; it changes every time
+the bundle changes.
+
+Dev mode deliberately skips the content hash. The output lands at
+`dist/assets/islands.js` — the same URL every tick. This is the URL-contract
+guarantee that makes SSE-driven hot-swap work: when the browser receives an
+`Islands` event, it knows the new bundle is always reachable at the same base URL.
+Changing the URL on every rebuild would force a full page reload because the browser
+would have no cached reference to swap from.
+
+Content hashing is the production pipeline's responsibility. In dev the stable name
+is correct by design, not an oversight.
+
+## What this means in practice
+
+Three typical edit scenarios, and which event fires:
+
+**Edit a `.tsx` island component body only.** The watcher fires on the component
+file. The dependency graph marks pages that consume it dirty; islands re-bundle runs;
+the SSR renderer reloads; affected pages re-render. If the rendered HTML changed, a
+`Page` event fires and the browser reloads. If the HTML is byte-identical (e.g. you
+only changed client-side state logic that never reaches the server render), only an
+`Islands` event fires — the component re-hydrates in place, your neighbour
+components' scroll position and state are untouched.
+
+**Edit a page file that consumes an island.** Both page and island are dirty. The
+orchestrator re-renders the page; the HTML almost certainly changed; a `Page` event
+fires. The browser gets a fresh full-page load with up-to-date server-rendered HTML.
+Any concurrent `Islands` events for that tab are mooted by the reload.
+
+**Edit a CSS file only.** No pages are dirty, no islands re-bundle. The CSS pipeline
+runs; if the output changed, a `Css` event fires. The browser swaps the stylesheet
+in place — no document reload, your scroll position and any client-side state are
+preserved.
+
+## Related
+
+- [Build pipeline](/concepts/build-pipeline) — the full pipeline from CLI to
+  `dist/`, and how dev mode layers on top of it
+- [Incremental rebuild](/concepts/incremental-rebuild) — the dependency graph and
+  `DirtySet` that limit rebuilds to affected pages
+- [Islands](/concepts/islands) — how `"use client"` opts a component into the
+  islands bundle
+- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — including
+  the restart-only limitation for `prerender = false` routes in dev
