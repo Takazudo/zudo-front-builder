@@ -1,0 +1,29 @@
+# Cross.toml — configuration for cross-rs (https://github.com/cross-rs/cross)
+#
+# Pins the aarch64-unknown-linux-gnu cross-compilation image so the built
+# binary's required GLIBC stays inside [2.27, 2.35] — high enough for V8's
+# memfd_create reference (introduced in glibc 2.27, Ubuntu 18.04), low
+# enough to honour the project's ≤ 2.35 floor.
+#
+# Verified: cross-rs's `main`-branch Dockerfile
+# (docker/Dockerfile.aarch64-unknown-linux-gnu) is FROM ubuntu:20.04 →
+# GLIBC 2.31. That window covers memfd_create AND keeps us under the floor.
+#
+# Why not 0.2.5: ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5 is Ubuntu
+# 16.04 (GLIBC 2.23) — too old. V8's wasm-objects.cc references memfd_create
+# directly, which is unresolved at link time on 2.23, producing
+# "undefined reference to `memfd_create'" from collect2.
+#
+# Reproducibility: the `main` tag is mutable, so the image is pinned by SHA
+# digest rather than by tag. To roll forward, run
+#   docker pull ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+#   docker inspect --format='{{index .RepoDigests 0}}' \
+#     ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+# verify the new image is still Ubuntu 20.04-based (GLIBC ≤ 2.35), and
+# update the digest below.
+#
+# TODO when ubuntu-22.04 GitHub Actions runner is deprecated: revisit in case
+# cross-rs publishes an Ubuntu 22.04-based image by then.
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1811a69aab16f39de09df72a991b4d7b33a0337686a827bea4890ccc399ff8f0"

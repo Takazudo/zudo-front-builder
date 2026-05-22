@@ -30,9 +30,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use zfb_build::{bundle, BundleMode, BundlerInput};
+use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_content::{build_snapshot, CollectionConfig};
 use zfb_render::adapters::Framework;
 
@@ -373,36 +374,366 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 3 — EmbeddedV8 render path (requires sub-162)
+// Group 3 — EmbeddedV8 render path
 // ---------------------------------------------------------------------------
 
-// End-to-end render test: build a bundle with `Backend::EmbeddedV8` and
-// render a page that calls `getCollection("blog")`. The HTML response must
-// contain titles from the snapshot.
-//
-// IMPORTANT — this test requires sub-162 (EmbeddedV8RenderHost), which is
-// now merged on base/embed-v8. The body is a compile-time stub so the file
-// compiles; un-comment + replace `todo!()` with the real assertions when
-// the integration wiring is finalised. Kept `#[ignore]` so cargo test
-// --workspace doesn't panic on the stub.
-//
-// ## What it will assert
-//
-// 1. bundle() builds a bundle that embeds the snapshot literal.
-// 2. render_all() with Backend::EmbeddedV8 dispatches a page request.
-// 3. The rendered HTML for the homepage contains blog post titles sourced
-//    from the snapshot — confirming that getCollection("blog") inside
-//    getStaticProps() resolves from the embedded snapshot rather than
-//    attempting a node:fs read.
-// #[test]
-// #[ignore = "requires sub-162 (Backend::EmbeddedV8) — un-ignore after merge"]
-// fn embedded_v8_renders_page_with_snapshot_data() {
-//     // Locate esbuild (required for real bundle).
-//     // Build a bundled-basic-blog-template fixture (or a minimal fixture project).
-//     // Call bundle() with Backend::EmbeddedV8 and content_snapshot_json
-//     //   set from build_snapshot(blog_collection_config).
-//     // Call render_all() with a route universe containing "/".
-//     // Read dist/index.html and assert it contains "Alpha Post" or
-//     //   similar title from the blog collection.
-//     todo!("implement after sub-162 is merged");
-// }
+/// Resolve the esbuild binary. Same precedence as the other integration
+/// tests (`bundler_integration.rs`, `integration_e2e_routing_rendering.rs`):
+///
+/// 1. `ZFB_ESBUILD_BIN` env var (an absolute path).
+/// 2. `crates/zfb/binaries/esbuild/esbuild` (the workspace-staged binary).
+/// 3. `which esbuild` (pnpm-store bin, system PATH).
+fn locate_esbuild() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("ZFB_ESBUILD_BIN") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
+        let slot = workspace.join("crates/zfb/binaries/esbuild/esbuild");
+        if slot.exists() {
+            return Some(slot);
+        }
+    }
+    // Fallback: any pnpm-staged esbuild reachable from the worktree (the
+    // sibling main-repo's `node_modules/.pnpm/node_modules/esbuild/bin`).
+    if let Some(store) = locate_pnpm_node_modules() {
+        let pnpm_slot = store.join("esbuild/bin/esbuild");
+        if pnpm_slot.exists() {
+            return Some(pnpm_slot);
+        }
+    }
+    if let Ok(out) = Command::new("which").arg("esbuild").output() {
+        if out.status.success() {
+            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Workspace root (two levels up from `CARGO_MANIFEST_DIR`).
+fn workspace_root() -> PathBuf {
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root from CARGO_MANIFEST_DIR")
+        .to_path_buf()
+}
+
+/// Locate a `node_modules/.pnpm/node_modules` directory that contains the
+/// runtime deps (`preact`, `hono`, …) the bundle needs.
+///
+/// First tries the worktree root (where `pnpm install` would normally
+/// drop it). If that path is missing — common in a fresh `/x-wt-teams`
+/// worktree that has not been `pnpm install`-ed because the manager
+/// session shares the main repo's `node_modules` — walks upwards looking
+/// for a sibling main-repo checkout. Returns `None` when no candidate
+/// exists; the test skips in that case.
+fn locate_pnpm_node_modules() -> Option<PathBuf> {
+    let primary = workspace_root().join("node_modules/.pnpm/node_modules");
+    if primary.exists() {
+        return Some(primary);
+    }
+    // Walk the worktree ancestry to find a main checkout. The
+    // `/x-wt-teams` layout puts worktrees at `<repo>/worktrees/<name>/`,
+    // so the main repo is at `<worktree>/../../`.
+    let mut cursor = workspace_root();
+    for _ in 0..4 {
+        let candidate = cursor.join("node_modules/.pnpm/node_modules");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        cursor = parent.to_path_buf();
+    }
+    None
+}
+
+/// Build a custom `node_modules` directory for the test bundle.
+///
+/// Mirrors `integration_e2e_routing_rendering::make_test_node_modules`:
+/// generic packages (`preact`, `preact-render-to-string`, `hono`) symlink
+/// to the pnpm virtual store; `@takazudo/zfb-runtime` and `zfb` symlink
+/// to the worktree copies so the bundle picks up the source under test.
+fn make_test_node_modules() -> Option<tempfile::TempDir> {
+    let worktree_root = workspace_root();
+    let pnpm_store = locate_pnpm_node_modules()?;
+
+    let tmp = tempfile::tempdir().expect("tempdir for test node_modules");
+    let nm = tmp.path();
+
+    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    for pkg in from_store {
+        let src = pnpm_store.join(pkg);
+        if !src.exists() {
+            eprintln!(
+                "[embedded_v8_snapshot_e2e] missing runtime dep `{pkg}` at {} — \
+                 skipping test (run `pnpm install` at the repo root).",
+                src.display(),
+            );
+            return None;
+        }
+        let dst = nm.join(pkg);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&src, &dst)
+            .unwrap_or_else(|e| panic!("symlink {}: {e}", src.display()));
+    }
+
+    // `@takazudo/zfb-runtime` and `@takazudo/zfb` both come from the
+    // worktree so the test exercises the source under review. The bundler
+    // rewrites bare `zfb` specifiers to `@takazudo/zfb` (see
+    // `crates/zfb-build/src/bundler.rs` around `--alias:zfb=@takazudo/zfb`),
+    // so both forms need the scoped package to exist.
+    let takazudo_dir = nm.join("@takazudo");
+    fs::create_dir_all(&takazudo_dir).expect("create @takazudo dir");
+    let zfb_runtime_src = worktree_root.join("packages/zfb-runtime");
+    let zfb_runtime_dst = takazudo_dir.join("zfb-runtime");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_runtime_src, &zfb_runtime_dst)
+        .unwrap_or_else(|e| panic!("symlink @takazudo/zfb-runtime: {e}"));
+
+    let zfb_src = worktree_root.join("packages/zfb");
+    let zfb_dst_scoped = takazudo_dir.join("zfb");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_src, &zfb_dst_scoped)
+        .unwrap_or_else(|e| panic!("symlink @takazudo/zfb: {e}"));
+    // Also keep the bare `zfb` name available for any code path that
+    // still resolves it directly (the bundler's alias targets the scoped
+    // form for production builds, but unit tests sometimes import the
+    // bare form).
+    let zfb_dst_bare = nm.join("zfb");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_src, &zfb_dst_bare)
+        .unwrap_or_else(|e| panic!("symlink zfb: {e}"));
+
+    Some(tmp)
+}
+
+/// Create a minimal fixture project on disk: a `pages/index.tsx` that
+/// reads from a `blog` content collection via `getCollection("blog")` and
+/// renders post titles, plus a `content/blog/` directory with two
+/// `.md` posts carrying `title` frontmatter.
+fn write_blog_fixture_project(root: &Path) -> PathBuf {
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::create_dir_all(root.join("layouts")).unwrap();
+
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"export async function getStaticProps() {
+  const { getCollection } = await import("zfb/content");
+  const posts = (await getCollection("blog")) as Array<{
+    slug: string;
+    data: { title: string };
+  }>;
+  return { props: { posts } };
+}
+
+type Props = {
+  posts: Array<{ slug: string; data: { title: string } }>;
+};
+
+export default function HomePage({ posts }: Props) {
+  return (
+    <html lang="en">
+      <head>
+        <title>blog-snapshot-fixture</title>
+      </head>
+      <body>
+        <h1>Posts</h1>
+        <ul>
+          {posts.map((p) => (
+            <li key={p.slug}>{p.data.title}</li>
+          ))}
+        </ul>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("content/blog/alpha.md"),
+        "---\ntitle: \"Alpha Post\"\ndate: \"2026-01-01\"\n---\nBody of alpha.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/blog/zulu.md"),
+        "---\ntitle: \"Zulu Post\"\ndate: \"2026-03-01\"\n---\nBody of zulu.\n",
+    )
+    .unwrap();
+
+    root.to_path_buf()
+}
+
+/// End-to-end render test: a bundle built with a populated
+/// `content_snapshot_json` and dispatched through the in-process V8
+/// host renders a page that calls `getCollection("blog")` inside
+/// `getStaticProps`. The rendered HTML must contain the post titles
+/// from the snapshot, proving:
+///
+/// 1. `bundle()` embeds the snapshot literal into `entry.mjs`
+///    (`bundler.rs:2258`).
+/// 2. The generated `createPageRouter({...})` call hands the literal to
+///    the runtime's `setContentSnapshot` (`router.ts:159`).
+/// 3. `getCollection("blog")` resolves from the installed snapshot
+///    (`packages/zfb/src/content.ts:425-427`) — i.e. without falling
+///    through to `node:fs`.
+///
+/// This is the previously-deferred stub from sub-162 / #392, now
+/// implemented. Drives the host directly via `EmbeddedV8RenderHost`
+/// rather than `render_all(Backend::EmbeddedV8 { .. })`: the
+/// `EmbeddedV8Host` trait requires `Send`, and the only impl
+/// (`ThreadedV8Host`) lives in the `zfb` crate, which is downstream of
+/// this crate — depending on it from here would form a cycle. Driving
+/// the host directly here gives the same proof with no extra wiring.
+///
+/// Skips with an `eprintln!` when esbuild is unavailable (mirroring
+/// `integration_e2e_routing_rendering`). Gated on the `embed_v8`
+/// feature; off by default builds drop this test entirely (same
+/// pattern as `crates/zfb-render/tests/embedded_v8_*.rs`).
+#[cfg(feature = "embed_v8")]
+#[tokio::test]
+async fn embedded_v8_renders_page_with_snapshot_data() {
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] no esbuild binary; set ZFB_ESBUILD_BIN, \
+             place it at crates/zfb/binaries/esbuild/esbuild, or install via pnpm. \
+             Skipping."
+        );
+        return;
+    };
+
+    // --- Fixture: pages/index.tsx + content/blog/*.md ---
+    let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
+    let project_root = write_blog_fixture_project(fixture_tmp.path());
+    let blog_dir = project_root.join("content/blog");
+
+    // --- Snapshot: build the real ContentSnapshot off disk ---
+    let snap = build_snapshot(&[CollectionConfig::new("blog", &blog_dir)])
+        .expect("build_snapshot from fixture");
+    let snap_json = serde_json::to_string(&snap).expect("serialise snapshot");
+
+    // Sanity: the snapshot must carry both entries with their titles in
+    // the frontmatter — otherwise the in-bundle render below cannot
+    // surface them either.
+    assert!(
+        snap_json.contains("Alpha Post"),
+        "snapshot JSON should embed 'Alpha Post' from frontmatter; got: {snap_json}"
+    );
+    assert!(
+        snap_json.contains("Zulu Post"),
+        "snapshot JSON should embed 'Zulu Post' from frontmatter; got: {snap_json}"
+    );
+
+    // --- Bundle: real esbuild, real node_modules symlinks ---
+    let Some(node_modules) = make_test_node_modules() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] missing runtime deps in pnpm store; \
+             skipping test (run `pnpm install` at the repo root)."
+        );
+        return;
+    };
+    let dist_tmp = tempfile::tempdir().expect("dist tempdir");
+
+    let input = BundlerInput {
+        project_root: project_root.clone(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        content_collections: vec![ContentCollectionSpec::new(
+            "blog",
+            project_root.join("content/blog"),
+        )],
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: Framework::Preact,
+        define_vars: HashMap::new(),
+        tsconfig_paths: BTreeMap::new(),
+        external: vec![],
+        outdir: dist_tmp.path().to_path_buf(),
+        mode: BundleMode::Production,
+        minify: false,
+        esbuild_binary: Some(esbuild.clone()),
+        mock_subprocess_output: None,
+        content_snapshot_json: Some(snap_json.clone()),
+        node_modules_dir: Some(node_modules.path().to_path_buf()),
+        node_modules_preserve_symlinks: true,
+        strip_md_ext: false,
+        code_highlight_theme: None,
+        code_highlight_themes_dir: None,
+        resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        prefetch_disabled: false,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
+        worker_only_routes: None,
+        bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
+    };
+
+    let out = bundle(input).expect("bundle should succeed for fixture project");
+    let bundle_source = fs::read_to_string(&out.bundle_path)
+        .expect("read produced bundle.mjs");
+
+    // Spot-check: the snapshot literal made it into the bundle. This
+    // guarantees the bundler-level wiring is correct; the V8 host
+    // dispatch below proves the runtime side.
+    assert!(
+        bundle_source.contains("Alpha Post"),
+        "bundle.mjs must embed snapshot literal containing 'Alpha Post'; \
+         got (first 500 chars):\n{}",
+        &bundle_source[..bundle_source.len().min(500)],
+    );
+
+    // --- Dispatch through the embedded V8 host ---
+    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    host.execute_module("bundle.mjs", &bundle_source)
+        .await
+        .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
+
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .unwrap_or_else(|e| panic!("dispatch / failed: {e}"));
+
+    assert_eq!(
+        resp.status, 200,
+        "homepage must render 200; got status {}, body={:?}",
+        resp.status,
+        resp.body_utf8(),
+    );
+    let body = resp
+        .body_utf8()
+        .expect("response body must be valid UTF-8")
+        .to_string();
+    // The load-bearing assertion: post titles from the snapshot are
+    // present in the rendered HTML. If `getCollection` were silently
+    // returning `[]` (e.g. because the snapshot wasn't installed) the
+    // `<ul>` would be empty and these substrings would be absent.
+    assert!(
+        body.contains("Alpha Post"),
+        "rendered homepage must contain 'Alpha Post' from getCollection(\"blog\"); \
+         got body:\n{body}",
+    );
+    assert!(
+        body.contains("Zulu Post"),
+        "rendered homepage must contain 'Zulu Post' from getCollection(\"blog\"); \
+         got body:\n{body}",
+    );
+}

@@ -531,14 +531,24 @@ mod tests {
         let has_tsx_page = dir.get_file("node-free/pages/index.tsx").is_some();
         assert!(has_tsx_page, "node-free template must contain pages/index.tsx");
 
-        // Content collections currently require Node-only node:fs at build
-        // time (see issue #392), so the Node-free template intentionally
-        // omits the content/ directory until upstream gains a Node-free
-        // path. Assert that absence so a regression here gets caught.
+        // Content collections work under the embedded V8 host (the
+        // snapshot is baked into the bundle, so `getCollection` resolves
+        // without `node:fs`). The template ships a `content/posts/` dir
+        // with at least one `.md` seed post so `zfb build` produces a
+        // working dist out of the box.
+        let posts_dir = dir
+            .get_dir("node-free/content/posts")
+            .expect("node-free template must ship content/posts/ directory");
+        let has_md_post = posts_dir
+            .files()
+            .any(|f| f.path().extension().and_then(|e| e.to_str()) == Some("md"));
         assert!(
-            dir.get_dir("node-free/content").is_none(),
-            "node-free template must NOT ship a content/ directory until \
-             content collections work without node:fs (see #392 / #390)"
+            has_md_post,
+            "node-free/content/posts/ must contain at least one .md seed post"
+        );
+        assert!(
+            dir.get_file("node-free/pages/posts/[slug].tsx").is_some(),
+            "node-free template must contain pages/posts/[slug].tsx"
         );
     }
 
@@ -614,12 +624,20 @@ mod tests {
         let has_tsx = walkdir_has_extension(&pages_dir, "tsx");
         assert!(has_tsx, "scaffolded pages/ must contain at least one .tsx file");
 
-        // content/ is intentionally absent — see #392 (getCollection requires
-        // node:fs). The README explains how to add it back once that gap closes.
+        // content/ ships with the template now — getCollection() resolves
+        // from the in-bundle snapshot under the embedded V8 host, so the
+        // node-free path no longer needs node:fs at build time. A regression
+        // that removes the seed content would silently break `zfb build`'s
+        // homepage rendering, so assert presence.
+        let content_posts = dest.join("content/posts");
         assert!(
-            !dest.join("content").exists(),
-            "scaffolded node-free site must NOT contain a content/ directory \
-             until content collections work without node:fs (see #392 / #390)"
+            content_posts.exists(),
+            "scaffolded node-free site must contain content/posts/ directory"
+        );
+        let has_md_post = walkdir_has_extension(&content_posts, "md");
+        assert!(
+            has_md_post,
+            "scaffolded content/posts/ must contain at least one .md seed post"
         );
     }
 

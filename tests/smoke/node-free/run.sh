@@ -5,7 +5,9 @@
 #
 # Steps:
 #   1. Scaffold a new site with the node-free template.
-#   2. Build the site and assert dist/index.html exists with expected content.
+#   2. Build the site and assert dist/index.html exists with expected content,
+#      AND that the `posts` content collection produced dist/posts/<slug>/index.html
+#      with the post title from the markdown frontmatter.
 #   3. Start zfb dev in the background on the default port (3000).
 #   4. Poll until the dev server is ready (no fixed sleeps).
 #   5. Assert HTTP 200 + expected content from the dev server.
@@ -23,6 +25,12 @@ PORT=3000
 # Stable substring from the node-free template's index page.
 # Must match the rendered output of crates/zfb/templates/node-free/pages/index.tsx.
 EXPECTED_CONTENT="node-free"
+# Title from the seed post `content/posts/hello.md`. Surfaces in both
+# `dist/index.html` (the homepage post list) and the dedicated per-post page
+# `dist/posts/hello/index.html`. The presence of this string in the per-post
+# HTML proves that `getCollection("posts")` resolved correctly under the
+# embedded V8 host (i.e. without a Node `node:fs` fallback).
+EXPECTED_POST_TITLE="Hello, zfb"
 
 pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
@@ -51,6 +59,34 @@ if ! grep -q "$EXPECTED_CONTENT" dist/index.html; then
     fail "dist/index.html does not contain expected content: $EXPECTED_CONTENT"
 fi
 pass "dist/index.html contains expected content"
+
+# Homepage must list the seed post (proving the index page's
+# `getCollection("posts")` call resolved entries from the snapshot).
+if ! grep -q "$EXPECTED_POST_TITLE" dist/index.html; then
+    fail "dist/index.html does not contain expected post title: $EXPECTED_POST_TITLE"
+fi
+pass "dist/index.html lists the seed post"
+
+# The dynamic `pages/posts/[slug].tsx` route must materialise into a
+# per-post HTML file. Static-site-generation expands `[slug]` via `paths()`,
+# which calls `getCollection("posts")` — so a missing file or missing
+# title here means the snapshot didn't reach the route at SSG time.
+if [ ! -f dist/posts/hello/index.html ]; then
+    fail "dist/posts/hello/index.html not found after build"
+fi
+pass "dist/posts/hello/index.html exists"
+
+if ! grep -q "$EXPECTED_POST_TITLE" dist/posts/hello/index.html; then
+    fail "dist/posts/hello/index.html does not contain post title: $EXPECTED_POST_TITLE"
+fi
+pass "dist/posts/hello/index.html contains the post title"
+
+# NOTE — body rendering is NOT asserted here. The deferred Content-rendering
+# verification belongs to a follow-up: this smoke + the e2e test
+# (crates/zfb-build/tests/embedded_v8_snapshot_e2e.rs) prove that the snapshot
+# reaches the route and getCollection("posts") resolves entries, but neither
+# checks that <post.Content /> renders body markdown to real HTML in the
+# embedded-V8 SSG path. See the agent-found follow-up issue for the gap.
 
 # ── Step 3: Start dev server in the background ───────────────────────────────
 
