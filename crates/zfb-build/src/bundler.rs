@@ -701,6 +701,11 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 /// - `.mdx=jsx` — `.mdx` files were rewritten to JSX text by
 ///   `materialise_shadow`; tell esbuild to parse them as JSX so the
 ///   `.mdx` extension keeps working for user import paths.
+/// - `.md=jsx` — `.md` files are now routed through the same
+///   `compile_mdx_to_jsx_module_cached` path as `.mdx` files (plain
+///   CommonMark is a strict MDX subset). The shadow file retains the
+///   `.md` extension; this loader tells esbuild to parse it as JSX so
+///   the specifier and loader extension agree (zfb#405).
 /// - `.css=empty` — plain `.css` imports inside JS modules are
 ///   converted to no-op modules at compile time. The Worker bundle
 ///   must NOT carry user CSS bytes — `ProductionAssetPipeline` writes
@@ -732,7 +737,7 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   parse error rather than silently dropping the import — which is
 ///   the correct fail-fast signal for a misconfigured build.
 pub const ESBUILD_LOADER_ARGS: &[&str] =
-    &["--loader:.mdx=jsx", "--loader:.css=empty", "--loader:.module.css=js"];
+    &["--loader:.mdx=jsx", "--loader:.md=jsx", "--loader:.css=empty", "--loader:.module.css=js"];
 
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
@@ -1775,8 +1780,11 @@ fn materialise_collection(
             }
         }
 
-        let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
-        if is_mdx {
+        let is_markdown = matches!(
+            from.extension().and_then(|s| s.to_str()),
+            Some("md") | Some("mdx")
+        );
+        if is_markdown {
             // Reset per-document state (e.g. HeadingLinksPlugin's slug
             // counter) before each new MDX file (zfb#187).
             pipeline.reset_per_entry();
@@ -3214,6 +3222,132 @@ mod tests {
         // Non-MDX files copied verbatim.
         let txt = fs::read_to_string(dest.join("README.txt")).unwrap();
         assert_eq!(txt, "not mdx\n");
+    }
+
+    #[test]
+    fn materialise_collection_compiles_md_files_into_bridge() {
+        // Regression test for zfb#405 / zfb#398: `.md` files were previously
+        // `fs::copy`'d verbatim and never added to `imports`, so the bridge
+        // map had no entry and `bridge.get(spec)` returned `undefined`,
+        // causing the page to fall back to `<pre data-zfb-content-fallback>`.
+        //
+        // After the fix, `.md` files are compiled through
+        // `compile_mdx_to_jsx_module_cached` (CommonMark is a strict MDX
+        // subset) and produce a `ContentImport` with an `mdx://...` specifier,
+        // exactly like `.mdx` files. The shadow file retains the `.md`
+        // extension; `--loader:.md=jsx` in `ESBUILD_LOADER_ARGS` tells esbuild
+        // to parse the compiled JSX.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("posts");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("hello.md"),
+            "---\ntitle: Hello\n---\n\n**node-free**\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow_content").join("posts");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        materialise_collection(
+            &src,
+            &dest,
+            "posts",
+            &mut imports,
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        // The `.md` file must produce a ContentImport (was missing before the fix).
+        assert_eq!(
+            imports.len(),
+            1,
+            "expected 1 import for the .md file, got {imports:?}"
+        );
+
+        let ci = &imports[0];
+
+        // Shadow path retains `.md` extension (not renamed to `.mdx`).
+        assert_eq!(
+            ci.shadow_rel_path, "content/posts/hello.md",
+            "shadow_rel_path must retain .md extension; got {}",
+            ci.shadow_rel_path
+        );
+
+        // Specifier must be an `mdx://` URI with a hash segment.
+        assert!(
+            ci.specifier.starts_with("mdx://"),
+            "specifier must start with mdx://; got {}",
+            ci.specifier
+        );
+        assert!(
+            ci.specifier.contains('#'),
+            "specifier must contain hash segment; got {}",
+            ci.specifier
+        );
+
+        // Shadow file exists at the `.md` path and contains compiled JSX.
+        let shadow_file = dest.join("hello.md");
+        assert!(shadow_file.is_file(), "shadow file must exist at hello.md");
+        let jsx = fs::read_to_string(&shadow_file).unwrap();
+        assert!(
+            jsx.contains("_createMdxContent"),
+            "shadow .md file must contain compiled JSX (_createMdxContent); got:\n{jsx}"
+        );
+
+        // The specifier is present in an entry.mjs bridge map — confirming
+        // that `write_entry_module` correctly wires the `.md` import.
+        let shadow_root = tmp.path().join("shadow_for_entry");
+        fs::create_dir_all(&shadow_root).unwrap();
+        write_entry_module(
+            &shadow_root,
+            &[],
+            "preact-render-to-string",
+            None,
+            &imports,
+            None,
+            false,
+        )
+        .unwrap();
+        let entry = fs::read_to_string(shadow_root.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        // The bridge import line must reference the `.md` shadow path.
+        assert!(
+            entry.contains("from \"./content/posts/hello.md\";"),
+            "entry.mjs bridge import must reference hello.md; got:\n{entry}"
+        );
+
+        // The bridge map must contain the specifier key.
+        let spec_no_hash = ci.specifier.split('#').next().unwrap();
+        assert!(
+            entry.contains(&format!("[\"{}\",", ci.specifier))
+                || entry.contains(&format!("[\"{}\", ", ci.specifier)),
+            "entry.mjs bridge map must contain hash-bearing specifier {}; got:\n{entry}",
+            ci.specifier
+        );
+        assert!(
+            entry.contains(&format!("[\"{}\",", spec_no_hash))
+                || entry.contains(&format!("[\"{}\", ", spec_no_hash)),
+            "entry.mjs bridge map must contain no-hash specifier {}; got:\n{entry}",
+            spec_no_hash
+        );
+
+        // Loader constant must include `.md=jsx` so esbuild can parse the
+        // compiled shadow file (ESBUILD_LOADER_ARGS regression check).
+        assert!(
+            ESBUILD_LOADER_ARGS.contains(&"--loader:.md=jsx"),
+            "ESBUILD_LOADER_ARGS must include --loader:.md=jsx; got: {ESBUILD_LOADER_ARGS:?}"
+        );
     }
 
     #[test]
