@@ -17,7 +17,7 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 6. **Renderer** — `crates/zfb-render`. Compiles TSX to JS with SWC, evaluates the resulting ES module via the JS runtime host, and calls the page's `default()` export to produce an HTML string. Content collection entries (`.md` / `.mdx`) are compiled through the same pipeline as JSX modules — the renderer resolves `mdx://<collection>/<slug>` specifiers and surfaces them to user pages as `entry.Content` (see [MDX Components](/concepts/mdx-components)).
 7. **CSS pipeline** — `crates/zfb-css`. Runs Tailwind v4 and PostCSS as needed. See [Styling](/concepts/styling).
 8. **Islands pipeline** — `crates/zfb-islands`. Bundles each `"use client"` component as a separate ESM module via esbuild. See [Islands](/concepts/islands).
-9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/livereload` for browser reload events.
+9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/reload` for browser reload events (see [Dev mode lifecycle](/concepts/dev-mode-lifecycle) for the full event-type breakdown).
 
 ## Production: `zfb build`
 
@@ -25,7 +25,7 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 
 CLI → Router → Graph → Build orchestrator → Renderer → CSS pipeline → Islands pipeline.
 
-The watcher and dev server are not involved. Every page is rendered, every CSS bundle is produced, every island is bundled, and the result lands in `dist/` (or wherever `outDir` points). Atomic writes mean an interrupted build leaves the previous `dist/` intact rather than a partially overwritten mess.
+The watcher and dev server are not involved. Every page is rendered, every CSS bundle is produced, every island is bundled, and the result lands in `dist/` (or wherever `outDir` points). Atomic writes mean an interrupted build leaves the previous `dist/` intact rather than a partially overwritten mess. For `prerender = false` routes, the adapter emits a worker bundle instead of static HTML — see [SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker) for how that output is structured.
 
 ## Development: `zfb dev`
 

@@ -72,7 +72,7 @@ The orchestrator (`crates/zfb-build`) receives the `DirtySet` and feeds it into 
 3. **Re-bundle islands only when consuming pages changed.** The islands sub-pipeline runs only when the plan's `rerun_islands` flag is set — which the orchestrator sets only when a changed file is inside an islands root (e.g. `components/`). A content-only change does not trigger an islands re-bundle.
 4. **Keep filenames stable.** Dev-mode output files use stable names (no content hashes). The browser cache contract does not change between watcher ticks. Content hashing is the production pipeline's job.
 
-The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages.
+The combined effect: a content edit that touches two pages produces two HTML writes, one live-reload event, and no island bundling. A header component edit produces writes for every page that imports the header, but still only those pages. For the full breakdown of SSE event types (`Page`, `Css`, `Islands`) and how the browser reacts to each, see [Dev mode lifecycle](/concepts/dev-mode-lifecycle).
 
 For a deeper look at the orchestrator design, see [Build engine](/architecture/build-engine).
 

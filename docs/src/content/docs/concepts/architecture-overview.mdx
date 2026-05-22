@@ -115,7 +115,9 @@ embedded V8 isolate. The production host is workerd. The contract —
 
 `packages/zfb-adapter-cloudflare` is the deployment adapter for Cloudflare
 Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
-wraps it in the thin shell that `wrangler deploy` expects.
+wraps it in the thin shell that `wrangler deploy` expects. For a deep dive into
+the two-file worker output and how requests are dispatched at runtime, see
+[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker).
 
 The full rationale for this design is in [JS Runtime](/architecture/js-runtime):
 the embedded V8 host design and why the bundle contract is engine-agnostic.
