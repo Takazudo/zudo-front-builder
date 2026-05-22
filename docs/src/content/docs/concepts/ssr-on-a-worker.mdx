@@ -23,7 +23,11 @@ external Workers you deploy separately with wrangler.
 ## Your page is just a function
 
 Strip away the framework vocabulary and a `prerender = false` zfb page is a plain
-`async function` that returns a `Response`:
+`async function` that returns a `Response`. In the snippet below, `renderToString`,
+`getUser`, `updateProfile`, and `AccountLayout` are placeholder identifiers
+representing app-side code — they are not exports of zfb or
+`@takazudo/zfb-adapter-cloudflare`. The only framework-provided symbol the example
+uses is `getCloudflareContext`.
 
 ```tsx
 // pages/account.tsx
@@ -93,16 +97,24 @@ applies a static-first, dynamic-second rule:
 
 | Request method | Dispatch order |
 |---|---|
-| GET, HEAD | Probe `env.ASSETS` first. Status 200 returns the static asset directly. Status 404 falls through to the inner worker. |
+| GET, HEAD | Probe `env.ASSETS` first. The inner worker is invoked only if the asset server returns 404. Any other status — 200, 308, etc. — is returned to the client directly. |
 | POST, PUT, PATCH, DELETE | Skip `env.ASSETS` entirely. Go straight to the inner worker. |
 
-**Why static-first for GET/HEAD:** Cloudflare Pages' asset server handles the
-trailing-slash canonicalisation for prerendered routes (e.g. `/docs/account` →
-308 → `/docs/account/` → `dist/docs/account/index.html`). It also serves the
-build-time head injection (`<link rel="stylesheet">`, `<script type="module"
-src="/islands/...">`) that makes island hydration work. If the inner Hono router
-handled prerendered routes first, it would re-render them at request time
-without those injected assets, and islands would not hydrate.
+The fall-through rule is "404 only", not "non-200 only". This matters because
+Cloudflare Pages' asset server emits 308 redirects to canonicalise trailing
+slashes for prerendered routes (e.g. `/docs/account` →
+308 → `/docs/account/` → `dist/docs/account/index.html`), and the wrapper has to
+let those 308s reach the client so the browser can follow them to the index.html.
+Inspecting `worker-wrapper.mjs`: the wrapper calls `await env.ASSETS.fetch(request)`
+and returns the response untouched whenever `assetResponse.status !== 404`.
+
+**Why static-first for GET/HEAD:** the asset server is responsible for the
+trailing-slash canonicalisation described above, and it also serves the
+build-time head injection (`<link rel="stylesheet">`,
+`<script type="module" src="/assets/islands-<hash>.js">`) that makes island
+hydration work. If the inner Hono router handled prerendered routes first, it
+would re-render them at request time without those injected assets, and islands
+would not hydrate.
 
 **Why POST/PUT/PATCH/DELETE go straight through:** The asset server is read-only
 by definition. Probing it for a form submission would always return 404 or 405 —
@@ -110,7 +122,11 @@ an unnecessary round-trip with no benefit. Form submissions, JSON API calls, and
 any mutation go directly to the inner worker.
 
 The result: static pages are not paying the SSR cost. A `prerender = true` page
-is served entirely by `env.ASSETS`; the inner bundle is never loaded for it.
+is served entirely by `env.ASSETS`, and the inner worker's `fetch` handler is
+not invoked. (The inner bundle is still loaded and evaluated on worker boot
+because `_worker.js` imports it at module scope — see
+[What is NOT in the worker output](#what-is-not-in-the-worker-output) for the
+precise wording.)
 
 ## The `getCloudflareContext()` trick
 
@@ -184,15 +200,25 @@ Two categories of output are intentionally absent from `dist/_worker.js` and
 `dist/_zfb_inner.mjs`:
 
 **Islands** — components marked with `"use client"` are compiled by a separate
-esbuild step into per-island browser bundles under `dist/islands/`. They are
-browser-shipped JavaScript, not server-executed Worker code. The Worker renders
-their static HTML shell; the browser downloads and hydrates each island
-independently. See [Islands](/concepts/islands).
+esbuild step into a **single combined** browser-shipped bundle. In dev the bundle
+lands at `dist/assets/islands.js` (stable filename, no hash); in production
+`ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
+rewrites every reference in the rendered HTML to the hashed URL. The bundle is
+neither part of `dist/_worker.js` nor of `dist/_zfb_inner.mjs` — it is browser-shipped
+JavaScript, not server-executed Worker code. The Worker renders the static HTML
+shell; the browser downloads the islands bundle and its top-level hydration code
+walks every `[data-zfb-island]` element on the page. See
+[Islands](/concepts/islands) for the full mechanism.
 
 **Prerendered pages** — any page that exports `prerender = true` (or omits the
 export, which defaults to true) is rendered to static HTML at build time. At
-request time, Cloudflare Pages serves the `.html` file directly from `env.ASSETS`.
-The inner Worker bundle is never invoked for those routes.
+request time, Cloudflare Pages serves the `.html` file directly from `env.ASSETS`,
+so the inner Worker's `fetch` handler is **not invoked** for those routes. The
+inner bundle is still loaded and evaluated on worker boot, however —
+`_worker.js` does a static `import inner from "./_zfb_inner.mjs"`, so workerd
+pulls the inner module graph into memory regardless of which route the first
+request lands on. The optimisation is "static hits skip `inner.fetch()`", not
+"static-only deploys skip loading the inner bundle".
 
 ## Related
 
