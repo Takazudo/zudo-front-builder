@@ -1352,7 +1352,9 @@ fn materialise_shadow(
         }
 
         // Pre-compile MDX, leaving the .mdx extension in place.
-        let is_mdx = from.extension().and_then(|s| s.to_str()) == Some("mdx");
+        let ext = from.extension().and_then(|s| s.to_str());
+        let is_mdx = ext == Some("mdx");
+        let is_md = ext == Some("md");
         if is_mdx {
             // Reset per-document state (e.g. HeadingLinksPlugin's slug
             // counter) before each new MDX file so cross-document state
@@ -1376,6 +1378,66 @@ fn materialise_shadow(
             }
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
+        } else if is_md && is_pages_dir {
+            // .md page: compile via the MDX pipeline then wrap in a minimal
+            // HTML shell.  The compiled body is written to a `_`-prefixed
+            // sibling so `derive_route` skips it; the shell module at the
+            // original `.md` shadow path becomes the page module esbuild
+            // bundles and the router serves.
+            pipeline.reset_per_entry();
+            if resolve_source_map.is_some() {
+                if let Some(parent) = from.parent() {
+                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
+                }
+            }
+            let raw = fs::read_to_string(from)
+                .with_context(|| format!("read md page {}", from.display()))?;
+            // Extract frontmatter for title / lang, then compile the body.
+            let (frontmatter_value, md_body) = match zfb_frontmatter::extract(from, &raw) {
+                Ok(uf) => (uf.value, uf.body.unwrap_or_default()),
+                Err(_) => {
+                    // Frontmatter parse failure: treat entire source as body,
+                    // no frontmatter.
+                    (serde_json::Value::Null, strip_yaml_frontmatter(&raw).to_string())
+                }
+            };
+            let compiled =
+                compile_mdx_to_jsx_module_cached(&md_body, from, None, Some(&mut pipeline))
+                    .with_context(|| format!("compile md page {}", from.display()))?;
+            for diag in pipeline.take_broken_links() {
+                broken_links_out.push((from.display().to_string(), diag.url));
+            }
+            // Derive slug from the relative path so the title fallback matches
+            // the URL: `about.md` → "about", `index.md` → "index",
+            // `blog/post.md` → "post".
+            let slug_fallback = rel
+                .with_extension("")
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("index")
+                .to_string();
+            // Body file: `_zfb_md_body_<stem>.jsx` in the same shadow dir.
+            // Starts with `_` so `derive_route` ignores it.
+            let stem = from
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("page");
+            let body_filename = format!("_zfb_md_body_{stem}.jsx");
+            let body_shadow_path = to
+                .parent()
+                .map(|p| p.join(&body_filename))
+                .unwrap_or_else(|| PathBuf::from(&body_filename));
+            fs::write(&body_shadow_path, compiled.jsx_source.as_bytes())
+                .with_context(|| {
+                    format!("write md body to {}", body_shadow_path.display())
+                })?;
+            // Shell module at the original `.md` shadow path.
+            // Prefix the body import with "./" so esbuild resolves it as a
+            // relative path (bare names are interpreted as package specifiers).
+            let body_import = format!("./{body_filename}");
+            let shell = render_md_page_shell(&frontmatter_value, &slug_fallback, &body_import);
+            fs::write(&to, shell.as_bytes())
+                .with_context(|| format!("write md page shell to {}", to.display()))?;
         } else {
             fs::copy(from, &to)
                 .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
@@ -2396,6 +2458,66 @@ fn route_path_under_pages(source_path: &Path) -> String {
 
 fn json_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
+}
+
+/// Render the TSX shell module for a `.md` page.
+///
+/// Returns a complete TSX module that:
+/// 1. Imports the compiled MDX body module (a `_`-prefixed sibling file).
+/// 2. Exports a default page component that renders a full `<html>` document
+///    with `<head>` (charset + title) and `<body>` containing the MDX body.
+///
+/// Recognised frontmatter keys (both optional):
+/// - `title` (string) — used as `<title>`. Falls back to `slug_fallback`
+///   (last URL segment, or `"index"` for `/`).
+/// - `lang` (string) — used as `<html lang="…">`. Defaults to `"en"`.
+///
+/// All other frontmatter keys are silently ignored (v1 contract: no layout
+/// system, no `layout:` frontmatter).
+///
+/// The title and lang values are assigned to `const` variables and
+/// referenced via JSX expressions so any reserved characters (`&`, `"`,
+/// `<`) in frontmatter values cannot break the generated JSX syntax.
+pub(crate) fn render_md_page_shell(
+    frontmatter: &serde_json::Value,
+    slug_fallback: &str,
+    body_import: &str,
+) -> String {
+    // Extract title: string from frontmatter, else slug fallback.
+    let title = frontmatter
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(slug_fallback);
+    // Extract lang: string from frontmatter, else "en".
+    let lang = frontmatter
+        .get("lang")
+        .and_then(|v| v.as_str())
+        .unwrap_or("en");
+
+    format!(
+        "// AUTO-GENERATED by zfb_build::bundler (md page shell). Do not edit.\n\
+         import MdBody from {import_spec};\n\
+         \n\
+         const __title = {title_json};\n\
+         const __lang = {lang_json};\n\
+         \n\
+         export default function MdPage() {{\n\
+         \u{0020} return (\n\
+         \u{0020}   <html lang={{__lang}}>\n\
+         \u{0020}     <head>\n\
+         \u{0020}       <meta charSet=\"utf-8\" />\n\
+         \u{0020}       <title>{{__title}}</title>\n\
+         \u{0020}     </head>\n\
+         \u{0020}     <body>\n\
+         \u{0020}       <MdBody />\n\
+         \u{0020}     </body>\n\
+         \u{0020}   </html>\n\
+         \u{0020} );\n\
+         }}\n",
+        import_spec = json_str(body_import),
+        title_json = json_str(title),
+        lang_json = json_str(lang),
+    )
 }
 
 /// Convert a route string from the file-system bracket notation used by
@@ -4180,6 +4302,327 @@ mod tests {
         assert!(
             msg.contains("route collision"),
             "expected route collision message; got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_md_page_shell unit tests (#408)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_md_page_shell_uses_title_from_frontmatter() {
+        let fm = serde_json::json!({"title": "About Us"});
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx");
+        // Title const must be the frontmatter value, not the slug.
+        assert!(
+            shell.contains("const __title = \"About Us\";"),
+            "expected title from frontmatter; got:\n{shell}"
+        );
+        // Import must reference the body file with relative path.
+        assert!(
+            shell.contains("from \"./_zfb_md_body_about.jsx\""),
+            "expected body import; got:\n{shell}"
+        );
+        // Full document structure.
+        assert!(shell.contains("<html lang={__lang}>"), "html element with lang; got:\n{shell}");
+        assert!(shell.contains("<meta charSet=\"utf-8\" />"), "charset meta; got:\n{shell}");
+        assert!(shell.contains("<title>{__title}</title>"), "title element; got:\n{shell}");
+        assert!(shell.contains("<MdBody />"), "body component; got:\n{shell}");
+    }
+
+    #[test]
+    fn render_md_page_shell_falls_back_to_slug_when_no_title() {
+        let fm = serde_json::json!({});
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx");
+        assert!(
+            shell.contains("const __title = \"about\";"),
+            "expected slug fallback; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_falls_back_to_index_for_root() {
+        // pages/index.md → slug_fallback is "index"
+        let fm = serde_json::json!({});
+        let shell = render_md_page_shell(&fm, "index", "./_zfb_md_body_index.jsx");
+        assert!(
+            shell.contains("const __title = \"index\";"),
+            "root page slug fallback should be \"index\"; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_uses_lang_from_frontmatter() {
+        let fm = serde_json::json!({"title": "Page", "lang": "ja"});
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        assert!(
+            shell.contains("const __lang = \"ja\";"),
+            "expected lang from frontmatter; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_defaults_lang_to_en() {
+        let fm = serde_json::json!({"title": "Page"});
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        assert!(
+            shell.contains("const __lang = \"en\";"),
+            "expected default lang \"en\"; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_ignores_non_string_title() {
+        // Non-string title falls back to slug, not to garbage.
+        let fm = serde_json::json!({"title": 42});
+        let shell = render_md_page_shell(&fm, "slug-fallback", "./_zfb_md_body_x.jsx");
+        assert!(
+            shell.contains("const __title = \"slug-fallback\";"),
+            "non-string title must fall back to slug; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_title_is_json_string_literal() {
+        // The title value is emitted as a JSON string literal assigned to
+        // a const and then referenced via a JSX expression `{__title}`.
+        // This is safe for any string content — the JSX renderer handles
+        // escaping at render time. The test verifies the const assignment
+        // shape (not raw HTML injection).
+        let fm = serde_json::json!({"title": "A & <B>"});
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        // The title must be assigned to a const (JSON string literal form).
+        // json_str produces a valid JSON string; the const is referenced
+        // via {__title} in JSX so the renderer handles escaping at render time.
+        assert!(
+            shell.contains("const __title = "),
+            "title must be assigned to a const; got:\n{shell}"
+        );
+        // The value must appear inside the const assignment as a string literal.
+        // We don't assert the exact escaping since json_str may or may not
+        // escape & / < (both are valid in JSON).
+        assert!(
+            shell.contains("<title>{__title}</title>"),
+            "title must be referenced via JSX expression; got:\n{shell}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // materialise_shadow with .md pages (#408)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn materialise_shadow_compiles_md_pages_and_emits_shell() {
+        // A .md file in the pages/ root must be compiled and wrapped in
+        // the HTML shell; a `_zfb_md_body_<stem>.jsx` sibling holds the
+        // compiled body, and the original .md shadow path holds the shell.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("pages");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("about.md"),
+            "---\ntitle: About\nlang: fr\n---\n\n# Hello\n\nA paragraph.\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow").join("pages");
+        let mut routes = Vec::new();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        // Route is detected for /about.
+        assert_eq!(routes.len(), 1, "expected one route; got {routes:?}");
+        assert_eq!(routes[0].route, "/about");
+
+        // Shadow has both the shell and the body file.
+        let shell_path = dest.join("about.md");
+        let body_path = dest.join("_zfb_md_body_about.jsx");
+        assert!(shell_path.is_file(), "shell must exist at about.md");
+        assert!(body_path.is_file(), "body must exist at _zfb_md_body_about.jsx");
+
+        // Shell is a TSX module wrapping the body.
+        let shell = fs::read_to_string(&shell_path).unwrap();
+        assert!(
+            shell.contains("const __title = \"About\";"),
+            "shell must pick up title from frontmatter; got:\n{shell}"
+        );
+        assert!(
+            shell.contains("const __lang = \"fr\";"),
+            "shell must pick up lang from frontmatter; got:\n{shell}"
+        );
+        assert!(
+            shell.contains("from \"./_zfb_md_body_about.jsx\""),
+            "shell must import the body file with relative path; got:\n{shell}"
+        );
+        assert!(shell.contains("<MdBody />"), "shell must render <MdBody />; got:\n{shell}");
+
+        // Body contains compiled MDX output.
+        let body = fs::read_to_string(&body_path).unwrap();
+        assert!(
+            body.contains("_createMdxContent"),
+            "body must be compiled JSX; got:\n{body}"
+        );
+
+        // derive_route must skip the _-prefixed body file (no route for it).
+        assert!(
+            !routes.iter().any(|r| r.source_path.to_string_lossy().contains("_zfb_md_body")),
+            "body file must not produce a route; routes: {routes:?}"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_md_page_slug_fallback_for_index() {
+        // pages/index.md → route "/" → slug fallback "index" → title "index".
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("pages");
+        fs::create_dir_all(&src).unwrap();
+        // No frontmatter title.
+        fs::write(src.join("index.md"), "# Welcome\n").unwrap();
+
+        let dest = tmp.path().join("shadow").join("pages");
+        let mut routes = Vec::new();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "/");
+
+        let shell = fs::read_to_string(dest.join("index.md")).unwrap();
+        assert!(
+            shell.contains("const __title = \"index\";"),
+            "slug fallback should be 'index'; got:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_md_in_content_dir_is_not_wrapped_in_shell() {
+        // .md files in a non-pages dir (content/) must be compiled as
+        // collection entries (no shell wrapper) — the pages shell only
+        // applies when is_pages_dir == true.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("content");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("post.md"),
+            "---\ntitle: Post\n---\n\n# Post\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow").join("content");
+        let mut routes = Vec::new();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        // In non-pages dir: post.md copied verbatim (not compiled into shell).
+        let shadow_file = dest.join("post.md");
+        assert!(shadow_file.is_file(), "post.md must exist in shadow");
+        let content = fs::read_to_string(&shadow_file).unwrap();
+        // Verbatim copy: still has the frontmatter YAML, not a shell module.
+        assert!(
+            !content.contains("const __title ="),
+            "content dir .md must NOT be wrapped in shell; got:\n{content}"
+        );
+        // No _-prefixed body file should exist.
+        assert!(
+            !dest.join("_zfb_md_body_post.jsx").exists(),
+            "no body file expected for content dir .md"
+        );
+        // No route collected for content dir.
+        assert!(routes.is_empty(), "content dir must not produce routes; got {routes:?}");
+    }
+
+    #[test]
+    fn materialise_shadow_md_page_relative_link_produces_anchor_in_body() {
+        // A relative markdown link `[link](./other)` in a pages .md file
+        // must compile into an <a> element in the body JSX. We assert on
+        // tag structure (an <a> is emitted, link text is present, href is
+        // present) rather than guessing the exact resolved URL.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("pages");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("about.md"),
+            "---\ntitle: About\n---\n\nSee [other page](./other).\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow").join("pages");
+        let mut routes = Vec::new();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(dest.join("_zfb_md_body_about.jsx")).unwrap();
+
+        // The compiled body must contain an <a> element.
+        assert!(
+            body.contains("<_components.a"),
+            "relative link must produce an <a> element; got:\n{body}"
+        );
+        // The link text must appear somewhere in the body output.
+        assert!(
+            body.contains("other page"),
+            "link text must be present; got:\n{body}"
+        );
+        // An href attribute must be present (value is whatever the pipeline emits).
+        assert!(
+            body.contains("href="),
+            "anchor must have an href attribute; got:\n{body}"
         );
     }
 }
