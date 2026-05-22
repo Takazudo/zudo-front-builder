@@ -74,7 +74,9 @@ jobs:
             platform: darwin-x64
             binary: zfb
             archive_ext: tar.gz
-          - host: ubuntu-latest
+          # TODO when ubuntu-22.04 GitHub Actions runner is deprecated: switch to a
+          # manylinux_2_28 container or zig-cc cross-compile to maintain the GLIBC 2.35 floor.
+          - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x64-gnu
             binary: zfb
@@ -166,6 +168,26 @@ jobs:
             -v "$PWD:/w" -w /w \
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
+
+      - name: Enforce GLIBC 2.35 floor on the built binary
+        if: ${{ contains(matrix.settings.target, 'linux-gnu') }}
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.settings.target }}/release/zfb"
+          MAX_GLIBC=$(objdump -T "$BIN" \
+            | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
+            | sort -V \
+            | tail -1)
+          echo "Highest required GLIBC symbol: $MAX_GLIBC"
+          if [[ -z "$MAX_GLIBC" ]]; then
+            echo "::error::No GLIBC symbols found via objdump — binary inspection failed."
+            exit 1
+          fi
+          WORST=$(printf '%s\n%s\n' "$MAX_GLIBC" "GLIBC_2.35" | sort -V | tail -1)
+          if [[ "$WORST" != "GLIBC_2.35" ]]; then
+            echo "::error::Binary requires $MAX_GLIBC, exceeds the GLIBC_2.35 floor."
+            exit 1
+          fi
 
       - name: Copy binary to platform package
         shell: bash
