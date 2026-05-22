@@ -1,5 +1,11 @@
 {
   "framework": "preact",
   "outDir": "dist",
-  "publicDir": "public"
+  "publicDir": "public",
+  "collections": [
+    {
+      "name": "posts",
+      "path": "content/posts"
+    }
+  ]
 }

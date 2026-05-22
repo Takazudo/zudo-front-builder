@@ -1,13 +1,29 @@
 /**
- * Home page — single static page for the node-free template.
+ * Home page — lists every entry in the `posts` content collection.
  *
- * Intentionally simple: no content collections, no getCollection() call.
- * Content collections in @takazudo/zfb-runtime currently require Node-only
- * `node:fs` at build time (see issue #392). Until that gap is closed, the
- * Node-free template renders entirely from inline TSX, which the embedded
- * esbuild Go binary + V8 host can build without any Node toolchain.
+ * `getCollection("posts")` reads `.md` files under `content/posts/` at
+ * build time. Under the embedded V8 host (the node-free path), the
+ * snapshot is baked into the bundle, so `getCollection` resolves
+ * synchronously from memory rather than reading `node:fs`.
  */
-export default function HomePage() {
+type Post = {
+  slug: string;
+  data: { title: string; date?: string };
+};
+
+export async function getStaticProps() {
+  const { getCollection } = await import("zfb/content");
+  const posts = (await getCollection("posts")) as Post[];
+  // Sort newest first when dates are present; preserve discovery order otherwise.
+  const sorted = [...posts].sort((a, b) => (b.data.date ?? "").localeCompare(a.data.date ?? ""));
+  return { props: { posts: sorted } };
+}
+
+type Props = {
+  posts: Post[];
+};
+
+export default function HomePage({ posts }: Props) {
   return (
     <html lang="en">
       <head>
@@ -21,13 +37,27 @@ export default function HomePage() {
           A minimal <code>zfb</code> site — no Node, no pnpm required. The <code>zfb</code> binary
           alone scaffolds, builds, and serves this page.
         </p>
+        <h2>Posts</h2>
+        <ul>
+          {posts.map((post) => (
+            <li key={post.slug}>
+              <a href={`/posts/${post.slug}`}>{post.data.title}</a>
+              {post.data.date ? (
+                <>
+                  {" — "}
+                  <time dateTime={post.data.date}>{post.data.date}</time>
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
         <h2>Next steps</h2>
         <ul>
           <li>
             Edit <code>pages/index.tsx</code> to change this page.
           </li>
           <li>
-            Add more pages by dropping <code>.tsx</code> files into <code>pages/</code>.
+            Add more posts by dropping <code>.md</code> files into <code>content/posts/</code>.
           </li>
           <li>
             See the docs at{" "}
