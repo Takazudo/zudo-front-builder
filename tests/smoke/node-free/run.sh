@@ -81,12 +81,12 @@ if ! grep -q "$EXPECTED_POST_TITLE" dist/posts/hello/index.html; then
 fi
 pass "dist/posts/hello/index.html contains the post title"
 
-# NOTE — body rendering is NOT asserted here. The deferred Content-rendering
-# verification belongs to a follow-up: this smoke + the e2e test
-# (crates/zfb-build/tests/embedded_v8_snapshot_e2e.rs) prove that the snapshot
-# reaches the route and getCollection("posts") resolves entries, but neither
-# checks that <post.Content /> renders body markdown to real HTML in the
-# embedded-V8 SSG path. See the agent-found follow-up issue for the gap.
+# Body markdown must render to HTML. `**node-free**` in hello.md must appear
+# as `<strong>node-free</strong>`, not as literal asterisks.
+if ! grep -qF '<strong>node-free</strong>' dist/posts/hello/index.html; then
+    fail "dist/posts/hello/index.html does not contain rendered body markup: <strong>node-free</strong>"
+fi
+pass "dist/posts/hello/index.html contains rendered body markup"
 
 # ── Step 3: Start dev server in the background ───────────────────────────────
 
