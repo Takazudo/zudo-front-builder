@@ -36,10 +36,18 @@ if (-not $requestedVersion -or $requestedVersion -eq 'latest') {
     $releaseInfo = Invoke-RestMethod -Uri $releaseApiUrl -UseBasicParsing
     $tag = $releaseInfo.tag_name
 } elseif ($requestedVersion -eq 'latest-prerelease') {
-    # Opt into latest prerelease
-    $releaseApiUrl = "https://api.github.com/repos/${ghRepo}/releases?per_page=1"
+    # Opt into latest prerelease.
+    # Filter to actual prereleases — the naive [0] just picks the most recent
+    # release of any kind, so once a stable release is published after a
+    # prerelease, 'latest-prerelease' would silently resolve to that stable tag.
+    $releaseApiUrl = "https://api.github.com/repos/${ghRepo}/releases?per_page=30"
     Write-Host "Resolving latest prerelease..."
-    $releaseInfo = (Invoke-RestMethod -Uri $releaseApiUrl -UseBasicParsing)[0]
+    $allReleases = Invoke-RestMethod -Uri $releaseApiUrl -UseBasicParsing
+    $releaseInfo = $allReleases | Where-Object { $_.prerelease -eq $true } | Select-Object -First 1
+    if (-not $releaseInfo) {
+        Write-Error "Could not resolve latest prerelease — no prerelease found in the last 30 releases."
+        exit 1
+    }
     $tag = $releaseInfo.tag_name
 } else {
     # Pinned version — treat as-is (must start with "v")

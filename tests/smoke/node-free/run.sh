@@ -13,7 +13,12 @@
 
 set -eu
 
-SITE_DIR="/tmp/my-site"
+# zfb new rejects absolute paths and path separators (validate_project_name in
+# crates/zfb/src/commands/new.rs), so the site must be scaffolded under a
+# pre-chosen workdir using a single-segment relative name.
+SITE_WORKDIR="/tmp"
+SITE_NAME="my-site"
+SITE_DIR="${SITE_WORKDIR}/${SITE_NAME}"
 PORT=3000
 # Stable substring from the node-free template's index page.
 # Must match the rendered output of crates/zfb/templates/node-free/pages/index.tsx.
@@ -24,8 +29,11 @@ fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
 
 # ── Step 1: Scaffold ─────────────────────────────────────────────────────────
 
-printf '==> zfb new %s --template node-free\n' "$SITE_DIR"
-zfb new "$SITE_DIR" --template node-free
+printf '==> zfb new %s --template node-free (cwd: %s)\n' "$SITE_NAME" "$SITE_WORKDIR"
+cd "$SITE_WORKDIR"
+# Idempotency for local re-runs; CI runs in a fresh container so SITE_DIR is absent.
+rm -rf "$SITE_NAME"
+zfb new "$SITE_NAME" --template node-free
 pass "scaffold"
 
 # ── Step 2: Build ────────────────────────────────────────────────────────────

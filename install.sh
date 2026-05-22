@@ -98,12 +98,17 @@ resolve_tag() {
   fi
 
   if [ "$_version" = "latest-prerelease" ]; then
-    # Most recent release entry (includes prereleases)
-    _tag=$(curl -fsSL "${API_BASE}?per_page=1" \
+    # Pick the first release entry where "prerelease": true. The naive
+    # ?per_page=1 query just returns the most-recent release of ANY kind, so
+    # once a stable release is published after a prerelease, "latest-prerelease"
+    # would silently resolve to that stable tag. awk splits on '}' so each
+    # record is one release object; the first one marked prerelease wins.
+    _tag=$(curl -fsSL "${API_BASE}?per_page=30" \
+           | awk -v RS='}' '/"prerelease":[[:space:]]*true/ { print; exit }' \
            | grep -m1 '"tag_name":' \
            | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     if [ -z "$_tag" ]; then
-      err "could not resolve the latest prerelease tag from GitHub API"
+      err "could not resolve the latest prerelease tag from GitHub API (no prerelease found in the last 30 releases)"
     fi
     printf '%s' "$_tag"
     return
