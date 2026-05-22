@@ -19,6 +19,12 @@
 //! print a friendly notice and continue successfully so the user can run
 //! install themselves later.
 //!
+//! **Node-free templates** (currently: `node-free`) skip both the
+//! `patch_package_json` and `try_pnpm_install` steps entirely — they ship no
+//! `package.json` and are intended for users running zfb with no Node/pnpm on
+//! PATH. The gate is driven by [`NO_INSTALL_TEMPLATES`]; add a template name
+//! there to opt it out of the npm post-install pipeline.
+//!
 //! Status messages go through [`crate::output`] so they look consistent with
 //! the rest of the zfb CLI. `zfb new` deliberately does NOT load
 //! `zfb.config.{json,ts}` — at the moment this command runs the project does
@@ -39,6 +45,14 @@ use crate::output;
 ///
 /// Each top-level subdirectory is a template selectable via `--template`.
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
+
+/// Templates that ship no `package.json` and require no `pnpm install` step.
+///
+/// When a scaffolded template name appears in this list, the post-scaffold
+/// pipeline skips both `patch_package_json` and `try_pnpm_install`. Add a
+/// new template name here to opt it out of the npm pipeline; existing
+/// templates (`basic-blog`, …) are unaffected.
+const NO_INSTALL_TEMPLATES: &[&str] = &["node-free"];
 
 /// Replacement value applied to any `workspace:*` dependency found in a
 /// scaffolded `package.json`.
@@ -100,24 +114,31 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
     let prefix = Path::new(&args.template);
     write_dir(template, dest, prefix)?;
 
-    // Patch package.json: project name + workspace dep placeholder. We do
-    // this after writing files so the rewriter operates on the same bytes
-    // the user will see, and so a future template that ships multiple
-    // package.json files (e.g. nested workspaces) can be handled by
-    // expanding the search rather than the embedding.
-    patch_package_json(&dest.join("package.json"), &args.name)?;
+    // Node-free templates ship no `package.json` and do not need `pnpm
+    // install`. Skip both post-scaffold npm steps for them so a user with no
+    // Node/pnpm on PATH can run `zfb dev` immediately after scaffolding.
+    let skip_npm = NO_INSTALL_TEMPLATES.contains(&args.template.as_str());
 
-    match try_pnpm_install(dest).await {
-        PnpmOutcome::Ran => {}
-        PnpmOutcome::Missing => {
-            output::warn(
-                "pnpm not found on PATH \u{2014} skipping install. Run pnpm install manually before zfb dev.",
-            );
-        }
-        PnpmOutcome::Failed(msg) => {
-            output::warn(&format!(
-                "pnpm install failed: {msg}. Run pnpm install manually before zfb dev."
-            ));
+    if !skip_npm {
+        // Patch package.json: project name + workspace dep placeholder. We do
+        // this after writing files so the rewriter operates on the same bytes
+        // the user will see, and so a future template that ships multiple
+        // package.json files (e.g. nested workspaces) can be handled by
+        // expanding the search rather than the embedding.
+        patch_package_json(&dest.join("package.json"), &args.name)?;
+
+        match try_pnpm_install(dest).await {
+            PnpmOutcome::Ran => {}
+            PnpmOutcome::Missing => {
+                output::warn(
+                    "pnpm not found on PATH \u{2014} skipping install. Run pnpm install manually before zfb dev.",
+                );
+            }
+            PnpmOutcome::Failed(msg) => {
+                output::warn(&format!(
+                    "pnpm install failed: {msg}. Run pnpm install manually before zfb dev."
+                ));
+            }
         }
     }
 
@@ -456,5 +477,177 @@ mod tests {
             has_workspace_dep,
             "basic-blog template should declare at least one workspace:* dep"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // node-free template tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn template_registry_exposes_node_free() {
+        let names = available_templates();
+        assert!(
+            names.iter().any(|n| n == "node-free"),
+            "expected 'node-free' in templates, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn node_free_template_has_no_package_json() {
+        let dir = TEMPLATES
+            .get_dir("node-free")
+            .expect("node-free template missing from registry");
+        // Use get_file to check known paths (Dir::files() is non-recursive).
+        // A root-level package.json is the only place one could appear.
+        assert!(
+            dir.get_file("node-free/package.json").is_none(),
+            "node-free template must not ship a package.json"
+        );
+        assert!(
+            dir.get_file("node-free/pnpm-lock.yaml").is_none(),
+            "node-free template must not ship a pnpm-lock.yaml"
+        );
+    }
+
+    #[test]
+    fn node_free_template_has_required_files() {
+        let dir = TEMPLATES
+            .get_dir("node-free")
+            .expect("node-free template missing from registry");
+
+        // Check for zfb.config.json at the template root.
+        let config = dir.get_file("node-free/zfb.config.json");
+        assert!(
+            config.is_some(),
+            "node-free template must contain zfb.config.json"
+        );
+
+        // Check for README.md.
+        let readme = dir.get_file("node-free/README.md");
+        assert!(readme.is_some(), "node-free template must contain README.md");
+
+        // Check for at least one .tsx page (using known paths since
+        // include_dir's Dir::files() is non-recursive).
+        let has_tsx_page = dir.get_file("node-free/pages/index.tsx").is_some();
+        assert!(has_tsx_page, "node-free template must contain pages/index.tsx");
+
+        // Check for at least one .md content file other than README.md.
+        let has_md_content = dir
+            .get_file("node-free/content/posts/hello.md")
+            .is_some();
+        assert!(
+            has_md_content,
+            "node-free template must contain content/posts/hello.md"
+        );
+    }
+
+    #[test]
+    fn node_free_template_zfb_config_is_valid_json() {
+        let dir = TEMPLATES
+            .get_dir("node-free")
+            .expect("node-free template missing from registry");
+        let config_file = dir
+            .get_file("node-free/zfb.config.json")
+            .expect("node-free/zfb.config.json missing from template");
+        let parsed: Result<Value, _> = serde_json::from_slice(config_file.contents());
+        assert!(
+            parsed.is_ok(),
+            "node-free/zfb.config.json must be valid JSON: {:?}",
+            parsed.err()
+        );
+        let config = parsed.unwrap();
+        assert!(
+            config.get("framework").is_some(),
+            "node-free/zfb.config.json must declare 'framework'"
+        );
+    }
+
+    #[test]
+    fn node_free_scaffold_produces_correct_file_set() {
+        // Scaffold the node-free template into a tempdir and verify:
+        // - zfb.config.json is present and valid JSON
+        // - README.md is present
+        // - At least one .tsx page is present
+        // - At least one .md content file is present
+        // - package.json is NOT present
+        // - pnpm-lock.yaml is NOT present
+        let tmp = tempdir().unwrap();
+        let dest = tmp.path().join("my-site");
+        fs::create_dir_all(&dest).unwrap();
+
+        let template_dir = TEMPLATES
+            .get_dir("node-free")
+            .expect("node-free template missing");
+        let prefix = Path::new("node-free");
+        write_dir(template_dir, &dest, prefix).unwrap();
+
+        assert!(
+            dest.join("zfb.config.json").exists(),
+            "scaffolded site must have zfb.config.json"
+        );
+        assert!(
+            dest.join("README.md").exists(),
+            "scaffolded site must have README.md"
+        );
+        assert!(
+            !dest.join("package.json").exists(),
+            "scaffolded site must NOT have package.json"
+        );
+        assert!(
+            !dest.join("pnpm-lock.yaml").exists(),
+            "scaffolded site must NOT have pnpm-lock.yaml"
+        );
+
+        // zfb.config.json must parse as valid JSON.
+        let config_raw = fs::read_to_string(dest.join("zfb.config.json")).unwrap();
+        let config: Value = serde_json::from_str(&config_raw)
+            .expect("scaffolded zfb.config.json must be valid JSON");
+        assert!(
+            config.get("framework").is_some(),
+            "scaffolded zfb.config.json must declare 'framework'"
+        );
+
+        // At least one .tsx page must be present somewhere under pages/.
+        let pages_dir = dest.join("pages");
+        assert!(pages_dir.exists(), "scaffolded site must have a pages/ directory");
+        let has_tsx = walkdir_has_extension(&pages_dir, "tsx");
+        assert!(has_tsx, "scaffolded pages/ must contain at least one .tsx file");
+
+        // At least one .md content file must be present somewhere under content/.
+        let content_dir = dest.join("content");
+        assert!(content_dir.exists(), "scaffolded site must have a content/ directory");
+        let has_md = walkdir_has_extension(&content_dir, "md");
+        assert!(has_md, "scaffolded content/ must contain at least one .md file");
+    }
+
+    #[test]
+    fn no_install_templates_list_contains_node_free() {
+        assert!(
+            NO_INSTALL_TEMPLATES.contains(&"node-free"),
+            "NO_INSTALL_TEMPLATES must include 'node-free'"
+        );
+        // basic-blog must NOT be in the list (it still needs pnpm install).
+        assert!(
+            !NO_INSTALL_TEMPLATES.contains(&"basic-blog"),
+            "basic-blog must not be in NO_INSTALL_TEMPLATES"
+        );
+    }
+
+    /// Recursively check whether any file under `dir` has the given extension.
+    fn walkdir_has_extension(dir: &Path, ext: &str) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if walkdir_has_extension(&path, ext) {
+                    return true;
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                return true;
+            }
+        }
+        false
     }
 }
