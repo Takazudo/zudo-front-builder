@@ -15,7 +15,9 @@ rebuilds to affected pages read [Incremental rebuild](/concepts/incremental-rebu
 
 This page describes the **SSG / static-HTML dev loop only**. For `prerender = false`
 SSR routes, source edits during a `zfb dev` session do **not** hot-reload — the V8
-SSR bundle is restart-only. See
+SSR bundle is bound to the boot-time JS bundle and is restart-only. The per-tick
+rebuild described below does **not** reload the SSR renderer; it re-renders the
+SSG output that the renderer was bootstrapped with. See
 [No live reload of the SSR bundle](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
 in the SSR guide.
 
@@ -25,8 +27,10 @@ in the SSR guide.
 
 The moment you save, the operating system fires a filesystem event on the file's
 path. `crates/zfb-watcher` is watching every relevant directory — `pages/`,
-`components/`, `content/`, `layouts/`, `styles/`, `data/`, `public/`, and
-`zfb.config.ts` — via the [`notify`](https://crates.io/crates/notify) crate.
+`components/`, `content/`, `layouts/`, `styles/`, `data/`, `public/`, and the two
+config files `zfb.config.json` and `zfb.config.ts` — via the
+[`notify`](https://crates.io/crates/notify) crate. (See `DEFAULT_WATCH_ROOTS` in
+`crates/zfb/src/commands/dev.rs` for the canonical list.)
 
 Editor saves are rarely a single clean event. vim renames a swap file over the
 original; VS Code emits several metadata-then-data events in quick succession; a
@@ -48,24 +52,24 @@ is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag 
 set. If a CSS source changed, `rerun_css` is set. Then the
 `DevAssetPipeline::apply()` method runs, in this order:
 
-1. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
+1. **Pages re-rendered.** The orchestrator calls the renderer for each page in
+   the dirty set, driving SSG output through the embedded V8 host that was booted
+   when `zfb dev` started. Each rendered `RenderedPage.html` is compared
+   byte-for-byte against the last-known output. If the bytes are identical (a
+   pure refactor that produced no semantic HTML change), no file is written and
+   no reload signal is sent for that page. The V8 host itself is **not** reloaded
+   per tick — `BuildContext::reload_renderer` is `None` in dev today (see
+   `crates/zfb/src/commands/dev.rs`), so the renderer stays bound to the
+   boot-time bundle for the whole session.
+2. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + PostCSS run. If the
+   CSS output is byte-identical to the previous tick, no `Css` event is emitted.
+3. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
    subprocess is invoked. It bundles every `"use client"` component and writes a
    single combined module to a **stable filename** — `dist/assets/islands.js` (the
-   `STABLE_ISLANDS_FILENAME` constant in `crates/zfb-islands/src/bundler.rs`). No
-   content hash in the filename; see [Why filenames stay stable in dev](#why-filenames-stay-stable-in-dev).
-2. **SSR renderer reload.** Before pages are rendered, the embedded V8 host
-   (`deno_core`) is reloaded with the freshly-emitted bundle. This step runs
-   whenever the dirty page set is non-empty. It is constant-cost — one isolate
-   boot regardless of how many pages will be rendered — and is the main per-tick
-   overhead for small dirty sets.
-3. **Pages re-rendered.** The orchestrator calls the renderer for each page in the
-   dirty set. Each rendered `RenderedPage.html` is compared byte-for-byte against
-   the last-known output. If the bytes are identical (a pure refactor that produced
-   no semantic HTML change), no file is written and no reload signal is sent for
-   that page.
-4. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + PostCSS run. If the
-   CSS output is byte-identical to the previous tick, no `Css` event is emitted.
-5. **Build outcome broadcast.** The pipeline returns a `BuildOutcome` struct.
+   `STABLE_ISLANDS_FILENAME` constant in `crates/zfb-types/src/asset_urls.rs`,
+   re-exported and consumed by the islands bundler). No content hash in the
+   filename; see [Why filenames stay stable in dev](#why-filenames-stay-stable-in-dev).
+4. **Build outcome broadcast.** The pipeline returns a `BuildOutcome` struct.
    `outcome_to_events()` in `crates/zfb-server/src/livereload.rs` inspects the
    outcome and maps it to `ReloadEvent` values that are broadcast over the SSE
    channel at `/__zfb/reload`. Every browser tab that has your site open is
@@ -77,23 +81,33 @@ set. If a CSS source changed, `rerun_css` is set. Then the
 |---|---|---|
 | `pages_written.len() > 0` | `Page` | Full `location.reload()` |
 | `css_changed` | `Css` | Hot-swap every `<link rel="stylesheet">` — appends `?v=<timestamp>` to bust the browser cache without reloading the document |
-| `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`) and re-hydration of just that component — no document reload |
+| `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`). The newly-imported module runs its hydration, which by default re-mounts **every** `[data-zfb-island]` element on the current page — no document reload |
 
-When multiple events fire in the same tick, the server emits every applicable event.
-The browser processes them in the order they arrive. On receiving a `Page` event,
-the browser calls `location.reload()`, which discards the current document —
-this makes the in-place `Css` or `Islands` swaps moot for that tab. **But other
-tabs subscribed to the same SSE channel still benefit from the `Css` and `Islands`
-hot-swaps** — they receive those events independently and update without reloading.
+When multiple events fire in the same tick, the server emits every applicable event,
+and **every connected tab is subscribed to the same SSE channel and receives all of
+them.** The browser processes events in arrival order. On receiving a `Page` event,
+each tab calls `location.reload()`, which discards the current document — this
+makes any `Css` or `Islands` events emitted in the same tick moot for that tab. The
+"only this tab gets a full reload" pattern does not exist here; **the in-place
+`Css` and `Islands` swaps are moot for every subscribed tab in that tick**, not
+just the active one.
 
-One detail on `Islands`: the server emits **one `Islands` event per re-bundled
-component**. If a save touches a shared utility consumed by two islands components,
-`outcome_to_events()` emits two separate events — one for each entry in
-`info.components`. Both events carry the same `bundle_url` (`/assets/islands.js`)
-because the output is a single combined bundle. The client script at
-`/__zfb/livereload.js` appends a fresh timestamp (`?v=<timestamp>`) to that URL
-before each `import()` call so the module cache is busted even though the URL is
-otherwise stable.
+One detail on `Islands`: in dev mode today, `BuildContext::run_islands` reports
+`components: Vec::new()` to `outcome_to_events()` because the build-side payload
+does not currently surface per-island names. The server therefore emits a
+**single** `Islands` event with `component: ""` and the stable bundle URL
+(`/assets/islands.js`). The client script at `/__zfb/livereload.js` reads only
+`bundleUrl`, appends a fresh timestamp (`?v=<timestamp>`), and dynamic-imports the
+result. The imported bundle's top-level hydration code then runs and walks every
+`[data-zfb-island]` on the page — so a single islands tick re-hydrates the whole
+page, not a single component, by default.
+
+**Targeted re-hydration is opt-in.** When the client detects a user-provided
+`window.__zfbIslandsReload(component, swapUrl)` function, it delegates the
+import to that hook instead of doing a plain dynamic import. Applications that
+want to preserve scroll position or component state across an islands hot-swap
+install this hook and decide for themselves which components to remount. Without
+the hook, the default page-wide re-hydration is what runs.
 
 ## Why filenames stay stable in dev
 
@@ -117,12 +131,14 @@ is correct by design, not an oversight.
 Three typical edit scenarios, and which event fires:
 
 **Edit a `.tsx` island component body only.** The watcher fires on the component
-file. The dependency graph marks pages that consume it dirty; islands re-bundle runs;
-the SSR renderer reloads; affected pages re-render. If the rendered HTML changed, a
-`Page` event fires and the browser reloads. If the HTML is byte-identical (e.g. you
-only changed client-side state logic that never reaches the server render), only an
-`Islands` event fires — the component re-hydrates in place, your neighbour
-components' scroll position and state are untouched.
+file. The dependency graph marks pages that consume it dirty; the orchestrator
+re-renders affected pages first, then re-bundles islands. If the rendered HTML
+changed, a `Page` event fires and the browser reloads. If the HTML is
+byte-identical (e.g. you only changed client-side state logic that never reaches
+the server render), only an `Islands` event fires — the new bundle is
+dynamic-imported and its hydration runs, re-mounting every island on the page. To
+preserve scroll position or per-component state across that swap, install a
+`window.__zfbIslandsReload` hook (see [The three SSE event types](#the-three-sse-event-types)).
 
 **Edit a page file that consumes an island.** Both page and island are dirty. The
 orchestrator re-renders the page; the HTML almost certainly changed; a `Page` event

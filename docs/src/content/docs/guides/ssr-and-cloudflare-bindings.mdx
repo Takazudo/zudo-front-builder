@@ -137,6 +137,25 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 Deploy `dist/` to Cloudflare Pages as usual. The Worker handles dynamic
 routes; the static asset server handles everything else.
 
+<Warning title="compatibility_flags = ['nodejs_compat'] is mandatory">
+
+The adapter threads the per-request `(env, ctx, request)` context through an
+`AsyncLocalStorage` (from `node:async_hooks`) that `getCloudflareContext()` reads
+from. Workerd does not expose `node:async_hooks` by default — you must opt in
+via `wrangler.toml`:
+
+```toml
+# wrangler.toml
+compatibility_flags = ["nodejs_compat"]
+```
+
+Without this flag the Worker fails to boot with an error naming `node:async_hooks`
+as the missing module. See
+[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker#the-getcloudflarecontext-trick)
+for the deeper mechanism.
+
+</Warning>
+
 ## Reading the Worker `env` from an SSR handler
 
 A Cloudflare Worker's `fetch` handler receives `(request, env, ctx)`.
