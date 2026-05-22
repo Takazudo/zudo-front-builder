@@ -1,12 +1,48 @@
 # release.yml
 #
-# Cross-compiles the zfb Rust binary for 4 platforms, uploads artifacts,
-# then publishes all workspace packages to npm in topological order.
+# Cross-compiles the zfb Rust binary for 5 platforms, packages each binary
+# as a tar.gz (Unix) or zip (Windows), generates SHA-256 checksum files,
+# attaches them as GitHub Release assets, and publishes all workspace npm
+# packages in topological order.
 #
 # IMPORTANT: NPM_TOKEN must be an Automation-type token (bypasses 2FA).
 # A standard user token will fail in unattended CI publish because npm
 # requires 2FA for scoped publish unless the token type is "Automation".
 # Create one at https://www.npmjs.com/settings/<user>/tokens with type "Automation".
+#
+# ── Release-channel policy (LOCKED — consumed by S4/S5/S6 installers) ──────
+#
+# GitHub Release "latest" (prerelease: false) is the stable channel.
+# GitHub automatically excludes prerelease Releases from the "latest" query.
+#
+# Prerelease tagging rule:
+#   Tag matching *-next.*, *-beta.*, or *-rc.* → GH Release is created with
+#   prerelease: true.  Same tags get npm dist-tag "next".
+#   All other v* tags → prerelease: false, npm dist-tag "latest".
+#
+# Installer opt-in to a prerelease:
+#   ZFB_VERSION=v0.X.Y-next.N       — install that exact version
+#   ZFB_VERSION=latest-prerelease   — install the latest prerelease release
+#
+# ── Archive / checksum contract (LOCKED — S4/S5/S6 parse these exactly) ────
+#
+# Archive name:  zfb-{semver}-{target-triple}.{ext}
+#   {semver}        = version from packages/zfb/package.json, no leading "v"
+#   {target-triple} = exact Rust target triple (e.g. aarch64-unknown-linux-gnu)
+#   {ext}           = tar.gz  for Unix (darwin-*, linux-*)
+#                     zip     for Windows (x86_64-pc-windows-msvc)
+#
+# Archive contents: exactly one file at the archive root — "zfb" (Unix) or
+#   "zfb.exe" (Windows).  No nested directory.  Produced by:
+#     Unix:    tar -C <bindir> -czf <archive> zfb
+#     Windows: cd <bindir>; Compress-Archive zfb.exe <archive>
+#
+# Checksum file: {archive-name}.sha256
+#   One line: "<64-hex-lowercase>  <archive-basename>"  (two spaces, GNU coreutils
+#   sha256sum default).  Produced on each platform and verified by:
+#     Linux/macOS: sha256sum <archive> | sed 's|.*/||'   (basename only)
+#     Windows:     (Get-FileHash).Hash.ToLower() + "  " + basename
+#   Installers parse the first whitespace-delimited field as the hash.
 
 name: Release
 
@@ -17,7 +53,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Skip publish step (build + upload only)"
+        description: "Skip publish + GH Release upload steps (build + tarball + sha256 only)"
         type: boolean
         default: false
 
@@ -32,20 +68,30 @@ jobs:
             target: aarch64-apple-darwin
             platform: darwin-arm64
             binary: zfb
+            archive_ext: tar.gz
           - host: macos-13
             target: x86_64-apple-darwin
             platform: darwin-x64
             binary: zfb
+            archive_ext: tar.gz
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-x64-gnu
             binary: zfb
+            archive_ext: tar.gz
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64-gnu
+            binary: zfb
+            archive_ext: tar.gz
+            use_cross: true
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             platform: win32-x64-msvc
             binary: zfb.exe
+            archive_ext: zip
     runs-on: ${{ matrix.settings.host }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -60,27 +106,195 @@ jobs:
           node-version: "22"
           cache: "pnpm"
 
+      # Install node_modules before cargo build so that build.rs (embed_framework_packages)
+      # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.settings.target }}
+
+      # Install cross-rs for the linux-arm64 cross-compile target.
+      # cross wraps `cargo build` inside a Docker container that provides the correct
+      # aarch64-unknown-linux-gnu linker; the host workspace (including node_modules)
+      # is mounted as a volume so build.rs can embed framework packages.
+      - name: Install cross (linux-arm64 only)
+        if: ${{ matrix.settings.use_cross == true }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Sync platform package versions (lockstep check)
         shell: bash
         run: node scripts/sync-platform-versions.mjs
 
-      - name: Build zfb binary
+      - name: Resolve version
+        shell: bash
+        run: |
+          # Derive semver from packages/zfb/package.json (no leading "v").
+          # For real tag pushes this matches the tag; for dry-run workflow_dispatch
+          # on a branch it is the current dev version string.
+          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+          echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
+          echo "Resolved semver: $ZFB_SEMVER"
+
+      - name: Build zfb binary (native)
+        if: ${{ matrix.settings.use_cross != true }}
         shell: bash
         run: cargo build -p zfb --release --target ${{ matrix.settings.target }}
+
+      - name: Build zfb binary (cross — linux-arm64)
+        if: ${{ matrix.settings.use_cross == true }}
+        shell: bash
+        run: cross build -p zfb --release --target ${{ matrix.settings.target }}
+
+      # Verify the arm64 binary runs correctly under QEMU emulation.
+      # Satisfies acceptance criterion: "linux-arm64 binary runs ./zfb --version correctly
+      # under QEMU verification step in workflow logs."
+      - name: Set up QEMU (linux-arm64 only)
+        if: ${{ matrix.settings.use_cross == true }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: QEMU smoke test — run arm64 binary
+        if: ${{ matrix.settings.use_cross == true }}
+        shell: bash
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/w" -w /w \
+            debian:stable-slim \
+            ./target/aarch64-unknown-linux-gnu/release/zfb --version
 
       - name: Copy binary to platform package
         shell: bash
         run: cp target/${{ matrix.settings.target }}/release/${{ matrix.settings.binary }} packages/zfb-${{ matrix.settings.platform }}/
+
+      # ── Archive and checksum (contract-locked format) ──────────────────────
+      # Archive name: zfb-{semver}-{target-triple}.{ext}
+      # Archive contains exactly one file at the root (no nested directory).
+      # sha256 file: one line "<64-hex>  <archive-basename>" (two spaces, GNU format).
+
+      - name: Create archive (Unix tar.gz)
+        if: ${{ matrix.settings.archive_ext == 'tar.gz' }}
+        shell: bash
+        run: |
+          ARCHIVE="zfb-${ZFB_SEMVER}-${{ matrix.settings.target }}.tar.gz"
+          # -C ensures no nested directory leaks into the archive root
+          tar -C "packages/zfb-${{ matrix.settings.platform }}" -czf "$ARCHIVE" "${{ matrix.settings.binary }}"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Create archive (Windows zip)
+        if: ${{ matrix.settings.archive_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          $Archive = "zfb-${env:ZFB_SEMVER}-${{ matrix.settings.target }}.zip"
+          Push-Location "packages/zfb-${{ matrix.settings.platform }}"
+          Compress-Archive -Path "${{ matrix.settings.binary }}" -DestinationPath "../../$Archive"
+          Pop-Location
+          echo "ARCHIVE=$Archive" >> $env:GITHUB_ENV
+
+      - name: Generate sha256 checksum (Unix)
+        if: ${{ matrix.settings.archive_ext == 'tar.gz' }}
+        shell: bash
+        run: |
+          # sha256sum outputs "<hash>  <path>"; sed strips the directory prefix so
+          # the checksum file contains only the basename (S4/S5/S6 rely on this).
+          sha256sum "$ARCHIVE" | sed 's|.*/||' > "${ARCHIVE}.sha256"
+          echo "--- checksum file contents ---"
+          cat "${ARCHIVE}.sha256"
+
+      - name: Generate sha256 checksum (Windows)
+        if: ${{ matrix.settings.archive_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          $Hash = (Get-FileHash "$env:ARCHIVE" -Algorithm SHA256).Hash.ToLower()
+          $Basename = Split-Path "$env:ARCHIVE" -Leaf
+          # Two spaces between hash and filename — GNU sha256sum format (S4/S5/S6 rely on this)
+          "${Hash}  ${Basename}" | Out-File -FilePath "${env:ARCHIVE}.sha256" -Encoding ascii -NoNewline
+          Write-Host "--- checksum file contents ---"
+          Get-Content "${env:ARCHIVE}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.settings.target }}
           path: packages/zfb-${{ matrix.settings.platform }}/${{ matrix.settings.binary }}
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.settings.target }}
+          path: |
+            zfb-*-${{ matrix.settings.target }}.${{ matrix.settings.archive_ext }}
+            zfb-*-${{ matrix.settings.target }}.${{ matrix.settings.archive_ext }}.sha256
+          if-no-files-found: error
+
+  release-assets:
+    # Attaches all 5 archives + 5 sha256 files to the GitHub Release.
+    # Runs after all platform builds complete to avoid first-vs-append GH Release
+    # race conditions.  Skipped on dry_run and non-tag refs.
+    name: Upload GitHub Release assets
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and channel
+        shell: bash
+        run: |
+          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+          echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
+          # Determine prerelease flag from the tag name.
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG" =~ -next\. ]] || [[ "$TAG" =~ -beta\. ]] || [[ "$TAG" =~ -rc\. ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+          echo "Tag: $TAG | semver: $ZFB_SEMVER | prerelease: $IS_PRERELEASE"
+
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: List collected assets
+        shell: bash
+        run: ls -lh release-assets/
+
+      - name: DRY RUN — skip GH Release upload
+        if: ${{ inputs.dry_run == true }}
+        shell: bash
+        run: |
+          echo "DRY RUN — would have uploaded the following assets to GH Release:"
+          ls release-assets/
+          echo "Set dry_run=false on a real v* tag push to create the release."
+
+      # Guard: a manual workflow_dispatch on a branch (not a v* tag) must not
+      # accidentally create a GH Release.
+      - name: Guard — tag ref required for real release upload
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            echo "::error::GH Release upload requires a v* tag ref. Got: $GITHUB_REF."
+            echo "::error::For manual smoke tests, re-run workflow_dispatch with dry_run=true."
+            exit 1
+          fi
+
+      - name: Upload archives and checksums to GitHub Release
+        if: ${{ inputs.dry_run != true && startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
 
   publish:
     # Publishes all workspace packages once all platform binaries are built.
@@ -110,17 +324,21 @@ jobs:
       - name: Download all platform binaries
         uses: actions/download-artifact@v4
         with:
+          pattern: binary-*
           path: artifacts
+          merge-multiple: false
 
       - name: Place binaries in platform packages
         shell: bash
         run: |
           cp artifacts/binary-aarch64-apple-darwin/zfb packages/zfb-darwin-arm64/zfb
           cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
+          cp artifacts/binary-aarch64-unknown-linux-gnu/zfb packages/zfb-linux-arm64-gnu/zfb
           cp artifacts/binary-x86_64-unknown-linux-gnu/zfb packages/zfb-linux-x64-gnu/zfb
           cp artifacts/binary-x86_64-pc-windows-msvc/zfb.exe packages/zfb-win32-x64-msvc/zfb.exe
           chmod +x packages/zfb-darwin-arm64/zfb
           chmod +x packages/zfb-darwin-x64/zfb
+          chmod +x packages/zfb-linux-arm64-gnu/zfb
           chmod +x packages/zfb-linux-x64-gnu/zfb
 
       - name: Install dependencies

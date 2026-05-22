@@ -21,7 +21,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64-gnu", "win32-x64-msvc"];
+const PLATFORMS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64-gnu",
+  "linux-x64-gnu",
+  "win32-x64-msvc",
+];
 
 const OPTIONAL_DEP_PREFIX = "@takazudo/zfb-";
 

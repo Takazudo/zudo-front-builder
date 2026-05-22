@@ -1,0 +1,182 @@
+# node-free-smoke.yml
+#
+# End-to-end smoke test for the node-free distribution path.
+# Validates that the zfb binary can scaffold, build, and serve a node-free
+# site inside a Debian container that has no Node, no Rust, and no pnpm.
+#
+# ── Job topology ──────────────────────────────────────────────────────────
+#
+# PR + main push (ZFB_SMOKE_MODE=local):
+#   build-binary (amd64 on ubuntu-latest)
+#     └─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
+#   build-binary (arm64 on ubuntu-24.04-arm)
+#     └─► smoke-arm64 (ubuntu-24.04-arm) — runs container in local mode
+#
+# Tag push — after release.yml has published GH Release assets
+# (ZFB_SMOKE_MODE=released):
+#   smoke-released (ubuntu-latest) — curl-pipes install.sh, validates
+#                                    public install path end-to-end.
+#
+# ── Trigger policy ────────────────────────────────────────────────────────
+#
+# build-binary + smoke-amd64/arm64: pull_request + push to main.
+# smoke-released: workflow_run after release.yml completes (tag only).
+#   Using workflow_run rather than "push: tags" ensures the GH Release
+#   assets already exist when install.sh tries to download them.
+
+name: Node-free smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "base/**"
+  workflow_run:
+    # Trigger the released-mode smoke after release.yml finishes on a tag.
+    # release.yml only runs on v* tags, so this job only fires on real releases.
+    workflows: ["Release"]
+    types: [completed]
+
+jobs:
+  # ── Linux binary build (one job per platform) ──────────────────────────────
+  build-binary:
+    name: Build binary (${{ matrix.platform.runner }})
+    # Only run on PR and main push triggers, not on workflow_run.
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: smoke-binary-amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: smoke-binary-arm64
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm version is read from package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # build.rs (embed_framework_packages) needs node_modules at build time.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Build zfb binary
+        run: cargo build -p zfb --release --target ${{ matrix.platform.target }}
+
+      # Stage binary to a fixed path inside the smoke build context so that
+      # Dockerfile COPY zfb-bin is always resolvable regardless of target triple.
+      - name: Stage binary for smoke container
+        run: |
+          cp target/${{ matrix.platform.target }}/release/zfb \
+             tests/smoke/node-free/zfb-bin
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact }}
+          # Upload the full smoke context dir (Dockerfile + run.sh + binary).
+          path: tests/smoke/node-free/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── amd64 smoke: runs on ubuntu-latest ─────────────────────────────────────
+  smoke-amd64:
+    name: Smoke amd64 (local mode)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Download smoke context (amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-binary-amd64
+          path: smoke-ctx
+
+      - name: Fix permissions on run.sh
+        run: chmod +x smoke-ctx/run.sh
+
+      - name: Build smoke image
+        run: |
+          docker build \
+            --build-arg ZFB_SMOKE_MODE=local \
+            -t zfb-smoke:amd64 \
+            smoke-ctx/
+
+      - name: Run smoke container
+        run: docker run --rm zfb-smoke:amd64
+
+  # ── arm64 smoke: runs on ubuntu-24.04-arm (native arm64 runner) ────────────
+  smoke-arm64:
+    name: Smoke arm64 (local mode)
+    needs: build-binary
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 6
+    steps:
+      - name: Download smoke context (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-binary-arm64
+          path: smoke-ctx
+
+      - name: Fix permissions on run.sh
+        run: chmod +x smoke-ctx/run.sh
+
+      - name: Build smoke image
+        run: |
+          docker build \
+            --build-arg ZFB_SMOKE_MODE=local \
+            -t zfb-smoke:arm64 \
+            smoke-ctx/
+
+      - name: Run smoke container
+        run: docker run --rm zfb-smoke:arm64
+
+  # ── Post-release smoke: validates the public install.sh path ───────────────
+  smoke-released:
+    name: Smoke released (install.sh)
+    # Only runs when triggered by workflow_run (after release.yml on a tag),
+    # and only if that run succeeded.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the tag that triggered the release so tests/smoke/node-free/
+          # reflects the same revision that was released.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # In released mode the Dockerfile overwrites zfb-bin with install.sh,
+      # so we provide a placeholder to satisfy the unconditional COPY.
+      - name: Create placeholder for released-mode COPY
+        run: |
+          printf 'placeholder — replaced by install.sh in released mode\n' \
+            > tests/smoke/node-free/zfb-bin
+
+      - name: Build smoke image (released mode)
+        run: |
+          docker build \
+            --build-arg ZFB_SMOKE_MODE=released \
+            -t zfb-smoke:released \
+            tests/smoke/node-free/
+
+      - name: Run smoke container (released mode)
+        run: docker run --rm zfb-smoke:released

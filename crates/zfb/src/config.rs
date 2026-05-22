@@ -28,9 +28,10 @@
 //!
 //! TS support requires `node` in `PATH` and the staged esbuild binary at
 //! `crates/zfb/binaries/esbuild/esbuild` (or the path pointed at by the
-//! `ZFB_ESBUILD_BIN` environment variable). `node` was already a hard
-//! this module surfaces a clean error if `node` is missing (still needed
-//! for esbuild, prettier, and other JS tooling).
+//! `ZFB_ESBUILD_BIN` environment variable). Node is an **opt-in escape hatch
+//! for TS config evaluation** — projects that use `zfb.config.json` run
+//! fully Node-free. This module surfaces a clean error when `node` is absent
+//! and a `.ts` config is present, so the failure is never silent.
 //!
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.

@@ -27,3 +27,9 @@ globset = "0.4"
 # graph at a different version line and the AST types would not unify
 # across crates.
 swc_core = { version = "64" }
+
+[profile.release]
+# Strip debug symbols to keep release binaries small (< 25 MB per platform).
+# Applied workspace-wide — member crate [profile.release] blocks are ignored
+# by Cargo when a workspace root profile is present.
+strip = "symbols"

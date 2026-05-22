@@ -2,7 +2,33 @@
 
 `zfb` is a Rust-built static-site engine for TypeScript/JSX projects — millisecond rebuilds, single binary, no cargo needed by end users.
 
-## Install
+## Install without Node
+
+No Node.js required. zfb ships as a self-contained binary — esbuild and Tailwind are included. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://takazudomodular.com/pj/zudo-front-builder/install/node-free)** docs page.
+
+**Linux / macOS (curl):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
+```
+
+Installs `zfb` to `$HOME/.local/bin/zfb`. Set `ZFB_INSTALL=/your/path` to change the prefix. Set `ZFB_VERSION=v0.X.Y` to pin a specific release.
+
+**macOS (Homebrew):**
+
+```sh
+brew install Takazudo/tap/zfb
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.ps1 | iex
+```
+
+This downloads the `x86_64-pc-windows-msvc` binary, verifies its SHA-256 checksum, and installs `zfb.exe` to `%LOCALAPPDATA%\zfb\bin\zfb.exe`. Set `$env:ZFB_INSTALL` to change the install root. Set `$env:ZFB_VERSION` to pin a specific release tag (e.g. `v0.2.0`) or use `latest-prerelease` to opt into pre-releases.
+
+## Install via npm (Node required)
 
 ```sh
 # Scaffold a new site
@@ -12,7 +38,7 @@ pnpm create zfb@latest my-site
 pnpm add -D @takazudo/zfb
 ```
 
-`@takazudo/zfb` ships a prebuilt Rust binary per platform via npm optional-deps — no cargo or Rust toolchain required.
+`@takazudo/zfb` ships a prebuilt Rust binary per platform via npm optional-deps — no cargo or Rust toolchain required. Because the package declares `engines.node >=22.0.0`, npm-channel users will see a warning if their Node version is older than 22; the binary itself still runs, but the warning is harmless.
 
 ## Why Rust?
 
