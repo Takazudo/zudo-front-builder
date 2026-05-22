@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const platformPackages = {
   "darwin-arm64": "@takazudo/zfb-darwin-arm64",
   "darwin-x64": "@takazudo/zfb-darwin-x64",
+  "linux-arm64": "@takazudo/zfb-linux-arm64-gnu",
   "linux-x64": "@takazudo/zfb-linux-x64-gnu",
   "win32-x64": "@takazudo/zfb-win32-x64-msvc",
 };
