@@ -143,6 +143,9 @@ importers:
       '@takazudo/zfb-darwin-x64':
         specifier: workspace:0.1.0-next.0
         version: link:../zfb-darwin-x64
+      '@takazudo/zfb-linux-arm64-gnu':
+        specifier: workspace:0.1.0-next.0
+        version: link:../zfb-linux-arm64-gnu
       '@takazudo/zfb-linux-x64-gnu':
         specifier: workspace:0.1.0-next.0
         version: link:../zfb-linux-x64-gnu
@@ -165,6 +168,8 @@ importers:
   packages/zfb-darwin-arm64: {}
 
   packages/zfb-darwin-x64: {}
+
+  packages/zfb-linux-arm64-gnu: {}
 
   packages/zfb-linux-x64-gnu: {}
 
