@@ -276,22 +276,22 @@ fn paths_param_with_wrong_type_names_param_and_route() {
 // ---------------------------------------------------------------------------
 // Failure mode 5 — invalid `zfb.config.ts`: SKIPPED.
 //
-// No crate currently parses `zfb.config.ts` into a typed Rust struct (the
-// adapter / SWC pipeline references it only in doc-comments, and the
-// islands esbuild crate touches it as a marker). When the loader lands,
-// this test should produce a config file with a missing required field /
-// wrong type and assert the error includes:
+// `zfb::config` now evaluates `zfb.config.ts` in-process via the embedded
+// V8 isolate (epic #414 / Sub 3 #417), but `zfb-render` does not yet call
+// through to that evaluator. When zfb-render gains direct TS-config
+// support, this test should produce a config file with a missing required
+// field / wrong type and assert the error includes:
 //   - the absolute path to `zfb.config.ts`
 //   - the bad field name
 //   - what was expected (e.g. `framework: "preact" | "react"`)
-// Tracked in the Sub 4 log as a follow-up.
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "no zfb.config.ts loader exists yet — see Sub 4 log follow-up"]
+#[ignore = "zfb-render does not yet call the in-process TS config evaluator"]
 fn invalid_zfb_config_ts_points_at_field_and_file() {
-    // Once a config loader exists in zfb (or zfb-render), build a tmp
-    // config with a missing `framework` field and assert the error
-    // mentions the path, the field name, and the expected union type.
+    // Once zfb-render calls through to the in-process V8 evaluator in
+    // zfb::config, build a tmp config with a missing `framework` field
+    // and assert the error mentions the path, the field name, and the
+    // expected union type.
 }
 
 // ---------------------------------------------------------------------------
