@@ -2425,6 +2425,7 @@ mod tests {
                         route: "/".into(),
                         source_path: PathBuf::from("pages/index.tsx"),
                         entry_key: "/".into(),
+                        static_html: false,
                     }],
                 },
             })
