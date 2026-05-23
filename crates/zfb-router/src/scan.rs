@@ -210,12 +210,21 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
     let kind = classify(&segments);
     let specificity = score(&segments, source);
 
+    // `.html` source files bypass JS render entirely — the build pipeline
+    // copies the body verbatim to dist/ without involving V8.
+    let static_html = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e == "html")
+        .unwrap_or(false);
+
     Ok(Route {
         source_path: source.to_path_buf(),
         segments,
         kind,
         specificity,
         output_extension,
+        static_html,
     })
 }
 
@@ -642,6 +651,36 @@ mod tests {
         assert_eq!(r.template(), "/");
         assert!(r.segments.is_empty());
         assert_eq!(r.output_extension, None);
+    }
+
+    // ---- .html static_html flag (Sub 409) ----------------------------------
+
+    #[test]
+    fn html_source_has_static_html_true() {
+        // `.html` pages bypass JS render — the flag must be set.
+        let r = route_from("contact.html");
+        assert!(r.static_html, "contact.html must have static_html=true");
+    }
+
+    #[test]
+    fn tsx_source_has_static_html_false() {
+        // `.tsx` pages go through JS render — flag must be false.
+        let r = route_from("about.tsx");
+        assert!(!r.static_html, "about.tsx must have static_html=false");
+    }
+
+    #[test]
+    fn md_source_has_static_html_false() {
+        // `.md` pages go through MDX compilation — flag must be false.
+        let r = route_from("post.md");
+        assert!(!r.static_html, "post.md must have static_html=false");
+    }
+
+    #[test]
+    fn html_index_root_has_static_html_true() {
+        // The index `.html` page must also carry the flag.
+        let r = route_from("index.html");
+        assert!(r.static_html, "index.html must have static_html=true");
     }
 
     // ---- underscore-stem skipping for new extensions -----------------------
