@@ -2227,7 +2227,18 @@ mod tests {
 
     #[tokio::test]
     async fn loads_from_json_fixture() {
+        // Test intent: JSON parsing produces a populated Config with all
+        // top-level fields (including a plugins entry that round-trips).
+        // Plugin resolution itself is covered exhaustively by the
+        // json_plugin_* tests; here we use a relative-path plugin (the
+        // simplest resolver branch) so the load completes without needing a
+        // node_modules fixture. Before #418 this test used a bare-spec
+        // ("my-plugin") that the old warn-and-skip path silently dropped;
+        // that path now hard-errors, so the fixture switched to a real file.
         let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("plugin.mjs"), "export default {};")
+            .await
+            .unwrap();
         let json = r#"{
             "outDir": "build",
             "publicDir": "static",
@@ -2240,7 +2251,7 @@ mod tests {
             ],
             "tailwind": { "enabled": false },
             "plugins": [
-                { "name": "my-plugin", "options": { "level": 2 } }
+                { "name": "./plugin.mjs", "options": { "level": 2 } }
             ]
         }"#;
         tokio::fs::write(tmp.path().join("zfb.config.json"), json)
@@ -2260,7 +2271,7 @@ mod tests {
             Some(TailwindConfig { enabled: false })
         );
         assert_eq!(cfg.plugins.len(), 1);
-        assert_eq!(cfg.plugins[0].name, "my-plugin");
+        assert_eq!(cfg.plugins[0].name, "./plugin.mjs");
     }
 
     #[tokio::test]
