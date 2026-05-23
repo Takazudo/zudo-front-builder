@@ -11,7 +11,9 @@
   ],
   "main": "zfb.exe",
   "files": [
-    "zfb.exe"
+    "zfb.exe",
+    "LICENSE",
+    "README.md"
   ],
   "repository": {
     "type": "git",
