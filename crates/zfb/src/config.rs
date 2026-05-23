@@ -1140,18 +1140,23 @@ pub async fn load_from_dir_with_options(
 /// filter (`commands::plugins::build_plugin_specs`) would drop them all
 /// silently — both `preBuild` and `postBuild` hooks would never fire.
 ///
-/// Behaviour mirrors the TS path (`config-loader.mjs`) for the cases we
-/// can handle without a JS runtime:
+/// Behaviour mirrors the TS path (`config-loader.mjs`):
 ///
 /// - Plugin entries naming a relative path (`./` or `../` prefix) or an
 ///   absolute path are canonicalised against `dir` and converted to a
 ///   `file://` URL via [`url::Url::from_file_path`]. A missing file is a
 ///   hard error pointing at the path the user wrote so the failure is
 ///   self-explanatory.
-/// - Bare specifiers (`@scope/pkg`, `pkg-name`) cannot be resolved here
-///   without running node; they stay `None` and we emit a user-visible
-///   warning so the silent-drop behaviour is at least announced. The
-///   user's recovery path is to switch to `zfb.config.ts`.
+/// - Bare specifiers (`@scope/pkg`, `pkg-name`) are resolved via
+///   [`crate::node_resolve::resolve_node_bare_specifier`] using
+///   `oxc_resolver`, which honours conditional exports and parent-directory
+///   walk — the same algorithm Node uses for `import.meta.resolve`. A
+///   package that cannot be found (not yet installed) is a hard error with
+///   a recovery hint rather than a silent skip (issue #211).
+///
+/// Fail-fast: the first unresolvable plugin aborts the whole load — surfacing
+/// every broken entry at once would just delay the same fix (`pnpm install`
+/// or correct the path) by one iteration of the user's edit-build loop.
 fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
     for entry in cfg.plugins.iter_mut() {
         let name = entry.name.as_str();
@@ -1180,17 +1185,18 @@ fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
             })?;
             entry.resolved_module = Some(url.into());
         } else {
-            // Bare specifier — no way to resolve without node. Warn so
-            // the surprising "all plugins ignored" behaviour from #211
-            // is at least announced. resolved_module stays None and the
-            // plugin-host filter will drop this entry the same way it
-            // does for synthetic test configs.
-            crate::output::warn(format!(
-                "plugin {:?}: bare specifiers cannot be resolved by zfb.config.json; \
-                 use a relative path (e.g. \"./node_modules/{name}/index.mjs\") or \
-                 switch to zfb.config.ts so node can resolve it",
-                name
-            ));
+            // Bare specifier — resolve via oxc_resolver (issue #211 fix).
+            // Hard error if the package is not installed so the user gets
+            // a clear signal rather than silent plugin-drop.
+            let file_url = crate::node_resolve::resolve_node_bare_specifier(name, dir)
+                .with_context(|| {
+                    format!(
+                        "plugin {:?}: package not found in node_modules \
+                         (did you run `pnpm install`?)",
+                        name
+                    )
+                })?;
+            entry.resolved_module = Some(file_url);
         }
     }
     Ok(())
@@ -2504,37 +2510,86 @@ mod tests {
         );
     }
 
+    /// Bare specifiers in `zfb.config.json` now resolve via `oxc_resolver`
+    /// when `node_modules` is present (issue #211 fix).
     #[tokio::test]
-    async fn json_plugin_bare_specifier_stays_unresolved_no_error() {
+    async fn json_plugin_bare_specifier_resolves_when_installed() {
         let tmp = TempDir::new().unwrap();
+
+        // Set up node_modules/@takazudo/zfb-shell-rename with a minimal
+        // package.json + index.js so oxc_resolver can find it.
+        let pkg_dir = tmp
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-shell-rename");
+        tokio::fs::create_dir_all(&pkg_dir).await.unwrap();
+        tokio::fs::write(
+            pkg_dir.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-shell-rename", "main": "index.js" }"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(pkg_dir.join("index.js"), "export default {};\n")
+            .await
+            .unwrap();
+
         tokio::fs::write(
             tmp.path().join("zfb.config.json"),
             r#"{
                 "plugins": [
-                    { "name": "@takazudo/zfb-shell-rename" },
-                    { "name": "some-bare-pkg" }
+                    { "name": "@takazudo/zfb-shell-rename" }
                 ]
             }"#,
         )
         .await
         .unwrap();
 
-        // Bare specifiers cannot be resolved without node; they must
-        // not raise an error here (warning is emitted instead, but we
-        // do not assert on stderr text — that's a UX detail).
         let cfg = load_from_dir(tmp.path())
             .await
-            .expect("bare specifier in JSON config must not error");
-        assert_eq!(cfg.plugins.len(), 2);
-        assert!(
-            cfg.plugins[0].resolved_module.is_none(),
-            "bare specifier must stay None (got {:?})",
-            cfg.plugins[0].resolved_module
+            .expect("bare specifier with installed package must not error");
+        assert_eq!(cfg.plugins.len(), 1);
+        let resolved = cfg.plugins[0].resolved_module.as_deref().expect(
+            "bare specifier with node_modules present must populate resolved_module",
         );
         assert!(
-            cfg.plugins[1].resolved_module.is_none(),
-            "bare specifier must stay None (got {:?})",
-            cfg.plugins[1].resolved_module
+            resolved.starts_with("file://"),
+            "resolved_module should be a file:// URL, got {resolved:?}"
+        );
+        assert!(
+            resolved.contains("zfb-shell-rename"),
+            "resolved_module should reference the package, got {resolved:?}"
+        );
+    }
+
+    /// Bare specifiers for packages that are not installed must produce a
+    /// clear error naming the package and giving a recovery hint (issue #211).
+    #[tokio::test]
+    async fn json_plugin_bare_specifier_errors_clearly_when_not_installed() {
+        let tmp = TempDir::new().unwrap();
+        // No node_modules — the package cannot be found.
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "plugins": [
+                    { "name": "some-uninstalled-pkg" }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("uninstalled bare-specifier plugin must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("some-uninstalled-pkg"),
+            "error must name the missing package: {msg}"
+        );
+        assert!(
+            msg.contains("pnpm install") || msg.contains("not found"),
+            "error must give a recovery hint: {msg}"
         );
     }
 

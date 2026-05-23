@@ -39,8 +39,6 @@ use url::Url;
 /// - Returns an error if the package cannot be found, with a message matching
 ///   the `config-loader.mjs` diagnostic shape so plugin authors see the same
 ///   text regardless of which evaluation path ran their config.
-// Sub 3 (#417) wires this into `config.rs`; unused-until-then is expected.
-#[allow(dead_code)]
 pub fn resolve_node_bare_specifier(name: &str, project_root: &Path) -> Result<String> {
     // --- input validation -------------------------------------------------------
 
