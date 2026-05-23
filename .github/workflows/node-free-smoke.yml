@@ -119,19 +119,31 @@ jobs:
             exit 1
           fi
 
-      # Stage binary to a fixed path inside the smoke build context so that
+      # Stage binary to a fixed path inside the smoke build contexts so that
       # Dockerfile COPY zfb-bin is always resolvable regardless of target triple.
-      - name: Stage binary for smoke container
+      # One compile, two uploads — JSON variant and TS variant both need the binary.
+      - name: Stage binary for smoke containers
         run: |
           cp target/${{ matrix.platform.target }}/release/zfb \
              tests/smoke/node-free/zfb-bin
+          cp target/${{ matrix.platform.target }}/release/zfb \
+             tests/smoke/node-free-ts/zfb-bin
 
-      - name: Upload binary artifact
+      - name: Upload binary artifact (JSON smoke)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact }}
           # Upload the full smoke context dir (Dockerfile + run.sh + binary).
           path: tests/smoke/node-free/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload binary artifact (TS smoke)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact }}-ts
+          # Upload the full TS smoke context dir (Dockerfile + run.sh + binary).
+          path: tests/smoke/node-free-ts/
           if-no-files-found: error
           retention-days: 1
 
@@ -186,6 +198,58 @@ jobs:
 
       - name: Run smoke container
         run: docker run --rm zfb-smoke:arm64
+
+  # ── amd64 TS-config smoke: runs on ubuntu-latest ───────────────────────────
+  smoke-amd64-ts:
+    name: Smoke amd64 TS-config (local mode)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Download smoke context (amd64 TS)
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-binary-amd64-ts
+          path: smoke-ctx-ts
+
+      - name: Fix permissions on run.sh
+        run: chmod +x smoke-ctx-ts/run.sh
+
+      - name: Build smoke image (TS config)
+        run: |
+          docker build \
+            --build-arg ZFB_SMOKE_MODE=local \
+            -t zfb-smoke:amd64-ts \
+            smoke-ctx-ts/
+
+      - name: Run smoke container (TS config)
+        run: docker run --rm zfb-smoke:amd64-ts
+
+  # ── arm64 TS-config smoke: runs on ubuntu-24.04-arm ────────────────────────
+  smoke-arm64-ts:
+    name: Smoke arm64 TS-config (local mode)
+    needs: build-binary
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 6
+    steps:
+      - name: Download smoke context (arm64 TS)
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-binary-arm64-ts
+          path: smoke-ctx-ts
+
+      - name: Fix permissions on run.sh
+        run: chmod +x smoke-ctx-ts/run.sh
+
+      - name: Build smoke image (TS config)
+        run: |
+          docker build \
+            --build-arg ZFB_SMOKE_MODE=local \
+            -t zfb-smoke:arm64-ts \
+            smoke-ctx-ts/
+
+      - name: Run smoke container (TS config)
+        run: docker run --rm zfb-smoke:arm64-ts
 
   # ── Post-release smoke: validates the public install.sh path ───────────────
   smoke-released:

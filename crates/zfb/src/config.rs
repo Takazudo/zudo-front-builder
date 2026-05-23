@@ -18,30 +18,40 @@
 //! [`load_from_dir`] picks exactly one source per call:
 //!
 //! 1. `dir/zfb.config.ts` — bundled to ESM by the pinned `esbuild` binary
-//!    (the same one zfb-islands uses), then evaluated by `node` to pull the
-//!    default export back as JSON, which is fed into `serde_json::from_str`.
+//!    (the same one zfb-islands uses), then evaluated **in-process** by the
+//!    embedded V8 isolate (default builds). The default export is returned as
+//!    a JSON envelope and fed into `serde_json::from_str`.
 //!    **TS wins over JSON when both files are present** — the TS form is the
 //!    canonical, recommended way to author a zfb config.
 //! 2. `dir/zfb.config.json` — read + parse via `serde_json`. Used only when
 //!    no `zfb.config.ts` is found.
 //! 3. Neither present — return [`Config::default`].
 //!
-//! TS support requires `node` in `PATH` and the staged esbuild binary at
-//! `crates/zfb/binaries/esbuild/esbuild` (or the path pointed at by the
-//! `ZFB_ESBUILD_BIN` environment variable). Node is an **opt-in escape hatch
-//! for TS config evaluation** — projects that use `zfb.config.json` run
-//! fully Node-free. This module surfaces a clean error when `node` is absent
-//! and a `.ts` config is present, so the failure is never silent.
+//! `zfb.config.ts` is evaluated in-process via the embedded V8 isolate that
+//! ships with the default `zfb` binary. There is no runtime Node dependency.
+//! `zfb.config.ts` is a data config — `node:*` imports, `process.env`, and
+//! other Node-only APIs are not available inside the evaluator (esbuild
+//! `--platform=neutral` rejects them at bundle time).
+//!
+//! **Slim-build fallback** (`--no-default-features` / no `embed_v8`): the
+//! in-process evaluator is compiled out; TS config evaluation falls back to
+//! the `node` subprocess path (`load_ts_via_subprocess`). This path requires
+//! `node` in `PATH` and surfaces a clean error when it is absent.
 //!
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.
 
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use serde::{de, Deserialize, Deserializer, Serialize};
+
+// OsString is used by LoadOptions::node_binary (always compiled in).
+use std::ffi::OsString;
+// tokio::process::Command is used on both paths:
+//   - default (embed_v8): esbuild spawn in load_ts_via_inprocess_v8
+//   - slim (no embed_v8): esbuild + node spawns in load_ts_via_subprocess
 use tokio::process::Command;
 
 // --- JsonSchema newtype --------------------------------------------------------
@@ -724,16 +734,15 @@ impl Default for TailwindConfig {
 /// (npm package name or `./`-relative module path). `resolved_module`
 /// is the absolute module specifier (a `file://` URL) the JS-side
 /// plugin host will hand to `import()`. It is `None` for the JSON-
-/// config path (no node subprocess runs there) and for synthetic
-/// configs constructed in tests; the [`Config`] consumers that actually
-/// load plugins (the build/dev orchestration) treat a `None`
-/// `resolved_module` as "no plugin module — skip this entry".
+/// config path and for synthetic configs constructed in tests; the
+/// [`Config`] consumers that actually load plugins (the build/dev
+/// orchestration) treat a `None` `resolved_module` as "no plugin
+/// module — skip this entry".
 ///
-/// Sub 3 / issue #108: this field is populated by
-/// `crates/zfb/js/config-loader.mjs` when the config goes through the
-/// TS load path. The loader emits a `{ config, plugins }` envelope
-/// where `plugins[i]` is the absolute module specifier for
-/// `config.plugins[i].name`.
+/// Sub 3 / issue #108: on the TS load path the evaluator (in-process V8
+/// on default builds, `crates/zfb/js/config-loader.mjs` subprocess on
+/// slim builds) emits a `{ config, plugins }` envelope where `plugins[i]`
+/// is the absolute module specifier for `config.plugins[i].name`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfig {
     pub name: String,
@@ -1036,6 +1045,11 @@ fn default_true() -> bool {
 /// JS payload run by `node` to dynamic-import the bundled config and emit
 /// the default export as JSON on stdout. Embedded into the binary so we
 /// don't have to ship a sidecar file at runtime.
+///
+/// Slim-build-only: staged into a tempdir and evaluated by the `node`
+/// subprocess in [`load_ts_via_subprocess`]. Default (embed_v8) builds
+/// evaluate the bundle in-process and do not need this file.
+#[cfg(not(feature = "embed_v8"))]
 const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 
 /// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
@@ -1112,9 +1126,9 @@ pub async fn load_from_dir_with_options(
         // downstream plugin-host filter silently drop ALL plugins
         // (see `commands::plugins::build_plugin_specs`). Mirror the
         // shape the TS-load path produces (a `file://` URL) for plugin
-        // entries that name a path on disk; bare specifiers can't be
-        // resolved without a node subprocess and stay `None` with a
-        // user-facing warning so the surprise is visible.
+        // entries that name a path on disk; bare specifiers require Node
+        // module resolution (not available on the JSON path) and stay
+        // `None` with a user-facing warning so the surprise is visible.
         resolve_json_plugin_modules(&mut cfg, dir)
             .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
         validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
@@ -1135,71 +1149,99 @@ pub async fn load_from_dir_with_options(
 /// Resolve `Config.plugins[].resolved_module` for the JSON-load path.
 ///
 /// Issue #211: `zfb.config.json` is parsed via `serde_json` and skips the
-/// node subprocess that the TS path uses, so without this helper every
-/// plugin entry would have `resolved_module = None` and the plugin-host
-/// filter (`commands::plugins::build_plugin_specs`) would drop them all
-/// silently — both `preBuild` and `postBuild` hooks would never fire.
+/// TS config evaluator, so without this helper every plugin entry would
+/// have `resolved_module = None` and the plugin-host filter
+/// (`commands::plugins::build_plugin_specs`) would drop them all silently
+/// — both `preBuild` and `postBuild` hooks would never fire.
 ///
-/// Behaviour mirrors the TS path (`config-loader.mjs`) for the cases we
-/// can handle without a JS runtime:
+/// Behaviour mirrors the TS evaluator's plugin-resolution logic:
 ///
 /// - Plugin entries naming a relative path (`./` or `../` prefix) or an
 ///   absolute path are canonicalised against `dir` and converted to a
 ///   `file://` URL via [`url::Url::from_file_path`]. A missing file is a
 ///   hard error pointing at the path the user wrote so the failure is
 ///   self-explanatory.
-/// - Bare specifiers (`@scope/pkg`, `pkg-name`) cannot be resolved here
-///   without running node; they stay `None` and we emit a user-visible
-///   warning so the silent-drop behaviour is at least announced. The
-///   user's recovery path is to switch to `zfb.config.ts`.
+/// - Bare specifiers (`@scope/pkg`, `pkg-name`) are resolved via
+///   [`crate::node_resolve::resolve_node_bare_specifier`] using
+///   `oxc_resolver`, which honours conditional exports and parent-directory
+///   walk — the same algorithm Node uses for `import.meta.resolve`. A
+///   package that cannot be found (not yet installed) is a hard error with
+///   a recovery hint rather than a silent skip (issue #211).
+///
+/// Fail-fast: the first unresolvable plugin aborts the whole load — surfacing
+/// every broken entry at once would just delay the same fix (`pnpm install`
+/// or correct the path) by one iteration of the user's edit-build loop.
 fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
     for entry in cfg.plugins.iter_mut() {
         let name = entry.name.as_str();
-        let is_relative = name.starts_with("./") || name.starts_with("../");
-        let is_absolute = name.starts_with('/');
-        if is_relative || is_absolute {
-            let raw_path = if is_relative {
-                dir.join(name)
-            } else {
-                PathBuf::from(name)
-            };
-            let canonical = raw_path.canonicalize().with_context(|| {
-                format!(
-                    "plugin {:?}: cannot resolve plugin file at {} \
-                     (does the file exist?)",
-                    name,
-                    raw_path.display()
-                )
-            })?;
-            let url = url::Url::from_file_path(&canonical).map_err(|()| {
-                anyhow!(
-                    "plugin {:?}: failed to convert {} to a file:// URL",
-                    name,
-                    canonical.display()
-                )
-            })?;
-            entry.resolved_module = Some(url.into());
-        } else {
-            // Bare specifier — no way to resolve without node. Warn so
-            // the surprising "all plugins ignored" behaviour from #211
-            // is at least announced. resolved_module stays None and the
-            // plugin-host filter will drop this entry the same way it
-            // does for synthetic test configs.
-            crate::output::warn(format!(
-                "plugin {:?}: bare specifiers cannot be resolved by zfb.config.json; \
-                 use a relative path (e.g. \"./node_modules/{name}/index.mjs\") or \
-                 switch to zfb.config.ts so node can resolve it",
-                name
-            ));
+        match resolve_plugin_path_to_file_url(name, dir)? {
+            Some(url) => {
+                entry.resolved_module = Some(url);
+            }
+            None => {
+                // Bare specifier — resolve via oxc_resolver (issue #211 fix).
+                // Hard error if the package is not installed so the user gets
+                // a clear signal rather than silent plugin-drop.
+                let file_url = crate::node_resolve::resolve_node_bare_specifier(name, dir)
+                    .with_context(|| {
+                        format!(
+                            "plugin {:?}: package not found in node_modules \
+                             (did you run `pnpm install`?)",
+                            name
+                        )
+                    })?;
+                entry.resolved_module = Some(file_url);
+            }
         }
     }
     Ok(())
 }
 
+/// Resolve a single plugin `name` to a `file://` URL string for the
+/// relative/absolute-path case.
+///
+/// Returns `Ok(Some(url))` for relative (`./`, `../`) or absolute (`/`)
+/// paths, checking that the file actually exists. Returns `Ok(None)` for
+/// bare specifiers — the caller resolves them via
+/// `crate::node_resolve::resolve_node_bare_specifier` (both JSON and TS
+/// paths share the same resolver since #418). Returns `Err` when a
+/// relative/absolute path does not exist on disk.
+fn resolve_plugin_path_to_file_url(name: &str, dir: &Path) -> Result<Option<String>> {
+    let is_relative = name.starts_with("./") || name.starts_with("../");
+    let is_absolute = name.starts_with('/');
+    if is_relative || is_absolute {
+        let raw_path = if is_relative {
+            dir.join(name)
+        } else {
+            PathBuf::from(name)
+        };
+        let canonical = raw_path.canonicalize().with_context(|| {
+            format!(
+                "plugin {:?}: cannot resolve plugin file at {} \
+                 (does the file exist?)",
+                name,
+                raw_path.display()
+            )
+        })?;
+        let url = url::Url::from_file_path(&canonical).map_err(|()| {
+            anyhow!(
+                "plugin {:?}: failed to convert {} to a file:// URL",
+                name,
+                canonical.display()
+            )
+        })?;
+        Ok(Some(url.into()))
+    } else {
+        // Bare specifier — caller handles.
+        Ok(None)
+    }
+}
+
 /// Load a single `zfb.config.ts` file: bundle it with esbuild, evaluate
-/// it with node, parse the JSON envelope (`{ config, plugins }`) the
-/// loader emits, and merge the resolved plugin module specifiers back
-/// onto `Config.plugins[].resolved_module`.
+/// it (via embedded V8 on default features, via node on slim builds),
+/// parse the JSON envelope (`{ config, plugins }`) the loader emits, and
+/// merge the resolved plugin module specifiers back onto
+/// `Config.plugins[].resolved_module`.
 async fn load_from_ts_file(
     ts_path: &Path,
     dir: &Path,
@@ -1208,18 +1250,150 @@ async fn load_from_ts_file(
     let json = if let Some(canned) = opts.test_default_export_json.as_deref() {
         canned.to_string()
     } else {
-        load_ts_via_subprocess(ts_path, dir, opts).await?
+        #[cfg(feature = "embed_v8")]
+        {
+            load_ts_via_inprocess_v8(ts_path, dir, opts).await?
+        }
+        #[cfg(not(feature = "embed_v8"))]
+        {
+            load_ts_via_subprocess(ts_path, dir, opts).await?
+        }
     };
     parse_loader_envelope(&json, ts_path)
 }
 
-/// Internal envelope shape emitted by `crates/zfb/js/config-loader.mjs`.
+/// Bundle `ts_path` with esbuild (`--platform=neutral`) and evaluate it
+/// in-process using the embedded V8 isolate. Returns the same
+/// `{ config, plugins: [...resolved-specifiers...] }` envelope JSON that
+/// `load_ts_via_subprocess` returned so `parse_loader_envelope` is
+/// unchanged.
 ///
-/// The TS-load subprocess writes `{"config": <user-default-export>,
-/// "plugins": [<resolved-module-specifier>, …]}` so we get both halves
-/// in one parse. Older callers that supply `test_default_export_json`
-/// can still pass either the envelope shape or a bare config object —
-/// the bare-config branch is kept for backwards-test-compat.
+/// `--platform=neutral` means any `node:*` import becomes a bundle-time
+/// error from esbuild (not a silent external + runtime crash). This is the
+/// explicit data-config contract: `zfb.config.ts` must be self-contained.
+#[cfg(feature = "embed_v8")]
+async fn load_ts_via_inprocess_v8(
+    ts_path: &Path,
+    dir: &Path,
+    opts: &LoadOptions,
+) -> Result<String> {
+    use zfb_render::ThreadedConfigEvaluator;
+
+    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("zfb-config-")
+        .tempdir()
+        .context("config loader: failed to allocate temp directory")?;
+    let stub_path = tmp.path().join("zfb-config-stub.mjs");
+    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
+    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
+        .await
+        .context("config loader: failed to stage zfb-config-stub.mjs")?;
+    // CONFIG_LOADER_MJS is NOT staged here — V8 evaluates the bundle
+    // directly; Sub 5 (#420) will gate the constant itself.
+
+    // Bundle with --platform=neutral so node:* imports are bundle-time
+    // errors rather than silent externals that explode inside V8.
+    // data-config contract: zfb.config.ts must not import Node builtins.
+    let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
+    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
+    let outfile_arg = format!("--outfile={}", bundle_path.display());
+    let mut cmd = Command::new(&esbuild);
+    cmd.current_dir(dir);
+    cmd.arg("--bundle");
+    cmd.arg("--format=esm");
+    cmd.arg("--platform=neutral");
+    cmd.arg("--target=esnext");
+    cmd.arg("--log-level=warning");
+    cmd.arg(&alias_arg);
+    cmd.arg(&alias_scoped_arg);
+    cmd.arg(&outfile_arg);
+    cmd.arg(ts_path);
+
+    let esbuild_out = cmd.output().await.with_context(|| {
+        format!(
+            "config loader: failed to spawn esbuild at {}",
+            esbuild.display()
+        )
+    })?;
+    if !esbuild_out.status.success() {
+        let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
+        bail!(
+            "config loader: esbuild failed to bundle {} ({}): {}",
+            ts_path.display(),
+            esbuild_out.status,
+            stderr.trim()
+        );
+    }
+
+    // Read the bundle off disk, then hand off to V8.
+    let bundle_src = tokio::fs::read_to_string(&bundle_path)
+        .await
+        .with_context(|| {
+            format!(
+                "config loader: failed to read esbuild output at {}",
+                bundle_path.display()
+            )
+        })?;
+
+    // Evaluate in a dedicated OS thread so V8 startup doesn't pin a
+    // tokio worker (V8 boot can take hundreds of ms).
+    let raw_value = tokio::task::spawn_blocking(move || {
+        ThreadedConfigEvaluator::eval_bundle(&bundle_src)
+    })
+    .await
+    .map_err(|e| anyhow!("config eval join error: {e}"))?
+    .map_err(|e| anyhow!("embedded V8 evaluator failed: {e}"))?;
+
+    // raw_value is the user's `default` export as a serde_json::Value.
+    // We need to walk the plugins[] array and resolve each entry's `name`
+    // to a file:// URL, then assemble the envelope parse_loader_envelope
+    // expects: { config: <raw_value>, plugins: [<resolved-url>, ...] }
+
+    // Extract the plugins array from the raw value — resolve each name.
+    let plugins_arr = raw_value
+        .get("plugins")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut resolved_plugins: Vec<String> = Vec::with_capacity(plugins_arr.len());
+    for plugin_val in &plugins_arr {
+        let name = plugin_val
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("config loader: plugin entry missing string 'name' field"))?;
+
+        // relative/absolute path → file:// URL; bare specifier → node_resolve.
+        let url = if let Some(file_url) = resolve_plugin_path_to_file_url(name, dir)? {
+            file_url
+        } else {
+            // Bare specifier — resolve via oxc_resolver (in-process).
+            crate::node_resolve::resolve_node_bare_specifier(name, dir)
+                .with_context(|| format!("config loader: resolving plugin {:?}", name))?
+        };
+        resolved_plugins.push(url);
+    }
+
+    // Assemble the envelope parse_loader_envelope expects.
+    let envelope = serde_json::json!({
+        "config": raw_value,
+        "plugins": resolved_plugins,
+    });
+    Ok(serde_json::to_string(&envelope)
+        .context("config loader: failed to serialise V8 eval envelope")?)
+}
+
+/// Internal envelope shape produced by the TS config evaluator.
+///
+/// On the default (embed_v8) path the in-process evaluator serialises
+/// `{"config": <user-default-export>, "plugins": [<resolved-module-specifier>,
+/// …]}` to a Rust `String` before returning.  On the slim-build path
+/// `crates/zfb/js/config-loader.mjs` writes the same shape to stdout.
+/// Older callers that supply `test_default_export_json` can still pass
+/// either the envelope shape or a bare config object — the bare-config
+/// branch is kept for backwards-test-compat.
 #[derive(Debug, Deserialize)]
 struct LoaderEnvelope {
     config: Config,
@@ -1237,7 +1411,7 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
         if !resolved.is_empty() && resolved.len() != config.plugins.len() {
             bail!(
                 "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
-                 this indicates a bug in config-loader.mjs",
+                 this indicates a bug in the TS config evaluator",
                 ts_path.display(),
                 config.plugins.len(),
                 resolved.len()
@@ -1344,6 +1518,10 @@ fn resolve_esbuild_binary_with_handle(
 
 /// Run esbuild + node to compile `ts_path` to ESM and pull the default
 /// export back as JSON.
+///
+/// Slim-build fallback: available only when `embed_v8` is disabled so the
+/// node subprocess path is preserved for the slim-build audience.
+#[cfg(not(feature = "embed_v8"))]
 async fn load_ts_via_subprocess(
     ts_path: &Path,
     dir: &Path,
@@ -2055,7 +2233,18 @@ mod tests {
 
     #[tokio::test]
     async fn loads_from_json_fixture() {
+        // Test intent: JSON parsing produces a populated Config with all
+        // top-level fields (including a plugins entry that round-trips).
+        // Plugin resolution itself is covered exhaustively by the
+        // json_plugin_* tests; here we use a relative-path plugin (the
+        // simplest resolver branch) so the load completes without needing a
+        // node_modules fixture. Before #418 this test used a bare-spec
+        // ("my-plugin") that the old warn-and-skip path silently dropped;
+        // that path now hard-errors, so the fixture switched to a real file.
         let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("plugin.mjs"), "export default {};")
+            .await
+            .unwrap();
         let json = r#"{
             "outDir": "build",
             "publicDir": "static",
@@ -2068,7 +2257,7 @@ mod tests {
             ],
             "tailwind": { "enabled": false },
             "plugins": [
-                { "name": "my-plugin", "options": { "level": 2 } }
+                { "name": "./plugin.mjs", "options": { "level": 2 } }
             ]
         }"#;
         tokio::fs::write(tmp.path().join("zfb.config.json"), json)
@@ -2088,7 +2277,7 @@ mod tests {
             Some(TailwindConfig { enabled: false })
         );
         assert_eq!(cfg.plugins.len(), 1);
-        assert_eq!(cfg.plugins[0].name, "my-plugin");
+        assert_eq!(cfg.plugins[0].name, "./plugin.mjs");
     }
 
     #[tokio::test]
@@ -2297,9 +2486,9 @@ mod tests {
 
     #[tokio::test]
     async fn ts_envelope_count_mismatch_is_rejected() {
-        // Defensive guard — if config-loader.mjs ever drifts and emits
-        // a plugins array that doesn't 1:1 match config.plugins, we
-        // surface that as a clear error rather than silently dropping
+        // Defensive guard — if the TS config evaluator ever drifts and
+        // emits a plugins array that doesn't 1:1 match config.plugins,
+        // we surface that as a clear error rather than silently dropping
         // resolutions.
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
@@ -2504,37 +2693,86 @@ mod tests {
         );
     }
 
+    /// Bare specifiers in `zfb.config.json` now resolve via `oxc_resolver`
+    /// when `node_modules` is present (issue #211 fix).
     #[tokio::test]
-    async fn json_plugin_bare_specifier_stays_unresolved_no_error() {
+    async fn json_plugin_bare_specifier_resolves_when_installed() {
         let tmp = TempDir::new().unwrap();
+
+        // Set up node_modules/@takazudo/zfb-shell-rename with a minimal
+        // package.json + index.js so oxc_resolver can find it.
+        let pkg_dir = tmp
+            .path()
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-shell-rename");
+        tokio::fs::create_dir_all(&pkg_dir).await.unwrap();
+        tokio::fs::write(
+            pkg_dir.join("package.json"),
+            r#"{ "name": "@takazudo/zfb-shell-rename", "main": "index.js" }"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(pkg_dir.join("index.js"), "export default {};\n")
+            .await
+            .unwrap();
+
         tokio::fs::write(
             tmp.path().join("zfb.config.json"),
             r#"{
                 "plugins": [
-                    { "name": "@takazudo/zfb-shell-rename" },
-                    { "name": "some-bare-pkg" }
+                    { "name": "@takazudo/zfb-shell-rename" }
                 ]
             }"#,
         )
         .await
         .unwrap();
 
-        // Bare specifiers cannot be resolved without node; they must
-        // not raise an error here (warning is emitted instead, but we
-        // do not assert on stderr text — that's a UX detail).
         let cfg = load_from_dir(tmp.path())
             .await
-            .expect("bare specifier in JSON config must not error");
-        assert_eq!(cfg.plugins.len(), 2);
-        assert!(
-            cfg.plugins[0].resolved_module.is_none(),
-            "bare specifier must stay None (got {:?})",
-            cfg.plugins[0].resolved_module
+            .expect("bare specifier with installed package must not error");
+        assert_eq!(cfg.plugins.len(), 1);
+        let resolved = cfg.plugins[0].resolved_module.as_deref().expect(
+            "bare specifier with node_modules present must populate resolved_module",
         );
         assert!(
-            cfg.plugins[1].resolved_module.is_none(),
-            "bare specifier must stay None (got {:?})",
-            cfg.plugins[1].resolved_module
+            resolved.starts_with("file://"),
+            "resolved_module should be a file:// URL, got {resolved:?}"
+        );
+        assert!(
+            resolved.contains("zfb-shell-rename"),
+            "resolved_module should reference the package, got {resolved:?}"
+        );
+    }
+
+    /// Bare specifiers for packages that are not installed must produce a
+    /// clear error naming the package and giving a recovery hint (issue #211).
+    #[tokio::test]
+    async fn json_plugin_bare_specifier_errors_clearly_when_not_installed() {
+        let tmp = TempDir::new().unwrap();
+        // No node_modules — the package cannot be found.
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "plugins": [
+                    { "name": "some-uninstalled-pkg" }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("uninstalled bare-specifier plugin must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("some-uninstalled-pkg"),
+            "error must name the missing package: {msg}"
+        );
+        assert!(
+            msg.contains("pnpm install") || msg.contains("not found"),
+            "error must give a recovery hint: {msg}"
         );
     }
 
@@ -2582,6 +2820,10 @@ mod tests {
         assert_eq!(parsed_path, plugin_path.canonicalize().unwrap());
     }
 
+    // Slim-build-only: the default-features path (embed_v8) never calls
+    // node, so the "node not in PATH" error can only fire from the slim
+    // build's subprocess fallback (#390 audit-trail criterion 2).
+    #[cfg(not(feature = "embed_v8"))]
     #[tokio::test]
     async fn ts_config_missing_node_emits_actionable_error() {
         // Force the node binary to a path that doesn't exist so the
@@ -3128,6 +3370,133 @@ mod tests {
         assert!(
             msg.contains("ssr") || msg.contains("variant"),
             "msg: {msg}"
+        );
+    }
+
+    // --- Sub #417 V8 evaluator wiring tests ----------------------------------
+
+    /// V8 path end-to-end: spawn_blocking wrapping test.
+    ///
+    /// Runs `load_from_dir` through the real esbuild + V8 evaluator path
+    /// (no test-override short-circuit). A sibling `tokio::time::sleep` of
+    /// equal wall-clock duration must complete within tolerance — proving that
+    /// the `spawn_blocking` wrapper is in place and the tokio event loop stays
+    /// unblocked during V8 boot. If a future refactor drops `spawn_blocking`
+    /// the sibling sleep would be starved, failing the time-comparison assertion.
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn v8_eval_spawn_blocking_does_not_starve_event_loop() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.ts"),
+            "export default { port: 7777 };\n",
+        )
+        .await
+        .unwrap();
+
+        // Record wall-clock time of a plain tokio sleep so we have a
+        // baseline for what "the event loop is free" looks like.
+        let sleep_start = std::time::Instant::now();
+        let sleep_dur = std::time::Duration::from_millis(50);
+
+        // Run the V8 eval and the sleep concurrently.
+        let (load_result, ()) = tokio::join!(
+            load_from_dir(tmp.path()),
+            tokio::time::sleep(sleep_dur),
+        );
+        let sleep_elapsed = sleep_start.elapsed();
+
+        // The load must succeed.
+        let cfg = load_result.expect("V8 eval should load a simple config");
+        assert_eq!(cfg.port, Some(7777));
+
+        // The sleep must have completed within 10× its requested duration.
+        // If spawn_blocking is missing, the V8-boot thread would pin the
+        // single tokio worker and the sleep would be delayed by the full
+        // V8 startup time (typically 200–600 ms), which is > 500 ms.
+        let tolerance = sleep_dur * 10;
+        assert!(
+            sleep_elapsed < sleep_dur + tolerance,
+            "tokio::time::sleep({sleep_dur:?}) took {sleep_elapsed:?} — \
+             event loop may have been starved (spawn_blocking missing?)"
+        );
+    }
+
+    /// esbuild `--platform=neutral` rejects `node:fs` at bundle time.
+    ///
+    /// Asserts that a `zfb.config.ts` containing `import fs from "node:fs"`
+    /// produces an esbuild bundle-time error (not a V8 eval error) and that
+    /// the error message names the offending import. This is the data-config
+    /// contract: `zfb.config.ts` must not import Node built-ins.
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn v8_eval_node_fs_import_fails_at_bundle_time_not_v8() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.ts"),
+            // data-config contract: node:* imports are forbidden.
+            "import fs from \"node:fs\";\nexport default { files: fs.readdirSync(\".\") };\n",
+        )
+        .await
+        .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("node:fs import must fail at bundle time");
+        let msg = format!("{err:#}");
+
+        // Must be an esbuild error, not a V8 eval error.
+        assert!(
+            msg.contains("esbuild failed"),
+            "error should come from esbuild (bundle time), got: {msg}"
+        );
+        // Must name the offending import so users know what to fix.
+        assert!(
+            msg.contains("node:fs"),
+            "error should name the offending node:fs import, got: {msg}"
+        );
+        // Must NOT say "embedded V8 evaluator failed" — the error must
+        // occur before V8 is even invoked.
+        assert!(
+            !msg.contains("embedded V8 evaluator failed"),
+            "error must not come from V8 eval (must be bundle-time), got: {msg}"
+        );
+    }
+
+    /// Slim-build only: verify that the "node not in PATH" actionable error
+    /// fires when both node is missing AND the slim-build fallback is used.
+    ///
+    /// Gated under `cfg(not(feature = "embed_v8"))` because the default-features
+    /// build compiles V8 in and never calls node to evaluate config — this
+    /// state (V8 absent AND node absent) cannot occur on the default path.
+    /// (#390 audit-trail: second acceptance criterion.)
+    #[cfg(not(feature = "embed_v8"))]
+    #[tokio::test]
+    async fn slim_build_missing_node_emits_actionable_error() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        if !PathBuf::from(DEFAULT_ESBUILD_SLOT).exists()
+            && std::env::var_os("ZFB_ESBUILD_BIN").is_none()
+        {
+            return;
+        }
+        let opts = LoadOptions {
+            node_binary: Some(OsString::from("zfb-no-such-node-binary-slim-xyz")),
+            ..LoadOptions::default()
+        };
+        let err = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect_err("missing node should error cleanly on slim build");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not found in PATH"),
+            "msg should call out PATH: {msg}"
+        );
+        assert!(
+            msg.contains("Node.js"),
+            "msg should mention Node.js: {msg}"
         );
     }
 }

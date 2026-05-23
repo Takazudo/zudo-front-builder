@@ -7,6 +7,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod diagnostics;
+mod node_resolve;
 pub(crate) mod output;
 pub mod render_pipeline;
 // V8-bearing adapters (issue #371, sub-task 4.1a). Compiled in only

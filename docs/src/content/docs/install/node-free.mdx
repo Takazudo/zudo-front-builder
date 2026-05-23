@@ -113,16 +113,17 @@ zfb --version
 
 ## Config file: `zfb.config.json` vs `zfb.config.ts`
 
-When running without Node you must use **`zfb.config.json`** instead of
-`zfb.config.ts`.
+Both config formats work without Node. `zfb.config.ts` is evaluated
+in-process via the embedded V8 isolate that ships with the default `zfb`
+binary — there is no runtime Node dependency.
 
-The `.ts` form is the canonical, recommended way to author a zfb config
-when Node is available — it gives you TypeScript types, comments, and
-computed values. The `.json` form is a strict subset: the same fields,
-but no TypeScript syntax and no computed values.
+`zfb.config.ts` is a **data config** — `node:*` imports, `process.env`, and
+other Node-only APIs are not available inside the evaluator. Use
+`zfb.config.ts` when you want TypeScript types, comments, and computed values.
+Use `zfb.config.json` for a plain JSON alternative.
 
 ```jsonc
-// zfb.config.json — Node-free compatible
+// zfb.config.json — also Node-free compatible
 {
   "framework": "preact",
   "outDir": "dist",
@@ -136,7 +137,7 @@ but no TypeScript syntax and no computed values.
 ```
 
 If both `zfb.config.ts` and `zfb.config.json` are present, the `.ts` file
-wins and Node is required to evaluate it.
+wins.
 
 ## When Node is still needed
 
@@ -144,12 +145,11 @@ The following features require Node in `PATH`:
 
 | Feature | Why |
 | --- | --- |
-| `zfb.config.ts` evaluation | The TS config is bundled by esbuild then evaluated by `node` to pull the default export back as JSON. Use `zfb.config.json` to avoid this. |
 | `zfb check` without `--skip-tsc` | TypeScript type-checking delegates to `tsc`, which is a Node package. Pass `--skip-tsc` to run the non-TS checks only. |
 | Cloudflare adapter (`@takazudo/zfb-adapter-cloudflare`) | The adapter depends on Wrangler, which is a Node CLI. SSR deployments to Cloudflare Pages always need Node in the deploy environment. |
 
 Everything else — building, dev server, islands, Tailwind, MDX, content
-collections — runs Node-free.
+collections, and `zfb.config.ts` evaluation — runs Node-free.
 
 ## Upgrading zfb
 

@@ -36,6 +36,12 @@ pub use embedded_v8::{
     PluginRegistryHooks, VirtualModuleHook,
 };
 
+#[cfg(feature = "embed_v8")]
+pub mod config_eval;
+
+#[cfg(feature = "embed_v8")]
+pub use config_eval::{ConfigEvalError, ThreadedConfigEvaluator};
+
 pub use error::{RenderError, Result};
 pub use loader::{read_to_string, ResolverError};
 pub use render::{RenderRequest, Renderer};

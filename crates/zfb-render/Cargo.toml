@@ -92,9 +92,12 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 # Async test runtime for `#[tokio::test]` on async render-host tests.
-# `rt-multi-thread` is intentionally absent — the V8 host is
-# `!Send + !Sync` and runs on the current-thread runtime only.
-tokio = { version = "1", features = ["rt", "macros"] }
+# `rt-multi-thread` is intentionally absent for the embedded V8 render host
+# (which is `!Send + !Sync` and always uses a `current_thread` runtime).
+# Added `rt-multi-thread` and `time` for `config_eval` tests: the
+# `spawn_blocking` parallelism test (acceptance criterion) requires
+# `#[tokio::test(flavor = "multi_thread")]` and `tokio::time::sleep`.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Used by tests/integration_routing_rendering.rs to scan the routing
 # fixtures into a `Route` table. Lives in dev-deps because zfb-render
 # itself does not need to depend on zfb-router at runtime — the build

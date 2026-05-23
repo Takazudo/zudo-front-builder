@@ -3,9 +3,9 @@
 //! Both `zfb build` and `zfb dev` need to spawn the long-lived plugin
 //! host subprocess if (and only if) the loaded `Config.plugins` list
 //! contains entries with a resolved module specifier — the JSON config
-//! path leaves `resolved_module` as `None` because no node subprocess
-//! ran during loading. A `None` entry is treated as "no plugin module"
-//! and is silently skipped here.
+//! path leaves `resolved_module` as `None` because bare-specifier Node
+//! module resolution is not available there. A `None` entry is treated
+//! as "no plugin module" and is silently skipped here.
 
 use std::sync::Arc;
 

@@ -18,7 +18,7 @@ No `pnpm install`, no `pnpm dev`, no `pnpm exec` needed.
 ## Structure
 
 ```
-zfb.config.json     zfb configuration (JSON only — no .ts in this template)
+zfb.config.json     zfb configuration (JSON form; see note below on .ts support)
 pages/
   index.tsx         home page — lists posts from the collection
   about.md          sample .md page entry — renders at /about
@@ -62,14 +62,25 @@ export async function getStaticProps() {
 ```
 
 Add another post by dropping a new `.md` file into `content/posts/` and
-editing the `collections` entry in `zfb.config.json` if you want a
-different name.
+editing the `collections` entry in `zfb.config.json` (or `zfb.config.ts` —
+see below) if you want a different name.
 
 ## Configuration
 
-See `zfb.config.json` and the
-[zfb docs](https://github.com/Takazudo/zudo-front-builder) for available
-options. The `zfb.config.ts` (`.ts`) form is intentionally omitted from
-this template until upstream gains an embedded-V8 path for evaluating
-`.ts` configs (tracking:
-[Tier 2 epic #390](https://github.com/Takazudo/zudo-front-builder/issues/390)).
+Both `zfb.config.json` and `zfb.config.ts` are supported — no Node required
+for either. When `zfb.config.ts` is present it takes precedence; the TypeScript
+file is bundled and evaluated by the in-process V8 engine embedded in the `zfb`
+binary. This project ships the `.json` form for simplicity; rename it to `.ts`
+and use `defineConfig` from `"zfb/config"` if you prefer editor types:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  framework: "preact",
+  collections: [{ name: "posts", path: "content/posts" }],
+});
+```
+
+See the [zfb docs](https://github.com/Takazudo/zudo-front-builder) for all
+available options.

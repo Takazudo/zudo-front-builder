@@ -93,6 +93,13 @@ zfb-server = { path = "../zfb-server" }
 # because the dev server cannot serve assets on a different origin).
 zfb-types = { path = "../zfb-types" }
 zfb-watcher = { path = "../zfb-watcher" }
+# Node ESM bare-specifier resolver — replaces `createRequire().resolve` /
+# `import.meta.resolve` in config-loader.mjs with a pure-Rust helper
+# (issue #416 / epic #414).  Handles conditional exports, scoped packages,
+# and parent-directory walk correctly — the form real `@takazudo/zfb-*`
+# packages use.  Pulls ~4 transitive crates (rustc-hash, dashmap, etc.)
+# that are small and not otherwise in the graph.
+oxc_resolver = "11.19.1"
 
 [build-dependencies]
 # Binary download and SHA-256 verification in build.rs.

@@ -1,6 +1,7 @@
-// AUTO-LOADED by zfb::config (Wave 2 / Sub 1 — `zfb.config.ts` loader).
-// Do not edit unless you also update the Rust caller in
-// `crates/zfb/src/config.rs::load_ts_via_subprocess`.
+// AUTO-LOADED by zfb::config during `zfb.config.ts` evaluation.
+// Used on both the default (embed_v8) in-process path and the slim-build
+// subprocess fallback (`load_ts_via_subprocess`). Do not edit unless you
+// also update the Rust callers in `crates/zfb/src/config.rs`.
 //
 // Stub for the `zfb/config` import that user `zfb.config.ts` files
 // reach for. The real package (packages/zfb/src/config.ts) exposes

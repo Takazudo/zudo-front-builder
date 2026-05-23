@@ -1,5 +1,11 @@
-// AUTO-LOADED by zfb::config (Wave 2 / Sub 1 — `zfb.config.ts` loader,
-// extended by Phase B Sub 3 / issue #108 with plugin-name resolution).
+// SLIM-BUILD ONLY. Used exclusively by `load_ts_via_subprocess` in
+// `crates/zfb/src/config.rs` when the `embed_v8` feature is disabled.
+// Default (embed_v8) builds evaluate the bundle in-process via V8 and
+// do not stage this file at all (the `CONFIG_LOADER_MJS` constant is
+// cfg-gated to `#[cfg(not(feature = "embed_v8"))]`).
+//
+// Originally: Wave 2 / Sub 1 — `zfb.config.ts` loader, extended by
+// Phase B Sub 3 / issue #108 with plugin-name resolution.
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb/src/config.rs::load_ts_via_subprocess`.
 //

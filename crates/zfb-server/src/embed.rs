@@ -343,9 +343,9 @@ impl ServerBuilder {
     ///
     /// Currently `.json` is supported directly; `.ts` returns a clear
     /// error pointing the caller at the `zfb` CLI for TS-config
-    /// support (the TS loader requires `node` + esbuild and lives in
-    /// the bin crate). This restriction will be lifted in a follow-up
-    /// once the TS loader is hoisted into a sharable place.
+    /// support (the in-process V8 + esbuild evaluator lives in the bin
+    /// crate and is not yet hoisted into a shareable place). This
+    /// restriction will be lifted in a follow-up.
     pub fn config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.config_path = Some(path.as_ref().to_path_buf());
         self
@@ -580,11 +580,11 @@ impl ServerHandle {
 // --- config_path JSON loader -------------------------------------------------
 //
 // Loads just the four fields the embedded server cares about from the
-// project's `zfb.config.json`. A full TS-config loader requires `node`
-// + esbuild and lives in the `zfb` bin crate; the embed API's
-// `config_path` only supports JSON in this milestone. The error
-// message surfaces the missing TS support clearly so callers know
-// where to look.
+// project's `zfb.config.json`. The embed API's `config_path` only supports
+// JSON in this milestone; TS config evaluation (via the in-process V8 +
+// esbuild pipeline) lives in the `zfb` bin crate and is not yet hoisted
+// into a shareable place. The error message surfaces the missing TS
+// support clearly so callers know where to look.
 
 /// Minimal mirror of the embed-relevant subset of `zfb.config.json`.
 /// Field names match the canonical TS shape (`#[serde(rename_all =
@@ -639,7 +639,7 @@ fn load_embed_config(
             "ServerBuilder::config_path: `.ts` configs are not yet \
              loadable from `zfb-server`'s embed API in this milestone. \
              Convert to `zfb.config.json`, or use the `zfb` CLI which \
-             ships the `node`+esbuild TS loader. (Sub-task 3.1a / #370.)"
+             ships the in-process V8 + esbuild TS loader. (Sub-task 3.1a / #370.)"
         ));
     }
     if ext != "json" {
