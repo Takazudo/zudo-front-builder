@@ -348,21 +348,12 @@ pub struct BundlerInput {
     /// `node_modules` tree is accessible via the ancestor walk.
     pub node_modules_dir: Option<PathBuf>,
 
-    /// When `true`, esbuild is invoked with `--preserve-symlinks` so
-    /// it stays at the symlink location during package resolution. Set
-    /// by tests that point [`Self::node_modules_dir`] at a synthetic
-    /// fixture tree where the package source physically lives outside
-    /// the project root.
-    ///
-    /// Production builds leave this `false`. pnpm-style projects
-    /// store package contents under
-    /// `node_modules/.pnpm/<spec>/node_modules/<pkg>/...`; following
-    /// the symlink lets esbuild walk up from the *real* path and
-    /// discover the per-package nested `node_modules` (where pnpm
-    /// hoists transitive deps like `hono`). Preserving symlinks would
-    /// keep esbuild anchored at `node_modules/<pkg>` in the project
-    /// root, where transitive deps are NOT hoisted, and resolution
-    /// fails.
+    /// **Deprecated / no-op.** This field is no longer consulted;
+    /// `--preserve-symlinks` is now passed automatically whenever
+    /// [`Self::node_modules_dir`] is `Some`. See the `run_esbuild`
+    /// comment for the full rationale (Wave 3 / #434 follow-up).
+    /// Kept here for API continuity so callers do not need a
+    /// mechanical churn across the codebase.
     pub node_modules_preserve_symlinks: bool,
 
     /// When `true`, append [`zfb_content::pipeline::Pipeline::add_strip_md_ext`]
@@ -2902,16 +2893,20 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     // same as `--platform=node`; the bundle stays platform-neutral.
     cmd.arg("--external:node:*");
 
-    // When a custom `node_modules_dir` is injected (test fixture mode),
-    // packages are symlinked into the shadow tree rather than physically
-    // present. Without `--preserve-symlinks` esbuild resolves imports from
-    // the **real** (symlink-target) directory, causing it to walk up into
-    // the source tree and miss the custom node_modules. With
-    // `--preserve-symlinks` resolution stays anchored at the symlink
-    // location inside the shadow tree, so `hono`, `preact`, etc. are found
-    // in the injected node_modules even when the package source lives in a
-    // different tree (e.g. the worktree's packages/ directory).
-    if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
+    // Always pass --preserve-symlinks when a custom node_modules_dir is
+    // configured. Wave 3 (#434) made the shadow tree symlink-heavy: source
+    // files that are not .md/.mdx are now symlinked into the shadow rather
+    // than physically copied. Without --preserve-symlinks esbuild follows a
+    // symlinked source file back to its real path (e.g. /tmp/my-site/pages/
+    // index.tsx) and walks upward from there looking for node_modules. In
+    // node-free vendored mode /tmp/my-site/ has no node_modules, so
+    // resolution fails with "Could not resolve preact/jsx-runtime".
+    // --preserve-symlinks keeps esbuild anchored at the shadow path, where
+    // <shadow>/node_modules is the injected vendor tree. The previous
+    // `&& input.node_modules_preserve_symlinks` opt-in gate was a pre-Wave-3
+    // assumption that source files in the shadow were always real copies.
+    // Production builds have node_modules_dir = None and are unaffected.
+    if input.node_modules_dir.is_some() {
         cmd.arg("--preserve-symlinks");
     }
 
