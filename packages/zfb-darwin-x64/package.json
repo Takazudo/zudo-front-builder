@@ -11,7 +11,9 @@
   ],
   "main": "zfb",
   "files": [
-    "zfb"
+    "zfb",
+    "LICENSE",
+    "README.md"
   ],
   "repository": {
     "type": "git",
