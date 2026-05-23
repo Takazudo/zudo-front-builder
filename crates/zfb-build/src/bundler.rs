@@ -1004,7 +1004,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     //
     // Directories already materialised above (pages, content, components,
     // layouts) and infrastructure directories (node_modules, dist, .git,
-    // hidden dirs, zfb output dirs) are skipped.
+    // hidden dirs, zfb output dirs) are skipped. Additionally, directories
+    // excluded by the consumer's .gitignore (or global git ignore) are
+    // skipped — see `enumerate_extra_top_level_dirs` for the full rules.
+    //
+    // Behavior note: consumers using negated patterns like `!worktrees/keep/`
+    // to opt a sub-path back in will find the negation silently ignored at
+    // this pass — `max_depth=1` means we operate whole-dir-or-nothing.
     {
         let known: &[&str] = &[
             "pages",
@@ -1019,54 +1025,36 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             ".next",
             ".vercel",
         ];
-        if let Ok(rd) = fs::read_dir(&input.project_root) {
-            for entry in rd.flatten() {
-                let ft = match entry.file_type() {
-                    Ok(ft) => ft,
-                    Err(_) => continue,
-                };
-                if !ft.is_dir() {
-                    continue;
-                }
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                // Skip hidden dirs and known/infrastructure dirs.
-                if name_str.starts_with('.') {
-                    continue;
-                }
-                if known.iter().any(|k| name_str == *k) {
-                    continue;
-                }
-                let src_dir = input.project_root.join(&name);
-                let dst_dir = shadow.join(&name);
-                let mut broken = Vec::new();
-                materialise_shadow(
-                    &src_dir,
-                    &dst_dir,
-                    &mut Vec::new(),
-                    &input.project_root,
-                    input.strip_md_ext,
-                    input.code_highlight_theme.as_deref(),
-                    input.code_highlight_themes_dir.as_deref(),
-                    if resolve_links_enabled {
-                        Some(&resolve_source_map)
-                    } else {
-                        None
-                    },
-                    input.gfm_constructs,
-                    input.toc.clone(),
-                    input.external_links.as_ref(),
-                    input.cjk_friendly,
-                    &mut broken,
+        for src_dir in enumerate_extra_top_level_dirs(&input.project_root, known) {
+            let name = src_dir.file_name().unwrap_or_default().to_os_string();
+            let dst_dir = shadow.join(&name);
+            let mut broken = Vec::new();
+            materialise_shadow(
+                &src_dir,
+                &dst_dir,
+                &mut Vec::new(),
+                &input.project_root,
+                input.strip_md_ext,
+                input.code_highlight_theme.as_deref(),
+                input.code_highlight_themes_dir.as_deref(),
+                if resolve_links_enabled {
+                    Some(&resolve_source_map)
+                } else {
+                    None
+                },
+                input.gfm_constructs,
+                input.toc.clone(),
+                input.external_links.as_ref(),
+                input.cjk_friendly,
+                &mut broken,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising extra dir {} into shadow",
+                    src_dir.display()
                 )
-                .with_context(|| {
-                    format!(
-                        "bundler: failed materialising extra dir {} into shadow",
-                        src_dir.display()
-                    )
-                })?;
-                all_broken_links.extend(broken);
-            }
+            })?;
+            all_broken_links.extend(broken);
         }
     }
 
@@ -1308,6 +1296,48 @@ fn is_pruned_infra_dir(entry: &walkdir::DirEntry) -> bool {
     // still be materialised). Top-level dist/target pruning is handled
     // by the existing skip-list in the 2a-extra block.
     false
+}
+
+/// Enumerate top-level directories under `project_root` that should be
+/// materialised into the shadow tree as "extra dirs" (i.e., directories not
+/// handled by the dedicated pages/content/components/layouts passes).
+///
+/// Uses the `ignore` crate's `WalkBuilder` (the same walker ripgrep uses)
+/// so that the consumer's `.gitignore`, `.git/info/exclude`, and global git
+/// ignore rules are respected automatically.  `require_git(false)` ensures
+/// the filter still applies even when the consumer project is not a git repo.
+///
+/// Directories that match `known_skip_list` or that start with `.` are also
+/// excluded, preserving the previous behaviour of the `fs::read_dir` loop.
+fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str]) -> Vec<PathBuf> {
+    use ignore::WalkBuilder;
+    let walker = WalkBuilder::new(project_root)
+        .max_depth(Some(1)) // immediate children only
+        .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
+        .require_git(false) // honor .gitignore even when consumer isn't a git repo
+        .build();
+    let mut out = Vec::new();
+    for entry in walker.flatten() {
+        if entry.path() == project_root {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Some(ft) => ft,
+            None => continue,
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if known_skip_list.iter().any(|k| name == *k) {
+            continue;
+        }
+        out.push(entry.path().to_path_buf());
+    }
+    out
 }
 
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
@@ -5051,6 +5081,163 @@ mod tests {
                 "zzz.tsx".to_string(),
             ],
             "lexicographic order must be preserved and node_modules must be absent; got {walked:?}"
+        );
+    }
+
+    // --- enumerate_extra_top_level_dirs tests (#433) --------------------------
+
+    /// Helper: collect just the last path component names from the helper's
+    /// return value for readable assertions.
+    fn dir_names(paths: Vec<PathBuf>) -> Vec<String> {
+        let mut names: Vec<String> = paths
+            .into_iter()
+            .map(|p| {
+                p.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn enumerate_extra_top_level_dirs_basic_gitignore() {
+        // .gitignore containing "worktrees/" causes the worktrees/ dir to be
+        // excluded; styles/ (not gitignored) is returned.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("styles")).unwrap();
+        fs::write(root.join("styles/foo.css"), "/* css */\n").unwrap();
+        fs::create_dir_all(root.join("worktrees/sub")).unwrap();
+        fs::write(root.join("worktrees/sub/file.txt"), "data\n").unwrap();
+        fs::write(root.join(".gitignore"), "worktrees/\n").unwrap();
+
+        let result = enumerate_extra_top_level_dirs(root, &[]);
+        let names = dir_names(result);
+        assert!(
+            names.contains(&"styles".to_string()),
+            "styles must be present; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"worktrees".to_string()),
+            "worktrees must be excluded by .gitignore; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn enumerate_extra_top_level_dirs_negated_pattern_whole_dir_excluded() {
+        // .gitignore: "worktrees/\n!worktrees/keep/"
+        // Because max_depth=1, we see only the top-level "worktrees/" entry.
+        // The ignore crate applies gitignore rules at the entry level — a
+        // negation for a sub-path inside an already-excluded directory does NOT
+        // re-include the parent at depth 1. The whole "worktrees/" dir is still
+        // excluded. This is intentional and documented: the extra-dirs pass is
+        // whole-dir-or-nothing at max_depth=1; consumers needing sub-path
+        // granularity should not rely on this pass.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("styles")).unwrap();
+        fs::write(root.join("styles/foo.css"), "/* css */\n").unwrap();
+        fs::create_dir_all(root.join("worktrees/keep")).unwrap();
+        fs::write(root.join("worktrees/keep/file.txt"), "data\n").unwrap();
+        fs::write(root.join(".gitignore"), "worktrees/\n!worktrees/keep/\n").unwrap();
+
+        let result = enumerate_extra_top_level_dirs(root, &[]);
+        let names = dir_names(result);
+        assert!(
+            names.contains(&"styles".to_string()),
+            "styles must be present; got {names:?}"
+        );
+        // Negation at sub-path depth does NOT re-include the whole worktrees/
+        // dir at max_depth=1 — the parent is excluded first.
+        assert!(
+            !names.contains(&"worktrees".to_string()),
+            "worktrees must still be excluded (negation at depth is not preserved); got {names:?}"
+        );
+    }
+
+    #[test]
+    fn enumerate_extra_top_level_dirs_no_git_dir_still_honors_gitignore() {
+        // Verifies `require_git(false)`: .gitignore is respected even when
+        // there is no .git/ directory, i.e., the consumer isn't a git repo.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Deliberately no .git/ directory.
+        fs::create_dir_all(root.join("styles")).unwrap();
+        fs::write(root.join("styles/foo.css"), "/* css */\n").unwrap();
+        fs::create_dir_all(root.join("worktrees/sub")).unwrap();
+        fs::write(root.join("worktrees/sub/file.txt"), "data\n").unwrap();
+        fs::write(root.join(".gitignore"), "worktrees/\n").unwrap();
+
+        let result = enumerate_extra_top_level_dirs(root, &[]);
+        let names = dir_names(result);
+        assert!(
+            names.contains(&"styles".to_string()),
+            "styles must be present; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"worktrees".to_string()),
+            "worktrees must be excluded by .gitignore even without .git/; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn enumerate_extra_top_level_dirs_skip_list_intersection() {
+        // Dirs in the known skip-list (node_modules, dist) are excluded even
+        // when they are not in .gitignore.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("styles")).unwrap();
+        fs::write(root.join("styles/foo.css"), "/* css */\n").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/index.js"), "// js\n").unwrap();
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/bundle.js"), "// bundle\n").unwrap();
+
+        let known: &[&str] = &["node_modules", "dist"];
+        let result = enumerate_extra_top_level_dirs(root, known);
+        let names = dir_names(result);
+        assert!(
+            names.contains(&"styles".to_string()),
+            "styles must be present; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"node_modules".to_string()),
+            "node_modules must be excluded by skip-list; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"dist".to_string()),
+            "dist must be excluded by skip-list; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn enumerate_extra_top_level_dirs_hidden_dirs_excluded() {
+        // Top-level hidden directories (.foo/) are excluded by the starts_with('.')
+        // filter (and also by standard_filters — double-covered).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("styles")).unwrap();
+        fs::write(root.join("styles/foo.css"), "/* css */\n").unwrap();
+        fs::create_dir_all(root.join(".foo")).unwrap();
+        fs::write(root.join(".foo/config"), "data\n").unwrap();
+
+        let result = enumerate_extra_top_level_dirs(root, &[]);
+        let names = dir_names(result);
+        assert!(
+            names.contains(&"styles".to_string()),
+            "styles must be present; got {names:?}"
+        );
+        assert!(
+            !names.contains(&".foo".to_string()),
+            ".foo hidden dir must be excluded; got {names:?}"
         );
     }
 }

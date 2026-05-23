@@ -13,6 +13,10 @@ syntect = "5"
 garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
 walkdir = "2"
+# gitignore-aware directory walker used by ripgrep — honors .gitignore,
+# .git/info/exclude, global git ignore, and hidden-file rules. Used in
+# zfb-build's extra-dirs top-level pass to avoid materialising gitignored dirs.
+ignore = "0.4"
 async-trait = "0.1"
 # Glob pattern matching for content-collection include/exclude filters.
 # `globset` is the BurntSushi crate used by ripgrep — single GlobSet
