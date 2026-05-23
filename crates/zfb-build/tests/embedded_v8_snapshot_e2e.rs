@@ -518,8 +518,16 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
 
 /// Create a minimal fixture project on disk: a `pages/index.tsx` that
 /// reads from a `blog` content collection via `getCollection("blog")` and
-/// renders post titles, plus a `content/blog/` directory with two
-/// `.md` posts carrying `title` frontmatter.
+/// renders post titles plus the first post's `Content` component, plus a
+/// `content/blog/` directory with two `.md` posts.
+///
+/// The alpha post body uses `**bold alpha**` (GFM strong) so the rendered
+/// HTML contains `<strong>bold alpha</strong>`. This allows the
+/// `embedded_v8_renders_page_with_snapshot_data` test to assert on rendered
+/// body HTML rather than raw markdown source, confirming that
+/// `materialise_collection` registers `.md` entries in the content bridge
+/// so `<post.Content />` produces real HTML output instead of the
+/// `<pre data-zfb-content-fallback>` raw-body fallback.
 fn write_blog_fixture_project(root: &Path) -> PathBuf {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::create_dir_all(root.join("content/blog")).unwrap();
@@ -528,20 +536,33 @@ fn write_blog_fixture_project(root: &Path) -> PathBuf {
 
     fs::write(
         root.join("pages/index.tsx"),
-        r#"export async function getStaticProps() {
+        r#"import { defaultComponents } from "zfb";
+import type { ContentProps } from "zfb/content";
+
+type ContentElement = {
+  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
+type Post = {
+  slug: string;
+  data: { title: string };
+  Content: (props: ContentProps) => ContentElement;
+};
+
+export async function getStaticProps() {
   const { getCollection } = await import("zfb/content");
-  const posts = (await getCollection("blog")) as Array<{
-    slug: string;
-    data: { title: string };
-  }>;
+  const posts = (await getCollection("blog")) as Post[];
   return { props: { posts } };
 }
 
 type Props = {
-  posts: Array<{ slug: string; data: { title: string } }>;
+  posts: Post[];
 };
 
 export default function HomePage({ posts }: Props) {
+  const first = posts[0];
   return (
     <html lang="en">
       <head>
@@ -554,6 +575,11 @@ export default function HomePage({ posts }: Props) {
             <li key={p.slug}>{p.data.title}</li>
           ))}
         </ul>
+        {first ? (
+          <article>
+            <first.Content components={{ ...defaultComponents }} />
+          </article>
+        ) : null}
       </body>
     </html>
   );
@@ -562,9 +588,13 @@ export default function HomePage({ posts }: Props) {
     )
     .unwrap();
 
+    // alpha.md uses `**bold alpha**` (GFM strong emphasis) so the rendered
+    // HTML contains `<strong>bold alpha</strong>` — a discriminating marker
+    // that proves the Content component ran the markdown renderer rather than
+    // falling back to the raw `<pre data-zfb-content-fallback>` path.
     fs::write(
         root.join("content/blog/alpha.md"),
-        "---\ntitle: \"Alpha Post\"\ndate: \"2026-01-01\"\n---\nBody of alpha.\n",
+        "---\ntitle: \"Alpha Post\"\ndate: \"2026-01-01\"\n---\nBody of **bold alpha**.\n",
     )
     .unwrap();
     fs::write(
@@ -734,6 +764,20 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
     assert!(
         body.contains("Zulu Post"),
         "rendered homepage must contain 'Zulu Post' from getCollection(\"blog\"); \
+         got body:\n{body}",
+    );
+
+    // Body-content rendering assertion: the fixture's alpha.md body contains
+    // `**bold alpha**`. The `<post.Content />` render must produce
+    // `<strong>bold alpha</strong>` in the HTML output. If materialise_collection
+    // failed to register the .md module in the content bridge, Content would
+    // fall back to `<pre data-zfb-content-fallback>` printing the raw body, and
+    // this substring would be absent.
+    assert!(
+        body.contains("<strong>bold alpha</strong>"),
+        "rendered homepage must contain '<strong>bold alpha</strong>' from Content render; \
+         raw markdown '**bold alpha**' must not pass through literally. \
+         This would fail without #405's fix to materialise_collection. \
          got body:\n{body}",
     );
 }
