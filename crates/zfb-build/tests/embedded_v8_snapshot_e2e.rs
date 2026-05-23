@@ -32,8 +32,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
-use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
+use zfb_build::{
+    bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, ContentCollectionSpec,
+    RendererInput, RouteUniverseEntry,
+};
 use zfb_content::{build_snapshot, CollectionConfig};
 use zfb_render::adapters::Framework;
 
@@ -779,5 +783,263 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
          raw markdown '**bold alpha**' must not pass through literally. \
          This would fail without #405's fix to materialise_collection. \
          got body:\n{body}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group 4 — .md and .html page end-to-end (confirm gate for #408 + #409)
+// ---------------------------------------------------------------------------
+
+/// Build a minimal fixture project that has a `.md` page (pages/about.md)
+/// and a `.html` page (pages/legal.html) to drive the #408 + #409 pipelines.
+fn write_md_html_page_fixture(root: &Path) {
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("content")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::create_dir_all(root.join("layouts")).unwrap();
+
+    // pages/about.md — heading, GFM strong, relative link.
+    // The heading `# Hello` → <h1>Hello</h1> and `**bold**` →
+    // <strong>bold</strong> prove the MDX pipeline ran (#408).
+    fs::write(
+        root.join("pages/about.md"),
+        "---\ntitle: About\nlang: en\n---\n\n# Hello\n\nThis is **bold** text.\n\nSee [link](./other).\n",
+    )
+    .unwrap();
+
+    // pages/legal.html — verbatim HTML with a YAML frontmatter block.
+    // The frontmatter must be stripped; the HTML body must pass through
+    // verbatim (#409).
+    fs::write(
+        root.join("pages/legal.html"),
+        "---\ntitle: Legal\n---\n<!doctype html>\n<html lang=\"en\">\n\
+         <head><meta charset=\"utf-8\"><title>Legal</title></head>\n\
+         <body><h1>Legal Notice</h1><p>verbatim content</p></body>\n\
+         </html>\n",
+    )
+    .unwrap();
+}
+
+/// End-to-end: a `.md` page in `pages/` renders to HTML with the markdown
+/// body compiled to real tags via the MDX pipeline.
+///
+/// Asserts:
+/// - `<h1>Hello</h1>` (from `# Hello`) — MDX heading compiled correctly.
+/// - `<strong>bold</strong>` (from `**bold**`) — GFM strong emphasis compiled.
+///   Without #408's `materialise_shadow` fix the route would be absent or the
+///   body would be raw markdown / a `<pre>` fallback, and both substrings
+///   would be absent.
+///
+/// Gated on `#[cfg(feature = "embed_v8")]` (same as the rest of this group).
+/// Skips when esbuild is unavailable or pnpm runtime deps are missing.
+#[cfg(feature = "embed_v8")]
+#[tokio::test]
+async fn embedded_v8_md_page_renders_to_html() {
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] no esbuild binary; set ZFB_ESBUILD_BIN, \
+             place it at crates/zfb/binaries/esbuild/esbuild, or install via pnpm. \
+             Skipping md-page test."
+        );
+        return;
+    };
+
+    let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
+    let project_root = fixture_tmp.path();
+    write_md_html_page_fixture(project_root);
+
+    let Some(node_modules) = make_test_node_modules() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] missing runtime deps in pnpm store; \
+             skipping md-page test (run `pnpm install` at the repo root)."
+        );
+        return;
+    };
+
+    let dist_tmp = tempfile::tempdir().expect("dist tempdir");
+
+    let input = BundlerInput {
+        project_root: project_root.to_path_buf(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        content_collections: Vec::new(),
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: Framework::Preact,
+        define_vars: HashMap::new(),
+        tsconfig_paths: BTreeMap::new(),
+        external: vec![],
+        outdir: dist_tmp.path().to_path_buf(),
+        mode: BundleMode::Production,
+        minify: false,
+        esbuild_binary: Some(esbuild.clone()),
+        mock_subprocess_output: None,
+        content_snapshot_json: None,
+        node_modules_dir: Some(node_modules.path().to_path_buf()),
+        node_modules_preserve_symlinks: true,
+        strip_md_ext: false,
+        code_highlight_theme: None,
+        code_highlight_themes_dir: None,
+        resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        prefetch_disabled: false,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
+        worker_only_routes: None,
+        bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
+    };
+
+    let out = bundle(input).expect("bundle with pages/about.md should succeed");
+    let bundle_source = fs::read_to_string(&out.bundle_path).expect("read bundle.mjs");
+
+    // Sanity: the compiled markdown body must be present in the bundle.
+    // `# Hello` compiles to an h1 reference and `**bold**` to a strong
+    // reference. If #408 is reverted, this file won't be in the route at all.
+    assert!(
+        bundle_source.contains("Hello"),
+        "bundle.mjs must embed the compiled about.md body containing 'Hello'; \
+         got (first 500 chars):\n{}",
+        &bundle_source[..bundle_source.len().min(500)],
+    );
+
+    // Dispatch via the embedded V8 host.
+    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    host.execute_module("bundle.mjs", &bundle_source)
+        .await
+        .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
+
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/about"))
+        .await
+        .unwrap_or_else(|e| panic!("dispatch /about failed: {e}"));
+
+    assert_eq!(
+        resp.status, 200,
+        "/about must render 200; got status {}, body={:?}",
+        resp.status,
+        resp.body_utf8(),
+    );
+
+    let body = resp
+        .body_utf8()
+        .expect("response body must be valid UTF-8")
+        .to_string();
+
+    // `# Hello` must compile to <h1>Hello</h1>.
+    // Raw markdown would produce literal `# Hello` or nothing; this string
+    // only appears when the MDX heading compiler ran (#408 path).
+    assert!(
+        body.contains("<h1>Hello</h1>"),
+        "rendered /about must contain '<h1>Hello</h1>' from compiled markdown; \
+         raw '# Hello' must not pass through literally. \
+         This would fail without #408's materialise_shadow .md support. \
+         got body:\n{body}",
+    );
+
+    // `**bold**` must compile to <strong>bold</strong>.
+    // A raw-body fallback would contain `**bold**`, not the HTML tag.
+    assert!(
+        body.contains("<strong>bold</strong>"),
+        "rendered /about must contain '<strong>bold</strong>' from GFM strong; \
+         raw '**bold**' must not pass through literally. \
+         This would fail without #408's materialise_shadow .md support. \
+         got body:\n{body}",
+    );
+}
+
+/// End-to-end: a `.html` page in `pages/` is written verbatim to dist with
+/// YAML frontmatter stripped. Uses `Backend::Stub` (never called — the static-
+/// HTML bypass in `render_one_inner` reads from disk directly).
+///
+/// Asserts:
+/// - `dist/legal/index.html` is written.
+/// - The YAML frontmatter block (`title: Legal`) is absent in the output.
+/// - `<!doctype html>` is present (first line after frontmatter strip).
+/// - `<h1>Legal Notice</h1>` is present (verbatim body preserved).
+///
+/// Removing #409's `static_html` bypass would route the `.html` page through
+/// the backend, the stub would panic, and the test would fail.
+#[test]
+fn html_page_written_verbatim_via_render_all() {
+    let project_tmp = tempfile::tempdir().expect("project tempdir");
+    let dist_tmp = tempfile::tempdir().expect("dist tempdir");
+
+    write_md_html_page_fixture(project_tmp.path());
+
+    // Backend::Stub that panics if called — the static_html bypass must
+    // never reach the backend for the legal route.
+    let backend = Backend::Stub {
+        handler: Arc::new(|path: &str| {
+            panic!(
+                "backend must not be dispatched for static_html routes; got path: {path}"
+            )
+        }),
+    };
+
+    let universe = vec![RouteUniverseEntry {
+        url_path: "/legal".into(),
+        output_path: PathBuf::from("legal/index.html"),
+        route_key: "/legal".into(),
+        static_html: true,
+        source_path: Some(PathBuf::from("pages/legal.html")),
+    }];
+
+    let out = render_all(RendererInput {
+        bundle_path: PathBuf::from("/dev/null"),
+        sourcemap_path: PathBuf::from("/dev/null"),
+        manifest: BundleManifest {
+            framework: "preact".into(),
+            jsx_import_source: "preact".into(),
+            hydrate_shim_specifier: "zfb:internal/preact/hydrate".into(),
+            bundle_basename: "bundle.mjs".into(),
+            routes: vec![],
+        },
+        dist_dir: dist_tmp.path().to_path_buf(),
+        project_root: project_tmp.path().to_path_buf(),
+        route_universe: universe,
+        prerender_map: BTreeMap::new(),
+        backend,
+        request_timeout: None,
+        prod_head_assets: None,
+    })
+    .expect("render_all must succeed for static-HTML route");
+
+    assert_eq!(
+        out.ssg_files_written.len(),
+        1,
+        "exactly one file should be written for the legal route"
+    );
+
+    let dest = dist_tmp.path().join("legal/index.html");
+    assert!(dest.exists(), "dist/legal/index.html must be written");
+
+    let content = fs::read_to_string(&dest).expect("read dist/legal/index.html");
+
+    // YAML frontmatter must be stripped — not present in the output.
+    assert!(
+        !content.contains("title: Legal"),
+        "YAML frontmatter 'title: Legal' must be stripped from the output. \
+         got content:\n{content}",
+    );
+
+    // The verbatim HTML body must be present.
+    assert!(
+        content.contains("<!doctype html>"),
+        "output must contain '<!doctype html>' (frontmatter stripped, body verbatim); \
+         This would fail without #409's static_html bypass. \
+         got content:\n{content}",
+    );
+    assert!(
+        content.contains("<h1>Legal Notice</h1>"),
+        "output must contain '<h1>Legal Notice</h1>' (verbatim HTML body preserved); \
+         This would fail without #409's static_html bypass. \
+         got content:\n{content}",
     );
 }
