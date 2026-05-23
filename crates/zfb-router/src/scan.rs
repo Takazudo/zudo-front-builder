@@ -2,22 +2,43 @@
 //!
 //! Conventions follow Next.js / Astro:
 //!
-//! | source                              | route         |
-//! |-------------------------------------|---------------|
-//! | `pages/index.tsx`                   | `/`           |
-//! | `pages/about.tsx`                   | `/about`      |
-//! | `pages/about.md`                    | `/about`      |
-//! | `pages/about.html`                  | `/about`      |
-//! | `pages/blog/index.tsx`              | `/blog`       |
-//! | `pages/blog/[slug].tsx`             | `/blog/:slug` |
-//! | `pages/blog/page/[page].tsx`        | `/blog/page/:page` |
-//! | `pages/docs/[...slug].tsx`          | `/docs/:slug{.+}` |
-//! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug` |
+//! | source                              | route              | notes                          |
+//! |-------------------------------------|--------------------|--------------------------------|
+//! | `pages/index.tsx`                   | `/`                |                                |
+//! | `pages/about.tsx`                   | `/about`           |                                |
+//! | `pages/about.md`                    | `/about`           | SSG-only; MDX pipeline         |
+//! | `pages/about.html`                  | `/about`           | SSG-only; static-asset copy    |
+//! | `pages/blog/index.tsx`              | `/blog`            |                                |
+//! | `pages/blog/[slug].tsx`             | `/blog/:slug`      |                                |
+//! | `pages/blog/page/[page].tsx`        | `/blog/page/:page` |                                |
+//! | `pages/docs/[...slug].tsx`          | `/docs/:slug{.+}`  |                                |
+//! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
 //! Accepted page extensions: `.tsx`, `.md`, `.html`. Files with any other
 //! extension are skipped with a `tracing::warn!` so authors notice accidental
 //! mis-placements.
+//!
+//! ## `.md` page contract (v1)
+//!
+//! `.md` pages are compiled through the MDX pipeline and wrapped in a
+//! minimal HTML shell. Recognised frontmatter keys: `title` (string,
+//! used as `<title>`; falls back to the URL slug) and `lang` (string,
+//! used as `<html lang="…">`; defaults to `"en"`). All other frontmatter
+//! keys are silently ignored. There is no layout system for `.md` pages
+//! in v1 — `layout:` frontmatter has no effect; wrap the content in a
+//! `.tsx` page if a shared layout is needed. SSG-only: `.md` pages are
+//! not supported in SSR mode.
+//!
+//! ## `.html` page contract (v1)
+//!
+//! `.html` pages are copied verbatim to `dist/` without any JS rendering
+//! or post-processing. The file must be a complete HTML document (starting
+//! with `<!doctype` or `<html>`); bare HTML fragments are out of scope for
+//! v1. Because the file is treated as a static asset, base-path rewriting,
+//! link normalisation, and sitemap inclusion do not apply. Use `.md` or
+//! `.tsx` if any of those transformations are needed. SSG-only: `.html`
+//! pages are not supported in SSR mode.
 
 use std::collections::HashMap;
 use std::path::{Component, Path};

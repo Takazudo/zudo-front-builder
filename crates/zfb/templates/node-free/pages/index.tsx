@@ -60,6 +60,10 @@ export default function HomePage({ posts }: Props) {
             Add more posts by dropping <code>.md</code> files into <code>content/posts/</code>.
           </li>
           <li>
+            Try the <a href="/about">About page</a> — a <code>.md</code> page entry that renders
+            Markdown directly from <code>pages/about.md</code>.
+          </li>
+          <li>
             See the docs at{" "}
             <a href="https://github.com/Takazudo/zudo-front-builder">Takazudo/zudo-front-builder</a>
             .
