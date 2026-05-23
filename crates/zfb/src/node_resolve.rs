@@ -122,22 +122,102 @@ pub fn resolve_node_bare_specifier(name: &str, project_root: &Path) -> Result<St
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    /// Returns the absolute path to a named sub-directory under
-    /// `crates/zfb/tests/fixtures/node_resolve/`.
-    fn fixture(name: &str) -> PathBuf {
+    // -----------------------------------------------------------------------
+    // Fixture helpers
+    // -----------------------------------------------------------------------
+
+    /// Root of the committed fixture sources:
+    /// `crates/zfb/tests/fixtures/node_resolve/<case>/src/`
+    fn fixture_src(case: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("node_resolve")
-            .join(name)
+            .join(case)
+            .join("src")
     }
+
+    /// Recursively copy every file from `src` into `dst`, preserving the
+    /// relative path structure.
+    fn copy_dir_all(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("create dst dir");
+        for entry in std::fs::read_dir(src).expect("read src dir") {
+            let entry = entry.expect("read dir entry");
+            let ty = entry.file_type().expect("file type");
+            if ty.is_dir() {
+                copy_dir_all(&entry.path(), &dst.join(entry.file_name()));
+            } else {
+                std::fs::copy(entry.path(), dst.join(entry.file_name()))
+                    .expect("copy file");
+            }
+        }
+    }
+
+    /// Build a temporary `node_modules/` tree for the named fixture case.
+    ///
+    /// Copies every top-level entry from `<case>/src/` into
+    /// `<tmpdir>/node_modules/<entry>/` and returns the `TempDir` handle
+    /// (which must stay alive for the duration of the test).
+    /// The returned `TempDir` itself is the `project_root` to pass to
+    /// `resolve_node_bare_specifier`.
+    fn build_fixture(case: &str) -> TempDir {
+        let src_root = fixture_src(case);
+        let tmp = TempDir::new().expect("create TempDir");
+        let node_modules = tmp.path().join("node_modules");
+
+        for entry in std::fs::read_dir(&src_root)
+            .unwrap_or_else(|e| panic!("read fixture src for {case}: {e}"))
+        {
+            let entry = entry.expect("read dir entry");
+            let pkg_name = entry.file_name();
+            let dst = node_modules.join(&pkg_name);
+            copy_dir_all(&entry.path(), &dst);
+        }
+
+        tmp
+    }
+
+    /// Build the parent-walk fixture.
+    ///
+    /// Layout created in `<tmpdir>`:
+    /// ```
+    /// parent/
+    ///   node_modules/pkg-parent/   ← package lives here
+    ///   child/                     ← resolve FROM here (no node_modules)
+    /// ```
+    ///
+    /// Returns `(TempDir, project_root)` where `project_root` is
+    /// `<tmpdir>/parent/child`.  The caller must keep `TempDir` alive.
+    fn build_parent_walk_fixture() -> (TempDir, PathBuf) {
+        let src_root = fixture_src("parent-walk");
+        let tmp = TempDir::new().expect("create TempDir");
+        let node_modules = tmp.path().join("parent").join("node_modules");
+
+        for entry in std::fs::read_dir(&src_root)
+            .expect("read parent-walk fixture src")
+        {
+            let entry = entry.expect("read dir entry");
+            let dst = node_modules.join(entry.file_name());
+            copy_dir_all(&entry.path(), &dst);
+        }
+
+        let child = tmp.path().join("parent").join("child");
+        std::fs::create_dir_all(&child).expect("create child dir");
+
+        (tmp, child)
+    }
+
+    // -----------------------------------------------------------------------
+    // Acceptance tests (a–h)
+    // -----------------------------------------------------------------------
 
     // (a) `main` field present → resolves to the file named by `main`.
     #[test]
     fn a_main_field() {
-        let project_root = fixture("main-field");
-        let result = resolve_node_bare_specifier("pkg-main", &project_root)
+        let tmp = build_fixture("main-field");
+        let result = resolve_node_bare_specifier("pkg-main", tmp.path())
             .expect("should resolve pkg-main");
         assert!(
             result.starts_with("file://"),
@@ -152,8 +232,8 @@ mod tests {
     // (b) `exports: "./x.js"` string form → resolves.
     #[test]
     fn b_exports_string_form() {
-        let project_root = fixture("exports-string");
-        let result = resolve_node_bare_specifier("pkg-exports-str", &project_root)
+        let tmp = build_fixture("exports-string");
+        let result = resolve_node_bare_specifier("pkg-exports-str", tmp.path())
             .expect("should resolve pkg-exports-str");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         assert!(
@@ -165,8 +245,8 @@ mod tests {
     // (c) `exports: { ".": "./x.js" }` object form → resolves.
     #[test]
     fn c_exports_object_form() {
-        let project_root = fixture("exports-object");
-        let result = resolve_node_bare_specifier("pkg-exports-obj", &project_root)
+        let tmp = build_fixture("exports-object");
+        let result = resolve_node_bare_specifier("pkg-exports-obj", tmp.path())
             .expect("should resolve pkg-exports-obj");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         assert!(
@@ -182,8 +262,8 @@ mod tests {
     // pick `index.mjs`, NOT `index.cjs`.
     #[test]
     fn d_conditional_exports_picks_import_branch() {
-        let project_root = fixture("exports-conditional");
-        let result = resolve_node_bare_specifier("pkg-cond", &project_root)
+        let tmp = build_fixture("exports-conditional");
+        let result = resolve_node_bare_specifier("pkg-cond", tmp.path())
             .expect("should resolve pkg-cond");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         assert!(
@@ -199,8 +279,8 @@ mod tests {
     // (e) Scoped package `@scope/pkg` resolves under `node_modules/@scope/pkg/`.
     #[test]
     fn e_scoped_package() {
-        let project_root = fixture("scoped-package");
-        let result = resolve_node_bare_specifier("@scope/pkg", &project_root)
+        let tmp = build_fixture("scoped-package");
+        let result = resolve_node_bare_specifier("@scope/pkg", tmp.path())
             .expect("should resolve @scope/pkg");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         assert!(
@@ -214,13 +294,12 @@ mod tests {
     }
 
     // (f) Walks parent directories when `node_modules` is not in project root.
-    // The fixture has `node_modules/pkg-parent/` in `parent/` but not in
-    // `parent/child/`, so the resolver must walk up.
+    // Package lives in `<tmp>/parent/node_modules/` but resolution starts from
+    // `<tmp>/parent/child/` (no node_modules there), so the resolver must walk up.
     #[test]
     fn f_walks_parent_directories() {
-        // Resolve from the child directory — no node_modules there.
-        let project_root = fixture("parent-walk").join("parent").join("child");
-        let result = resolve_node_bare_specifier("pkg-parent", &project_root)
+        let (_tmp, child) = build_parent_walk_fixture();
+        let result = resolve_node_bare_specifier("pkg-parent", &child)
             .expect("should walk up and find pkg-parent");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         assert!(
@@ -232,8 +311,9 @@ mod tests {
     // (g) Missing package → error message names the package.
     #[test]
     fn g_missing_package_names_it_in_error() {
-        let project_root = fixture("missing-package");
-        let err = resolve_node_bare_specifier("pkg-does-not-exist", &project_root)
+        // An empty TempDir has no node_modules — any package will fail to resolve.
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_node_bare_specifier("pkg-does-not-exist", tmp.path())
             .expect_err("should fail for missing package");
         let msg = err.to_string();
         assert!(
@@ -251,9 +331,9 @@ mod tests {
     //     Must resolve to the `import` branch (`dist/index.mjs`).
     #[test]
     fn h_real_plugin_shape_snapshot() {
-        let project_root = fixture("real-plugin-shape");
+        let tmp = build_fixture("real-plugin-shape");
         let result =
-            resolve_node_bare_specifier("@takazudo/zfb-plugin-example", &project_root)
+            resolve_node_bare_specifier("@takazudo/zfb-plugin-example", tmp.path())
                 .expect("should resolve @takazudo/zfb-plugin-example");
         assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
         // Must resolve to the `import` branch, not `default` (CJS) or `types` (d.ts).
@@ -271,36 +351,38 @@ mod tests {
         );
     }
 
-    // --- input validation tests -------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Input validation tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn rejects_empty_name() {
-        let project_root = fixture("main-field");
-        let err = resolve_node_bare_specifier("", &project_root)
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_node_bare_specifier("", tmp.path())
             .expect_err("empty name should be rejected");
         assert!(err.to_string().contains("non-empty"), "got: {err}");
     }
 
     #[test]
     fn rejects_relative_path() {
-        let project_root = fixture("main-field");
-        let err = resolve_node_bare_specifier("./local", &project_root)
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_node_bare_specifier("./local", tmp.path())
             .expect_err("relative path should be rejected");
         assert!(err.to_string().contains("relative"), "got: {err}");
     }
 
     #[test]
     fn rejects_absolute_path() {
-        let project_root = fixture("main-field");
-        let err = resolve_node_bare_specifier("/usr/local/lib/something", &project_root)
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_node_bare_specifier("/usr/local/lib/something", tmp.path())
             .expect_err("absolute path should be rejected");
         assert!(err.to_string().contains("absolute"), "got: {err}");
     }
 
     #[test]
     fn rejects_subpath_import_key() {
-        let project_root = fixture("main-field");
-        let err = resolve_node_bare_specifier("#internal", &project_root)
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_node_bare_specifier("#internal", tmp.path())
             .expect_err("subpath import key should be rejected");
         assert!(err.to_string().contains("subpath import"), "got: {err}");
     }
