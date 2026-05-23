@@ -3,7 +3,7 @@ pre-commit:
   commands:
     format-ts:
       glob: "*.{js,mjs,cjs,ts,tsx,json,yml,yaml}"
-      run: "pnpm exec prettier --write {staged_files}"
+      run: "pnpm exec prettier --write --no-error-on-unmatched-pattern {staged_files}"
       stage_fixed: true
     format-mdx:
       glob: "*.{md,mdx}"

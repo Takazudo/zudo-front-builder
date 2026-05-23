@@ -1,0 +1,9 @@
+# The node_modules directories in these sub-directories are test fixture data,
+# not real installed packages. They must be committed so the unit tests in
+# node_resolve.rs can resolve against them without requiring a pnpm install step.
+# The workspace-root .gitignore blanket-ignores node_modules/; this file
+# negates that rule for this fixture tree (at all depths).
+!*/node_modules/
+!*/node_modules/**
+!*/*/node_modules/
+!*/*/node_modules/**
