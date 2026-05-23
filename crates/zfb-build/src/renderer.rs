@@ -104,6 +104,15 @@ pub struct RouteUniverseEntry {
     /// router uses internally — kept opaque). Used as the lookup key
     /// against `prerender_map`.
     pub route_key: String,
+    /// When `true`, this route was produced from a `.html` source file.
+    /// The renderer bypasses V8 dispatch and copies the source body
+    /// verbatim to `output_path`. `source_path` must be `Some` in this
+    /// case — it is joined with `project_root` to read the source file.
+    pub static_html: bool,
+    /// Project-relative path to the source file. Required when
+    /// `static_html` is `true` so the renderer can read the body.
+    /// `None` for normal JS-rendered routes.
+    pub source_path: Option<PathBuf>,
 }
 
 /// The HTTP-like response returned by [`EmbeddedV8Host::dispatch_fetch`]
@@ -416,6 +425,10 @@ pub struct RendererInput {
     pub manifest: BundleManifest,
     /// Where to write the SSG output. Created if missing.
     pub dist_dir: PathBuf,
+    /// Project root directory. Required for resolving the `source_path`
+    /// of static-HTML entries in `route_universe` — the renderer joins
+    /// `project_root` with `entry.source_path` to read the verbatim body.
+    pub project_root: PathBuf,
     /// Every concrete URL the build wants on disk, after `paths()`
     /// expansion. SSR-only entries (whose `route_key` maps to
     /// `prerender == false` in [`RendererInput::prerender_map`]) are
@@ -568,6 +581,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
         sourcemap_path,
         manifest: _manifest,
         dist_dir,
+        project_root,
         route_universe,
         prerender_map,
         backend,
@@ -609,6 +623,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
             &mut handle,
             entry,
             &dist_dir,
+            &project_root,
             sourcemap.as_ref(),
             prod_head_assets.as_ref(),
         ) {
@@ -732,6 +747,7 @@ pub fn render_one(
     state: &mut RendererState,
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
+    project_root: &Path,
 ) -> Result<PathBuf, RendererError> {
     fs::create_dir_all(dist_dir).map_err(|e| RendererError::Io {
         path: dist_dir.to_path_buf(),
@@ -741,6 +757,7 @@ pub fn render_one(
         &mut state.handle,
         entry,
         dist_dir,
+        project_root,
         state.sourcemap.as_ref(),
         // Dev mode never injects prod head assets — see the
         // `prod_head_assets` field doc on `RendererInput`.
@@ -829,13 +846,59 @@ fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, Ren
 /// Dispatch one route request through `handle` and write the result to
 /// disk. Works uniformly across HTTP (existing server), embedded V8,
 /// and stub backends.
+///
+/// Static-HTML routes (`entry.static_html == true`) bypass the backend
+/// entirely. The source file is read from disk
+/// (`project_root.join(source_path)`), YAML frontmatter is stripped, and
+/// the remaining body is written verbatim. Head injection and source-map
+/// re-projection do not apply to these routes.
 fn render_one_inner(
     handle: &mut BackendHandle,
     entry: &RouteUniverseEntry,
     dist_dir: &Path,
+    project_root: &Path,
     sourcemap: Option<&sourcemap::SourceMap>,
     prod_head_assets: Option<&crate::head_inject::ProdHeadAssets>,
 ) -> Result<PathBuf, RendererError> {
+    // Validate `output_path` before joining: the value comes from the
+    // route universe (router + page modules), but a malformed entry
+    // could carry an absolute or `..`-escaping relative path. Reject
+    // those at the write boundary so a hostile or buggy page module
+    // cannot corrupt files outside dist.
+    let dest = crate::atomic::validate_output_path(dist_dir, &entry.output_path).map_err(|e| {
+        RendererError::Io {
+            path: entry.output_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+        }
+    })?;
+
+    if entry.static_html {
+        // Option B bypass: read the source file and emit its body verbatim.
+        // Head injection and post-processing do not apply.
+        let src_path = match &entry.source_path {
+            Some(p) => project_root.join(p),
+            None => {
+                return Err(RendererError::Io {
+                    path: entry.output_path.clone(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "static_html route is missing source_path",
+                    ),
+                });
+            }
+        };
+        let raw = fs::read_to_string(&src_path).map_err(|e| RendererError::Io {
+            path: src_path.clone(),
+            source: e,
+        })?;
+        let body = strip_static_html_frontmatter(&raw);
+        crate::atomic::atomic_write(&dest, body.as_bytes()).map_err(|e| RendererError::Io {
+            path: dest.clone(),
+            source: std::io::Error::other(format!("{e:#}")),
+        })?;
+        return Ok(dest);
+    }
+
     let resp = handle.dispatch(&entry.url_path)?;
     let status = resp.status;
     let body = resp.body;
@@ -855,17 +918,6 @@ fn render_one_inner(
             user_location,
         });
     }
-    // Validate `output_path` before joining: the value comes from the
-    // route universe (router + page modules), but a malformed entry
-    // could carry an absolute or `..`-escaping relative path. Reject
-    // those at the write boundary so a hostile or buggy page module
-    // cannot corrupt files outside dist.
-    let dest = crate::atomic::validate_output_path(dist_dir, &entry.output_path).map_err(|e| {
-        RendererError::Io {
-            path: entry.output_path.clone(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
-        }
-    })?;
     // Prod-only head injection. When `prod_head_assets` is `Some` the
     // helper splices `<link>` / `<script type="module">` tags before
     // `</head>`. Non-HTML output (no `</head>`) and dev mode (no
@@ -895,6 +947,67 @@ fn render_one_inner(
         source: std::io::Error::other(format!("{e:#}")),
     })?;
     Ok(dest)
+}
+
+/// Strip YAML frontmatter from a `.html` source file, returning the body.
+///
+/// The frontmatter block is delimited by `---` on its own line at the
+/// very start of the file (after an optional BOM). The body starts on the
+/// line immediately after the closing `---`. If no frontmatter is present,
+/// the entire input is returned unchanged.
+fn strip_static_html_frontmatter(input: &str) -> &str {
+    let s = input.trim_start_matches('\u{feff}');
+    if !s.starts_with("---") {
+        return input;
+    }
+    // The opening `---` must be followed by a newline (not `---foo`).
+    let after_open = &s["---".len()..];
+    let after_newline = if let Some(rest) = after_open.strip_prefix('\n') {
+        rest
+    } else if let Some(rest) = after_open.strip_prefix("\r\n") {
+        rest
+    } else {
+        return input;
+    };
+    // Scan for closing `---` on its own line.
+    let mut search = after_newline;
+    loop {
+        if let Some(pos) = search.find("---") {
+            let before = &search[..pos];
+            // Must be at the start of a line.
+            if before.is_empty() || before.ends_with('\n') {
+                let rest = &search[pos + 3..];
+                // After `---` must come a newline or end of input.
+                if rest.is_empty() {
+                    return "";
+                }
+                if let Some(body) = rest.strip_prefix('\n') {
+                    return body;
+                }
+                if let Some(body) = rest.strip_prefix("\r\n") {
+                    return body;
+                }
+                // `---` followed by non-newline is not a closing marker;
+                // advance past it and keep searching.
+                if rest.len() > 1 {
+                    search = &rest[1..];
+                } else {
+                    break;
+                }
+            } else {
+                // `---` not at line start; advance past it.
+                if search.len() > pos + 1 {
+                    search = &search[pos + 1..];
+                } else {
+                    break;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    // No closing marker found — return entire input.
+    input
 }
 
 fn join_url(base: &str, path: &str) -> String {
@@ -1177,22 +1290,30 @@ mod tests {
                 url_path: "/".into(),
                 output_path: PathBuf::from("index.html"),
                 route_key: "/".into(),
-            },
+            static_html: false,
+            source_path: None,
+},
             RouteUniverseEntry {
                 url_path: "/about".into(),
                 output_path: PathBuf::from("about/index.html"),
                 route_key: "/about".into(),
-            },
+            static_html: false,
+            source_path: None,
+},
             RouteUniverseEntry {
                 url_path: "/feed.xml".into(),
                 output_path: PathBuf::from("feed.xml"),
                 route_key: "/feed.xml".into(),
-            },
+            static_html: false,
+            source_path: None,
+},
             RouteUniverseEntry {
                 url_path: "/preview".into(),
                 output_path: PathBuf::from("preview/index.html"),
                 route_key: "/preview".into(),
-            },
+            static_html: false,
+            source_path: None,
+},
         ];
 
         let out = render_all(RendererInput {
@@ -1205,7 +1326,8 @@ mod tests {
             backend,
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .expect("render_all");
 
         // SSG side: 3 files written in input order.
@@ -1237,7 +1359,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
         let out = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1248,7 +1372,8 @@ mod tests {
             backend: stub_backend(|_| html_ok("<html>ok</html>")),
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .unwrap();
         assert_eq!(out.ssg_files_written.len(), 1);
         assert!(out.ssr_manifest.routes.is_empty());
@@ -1261,7 +1386,9 @@ mod tests {
             url_path: "/error".into(),
             output_path: PathBuf::from("error/index.html"),
             route_key: "/error".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
         let err = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1277,7 +1404,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .unwrap_err();
         match err {
             RendererError::RenderFailed { status, body, .. } => {
@@ -1301,7 +1429,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
         render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1319,7 +1449,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .expect("render_all");
         let written = fs::read(dist.path().join("index.html")).unwrap();
         assert_eq!(written, raw_html);
@@ -1334,7 +1465,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
         let assets = crate::head_inject::ProdHeadAssets {
             css_url: Some("/assets/styles.css".into()),
             island_module_urls: vec!["/assets/islands.js".into()],
@@ -1356,7 +1489,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: Some(assets),
-        })
+        project_root: PathBuf::new(),
+})
         .expect("render_all");
         let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
         let close_at = written.find("</head>").unwrap();
@@ -1380,7 +1514,9 @@ mod tests {
             url_path: "/feed.xml".into(),
             output_path: PathBuf::from("feed.xml"),
             route_key: "/feed.xml".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
         let assets = crate::head_inject::ProdHeadAssets {
             css_url: Some("/assets/styles.css".into()),
             island_module_urls: vec![],
@@ -1402,7 +1538,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: Some(assets),
-        })
+        project_root: PathBuf::new(),
+})
         .expect("render_all");
         let written = fs::read(dist.path().join("feed.xml")).unwrap();
         assert_eq!(written, xml_body);
@@ -1480,7 +1617,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
 
         let err = render_all(RendererInput {
             bundle_path,
@@ -1497,7 +1636,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .unwrap_err();
 
         match err {
@@ -1537,7 +1677,9 @@ mod tests {
             url_path: "/foo".into(),
             output_path: PathBuf::from("foo/index.html"),
             route_key: "/foo".into(),
-        }];
+        static_html: false,
+        source_path: None,
+}];
 
         let err = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
@@ -1554,7 +1696,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        })
+        project_root: PathBuf::new(),
+})
         .unwrap_err();
 
         match err {
@@ -1606,8 +1749,10 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
+            static_html: false,
+            source_path: None,
         };
-        let written = render_one(&mut reloaded, &entry, dist.path()).expect("render_one");
+        let written = render_one(&mut reloaded, &entry, dist.path(), dist.path()).expect("render_one");
         let body = fs::read_to_string(written).unwrap();
         assert!(body.contains("after"), "expected 'after' body, got: {body}");
 
@@ -1622,6 +1767,144 @@ mod tests {
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].line, 42);
         assert_eq!(cands[0].col, 7);
+    }
+
+    // ---- strip_static_html_frontmatter (Sub 409) ---------------------------
+
+    #[test]
+    fn strip_frontmatter_no_frontmatter() {
+        let input = "<!doctype html><html></html>";
+        assert_eq!(strip_static_html_frontmatter(input), input);
+    }
+
+    #[test]
+    fn strip_frontmatter_strips_yaml_block() {
+        let input = "---\ntitle: Hello\n---\n<!doctype html><html></html>";
+        assert_eq!(
+            strip_static_html_frontmatter(input),
+            "<!doctype html><html></html>"
+        );
+    }
+
+    #[test]
+    fn strip_frontmatter_handles_crlf() {
+        let input = "---\r\ntitle: Hello\r\n---\r\n<!doctype html>";
+        assert_eq!(strip_static_html_frontmatter(input), "<!doctype html>");
+    }
+
+    #[test]
+    fn strip_frontmatter_no_closing_marker_returns_original() {
+        let input = "---\ntitle: Hello\n<!doctype html>";
+        // No closing `---` — return the full input unchanged.
+        assert_eq!(strip_static_html_frontmatter(input), input);
+    }
+
+    #[test]
+    fn strip_frontmatter_empty_body_after_close() {
+        let input = "---\ntitle: Hi\n---\n";
+        assert_eq!(strip_static_html_frontmatter(input), "");
+    }
+
+    #[test]
+    fn strip_frontmatter_strips_bom() {
+        // BOM + frontmatter: body starts after `---\n`.
+        let input = "\u{feff}---\ntitle: Hi\n---\n<html/>";
+        assert_eq!(strip_static_html_frontmatter(input), "<html/>");
+    }
+
+    // ---- static HTML bypass in render_all (Sub 409) -----------------------
+
+    #[test]
+    fn static_html_route_written_verbatim_backend_never_called() {
+        // The stub backend panics if called. If the static-HTML bypass
+        // is wired correctly, the panic never fires.
+        let project_root = tempfile::tempdir().unwrap();
+        let dist = tempfile::tempdir().unwrap();
+
+        // Write the source `.html` file into the project root.
+        let pages_dir = project_root.path().join("pages");
+        fs::create_dir_all(&pages_dir).unwrap();
+        let src = pages_dir.join("about.html");
+        fs::write(
+            &src,
+            "---\ntitle: About\n---\n<!doctype html><html><body>About</body></html>",
+        )
+        .unwrap();
+
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/about".into(),
+            output_path: PathBuf::from("about/index.html"),
+            route_key: "/about".into(),
+            static_html: true,
+            source_path: Some(PathBuf::from("pages/about.html")),
+        }];
+
+        // The stub backend panics. This proves it is never called.
+        let backend = Backend::Stub {
+            handler: Arc::new(|_| panic!("backend must not be called for static-HTML routes")),
+        };
+
+        let out = render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            project_root: project_root.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend,
+            request_timeout: None,
+            prod_head_assets: None,
+        })
+        .expect("render_all should succeed for static-HTML route");
+
+        assert_eq!(out.ssg_files_written.len(), 1);
+
+        let written = fs::read_to_string(dist.path().join("about/index.html")).unwrap();
+        // Frontmatter should be stripped; body should be verbatim.
+        assert!(!written.contains("title: About"), "frontmatter must be stripped");
+        assert!(written.contains("<!doctype html>"), "body must start with <!doctype html>");
+        assert!(written.contains("About"), "body content must be preserved");
+    }
+
+    #[test]
+    fn static_html_route_index_page_verbatim() {
+        // `index.html` → `dist/index.html` without frontmatter.
+        let project_root = tempfile::tempdir().unwrap();
+        let dist = tempfile::tempdir().unwrap();
+
+        let pages_dir = project_root.path().join("pages");
+        fs::create_dir_all(&pages_dir).unwrap();
+        fs::write(
+            pages_dir.join("index.html"),
+            "<!doctype html><html><body>Home</body></html>",
+        )
+        .unwrap();
+
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/".into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: "/".into(),
+            static_html: true,
+            source_path: Some(PathBuf::from("pages/index.html")),
+        }];
+
+        let out = render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            project_root: project_root.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: stub_backend(|_| panic!("backend must not be called")),
+            request_timeout: None,
+            prod_head_assets: None,
+        })
+        .expect("render_all should succeed");
+
+        let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
+        assert!(written.contains("Home"), "body content must be preserved");
     }
 
 }

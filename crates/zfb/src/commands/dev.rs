@@ -725,6 +725,9 @@ struct DevRenderInner {
     /// this Arc once at construction and goes through it via
     /// `spawn_blocking` per request.
     renderer: Arc<Mutex<Option<RendererState>>>,
+    /// Project root. Passed to `render_one` so it can locate the source
+    /// file for static-HTML routes (#409).
+    project_root: PathBuf,
 }
 
 impl DevRenderSession {
@@ -744,7 +747,7 @@ impl DevRenderSession {
         let state = lock
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
-        let written = render_one(state, &entry, dist_dir).map_err(anyhow::Error::from)?;
+        let written = render_one(state, &entry, dist_dir, &self.inner.project_root).map_err(anyhow::Error::from)?;
         let html = std::fs::read_to_string(&written)
             .with_context(|| format!("failed to read rendered page {}", written.display()))?;
         // RouteUniverseEntry::output_path is a PathBuf validated by the
@@ -1123,6 +1126,8 @@ fn boot_dev_renderer(
             url_path: deferred.template.clone(),
             output_path: PathBuf::new(),
             route_key: deferred.template.clone(),
+            static_html: false,
+            source_path: None,
         });
     }
 
@@ -1131,6 +1136,7 @@ fn boot_dev_renderer(
             routes_by_source,
             ssr_routes,
             renderer: Arc::new(Mutex::new(Some(state))),
+            project_root: project_root.to_path_buf(),
         }),
     })
 }
@@ -1298,6 +1304,7 @@ mod tests {
                 routes_by_source: HashMap::new(),
                 ssr_routes: Vec::new(),
                 renderer: Arc::new(Mutex::new(None)),
+                project_root: PathBuf::new(),
             }),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
@@ -1318,6 +1325,8 @@ mod tests {
                 url_path: "/".into(),
                 output_path: PathBuf::from("index.html"),
                 route_key: "/".into(),
+                static_html: false,
+                source_path: None,
             },
         );
         let session = DevRenderSession {
@@ -1325,6 +1334,7 @@ mod tests {
                 routes_by_source: routes,
                 ssr_routes: Vec::new(),
                 renderer: Arc::new(Mutex::new(None)),
+                project_root: PathBuf::new(),
             }),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
@@ -1365,14 +1375,19 @@ mod tests {
                         url_path: "/blog/:slug".into(),
                         output_path: PathBuf::new(),
                         route_key: "/blog/:slug".into(),
+                        static_html: false,
+                        source_path: None,
                     },
                     RouteUniverseEntry {
                         url_path: "/api/x".into(),
                         output_path: PathBuf::new(),
                         route_key: "/api/x".into(),
+                        static_html: false,
+                        source_path: None,
                     },
                 ],
                 renderer: Arc::new(Mutex::new(None)),
+                project_root: PathBuf::new(),
             }),
         };
         let patterns = session.ssr_patterns();

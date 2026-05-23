@@ -167,17 +167,23 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
         url_path: "/".into(),
         output_path: PathBuf::from("index.html"),
         route_key: "/".into(),
-    });
+    static_html: false,
+    source_path: None,
+});
     entries.push(RouteUniverseEntry {
         url_path: "/about".into(),
         output_path: PathBuf::from("about/index.html"),
         route_key: "/about".into(),
-    });
+    static_html: false,
+    source_path: None,
+});
     entries.push(RouteUniverseEntry {
         url_path: "/blog".into(),
         output_path: PathBuf::from("blog/index.html"),
         route_key: "/blog".into(),
-    });
+    static_html: false,
+    source_path: None,
+});
 
     // --- /blog/[slug] — one per post (matches fixture posts.ts) ---
     for slug in ["hello", "second", "third", "fourth"] {
@@ -185,7 +191,9 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path: format!("/blog/{slug}"),
             output_path: PathBuf::from(format!("blog/{slug}/index.html")),
             route_key: "/blog/[slug]".into(),
-        });
+        static_html: false,
+        source_path: None,
+});
     }
 
     // --- /blog/page/[page] — 4 posts, 2 per page → 2 pages ---
@@ -194,7 +202,9 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path: format!("/blog/page/{page}"),
             output_path: PathBuf::from(format!("blog/page/{page}/index.html")),
             route_key: "/blog/page/[page]".into(),
-        });
+        static_html: false,
+        source_path: None,
+});
     }
 
     // --- /[lang]/[slug] — 2 langs × 2 slugs ---
@@ -204,7 +214,9 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
                 url_path: format!("/{lang}/{slug}"),
                 output_path: PathBuf::from(format!("{lang}/{slug}/index.html")),
                 route_key: "/[lang]/[slug]".into(),
-            });
+            static_html: false,
+            source_path: None,
+});
         }
     }
 
@@ -221,7 +233,9 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path,
             output_path,
             route_key: "/docs/[...slug]".into(),
-        });
+        static_html: false,
+        source_path: None,
+});
     }
 
     entries
@@ -396,7 +410,8 @@ fn e2e_routing_rendering_with_embedded_host() {
         backend: Backend::Existing { base_url: base_url.clone() },
         request_timeout: None,
         prod_head_assets: None,
-    })
+    project_root: PathBuf::new(),
+})
     .expect("render_all with Preact should succeed");
 
     assert_eq!(

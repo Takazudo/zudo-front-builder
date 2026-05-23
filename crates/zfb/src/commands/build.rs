@@ -1607,6 +1607,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         sourcemap_path: bundler_out.sourcemap_path.clone(),
         manifest: bundler_out.manifest.clone(),
         dist_dir: outdir.to_path_buf(),
+        project_root: project_root.to_path_buf(),
         route_universe: static_routes,
         prerender_map: prerender_map.clone(),
         backend,
@@ -2531,6 +2532,7 @@ mod tests {
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -2541,6 +2543,7 @@ mod tests {
             kind: RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -2752,6 +2755,7 @@ mod tests {
                 kind: zfb_router::RouteKind::Dynamic,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
@@ -2960,6 +2964,7 @@ mod tests {
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default(); // adapter is None
@@ -3017,6 +3022,7 @@ mod tests {
                 kind: RouteKind::Static,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
@@ -4208,6 +4214,7 @@ mod tests {
             kind: zfb_router::RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default(); // adapter is None
@@ -4262,6 +4269,7 @@ mod tests {
             kind: zfb_router::RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let mut cfg = Config::default();
@@ -4333,6 +4341,7 @@ mod tests {
                 kind: zfb_router::RouteKind::Dynamic,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
