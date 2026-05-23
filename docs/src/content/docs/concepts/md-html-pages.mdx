@@ -1,0 +1,158 @@
+---
+title: Markdown and HTML Pages
+description: Use .md and .html files as first-class page entries alongside .tsx — same routing conventions, different render path.
+sidebar_position: 1.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How `.md` and `.html` files in `pages/` become routes. Covers the
+frontmatter keys recognised for `.md` pages, the v1 layout limitation,
+the static-asset contract for `.html` pages, and the SSG-only constraint
+shared by both.
+
+</Info>
+
+zfb accepts three page source extensions: `.tsx`, `.md`, and `.html`.
+All three follow the same file-system routing conventions under
+`pages/` — `pages/about.md` and `pages/about.tsx` both produce the
+route `/about`. What differs is the render path each extension takes.
+
+## `.md` pages
+
+`.md` files placed in `pages/` are compiled through the same MDX
+pipeline that drives content collections. The engine wraps the compiled
+body in a minimal HTML shell and writes the result to `dist/` like any
+other page.
+
+### Frontmatter keys
+
+Only two frontmatter keys are read for `.md` pages (v1 contract):
+
+| Key | Type | Default | Effect |
+| --- | ---- | ------- | ------ |
+| `title` | string | URL slug | Sets the `<title>` element in the HTML shell. |
+| `lang` | string | `"en"` | Sets `<html lang="…">`. |
+
+All other keys are **silently ignored**. There is no schema validation
+and no error for unknown keys — they are simply not surfaced in the
+rendered output.
+
+```md
+---
+title: About this project
+lang: en
+---
+
+## What is this?
+
+A short description of the project.
+```
+
+The slug fallback for `title` is derived from the relative path of the
+file inside `pages/` — `pages/docs/intro.md` becomes `"docs/intro"`.
+
+### Relative links
+
+Relative Markdown links go through the standard MDX pipeline and are
+resolved relative to the source file.
+
+### v1 layout limitation
+
+There is **no layout system** for `.md` pages in v1. A `layout:` key
+in frontmatter has no effect. The engine always produces a bare HTML
+document wrapping the MDX body — no `<DefaultLayout>`, no custom
+wrapper.
+
+If you need a shared layout (navigation, header, footer), write a
+`.tsx` page instead and import the Markdown content as a component, or
+use a content collection.
+
+<Warning title="No layout support for .md pages in v1">
+
+`layout:` frontmatter is ignored for `.md` page entries. Use `.tsx` if
+you need a layout wrapper around Markdown content.
+
+</Warning>
+
+### SSG-only
+
+`.md` page entries are **SSG-only**. They are not supported in SSR
+mode (Cloudflare Worker runtime). Use `.tsx` if you need server-side
+rendering.
+
+## `.html` pages
+
+`.html` files in `pages/` are copied verbatim to `dist/` without any
+JavaScript rendering or post-processing. The engine treats them as
+static assets that happen to live under the routing tree.
+
+### Full-document requirement
+
+The file must be a **complete HTML document**. It must start with
+`<!doctype` (case-insensitive) or `<html`. Bare HTML fragments (a
+`<div>` or a `<p>` block without wrapping structure) are out of scope
+for v1 and produce undefined output.
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Static page</title>
+  </head>
+  <body>
+    <h1>Hello from a static .html page</h1>
+  </body>
+</html>
+```
+
+### No post-processing
+
+Because `.html` pages bypass the JS render pipeline entirely, the
+following do **not** apply:
+
+- **Base-path rewriting** — if your site uses a `base` prefix (e.g.
+  `/pj/site/`), absolute href/src values in the file are not rewritten.
+- **Link normalisation** — the link normaliser that `.tsx` and `.md`
+  pages go through is not run.
+- **Sitemap inclusion** — `.html` page routes are not automatically
+  added to a generated `sitemap.xml`.
+
+If any of those are needed, use `.md` or `.tsx` instead.
+
+### SSG-only
+
+`.html` page entries are **SSG-only**. They are not supported in SSR
+mode.
+
+## Shared: SSG-only constraint
+
+Both `.md` and `.html` pages are build-time (SSG) only. Dynamic routes
+using `[param]` or `[...param]` brackets are valid for `.md` and
+`.html` file names — the router parses them the same way as `.tsx` —
+but the `paths()` export mechanism used to enumerate dynamic URLs at
+build time is a `.tsx`-only feature in v1. Static (non-parameterised)
+`.md` and `.html` page paths work correctly.
+
+## Choosing the right extension
+
+| Situation | Recommended extension |
+| --------- | --------------------- |
+| Rich JSX page with a layout | `.tsx` |
+| Simple content-only page, no shared layout needed | `.md` |
+| Pre-authored static HTML file that needs no processing | `.html` |
+| Page that contributes to sitemap or uses base-path | `.tsx` or `.md` |
+| Server-side rendered page | `.tsx` |
+
+## See also
+
+- [Routing](/concepts/routing) — the full file-to-route mapping table.
+- [Frontmatter](/concepts/frontmatter) — the unified frontmatter
+  contract for `.tsx` pages (includes TSX literal-only rules and
+  output-extension precedence).
+- [Non-HTML Pages](/concepts/non-html-pages) — emit XML, JSON, or
+  plain text from `.tsx` pages.
+- [Content Collections](/concepts/content-collections) — the
+  `getCollection()` API for `.md` / `.mdx` files under `content/`.
