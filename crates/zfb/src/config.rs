@@ -18,20 +18,25 @@
 //! [`load_from_dir`] picks exactly one source per call:
 //!
 //! 1. `dir/zfb.config.ts` — bundled to ESM by the pinned `esbuild` binary
-//!    (the same one zfb-islands uses), then evaluated by `node` to pull the
-//!    default export back as JSON, which is fed into `serde_json::from_str`.
+//!    (the same one zfb-islands uses), then evaluated **in-process** by the
+//!    embedded V8 isolate (default builds). The default export is returned as
+//!    a JSON envelope and fed into `serde_json::from_str`.
 //!    **TS wins over JSON when both files are present** — the TS form is the
 //!    canonical, recommended way to author a zfb config.
 //! 2. `dir/zfb.config.json` — read + parse via `serde_json`. Used only when
 //!    no `zfb.config.ts` is found.
 //! 3. Neither present — return [`Config::default`].
 //!
-//! TS support requires `node` in `PATH` and the staged esbuild binary at
-//! `crates/zfb/binaries/esbuild/esbuild` (or the path pointed at by the
-//! `ZFB_ESBUILD_BIN` environment variable). Node is an **opt-in escape hatch
-//! for TS config evaluation** — projects that use `zfb.config.json` run
-//! fully Node-free. This module surfaces a clean error when `node` is absent
-//! and a `.ts` config is present, so the failure is never silent.
+//! `zfb.config.ts` is evaluated in-process via the embedded V8 isolate that
+//! ships with the default `zfb` binary. There is no runtime Node dependency.
+//! `zfb.config.ts` is a data config — `node:*` imports, `process.env`, and
+//! other Node-only APIs are not available inside the evaluator (esbuild
+//! `--platform=neutral` rejects them at bundle time).
+//!
+//! **Slim-build fallback** (`--no-default-features` / no `embed_v8`): the
+//! in-process evaluator is compiled out; TS config evaluation falls back to
+//! the `node` subprocess path (`load_ts_via_subprocess`). This path requires
+//! `node` in `PATH` and surfaces a clean error when it is absent.
 //!
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.
@@ -729,16 +734,15 @@ impl Default for TailwindConfig {
 /// (npm package name or `./`-relative module path). `resolved_module`
 /// is the absolute module specifier (a `file://` URL) the JS-side
 /// plugin host will hand to `import()`. It is `None` for the JSON-
-/// config path (no node subprocess runs there) and for synthetic
-/// configs constructed in tests; the [`Config`] consumers that actually
-/// load plugins (the build/dev orchestration) treat a `None`
-/// `resolved_module` as "no plugin module — skip this entry".
+/// config path and for synthetic configs constructed in tests; the
+/// [`Config`] consumers that actually load plugins (the build/dev
+/// orchestration) treat a `None` `resolved_module` as "no plugin
+/// module — skip this entry".
 ///
-/// Sub 3 / issue #108: this field is populated by
-/// `crates/zfb/js/config-loader.mjs` when the config goes through the
-/// TS load path. The loader emits a `{ config, plugins }` envelope
-/// where `plugins[i]` is the absolute module specifier for
-/// `config.plugins[i].name`.
+/// Sub 3 / issue #108: on the TS load path the evaluator (in-process V8
+/// on default builds, `crates/zfb/js/config-loader.mjs` subprocess on
+/// slim builds) emits a `{ config, plugins }` envelope where `plugins[i]`
+/// is the absolute module specifier for `config.plugins[i].name`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfig {
     pub name: String,
@@ -1122,9 +1126,9 @@ pub async fn load_from_dir_with_options(
         // downstream plugin-host filter silently drop ALL plugins
         // (see `commands::plugins::build_plugin_specs`). Mirror the
         // shape the TS-load path produces (a `file://` URL) for plugin
-        // entries that name a path on disk; bare specifiers can't be
-        // resolved without a node subprocess and stay `None` with a
-        // user-facing warning so the surprise is visible.
+        // entries that name a path on disk; bare specifiers require Node
+        // module resolution (not available on the JSON path) and stay
+        // `None` with a user-facing warning so the surprise is visible.
         resolve_json_plugin_modules(&mut cfg, dir)
             .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
         validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
@@ -1145,12 +1149,12 @@ pub async fn load_from_dir_with_options(
 /// Resolve `Config.plugins[].resolved_module` for the JSON-load path.
 ///
 /// Issue #211: `zfb.config.json` is parsed via `serde_json` and skips the
-/// node subprocess that the TS path uses, so without this helper every
-/// plugin entry would have `resolved_module = None` and the plugin-host
-/// filter (`commands::plugins::build_plugin_specs`) would drop them all
-/// silently — both `preBuild` and `postBuild` hooks would never fire.
+/// TS config evaluator, so without this helper every plugin entry would
+/// have `resolved_module = None` and the plugin-host filter
+/// (`commands::plugins::build_plugin_specs`) would drop them all silently
+/// — both `preBuild` and `postBuild` hooks would never fire.
 ///
-/// Behaviour mirrors the TS path (`config-loader.mjs`):
+/// Behaviour mirrors the TS evaluator's plugin-resolution logic:
 ///
 /// - Plugin entries naming a relative path (`./` or `../` prefix) or an
 ///   absolute path are canonicalised against `dir` and converted to a
@@ -1381,13 +1385,15 @@ async fn load_ts_via_inprocess_v8(
         .context("config loader: failed to serialise V8 eval envelope")?)
 }
 
-/// Internal envelope shape emitted by `crates/zfb/js/config-loader.mjs`.
+/// Internal envelope shape produced by the TS config evaluator.
 ///
-/// The TS-load subprocess writes `{"config": <user-default-export>,
-/// "plugins": [<resolved-module-specifier>, …]}` so we get both halves
-/// in one parse. Older callers that supply `test_default_export_json`
-/// can still pass either the envelope shape or a bare config object —
-/// the bare-config branch is kept for backwards-test-compat.
+/// On the default (embed_v8) path the in-process evaluator serialises
+/// `{"config": <user-default-export>, "plugins": [<resolved-module-specifier>,
+/// …]}` to a Rust `String` before returning.  On the slim-build path
+/// `crates/zfb/js/config-loader.mjs` writes the same shape to stdout.
+/// Older callers that supply `test_default_export_json` can still pass
+/// either the envelope shape or a bare config object — the bare-config
+/// branch is kept for backwards-test-compat.
 #[derive(Debug, Deserialize)]
 struct LoaderEnvelope {
     config: Config,
@@ -1405,7 +1411,7 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
         if !resolved.is_empty() && resolved.len() != config.plugins.len() {
             bail!(
                 "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
-                 this indicates a bug in config-loader.mjs",
+                 this indicates a bug in the TS config evaluator",
                 ts_path.display(),
                 config.plugins.len(),
                 resolved.len()
@@ -2480,9 +2486,9 @@ mod tests {
 
     #[tokio::test]
     async fn ts_envelope_count_mismatch_is_rejected() {
-        // Defensive guard — if config-loader.mjs ever drifts and emits
-        // a plugins array that doesn't 1:1 match config.plugins, we
-        // surface that as a clear error rather than silently dropping
+        // Defensive guard — if the TS config evaluator ever drifts and
+        // emits a plugins array that doesn't 1:1 match config.plugins,
+        // we surface that as a clear error rather than silently dropping
         // resolutions.
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
