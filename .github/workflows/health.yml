@@ -1,3 +1,9 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
 name: health
 
 on:
@@ -21,23 +27,23 @@ jobs:
     # and typically complete well within this budget.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
       # Cache compiled Rust artifacts across runs. The cache key encodes the
       # OS, Rust toolchain, and a hash of every Cargo.toml/Cargo.lock in the
       # workspace so the cache is invalidated cleanly when any member's
       # dependency set changes (including when deno_core / V8 is added by
       # Sub 2).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           # Prefix so future workspace-member additions don't share a stale
           # cache. Bumped v1 → v2 in PR #250 after the cached target/ snapshot
@@ -74,18 +80,18 @@ jobs:
     # budget while the cache primes on the first run.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           # Separate cache key from the V8-on job — the target/ trees
           # are not interchangeable (different feature set, different
