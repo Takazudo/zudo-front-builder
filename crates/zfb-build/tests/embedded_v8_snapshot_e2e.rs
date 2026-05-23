@@ -638,6 +638,7 @@ export default function HomePage({ posts }: Props) {
 /// pattern as `crates/zfb-render/tests/embedded_v8_*.rs`).
 #[cfg(feature = "embed_v8")]
 #[tokio::test]
+#[ignore = "tracked in #413 — dual zfb/content instance under embed_v8 test harness after #405"]
 async fn embedded_v8_renders_page_with_snapshot_data() {
     use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
 
