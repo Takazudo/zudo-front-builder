@@ -51,6 +51,11 @@ pub struct Route {
     /// [`crate::route::Route::output_filename`]): frontmatter `extension`
     /// override > filename convention (this field) > the `html` default.
     pub output_extension: Option<String>,
+    /// When `true`, this route was produced from a `.html` source file in
+    /// `pages/`. The build pipeline emits the source body verbatim to
+    /// `dist/` instead of running JS render. JS render is skipped
+    /// entirely for these routes.
+    pub static_html: bool,
 }
 
 /// Default output extension when neither frontmatter nor the filename

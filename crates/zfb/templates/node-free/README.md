@@ -21,6 +21,7 @@ No `pnpm install`, no `pnpm dev`, no `pnpm exec` needed.
 zfb.config.json     zfb configuration (JSON only — no .ts in this template)
 pages/
   index.tsx         home page — lists posts from the collection
+  about.md          sample .md page entry — renders at /about
   posts/[slug].tsx  dynamic per-post page
 content/
   posts/            posts collection (Markdown with frontmatter)
@@ -32,6 +33,17 @@ content/
 
 Drop more `.tsx` files into `pages/`. Each becomes a route at the same path
 under `/` (so `pages/about.tsx` → `/about`).
+
+You can also add `.md` files for simple content pages. `pages/about.md`
+produces the same `/about` route and is compiled through the MDX pipeline.
+Two frontmatter keys are recognised: `title` (sets `<title>`) and `lang`
+(sets `<html lang="…">`; defaults to `"en"`). No layout system is available
+for `.md` pages in v1 — use `.tsx` if a shared layout is needed. See the
+[about page](/about) in this template for a working example.
+
+Pre-authored static HTML files can be placed as `.html` pages (e.g.
+`pages/contact.html` → `/contact`). The file must be a complete HTML document
+and is copied verbatim to `dist/` without any post-processing.
 
 ## Content collections
 

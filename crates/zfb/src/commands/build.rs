@@ -1607,6 +1607,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         sourcemap_path: bundler_out.sourcemap_path.clone(),
         manifest: bundler_out.manifest.clone(),
         dist_dir: outdir.to_path_buf(),
+        project_root: project_root.to_path_buf(),
         route_universe: static_routes,
         prerender_map: prerender_map.clone(),
         backend,
@@ -1621,6 +1622,24 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .render_all(renderer_input)
         .context("renderer step failed")?;
 
+    // .html-page emission (Option B, zfb#409): files written from
+    // `.html` page sources are emitted verbatim per the v1 contract —
+    // no asset URL rewriting, no link-base rewriting, no sitemap
+    // inclusion. Filter them out of the path list fed to the next two
+    // post-processing passes so the contract is preserved when the
+    // user has set `base` or enabled the prod asset pipeline.
+    let static_html_set: std::collections::HashSet<&std::path::Path> = render_out
+        .static_html_files_written
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .collect();
+    let post_processable_pages: Vec<std::path::PathBuf> = render_out
+        .ssg_files_written
+        .iter()
+        .filter(|p| !static_html_set.contains(p.as_path()))
+        .cloned()
+        .collect();
+
     // 3.5. Production asset pipeline pass.
     //
     // The renderer just wrote SSG HTML files to disk with stable
@@ -1633,7 +1652,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         let prod_pages = build_prod_rendered_files(
             outdir,
             &route_universe_for_rewrite,
-            &render_out.ssg_files_written,
+            &post_processable_pages,
         );
         apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
             .context("production asset pipeline (hash + URL rewrite) failed")?;
@@ -1651,7 +1670,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // unset, `"/"`, or absolute-URL-shaped.
     crate::commands::link_base_rewrite::apply_link_base_rewrite(
         outdir,
-        &render_out.ssg_files_written,
+        &post_processable_pages,
         config.base.as_deref(),
         config.trailing_slash,
     )
@@ -2424,6 +2443,7 @@ mod tests {
                         route: "/".into(),
                         source_path: PathBuf::from("pages/index.tsx"),
                         entry_key: "/".into(),
+                        static_html: false,
                     }],
                 },
             })
@@ -2500,6 +2520,7 @@ mod tests {
             self.render_calls.borrow_mut().push(input);
             Ok(RendererOutput {
                 ssg_files_written: written,
+                static_html_files_written: Vec::new(),
                 ssr_manifest: SsrManifest::default(),
                 runtime_logs: String::new(),
             })
@@ -2531,6 +2552,7 @@ mod tests {
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -2541,6 +2563,7 @@ mod tests {
             kind: RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -2752,6 +2775,7 @@ mod tests {
                 kind: zfb_router::RouteKind::Dynamic,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
@@ -2960,6 +2984,7 @@ mod tests {
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default(); // adapter is None
@@ -3017,6 +3042,7 @@ mod tests {
                 kind: RouteKind::Static,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
@@ -4208,6 +4234,7 @@ mod tests {
             kind: zfb_router::RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let cfg = Config::default(); // adapter is None
@@ -4262,6 +4289,7 @@ mod tests {
             kind: zfb_router::RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
         let mut cfg = Config::default();
@@ -4333,6 +4361,7 @@ mod tests {
                 kind: zfb_router::RouteKind::Dynamic,
                 specificity: 0,
                 output_extension: None,
+                static_html: false,
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));

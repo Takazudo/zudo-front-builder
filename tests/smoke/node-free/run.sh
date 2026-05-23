@@ -44,6 +44,41 @@ rm -rf "$SITE_NAME"
 zfb new "$SITE_NAME" --template node-free
 pass "scaffold"
 
+# ── Step 1b: Drop page fixtures ─────────────────────────────────────────────
+# Add a .md page and a .html page so Step 2's build exercises #408 and #409.
+#
+# pages/about.md — heading, bold span, relative link.
+# The pipeline converts `**bold**` to `<strong>bold</strong>` and keeps the
+# `[link](./other)` href as `./other` (no link-rewriting configured in the
+# node-free template's zfb.config.json).
+cd "$SITE_DIR"
+printf '%s\n' \
+    '---' \
+    'title: About' \
+    'lang: en' \
+    '---' \
+    '' \
+    '# Hello' \
+    '' \
+    'This is **bold** text.' \
+    '' \
+    'See [link](./other).' \
+    > pages/about.md
+
+# pages/legal.html — verbatim HTML body with YAML frontmatter that must be stripped.
+printf '%s\n' \
+    '---' \
+    'title: Legal' \
+    '---' \
+    '<!doctype html>' \
+    '<html lang="en">' \
+    '<head><meta charset="utf-8"><title>Legal</title></head>' \
+    '<body><h1>Legal Notice</h1><p>This is the legal page verbatim content.</p></body>' \
+    '</html>' \
+    > pages/legal.html
+
+pass "page fixtures written"
+
 # ── Step 2: Build ────────────────────────────────────────────────────────────
 
 printf '==> zfb build (cwd: %s)\n' "$SITE_DIR"
@@ -81,12 +116,63 @@ if ! grep -q "$EXPECTED_POST_TITLE" dist/posts/hello/index.html; then
 fi
 pass "dist/posts/hello/index.html contains the post title"
 
-# NOTE — body rendering is NOT asserted here. The deferred Content-rendering
-# verification belongs to a follow-up: this smoke + the e2e test
-# (crates/zfb-build/tests/embedded_v8_snapshot_e2e.rs) prove that the snapshot
-# reaches the route and getCollection("posts") resolves entries, but neither
-# checks that <post.Content /> renders body markdown to real HTML in the
-# embedded-V8 SSG path. See the agent-found follow-up issue for the gap.
+# Body markdown must render to HTML. `**node-free**` in hello.md must appear
+# as `<strong>node-free</strong>`, not as literal asterisks.
+if ! grep -qF '<strong>node-free</strong>' dist/posts/hello/index.html; then
+    fail "dist/posts/hello/index.html does not contain rendered body markup: <strong>node-free</strong>"
+fi
+pass "dist/posts/hello/index.html contains rendered body markup"
+
+# ── Step 2b: Assert .md page (#408) ─────────────────────────────────────────
+# dist/about/index.html must exist and contain the rendered markdown body.
+# Assertions are pinned to the exact tags emitted by the pipeline (observed
+# by running `zfb build` locally on a fixture with the same source content).
+
+if [ ! -f dist/about/index.html ]; then
+    fail "dist/about/index.html not found after build (#408 regression)"
+fi
+pass "dist/about/index.html exists"
+
+# `# Hello` → <h1>Hello</h1>  (MDX heading compile)
+if ! grep -qF '<h1>Hello</h1>' dist/about/index.html; then
+    fail "dist/about/index.html does not contain <h1>Hello</h1> (markdown heading must be compiled)"
+fi
+pass "dist/about/index.html contains <h1>Hello</h1>"
+
+# `**bold**` → <strong>bold</strong>  (GFM strong emphasis)
+if ! grep -qF '<strong>bold</strong>' dist/about/index.html; then
+    fail "dist/about/index.html does not contain <strong>bold</strong> (markdown strong must be compiled)"
+fi
+pass "dist/about/index.html contains <strong>bold</strong>"
+
+# `[link](./other)` → <a href="./other">link</a>
+# The node-free template has no resolve_markdown_links config, so the href
+# is emitted verbatim as ./other (observed locally).
+if ! grep -qF '<a href="./other">link</a>' dist/about/index.html; then
+    fail "dist/about/index.html does not contain <a href=\"./other\">link</a>"
+fi
+pass "dist/about/index.html contains <a href=\"./other\">link</a>"
+
+# ── Step 2c: Assert .html page (#409) ───────────────────────────────────────
+# dist/legal/index.html must exist, have its YAML frontmatter stripped, and
+# contain the verbatim HTML body.
+
+if [ ! -f dist/legal/index.html ]; then
+    fail "dist/legal/index.html not found after build (#409 regression)"
+fi
+pass "dist/legal/index.html exists"
+
+# Frontmatter must be stripped.
+if grep -q '^title: Legal' dist/legal/index.html; then
+    fail "dist/legal/index.html contains raw frontmatter (strip_static_html_frontmatter not applied)"
+fi
+pass "dist/legal/index.html has no raw frontmatter"
+
+# Verbatim HTML body must be present.
+if ! grep -qF '<h1>Legal Notice</h1>' dist/legal/index.html; then
+    fail "dist/legal/index.html does not contain verbatim <h1>Legal Notice</h1>"
+fi
+pass "dist/legal/index.html contains verbatim HTML body"
 
 # ── Step 3: Start dev server in the background ───────────────────────────────
 

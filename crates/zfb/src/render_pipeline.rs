@@ -341,6 +341,12 @@ pub fn build_route_universe(routes: &[Route]) -> RouteUniversePlan {
                     url_path: template.clone(),
                     output_path: route.output_filename(None),
                     route_key: template,
+                    static_html: route.static_html,
+                    source_path: if route.static_html {
+                        Some(route.source_path.clone())
+                    } else {
+                        None
+                    },
                 });
             }
             RouteKind::Dynamic | RouteKind::Catchall => {
@@ -529,6 +535,8 @@ fn try_expand_one(
             url_path: r.url.clone(),
             output_path: output_path.clone(),
             route_key: route.template.clone(),
+            static_html: false,
+            source_path: None,
         });
 
         // Split the flat `HashMap<String, String>` from `ResolvedPath`
@@ -957,6 +965,8 @@ fn resolve_json_paths(
             url_path: r.url.clone(),
             output_path: output_path.clone(),
             route_key: route.template.clone(),
+            static_html: false,
+            source_path: None,
         });
 
         let mut scalars = BTreeMap::new();
@@ -1218,6 +1228,7 @@ mod tests {
             kind: RouteKind::Static,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -1228,6 +1239,7 @@ mod tests {
             kind: RouteKind::Dynamic,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 
@@ -1255,6 +1267,7 @@ mod tests {
             kind,
             specificity: 0,
             output_extension: None,
+            static_html: false,
         }
     }
 

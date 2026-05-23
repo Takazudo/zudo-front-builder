@@ -167,16 +167,22 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
         url_path: "/".into(),
         output_path: PathBuf::from("index.html"),
         route_key: "/".into(),
+        static_html: false,
+        source_path: None,
     });
     entries.push(RouteUniverseEntry {
         url_path: "/about".into(),
         output_path: PathBuf::from("about/index.html"),
         route_key: "/about".into(),
+        static_html: false,
+        source_path: None,
     });
     entries.push(RouteUniverseEntry {
         url_path: "/blog".into(),
         output_path: PathBuf::from("blog/index.html"),
         route_key: "/blog".into(),
+        static_html: false,
+        source_path: None,
     });
 
     // --- /blog/[slug] — one per post (matches fixture posts.ts) ---
@@ -185,6 +191,8 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path: format!("/blog/{slug}"),
             output_path: PathBuf::from(format!("blog/{slug}/index.html")),
             route_key: "/blog/[slug]".into(),
+            static_html: false,
+            source_path: None,
         });
     }
 
@@ -194,6 +202,8 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path: format!("/blog/page/{page}"),
             output_path: PathBuf::from(format!("blog/page/{page}/index.html")),
             route_key: "/blog/page/[page]".into(),
+            static_html: false,
+            source_path: None,
         });
     }
 
@@ -204,6 +214,8 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
                 url_path: format!("/{lang}/{slug}"),
                 output_path: PathBuf::from(format!("{lang}/{slug}/index.html")),
                 route_key: "/[lang]/[slug]".into(),
+                static_html: false,
+                source_path: None,
             });
         }
     }
@@ -212,7 +224,10 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
     let doc_slugs: &[(&str, &[&str])] = &[
         ("intro", &["intro"]),
         ("guides-install", &["guides", "install"]),
-        ("guides-config-framework", &["guides", "config", "framework"]),
+        (
+            "guides-config-framework",
+            &["guides", "config", "framework"],
+        ),
     ];
     for (_name, segments) in doc_slugs {
         let url_path = format!("/docs/{}", segments.join("/"));
@@ -221,6 +236,8 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             url_path,
             output_path,
             route_key: "/docs/[...slug]".into(),
+            static_html: false,
+            source_path: None,
         });
     }
 
@@ -278,8 +295,7 @@ fn make_test_node_modules() -> tempfile::TempDir {
     let zfb_src = worktree_root.join("packages/zfb");
     let zfb_dst = nm.join("zfb");
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&zfb_src, &zfb_dst)
-        .unwrap_or_else(|e| panic!("symlink zfb: {e}"));
+    std::os::unix::fs::symlink(&zfb_src, &zfb_dst).unwrap_or_else(|e| panic!("symlink zfb: {e}"));
 
     tmp
 }
@@ -320,8 +336,8 @@ fn build_bundle(
         site: None,
         prefetch_disabled: false,
         toc: None,
-            external_links: None,
-            cjk_friendly: true,
+        external_links: None,
+        cjk_friendly: true,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
@@ -378,12 +394,8 @@ fn e2e_routing_rendering_with_embedded_host() {
     // --- Preact pass ---
     eprintln!("[e2e_routing_rendering] bundling with Preact…");
     let dist_preact = tempfile::tempdir().expect("tempdir");
-    let (bundle_preact, _nm_preact) = build_bundle(
-        &fixture,
-        Framework::Preact,
-        &esbuild,
-        dist_preact.path(),
-    );
+    let (bundle_preact, _nm_preact) =
+        build_bundle(&fixture, Framework::Preact, &esbuild, dist_preact.path());
 
     eprintln!("[e2e_routing_rendering] rendering all routes with Preact…");
     let renderer_out = render_all(RendererInput {
@@ -393,9 +405,12 @@ fn e2e_routing_rendering_with_embedded_host() {
         dist_dir: dist_preact.path().join("html"),
         route_universe: universe.clone(),
         prerender_map: BTreeMap::new(), // all SSG
-        backend: Backend::Existing { base_url: base_url.clone() },
+        backend: Backend::Existing {
+            base_url: base_url.clone(),
+        },
         request_timeout: None,
         prod_head_assets: None,
+        project_root: PathBuf::new(),
     })
     .expect("render_all with Preact should succeed");
 
@@ -416,8 +431,7 @@ fn e2e_routing_rendering_with_embedded_host() {
     let dist_html = dist_preact.path().join("html");
     for entry in &universe {
         let dest = dist_html.join(&entry.output_path);
-        let body = fs::read(&dest)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", dest.display()));
+        let body = fs::read(&dest).unwrap_or_else(|e| panic!("reading {}: {e}", dest.display()));
         preact_html.push((entry.url_path.clone(), body));
     }
 
