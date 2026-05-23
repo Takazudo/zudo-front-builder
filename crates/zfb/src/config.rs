@@ -1042,10 +1042,10 @@ fn default_true() -> bool {
 /// the default export as JSON on stdout. Embedded into the binary so we
 /// don't have to ship a sidecar file at runtime.
 ///
-/// On the default-features (embed_v8) path, V8 evaluates the bundle
-/// directly — this constant becomes unused until Sub 5 (#420) gates it
-/// behind `cfg(not(feature = "embed_v8"))`.
-#[cfg_attr(feature = "embed_v8", allow(dead_code))]
+/// Slim-build-only: staged into a tempdir and evaluated by the `node`
+/// subprocess in [`load_ts_via_subprocess`]. Default (embed_v8) builds
+/// evaluate the bundle in-process and do not need this file.
+#[cfg(not(feature = "embed_v8"))]
 const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 
 /// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
