@@ -12,21 +12,18 @@
 //!    must match. This pins the sort-by-(collection, slug) contract
 //!    documented in `crates/zfb-content/src/content_bridge.rs`.
 //!
-//! 3. **EmbeddedV8 render path** (gated, requires sub-162) — a bundle
-//!    built with `Backend::EmbeddedV8` renders a page that calls
+//! 3. **EmbeddedV8 render path** (gated, requires the `embed_v8` feature) — a
+//!    bundle built with a real esbuild renders a page that calls
 //!    `getCollection("blog")` and the HTML contains snapshot data.
-//!    **This test is annotated `#[ignore]` and will fail until
-//!    sub-162 (EmbeddedV8RenderHost) is merged** because
-//!    `Backend::EmbeddedV8` does not yet exist in this worktree.
-//!    The manager re-runs it after merging sub-162.
+//!    Skips gracefully when esbuild is unavailable or pnpm deps are missing.
 //!
 //! ## Dependency note
 //!
 //! The bundler-level tests (groups 1 and 2) do NOT require esbuild or a
 //! running JS runtime — they exercise only the `bundle()` codepath
 //! with `mock_subprocess_output` so they run in CI without any external
-//! binary. The EmbeddedV8 render test (group 3) is gated behind
-//! `#[ignore]` precisely because it needs sub-162's host.
+//! binary. The EmbeddedV8 render test (group 3) is gated on the `embed_v8`
+//! feature and skips when esbuild or the pnpm store is unavailable.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -638,7 +635,6 @@ export default function HomePage({ posts }: Props) {
 /// pattern as `crates/zfb-render/tests/embedded_v8_*.rs`).
 #[cfg(feature = "embed_v8")]
 #[tokio::test]
-#[ignore = "tracked in #413 — dual zfb/content instance under embed_v8 test harness after #405"]
 async fn embedded_v8_renders_page_with_snapshot_data() {
     use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
 
@@ -704,7 +700,13 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         mock_subprocess_output: None,
         content_snapshot_json: Some(snap_json.clone()),
         node_modules_dir: Some(node_modules.path().to_path_buf()),
-        node_modules_preserve_symlinks: true,
+        // false (production default): esbuild resolves symlinks to realpaths,
+        // collapsing the nested packages/zfb-runtime/node_modules/@takazudo/zfb
+        // symlink and the top-level @takazudo/zfb symlink into a single
+        // packages/zfb/src/content.ts — preventing a dual-module instance.
+        // true would cause the zfb/content module to be bundled twice (once per
+        // symlink path), breaking the content snapshot bridge (tracked in #413).
+        node_modules_preserve_symlinks: false,
         strip_md_ext: false,
         code_highlight_theme: None,
         code_highlight_themes_dir: None,
