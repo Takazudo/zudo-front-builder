@@ -1,0 +1,1 @@
+// pkg-cond CJS entry

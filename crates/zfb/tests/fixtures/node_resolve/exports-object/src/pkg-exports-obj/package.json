@@ -1,0 +1,7 @@
+{
+  "name": "pkg-exports-obj",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./x.js"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "pkg-cond",
+  "version": "1.0.0",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.cjs"
+    }
+  }
+}
