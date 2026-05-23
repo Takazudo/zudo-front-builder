@@ -1622,6 +1622,24 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .render_all(renderer_input)
         .context("renderer step failed")?;
 
+    // .html-page emission (Option B, zfb#409): files written from
+    // `.html` page sources are emitted verbatim per the v1 contract —
+    // no asset URL rewriting, no link-base rewriting, no sitemap
+    // inclusion. Filter them out of the path list fed to the next two
+    // post-processing passes so the contract is preserved when the
+    // user has set `base` or enabled the prod asset pipeline.
+    let static_html_set: std::collections::HashSet<&std::path::Path> = render_out
+        .static_html_files_written
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .collect();
+    let post_processable_pages: Vec<std::path::PathBuf> = render_out
+        .ssg_files_written
+        .iter()
+        .filter(|p| !static_html_set.contains(p.as_path()))
+        .cloned()
+        .collect();
+
     // 3.5. Production asset pipeline pass.
     //
     // The renderer just wrote SSG HTML files to disk with stable
@@ -1634,7 +1652,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         let prod_pages = build_prod_rendered_files(
             outdir,
             &route_universe_for_rewrite,
-            &render_out.ssg_files_written,
+            &post_processable_pages,
         );
         apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
             .context("production asset pipeline (hash + URL rewrite) failed")?;
@@ -1652,7 +1670,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // unset, `"/"`, or absolute-URL-shaped.
     crate::commands::link_base_rewrite::apply_link_base_rewrite(
         outdir,
-        &render_out.ssg_files_written,
+        &post_processable_pages,
         config.base.as_deref(),
         config.trailing_slash,
     )
@@ -2502,6 +2520,7 @@ mod tests {
             self.render_calls.borrow_mut().push(input);
             Ok(RendererOutput {
                 ssg_files_written: written,
+                static_html_files_written: Vec::new(),
                 ssr_manifest: SsrManifest::default(),
                 runtime_logs: String::new(),
             })

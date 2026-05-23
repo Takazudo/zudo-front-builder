@@ -1427,10 +1427,23 @@ fn materialise_shadow(
             // Extract frontmatter for title / lang, then compile the body.
             let (frontmatter_value, md_body) = match zfb_frontmatter::extract(from, &raw) {
                 Ok(uf) => (uf.value, uf.body.unwrap_or_default()),
-                Err(_) => {
-                    // Frontmatter parse failure: treat entire source as body,
-                    // no frontmatter.
-                    (serde_json::Value::Null, strip_yaml_frontmatter(&raw).to_string())
+                Err(err) => {
+                    // Frontmatter parse failure: strip the malformed
+                    // delimited block and feed only the body to the MDX
+                    // pipeline, recording no frontmatter values. Warn so
+                    // the user notices — silently falling back to slug /
+                    // default lang would otherwise hide a typo in their
+                    // YAML.
+                    tracing::warn!(
+                        path = %from.display(),
+                        error = %err,
+                        "md page frontmatter failed to parse; \
+                         falling back to slug title and default lang"
+                    );
+                    (
+                        serde_json::Value::Null,
+                        strip_yaml_frontmatter(&raw).to_string(),
+                    )
                 }
             };
             let compiled =

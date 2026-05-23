@@ -50,8 +50,11 @@ lang: en
 A short description of the project.
 ```
 
-The slug fallback for `title` is derived from the relative path of the
-file inside `pages/` — `pages/docs/intro.md` becomes `"docs/intro"`.
+The slug fallback for `title` is derived from the file stem — the
+last path segment without its extension. `pages/about.md` falls back
+to `"about"`, and `pages/docs/intro.md` falls back to `"intro"` (not
+`"docs/intro"`). Use frontmatter `title:` when you need a more
+specific title.
 
 ### Relative links
 

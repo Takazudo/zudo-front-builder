@@ -109,9 +109,12 @@ pub struct RouteUniverseEntry {
     /// verbatim to `output_path`. `source_path` must be `Some` in this
     /// case — it is joined with `project_root` to read the source file.
     pub static_html: bool,
-    /// Project-relative path to the source file. Required when
-    /// `static_html` is `true` so the renderer can read the body.
-    /// `None` for normal JS-rendered routes.
+    /// Path to the source file. Required when `static_html` is `true`
+    /// so the renderer can read the body. `None` for normal JS-rendered
+    /// routes. May be absolute (current `render_pipeline.rs` plumbing
+    /// passes the absolute path from `WalkDir`) or project-relative;
+    /// the renderer's read joins it with `project_root`, which is a
+    /// no-op for absolute paths.
     pub source_path: Option<PathBuf>,
 }
 
@@ -487,7 +490,18 @@ pub struct RendererStartInput {
 pub struct RendererOutput {
     /// Absolute paths of every file the renderer wrote, in
     /// `route_universe` order. Empty if every route was SSR-only.
+    /// Includes static-HTML pages emitted via Option B; see
+    /// [`static_html_files_written`](Self::static_html_files_written)
+    /// for the subset that must NOT receive post-processing.
     pub ssg_files_written: Vec<PathBuf>,
+    /// Subset of `ssg_files_written` containing paths emitted from
+    /// `.html` page sources via the static-asset copy-through path
+    /// (RouteUniverseEntry::static_html). Downstream passes that
+    /// mutate the dist output — production asset rewriting, link-base
+    /// rewriting, sitemap inclusion — MUST skip these files per the
+    /// v1 contract: `.html` pages are emitted verbatim and bypass
+    /// all post-processing. Empty when no static-HTML routes ran.
+    pub static_html_files_written: Vec<PathBuf>,
     /// SSR-only routes that the renderer deliberately skipped.
     /// T7 hands this to the runtime SSR adapter so a deployed worker
     /// knows which URLs to serve dynamically.
@@ -617,6 +631,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     let sourcemap = load_sourcemap(&sourcemap_path);
 
     let mut written: Vec<PathBuf> = Vec::with_capacity(ssg_routes.len());
+    let mut static_html_written: Vec<PathBuf> = Vec::new();
     let mut last_err: Option<RendererError> = None;
     for entry in &ssg_routes {
         match render_one_inner(
@@ -627,7 +642,12 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
             sourcemap.as_ref(),
             prod_head_assets.as_ref(),
         ) {
-            Ok(path) => written.push(path),
+            Ok(path) => {
+                if entry.static_html {
+                    static_html_written.push(path.clone());
+                }
+                written.push(path);
+            }
             Err(e) => {
                 last_err = Some(e);
                 break;
@@ -652,6 +672,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
 
     Ok(RendererOutput {
         ssg_files_written: written,
+        static_html_files_written: static_html_written,
         ssr_manifest: SsrManifest { routes: ssr_routes },
         runtime_logs: logs,
     })
@@ -1290,30 +1311,30 @@ mod tests {
                 url_path: "/".into(),
                 output_path: PathBuf::from("index.html"),
                 route_key: "/".into(),
-            static_html: false,
-            source_path: None,
-},
+                static_html: false,
+                source_path: None,
+            },
             RouteUniverseEntry {
                 url_path: "/about".into(),
                 output_path: PathBuf::from("about/index.html"),
                 route_key: "/about".into(),
-            static_html: false,
-            source_path: None,
-},
+                static_html: false,
+                source_path: None,
+            },
             RouteUniverseEntry {
                 url_path: "/feed.xml".into(),
                 output_path: PathBuf::from("feed.xml"),
                 route_key: "/feed.xml".into(),
-            static_html: false,
-            source_path: None,
-},
+                static_html: false,
+                source_path: None,
+            },
             RouteUniverseEntry {
                 url_path: "/preview".into(),
                 output_path: PathBuf::from("preview/index.html"),
                 route_key: "/preview".into(),
-            static_html: false,
-            source_path: None,
-},
+                static_html: false,
+                source_path: None,
+            },
         ];
 
         let out = render_all(RendererInput {
@@ -1326,8 +1347,8 @@ mod tests {
             backend,
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .expect("render_all");
 
         // SSG side: 3 files written in input order.
@@ -1372,8 +1393,8 @@ mod tests {
             backend: stub_backend(|_| html_ok("<html>ok</html>")),
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .unwrap();
         assert_eq!(out.ssg_files_written.len(), 1);
         assert!(out.ssr_manifest.routes.is_empty());
@@ -1404,8 +1425,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .unwrap_err();
         match err {
             RendererError::RenderFailed { status, body, .. } => {
@@ -1449,8 +1470,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .expect("render_all");
         let written = fs::read(dist.path().join("index.html")).unwrap();
         assert_eq!(written, raw_html);
@@ -1489,8 +1510,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: Some(assets),
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .expect("render_all");
         let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
         let close_at = written.find("</head>").unwrap();
@@ -1538,8 +1559,8 @@ mod tests {
             },
             request_timeout: None,
             prod_head_assets: Some(assets),
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .expect("render_all");
         let written = fs::read(dist.path().join("feed.xml")).unwrap();
         assert_eq!(written, xml_body);
@@ -1636,8 +1657,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .unwrap_err();
 
         match err {
@@ -1696,8 +1717,8 @@ mod tests {
             }),
             request_timeout: None,
             prod_head_assets: None,
-        project_root: PathBuf::new(),
-})
+            project_root: PathBuf::new(),
+        })
         .unwrap_err();
 
         match err {

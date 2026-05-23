@@ -49,7 +49,13 @@ use crate::error::RouterError;
 use crate::route::{Route, RouteKind, Segment};
 
 /// Extensions accepted as page source files.
-const ACCEPTED_PAGE_EXTENSIONS: &[&str] = &["tsx", "md", "html"];
+///
+/// `mdx` is included for parity with existing zfb projects that author MDX
+/// pages directly in `pages/`. The bundler routes `.mdx` and `.md` through
+/// the same MDX-compile pipeline, but the router must accept both shapes so
+/// `pages/about.mdx` continues to produce `/about` (zfb#404 regression fix
+/// — earlier diff briefly dropped `.mdx` while extending the allowlist).
+const ACCEPTED_PAGE_EXTENSIONS: &[&str] = &["tsx", "mdx", "md", "html"];
 
 /// Maximum specificity points awarded per route segment. The exact value is an
 /// implementation detail; only relative ordering matters.
@@ -113,21 +119,40 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
             continue;
         }
 
-        // Accept .tsx, .md, .html as page sources. Warn on any other extension
-        // so authors notice accidental mis-placements in pages/.
+        // Accept .tsx, .mdx, .md, .html as page sources. Warn on any other
+        // extension so authors notice accidental mis-placements in pages/.
         match ext {
             Some(e) if ACCEPTED_PAGE_EXTENSIONS.contains(&e) => {}
             _ => {
                 tracing::warn!(
                     path = %rel.display(),
                     "pages/ file has an unrecognised extension and will be skipped; \
-                     accepted extensions are: tsx, md, html"
+                     accepted extensions are: tsx, mdx, md, html"
                 );
                 continue;
             }
         }
 
         let route = parse_route(path, rel)?;
+
+        // Dynamic / catchall .md and .html routes cannot work in v1:
+        // there is no `paths()` story for either extension (the build-time
+        // expansion would need a top-level export from the source, which a
+        // pure .md or .html file cannot carry). Skip them with a loud
+        // warning so authors notice rather than shipping a green build
+        // that silently produces no pages.
+        if matches!(ext, Some("md") | Some("html"))
+            && !matches!(route.kind, RouteKind::Static)
+        {
+            tracing::warn!(
+                path = %rel.display(),
+                kind = ?route.kind,
+                "dynamic .md / .html page routes are not supported in v1 (no paths() story); \
+                 this file will be skipped — author it as .tsx if dynamic paths are needed"
+            );
+            continue;
+        }
+
         routes.push(route);
     }
 
