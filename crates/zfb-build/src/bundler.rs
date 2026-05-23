@@ -1340,6 +1340,47 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
     out
 }
 
+/// Symlink `from` at `to`, falling back to `fs::copy` on platforms that
+/// do not support file symlinks or when the necessary privilege is absent.
+///
+/// Any pre-existing entry at `to` is removed first so we never attempt to
+/// create a symlink over an existing path. The removal error is ignored
+/// (the entry may not exist yet on the first materialise pass). This is
+/// forward-compatible with a future persistent-shadow refactor where the
+/// shadow tree is reused across builds.
+///
+/// - **Unix**: uses [`std::os::unix::fs::symlink`].
+/// - **Windows**: tries [`std::os::windows::fs::symlink_file`]; falls back
+///   to `fs::copy` when the call fails (Developer Mode off / missing
+///   `SeCreateSymbolicLinkPrivilege` — this matches today's behaviour and
+///   incurs no regression on unprivileged Windows contexts).
+/// - **Other platforms**: unconditional `fs::copy`.
+fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Remove any pre-existing entry at `to` so we never try to symlink
+    // over an existing file. Forward-compatible with a future
+    // persistent-shadow refactor (out of scope for this epic).
+    let _ = fs::remove_file(to);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(from, to)
+    }
+    #[cfg(windows)]
+    {
+        // File symlinks on Windows require admin OR Developer Mode OR
+        // SeCreateSymbolicLinkPrivilege. Fall back to fs::copy when the
+        // privilege is missing so the bundler keeps working in
+        // unprivileged contexts — perf parity with today's behaviour.
+        match std::os::windows::fs::symlink_file(from, to) {
+            Ok(()) => Ok(()),
+            Err(_) => fs::copy(from, to).map(|_| ()),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        fs::copy(from, to).map(|_| ())
+    }
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1597,8 +1638,9 @@ fn materialise_shadow(
             fs::write(&to, shell.as_bytes())
                 .with_context(|| format!("write md page shell to {}", to.display()))?;
         } else {
-            fs::copy(from, &to)
-                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+            symlink_or_copy(from, &to).with_context(|| {
+                format!("symlink_or_copy {} -> {}", from.display(), to.display())
+            })?;
         }
 
         // Routes only collected from the pages root.
@@ -2102,8 +2144,9 @@ fn materialise_collection(
                 shadow_rel_path,
             });
         } else {
-            fs::copy(from, &to)
-                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+            symlink_or_copy(from, &to).with_context(|| {
+                format!("symlink_or_copy {} -> {}", from.display(), to.display())
+            })?;
         }
     }
     Ok(())
@@ -4853,7 +4896,10 @@ mod tests {
         let mut out: Vec<String> = Vec::new();
         for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
             let entry = entry.unwrap();
-            if !entry.file_type().is_file() {
+            // Accept both regular files and symlinks to files (non-transformed
+            // shadow entries are now symlinks after the symlink_or_copy change).
+            let ft = entry.file_type();
+            if !ft.is_file() && !ft.is_symlink() {
                 continue;
             }
             let rel = entry
@@ -5238,6 +5284,182 @@ mod tests {
         assert!(
             !names.contains(&".foo".to_string()),
             ".foo hidden dir must be excluded; got {names:?}"
+        );
+    }
+
+    // ── symlink_or_copy tests ────────────────────────────────────────────
+
+    /// Non-transformed files (CSS, PNG) placed by materialise_shadow must
+    /// be symlinks on Unix, not byte-copies. On Windows (fallback path) we
+    /// accept either a symlink or a regular file.
+    #[test]
+    fn symlink_or_copy_non_transformed_files_are_symlinks() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let dest_tmp = tempfile::tempdir().unwrap();
+
+        let src = src_tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("style.css"), "body { margin: 0; }\n").unwrap();
+        // Write minimal 1×1 PNG (binary content).
+        fs::write(
+            src.join("image.png"),
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82",
+        )
+        .unwrap();
+
+        let dest = dest_tmp.path().join("shadow");
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            src_tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        for filename in &["style.css", "image.png"] {
+            let dest_file = dest.join(filename);
+            let meta = fs::symlink_metadata(&dest_file)
+                .unwrap_or_else(|e| panic!("{filename} metadata error: {e}"));
+
+            #[cfg(unix)]
+            {
+                assert!(
+                    meta.file_type().is_symlink(),
+                    "{filename} must be a symlink in the shadow tree on unix; got {meta:?}"
+                );
+                let target = fs::read_link(&dest_file)
+                    .unwrap_or_else(|e| panic!("{filename} read_link error: {e}"));
+                assert_eq!(
+                    target,
+                    src.join(filename),
+                    "{filename} symlink must point at the source path"
+                );
+            }
+            #[cfg(windows)]
+            {
+                // Windows: accept symlink (privileged context) OR regular file (fallback).
+                assert!(
+                    meta.file_type().is_symlink() || meta.file_type().is_file(),
+                    "{filename} must be a symlink or regular file on windows; got {meta:?}"
+                );
+            }
+        }
+    }
+
+    /// Compiled MDX destinations must be real files (not symlinks) and their
+    /// content must differ from the source (compilation happened).
+    #[test]
+    fn symlink_or_copy_mdx_destination_is_real_file_not_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        let mdx_src_content = "---\ntitle: Test\n---\n\n# Hello\n\nsome paragraph\n";
+        fs::write(src.join("guide.mdx"), mdx_src_content).unwrap();
+
+        let dest = tmp.path().join("shadow");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports,
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let dest_mdx = dest.join("guide.mdx");
+        let meta = fs::symlink_metadata(&dest_mdx).expect("guide.mdx must exist in shadow");
+
+        // Must be a regular file, not a symlink.
+        assert!(
+            !meta.file_type().is_symlink(),
+            "compiled MDX destination must NOT be a symlink; it should be a real file with compiled JSX"
+        );
+        assert!(
+            meta.file_type().is_file(),
+            "compiled MDX destination must be a regular file"
+        );
+
+        // Contents must differ from source (compilation happened).
+        let dest_content = fs::read_to_string(&dest_mdx).unwrap();
+        assert_ne!(
+            dest_content, mdx_src_content,
+            "compiled MDX destination content must differ from source (compilation must have run)"
+        );
+        // Sanity-check: compiled output ships a _createMdxContent wrapper.
+        assert!(
+            dest_content.contains("_createMdxContent"),
+            "compiled MDX output must contain _createMdxContent; got:\n{dest_content}"
+        );
+    }
+
+    /// Teardown-safety regression test: dropping the shadow TempDir (which
+    /// contains symlinks) must NOT remove the original source files.
+    ///
+    /// This locks the core safety contract of #429 Option 1: a symlink's
+    /// referent is never deleted when the symlink itself is removed.
+    #[test]
+    fn symlink_or_copy_teardown_does_not_remove_source_files() {
+        // Source and destination are in SEPARATE tempdirs so that dropping
+        // the dest tempdir cannot accidentally remove the src.
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src = src_tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let src_file = src.join("app.tsx");
+        fs::write(&src_file, "export default () => null;\n").unwrap();
+
+        {
+            // Materialise into a separate tempdir and then drop it.
+            let dest_tmp = tempfile::tempdir().unwrap();
+            materialise_shadow(
+                &src,
+                dest_tmp.path(),
+                &mut Vec::new(),
+                src_tmp.path(),
+                false,
+                None,
+                None,
+                None,
+                zfb_content::ResolvedGfmConstructs::default(),
+                None,
+                None,
+                true,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            // dest_tmp dropped here — symlinks in it are removed, not their targets.
+        }
+
+        // Original source file must still exist and be readable.
+        assert!(
+            src_file.exists(),
+            "source file must still exist after shadow TempDir is dropped"
+        );
+        let contents = fs::read_to_string(&src_file)
+            .expect("source file must still be readable after shadow TempDir is dropped");
+        assert_eq!(
+            contents, "export default () => null;\n",
+            "source file contents must be unchanged after shadow TempDir teardown"
         );
     }
 }
