@@ -113,7 +113,7 @@ use walkdir::WalkDir;
 use zfb_content::compile_mdx_to_jsx_module_cached;
 use zfb_content::frontmatter as zfb_frontmatter;
 use zfb_content::plugins::util::source_map::{
-    CollectionRoute, DocsSourceMapOptions, build_docs_source_map,
+    build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
 use zfb_render::adapters::{make_adapter, Framework};
 
@@ -742,8 +742,12 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   raw CSS bytes and this loader makes esbuild fail with a clear
 ///   parse error rather than silently dropping the import — which is
 ///   the correct fail-fast signal for a misconfigured build.
-pub const ESBUILD_LOADER_ARGS: &[&str] =
-    &["--loader:.mdx=jsx", "--loader:.md=jsx", "--loader:.css=empty", "--loader:.module.css=js"];
+pub const ESBUILD_LOADER_ARGS: &[&str] = &[
+    "--loader:.mdx=jsx",
+    "--loader:.md=jsx",
+    "--loader:.css=empty",
+    "--loader:.module.css=js",
+];
 
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
@@ -828,14 +832,23 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            if resolve_links_enabled {
+                Some(&resolve_source_map)
+            } else {
+                None
+            },
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
             &mut broken,
         )
-        .with_context(|| format!("bundler: failed materialising pages from {}", pages_dir.display()))?;
+        .with_context(|| {
+            format!(
+                "bundler: failed materialising pages from {}",
+                pages_dir.display()
+            )
+        })?;
         all_broken_links.extend(broken);
     }
 
@@ -865,7 +878,11 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.strip_md_ext,
                 input.code_highlight_theme.as_deref(),
                 input.code_highlight_themes_dir.as_deref(),
-                if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                if resolve_links_enabled {
+                    Some(&resolve_source_map)
+                } else {
+                    None
+                },
                 input.gfm_constructs,
                 input.toc.clone(),
                 input.external_links.as_ref(),
@@ -898,7 +915,11 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            if resolve_links_enabled {
+                Some(&resolve_source_map)
+            } else {
+                None
+            },
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
@@ -924,7 +945,11 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            if resolve_links_enabled {
+                Some(&resolve_source_map)
+            } else {
+                None
+            },
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
@@ -949,7 +974,11 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.strip_md_ext,
             input.code_highlight_theme.as_deref(),
             input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+            if resolve_links_enabled {
+                Some(&resolve_source_map)
+            } else {
+                None
+            },
             input.gfm_constructs,
             input.toc.clone(),
             input.external_links.as_ref(),
@@ -977,8 +1006,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // layouts) and infrastructure directories (node_modules, dist, .git,
     // hidden dirs, zfb output dirs) are skipped.
     {
-        let known: &[&str] = &["pages", "content", "components", "layouts", "node_modules",
-                                "dist", ".git", "target", ".turbo", ".next", ".vercel"];
+        let known: &[&str] = &[
+            "pages",
+            "content",
+            "components",
+            "layouts",
+            "node_modules",
+            "dist",
+            ".git",
+            "target",
+            ".turbo",
+            ".next",
+            ".vercel",
+        ];
         if let Ok(rd) = fs::read_dir(&input.project_root) {
             for entry in rd.flatten() {
                 let ft = match entry.file_type() {
@@ -1008,7 +1048,11 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     input.strip_md_ext,
                     input.code_highlight_theme.as_deref(),
                     input.code_highlight_themes_dir.as_deref(),
-                    if resolve_links_enabled { Some(&resolve_source_map) } else { None },
+                    if resolve_links_enabled {
+                        Some(&resolve_source_map)
+                    } else {
+                        None
+                    },
                     input.gfm_constructs,
                     input.toc.clone(),
                     input.external_links.as_ref(),
@@ -1102,16 +1146,15 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // 3. Hydration shim.
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
     fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
-        format!("bundler: failed writing hydration shim to {}", shim_path.display())
+        format!(
+            "bundler: failed writing hydration shim to {}",
+            shim_path.display()
+        )
     })?;
 
     // 4. Synthetic tsconfig.json honouring the user's `paths`.
-    write_synthetic_tsconfig(
-        shadow,
-        &input.tsconfig_paths,
-        adapter.jsx_import_source(),
-    )
-    .context("bundler: failed writing synthetic tsconfig.json")?;
+    write_synthetic_tsconfig(shadow, &input.tsconfig_paths, adapter.jsx_import_source())
+        .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
     //
@@ -1163,23 +1206,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
     // Bundle filename — `bundle_basename` lets callers run two bundle()
     // passes in the same outdir (full SSG vs runtime-only) without clobber.
-    let bundle_filename: &str = input
-        .bundle_basename
-        .as_deref()
-        .unwrap_or("bundle.mjs");
+    let bundle_filename: &str = input.bundle_basename.as_deref().unwrap_or("bundle.mjs");
     let bundle_path = outdir.join(bundle_filename);
     let sourcemap_path = outdir.join(format!("{bundle_filename}.map"));
 
     if let Some(mock) = input.mock_subprocess_output.as_ref() {
         fs::write(&bundle_path, mock).with_context(|| {
-            format!("bundler: failed to write mock bundle to {}", bundle_path.display())
+            format!(
+                "bundler: failed to write mock bundle to {}",
+                bundle_path.display()
+            )
         })?;
     } else {
-        run_esbuild(
-            &input,
-            shadow,
-            &bundle_path,
-        )?;
+        run_esbuild(&input, shadow, &bundle_path)?;
     }
 
     let manifest = BundleManifest {
@@ -1223,6 +1262,54 @@ impl<'a> PathResolver<'a> {
     }
 }
 
+/// Returns `true` when a WalkDir entry is an infra directory that should
+/// not be descended into. Used as the predicate for
+/// `.filter_entry(|e| !is_pruned_infra_dir(e))` in both
+/// `materialise_shadow` and `materialise_collection`.
+///
+/// Rules (per #428 Fix A):
+/// - Non-directories are never pruned (return `false`).
+/// - Named infra dirs at any depth: `node_modules`, `.git`, `.next`,
+///   `.turbo`, `.vercel` are always skipped.
+/// - Any hidden directory (name starts with `.`) at depth > 0 is skipped,
+///   covering nested `.cache`, `.wrangler`, `.vite`, `.storybook`, etc.
+///   The depth-0 guard ensures the walker root itself is never pruned even
+///   if the caller happened to name it `.foo`.
+/// - `dist` / `target` are NOT pruned at depth (caveat from #428 — a
+///   legitimate sub-directory with those names should still be
+///   materialised; top-level pruning is already in the 2a-extra block).
+fn is_pruned_infra_dir(entry: &walkdir::DirEntry) -> bool {
+    // True ⇒ skip descending into this entry.
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+    let name = entry.file_name().to_string_lossy();
+    // Always-prune named infra dirs at any depth.
+    if matches!(
+        name.as_ref(),
+        "node_modules" | ".git" | ".next" | ".turbo" | ".vercel"
+    ) {
+        return true;
+    }
+    // Per #428 Fix A ("skip ... and dotdirs wherever it appears"): also
+    // prune any hidden directory at depth. The existing top-level
+    // extra-dirs loop already skips hidden dirs (name.starts_with('.')
+    // at L994), so this only changes behaviour *inside* the materialised
+    // roots — e.g. `layouts/.storybook/`, `pages/.cache/`,
+    // `components/.vite/`. Covers nested `.cache`, `.wrangler`, `.vite`,
+    // etc. without naming each one. NOTE: depth-0 is the walker root
+    // itself; we deliberately do NOT prune the root even if it is named
+    // (e.g.) `.foo`, because the caller chose to walk it.
+    if entry.depth() > 0 && name.starts_with('.') {
+        return true;
+    }
+    // Conservative: do NOT prune "dist" / "target" at depth (per #428
+    // "Caveats" — a legitimate sub-directory with those names should
+    // still be materialised). Top-level dist/target pruning is handled
+    // by the existing skip-list in the 2a-extra block.
+    false
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1264,10 +1351,7 @@ fn materialise_shadow(
     // name, so a user with a non-conventional source layout (e.g.
     // `src/routes/`) still produces routes correctly because the
     // bundler always materialises the shadow root under `pages/`.
-    let is_pages_dir = dest
-        .file_name()
-        .map(|s| s == "pages")
-        .unwrap_or(false);
+    let is_pages_dir = dest.file_name().map(|s| s == "pages").unwrap_or(false);
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
     // walk loop so the seven default plugins (admonitions, CJK-friendly
@@ -1331,7 +1415,12 @@ fn materialise_shadow(
     // "basic-usage-7" in one walk and "basic-usage" in the other,
     // producing different content_hash values and breaking the
     // mdx://<collection>/<slug>#<hash> bridge lookup (zfb#187).
-    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
+    for entry in WalkDir::new(src)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| !is_pruned_infra_dir(e))
+    {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         // WalkDir always yields paths under `src`, so `strip_prefix`
@@ -1349,8 +1438,7 @@ fn materialise_shadow(
         let to = dest.join(rel);
 
         if entry.file_type().is_dir() {
-            fs::create_dir_all(&to)
-                .with_context(|| format!("create dir {}", to.display()))?;
+            fs::create_dir_all(&to).with_context(|| format!("create dir {}", to.display()))?;
             continue;
         }
         if !entry.file_type().is_file() {
@@ -1399,8 +1487,8 @@ fn materialise_shadow(
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
             }
-            let raw = fs::read_to_string(from)
-                .with_context(|| format!("read mdx {}", from.display()))?;
+            let raw =
+                fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
             let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
                 .with_context(|| format!("compile mdx {}", from.display()))?;
@@ -1463,19 +1551,14 @@ fn materialise_shadow(
                 .to_string();
             // Body file: `_zfb_md_body_<stem>.jsx` in the same shadow dir.
             // Starts with `_` so `derive_route` ignores it.
-            let stem = from
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("page");
+            let stem = from.file_stem().and_then(|s| s.to_str()).unwrap_or("page");
             let body_filename = format!("_zfb_md_body_{stem}.jsx");
             let body_shadow_path = to
                 .parent()
                 .map(|p| p.join(&body_filename))
                 .unwrap_or_else(|| PathBuf::from(&body_filename));
             fs::write(&body_shadow_path, compiled.jsx_source.as_bytes())
-                .with_context(|| {
-                    format!("write md body to {}", body_shadow_path.display())
-                })?;
+                .with_context(|| format!("write md body to {}", body_shadow_path.display()))?;
             // Shell module at the original `.md` shadow path.
             // Prefix the body import with "./" so esbuild resolves it as a
             // relative path (bare names are interpreted as package specifiers).
@@ -1764,8 +1847,7 @@ fn materialise_collection(
     if !src.exists() {
         return Ok(());
     }
-    fs::create_dir_all(dest)
-        .with_context(|| format!("create dir {}", dest.display()))?;
+    fs::create_dir_all(dest).with_context(|| format!("create dir {}", dest.display()))?;
 
     // Compile the include / exclude globs once per collection. The
     // shared `CollectionFilter` MUST match `CollectionConfig::*` on the
@@ -1774,25 +1856,19 @@ fn materialise_collection(
     // each gets) silently turns every consumer-side `getCollection` /
     // `<Content />` lookup into a `<pre data-zfb-content-fallback>`
     // block.
-    let filter = zfb_content::collection::CollectionFilter::new(
-        include,
-        exclude,
-        id_strip_suffix,
-    )
-    .with_context(|| {
-        format!(
-            "bundler: failed to compile collection filter for `{}`",
-            collection_name
-        )
-    })?;
+    let filter = zfb_content::collection::CollectionFilter::new(include, exclude, id_strip_suffix)
+        .with_context(|| {
+            format!(
+                "bundler: failed to compile collection filter for `{}`",
+                collection_name
+            )
+        })?;
     let has_glob_filter = include.map(|p| !p.is_empty()).unwrap_or(false)
         || exclude.map(|p| !p.is_empty()).unwrap_or(false);
     // Re-derive the same suffix `CollectionFilter` would have stored
     // (empty / whitespace → None) so the bundler's specifier rewrite
     // and the walker's rewrite agree on whether to strip.
-    let strip_suffix = id_strip_suffix
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let strip_suffix = id_strip_suffix.map(str::trim).filter(|s| !s.is_empty());
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
     // walk loop so the seven default plugins fire on every collection
@@ -1845,7 +1921,12 @@ fn materialise_collection(
     // level, matching walk_collection's explicit files.sort() contract so
     // the two walks feed entries to their respective Pipeline instances in
     // the same order (zfb#187).
-    for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
+    for entry in WalkDir::new(src)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| !is_pruned_infra_dir(e))
+    {
         let entry = entry.with_context(|| format!("walking {}", src.display()))?;
         let from = entry.path();
         let rel = from.strip_prefix(src).map_err(|_| {
@@ -1858,8 +1939,7 @@ fn materialise_collection(
         let to = dest.join(rel);
 
         if entry.file_type().is_dir() {
-            fs::create_dir_all(&to)
-                .with_context(|| format!("create dir {}", to.display()))?;
+            fs::create_dir_all(&to).with_context(|| format!("create dir {}", to.display()))?;
             continue;
         }
         if !entry.file_type().is_file() {
@@ -1902,8 +1982,8 @@ fn materialise_collection(
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
             }
-            let raw = fs::read_to_string(from)
-                .with_context(|| format!("read mdx {}", from.display()))?;
+            let raw =
+                fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
             // Use `zfb_content::frontmatter::extract` rather than the
             // local `strip_yaml_frontmatter` helper so the body fed
             // into the compiler is **byte-for-byte identical** to the
@@ -2095,10 +2175,7 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
             if j < bytes.len() && bytes[j] == b'-' {
                 j += 1;
             }
-            if j + 1 < bytes.len()
-                && bytes[j] == b'\\'
-                && bytes[j + 1].is_ascii_alphabetic()
-            {
+            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
                 return true;
             }
         }
@@ -2367,10 +2444,7 @@ fn write_entry_module(
         // visible in the build summary (zero dynamic pages).
         serde_json::from_str::<serde_json::Value>(json)
             .ok()
-            .filter(|v| {
-                v.is_object()
-                    && v.get("collections").is_some_and(|c| c.is_object())
-            })
+            .filter(|v| v.is_object() && v.get("collections").is_some_and(|c| c.is_object()))
             .map(|_| json)
             .unwrap_or(r#"{ "collections": {} }"#)
     } else {
@@ -2485,8 +2559,7 @@ fn write_entry_module(
     src.push_str("};\n");
 
     let path = shadow.join(SHADOW_ENTRY_FILENAME);
-    fs::write(&path, src.as_bytes())
-        .with_context(|| format!("write {}", path.display()))?;
+    fs::write(&path, src.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -2619,11 +2692,7 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
 }
 
 /// Resolve and run the esbuild subprocess.
-fn run_esbuild(
-    input: &BundlerInput,
-    shadow: &Path,
-    bundle_path: &Path,
-) -> Result<()> {
+fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
     let tsconfig = shadow.join(SHADOW_TSCONFIG_FILENAME);
@@ -2716,7 +2785,9 @@ fn run_esbuild(
     // are zero-state) and avoids threading another parameter
     // through `run_esbuild`. Stays in sync with step 4 above so a
     // future framework switch can't make the two writes diverge.
-    let jsx_import_source = make_adapter(input.framework).jsx_import_source().to_string();
+    let jsx_import_source = make_adapter(input.framework)
+        .jsx_import_source()
+        .to_string();
     write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
         .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
 
@@ -2908,21 +2979,19 @@ mod tests {
         let mut names = HashMap::new();
         names.insert("card".to_string(), "sc0_card".to_string());
         let mut maps = HashMap::new();
-        maps.insert(
-            project_root.join("components/card.module.css"),
-            names,
-        );
+        maps.insert(project_root.join("components/card.module.css"), names);
 
         rewrite_css_modules_in_shadow(shadow_root, project_root, &maps).unwrap();
 
-        let mapped =
-            fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
+        let mapped = fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
         assert!(mapped.contains("sc0_card"), "mapped module: {mapped}");
         assert!(!mapped.contains("color: red"), "raw CSS must be gone");
 
-        let orphan =
-            fs::read_to_string(shadow_root.join("styles/orphan.module.css")).unwrap();
-        assert_eq!(orphan, "export default {};\n", "unmapped module degrades to {{}}");
+        let orphan = fs::read_to_string(shadow_root.join("styles/orphan.module.css")).unwrap();
+        assert_eq!(
+            orphan, "export default {};\n",
+            "unmapped module degrades to {{}}"
+        );
 
         let global = fs::read_to_string(shadow_root.join("styles/global.css")).unwrap();
         assert_eq!(global, ".g{}", "plain .css must be untouched");
@@ -2996,7 +3065,10 @@ mod tests {
             derive_route(Path::new("blog/[slug].tsx")).as_deref(),
             Some("/blog/[slug]")
         );
-        assert_eq!(derive_route(Path::new("post.mdx")).as_deref(), Some("/post"));
+        assert_eq!(
+            derive_route(Path::new("post.mdx")).as_deref(),
+            Some("/post")
+        );
         // _private files are skipped.
         assert!(derive_route(Path::new("_dev.tsx")).is_none());
         // Unknown extensions are skipped.
@@ -3006,10 +3078,7 @@ mod tests {
             derive_route(Path::new("about.md")).as_deref(),
             Some("/about")
         );
-        assert_eq!(
-            derive_route(Path::new("index.html")).as_deref(),
-            Some("/")
-        );
+        assert_eq!(derive_route(Path::new("index.html")).as_deref(), Some("/"));
     }
 
     #[test]
@@ -3034,7 +3103,16 @@ mod tests {
                 static_html: false,
             },
         ];
-        write_entry_module(shadow, &routes, "preact-render-to-string", None, &[], None, false).unwrap();
+        write_entry_module(
+            shadow,
+            &routes,
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -3107,7 +3185,16 @@ mod tests {
                 shadow_rel_path: "content/docs-ja/intro.mdx".to_string(),
             },
         ];
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &imports, None, false).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &imports,
+            None,
+            false,
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
 
@@ -3171,7 +3258,16 @@ mod tests {
         // `entry.mjs` without the bridge symbols).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -3238,7 +3334,16 @@ mod tests {
         // pre-`site` build (sub #254 acceptance criterion).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -3300,7 +3405,16 @@ mod tests {
         // the pre-`prefetch` build (sub #277 acceptance criterion).
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "preact-render-to-string", None, &[], None, false).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(
@@ -3361,10 +3475,7 @@ mod tests {
         // Two MDX files → two ContentImport records, with stable
         // forward-slash shadow_rel_paths under `content/docs/...`.
         assert_eq!(imports.len(), 2, "expected 2 MDX imports, got {imports:?}");
-        let rels: Vec<&str> = imports
-            .iter()
-            .map(|i| i.shadow_rel_path.as_str())
-            .collect();
+        let rels: Vec<&str> = imports.iter().map(|i| i.shadow_rel_path.as_str()).collect();
         assert!(
             rels.iter().any(|r| *r == "content/docs/intro.mdx"),
             "missing top-level intro entry; got: {rels:?}"
@@ -3812,8 +3923,7 @@ mod tests {
         // input at our two-page tree above.
         input.project_root = root.clone();
         input.outdir = root.join("dist");
-        let mut filter: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut filter: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         filter.insert("/api".to_string());
         input.worker_only_routes = Some(filter);
 
@@ -3892,10 +4002,7 @@ mod tests {
         let zfb_pkg_node_modules = workspace_root.join("packages/zfb/node_modules");
         // Use packages/zfb/node_modules where pnpm symlinks the runtime deps;
         // fall back to root node_modules if that path doesn't exist.
-        let nm_dir = if zfb_pkg_node_modules
-            .join("@takazudo/zfb-runtime")
-            .exists()
-        {
+        let nm_dir = if zfb_pkg_node_modules.join("@takazudo/zfb-runtime").exists() {
             Some(zfb_pkg_node_modules)
         } else if workspace_node_modules
             .join("@takazudo/zfb-runtime")
@@ -3976,8 +4083,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
 
-        let err = resolve_esbuild_binary_with_env(None, |_| None, Some(&missing_slot))
-            .unwrap_err();
+        let err = resolve_esbuild_binary_with_env(None, |_| None, Some(&missing_slot)).unwrap_err();
         let msg = format!("{err}");
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
@@ -4083,14 +4189,20 @@ mod tests {
         //   catchall → after plain dynamic
 
         // /blog/page/[page] has 2 static segs → comes before all 1-static routes
-        assert!(idx("/blog/page/[page]") < idx("/blog/[slug]"),
-            "/blog/page/[page] should be before /blog/[slug]");
+        assert!(
+            idx("/blog/page/[page]") < idx("/blog/[slug]"),
+            "/blog/page/[page] should be before /blog/[slug]"
+        );
         // /blog/[slug] (1 static) before /[lang]/[slug] (0 static)
-        assert!(idx("/blog/[slug]") < idx("/[lang]/[slug]"),
-            "/blog/[slug] should be before /[lang]/[slug]");
+        assert!(
+            idx("/blog/[slug]") < idx("/[lang]/[slug]"),
+            "/blog/[slug] should be before /[lang]/[slug]"
+        );
         // /docs/[...slug] (1 static, catchall) before /[lang]/[slug] (0 static)
-        assert!(idx("/docs/[...slug]") < idx("/[lang]/[slug]"),
-            "/docs/[...slug] should be before /[lang]/[slug]");
+        assert!(
+            idx("/docs/[...slug]") < idx("/[lang]/[slug]"),
+            "/docs/[...slug] should be before /[lang]/[slug]"
+        );
     }
 
     /// Locate a real esbuild binary for gated integration tests. Order:
@@ -4150,7 +4262,9 @@ mod tests {
         // the constant's doc comment; this guard turns the rejection
         // into a compile-time invariant.
         assert!(
-            !ESBUILD_LOADER_ARGS.iter().any(|a| a.contains("external:") && a.contains(".css")),
+            !ESBUILD_LOADER_ARGS
+                .iter()
+                .any(|a| a.contains("external:") && a.contains(".css")),
             "Worker bundle must NOT mark .css as external — esbuild can \
              leave runtime `import` statements workerd cannot resolve. \
              Use `--loader:.css=empty` instead. Got: {:?}",
@@ -4217,13 +4331,15 @@ mod tests {
         let input = BundlerInput {
             // Plugin alias: `@/foo` → some absolute path (no real file needed
             // because mock_subprocess_output bypasses esbuild).
-            plugin_alias_entries: vec![
-                ("@/foo".to_string(), root.join("src/foo.tsx").to_string_lossy().into_owned()),
-            ],
+            plugin_alias_entries: vec![(
+                "@/foo".to_string(),
+                root.join("src/foo.tsx").to_string_lossy().into_owned(),
+            )],
             // Virtual module: `virtual:meta` with inline source.
-            plugin_virtual_modules: vec![
-                ("virtual:meta".to_string(), "export const version = '1.0.0';\n".to_string()),
-            ],
+            plugin_virtual_modules: vec![(
+                "virtual:meta".to_string(),
+                "export const version = '1.0.0';\n".to_string(),
+            )],
             ..make_minimal_input(&tmp)
         };
 
@@ -4379,10 +4495,22 @@ mod tests {
             "expected body import; got:\n{shell}"
         );
         // Full document structure.
-        assert!(shell.contains("<html lang={__lang}>"), "html element with lang; got:\n{shell}");
-        assert!(shell.contains("<meta charSet=\"utf-8\" />"), "charset meta; got:\n{shell}");
-        assert!(shell.contains("<title>{__title}</title>"), "title element; got:\n{shell}");
-        assert!(shell.contains("<MdBody />"), "body component; got:\n{shell}");
+        assert!(
+            shell.contains("<html lang={__lang}>"),
+            "html element with lang; got:\n{shell}"
+        );
+        assert!(
+            shell.contains("<meta charSet=\"utf-8\" />"),
+            "charset meta; got:\n{shell}"
+        );
+        assert!(
+            shell.contains("<title>{__title}</title>"),
+            "title element; got:\n{shell}"
+        );
+        assert!(
+            shell.contains("<MdBody />"),
+            "body component; got:\n{shell}"
+        );
     }
 
     #[test]
@@ -4507,7 +4635,10 @@ mod tests {
         let shell_path = dest.join("about.md");
         let body_path = dest.join("_zfb_md_body_about.jsx");
         assert!(shell_path.is_file(), "shell must exist at about.md");
-        assert!(body_path.is_file(), "body must exist at _zfb_md_body_about.jsx");
+        assert!(
+            body_path.is_file(),
+            "body must exist at _zfb_md_body_about.jsx"
+        );
 
         // Shell is a TSX module wrapping the body.
         let shell = fs::read_to_string(&shell_path).unwrap();
@@ -4523,7 +4654,10 @@ mod tests {
             shell.contains("from \"./_zfb_md_body_about.jsx\""),
             "shell must import the body file with relative path; got:\n{shell}"
         );
-        assert!(shell.contains("<MdBody />"), "shell must render <MdBody />; got:\n{shell}");
+        assert!(
+            shell.contains("<MdBody />"),
+            "shell must render <MdBody />; got:\n{shell}"
+        );
 
         // Body contains compiled MDX output.
         let body = fs::read_to_string(&body_path).unwrap();
@@ -4534,7 +4668,9 @@ mod tests {
 
         // derive_route must skip the _-prefixed body file (no route for it).
         assert!(
-            !routes.iter().any(|r| r.source_path.to_string_lossy().contains("_zfb_md_body")),
+            !routes
+                .iter()
+                .any(|r| r.source_path.to_string_lossy().contains("_zfb_md_body")),
             "body file must not produce a route; routes: {routes:?}"
         );
     }
@@ -4585,11 +4721,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("content");
         fs::create_dir_all(&src).unwrap();
-        fs::write(
-            src.join("post.md"),
-            "---\ntitle: Post\n---\n\n# Post\n",
-        )
-        .unwrap();
+        fs::write(src.join("post.md"), "---\ntitle: Post\n---\n\n# Post\n").unwrap();
 
         let dest = tmp.path().join("shadow").join("content");
         let mut routes = Vec::new();
@@ -4625,7 +4757,10 @@ mod tests {
             "no body file expected for content dir .md"
         );
         // No route collected for content dir.
-        assert!(routes.is_empty(), "content dir must not produce routes; got {routes:?}");
+        assert!(
+            routes.is_empty(),
+            "content dir must not produce routes; got {routes:?}"
+        );
     }
 
     #[test]
@@ -4678,6 +4813,244 @@ mod tests {
         assert!(
             body.contains("href="),
             "anchor must have an href attribute; got:\n{body}"
+        );
+    }
+
+    // --- is_pruned_infra_dir / shadow walker prune tests (#432) ---------------
+
+    /// Collect all file paths under `root` relative to `root`, sorted.
+    fn collect_dest_files(root: &Path) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+            let entry = entry.unwrap();
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(rel.to_owned());
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn is_pruned_infra_dir_named_infra_dirs_not_materialised() {
+        // Named infra dirs (node_modules, .git, .next, .turbo, .vercel)
+        // must not appear in the shadow destination; a regular sibling file
+        // must still be copied. Tests both materialise_shadow (non-pages
+        // dest) and materialise_collection walkers.
+        for infra_name in &["node_modules", ".git", ".next", ".turbo", ".vercel"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("src");
+            // Regular sibling file.
+            fs::create_dir_all(&src).unwrap();
+            fs::write(src.join("real.tsx"), "export default () => null;\n").unwrap();
+            // Infra dir with nested file — must be pruned.
+            let infra = src.join(infra_name).join("foo");
+            fs::create_dir_all(&infra).unwrap();
+            fs::write(infra.join("inner.js"), "// should not appear\n").unwrap();
+
+            // --- materialise_shadow ---
+            let dest_shadow = tmp.path().join("shadow");
+            materialise_shadow(
+                &src,
+                &dest_shadow,
+                &mut Vec::new(),
+                tmp.path(),
+                false,
+                None,
+                None,
+                None,
+                zfb_content::ResolvedGfmConstructs::default(),
+                None,
+                None,
+                true,
+                &mut Vec::new(),
+            )
+            .unwrap();
+
+            let shadow_files = collect_dest_files(&dest_shadow);
+            assert!(
+                shadow_files.contains(&"real.tsx".to_string()),
+                "infra={infra_name}: real.tsx must be present in shadow; got {shadow_files:?}"
+            );
+            assert!(
+                !shadow_files
+                    .iter()
+                    .any(|f| f.starts_with(infra_name) || f.contains(&format!("/{infra_name}/"))),
+                "infra={infra_name}: no file under infra dir must appear in shadow; got {shadow_files:?}"
+            );
+
+            // --- materialise_collection ---
+            let dest_coll = tmp.path().join("collection");
+            materialise_collection(
+                &src,
+                &dest_coll,
+                "test",
+                &mut Vec::new(),
+                false,
+                None,
+                None,
+                None,
+                zfb_content::ResolvedGfmConstructs::default(),
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+                &mut Vec::new(),
+            )
+            .unwrap();
+
+            let coll_files = collect_dest_files(&dest_coll);
+            assert!(
+                coll_files.contains(&"real.tsx".to_string()),
+                "infra={infra_name}: real.tsx must be present in collection; got {coll_files:?}"
+            );
+            assert!(
+                !coll_files
+                    .iter()
+                    .any(|f| f.starts_with(infra_name) || f.contains(&format!("/{infra_name}/"))),
+                "infra={infra_name}: no file under infra dir must appear in collection; got {coll_files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_pruned_infra_dir_dotdir_at_depth_not_materialised() {
+        // A hidden directory nested under a regular subdirectory (.cache,
+        // .wrangler, etc.) must not appear in the destination, but the
+        // parent regular subdirectory and its non-dot sibling MUST.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        // Regular sibling under subdir.
+        fs::create_dir_all(src.join("subdir")).unwrap();
+        fs::write(src.join("subdir/real.tsx"), "export default () => null;\n").unwrap();
+        // Hidden dir under subdir — must be pruned.
+        fs::create_dir_all(src.join("subdir/.cache")).unwrap();
+        fs::write(src.join("subdir/.cache/inner.json"), "{}\n").unwrap();
+
+        let dest = tmp.path().join("shadow");
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let files = collect_dest_files(&dest);
+        assert!(
+            files.contains(&"subdir/real.tsx".to_string()),
+            "subdir/real.tsx must be materialised; got {files:?}"
+        );
+        assert!(
+            !files.iter().any(|f| f.contains(".cache")),
+            "subdir/.cache/* must NOT be materialised; got {files:?}"
+        );
+    }
+
+    #[test]
+    fn is_pruned_infra_dir_depth0_root_not_pruned() {
+        // Even when the walker root's name starts with '.', depth-0 is never
+        // pruned — the helper's `entry.depth() > 0` guard ensures the caller's
+        // chosen root is always walked.
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a src whose name starts with '.'.
+        let src = tmp.path().join(".dotroot");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("page.tsx"), "export default () => null;\n").unwrap();
+
+        let dest = tmp.path().join("shadow");
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            tmp.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let files = collect_dest_files(&dest);
+        assert!(
+            files.contains(&"page.tsx".to_string()),
+            "walker root named '.dotroot' must still be walked; got {files:?}"
+        );
+    }
+
+    #[test]
+    fn is_pruned_infra_dir_sort_and_filter_interaction() {
+        // Verify that the filter_entry + sort_by_file_name combination yields
+        // lexicographically ordered entries and that node_modules does NOT
+        // appear while the sibling "nodes/" dir DOES.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Build a source tree:
+        //   aaa.tsx          (plain file — should be first)
+        //   node_modules/x   (pruned infra dir — must not appear)
+        //   nodes/x.tsx      (regular dir starting with "nodes" — must appear)
+        //   zzz.tsx          (plain file — should be last)
+        fs::create_dir_all(tmp.path()).unwrap();
+        fs::write(tmp.path().join("aaa.tsx"), "// a\n").unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
+        fs::write(tmp.path().join("node_modules/x.js"), "// x\n").unwrap();
+        fs::create_dir_all(tmp.path().join("nodes")).unwrap();
+        fs::write(tmp.path().join("nodes/x.tsx"), "// nx\n").unwrap();
+        fs::write(tmp.path().join("zzz.tsx"), "// z\n").unwrap();
+
+        // Collect walked paths directly using the same pattern as the walkers.
+        let walked: Vec<String> = WalkDir::new(tmp.path())
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| !is_pruned_infra_dir(e))
+            .filter_map(|e| {
+                let e = e.unwrap();
+                if !e.file_type().is_file() {
+                    return None;
+                }
+                let rel = e
+                    .path()
+                    .strip_prefix(tmp.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .to_owned();
+                Some(rel)
+            })
+            .collect();
+
+        assert_eq!(
+            walked,
+            vec![
+                "aaa.tsx".to_string(),
+                "nodes/x.tsx".to_string(),
+                "zzz.tsx".to_string(),
+            ],
+            "lexicographic order must be preserved and node_modules must be absent; got {walked:?}"
         );
     }
 }
