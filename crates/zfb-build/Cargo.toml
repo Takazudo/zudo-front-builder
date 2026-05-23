@@ -60,6 +60,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
+ignore = { workspace = true }
 # Glob filter for the bundler's parallel collection walk. MUST match the
 # zfb-content walker's filter shape byte-for-byte so the snapshot's
 # `module_specifier` and the bridge map key agree on which files were
