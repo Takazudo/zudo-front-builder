@@ -18,7 +18,7 @@ No `pnpm install`, no `pnpm dev`, no `pnpm exec` needed.
 ## Structure
 
 ```
-zfb.config.json     zfb configuration (JSON only — no .ts in this template)
+zfb.config.json     zfb configuration (JSON form used in this template)
 pages/
   index.tsx         home page — lists posts from the collection
   about.md          sample .md page entry — renders at /about
@@ -69,7 +69,7 @@ different name.
 
 See `zfb.config.json` and the
 [zfb docs](https://github.com/Takazudo/zudo-front-builder) for available
-options. The `zfb.config.ts` (`.ts`) form is intentionally omitted from
-this template until upstream gains an embedded-V8 path for evaluating
-`.ts` configs (tracking:
-[Tier 2 epic #390](https://github.com/Takazudo/zudo-front-builder/issues/390)).
+options. `zfb.config.ts` also works Node-free — the default `zfb` binary
+evaluates it in-process via an embedded V8 isolate. This template ships
+`zfb.config.json` as the simpler starting point; rename or add a
+`zfb.config.ts` whenever you want TypeScript types or computed values.
