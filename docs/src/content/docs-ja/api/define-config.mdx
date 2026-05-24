@@ -1,0 +1,104 @@
+---
+title: defineConfig
+description: 完全な型推論つきで zfb プロジェクトの設定を定義します。
+sidebar_position: 1
+---
+
+## シグネチャ
+
+```ts
+defineConfig(config: ZfbConfig): ZfbConfig
+```
+
+`defineConfig` は `zfb/config` からエクスポートされます。このヘルパーは identity 型で、受け取った引数をそのまま返します。唯一の役割は、エディタに `ZfbConfig` 形状に対する IntelliSense と型チェックを提供することです。実際のスキーマは設定ロード時に Rust の serde によって検証されるため、設定を TypeScript で書いても JSON で書いても同じルールが適用されます。
+
+## 設定の形状
+
+すべてのキーは camelCase で、`crates/zfb/src/config.rs` を反映しています。
+
+- `outDir?: string` — 出力ディレクトリ。デフォルト: `"dist"`。
+- `publicDir?: string` — 静的アセットのディレクトリ。そのままコピーされます。デフォルト: `"public"`。
+- `host?: string` — dev / preview サーバーがバインドするホスト。
+- `port?: number` — dev / preview サーバーのポート。
+- `framework?: "preact" | "react"` — JSX フレームワークのランタイム。デフォルト: `"preact"`。
+- `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは `name`（`getCollection` 呼び出しで使う識別子）、`path`（プロジェクトルートからの相対ディレクトリ）、任意の `schema`（設定ロード時に検証され、フロントマターは `zfb check` とビルドによってスキーマと照合されます）を持ちます。
+- `tailwind?: { enabled?: boolean }` — Tailwind オプション。
+- `plugins?: PluginConfig[]` — ユーザー提供のプラグイン。各エントリは `name`（npm の specifier または `./` 相対パス）と任意の `options`（プラグインのフックに渡される任意の JSON オブジェクト）を持ちます。フックのコントラクト（`setup`、`preBuild`、`postBuild`、`devMiddleware`）の全体、および仮想モジュール・インポートエイリアス・開発専用の注入ルートについては [Plugins](/concepts/plugins) を参照してください。
+- `adapter?: string` — デプロイ先アダプタのパッケージ名。純粋な静的ビルドの場合は省略します。`"@takazudo/zfb-adapter-cloudflare"` のようなパッケージは SSR バンドルをデプロイ可能なエントリ（例: Cloudflare Pages 向けの `dist/_worker.js`）にラップします。
+- `site?: string` — 正規のオリジン URL（例: `"https://example.com"`）。設定すると `globalThis.__zfb.site` が公開され、レイアウトで正規の `<link>` タグ、OpenGraph メタ、サイトマップの絶対 href、hreflang の代替言語指定を構築できます。絶対 HTTP/HTTPS URL である必要があります。サーバーサイドでの正規 URL 構築が不要なビルドでは省略してください。`base` とは別物です（後述）。
+- `base?: string` — アセット URL 向けの公開 URL プレフィックス。サイトがサブパス配下にデプロイされる場合（例: `"/pj/my-site/"`）に使います。`site` とは別物です。`base` はアセット URL の前に付与され、`site` はメタデータで使う完全な正規オリジンです。
+- `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
+- `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
+- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。
+- `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
+
+## プロジェクトルート外のパスを監視する
+
+`extraWatchPaths` を使うと、プロジェクトツリー外のファイルが変更されたときに `zfb dev` がライブリロードできます。プロジェクトが兄弟リポジトリからコンテンツを読み込む場合、コードとともにコンテンツを同梱する `file:` 依存、共有ファイルシステムのディレクトリなどで便利です。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  extraWatchPaths: [
+    "/home/me/knowledge-base",
+    "/srv/shared-content",
+  ],
+});
+```
+
+セマンティクス:
+
+- **絶対パスのみ。** 各エントリは絶対パスである必要があります。相対パスは設定ロード時に `extraWatchPaths[N]: ... must be an absolute path` エラーで拒否されます。dev ウォッチャーは各エントリをプロジェクトルートの外でそのまま登録するため、相対パスを解決するためのアンカーを持ちません。
+- **正規化。** 各エントリは `zfb dev` 起動時に一度だけ正規化されます（`Path::canonicalize`）。シンボリックリンクは解決され、以降のイベントは正規形でリビルドロジックに到達します。そのため、ウォッチャーが発するパスは、設定した値に対して `realpath` を実行したときに得られる形と一致します。
+- **起動時に存在しない場合。** 設定されたパスが `zfb dev` 起動時点で存在しない場合は、警告とともにスキップされます。ウォッチャーはそのパスが後から出現するかをポーリングしません。dev サーバーがすでに動いている状態でディレクトリを作成した場合は、それを認識させるために `zfb dev` を再起動してください。
+- **再帰的。** 各エントリは再帰的に監視されます。起動後に作成されたサブディレクトリも、OS レベルの再帰監視によって自動的に拾われます。
+- **リビルドの範囲。** これらのパスからのイベントは依存グラフのカバー範囲外にあります（グラフはツリー内のエッジのみを追跡します）。そのため、ツリー内の同等の編集よりも保守的に広範なリビルドをトリガーします。これは意図的なトレードオフで、ルート外のソースについては精度よりも正しさを優先しています。
+
+**セキュリティ上の注意。** オプトイン専用です。`$HOME` や `/` のような無制限のディレクトリを指定し**ない**でください。Linux では再帰ウォッチャーがすべてのサブディレクトリを登録するため、大きなツリーでは inotify の `max_user_watches` 上限（多くのディストリビューションでデフォルト約 8192）にすぐ到達する可能性があります。広大なソースを監視する必要がある場合は、実際に編集するファイルを含む最も狭いサブツリーを監視してください。
+
+これは dev モードの機能です。プロダクションビルド（`zfb build`）はファイルシステムを一度スナップショットし、ウォッチャーのイベントに依存しないため、`extraWatchPaths` は出力される成果物に影響しません。
+
+## 例
+
+```ts
+// zfb.config.ts — 推奨される形式
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  outDir: "dist",
+  framework: "preact",
+  collections: [
+    {
+      name: "blog",
+      path: "content/blog",
+    },
+  ],
+  tailwind: { enabled: true },
+});
+```
+
+ローダーは `zfb.config.ts`（推奨）と `zfb.config.json`（レガシーのフォールバック）を受け付けます。`zfb.config.json` のみが存在する場合は `serde_json` 経由で読み込まれます。`./...`、`../...`、または絶対パスとして宣言されたプラグインパスは設定ファイルからの相対で解決されます（`"@takazudo/some-plugin"` のような npm specifier はどちらの形式でも動作します）。
+
+```json
+// zfb.config.json — レガシー形式。現在もサポート
+{
+  "outDir": "dist",
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog"
+    }
+  ],
+  "tailwind": { "enabled": true }
+}
+```
+
+## バリデーション
+
+ローダーは以下のルールを強制し、JSON のパース失敗についてはファイルパスと `line:column` を添えてエラーを報告します。
+
+- コレクション名は一意である必要があります。
+- `path` は絶対パスにできません。
+- `path` はプロジェクトルートから抜け出す `..` セグメントを含めることができません。
