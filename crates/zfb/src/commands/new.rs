@@ -11,9 +11,11 @@
 //! 2. Any dependency value matching `workspace:*` is rewritten to
 //!    [`WORKSPACE_DEP_PLACEHOLDER`]. The template ships its workspace deps
 //!    using pnpm's `workspace:*` protocol so the rewrite has something to
-//!    bite on; the placeholder is now a real published-version caret range
-//!    (`^0.1.0-next.0`) that resolves to whatever's currently on the
-//!    `@takazudo/zfb` npm tag the user installs from.
+//!    bite on; the placeholder is now an exact-pinned version string
+//!    (`=<version>`) that matches the CLI release that scaffolded the project.
+//!    Exact pin prevents a silent upgrade to a future stable once the CLI
+//!    moves from prerelease to stable. The value is kept in sync by
+//!    `scripts/sync-platform-versions.mjs`.
 //!
 //! After patching we attempt to run `pnpm install`; if pnpm is missing we
 //! print a friendly notice and continue successfully so the user can run
@@ -57,11 +59,18 @@ const NO_INSTALL_TEMPLATES: &[&str] = &["node-free"];
 /// Replacement value applied to any `workspace:*` dependency found in a
 /// scaffolded `package.json`.
 ///
-/// Caret range tracks the `@takazudo/zfb` v0.1.x line — npm/pnpm semver
-/// resolves this to whatever prerelease or stable version is on the user's
-/// chosen dist-tag (`next` or `latest`). Bump the lower-bound when the
-/// major moves (e.g. to `^0.2.0-next.0` for 0.2.x, or `^1.0.0` for 1.x).
-const WORKSPACE_DEP_PLACEHOLDER: &str = "^0.1.0-next.0";
+/// Uses an exact pin (`=<version>`) rather than a caret range so that
+/// scaffolded projects never silently upgrade to a future stable release.
+/// For example, `^0.1.0-next.4` would match stable `0.1.0` (npm semver
+/// treats stable as greater than any prerelease of the same triplet), causing
+/// an implicit downgrade of the SDK channel once `0.1.0` is published.
+/// `=0.1.0-next.4` pins exactly and prevents that.
+///
+/// **Do NOT edit this value by hand.** It is overwritten by
+/// `scripts/sync-platform-versions.mjs` on every version bump to match
+/// `packages/zfb/package.json`. See:
+/// <https://github.com/Takazudo/zudo-front-builder/issues/343>
+const WORKSPACE_DEP_PLACEHOLDER: &str = "=0.1.0-next.3";
 
 /// Dependency-section keys we walk inside `package.json` when rewriting
 /// `workspace:*` ranges. Kept as a constant so the rewriter and its tests
