@@ -334,6 +334,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      # id-token: write enables npm OIDC-attested provenance via --provenance below.
+      # Each published tarball carries a signed attestation linking to the GHA run + commit SHA.
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -413,6 +416,6 @@ jobs:
 
       - name: Publish to npm
         if: ${{ inputs.dry_run != true }}
-        run: pnpm -r publish --tag "$DIST_TAG" --no-git-checks --access public
+        run: pnpm -r publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
