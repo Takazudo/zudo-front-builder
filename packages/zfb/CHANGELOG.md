@@ -1,5 +1,7 @@
 # Changelog
 
+> **Newer releases:** see https://takazudomodular.com/pj/zudo-front-builder/changelog/ for v0.1.0-next.5 and later. Entries below are historical (kept for npm readers).
+
 ## 0.1.0-next.4
 
 ### Bug fixes
