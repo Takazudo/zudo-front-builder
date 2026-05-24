@@ -631,6 +631,12 @@ fn copy_executable(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 fn main() {
+    // Re-run this build script (and thus recompile the binary) whenever the
+    // release version env var changes. Without this directive, cargo will NOT
+    // rebuild when only ZFB_RELEASE_VERSION changes, causing stale --version
+    // output across local experiments or repeated CI builds.
+    println!("cargo:rerun-if-env-changed=ZFB_RELEASE_VERSION");
+
     // Sub 198 — embed @takazudo/zfb + zfb-runtime TypeScript source so the
     // installed binary works on a consumer with no node_modules.
     embed_runtime();
