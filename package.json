@@ -5,10 +5,10 @@
   "type": "module",
   "license": "MIT",
   "description": "zudo-front-builder — frontend build orchestrator (private workspace)",
-  "packageManager": "pnpm@10.30.0",
+  "packageManager": "pnpm@11.3.0",
   "engines": {
     "node": ">=22.0.0",
-    "pnpm": ">=10.0.0"
+    "pnpm": ">=11.0.0"
   },
   "scripts": {
     "//// === ROOT ===": "",
@@ -35,14 +35,5 @@
     "lefthook": "^2.1.6",
     "prettier": "^3.8.3",
     "wrangler": "4.85.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "devalue": "^5.8.1"
-    },
-    "onlyBuiltDependencies": [
-      "lefthook",
-      "wrangler"
-    ]
   }
 }

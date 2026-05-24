@@ -7,3 +7,28 @@ packages:
   # also publishes a tiny npm package for JS-side helpers). None exist today; the
   # glob is reserved so adding one later requires no workspace-config change.
   - "crates/*/npm"
+
+# pnpm 11 only reads auth/registry from .npmrc and ignores pnpm.* in package.json.
+# Everything else (peer-deps policy, engine strictness, supply-chain delays,
+# overrides, build-script allowlist) lives here. See https://pnpm.io/settings.
+autoInstallPeers: true
+engineStrict: true
+
+# pnpm 11 defaults minimumReleaseAge to 1440 (24h), which would block CI
+# `pnpm install --frozen-lockfile` on any dep published in the last day. CI must be
+# deterministic, so disable the delay here.
+minimumReleaseAge: 0
+
+overrides:
+  devalue: "^5.8.1"
+
+# pnpm 11 replaces the legacy `onlyBuiltDependencies` list with `allowBuilds`,
+# a per-package true/false map. Each entry is a deliberate decision to allow
+# (or refuse) the dependency's install/postinstall script. All four below are
+# legitimate native-binary builds — esbuild ships a Go binary, sharp builds
+# libvips bindings, lefthook + workerd ship native binaries — so all approved.
+allowBuilds:
+  esbuild: true
+  lefthook: true
+  sharp: true
+  workerd: true

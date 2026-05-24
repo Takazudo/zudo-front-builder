@@ -441,3 +441,58 @@ fn empty_mdx_fragment_emits_valid_jsx() {
         .compile(&out, &opts)
         .unwrap_or_else(|e| panic!("SWC rejected empty-fragment output: {e}\n--- src ---\n{out}"));
 }
+
+/// Regression for #286 (epic #285): markdown block nodes nested inside
+/// an MDX JSX element body — a heading, a paragraph, AND a list — must
+/// route through `_components.<tag>` so consumers can override `<h2>` /
+/// `<p>` / `<ul>` / `<li>` via the `components` prop, matching
+/// `JsxEmitter::emit_jsx`'s contract. Before the fix `jsx_render_child`
+/// / `jsx_wrap_children` emitted bare `<h2>`/`<p>`/`<ul>`/`<li>` tags,
+/// which missed the consumer `_components` map (no styled heading) and
+/// were never registered in the preamble.
+#[test]
+fn nested_markdown_in_mdx_jsx_routes_through_components() {
+    let out = emit_with_defaults(
+        "<Outro>\n\n## Wrap up\n\nA closing paragraph.\n\n- first\n- second\n\n</Outro>\n",
+    );
+    // The PascalCase wrapper still routes correctly (unchanged behavior).
+    assert!(
+        out.contains("const Outro = _components.Outro ?? components.Outro;"),
+        "PascalCase wrapper preamble must be emitted for <Outro>:\n{out}",
+    );
+    // Nested markdown tags route through `_components.<tag>`.
+    for needle in [
+        "<_components.h2",
+        "<_components.p>",
+        "<_components.ul>",
+        "<_components.li>",
+    ] {
+        assert!(
+            out.contains(needle),
+            "nested markdown must route through `{needle}`:\n{out}",
+        );
+    }
+    // Bare HTML tags must NOT leak through alongside the routed forms —
+    // this negative assertion is what catches a future regression.
+    for bare in ["<h2>", "<h2 ", "<p>", "<ul>", "<li>", "</h2>", "</p>", "</ul>", "</li>"] {
+        assert!(
+            !out.contains(bare),
+            "bare `{bare}` must not leak alongside the `_components` route:\n{out}",
+        );
+    }
+    // The preamble must register each tag's default fallback so the
+    // route works even without an explicit `components` override —
+    // this proves `collect_components_tag_names` harvested the tags.
+    for tag in ["h2", "p", "ul", "li"] {
+        let needle = format!("{tag}: \"{tag}\",");
+        assert!(
+            out.contains(&needle),
+            "`_components` default must register `{needle}`:\n{out}",
+        );
+    }
+    // SWC must accept the emitted module.
+    let opts = CompileOptions::default().with_filename("nested-md.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected nested-markdown output: {e}\n--- src ---\n{out}"));
+}
