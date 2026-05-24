@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
+import { format as mdxFormat } from "@takazudo/mdx-formatter";
 import { escapeForMdx } from "./escape-for-mdx";
 
 export interface ClaudeResourcesConfig {
@@ -63,8 +64,10 @@ function parseFrontmatter(content: string) {
   }
 }
 
-function escapeTitle(s: string): string {
-  return s.replace(/"/g, '\\"');
+/** Write an MDX file, normalising its frontmatter quoting via mdx-formatter. */
+async function writeMdx(filePath: string, content: string): Promise<void> {
+  const formatted = await mdxFormat(content);
+  fs.writeFileSync(filePath, formatted);
 }
 
 function listFiles(dir: string): string[] {
@@ -120,7 +123,7 @@ function findClaudeMdFiles(dir: string, excludeDirs: string[]): string[] {
 // CLAUDE.md generation
 // ---------------------------------------------------------------------------
 
-function generateClaudemdDocs(config: ClaudeResourcesConfig): ClaudeMdItem[] {
+async function generateClaudemdDocs(config: ClaudeResourcesConfig): Promise<ClaudeMdItem[]> {
   const projectRoot = config.projectRoot ?? path.dirname(config.claudeDir);
   const outputDir = path.join(config.docsDir, "claude-md");
 
@@ -150,10 +153,10 @@ function generateClaudemdDocs(config: ClaudeResourcesConfig): ClaudeMdItem[] {
 
     const pos = items.length + 1;
     const mdx = `---
-title: "${escapeTitle(displayPath)}"
-description: "CLAUDE.md at ${escapeTitle(displayPath)}"
+title: ${displayPath}
+description: CLAUDE.md at ${displayPath}
 sidebar_position: ${pos}
-sidebar_label: "${escapeTitle(relPath)}"
+sidebar_label: ${relPath}
 generated: true
 ---
 
@@ -161,7 +164,7 @@ generated: true
 
 ${escapeForMdx(content.trim())}
 `;
-    fs.writeFileSync(path.join(outputDir, `${slug}.mdx`), mdx);
+    await writeMdx(path.join(outputDir, `${slug}.mdx`), mdx);
   }
 
   // Sort: root first, then alphabetically
@@ -179,7 +182,7 @@ ${escapeForMdx(content.trim())}
 // Commands generation
 // ---------------------------------------------------------------------------
 
-function generateCommandsDocs(config: ClaudeResourcesConfig): CommandItem[] {
+async function generateCommandsDocs(config: ClaudeResourcesConfig): Promise<CommandItem[]> {
   const commandsDir = path.join(config.claudeDir, "commands");
   const outputDir = path.join(config.docsDir, "claude-commands");
 
@@ -204,15 +207,15 @@ function generateCommandsDocs(config: ClaudeResourcesConfig): CommandItem[] {
     items.push({ name, description });
 
     const mdx = `---
-title: "${escapeTitle(name)}"
-description: "${escapeTitle(description)}"
-sidebar_label: "${escapeTitle(name)}"
+title: ${name}
+description: ${description}
+sidebar_label: ${name}
 generated: true
 ---
 
 ${escapeForMdx(parsed.content.trim())}
 `;
-    fs.writeFileSync(path.join(outputDir, `${name}.mdx`), mdx);
+    await writeMdx(path.join(outputDir, `${name}.mdx`), mdx);
   }
 
   items.sort((a, b) => a.name.localeCompare(b.name));
@@ -287,7 +290,7 @@ function getSkillReferences(skillsDir: string, skillDir: string): SkillReference
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
+async function generateSkillsDocs(config: ClaudeResourcesConfig): Promise<SkillItem[]> {
   const skillsDir = path.join(config.claudeDir, "skills");
   const outputDir = path.join(config.docsDir, "claude-skills");
 
@@ -364,16 +367,16 @@ function generateSkillsDocs(config: ClaudeResourcesConfig): SkillItem[] {
     const body = [fileStructureSection, escapeForMdx(skillBody)].filter(Boolean).join("\n\n");
 
     const mdx = `---
-title: "${escapeTitle(name)}"
-description: "${escapeTitle(shortDesc)}"
-sidebar_label: "${escapeTitle(name)}"
+title: ${name}
+description: ${shortDesc}
+sidebar_label: ${name}
 generated: true
 ---
 
 ${body}`;
 
     // Write skill page as flat file
-    fs.writeFileSync(path.join(outputDir, `${dir}.mdx`), mdx);
+    await writeMdx(path.join(outputDir, `${dir}.mdx`), mdx);
 
     // Generate unlisted sub-pages (flat files with custom slug for nested breadcrumbs)
     // File: <dir>--ref-<name>.mdx, slug: claude-skills/<dir>/ref-<name>
@@ -382,15 +385,15 @@ ${body}`;
     for (const ref of references) {
       const subSlug = `${skillSlugBase}/ref-${ref.name}`;
       const refMdx = `---
-title: "${escapeTitle(ref.title)}"
-slug: "${subSlug}"
+title: ${ref.title}
+slug: ${subSlug}
 unlisted: true
 generated: true
 ---
 
 ${escapeForMdx(ref.content.trim())}
 `;
-      fs.writeFileSync(path.join(outputDir, `${dir}--ref-${ref.name}.mdx`), refMdx);
+      await writeMdx(path.join(outputDir, `${dir}--ref-${ref.name}.mdx`), refMdx);
     }
 
     for (const f of scriptFiles.filter((s) => s.endsWith(".md"))) {
@@ -399,9 +402,9 @@ ${escapeForMdx(ref.content.trim())}
       const raw = fs.readFileSync(path.join(skillsDir, dir, "scripts", f), "utf8");
       const h1Match = raw.match(/^#\s+(.+)$/m);
       const title = h1Match ? h1Match[1] : slug;
-      fs.writeFileSync(
+      await writeMdx(
         path.join(outputDir, `${dir}--script-${slug}.mdx`),
-        `---\ntitle: "${escapeTitle(title)}"\nslug: "${subSlug}"\nunlisted: true\ngenerated: true\n---\n\n${escapeForMdx(raw.trim())}\n`,
+        `---\ntitle: ${title}\nslug: ${subSlug}\nunlisted: true\ngenerated: true\n---\n\n${escapeForMdx(raw.trim())}\n`,
       );
     }
 
@@ -411,9 +414,9 @@ ${escapeForMdx(ref.content.trim())}
       const raw = fs.readFileSync(path.join(skillsDir, dir, "assets", f), "utf8");
       const h1Match = raw.match(/^#\s+(.+)$/m);
       const title = h1Match ? h1Match[1] : slug;
-      fs.writeFileSync(
+      await writeMdx(
         path.join(outputDir, `${dir}--asset-${slug}.mdx`),
-        `---\ntitle: "${escapeTitle(title)}"\nslug: "${subSlug}"\nunlisted: true\ngenerated: true\n---\n\n${escapeForMdx(raw.trim())}\n`,
+        `---\ntitle: ${title}\nslug: ${subSlug}\nunlisted: true\ngenerated: true\n---\n\n${escapeForMdx(raw.trim())}\n`,
       );
     }
   }
@@ -428,7 +431,7 @@ ${escapeForMdx(ref.content.trim())}
 // Agents generation
 // ---------------------------------------------------------------------------
 
-function generateAgentsDocs(config: ClaudeResourcesConfig): AgentItem[] {
+async function generateAgentsDocs(config: ClaudeResourcesConfig): Promise<AgentItem[]> {
   const agentsDir = path.join(config.claudeDir, "agents");
   const outputDir = path.join(config.docsDir, "claude-agents");
 
@@ -457,16 +460,16 @@ function generateAgentsDocs(config: ClaudeResourcesConfig): AgentItem[] {
     const modelBadge = model ? `**Model:** \`${model}\`\n` : "";
 
     const mdx = `---
-title: "${escapeTitle(name)}"
-description: "${escapeTitle(description)}"
-sidebar_label: "${escapeTitle(name)}"
+title: ${name}
+description: ${description}
+sidebar_label: ${name}
 generated: true
 ---
 
 ${modelBadge}
 ${escapeForMdx(parsed.content.trim())}
 `;
-    fs.writeFileSync(path.join(outputDir, `${fileSlug}.mdx`), mdx);
+    await writeMdx(path.join(outputDir, `${fileSlug}.mdx`), mdx);
   }
 
   items.sort((a, b) => a.name.localeCompare(b.name));
@@ -479,14 +482,14 @@ ${escapeForMdx(parsed.content.trim())}
 // Main
 // ---------------------------------------------------------------------------
 
-function generateOverviewIndex(config: ClaudeResourcesConfig) {
+async function generateOverviewIndex(config: ClaudeResourcesConfig) {
   const outputDir = path.join(config.docsDir, "claude");
   cleanDir(outputDir);
   ensureDir(outputDir);
 
   const index = `---
-title: "Claude"
-description: "Claude Code configuration reference."
+title: Claude
+description: Claude Code configuration reference.
 sidebar_position: 899
 generated: true
 ---
@@ -497,16 +500,16 @@ Claude Code configuration reference.
 
 <CategoryTreeNav category="claude" />
 `;
-  fs.writeFileSync(path.join(outputDir, "index.mdx"), index);
+  await writeMdx(path.join(outputDir, "index.mdx"), index);
 }
 
-export function generateClaudeResourcesDocs(config: ClaudeResourcesConfig) {
-  const claudemds = generateClaudemdDocs(config);
-  const commands = generateCommandsDocs(config);
-  const skills = generateSkillsDocs(config);
-  const agents = generateAgentsDocs(config);
+export async function generateClaudeResourcesDocs(config: ClaudeResourcesConfig) {
+  const claudemds = await generateClaudemdDocs(config);
+  const commands = await generateCommandsDocs(config);
+  const skills = await generateSkillsDocs(config);
+  const agents = await generateAgentsDocs(config);
 
-  generateOverviewIndex(config);
+  await generateOverviewIndex(config);
 
   return {
     claudemd: claudemds.length,
