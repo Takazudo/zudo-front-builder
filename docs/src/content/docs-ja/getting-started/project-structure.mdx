@@ -1,0 +1,84 @@
+---
+title: プロジェクト構造
+description: デフォルトテンプレートが配置するすべてのファイルとディレクトリを案内する。
+sidebar_position: 4
+---
+
+`zfb new my-site` を実行すると、`basic-blog` テンプレートが小さくも完結したプロジェクトを配置します。各ディレクトリが何のためのものかを知っておくと、これ以降のドキュメントをぐっと読み進めやすくなります。
+
+```text
+my-site/
+├── pages/
+│   ├── index.tsx
+│   └── blog/
+│       └── [slug].tsx
+├── layouts/
+│   └── default.tsx
+├── components/
+│   ├── note.tsx
+│   └── theme-toggle.tsx
+├── content/
+│   └── blog/
+│       └── hello-zfb.mdx
+├── styles/
+│   └── global.css
+├── public/
+├── zfb.config.json
+├── package.json
+├── tsconfig.json
+└── .gitignore
+```
+
+## pages/
+
+ファイルシステムルーティングはここに置かれます。`pages/` 配下のすべての `.tsx` ファイルがルートになります。
+
+- `pages/index.tsx` → `/`
+- `pages/about.tsx` → `/about`
+- `pages/blog/[slug].tsx` → `/blog/:slug`（動的ルート — 解決された slug ごとに 1 つの HTML ファイル）
+- `pages/docs/[...slug].tsx` → キャッチオール、任意の深さにマッチ
+
+デフォルトテンプレートには index ページと 1 つの動的なブログルートが含まれます。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して `[slug]` を解決された slug ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](/concepts/dynamic-routes) を参照してください。
+
+## layouts/
+
+再利用可能なページラッパーです。`layouts/default.tsx` はすべてのページが import するシェルで、ヘッダー・フッター・共通メタデータなどを担います。レイアウトは素の TSX コンポーネントなので、好きなように合成できます。
+
+## components/
+
+素のコンポーネントと **島** です。テンプレートには `components/note.tsx`（サーバーレンダリングされる注意書き）と `components/theme-toggle.tsx`（ダークモードを切り替える `"use client"` 島）が含まれます。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされ、JavaScript をまったく出力しません。考え方の全体像は [islands ページ](/concepts/islands) にあります。
+
+## content/
+
+コンテンツコレクションです。`content/blog/` は `blog` コレクションのシードエントリを保持します。名前付きディレクトリ内の Markdown・MDX ファイルで、ページから `getCollection("blog")` でクエリできます。コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。
+
+## styles/
+
+グローバル CSS です。`styles/global.css` がエントリポイントで、ルートレイアウトから import します。デフォルトテンプレートは、設定で `tailwind.enabled` が指定されているときにここで Tailwind を組み込みます。
+
+## public/
+
+サイトのルートからそのまま配信される静的アセットです。`favicon.ico`・`robots.txt`・SVG・ラスター画像・フォント・マニフェストファイルなど、絶対 URL で参照したいバイナリをここに置きます。このディレクトリは URL には現れません。`public/logo.svg` は `zfb dev` でも `zfb build` 後でも `/logo.svg` で到達できます。
+
+これらのファイルは TSX・MDX・CSS から URL で参照します。
+
+```tsx
+<img src="/logo.svg" alt="" width={128} height={32} />
+<link rel="icon" href="/favicon.ico" />
+```
+
+静的アセットにバンドラスタイルの import（`import logo from "./logo.svg"`）を使わないでください。zfb は `public/` に対してアセットパイプラインを実行しません。このディレクトリはそのままのミラーであり、ファイルは相対パスに一致する URL で出力されます。
+
+`zfb.config.ts` で `base` が設定されている場合（例: `base: "/pj/site/"`）、`public/` 内のファイルもそのプレフィックス配下で配信されます。`public/logo.svg` → `/pj/site/logo.svg` です。同じ前置がビルド時にも行われるため、プレフィックスは dev と prod で一貫します。
+
+`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[Static Assets](/concepts/static-assets) を参照してください。
+
+## zfb.config.json
+
+設定ファイルは次のキーを持つ camelCase スキーマを使います。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。
+
+テンプレートは `zfb.config.json` をスキャフォールドします。これを `zfb.config.ts` にリネームすると、zfb は同梱の esbuild バイナリ経由でロードし、完全な TypeScript 型と IDE 補完が得られます。スキーマはどちらの形式でも同一です。
+
+## package.json、tsconfig.json、.gitignore
+
+標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。

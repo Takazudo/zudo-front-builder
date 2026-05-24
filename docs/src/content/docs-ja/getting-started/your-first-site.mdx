@@ -1,0 +1,72 @@
+---
+title: 最初のサイト
+description: zfb プロジェクトをおよそ 5 分でスキャフォールド・実行・ビルドする。
+sidebar_position: 3
+---
+
+このウォークスルーでは、空のディレクトリから開発サーバーの起動、そしてサイトのビルドまでを案内します。グローバルな CLI インストールは不要です。スキャフォールドコマンドが必要なものをすべてオンデマンドで取得します。
+
+## 新しいプロジェクトをスキャフォールドする
+
+```bash
+pnpm create zfb@latest my-site
+# または
+npm create zfb@latest my-site
+```
+
+これは `create-zfb` イニシャライザを実行します。内部では `zfb new` を呼び出し、同梱の `basic-blog` テンプレートを `my-site/` にコピーします。`PATH` 上に pnpm があれば、zfb はテンプレートのコピー直後に `pnpm install` を自動実行します。なければ、自分で実行するよう促す短いメッセージを表示します。
+
+```bash
+cd my-site
+```
+
+zfb CLI をすでにグローバルインストールしている場合（[Installation](/getting-started/installation) を参照）、`zfb new` を直接呼び出しても同じ結果が得られます。
+
+```bash
+zfb new my-site --template basic-blog
+```
+
+`--template basic-blog` はデフォルトであり、現時点で唯一利用可能なテンプレートなので、省略できます。
+
+## 開発サーバーを起動する
+
+```bash
+pnpm zfb dev
+# または
+npx zfb dev
+```
+
+ホストとポートを示す「ready」バナーが表示されます（デフォルトは `http://localhost:3000`）。zfb はプロジェクトディレクトリを監視します。`pages/`・`layouts/`・`components/`・`content/`・`styles/` 内のファイルを保存すると、接続中のブラウザにライブリロードがブロードキャストされます。サーバーは `public/` に置いたものも配信します。
+
+ホストとポートは CLI から上書きできます。これらは常に `zfb.config.ts` より優先されます。
+
+```bash
+pnpm zfb dev --port 4000 --host 0.0.0.0
+# または
+npx zfb dev --port 4000 --host 0.0.0.0
+```
+
+## ビルドとプレビュー
+
+サイトの静的ビルドを生成するには:
+
+```bash
+pnpm zfb build
+pnpm zfb preview
+# または
+npx zfb build
+npx zfb preview
+```
+
+`zfb build` は出力ディレクトリ（デフォルトは `dist/`）を解決し、ファイルシステムルーターでルートを列挙し、静的ルートごとに 1 つの HTML ファイルを書き出します。続いて `zfb preview` がそのディレクトリをデフォルトでポート `4321` の HTTP で配信します。CLI フラグ（`--outdir`・`--port`）は両コマンドとも設定ファイルより優先されます。
+
+## 動作するサンプル
+
+`basic-blog` を使って完全にビルドされたサイトが [https://github.com/Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) で公開されています。
+
+## 次に読むもの
+
+- [Project structure](/getting-started/project-structure) — テンプレートが作成した各ディレクトリが実際に何をするのか。
+- [Routing](/concepts/routing) — `pages/` がどのように URL になるか。動的ルートやキャッチオールルートも含みます。
+- [Islands](/concepts/islands) — 個々のコンポーネントをクライアントサイドのハイドレーションにオプトインする方法。
+- [Build engine](/architecture/build-engine) — Rust クレートが内部でどう組み合わさっているか。

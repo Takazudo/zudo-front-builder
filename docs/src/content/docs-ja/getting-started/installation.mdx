@@ -1,0 +1,66 @@
+---
+title: インストール
+description: zfb CLI を npm からインストールする。
+sidebar_position: 2
+---
+
+`@takazudo/zfb` は npm パッケージとして配布され、npm の optional-deps 経由でビルド済みのプラットフォームバイナリを取得します。Rust ツールチェインは不要です。
+
+<Note>
+
+**Node がない場合は？** npm や Node なしでも、zfb をスタンドアロンバイナリとしてインストールできます。curl・Homebrew・Windows でのインストール手順は [Install without Node](/install/node-free) を参照してください。
+
+</Note>
+
+## 前提条件
+
+以下が必要です。
+
+- **Node.js ≥ 22** — 設定ローダーや一部のビルドステップが Node を呼び出します。
+- **pnpm** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。
+
+## CLI のインストール
+
+`@takazudo/zfb` をプロジェクトの開発依存としてインストールします。
+
+<Tabs>
+
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add -D @takazudo/zfb
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install -D @takazudo/zfb
+    ```
+  </TabItem>
+
+</Tabs>
+
+## インストールの確認
+
+```bash
+npx zfb --help
+```
+
+4 つのサブコマンドが表示されるはずです。
+
+- `zfb new` — 新しいプロジェクトをスキャフォールドする
+- `zfb dev` — ウォッチャーとライブリロード付きの開発サーバーを起動する
+- `zfb build` — 静的ビルドを生成する
+- `zfb preview` — ビルド出力を配信する
+
+`npx zfb --help` で 4 つすべてが表示されれば、[Your first site](/getting-started/your-first-site) に進む準備ができています。
+
+## ソースからビルドする（コントリビューター向け）
+
+zfb 本体にコントリビュートしていて CLI をソースからビルドする必要がある場合は、Rust ツールチェインの前提条件を含む詳しい手順を [BUILDING.md](https://github.com/Takazudo/zudo-front-builder/blob/main/BUILDING.md) で確認してください。
+
+最短の手順:
+
+```bash
+git clone https://github.com/Takazudo/zudo-front-builder.git
+cd zudo-front-builder
+cargo install --path crates/zfb
+```

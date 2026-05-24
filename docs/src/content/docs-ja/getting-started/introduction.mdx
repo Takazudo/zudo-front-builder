@@ -1,0 +1,64 @@
+---
+title: はじめに
+description: zfb とは何か、誰のためのものか、Astro や Next.js とどう比較されるか。
+sidebar_position: 1
+---
+
+zfb は Rust で構築された静的サイトエンジンです。すでに Astro や Next.js を知っていて、ミリ秒単位のリビルド、単一バイナリのツールチェイン、オプトイン方式の島モデルを求める人に向いています。
+
+`pages/` ディレクトリツリーを読み解き、TSX コンポーネントを書けるなら、zfb が要求することの 90 パーセントはすでに身についています。
+
+## zfb が提供するもの
+
+「なぜこの形なのか」（狭いスコープ、プラグインよりレシピ、ミドルウェア層なし）という観点については [Design philosophy](/concepts/design-philosophy) を参照してください。
+
+- **組み込み V8 ワーカー** — ページは Rust に組み込まれた V8 ランタイムを通じてレンダリングされます。ビルド時に別途 Node プロセスを起動する必要はありません。
+- **アトミックな書き出し** — ビルドが出力ディレクトリを書きかけの状態で残すことはありません。各 `zfb build` の実行は完全に完了するか、`dist/` を一切変更しないかのいずれかです。
+- **ページ単位のインクリメンタルリビルド** — 共有レイアウトを変更すると、それを import しているページだけが対象になり、サイト全体には及びません。大規模サイトでも開発ループのレイテンシは数十ミリ秒に保たれます。
+- **オプトイン方式の島** — コンポーネントはデフォルトでサーバーレンダリングされます。コンポーネントファイルに `"use client"` を追加すると、クライアントサイドのハイドレーションをオプトインできます。島を持たないページは JavaScript をまったく出力しません。
+- **フロントマターとコンテンツコレクション** — 名前付きディレクトリに置いた Markdown・MDX・TypeScript データファイルは型付きのコレクションになり、ページから `getCollection()` でクエリできます。
+- **動的ルート** — `pages/blog/[slug].tsx` は `paths()` 関数をエクスポートします。zfb はビルド時にこれを評価し、ルートを slug ごとに 1 つの HTML ファイルへ展開します。
+- **MDX コンポーネント** — 任意の TSX コンポーネントを `.mdx` コンテンツに import し、JSX として使えます。
+- **HTML 以外のページ** — ページファイルは `contentType` をエクスポートすることで、HTML の代わりに JSON・XML・RSS など任意のテキスト形式を生成できます。
+- **コンテンツクエリのブリッジ** — `getCollection()` はページコンポーネントだけでなく、MDX ファイル内や `paths()` 内でも利用できます。
+- **単一バイナリの配布** — zfb は 1 つの Rust バイナリとして提供されます。フレームワーク自体に `node_modules` は不要で、監査すべきプラグインレジストリもありません。
+
+## Astro から見て馴染みのある点
+
+| Astro のコンセプト | zfb での対応 |
+| --- | --- |
+| `src/pages/` のファイルシステムルーティング | `pages/` ディレクトリ、同じ命名規約 |
+| フロントマターフェンスを持つ `.astro` コンポーネント | `getStaticProps` をエクスポートする TSX ページファイル |
+| 型付きスキーマを持つ Content Collections | `getCollection()` + `zfb.config.ts` で宣言するスキーマ |
+| レイアウト内の `<slot />` | React の `children` prop — 素の TSX 合成 |
+| `client:load` ディレクティブ | コンポーネントファイル先頭の `"use client"` ディレクティブ |
+| 静的アセット用の `public/` | `public/` — 同じセマンティクス |
+| `astro.config.mjs` | `zfb.config.ts`（TypeScript、直接ロード） |
+
+異なる点: zfb には独自のコンポーネント構文がなく、すべてが TSX です。学ぶべき `.astro` ファイル形式はありません。トレードオフとして Astro のコンポーネント単位のフェンス構文は失われますが、ページ・レイアウト・コンポーネントを通じて一貫した記述面が得られます。
+
+## Next.js から見て馴染みのある点
+
+| Next.js のコンセプト | zfb での対応 |
+| --- | --- |
+| `pages/` ディレクトリルーティング（Pages Router） | `pages/` — 同じファイル命名とネストのルール |
+| `getStaticProps` / `getStaticPaths` | `getStaticProps` + `paths()` エクスポート、同じ 2 関数パターン |
+| 動的ルート `[slug].tsx` | `[slug].tsx` — 同一の構文 |
+| キャッチオールルート `[...slug].tsx` | `[...slug].tsx` — 同一の構文 |
+| 静的アセット用の `public/` | `public/` — 同じセマンティクス |
+| ページをラップするレイアウトコンポーネント | ページをラップするレイアウトコンポーネント — 素の TSX 合成 |
+
+異なる点: zfb は **デフォルトで SSG** です。すべてのページはビルド時に計算され、静的 HTML になります。本当にリクエスト時の挙動を必要とするルートは `prerender = false` でオプトアウトし、設定済みのアダプター（例: [`@takazudo/zfb-adapter-cloudflare`](/guides/ssr-and-cloudflare-bindings) 経由の Cloudflare Pages）が処理します。zfb が目指していないのは、フル機能のアプリフレームワークになることです。App Router も、React Server Components も、ミドルウェア層も、ページ単位の自動 ISR もありません。ランタイムの位置づけは「SSG にアダプター形状の脱出口を加えたもの」であって、「`output: export` だけの Next.js」ではありません。
+
+## クライアントルーターと View Transitions
+
+`@takazudo/zfb-runtime` パッケージは `<ClientRouter />` コンポーネントを提供します。これは同一オリジンへのナビゲーションをインターセプトし、フルリロードなしでページコンテンツを差し替えます。オプションで View Transitions API もサポートします。ルートレイアウトにマウントしてオプトインしてください。マウントしないページは通常のリンク挙動になります。
+
+## マイグレーションガイド
+
+- [Migrating from Astro](/guides/migrating-from-astro) — 既存の Astro 静的サイトを zfb へ移行するための、コンセプトごとの対応表。
+
+## 次に読むもの
+
+[Installation](/getting-started/installation) では CLI のビルドとインストールを扱います。
+[Your first site](/getting-started/your-first-site) では、プロジェクトのスキャフォールドからビルドまでを一通り解説します。
