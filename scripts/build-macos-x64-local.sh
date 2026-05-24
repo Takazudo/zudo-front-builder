@@ -157,14 +157,13 @@ echo "    ${archive_path}.sha256"
 # ── Optional upload to the GH Release ─────────────────────────────────────────
 
 if [[ -n "$upload_tag" ]]; then
-  # In the documented recovery flow the user cancels the stalled tag run, so the
-  # release-assets job (which creates the GH Release) never ran — the Release may
-  # not exist yet. `gh release upload` requires an existing Release, so create a
-  # minimal one first. The re-dispatched release.yml release-assets job later
-  # updates this same Release with the other 4 archives and the final prerelease
-  # flag (softprops/action-gh-release updates an existing release in place).
+  # Normally `/l-make-release` creates the draft Release before this script runs.
+  # If the draft does not exist yet, create one now (as a draft so that publishing
+  # it later — after assets are uploaded — is what fires `release: published`).
+  # IMPORTANT: Must be created as --draft so the release: published event fires
+  # only after the user explicitly publishes it, not during this upload step.
   if ! gh release view "$upload_tag" >/dev/null 2>&1; then
-    echo "==> GH Release ${upload_tag} does not exist yet — creating it"
+    echo "==> GH Release ${upload_tag} does not exist yet — creating a draft"
     # Match the channel policy: *-next.* / *-beta.* / *-rc.* tags are prereleases.
     prerelease_flag=""
     if [[ "$upload_tag" =~ -next\. ]] || [[ "$upload_tag" =~ -beta\. ]] || [[ "$upload_tag" =~ -rc\. ]]; then
@@ -172,7 +171,8 @@ if [[ -n "$upload_tag" ]]; then
     fi
     gh release create "$upload_tag" \
       --title "$upload_tag" \
-      --notes "Release ${upload_tag} (macOS-x64 built locally via escape hatch — issue #437; remaining assets uploaded by release.yml)" \
+      --notes "Release ${upload_tag} (macOS-x64 pre-built locally; remaining assets uploaded by release.yml)" \
+      --draft \
       $prerelease_flag
   fi
 
