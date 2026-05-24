@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.0-next.4
+
+### Bug fixes
+
+**Binary executable bit + launcher EACCES** (#441, #444 §1):
+
+- #441: The bundled `bin/zfb.mjs` launcher was missing its executable bit in the published tarball, causing `zfb: command not found` after `npm install -g`.
+- #444 §1: Companion fix ensuring the per-platform native binary receives its executable bit correctly on POSIX systems.
+
+**`--version` stamping** (#445, #444 §2):
+
+- #445: `zfb --version` printed `0.0.0` instead of the actual release version; the binary is now stamped with `ZFB_RELEASE_VERSION` at build time.
+- #444 §2: Ensures the version reported by `--version` matches the npm package version for all platforms.
+
+**`paths()` worker / `zfb/content` snapshot flow** (#442):
+
+- #442: Fixed a race in the content-snapshot flow where `paths()` could be invoked before the worker finished writing the snapshot, causing intermittent empty-route tables.
+
+**`@/` tsconfig path-alias regression** (#443):
+
+- #443: The `@/` TypeScript path alias was dropped during the build pipeline refactor in 0.1.0-next.3, breaking imports that relied on the alias in user projects.
+
+**`create-zfb` scaffold dist-tag** (#343):
+
+- #343: `npm create zfb@latest` was resolving the wrong dist-tag on the first install; scaffolded projects now pin to the exact CLI version (`=<ver>` rather than `^<ver>`) to prevent silent downgrade once the stable release lands.
+
 ## 0.1.0-next.1
 
 Initial public prerelease on npm.
