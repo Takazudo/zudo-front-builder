@@ -1,0 +1,192 @@
+---
+title: Islands
+description: "クライアントでインタラクティブなコンポーネントを \"use client\" でマークすると、zfb がブラウザでハイドレートします。"
+sidebar_position: 5
+category: Concepts
+---
+
+zfb のページはデフォルトで静的 HTML にレンダリングされます。**Islands（島）** はその抜け道です。ブラウザに JavaScript を配信してクライアントでハイドレートする小さなコンポーネントで、ページの残りの部分はプレーンな HTML のままに保たれます。
+
+メンタルモデルは単純です。ページの大部分は静的なドキュメントです。いくつかのインタラクティブな要素（カウンター、検索ボックス、テーマ切り替え）は、そのドキュメントに埋め込まれた島であり、それぞれが独立してロードされハイドレートされます。
+
+## 島とは何か
+
+`.tsx` ファイルの先頭に `"use client"` ディレクティブを追加します。
+
+```tsx
+"use client";
+
+import { useState } from "preact/hooks";
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+```
+
+この 1 つのディレクティブが opt-in のすべてです。これを持たないファイルは純粋なサーバーコンポーネントです。ビルド時に一度レンダリングされるだけで、ブラウザには決して届きません。
+
+[zfb-example-blog のスタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) にある `theme-toggle.tsx` コンポーネントは、典型的な実例です。`localStorage` と `matchMedia` を読み取り、自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、その後 `useEffect` 内でユーザーの設定に同期する点です。
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "preact/hooks";
+
+type Theme = "light" | "dark";
+
+export default function ThemeToggle() {
+  // 決定論的で SSR セーフなデフォルト。実際の設定は useEffect で適用される。
+  const [theme, setTheme] = useState<Theme>("light");
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") setTheme(saved);
+  }, []);
+
+  const next: Theme = theme === "dark" ? "light" : "dark";
+  return (
+    <button
+      type="button"
+      aria-pressed={theme === "dark"}
+      onClick={() => setTheme(next)}
+    >
+      {theme === "dark" ? "Light mode" : "Dark mode"}
+    </button>
+  );
+}
+```
+
+## N 個の島に対して esbuild が生成するもの
+
+3 つの島（`Counter`・`ThemeToggle`・`SearchBox`）を持つプロジェクトの場合、islands のビルドステップは **4 つのファイル** を出力します。
+
+```
+dist/islands/Counter.js
+dist/islands/ThemeToggle.js
+dist/islands/SearchBox.js
+dist/islands/islands-runtime.js
+```
+
+島ごとのバンドルが 3 つ（コンポーネントごとに 1 つ）、それにハイドレーションを駆動する共有ランタイムバンドルが 1 つです。島ごとの各ファイルは自己完結した ESM モジュールです。コンポーネントとフレームワーク固有のハイドレーション接着コード（例: Preact の `hydrate`）をインポートし、何もエクスポートしません。島同士の共有は各バンドル内の esbuild レベルで行われ、ランタイム自体は別のバンドルです。
+
+**ファイル名は安定しています** — 名前にコンテンツハッシュは含まれません。`ProductionAssetPipeline` がハッシュ化の単一の真実の源であり、出力された HTML 内の URL の書き換えを処理します。バンドラは予測可能なパスを書き出すため、下流の処理が推測する必要はありません。
+
+## 島がどうロードされるか
+
+レンダリング後、各島のサーバーレンダリングされた HTML は、メタデータを持つ `<div>` でラップされます。
+
+```html
+<div data-zfb-island="ThemeToggle"
+     data-props="{}"
+     data-when="load">
+  <!-- server-rendered island HTML -->
+  <button type="button" aria-pressed="false">Dark mode</button>
+</div>
+```
+
+少なくとも 1 つの島を持つページには、**1 つの `<script>` タグ** が `<head>` に注入されます。
+
+```html
+<script type="module" src="/islands/islands-runtime.js"></script>
+```
+
+ランタイム（`islands-runtime.js`）はページ上のすべての `[data-zfb-island]` 要素を走査します。見つけた各要素について、対応する島ごとのバンドル（`data-zfb-island="ThemeToggle"` に対しては `/islands/ThemeToggle.js`）を `dynamic-import()` し、シリアライズされた `data-props` を読み取り、既存のサーバーレンダリング済み DOM に対して `hydrate()` を呼び出します。
+
+## dynamic-import 設計の帰結
+
+ランタイムは `import()` を通じて島を遅延的に解決するため、次のことが言えます。
+
+- **ページが実際に使う島だけが取得されます。** `ThemeToggle` を使うページは `Counter.js` も `SearchBox.js` もダウンロードしません。
+- **島のないページにはランタイムが入りません。** ページのレンダリングツリーに `"use client"` コンポーネントが含まれない場合、ビルドパイプラインは `<script>` の注入を完全にスキップします。完全に静的なページには JavaScript が 1 バイトも届きません。
+- **1 つのページに新しい島を追加しても他のページには影響しません。** 各ページの HTML は独立しており、島は名前で取得されるため、ホームページに `SearchBox` を追加しても他のすべてのページの HTML やネットワークトラフィックは変わりません。
+
+安定したファイル名がこれを補強します。CI デプロイが `dist/islands/` ディレクトリに `SearchBox.js` を追加しても、既存のすべての `*.js` ファイルはバイト単位で同一のまま保たれ、ブラウザのキャッシュは有効なままです。
+
+## フレームワークの選択
+
+zfb は島について 2 つのフレームワークをサポートしています。
+
+| Config value | Runtime |
+|---|---|
+| `"preact"`（デフォルト） | Preact + `preact/jsx-runtime` |
+| `"react"` | React 18 + `react-dom/client` |
+
+`zfb.config.ts` で一度だけ設定します。
+
+```ts
+export default {
+  framework: "preact", // または "react"
+};
+```
+
+これは **プロジェクト全体の設定** です。プロジェクトごとに 1 つのフレームワークです。バンドラ（`crates/zfb-islands` の `FrameworkKind` enum）が、その選択を JSX 変換オプション（`--jsx-import-source`）と各島エントリをラップするハイドレーション接着コードに通します。同じプロジェクト内で Preact の島と React の島を混在させることはできません。
+
+zfb は Vue・Svelte・Solid をサポートしていません。`FrameworkKind` enum は意図的に 2 バリアントの enum であり、プラグインポイントではありません。別のフレームワークが必要な場合は、以下の抜け道が一般的なケースをカバーします。
+
+2 つのアダプタがどう動作するかの詳細は [Framework adapters](/architecture/framework-adapters) を参照してください。
+
+## 島ではないクライアント JS のための抜け道
+
+島はステートフルな UI コンポーネントをカバーします。それ以外のクライアントサイド JavaScript のニーズには、標準的な HTML の仕組みを直接使ってください。
+
+**インラインスクリプト** — ページの TSX やレイアウトに直接 `<script>` タグを書きます。
+
+```tsx
+export default function Layout({ children }) {
+  return (
+    <html>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `document.documentElement.dataset.theme = localStorage.getItem('theme') ?? 'light';`,
+          }}
+        />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+これは、スタイルシートのパース前に実行されなければならない同期的なハイドレーション前の処理（FOUC 防止、テーマ初期化、アナリティクスのセットアップ）に適したツールです。
+
+**外部スクリプト** — `public/` または CDN の任意の `.js` ファイルを参照します。
+
+```tsx
+<script src="/scripts/analytics.js" defer />
+<script src="https://cdn.example.com/lib.js" defer />
+```
+
+**カスタムビルドステップ** — 追加の TypeScript モジュールをバンドルする必要がある場合は、ビルドパイプラインに別の esbuild または Rollup のステップを追加し、その出力を `<script src>` から参照します。zfb は `"use client"` でない任意のモジュールを自動バンドルしません。自動で実行されるのは islands パイプラインだけです。
+
+**できないこと**: 通常の（`"use client"` でない）`.ts` や `.tsx` モジュールをページからインポートして、そのブラウザ側のコードがクライアントに届くことを期待すること。ディレクティブを持たないモジュールはサーバー専用です。SWC がビルド時にコンパイルして評価し、そのバイトは出力に一切含まれません。
+
+## 島を使わないほうがよいとき
+
+島は JavaScript を配信します。それにはコストがあります。追加する前に、それなしで問題を解決できないか自問してください。
+
+**DOM のクラス入れ替えトグル**（アコーディオン、ディスクロージャーメニュー、表示・非表示パネル）は、数行のプレーンな CSS や小さなインラインの `<script>` で解決できることがよくあります。ネイティブの `<details>` / `<summary>` 要素は JavaScript なしでアコーディオンの挙動を扱います。
+
+```html
+<details>
+  <summary>Frequently asked question</summary>
+  <p>The answer goes here.</p>
+</details>
+```
+
+CSS のみのアプローチ（`:target`・`:checked` + `<label>`・`@starting-style`）は、かつて JavaScript を必要とした多くのインタラクティブなパターンを扱えます。
+
+**島が適したツールとなるのは次の場合です。**
+
+- コンポーネントが、単一のインタラクションを超えて存続しなければならない状態を持つ場合（例: カート、ユーザーセッション、複数ステップのフォーム）。
+- コンポーネントがビルド時には利用できないブラウザ API に依存する場合（`canvas`・`WebGL`・`getUserMedia`・リアルタイムデータ）。
+- そうでなければコンポーネントを 2 回（サーバーレンダリング用に 1 回、クライアント用に 1 回）書いて手動で同期し続けることになる場合。
+
+正直な答えが「クリックでクラスを 1 つ切り替えたいだけ」なら、まず CSS か小さなインラインスクリプトに手を伸ばしてください。「2 回書くことになるステートフルな UI」に島を、というのが正しい判断基準です。
+
+パイプラインの形についてさらに詳しくは [Build pipeline](/concepts/build-pipeline) と [Build engine](/architecture/build-engine) を参照してください。
