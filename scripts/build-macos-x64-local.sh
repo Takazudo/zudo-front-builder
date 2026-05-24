@@ -108,7 +108,12 @@ pnpm install --frozen-lockfile
 echo "==> cargo build -p zfb --release --target ${target}"
 cargo build -p zfb --release --target "$target"
 
-built_binary="target/${target}/release/zfb"
+# Resolve the actual cargo target directory rather than assuming "./target".
+# A host-level ~/.cargo/config.toml (or CARGO_TARGET_DIR) can redirect builds
+# elsewhere; `cargo metadata` reports the effective location regardless.
+target_root="$(cargo metadata --format-version 1 --no-deps \
+  | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).target_directory))")"
+built_binary="${target_root}/${target}/release/zfb"
 if [[ ! -f "$built_binary" ]]; then
   echo "ERROR: expected binary not found: ${built_binary}" >&2
   exit 1
