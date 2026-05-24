@@ -11,7 +11,7 @@ export function claudeResourcesIntegration(options: ClaudeResourcesOptions): Ast
   return {
     name: "claude-resources",
     hooks: {
-      "astro:config:setup": ({ logger }) => {
+      "astro:config:setup": async ({ logger }) => {
         const rootDir = path.resolve(".");
         const claudeDir = path.resolve(rootDir, options.claudeDir);
         const projectRoot = options.projectRoot
@@ -21,7 +21,7 @@ export function claudeResourcesIntegration(options: ClaudeResourcesOptions): Ast
 
         logger.info(`Generating from ${claudeDir}`);
 
-        const counts = generateClaudeResourcesDocs({
+        const counts = await generateClaudeResourcesDocs({
           claudeDir,
           projectRoot,
           docsDir,
