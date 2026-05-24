@@ -55,3 +55,9 @@ __inbox/
 # miniflare subprocess is killed before NamedTempFile drop runs
 # (e.g. SIGKILL). See crates/zfb-build/src/renderer.rs.
 /zfb-renderer-bootstrap-*.mjs
+
+# Release archives + checksums produced locally by
+# scripts/build-macos-x64-local.sh (issue #437 escape hatch). Uploaded to the
+# GH Release, never committed.
+/zfb-*.tar.gz
+/zfb-*.tar.gz.sha256
