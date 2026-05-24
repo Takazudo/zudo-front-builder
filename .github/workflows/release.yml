@@ -170,11 +170,21 @@ jobs:
       - name: Build zfb binary (native)
         if: ${{ matrix.settings.use_cross != true }}
         shell: bash
+        # ZFB_RELEASE_VERSION stamps the release version into the binary at compile time
+        # via option_env! in cli.rs. Without this the binary would report 0.0.0 (Cargo.toml
+        # placeholder). The variable is already in GITHUB_ENV from the "Resolve version" step.
+        env:
+          ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cargo build -p zfb --release --target ${{ matrix.settings.target }}
 
       - name: Build zfb binary (cross — linux-arm64)
         if: ${{ matrix.settings.use_cross == true }}
         shell: bash
+        # ZFB_RELEASE_VERSION is passed into the cross Docker container via Cross.toml
+        # [build.env] passthrough — without that entry, cross drops host env vars at the
+        # container boundary.
+        env:
+          ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cross build -p zfb --release --target ${{ matrix.settings.target }}
 
       # Verify the arm64 binary runs correctly under QEMU emulation.
@@ -194,6 +204,57 @@ jobs:
             -v "$PWD:/w" -w /w \
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
+
+      # Per-platform version guard (Unix — all non-Windows platforms).
+      # Runs the freshly-built binary and asserts its --version output matches
+      # the release semver. Catches a missed ZFB_RELEASE_VERSION injection on
+      # any single platform instead of silently shipping a 0.0.0 binary.
+      - name: Assert --version equals release semver (Unix)
+        if: ${{ matrix.settings.archive_ext == 'tar.gz' && matrix.settings.use_cross != true }}
+        shell: bash
+        run: |
+          BINARY="target/${{ matrix.settings.target }}/release/zfb"
+          ACTUAL=$("$BINARY" --version)
+          EXPECTED="zfb $ZFB_SEMVER"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$ACTUAL', want '$EXPECTED'"
+            exit 1
+          fi
+
+      # Per-platform version guard for linux-arm64 (QEMU): runs the arm64
+      # binary inside the same QEMU-enabled container used for the smoke test.
+      - name: Assert --version equals release semver (linux-arm64 QEMU)
+        if: ${{ matrix.settings.use_cross == true }}
+        shell: bash
+        run: |
+          ACTUAL=$(docker run --rm --platform linux/arm64 \
+            -v "$PWD:/w" -w /w \
+            debian:stable-slim \
+            ./target/aarch64-unknown-linux-gnu/release/zfb --version)
+          EXPECTED="zfb $ZFB_SEMVER"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::--version mismatch on linux-arm64: got '$ACTUAL', want '$EXPECTED'"
+            exit 1
+          fi
+
+      # Per-platform version guard (Windows).
+      - name: Assert --version equals release semver (Windows)
+        if: ${{ matrix.settings.archive_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          $Binary = "target/${{ matrix.settings.target }}/release/zfb.exe"
+          $Actual = & $Binary --version
+          $Expected = "zfb $env:ZFB_SEMVER"
+          Write-Host "Expected: $Expected"
+          Write-Host "Actual:   $Actual"
+          if ($Actual -ne $Expected) {
+            Write-Host "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$Actual', want '$Expected'"
+            exit 1
+          }
 
       - name: Enforce GLIBC 2.35 floor on the built binary
         if: ${{ contains(matrix.settings.target, 'linux-gnu') }}
