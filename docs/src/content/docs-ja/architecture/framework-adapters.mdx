@@ -1,0 +1,65 @@
+---
+title: フレームワークアダプター
+description: zfb が単一のレンダラーの背後で Preact と React の両方をどう支えているか、そして 3 つ目のフレームワークの追加を加算的にする境界の形。
+sidebar_position: 3
+---
+
+zfb は TSX をレンダリングします。JSX は構文であり、それを HTML に変える *ランタイム* はフレームワークが供給します。zfb は 2 つをサポートします。**Preact**（デフォルト）と **React** です。
+
+## 必要性
+
+2 つの目標が反対方向に引っ張ります。1 つ目は、両方のフレームワークで同じように動く単一のレンダラーパイプラインです。これによりビルドを分岐させずに済みます。2 つ目は、多くのユーザーが React を望み（既存のコンポーネント、React 専用のライブラリ）、多くが Preact を望む（フットプリント、シグナル）ことです。zfb は選べるようにします。
+
+```ts
+// zfb.config.ts
+export default {
+  framework: "preact", // or "react"
+};
+```
+
+設定の読み込み時に一度だけ読まれ、ビルド全体に通されます。ユーザーにとっては 1 行の変更です。レンダラーにとっては、その選択が一切現れません。レンダラーは統一された `Adapter` トレイトと対話し、アダプターの構築以降に `if framework == "react"` の分岐を持ちません。
+
+## 境界
+
+コントラクトは `crates/zfb-render/src/adapters/mod.rs` にあります。すべてのアダプターは同じ狭いトレイトを実装します。
+
+```rust
+pub trait Adapter {
+    fn name(&self) -> &'static str;
+    fn jsx_import_source(&self) -> &'static str;
+    fn render_to_string_module(&self) -> &'static str;
+    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
+    fn hydrate_shim_specifier(&self) -> &'static str;
+    fn hydrate_shim_source(&self) -> &'static str;
+}
+```
+
+責務は 3 つのグループだけです。
+
+1. **SWC パイプラインにどの JSX import source を注入するかを伝える**（`jsx_import_source`）。これは `runtime: "automatic"` での `transform-react` パスを駆動するため、ユーザーのコードは `import { h } from "preact"` も `import React from "react"` も書かず、`@jsxImportSource` プラグマを綴ることもありません。フレームワークの選択は設定に存在し、SWC がそれをあらゆる場所に通します。
+2. **同期的な `renderToString` がどこにあるかをランタイムに伝え**（`render_to_string_module`）、それを `globalThis.__zfbRenderToString` としてエイリアスする **シムをインストールする**（`pre_render_setup`）。すると `render.rs` のレンダーオーケストレーターは、フレームワークの識別子で分岐することなく、ページごとに一度だけ `__zfbRenderToString(vnode)` を呼びます。
+3. **クライアントサイドのハイドレーションシムを提供する**（`hydrate_shim_specifier` + `hydrate_shim_source`）。アイランドバンドラーはこのモジュールをフレームワーク固有のエントリとしてアイランドバンドルに折り込みます。これは `hydrateIsland(Component, props, element)` をエクスポートし、`zfb-islands` のフレームワーク非依存なハイドレーションランタイムが DOM 内のすべての `[data-zfb-island]` 要素に対してそれを呼び出します。
+
+これがインターフェースの全体です。フックのセマンティクス、シグナルの相互運用、イベント委譲の戦略 — これらはどれも境界の内側にありません。各フレームワークは自身の振る舞いを保ち、アダプターは *どの* フレームワークに到達するかだけを制御します。
+
+## なぜセットアップフェーズのシムなのか
+
+`pre_render_setup` は最初のページレンダリングの前に一度だけ実行され、`globalThis` に `__zfbRenderToString` をインストールします。するとページごとのレンダリングは、Rust から JS への 1 回の関数呼び出しになります。モジュールの再解決も、シムの再インストールも、呼び出しごとの import の手順も不要です。コストはホストの生存期間につき一度だけ支払われ、その恩恵は数千ページにわたって積み上がります。
+
+魅力的に見える 2 つの代替案は除外されます。私たちは `preact-render-to-string` を直接 import するページごとの JS モジュールを生成しません。それはモジュール解決をレンダリングごとのホットパスに押し込むからです。また、Rust がソースにテンプレート展開するための JS 式を返す `hydrate_call()` API も公開しません。それは JS 式の連結を Rust という不向きな言語に置くことになるからです。シムは Rust から JS への境界を、純粋に静的なモジュール文字列として表現し続けます。
+
+## Preact アダプター
+
+`crates/zfb-render/src/adapters/preact.rs` にあります。JSX import source は `"preact"`、render モジュールは `"preact-render-to-string"`、ハイドレーションシムは `hydrate(vnode, container)` をラップします。Preact がデフォルトなのは、そのフットプリントが zfb の静的出力ターゲットにきれいに収まるからです。`preact-render-to-string` は同期的な SSR のために専用設計されており、ランタイムのイメージは小さく保たれます。
+
+## React アダプター
+
+`crates/zfb-render/src/adapters/react.rs` にあります。Preact より大きく、React のエコシステムを必要とするユーザー向けのオプトインです。JSX import source は `"react"`、render モジュールは `"react-dom/server"`、ハイドレーションシムは React 18 以降の `hydrateRoot(container, vnode)` をラップします。Preact と比べて引数の順序が入れ替わっている点に注意してください。これはアダプターが引き受けるため、ユーザーのコードが対応する必要はありません。
+
+React アダプターは **同期的な** `renderToString` を使い、`renderToReadableStream` や `renderToPipeableStream` は使いません。zfb は事前生成の静的 HTML を作るため、同期的な文字列の方がシンプルで決定論的であり、Node のストリーミングプリミティブをビルドホストに引きずり込まずに済みます。コストは、v1 ではストリーミング HTML と React Server Components がないことです。
+
+## 将来のアダプター
+
+Solid、Vue SSR、Svelte SSR — いずれも今日は出荷されていません。`Adapter` トレイトは十分小さいので、1 つ追加するのは純粋に加算的です。新しいアダプターファイル、新しい `Framework` enum のバリアント、新しい `make_adapter` のアームを増やすだけです。レンダーオーケストレーターは変わりません。
+
+将来のフレームワークがトレイトを満たせない場合 — 例えば `renderToString → string` に収まらない非同期の render エントリを必要とする場合 — それはトレイトを意図的に広げる理由であって、特別扱いする理由ではありません。
