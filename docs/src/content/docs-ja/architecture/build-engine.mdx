@@ -4,9 +4,9 @@ description: zfb のクレートがどう組み合わさるか、なぜリビル
 sidebar_position: 1
 ---
 
-このページは zfb のビルドエンジンの *構造* についての解説です。ファイルを保存したときに何が起こるかの手順を追いたい場合は [Build pipeline](/ja/concepts/build-pipeline) を読んでください。このページではなぜこの構造になっているのかを説明します。
+このページは zfb のビルドエンジンの *構造* についての解説です。ファイルを保存したときに何が起こるかの手順を追いたい場合は [Build pipeline](/concepts/build-pipeline) を読んでください。このページではなぜこの構造になっているのかを説明します。
 
-関連: [Architecture overview](/ja/concepts/architecture-overview) · [Islands](/ja/concepts/islands) · [Incremental rebuild](/ja/concepts/incremental-rebuild)
+関連: [Architecture overview](/concepts/architecture-overview) · [Islands](/concepts/islands) · [Incremental rebuild](/concepts/incremental-rebuild)
 
 ## クレートの分割
 
@@ -39,7 +39,7 @@ zfb はオーケストレーターです。依存グラフ、ページ単位の�
 | ツール | 役割 | トレイト境界 |
 | --- | --- | --- |
 | **esbuild** | サーバーサイドのワーカーバンドル（`zfb-build/bundler.rs`）とアイランドごとのクライアントバンドル（`zfb-islands`）をバンドルします。高速で、TSX/JSX、MDX ローダー、ツリーシェイキングを扱えます。 | `ClientBundler`（`zfb-islands` 内） |
-| **deno_core (V8)** | SSG と dev プレビューサーバー向けにサーバーサイドのワーカーバンドルを実行する、組み込みの V8 アイソレートです。Tauri での配布には Node 依存のない単一バイナリが必要なため選ばれました。理由は [JS runtime](/ja/architecture/js-runtime) を参照してください。 | `RenderHost`（`zfb-render` 内） |
+| **deno_core (V8)** | SSG と dev プレビューサーバー向けにサーバーサイドのワーカーバンドルを実行する、組み込みの V8 アイソレートです。Tauri での配布には Node 依存のない単一バイナリが必要なため選ばれました。理由は [JS runtime](/architecture/js-runtime) を参照してください。 | `RenderHost`（`zfb-render` 内） |
 | **SWC** | TSX のソースを JavaScript にコンパイルしてから esbuild やレンダーホストに渡します。`zfb-render` の内部に存在します。 | `zfb-render` の内部。そのクレートの transform ステップを置き換えることで差し替え可能 |
 | **lol_html** | ハイドレーションのエントリポイントの `<script>` タグやアイランドのマウントマーカーを、完全なパースなしにレンダリング済みの HTML に注入するために使うストリーミング HTML リライターです。 | `zfb-build/head_inject.rs` の内部で使用。公開トレイトは不要 — 低レベルのユーティリティです |
 
@@ -52,7 +52,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 - **SWC** はモジュールがレンダーホストに到達する前に `zfb-render` の内部で、または esbuild がソースを見る前に `zfb-build/bundler.rs` の内部で実行されます。いずれにせよオーケストレーターからは見えません。
 - **lol_html** はレンダーホストが HTML を返した後に `zfb-build/head_inject.rs` の内部で実行されます。オーケストレーターから見れば、入力は素の文字列で、出力も素の文字列です。
 
-この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](/ja/concepts/islands) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](/ja/concepts/incremental-rebuild) を参照してください。
+この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](/concepts/islands) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](/concepts/incremental-rebuild) を参照してください。
 
 ## V8 モードのゲート: `output` と自動検出
 
@@ -136,4 +136,4 @@ Rust のホスト（Tauri デスクトップアプリ、CLI ツール、コン�
 6. ディスク上の `public/` へのフォールバック、
 7. dev の 404。
 
-ホストハンドラは同一パスのランタイム SSR ページより優先されます。それこそがこの継ぎ目の主眼です。ビルダーの形・ハンドラのシグネチャ・コード上の優先順位コントラクトについては [Embed-as-library guide](/ja/guides/embed-as-library) を参照してください。
+ホストハンドラは同一パスのランタイム SSR ページより優先されます。それこそがこの継ぎ目の主眼です。ビルダーの形・ハンドラのシグネチャ・コード上の優先順位コントラクトについては [Embed-as-library guide](/guides/embed-as-library) を参照してください。
