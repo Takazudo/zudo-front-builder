@@ -230,7 +230,10 @@ fn mdx_to_jsx_module_inner(
     // heading text or remove headings would diverge — none ship with
     // `Pipeline::with_defaults()` today; if a future plugin needs to
     // rewrite headings, this collection should move post-hast.
-    let headings = collect_headings(&children);
+    let CollectedHeadings {
+        entries: headings,
+        nested_slugs,
+    } = collect_headings(&children);
 
     let (body, html_tags, component_names) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
@@ -245,8 +248,33 @@ fn mdx_to_jsx_module_inner(
         // `<Note><strong>bold</strong></Note>`). The HTML serializer
         // path keeps using the lossy fallback to preserve its
         // long-standing snapshot output.
-        let strategy = JsxEmitStrategy::JsxPath(&jsx_raw_recursive);
+        //
+        // Slug context: the strategy callback fires once per top-level
+        // MDX JSX node, in document order, with no shared mutable state
+        // (it is a `&dyn Fn`). We give it interior mutability via a
+        // `Cell<usize>` cursor over `nested_slugs` — the document-order
+        // list of slugs `collect_headings` assigned to JSX-nested
+        // headings. `jsx_render_child` pops the next slug each time it
+        // renders a `MdastNode::Heading`, so the `id` it stamps matches
+        // the TOC export exactly. The cursor persists across all
+        // top-level JSX nodes because the closure captures it by ref.
+        let slug_ctx = SlugCtx {
+            nested_slugs: &nested_slugs,
+            cursor: std::cell::Cell::new(0),
+        };
+        let strategy_fn = |node: &MdastNode| -> String { jsx_raw_recursive(node, &slug_ctx) };
+        let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
         let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
+        // The emitter must have consumed every nested-heading slug in
+        // lockstep with `collect_headings`. A mismatch means the emit
+        // walk order drifted from `walk_collect_headings`' descent set.
+        debug_assert_eq!(
+            slug_ctx.cursor.get(),
+            nested_slugs.len(),
+            "jsx_render_child consumed {} nested-heading slugs but collect_headings recorded {}",
+            slug_ctx.cursor.get(),
+            nested_slugs.len(),
+        );
         if let Some(p) = pipeline_mut {
             p.apply_hast_visitors(&mut hast);
         }
@@ -325,23 +353,69 @@ struct HeadingEntry {
     text: String,
 }
 
+/// Result of the single canonical heading walk.
+///
+/// `entries` drives the `export const headings = […]` TOC array.
+/// `nested_slugs` lists — in document order — the slug assigned to each
+/// heading that lives *inside* an MDX JSX element body. The JSX emitter
+/// (`jsx_render_child`) replays the same document-order walk and pops
+/// these slugs in sequence so the `id` it stamps on a nested
+/// `<_components.hN>` is byte-identical to the slug the TOC recorded.
+///
+/// Both lists come from ONE walk against ONE `seen` dedup map, so the
+/// numbering can never drift between the TOC export and the rendered
+/// nested heading.
+struct CollectedHeadings {
+    entries: Vec<HeadingEntry>,
+    nested_slugs: Vec<String>,
+}
+
 /// Walk the parsed mdast and collect every heading in document order.
 ///
 /// Slugs match what [`crate::plugins::heading_links`] would emit for
 /// the same document: same `slugify`, same `-1`, `-2`, … numbering for
 /// repeats. Per heading_links semantics, only `<h2>`–`<h6>` participate
 /// in the dedup counter; `<h1>` slugs are emitted raw.
-fn collect_headings(children: &[MdastNode]) -> Vec<HeadingEntry> {
-    let mut out = Vec::new();
+///
+/// ## Dedup ordering across the two render passes
+///
+/// On the production hast-detour path, top-level headings stay real
+/// hast `<hN>` elements and get their `id` from `HeadingLinksPlugin`
+/// (its own `seen` map). Headings nested inside an MDX JSX body are
+/// rendered to an opaque JsxRaw string before hast visitors run, so
+/// `HeadingLinksPlugin` never sees them — `jsx_render_child` must stamp
+/// their `id` instead. This walk is the single source of truth that
+/// sees BOTH, in document order, so the TOC export is always internally
+/// consistent and the nested-heading `id`s match the TOC.
+///
+/// Known asymmetry (out of scope for #477): because
+/// `HeadingLinksPlugin` keeps an independent `seen` map, a top-level
+/// heading's rendered `id` reflects a top-level-only count. If a
+/// JSX-nested heading shares its text and appears *earlier* in document
+/// order, this walk's combined count and HeadingLinksPlugin's
+/// top-level-only count can disagree for that top-level heading.
+/// Reconciling it would require seeding HeadingLinksPlugin's `seen` from
+/// this walk through the pipeline/bridge — invasive and not required by
+/// the issue (its acceptance case is top-level-first). The common case
+/// (top-level heading before any same-text nested heading) is exact.
+fn collect_headings(children: &[MdastNode]) -> CollectedHeadings {
+    let mut out = CollectedHeadings {
+        entries: Vec::new(),
+        nested_slugs: Vec::new(),
+    };
     let mut seen: HashMap<String, usize> = HashMap::new();
-    walk_collect_headings(children, &mut out, &mut seen);
+    // `in_jsx == false` at the top level; flips to true once we descend
+    // into an MDX JSX element body so we can route those headings' slugs
+    // into `nested_slugs` for the emitter to replay.
+    walk_collect_headings(children, &mut out, &mut seen, false);
     out
 }
 
 fn walk_collect_headings(
     nodes: &[MdastNode],
-    out: &mut Vec<HeadingEntry>,
+    out: &mut CollectedHeadings,
     seen: &mut HashMap<String, usize>,
+    in_jsx: bool,
 ) {
     for node in nodes {
         match node {
@@ -358,16 +432,38 @@ fn walk_collect_headings(
                 } else {
                     next_slug(seen, &base)
                 };
-                out.push(HeadingEntry { depth, slug, text });
+                // A heading inside an MDX JSX body is emitted by
+                // `jsx_render_child`, not by HeadingLinksPlugin — record
+                // its slug so the emitter can stamp the matching `id`.
+                // Empty-text headings still consume a slot (the emitter
+                // visits them too) but carry an empty slug → no `id`,
+                // mirroring HeadingLinksPlugin's skip-empty behaviour.
+                if in_jsx {
+                    out.nested_slugs.push(slug.clone());
+                }
+                out.entries.push(HeadingEntry { depth, slug, text });
             }
             // Headings can legally nest inside blockquotes / list items,
             // so descend into block-level containers. We deliberately do
             // NOT descend into Paragraph/Heading children themselves —
             // headings cannot appear there.
-            MdastNode::Root(r) => walk_collect_headings(&r.children, out, seen),
-            MdastNode::Blockquote(b) => walk_collect_headings(&b.children, out, seen),
-            MdastNode::List(l) => walk_collect_headings(&l.children, out, seen),
-            MdastNode::ListItem(li) => walk_collect_headings(&li.children, out, seen),
+            MdastNode::Root(r) => walk_collect_headings(&r.children, out, seen, in_jsx),
+            MdastNode::Blockquote(b) => walk_collect_headings(&b.children, out, seen, in_jsx),
+            MdastNode::List(l) => walk_collect_headings(&l.children, out, seen, in_jsx),
+            MdastNode::ListItem(li) => walk_collect_headings(&li.children, out, seen, in_jsx),
+            // Descend into MDX JSX element bodies (e.g. `<Outro>## …`).
+            // Everything below here is rendered by `jsx_render_child`, so
+            // flip `in_jsx` on so the slugs land in `nested_slugs`. The
+            // descent set below MUST stay in lockstep with the container
+            // arms `jsx_render_child` recurses through, or the emitter's
+            // pop order will drift from this walk (debug_assert in
+            // `mdx_to_jsx_module*` guards against that).
+            MdastNode::MdxJsxFlowElement(j) => {
+                walk_collect_headings(&j.children, out, seen, true);
+            }
+            MdastNode::MdxJsxTextElement(j) => {
+                walk_collect_headings(&j.children, out, seen, true);
+            }
             _ => {}
         }
     }
@@ -1109,6 +1205,73 @@ fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<
     }
 }
 
+/// Slug context threaded through the JSX-text recursive renderer.
+///
+/// `nested_slugs` is the document-order list of slugs `collect_headings`
+/// assigned to headings that live inside an MDX JSX element body, and
+/// `cursor` is the running index into it. Each time `jsx_render_child`
+/// renders a `MdastNode::Heading` it pops `nested_slugs[cursor]` and
+/// advances — so the `id` it stamps is byte-identical to the slug the
+/// TOC export recorded. The renderer's heading-visit order matches
+/// `walk_collect_headings`' descent order (both are mdast document-order
+/// walks reaching the same heading set), so the pop sequence aligns.
+///
+/// `Cell` gives interior mutability without `unsafe` / `thread_local`:
+/// the `&dyn Fn` strategy callback cannot carry `&mut` state, but a
+/// `&Cell` captured by the closure can.
+struct SlugCtx<'a> {
+    nested_slugs: &'a [String],
+    cursor: std::cell::Cell<usize>,
+}
+
+impl SlugCtx<'_> {
+    /// Pop the slug for the next nested heading in document order.
+    ///
+    /// Returns `None` once the precomputed list is exhausted — a guard
+    /// against over-walking (the `debug_assert` at the call site checks
+    /// the inverse, that every slug was consumed).
+    fn next_heading_slug(&self) -> Option<&str> {
+        let i = self.cursor.get();
+        let slug = self.nested_slugs.get(i).map(String::as_str);
+        if slug.is_some() {
+            self.cursor.set(i + 1);
+        }
+        slug
+    }
+}
+
+/// Build the `id="…"` attribute plus trailing hash-link anchor for a
+/// nested heading, mirroring [`crate::plugins::heading_links`] so a
+/// JSX-nested `<_components.hN>` renders identically to a top-level one.
+///
+/// `text` is the same plain-text projection `collect_headings` recorded
+/// for the heading (`mdast_inline_text`), so the `aria-label` matches
+/// what HeadingLinksPlugin would emit. An empty slug (empty-text
+/// heading) yields no id / no anchor, mirroring HeadingLinksPlugin's
+/// skip-empty behaviour. Returns `(attrs, anchor_jsx)`.
+fn nested_heading_id_and_anchor(slug: &str, text: &str) -> (String, String) {
+    if slug.is_empty() {
+        return (String::new(), String::new());
+    }
+    // Use `escape_attr_literal` (not `jsx_attr_escape`) and the verbatim
+    // `class` attribute name so a nested anchor is byte-identical to a
+    // top-level one: the top-level path renders the same
+    // `HeadingLinksPlugin::anchor` hast node through `render_hast_attrs`
+    // → `jsx_string_attr` → `escape_attr_literal`, keeping `class` as-is
+    // (see `render_hast_attrs` docs). The lowercase `a` routes through
+    // `_components.a` exactly as the bridge's `emit_element` would.
+    let attrs = format!(" id=\"{}\"", escape_attr_literal(slug));
+    // Empty-body anchor; the `#` glyph is a CSS `::after`. Mirrors
+    // `HeadingLinksPlugin::anchor`'s href / class / aria-label shape and
+    // attribute order.
+    let anchor = format!(
+        "<_components.a href=\"#{}\" class=\"hash-link\" aria-label=\"Direct link to {}\"></_components.a>",
+        escape_attr_literal(slug),
+        escape_attr_literal(text),
+    );
+    (attrs, anchor)
+}
+
 /// JSX-text recursive renderer plugged into `mdast_to_hast_with` via
 /// [`JsxEmitStrategy::JsxPath`]. Produces JSX-shaped source for the
 /// MDX JSX, MDX expression, and remark-math arms while preserving
@@ -1120,13 +1283,13 @@ fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<
 /// recursion only on the JSX path is safe because the bridge already
 /// embeds the resulting JsxRaw payload verbatim — JSX accepts plain
 /// HTML tags inside MDX JSX bodies.
-fn jsx_raw_recursive(node: &MdastNode) -> String {
+fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
         MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
         MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
@@ -1134,7 +1297,7 @@ fn jsx_raw_recursive(node: &MdastNode) -> String {
         // fires for the JSX-shaped arms above, but if the contract
         // ever changes we fall back to the recursive child renderer
         // rather than dropping the node.
-        other => jsx_render_child(other),
+        other => jsx_render_child(other, ctx),
     }
 }
 
@@ -1142,6 +1305,7 @@ fn jsx_element_text(
     name: Option<&str>,
     attrs: &[AttributeContent],
     children: &[MdastNode],
+    ctx: &SlugCtx,
 ) -> String {
     let attrs_str = render_jsx_attrs(attrs);
     // Choose the open/close JSX tag name. `name == None` is the MDX
@@ -1162,7 +1326,7 @@ fn jsx_element_text(
         // matches `JsxEmitter::emit_jsx`'s output.
         return format!("<{open_name}{attrs_str} />");
     }
-    let inner: String = children.iter().map(jsx_render_child).collect();
+    let inner: String = children.iter().map(|c| jsx_render_child(c, ctx)).collect();
     format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
 }
 
@@ -1179,26 +1343,40 @@ fn jsx_element_text(
 /// `HastNode::JsxRaw` arm) harvests the `<_components.<tag>` references
 /// afterwards so the module preamble registers each tag's default
 /// fallback in the `_components` map.
-fn jsx_render_child(node: &MdastNode) -> String {
+fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
         MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
         MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
-        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children),
+        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children, ctx),
         MdastNode::Heading(h) => {
             let depth = h.depth.clamp(1, 6);
-            jsx_wrap_children(&format!("h{depth}"), "", &h.children)
+            // This heading lives inside an MDX JSX body, so
+            // HeadingLinksPlugin (a hast visitor) never sees it — stamp
+            // the slug `id` + hash-link anchor here instead. The slug
+            // comes from `collect_headings`' canonical document-order
+            // walk via the cursor, so it matches the TOC export and the
+            // dedup numbering of any top-level headings. `next_heading_slug`
+            // returns `None` only if the precomputed list is exhausted
+            // (the debug_assert at the strategy call site guards that);
+            // fall back to no id/anchor rather than panicking in release.
+            let slug = ctx.next_heading_slug().unwrap_or("");
+            let text = mdast_inline_text(&h.children);
+            let (id_attr, anchor) = nested_heading_id_and_anchor(slug, &text);
+            let tag = format!("h{depth}");
+            let inner: String = h.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+            format!("<_components.{tag}{id_attr}>{inner}{anchor}</_components.{tag}>")
         }
-        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children),
-        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children),
-        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children),
+        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children, ctx),
+        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children, ctx),
+        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children, ctx),
         MdastNode::InlineCode(c) => format!(
             "<_components.code>{}</_components.code>",
             jsx_text_escape(&c.value),
@@ -1220,7 +1398,7 @@ fn jsx_render_child(node: &MdastNode) -> String {
             }
             format!(
                 "<_components.a{attrs}>{}</_components.a>",
-                l.children.iter().map(jsx_render_child).collect::<String>(),
+                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
             )
         }
         MdastNode::Image(i) => {
@@ -1246,11 +1424,11 @@ fn jsx_render_child(node: &MdastNode) -> String {
             }
             format!(
                 "<_components.{tag}{attrs}>{}</_components.{tag}>",
-                l.children.iter().map(jsx_render_child).collect::<String>(),
+                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
             )
         }
-        MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children),
-        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children),
+        MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children, ctx),
+        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx),
         MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
         MdastNode::Break(_) => "<_components.br />".to_string(),
         MdastNode::Math(m) => format!(
@@ -1261,10 +1439,10 @@ fn jsx_render_child(node: &MdastNode) -> String {
             "<_components.code class=\"language-math math-inline\">{}</_components.code>",
             jsx_text_escape(&m.value),
         ),
-        MdastNode::Root(r) => r.children.iter().map(jsx_render_child).collect(),
+        MdastNode::Root(r) => r.children.iter().map(|c| jsx_render_child(c, ctx)).collect(),
         // GFM pipe-table inside MDX JSX body — routes table tags through
         // `_components.<tag>`, matching the non-pipeline `emit_table_jsx`.
-        MdastNode::Table(t) => jsx_render_table(t),
+        MdastNode::Table(t) => jsx_render_table(t, ctx),
         // Footnotes, references, ESM, frontmatter, etc. drop silently here
         // — better than leaking a `Debug` repr.
         _ => String::new(),
@@ -1278,7 +1456,7 @@ fn jsx_render_child(node: &MdastNode) -> String {
 /// callers can override them, matching the non-pipeline `emit_table_jsx`.
 /// The resulting string is embedded as a [`HastNode::JsxRaw`] payload;
 /// the bridge's `collect_components_tag_names` scan registers each tag.
-fn jsx_render_table(t: &markdown::mdast::Table) -> String {
+fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
     let style_attr = |col: usize| -> String {
         t.align
             .get(col)
@@ -1297,7 +1475,7 @@ fn jsx_render_table(t: &markdown::mdast::Table) -> String {
                 continue;
             };
             let style = style_attr(col);
-            let inner: String = tc.children.iter().map(jsx_render_child).collect();
+            let inner: String = tc.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
             out.push_str(&format!(
                 "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
             ));
@@ -1328,10 +1506,10 @@ fn jsx_render_table(t: &markdown::mdast::Table) -> String {
     out
 }
 
-fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode]) -> String {
+fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
     format!(
         "<_components.{tag}{attrs}>{}</_components.{tag}>",
-        children.iter().map(jsx_render_child).collect::<String>(),
+        children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
     )
 }
 

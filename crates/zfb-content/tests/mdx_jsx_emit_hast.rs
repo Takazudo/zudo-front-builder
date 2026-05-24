@@ -496,3 +496,126 @@ fn nested_markdown_in_mdx_jsx_routes_through_components() {
         .compile(&out, &opts)
         .unwrap_or_else(|e| panic!("SWC rejected nested-markdown output: {e}\n--- src ---\n{out}"));
 }
+
+/// Regression for #477 (upstream zudolab/zzmod#292): a markdown
+/// `## heading` nested inside an MDX JSX element body must get a
+/// rehype-slug `id`, a hash-link anchor, AND a TOC (`headings`) entry —
+/// matching what `HeadingLinksPlugin` gives a top-level heading.
+///
+/// Before this fix the nested heading routed through `_components.h2`
+/// for styling (#286 / PR #439) but carried NO `id`, NO anchor, and was
+/// dropped from `export const headings`, because it lives in an opaque
+/// JsxRaw payload that hast visitors never traverse.
+#[test]
+fn nested_heading_in_mdx_jsx_gets_slug_id_anchor_and_toc_entry() {
+    let out = emit_with_defaults("<Outro>\n\n## Wrap Up\n\n</Outro>\n");
+
+    // (1) The nested `<_components.h2>` carries `id="wrap-up"` — the
+    // exact `slugify("Wrap Up")` output.
+    assert!(
+        out.contains("<_components.h2 id=\"wrap-up\">"),
+        "nested heading must get id from slugify:\n{out}",
+    );
+
+    // (2) The TOC export includes the nested heading (depth, slug, text).
+    assert!(
+        out.contains("{ depth: 2, slug: \"wrap-up\", text: \"Wrap Up\" }"),
+        "headings export must include the nested heading:\n{out}",
+    );
+
+    // (4) The nested heading carries a hash-link anchor with the SAME
+    // shape `HeadingLinksPlugin` stamps on a top-level heading:
+    // `<_components.a href="#slug" class="hash-link" aria-label="…">`.
+    assert!(
+        out.contains(
+            "<_components.a href=\"#wrap-up\" class=\"hash-link\" aria-label=\"Direct link to Wrap Up\"></_components.a>"
+        ),
+        "nested heading must carry a hash-link anchor identical to a top-level one:\n{out}",
+    );
+
+    // SWC must accept the emitted module.
+    let opts = CompileOptions::default().with_filename("nested-slug.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected nested-slug output: {e}\n--- src ---\n{out}"));
+}
+
+/// (3) Slug dedup numbering stays consistent when a same-text heading
+/// appears BOTH top-level and nested-in-JSX. Both passes draw from the
+/// single document-order `seen` map in `collect_headings`, so in
+/// document order the top-level `## Foo` wins `foo` and the later
+/// nested `## Foo` gets `foo-1` — and the rendered ids match the TOC.
+#[test]
+fn nested_and_top_level_same_text_share_dedup_numbering() {
+    // Top-level `## Foo` first (gets `foo`), then nested `## Foo` inside
+    // `<Outro>` second (must get `foo-1`).
+    let out = emit_with_defaults("## Foo\n\n<Outro>\n\n## Foo\n\n</Outro>\n");
+
+    // Top-level heading keeps the un-numbered slug (HeadingLinksPlugin).
+    assert!(
+        out.contains("id=\"foo\""),
+        "top-level heading should keep the base slug `foo`:\n{out}",
+    );
+    // Nested heading gets the deduped `foo-1`, NOT a colliding `foo`.
+    assert!(
+        out.contains("<_components.h2 id=\"foo-1\">"),
+        "nested same-text heading must dedup to `foo-1`:\n{out}",
+    );
+    assert!(
+        out.contains("href=\"#foo-1\""),
+        "nested heading anchor must point at the deduped slug:\n{out}",
+    );
+
+    // TOC export carries BOTH in document order with consistent slugs.
+    let foo_idx = out
+        .find("slug: \"foo\"")
+        .expect("TOC must list top-level `foo`");
+    let foo1_idx = out
+        .find("slug: \"foo-1\"")
+        .expect("TOC must list nested `foo-1`");
+    assert!(
+        foo_idx < foo1_idx,
+        "TOC must list `foo` before `foo-1` (document order):\n{out}",
+    );
+
+    let opts = CompileOptions::default().with_filename("dedup.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected dedup output: {e}\n--- src ---\n{out}"));
+}
+
+/// Multiple headings — including a deeply-nested one inside a list —
+/// in a single MDX JSX body must each pop the right slug from the
+/// document-order cursor (no off-by-one, no slug bleed between
+/// headings). Also confirms the `in_jsx` flag propagates through a
+/// list/list-item nested under the JSX element.
+#[test]
+fn multiple_and_deeply_nested_headings_in_one_jsx_pop_correct_slugs() {
+    let out = emit_with_defaults(
+        "<Outro>\n\n## Alpha\n\n### Beta\n\n- item\n\n  #### Gamma\n\n</Outro>\n",
+    );
+
+    // Each heading gets its own slug id at the correct depth.
+    for (depth, slug) in [(2, "alpha"), (3, "beta"), (4, "gamma")] {
+        assert!(
+            out.contains(&format!("<_components.h{depth} id=\"{slug}\">")),
+            "nested h{depth} must get id=\"{slug}\":\n{out}",
+        );
+        // …and a TOC entry.
+        assert!(
+            out.contains(&format!("depth: {depth}, slug: \"{slug}\"")),
+            "TOC must include h{depth} `{slug}`:\n{out}",
+        );
+    }
+
+    // Slugs appear in document order in the TOC (alpha < beta < gamma).
+    let a = out.find("slug: \"alpha\"").unwrap();
+    let b = out.find("slug: \"beta\"").unwrap();
+    let g = out.find("slug: \"gamma\"").unwrap();
+    assert!(a < b && b < g, "TOC headings must be in document order:\n{out}");
+
+    let opts = CompileOptions::default().with_filename("multi-nested.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected multi-nested output: {e}\n--- src ---\n{out}"));
+}
