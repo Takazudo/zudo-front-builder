@@ -1,0 +1,76 @@
+---
+title: Eleventy からの移行
+description: 11ty サイトを zfb に移行するための概念ごとのガイダンスと、適合しないケースについての率直な注記。
+sidebar_position: 2
+---
+
+Eleventy と zfb は大きな点で一致しています。小さな依存フットプリント、ファイルベースのルーティング、Markdown とフロントマターで駆動されるコンテンツです。両者が異なるのはテンプレートまわりです。移植に踏み切る前に、末尾の「率直な注記」セクションを読んでください。
+
+## レイアウトとインクルード
+
+11ty はレイアウトを `_includes/` に置き、フロントマターの `layout:` キーで参照します。zfb はレイアウトを `layouts/` から読み込み、それをページの TSX に直接インポートします:
+
+```tsx
+import BlogLayout from "../../layouts/blog-layout.tsx";
+
+export default function Page({ post }) {
+  return <BlogLayout><article>{post.body}</article></BlogLayout>;
+}
+```
+
+フロントマターの `layout:` によるルックアップはありません。合成はインポートによって行います。
+
+## テンプレート
+
+11ty は Liquid、Nunjucks、Handlebars、その他いくつかを提供します。zfb が提供するテンプレート言語はちょうど 1 つ、TSX だけです。Markdown コンテンツは依然としてパーサーを通りますが、そのコンテンツをラップするものはすべて JSX です。
+
+コードベースが Nunjucks マクロや Liquid フィルターに大きく依存している場合、実際の移植作業を見込んでください。互換のためのシムレイヤーはありません。
+
+## データカスケード
+
+11ty の `_data/` ディレクトリと、グローバル / ディレクトリ / テンプレートのデータカスケードには、zfb に直接の対応物はありません。代わりに、データを 2 か所で表現します:
+
+- **静的 / 共有データ** — `zfb.config.ts`（またはレガシーの `zfb.config.json`）でデータコレクションを宣言します。全体の形については [`defineConfig`](/api/define-config) を参照してください:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  collections: [
+    { name: "site", path: "data/site" },
+  ],
+});
+```
+
+- **ページごとのデータ** — ページの `paths()` エクスポートから返します。これは 11ty の `eleventyComputed` におおよそ相当します:
+
+```ts
+export async function paths() {
+  const posts = await getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post, year: post.data.pubDate.getFullYear() },
+  }));
+}
+```
+
+## ページネーション
+
+11ty の `pagination` フロントマターキーは、`paths()` の内部で使う `paginate()` ヘルパーになります。全体の API については /ja/api/paginate を参照してください。形は次のとおりです:
+
+```ts
+export async function paths() {
+  const posts = await getCollection("blog");
+  return paginate(posts, { pageSize: 10 });
+}
+```
+
+ページごとに 1 つのルートが得られ、加えて標準の `currentPage`、`totalPages`、`data` の props が渡されます。
+
+## Markdown フロントマター
+
+この部分はほとんど変わりません。`.md` ファイルの先頭で区切りとして `---` を使います。zfb-content はフロントマターを `entry.data` に、本文を `entry.body` にパースします。利用できるフィールドは、`zfb.config` で宣言したコレクションスキーマに依存します。
+
+## 率直な注記
+
+Liquid や Nunjucks が好きで JSX が好きでないなら、zfb はあなた向けではありません。このフレームワークは JSX をテンプレートとして使うことに対して意見が強く、代替手段を追加するロードマップ項目もありません。そのワークフローには、Eleventy が今後もずっとより良い選択肢であり続けるでしょう。zfb があなたの時間に最も見合うのは、すでに別の場所で React や Preact のコンポーネントを書いていて、同じ言語を話す小さく高速な SSG が欲しい場合です。

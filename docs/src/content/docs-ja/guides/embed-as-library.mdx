@@ -1,0 +1,176 @@
+---
+title: ライブラリとして組み込む
+description: Server ビルダー API を介して、Rust ホスト（Tauri・CLI・サービス）から zfb の HTTP サーバーをインプロセスで動かす。
+sidebar_position: 7
+---
+
+`zfb-server` クレートは小さなビルダー API を提供しており、Rust ホストが zfb の HTTP サーバーをインプロセスで動かせます。子サイドカーも追加のバイナリも不要です。`zfb dev` を支えるのと同じクレートが組み込みサーバーを支えており、唯一の違いは誰がライフサイクルを所有するかだけです。
+
+このガイドでは、公開ビルダーの形、リクエスト拡張の注入ポイント、そしてホストハンドラの継ぎ目（`with_ssr_handler`）を解説します。
+
+## どんなときに使うか
+
+ホストが次のことを必要とするとき、ライブラリとして組み込む方法を選びます。
+
+- zfb のフルなルートテーブルをデスクトップまたは CLI プロセス内で動かす、
+- ハンドラが毎リクエストで読むべきプロセス単位のコンテキスト（`AppHandle`、FS の権限セット、認証トークンなど）を付与する、
+- 特定の URL パターンを、JS ランタイムを一切経由せずに Rust 所有のレスポンス（Markdown ルックアップ、データベース読み込み、サイドカー API ブリッジ）でショートサーキットする。
+
+このモードと子サイドカーを同梱する方法のどちらにするかを決める構成マトリクスについては、[Desktop Deployment](/guides/desktop-deployment) を参照してください。
+
+## ビルダーの形
+
+公開される API 表面は小さいものです。`Server` 型と `ServerBuilder` 型を合わせても、公開メソッドは 10 個以下です。
+
+```rust
+use zfb_server::{Server, ServerHandle, ServerMode, RouteParams};
+use axum::http::{Request, StatusCode};
+use axum::body::Body;
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .bind("127.0.0.1:0".parse()?)
+    .with_request_extension(host_ctx.clone())
+    .with_ssr_handler(
+        "/api/echo/:msg",
+        |req: Request<Body>, params: RouteParams| async move {
+            let msg = params.get("msg").unwrap_or("(none)");
+            let ctx = req.extensions().get::<HostCtx>().cloned();
+            (StatusCode::OK, format!("ctx={ctx:?} msg={msg}"))
+        },
+    )
+    .build()?;
+
+let handle: ServerHandle = server.serve_in_thread()?;
+println!("listening on {}", handle.addr());
+// later:
+handle.shutdown()?;
+```
+
+ビルダーが確定する主な選択肢:
+
+- **`ServerMode::Embed`** はライブリロードのスクリプト注入と `/__zfb/reload` SSE エンドポイントをオフにします。それ以外のルートテーブルは `zfb dev` と同一です。
+- **`bind("127.0.0.1:0")`** は OS にエフェメラルポートを要求します。実際のポートは `ServerHandle::addr()` から読み取ってください。
+- **`serve_in_thread()`** は独自の `current_thread` tokio ランタイムを持つ専用の OS スレッドを起動するため、ホスト側に独自の tokio ランタイムは不要です（Tauri の同期的な `setup` コールバックも変更なしで機能します）。
+- **`ServerHandle::shutdown()`** は冪等です。2 回呼んでも何も起こりません。
+
+すでに独自の tokio ランタイムを駆動しているホスト向けに、非同期の終端 `Server::serve(self, shutdown).await` も利用できます。
+
+## リクエスト拡張の注入
+
+`ServerBuilder::with_request_extension::<T>(value)` は、受信するすべてのリクエストの `http::Extensions` マップにクローンされるプロセス単位の値を登録します。ハンドラは `req.extensions().get::<T>()` でそれを読みます:
+
+```rust
+#[derive(Clone)]
+struct HostCtx { /* … */ }
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .with_request_extension(host_ctx)
+    .with_ssr_handler("/whoami", |req: Request<Body>, _params| async move {
+        let ctx = req.extensions().get::<HostCtx>().cloned();
+        format!("{ctx:?}")
+    })
+    .build()?;
+```
+
+境界となる `T: Clone + Send + Sync + 'static` は、リクエスト単位のコンテキスト型に最低限必要なものです。ハンドラが `axum::Extension<T>` をインポートする必要は一切ありません。そのエクストラクタ型は意図的に `zfb-server` の公開 API 表面から外されています。
+
+異なる `T` で `with_request_extension` を複数回呼ぶと値が蓄積されます。同じ `T` で 2 回呼ぶと最初のものを上書きします（これは `http::Extensions::insert` のセマンティクスと一致します）。
+
+## ハンドラのシグネチャ
+
+`with_ssr_handler` は URL パターンと、次の形の非同期関数を受け取ります:
+
+```rust
+async fn(http::Request<axum::body::Body>, zfb_server::RouteParams) -> impl IntoResponse
+```
+
+それがコントラクトのすべてです。ハンドラは:
+
+- 受信したリクエストをそのままの `http::Request<Body>` として受け取ります。クエリ文字列、ヘッダー、ボディ、拡張のすべてがリクエスト自体からアクセス可能です。
+- キャプチャされたルートパラメータを、`params.get("name")` でルックアップできる `RouteParams` 値として受け取ります。
+- `axum::response::IntoResponse` を実装する任意のもの（`String`、タプル `(StatusCode, String)`、完全な `http::Response<…>`、カスタム型など）を返します。
+
+このシグネチャが意図的に HTTP 的な形になっているのは、ハンドラが何のためのものかに言及しないためです。同じプリミティブが Markdown ルックアップ、データベース読み込み、IPC ブリッジ、あるいはその他のリクエスト時レスポンスを支えられます。サーバーが見るのはバイトの入出力だけです。
+
+### ルートパターンの文法
+
+パターンは先頭スラッシュ付きのパスです。各セグメントは次のいずれかです:
+
+| 形式 | マッチ対象 | キャプチャ先 |
+| --- | --- | --- |
+| `foo` | リテラルなセグメント `foo` | — |
+| `:name` | ちょうど 1 つの空でないセグメント | `params.get("name")` |
+| `*name` | 残りの 1 つ以上のセグメントを `/` で連結したもの | `params.get("name")` |
+
+`*name` ワイルドカードはパターンの最終セグメントでなければなりません。空のキャプチャ（`:name` スロットに対する素の `/`）は拒否されます。
+
+例:
+
+- `/health` は `/health` のみにマッチします。
+- `/users/:id` は `/users/42` にマッチし、`id = "42"` となります。
+- `/files/*rest` は `/files/a/b.txt` にマッチし、`rest = "a/b.txt"` となります。
+- `/projects/:proj/refs/*rest` は両方を組み合わせています。
+
+## 優先順位: ホストハンドラがランタイム SSR に勝つ
+
+これは組み込みの継ぎ目における最も重要なルールです。開発ルーターがリクエストを受け取ると、次の順序で各レイヤーを試します:
+
+1. **プラグインの dev-middleware**（最長プレフィックスマッチ）— 登録されたプラグインがそのパスを要求する場合、
+2. **ホストが登録した Rust ハンドラ**（このビルダーメソッド）— 上記のパターンのいずれかがマッチする場合、
+3. **リクエスト時 SSR** — `SsrRouteSet` がそのパスを要求する場合、
+4. メモリ内ページキャッシュ（SSG 出力）、
+5. `dist/` へのディスク上フォールバック、
+6. `public/` へのディスク上フォールバック、
+7. dev の 404。
+
+ホストハンドラは、**同じ URL を要求するランタイム SSR ページよりも常に優先されます**。プロジェクトに `/dynamic` の Rust ハンドラと、同じく `/dynamic` を配信する `prerender = false` ページの両方がある場合、Rust ハンドラが勝ち、SSR ディスパッチャは一切呼び出されません。
+
+この方向にする理由:
+
+- ホストはプロセスの信頼された所有者です。あるパスにハンドラを登録するなら、それは意図的なオーバーライドです。
+- フォールスルーが必要なハンドラは、登録しないことを選べます。優先順位は登録時に決まるのであって、ハンドラがセンチネルを返すことによってではありません。
+- 逆順にすると、ランタイムページをオーバーライドしたいホストはすべて、ページのエクスポートをビルド時フラグの後ろにゲートする必要が生じます。これは、組み込みの継ぎ目が意図的に分離している 2 つの関心事を結合させてしまいます。
+
+## ライフサイクルとシャットダウン
+
+`Server::serve_in_thread()` は `ServerHandle` を返します。このハンドルは `Clone` なので、ホストは複数のシャットダウン呼び出し箇所（Tauri の `on_window_event`、Ctrl-C ハンドラ、HTTP の `/admin/stop` ルート）にコピーを渡せます。すべてのクローンは `Arc<Mutex<…>>` の背後で同じワンショットのセンダーと join ハンドルを共有します:
+
+```rust
+let handle = server.serve_in_thread()?;
+let h2 = handle.clone();
+
+ctrl_c_callback(move || {
+    let _ = h2.shutdown(); // idempotent
+});
+
+// On the main thread, wait for the server to exit:
+handle.join()??;
+```
+
+`shutdown()` はグレースフルシャットダウンのシグナルを一度だけ送ります。それ以降の呼び出しは何もしません。`join()` はシングルショットで、スレッドを待てるのは 1 つの呼び出し元だけです。
+
+## メソッド予算
+
+組み込みの API 表面は意図的に小さく保たれています。`Server` 型と `ServerBuilder` 型を合わせて公開するメソッドは 9 個です。`Server::builder`、`Server::serve`、`Server::serve_in_thread`、それに 6 つのビルダーメソッド（`config_path`、`mode`、`bind`、`with_request_extension`、`with_ssr_handler`、`build`）です。`ServerHandle::addr`、`ServerHandle::shutdown`、`ServerHandle::join` は意図的に別の型に置かれており、この予算からは除外されています。
+
+将来の機能で合計 10 個を超える必要が生じた場合、正しい対応は継ぎ目を再設計するフォローアップイシューであって、10 個目のメソッドを付け足すことではありません。
+
+## サンプルクレート
+
+最小限のエンドツーエンドの例が `crates/zfb-server/examples/embed/` にあります。ワークスペースのルートからビルドしてください:
+
+```sh
+cargo build --manifest-path crates/zfb-server/examples/embed/Cargo.toml
+```
+
+あるいは実行します（この例はサーバーを起動し、ハンドラが注入されたコンテキストとともに応答することを示すために HTTP リクエストを 1 回発行し、シャットダウンします）:
+
+```sh
+cargo run --manifest-path crates/zfb-server/examples/embed/Cargo.toml
+```
+
+このサンプルクレートは空の `[workspace]` テーブルを使って親ワークスペースから自身を除外しているため、ルートのマニフェストがこれをメンバーとして列挙する必要はありません。
