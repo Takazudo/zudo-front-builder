@@ -101,7 +101,11 @@ rustup target add "$target"
 # build.rs embeds framework packages from node_modules at compile time.
 
 echo "==> Installing node dependencies (pnpm install --frozen-lockfile)"
-pnpm install --frozen-lockfile
+# CI=true so pnpm runs non-interactively. pnpm 11 (#440) purges a node_modules
+# left by an incompatible pnpm version and would otherwise prompt for
+# confirmation — which aborts under no-TTY. The GHA runner gets CI=true for
+# free; set it here to replicate that environment for local builds.
+CI=true pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
