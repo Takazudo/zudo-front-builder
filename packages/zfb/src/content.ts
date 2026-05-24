@@ -104,30 +104,77 @@ export interface Snapshot {
 }
 
 /**
- * Module-level snapshot slot. `undefined` means "no snapshot installed";
- * `getCollection` falls back to the Node `fs` path. The runtime package
- * sets this once during init and (in dev mode) overwrites it on each
- * rebuild.
+ * Where the installed [`Snapshot`] lives.
+ *
+ * The state hangs off `globalThis.__zfb.contentSnapshot`, NOT a
+ * module-level `let`. This matters because under the production worker
+ * bundle the consumer's pnpm-strict `node_modules` layout exposes
+ * two physical paths to `@takazudo/zfb`:
+ *
+ *   - top-level `node_modules/@takazudo/zfb` (imported by user pages), AND
+ *   - nested `node_modules/.pnpm/@takazudo+zfb-runtime@.../node_modules/
+ *     @takazudo/zfb` (imported by `@takazudo/zfb-runtime` itself).
+ *
+ * The bundler passes `esbuild --preserve-symlinks` whenever a custom
+ * `node_modules_dir` is configured (see `crates/zfb-build/src/bundler.rs`
+ * around `--external:node:*`), so esbuild treats those two symlink
+ * targets as distinct sources and inlines `content.js` TWICE — yielding
+ * two module instances of `zfb/content` in the final worker bundle.
+ *
+ * If `installedSnapshot` were a per-module `let`, `createPageRouter`
+ * would install the snapshot on the runtime's copy and `getCollection`
+ * (called from a user `paths()` export) would read from the user
+ * page's copy — see `undefined`, and fall through to the `node:fs`
+ * branch, which then throws because `node:*` is externalized in the
+ * worker bundle. This is the regression #442 / #449 surfaced.
+ *
+ * Routing the slot through `globalThis` makes the snapshot bridge
+ * symmetric with the existing `globalThis.__zfb.content` MDX-component
+ * bridge (set by the build pipeline at `crates/zfb-build/src/bundler.rs`,
+ * read by `Content` below): both pieces of cross-module state share
+ * one well-known global, so any number of `zfb/content` module
+ * instances in the same JS realm see the same value.
+ *
+ * Tracked under #449 (production fix for #442); the test-fixture
+ * counterpart was #413.
  */
-let installedSnapshot: Snapshot | undefined;
+type SnapshotBridgeNamespace = {
+  contentSnapshot?: Snapshot | undefined;
+};
+
+type SnapshotBridgeGlobal = typeof globalThis & {
+  __zfb?: SnapshotBridgeNamespace;
+};
 
 /**
  * Register a [`Snapshot`] so [`getCollection`] resolves from memory.
  *
  * Pass `undefined` to clear (used by tests that need to restore the v0
  * filesystem path between runs). Idempotent: the latest call wins.
+ *
+ * Stored on `globalThis.__zfb.contentSnapshot` rather than a
+ * module-level `let` so a worker bundle that ends up with two
+ * `zfb/content` module instances still sees a single shared snapshot —
+ * see the [`SnapshotBridgeNamespace`] doc above for the full
+ * pnpm-symlink rationale.
  */
 export function setContentSnapshot(snapshot: Snapshot | undefined): void {
-  installedSnapshot = snapshot;
+  const g = globalThis as SnapshotBridgeGlobal;
+  const ns = (g.__zfb ?? {}) as SnapshotBridgeNamespace;
+  ns.contentSnapshot = snapshot;
+  g.__zfb = ns;
 }
 
 /**
  * Read the currently-installed [`Snapshot`], or `undefined` if none is
  * registered. Exposed mostly for tests; production callers should not
  * need to introspect the bridge state.
+ *
+ * Reads from `globalThis.__zfb.contentSnapshot`; see
+ * [`setContentSnapshot`] for why the slot lives on `globalThis`.
  */
 export function getContentSnapshot(): Snapshot | undefined {
-  return installedSnapshot;
+  return (globalThis as SnapshotBridgeGlobal).__zfb?.contentSnapshot;
 }
 
 /**
@@ -422,6 +469,12 @@ export function getCollection<T = Record<string, unknown>>(name: string): Collec
   // Snapshot path: installed by `@takazudo/zfb-runtime`'s
   // `createPageRouter` at Worker boot. Worker runtimes have no `fs`, so
   // this branch is the production path under the embedded V8 host.
+  //
+  // The snapshot lookup reads `globalThis.__zfb.contentSnapshot`
+  // (see `setContentSnapshot` above) rather than a per-module slot so
+  // the cross-`zfb/content`-instance case under `--preserve-symlinks`
+  // resolves through the same shared state — see #449.
+  const installedSnapshot = (globalThis as SnapshotBridgeGlobal).__zfb?.contentSnapshot;
   if (installedSnapshot !== undefined) {
     const list = installedSnapshot.collections[name] ?? [];
     return list.map((entry) => entryFromSnapshot<T>(entry));

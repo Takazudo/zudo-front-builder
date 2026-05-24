@@ -1046,3 +1046,399 @@ fn html_page_written_verbatim_via_render_all() {
          got content:\n{content}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Group 5 — `paths()` worker dispatch over a dual-`zfb/content` instance bundle
+// ---------------------------------------------------------------------------
+
+/// Build a `node_modules` directory that mimics the pnpm-strict layout
+/// real consumers ship: `@takazudo/zfb` is reachable via TWO physical
+/// paths so esbuild + `--preserve-symlinks` will end up inlining
+/// `content.js` twice.
+///
+/// Layout:
+///
+/// ```text
+/// <tmp>/
+///   preact/                                  -> pnpm store /preact
+///   preact-render-to-string/                 -> pnpm store /preact-render-to-string
+///   hono/                                    -> pnpm store /hono
+///   @takazudo/
+///     zfb/                                   -> packages/zfb            (path A)
+///     zfb-runtime/                           -> packages/zfb-runtime
+///       node_modules/@takazudo/
+///         zfb/                               -> packages/zfb            (path B)
+///   zfb/                                     -> packages/zfb            (bare alias)
+/// ```
+///
+/// Both `path A` and `path B` resolve to the same source file
+/// (`packages/zfb/dist/content.js`), but under `--preserve-symlinks`
+/// esbuild treats them as distinct sources and inlines the module
+/// body once per path. That is precisely the dual-instance shape that
+/// the bug #442 / #449 fix needs to survive: the worker bundle
+/// receives one `setContentSnapshot` call (on the instance reached
+/// from `@takazudo/zfb-runtime`) but the user `paths()` calls
+/// `getCollection()` on the other instance — and without the
+/// `globalThis`-backed snapshot slot, the second instance sees
+/// `installedSnapshot === undefined` and falls through to `node:fs`,
+/// which throws because `node:*` is externalized.
+fn make_dual_zfb_node_modules() -> Option<tempfile::TempDir> {
+    let worktree_root = workspace_root();
+    let pnpm_store = locate_pnpm_node_modules()?;
+
+    let tmp = tempfile::tempdir().expect("tempdir for dual-zfb node_modules");
+    let nm = tmp.path();
+
+    // Generic deps from the pnpm store.
+    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
+    for pkg in from_store {
+        let src = pnpm_store.join(pkg);
+        if !src.exists() {
+            eprintln!(
+                "[embedded_v8_snapshot_e2e] missing runtime dep `{pkg}` at {} — \
+                 skipping paths-dual-instance test (run `pnpm install`).",
+                src.display(),
+            );
+            return None;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&src, nm.join(pkg)).expect("symlink generic dep");
+    }
+
+    let takazudo_dir = nm.join("@takazudo");
+    fs::create_dir_all(&takazudo_dir).expect("create @takazudo dir");
+
+    let zfb_src = worktree_root.join("packages/zfb");
+    let zfb_runtime_src = worktree_root.join("packages/zfb-runtime");
+
+    // Path A — the consumer's top-level @takazudo/zfb.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_src, takazudo_dir.join("zfb"))
+        .expect("symlink top-level @takazudo/zfb");
+    // Top-level @takazudo/zfb-runtime.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_runtime_src, takazudo_dir.join("zfb-runtime"))
+        .expect("symlink top-level @takazudo/zfb-runtime");
+
+    // Path B — the nested @takazudo/zfb inside zfb-runtime's own
+    // node_modules. We materialise this as `node_modules/@takazudo/zfb-runtime-nested/`
+    // because we can't create a `node_modules/` inside the real workspace
+    // package without polluting it. Instead we symlink a directory tree:
+    // the test only needs esbuild to see TWO distinct paths to the
+    // zfb package. Easiest reliable way: a sibling top-level dir that
+    // also gets `@takazudo/zfb` and is reachable from zfb-runtime's
+    // resolution chain.
+    //
+    // The simplest reproducer that does NOT depend on writing inside
+    // packages/ is: alias the bare package name `zfb-shadow` to the
+    // same packages/zfb directory, and have the runtime resolve from
+    // there. But that requires bundler tweaks.
+    //
+    // What esbuild's `--preserve-symlinks` actually keys on is the
+    // post-resolution physical path. We can synthesize a second
+    // physical path by putting the same target behind a **second**
+    // node_modules entry whose package.json points back to the same
+    // module. The simplest is `@takazudo/zfb-nested-copy/` → same
+    // packages/zfb source — but esbuild resolves bare specifiers
+    // through package.json name fields, so we need the consumer's
+    // import to LITERALLY traverse a different filesystem path. The
+    // most reliable way without modifying packages/ is to give zfb-runtime
+    // its own private node_modules tree under the test tempdir.
+    //
+    // Implementation: copy zfb-runtime into the tempdir (NOT a symlink),
+    // then write a private `node_modules/@takazudo/zfb` symlink inside
+    // that copy. Now both the top-level lookup and the runtime-private
+    // lookup walk distinct physical paths to packages/zfb. esbuild +
+    // `--preserve-symlinks` will see two distinct sources for
+    // `@takazudo/zfb/content` and inline content.js twice. This is
+    // the production-pnpm-strict shape.
+    let zfb_runtime_copy = nm.join(".zfb-runtime-copy");
+    copy_dir_recursive(&zfb_runtime_src, &zfb_runtime_copy).expect("copy zfb-runtime into tempdir");
+    let copy_takazudo = zfb_runtime_copy.join("node_modules/@takazudo");
+    fs::create_dir_all(&copy_takazudo).expect("create copy/node_modules/@takazudo");
+    // The source `packages/zfb-runtime/node_modules/@takazudo/zfb` may
+    // already exist in the workspace as a pnpm-installed symlink to the
+    // workspace's `packages/zfb`. The recursive copy preserves it. Remove
+    // it before re-creating so this helper is idempotent regardless of
+    // whether pnpm has linked the workspace dep.
+    let nested_zfb = copy_takazudo.join("zfb");
+    let _ = fs::remove_file(&nested_zfb);
+    let _ = fs::remove_dir_all(&nested_zfb);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_src, &nested_zfb).expect("symlink nested @takazudo/zfb");
+    // Replace the top-level @takazudo/zfb-runtime symlink with one pointing
+    // at the copy so resolution from `import "@takazudo/zfb-runtime"`
+    // lands inside our private node_modules tree.
+    fs::remove_file(takazudo_dir.join("zfb-runtime"))
+        .expect("remove placeholder @takazudo/zfb-runtime symlink");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_runtime_copy, takazudo_dir.join("zfb-runtime"))
+        .expect("symlink @takazudo/zfb-runtime to the copy");
+
+    // Also keep the bare `zfb` name available — `bundler.rs` rewrites
+    // some specifiers to `zfb` and esbuild expects that to resolve.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zfb_src, nm.join("zfb")).expect("symlink bare zfb");
+
+    Some(tmp)
+}
+
+/// Recursive directory copy (regular files + symlinks). We need a real
+/// copy of zfb-runtime so we can attach a private `node_modules/` inside
+/// it without contaminating the workspace package.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else if ty.is_symlink() {
+            // Skip pre-existing symlinks (e.g. dangling ones in dist/). The
+            // resolver only needs package.json + dist source files; the
+            // copy doesn't have to mirror symlinks 1:1.
+            let target = fs::read_link(entry.path())?;
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(target, &dst_path);
+        } else {
+            fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a fixture project that has a dynamic route `[slug].tsx` whose
+/// `paths()` calls `getCollection("blog")`. The synthetic
+/// `/__paths__/<encoded-route-key>` endpoint should return the resolved
+/// path list when dispatched against this bundle.
+fn write_paths_via_collection_fixture(root: &Path) {
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::create_dir_all(root.join("layouts")).unwrap();
+
+    fs::write(
+        root.join("pages/[slug].tsx"),
+        r#"import { getCollection } from "@takazudo/zfb/content";
+
+type Post = { slug: string; data: { title: string } };
+
+export async function paths() {
+  const posts = getCollection("blog") as Post[];
+  return posts.map((p) => ({ params: { slug: p.slug }, props: { title: p.data.title } }));
+}
+
+type Props = { title: string; params: { slug: string } };
+
+export default function PostPage({ title, params }: Props) {
+  return (
+    <html lang="en">
+      <head><title>{title}</title></head>
+      <body><h1>{title}</h1><p>slug: {params.slug}</p></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("content/blog/alpha.md"),
+        "---\ntitle: \"Alpha Post\"\n---\nAlpha body.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/blog/zulu.md"),
+        "---\ntitle: \"Zulu Post\"\n---\nZulu body.\n",
+    )
+    .unwrap();
+}
+
+/// Regression test for #442 / #449 — `paths()` worker must NOT throw
+/// when the bundle ends up with two `zfb/content` module instances.
+///
+/// Reproduces the production-pnpm-strict failure mode: a consumer
+/// project whose `node_modules` exposes two physical paths to
+/// `@takazudo/zfb` (top-level + nested inside zfb-runtime's private
+/// `node_modules`), bundled with `--preserve-symlinks` (the bundler's
+/// default whenever `node_modules_dir` is set — see
+/// `crates/zfb-build/src/bundler.rs` around `--external:node:*`).
+/// Under that shape esbuild inlines `content.js` twice, so the
+/// runtime's `setContentSnapshot` call and the user `paths()`'s
+/// `getCollection` call target distinct module-level slots.
+///
+/// Without the `globalThis.__zfb.contentSnapshot` fix in
+/// `packages/zfb/src/content.ts`, the user-side instance falls
+/// through to `loadNodeModules()` and throws:
+///
+/// > zfb/content: cannot load node:fs / node:path — no Node-style
+/// > require available.
+///
+/// With the fix, both instances read the snapshot from the shared
+/// `globalThis.__zfb.contentSnapshot` slot, the user `paths()`
+/// returns the expected array, and the `/__paths__/` endpoint returns
+/// 200 + a JSON list with the two slugs.
+#[cfg(feature = "embed_v8")]
+#[tokio::test]
+async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] no esbuild binary; \
+             skipping paths-dual-instance test."
+        );
+        return;
+    };
+
+    let fixture_tmp = tempfile::tempdir().expect("fixture tempdir");
+    let project_root = fixture_tmp.path();
+    write_paths_via_collection_fixture(project_root);
+    let blog_dir = project_root.join("content/blog");
+
+    // Build a real ContentSnapshot from the fixture so the bundle's
+    // `__zfb_content_snapshot` literal carries the same data the
+    // build pipeline would inject.
+    let snap = build_snapshot(&[CollectionConfig::new("blog", &blog_dir)])
+        .expect("build_snapshot from paths-dual fixture");
+    let snap_json = serde_json::to_string(&snap).expect("serialise snapshot");
+    assert!(
+        snap_json.contains("alpha"),
+        "snapshot must contain the alpha slug; got: {snap_json}"
+    );
+
+    let Some(node_modules) = make_dual_zfb_node_modules() else {
+        eprintln!(
+            "[embedded_v8_snapshot_e2e] could not set up dual-zfb node_modules; \
+             skipping."
+        );
+        return;
+    };
+
+    let dist_tmp = tempfile::tempdir().expect("dist tempdir");
+
+    let input = BundlerInput {
+        project_root: project_root.to_path_buf(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        content_collections: vec![ContentCollectionSpec::new(
+            "blog",
+            project_root.join("content/blog"),
+        )],
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: Framework::Preact,
+        define_vars: HashMap::new(),
+        tsconfig_paths: BTreeMap::new(),
+        external: vec![],
+        outdir: dist_tmp.path().to_path_buf(),
+        mode: BundleMode::Production,
+        minify: false,
+        esbuild_binary: Some(esbuild.clone()),
+        mock_subprocess_output: None,
+        content_snapshot_json: Some(snap_json.clone()),
+        node_modules_dir: Some(node_modules.path().to_path_buf()),
+        // `node_modules_preserve_symlinks` is a no-op today (see
+        // `crates/zfb-build/src/bundler.rs` field doc) — the bundler
+        // ALWAYS passes `--preserve-symlinks` whenever `node_modules_dir`
+        // is set. We leave the value here for documentation parity with
+        // the other tests.
+        node_modules_preserve_symlinks: true,
+        strip_md_ext: false,
+        code_highlight_theme: None,
+        code_highlight_themes_dir: None,
+        resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        prefetch_disabled: false,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
+        worker_only_routes: None,
+        bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
+    };
+
+    let out = bundle(input).expect("bundle should succeed for paths-dual fixture");
+    let bundle_source = fs::read_to_string(&out.bundle_path).expect("read bundle.mjs");
+
+    // Spot-check: the snapshot literal made it into the bundle.
+    assert!(
+        bundle_source.contains("alpha"),
+        "bundle.mjs must embed the snapshot literal containing 'alpha'; \
+         got (first 500 chars):\n{}",
+        &bundle_source[..bundle_source.len().min(500)],
+    );
+
+    // Boot the embedded V8 host with the bundle and dispatch the
+    // synthetic `/__paths__/<encoded-route-key>` endpoint.
+    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    host.execute_module("bundle.mjs", &bundle_source)
+        .await
+        .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
+
+    // The route key is the Hono pattern (the bundler converts the
+    // file-system `[slug].tsx` to `/:slug`). Percent-encode it so the
+    // `/__paths__/:routeKey{.+}` capture decodes back to the same
+    // string.
+    let route_key = "/:slug";
+    let encoded = route_key.replace('/', "%2F").replace(':', "%3A");
+    let url = format!("http://zfb.local/__paths__/{encoded}");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get(&url))
+        .await
+        .unwrap_or_else(|e| panic!("dispatch /__paths__ failed: {e}"));
+
+    let body = resp
+        .body_utf8()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| String::from("<non-utf8>"));
+
+    assert_eq!(
+        resp.status, 200,
+        "/__paths__/{route_key} must return 200; got status {} body: {body}",
+        resp.status,
+    );
+
+    // Verify the dual-instance case did NOT regress: the throw from
+    // content.ts:308 is the bug we are guarding against. If it ever
+    // reappears, the body will contain this string and the status
+    // would have been 500 — the assertion above already fails first,
+    // but we also surface the throw text here in case future router
+    // edits start returning the throw with a 200.
+    assert!(
+        !body.contains("cannot load node:fs"),
+        "paths() must not throw 'cannot load node:fs' — that means the dual \
+         zfb/content instance broke the snapshot bridge again. body: {body}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|e| panic!("paths() body is not JSON: {e} — body: {body}"));
+    let arr = json
+        .as_array()
+        .unwrap_or_else(|| panic!("paths() must return a JSON array; got: {body}"));
+    assert_eq!(
+        arr.len(),
+        2,
+        "paths() must return one entry per blog post (alpha, zulu); got: {body}"
+    );
+
+    // Either order is fine — assert by content rather than position.
+    let slugs: std::collections::BTreeSet<&str> = arr
+        .iter()
+        .filter_map(|e| e.get("params"))
+        .filter_map(|p| p.get("slug"))
+        .filter_map(|s| s.as_str())
+        .collect();
+    assert!(
+        slugs.contains("alpha"),
+        "paths() must include slug 'alpha'; got body: {body}"
+    );
+    assert!(
+        slugs.contains("zulu"),
+        "paths() must include slug 'zulu'; got body: {body}"
+    );
+}
