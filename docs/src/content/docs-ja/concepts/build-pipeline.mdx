@@ -1,0 +1,61 @@
+---
+title: ビルドパイプライン
+description: zfb がプロジェクトをビルド済みサイトに変えるまでの端から端までのツアー。
+sidebar_position: 6
+category: Concepts
+---
+
+zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群として作られています。このページは、
+「どのクレートが何を、どの順序で行うか」というレベルでパイプライン全体をめぐるツアーです。
+個々の部品に深入りすることなくメンタルマップを得るのに十分な内容です。
+
+## クレート、順番に
+
+1. **CLI** — `crates/zfb`。コマンドライン引数をパースし、`zfb.config.{ts,json}` をロードし、`dev`・`build`・`preview` のいずれかのコマンドにディスパッチします。
+2. **Router** — `crates/zfb-router`。`pages/` をスキャンしてルートテーブルを生成します。[Routing](/concepts/routing) を参照してください。
+3. **Watcher** — `crates/zfb-watcher`。dev モード専用。`pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`・`public/`、そして `zfb.config.ts` を監視し、変更イベントのストリームを発行します。
+4. **Dependency graph** — `crates/zfb-graph`。ページとソースの依存関係を追跡します。ウォッチャーが変更を報告すると、グラフは「どのページをリビルドする必要があるか」という 1 つの問いに答えます。
+5. **Build orchestrator** — `crates/zfb-build`。ページ単位の作業を調整し、`atomic_write_string` 経由で出力をアトミックに書き込むため、書き込みの途中で `dist/` が中途半端に壊れた状態になることは決してありません。
+6. **Renderer** — `crates/zfb-render`。SWC で TSX を JS にコンパイルし、得られた ES モジュールを JS ランタイムホスト経由で評価し、ページの `default()` エクスポートを呼び出して HTML 文字列を生成します。コンテンツコレクションのエントリ（`.md` / `.mdx`）は JSX モジュールと同じパイプラインを通してコンパイルされます。レンダラは `mdx://<collection>/<slug>` の specifier を解決し、それらを `entry.Content` としてユーザーページに提供します（[MDX Components](/concepts/mdx-components) を参照）。
+7. **CSS pipeline** — `crates/zfb-css`。必要に応じて Tailwind v4 と PostCSS を実行します。[Styling](/concepts/styling) を参照してください。
+8. **Islands pipeline** — `crates/zfb-islands`。各 `"use client"` コンポーネントを esbuild 経由で個別の ESM モジュールとしてバンドルします。[Islands](/concepts/islands) を参照してください。
+9. **Server** — `crates/zfb-server`。dev モード専用。ページキャッシュを静的ファイルとして配信する axum ベースの HTTP サーバーに加え、ブラウザリロードイベント用に `/__zfb/reload` で SSE チャネルを提供します（イベント種別の完全な内訳は [Dev mode lifecycle](/concepts/dev-mode-lifecycle) を参照）。
+
+## 本番: `zfb build`
+
+`zfb build` はパイプラインを一度だけ実行し、完全なサイトを `outDir` に書き出します。
+
+CLI → Router → Graph → Build orchestrator → Renderer → CSS pipeline → Islands pipeline。
+
+ウォッチャーと dev サーバーは関与しません。すべてのページがレンダリングされ、すべての CSS
+バンドルが生成され、すべてのアイランドがバンドルされ、その結果が `dist/`（または `outDir`
+が指す場所）に配置されます。アトミック書き込みにより、ビルドが中断されても、半分上書きされた
+ぐちゃぐちゃの状態ではなく、以前の `dist/` がそのまま残ります。`prerender = false` の
+ルートについては、アダプタが静的 HTML の代わりにワーカーバンドルを出力します。その出力が
+どう構成されるかは [SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker) を
+参照してください。
+
+## 開発: `zfb dev`
+
+`zfb dev` は `zfb build` と同じパイプラインを長命のループとして実行し、加えてウォッチャーと
+サーバーを動かします。
+
+CLI → Router → Watcher → Build orchestrator → Renderer → CSS pipeline → Islands pipeline → Server。
+
+ウォッチャーが変更を報告すると、依存グラフが影響を受けるページを選び、オーケストレーターは
+それらだけをリビルドし、サーバーは SSE チャネル経由でリロードイベントをブロードキャストします。
+ブラウザは自動的に再接続してリロードします。
+
+## プレビュー: `zfb preview`
+
+`zfb preview` は 3 つのコマンドの中で最もシンプルです。既存の `dist/` ディレクトリを `:4321`
+で静的ファイルとして配信します。レンダリングもウォッチングもリビルドもありません。デプロイ前に
+本番ビルドをローカルで確認できるように存在しています。
+
+## なぜ分割するのか
+
+クレートの境界は偶然ではありません。ルーティングはレンダリングとは別の問題であり、レンダリングは
+ウォッチングとは別、ウォッチングは配信とは別です。これらを分割することで、各クレートは単体で
+テストできるくらい小さく保たれ、dev ループは本番経路に触れることなく最適化（インクリメンタル
+リビルド、ページキャッシュ、部分的な CSS 抽出）を差し込めます。より踏み込んだ理由付けは
+[/architecture/build-engine](/architecture/build-engine) にあります。
