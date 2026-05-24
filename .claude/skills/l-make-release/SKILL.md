@@ -81,9 +81,10 @@ Apply the following rules based on the optional argument:
 
 ## Step 3: Analyze Changes and Propose
 
-Find the latest version tag:
+Find the latest version tag. First fetch remote tags — under the X9 flow, prior releases created their `v*` tag only on GitHub (via the draft `gh release create`), so the most recent tag may be absent from this local checkout. Without the fetch, `git tag -l` picks a stale older tag and the changelog base re-includes already-released commits:
 
 ```bash
+git fetch --tags origin
 git tag -l 'v*' --sort=-v:refname | head -1
 ```
 
@@ -142,10 +143,13 @@ pnpm install
 
 This regenerates `pnpm-lock.yaml` so CI's `pnpm install --frozen-lockfile` succeeds.
 
-**Lockfile drift heuristic** — before staging, run:
+**Lockfile drift heuristic** — before staging, run (the goal is to surface added/removed lines that are NOT simple two-space-indented entries; `grep -E` cannot do a negative lookahead, so use `grep -P` where available, else the awk fallback):
 
 ```bash
-git diff pnpm-lock.yaml | grep -E '^[+-](?!  )' | head -20
+# PCRE (GNU grep -P / ripgrep): show +/- lines that are NOT two-space-indented
+git diff pnpm-lock.yaml | grep -P '^[+-](?!  )' | head -20
+# Portable fallback (BSD/macOS grep lacks -P):
+# git diff pnpm-lock.yaml | awk '/^[+-]/ && !/^[+-]  / { print } ' | head -20
 ```
 
 If you see non-version-related changes (structural changes, unexpected lines), stop and surface the diff to the user before proceeding.
