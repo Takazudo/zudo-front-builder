@@ -1,0 +1,86 @@
+---
+title: paginate
+description: アイテムのリストをページネーションされたルートインスタンスへ展開します。
+sidebar_position: 3
+---
+
+## シグネチャ
+
+```ts
+paginate<T, K extends string = string>(
+  items: readonly T[],
+  opts: PaginateOptions<K>,
+): PaginateRoute<T, K>[]
+```
+
+`paginate` は `paths()` エクスポート内で使い、アイテムのリストをページネーションされたルートへ展開します。この関数は `items` を `pageSize` ごとにチャンク分割し、チャンクごとに 1 つの `PaginateRoute` を生成します。各ルートはコンポーネントが受け取る URL パラメータとページプロップを保持します。
+
+`paginate` は常に少なくとも 1 つのルートを発行します。空の入力リストでは 1 つの空ページが生成され、インデックスルートが 404 にならずレンダリングされます。
+
+## PaginateOptions
+
+```ts
+type PaginateOptions<K extends string = string> = {
+  pageSize: number;
+  param: K;
+};
+```
+
+- `pageSize` — 1 ページあたりのアイテム数。正の整数である必要があります。
+- `param` — 埋め込む動的 URL セグメントの名前（例: `[page].tsx` という名前のルートファイルなら `"page"`）。
+
+## PaginateRoute の形状
+
+```ts
+type PaginateRoute<T, K extends string = string> = {
+  params: Record<K, string>;
+  props: { page: PaginatedPage<T> };
+};
+```
+
+各ルートは以下を保持します。
+
+- `params` — URL セグメントの値。`param: "page"` の呼び出しでは `{ page: "1" }`、`{ page: "2" }` などになります。
+- `props.page` — 以下を持つ `PaginatedPage<T>` レコード:
+  - `data: T[]` — このページに属するアイテム。
+  - `page: number` — 1 始まりのページ番号。
+  - `lastPage: number` — 総ページ数。
+  - `pageSize: number` — 1 ページあたりのアイテム数（便宜上のエコー）。
+  - `total: number` — 全ページにわたるアイテムの総数。
+
+## 例
+
+ブログインデックスを `/blog/page/[page].tsx` 配下で 10 記事ずつページネーションします。
+
+```tsx
+import { paginate } from "zfb/paginate";
+import { getCollection } from "zfb/content";
+
+export function paths() {
+  const posts = getCollection("blog");
+  return paginate(posts, {
+    pageSize: 10,
+    param: "page",
+  });
+}
+
+export default function BlogPage({ page }) {
+  const { data: items, page: currentPage, lastPage } = page;
+  return (
+    <section>
+      <h2>Blog — page {currentPage} of {lastPage}</h2>
+      <ul>
+        {items.map((post) => (
+          <li key={post.slug}>
+            <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+`param` の値（`"page"`）は、ルートファイル名の動的セグメント名（`[page].tsx`）と一致している必要があります。ページ番号は 1 から始まり、`params` では文字列として渡されます。
+
+ページコンポーネントは `PaginatedPage` レコードを `props.page` として受け取ります。分割代入で `data`、`page`、`lastPage`、`pageSize`、`total` にアクセスしてください。

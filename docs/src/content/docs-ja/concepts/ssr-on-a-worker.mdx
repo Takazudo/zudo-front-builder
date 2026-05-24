@@ -1,0 +1,138 @@
+---
+title: Worker 上の SSR（アダプターモード）
+description: prerender = false の zfb ページがプロダクションで実際にどう動くか — 2 層のワーカー出力、ASSETS 優先のディスパッチ、そして getCloudflareContext() を支える AsyncLocalStorage のトリック。
+sidebar_position: 8
+category: Concepts
+---
+
+<Info title="このページの内容">
+
+`prerender = false` の zfb ページがプロダクションで実際に何を動かすのかというメンタルモデル。2 層のワーカー出力、リクエストが正しいハンドラへどうディスパッチされるか、そして `getCloudflareContext()` が prop-drilling なしに任意のページコンポーネントへ Cloudflare のバインディングを届ける方法を扱います。
+
+このページはメンタルモデルです。実際のセットアップ（アダプターのインストール、`wrangler.toml` の配線、D1 へのクエリ、`compatibility_flags` の設定）については [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) を読んでください。
+また、このページは zfb が出力する `dist/_worker.js` に特化したものであり、wrangler で別途デプロイする外部の Worker についてではありません。
+
+</Info>
+
+## あなたのページはただの関数
+
+フレームワークの語彙を取り去れば、`prerender = false` の zfb ページは `Response` を返すただの `async function` です。以下のスニペットでは、`renderToString`・`getUser`・`updateProfile`・`AccountLayout` はアプリ側のコードを表すプレースホルダーの識別子です。zfb や `@takazudo/zfb-adapter-cloudflare` のエクスポートではありません。この例で使われている唯一のフレームワーク提供のシンボルは `getCloudflareContext` です。
+
+```tsx
+// pages/account.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+import AccountLayout from "../layouts/account-layout";
+
+export const prerender = false;
+
+interface Env {
+  DB: D1Database;
+  SESSION_SECRET: string;
+}
+
+export default async function AccountPage(): Promise<Response> {
+  const { env, request } = getCloudflareContext<Env>();
+
+  if (request.method === "POST") {
+    const form = await request.formData();
+    await updateProfile(env, form);
+    return new Response(null, { status: 303, headers: { location: "/account" } });
+  }
+
+  const user = await getUser(env, request);
+  return new Response(
+    renderToString(<AccountLayout user={user} />),
+    { headers: { "content-type": "text/html" } },
+  );
+}
+```
+
+この関数は引数を受け取りません。Cloudflare の `(request, env, ctx)` のタプルは、コールツリーのどこでも（レイアウト、ヘルパー、lib モジュール）`getCloudflareContext()` 経由で利用できます。同じページ上の `<form method="post">` からの `POST` は同じハンドラに到達します。`request.method` での分岐がミューテーションの経路です。
+
+ここで起きていることに、手書きの Worker で起きないような特別なことは何もありません。このページの残りでは、`getCloudflareContext()` が実際にどう動くか、そしてそれを可能にするためにビルドが何を出力するかを説明します。
+
+## ビルドが実際に出力するもの
+
+`@takazudo/zfb-adapter-cloudflare` を設定した状態で `zfb build` を実行すると、`dist/` 配下に 2 つのファイルが生成されます。
+
+**`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Cloudflare Pages のアドバンスドモードのエントリです。リクエストが到着したときに Cloudflare がロードするファイルです。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、すべてのリクエストを（静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
+
+**`dist/_zfb_inner.mjs`** — 本物のアプリケーションバンドル。すべての `pages/*.tsx` ファイル、レイアウト、コンポーネント、lib ヘルパーを単一の Hono 形の ESM モジュールにコンパイルしたものです。これが実際にページをレンダリングします。
+
+この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、アドバンスドモードの `_worker.js` ディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
+
+より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](/concepts/architecture-overview) を読んでください。
+
+## ディスパッチフロー
+
+Cloudflare Pages サイトへのすべてのリクエストは、まず `_worker.js` に到達します。スタブは静的優先・動的が次という規則を適用します。
+
+| Request method | Dispatch order |
+|---|---|
+| GET, HEAD | まず `env.ASSETS` を探る。内側のワーカーが呼ばれるのは、アセットサーバーが 404 を返した場合だけ。それ以外のステータス（200・308 など）はクライアントに直接返される。 |
+| POST, PUT, PATCH, DELETE | `env.ASSETS` を完全にスキップ。直接内側のワーカーへ進む。 |
+
+フォールスルーの規則は「404 のみ」であり「200 以外のみ」ではありません。これが重要なのは、Cloudflare Pages のアセットサーバーが、プリレンダリングされたルートの末尾スラッシュを正規化するために 308 リダイレクトを出すためです（例: `/docs/account` → 308 → `/docs/account/` → `dist/docs/account/index.html`）。ラッパーはこれらの 308 をクライアントへ届けて、ブラウザがそれを辿って index.html へ到達できるようにしなければなりません。`worker-wrapper.mjs` を見ると、ラッパーは `await env.ASSETS.fetch(request)` を呼び、`assetResponse.status !== 404` のときはレスポンスを手を加えずに返します。
+
+**なぜ GET/HEAD は静的優先なのか:** アセットサーバーは上で説明した末尾スラッシュの正規化を担当し、さらに島のハイドレーションを機能させるビルド時の head 注入（`<link rel="stylesheet">`、`<script type="module" src="/assets/islands-<hash>.js">`）も配信します。もし内側の Hono ルーターがプリレンダリングされたルートを先に処理すると、それらの注入されたアセットなしでリクエスト時に再レンダリングしてしまい、島はハイドレートされません。
+
+**なぜ POST/PUT/PATCH/DELETE は直接通すのか:** アセットサーバーは定義上リードオンリーです。フォーム送信のためにそれを探っても、常に 404 か 405 を返すだけ — 利益のない不要な往復です。フォーム送信、JSON API 呼び出し、あらゆるミューテーションは直接内側のワーカーへ進みます。
+
+その結果、静的ページは SSR のコストを払いません。`prerender = true` のページは `env.ASSETS` だけで配信され、内側のワーカーの `fetch` ハンドラは呼ばれません。（ただし `_worker.js` がモジュールスコープで内側のバンドルをインポートしているため、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。正確な表現は [What is NOT in the worker output](#what-is-not-in-the-worker-output) を参照してください。）
+
+## `getCloudflareContext()` のトリック
+
+Cloudflare Workers は、同じ V8 アイソレート内で複数のリクエストを並行してディスパッチできます。素朴な `globalThis.__env = env` への書き込みは、それらの並行リクエストをまたいで競合します。アダプターはこれを `node:async_hooks` の `AsyncLocalStorage` で解決します。
+
+仕組みは 2 ステップです。
+
+**ステップ 1 — ラッパーがコンテキストを保存する。** `inner.fetch(request)` を呼ぶ前に、生成された `_worker.js` スタブは次を実行します。
+
+```js
+als.run({ env, ctx, request }, () => inner.fetch(request));
+```
+
+これはリクエストごとの async スコープを開きます。そのスコープ内のすべての `await`（レイアウト、ヘルパー、データベース呼び出しをまたいで）は、依然として同じ保存された値を見ます。
+
+**ステップ 2 — ユーザーコードがコンテキストを読む。** `getCloudflareContext<Env>()` は、同じ `AsyncLocalStorage` インスタンスに対して `als.getStore()` を呼びます。アダプターモジュールがそのストレージインスタンスを安定したキーで `globalThis` に登録するため、ラッパーファイル（`_worker.js`）とユーザーバンドル（`_zfb_inner.mjs`）は、別々の ESM モジュールであっても同じインスタンスを共有します。`getStore()` は、ラッパーがこのリクエストのために保存した `{ env, ctx, request }` オブジェクトを返します。他の並行リクエストのものではありません。
+
+**なぜこれが `compatibility_flags = ["nodejs_compat"]` を必須にするのか。** `AsyncLocalStorage` は `node:async_hooks` にあります。Workerd はデフォルトでこれを公開しません。次のように opt-in する必要があります。
+
+```toml
+# wrangler.toml
+compatibility_flags = ["nodejs_compat"]
+```
+
+このフラグがないと、Worker は起動に失敗します。エラーメッセージは欠けているモジュールとして `node:async_hooks` を名指しします。完全な `wrangler.toml` 設定については [SSR and Cloudflare Bindings guide](/guides/ssr-and-cloudflare-bindings) を参照してください。
+
+**なぜ prop-drilling ではなく AsyncLocalStorage なのか。** ページハンドラは共有のレイアウトや lib ヘルパーを自由に組み合わせます。`env` を明示的なパラメータとして引き回すと、すべてのコンポーネントとヘルパーがそれを受け取ることを強いられます。Cloudflare 固有のインフラと汎用的な UI コードの間の漏れのある結合です。ALS はフレームワークの境界をきれいに保ちます。アダプターがストレージを所有し、ユーザーコードはそれが必要な場所でだけ読みます。
+
+<Info title="Next.js や Remix を知っているなら">
+
+概念は次のようにマッピングされます。
+
+| Concept | Next.js App Router | Remix | zfb adapter-mode |
+|---|---|---|---|
+| ファイルベースのルーティング | `app/account/page.tsx` | `routes/account.tsx` | `pages/account.tsx` |
+| サーバーでのデータ取得 | `async function Page()` | `loader` | `async function AccountPage()` |
+| ミューテーション | Server Actions | `action` | プレーンな `<form method="post">` |
+| レイアウト | `layout.tsx` | ネストしたルートレイアウト | `layouts/*.tsx`（インポート） |
+| 静的対動的 | `dynamic = 'force-static'` / `'force-dynamic'` | （常に動的） | `export const prerender = true` / `false` |
+
+仕組みとしては Worker、使い勝手としては App Router スタイルの SSR、思想としては Remix ランタイムなしの Remix。RSC ストリーミングも Server Actions の抽象もなく、ただ 1 つのバンドルと Web の `fetch` ハンドラがあるだけです。
+
+</Info>
+
+## ワーカー出力に含まれないもの
+
+2 つのカテゴリの出力が、`dist/_worker.js` と `dist/_zfb_inner.mjs` から意図的に欠けています。
+
+**Islands** — `"use client"` でマークされたコンポーネントは、別の esbuild ステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](/concepts/islands) を参照してください。
+
+**プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、Cloudflare Pages が `.html` ファイルを `env.ASSETS` から直接配信するため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。ただし、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。`_worker.js` が静的な `import inner from "./_zfb_inner.mjs"` を行うため、最初のリクエストがどのルートに着地するかに関係なく、workerd は内側のモジュールグラフをメモリに引き込みます。この最適化は「静的ヒットは `inner.fetch()` をスキップする」であって、「静的のみのデプロイは内側のバンドルのロードをスキップする」ではありません。
+
+## 関連
+
+- [Architecture overview](/concepts/architecture-overview) — 2 バンドルのモデルと、ワーカーバンドルの形がビルド時とプロダクションの間の安定したコントラクトであること。
+- [Islands](/concepts/islands) — `"use client"` がコンポーネントを Worker の外に存在するブラウザ配信バンドルへどう opt-in させるか。
+- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler pages dev` でのローカル開発。

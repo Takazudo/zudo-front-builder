@@ -1,0 +1,102 @@
+---
+title: Island
+description: Island JSX ラッパーを使って、コンポーネントをクライアントでハイドレートされる島としてラップします。
+sidebar_position: 4
+---
+
+## `<Island>` ラッパー
+
+`"@takazudo/zfb"` から `Island` をインポートし、ブラウザでハイドレートしたいコンポーネントをラップします。それ以外はサーバーレンダリングされた HTML のままになります。
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "./Counter";
+
+export default function Page() {
+  return (
+    <main>
+      <h1>My Page</h1>
+      <Island when="visible">
+        <Counter />
+      </Island>
+    </main>
+  );
+}
+```
+
+SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。クライアントランタイム（`@takazudo/zfb-runtime`）はこれらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。
+
+## IslandProps
+
+```ts
+interface IslandProps {
+  when?: When;
+  ssrFallback?: VNode;
+  children?: VNode;
+}
+```
+
+- `when` — ハイドレーション戦略。デフォルトは `"load"`。後述の [ハイドレーション戦略](#ハイドレーション戦略) を参照してください。
+- `ssrFallback` — SSR スキップモードを有効にします（Astro の `client:only` に相当）。指定すると、重い `children` はサーバーサイドで評価され**ません**。代わりに `ssrFallback` がレンダリングされ、クライアントはハイドレーション時に本物のコンポーネントに差し替えます。
+- `children` — ハイドレートするコンポーネント。
+
+## ハイドレーション戦略
+
+`when` プロップは 3 つの値を受け付けます。いずれも現在出荷済みです。
+
+| 値 | 振る舞い |
+| --- | --- |
+| `"load"` | ページの JavaScript が実行されたら即座にハイドレートします。`when` を省略した場合のデフォルトです。 |
+| `"visible"` | 島のルート要素がビューポートに入ったときにハイドレートします（IntersectionObserver、しきい値 0）。画面外コンテンツに対して最も低コストの遅延手段です。 |
+| `"idle"` | ブラウザの次のアイドルコールバック時にハイドレートします。`requestIdleCallback` がないプラットフォームでは `setTimeout(0)` にフォールバックします。 |
+
+## SSR スキップモード
+
+`ssrFallback` を渡すと、重い子要素のサーバーレンダリングを完全にスキップできます。
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import HeavyChart from "./HeavyChart";
+
+export default function Page() {
+  return (
+    <Island ssrFallback={<div>Loading chart…</div>}>
+      <HeavyChart data={data} />
+    </Island>
+  );
+}
+```
+
+サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングします。
+
+## エクスポートされる定数とヘルパー
+
+以下は `Island` とともに `"@takazudo/zfb"` からエクスポートされます。
+
+- `HYDRATE_MARKER_ATTR` — `data-zfb-island` 属性名。
+- `SKIP_SSR_MARKER_ATTR` — `data-zfb-island-skip-ssr` 属性名。
+- `ANONYMOUS_COMPONENT_NAME` — ラップした子要素の素性を特定できないときに使われるフォールバック名。
+- `resolveWhen(when: unknown): When` — `when` 値を検証して正規化します。不明な入力は `"load"` にフォールバックします（開発時は警告つき）。
+
+## "use client" ディレクティブ
+
+zfb は代替の記述スタイルとして、ファイルレベルの `"use client"` ディレクティブもサポートします。最初の文がリテラル文字列 `"use client"` であるコンポーネントファイルは、ビルドスキャナ（`crates/zfb-islands`）によって島のエントリとして扱われます。esbuild ベースのバンドラは、それを独自の依存グラフとともに ESM へ個別にコンパイルします。
+
+```tsx
+"use client";
+
+import { useState } from "preact/hooks";
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+```
+
+サーバーコンポーネントやページモジュールから島をインポートします。ビルドパイプラインがハイドレーションのブートストラップを自動的に配線します。
+
+島のアーキテクチャ全般や、いつ島に手を伸ばすべきかについては [Islands](/concepts/islands) を参照してください。

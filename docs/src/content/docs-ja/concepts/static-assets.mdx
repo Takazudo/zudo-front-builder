@@ -1,0 +1,143 @@
+---
+title: 静的アセット
+description: 画像・SVG・フォント・favicon・robots.txt など、バイト単位でそのまま配信するファイルを zfb の public/ ディレクトリ経由でどう配信するか。
+sidebar_position: 4.5
+category: Concepts
+---
+
+<Info title="このページの内容">
+
+静的ファイル（画像・SVG・フォント・favicon・`robots.txt`・JSON マニフェスト、あらゆるバイナリ）を `public/` ディレクトリ経由で配信する方法を説明します。URL の規約、dev/prod の一致保証、ファイル名がページと衝突したときの優先順位ルール、`base` マウントプレフィックスとの相互作用、そして代わりに TSX の `import` を使うべきケースを扱います。
+
+</Info>
+
+zfb はコード以外のアセットを 1 つのディレクトリ `public/` で扱います。ファイルを入れて絶対 URL で参照すれば、同じ URL が `zfb dev`・`zfb preview`・ビルドが出力する静的な `dist/` のいずれでも動作します。インストールするプラグインも、書くべき `import` も、壊しうるバンドラのステップもありません。
+
+## 規約
+
+`public/` 内のものはすべてサイトルートでそのまま配信されます。`public` というセグメントは URL に **現れません**。
+
+```text
+public/favicon.ico       →  /favicon.ico
+public/logo.svg          →  /logo.svg
+public/robots.txt        →  /robots.txt
+public/img/hero.png      →  /img/hero.png
+public/fonts/Inter.woff2 →  /fonts/Inter.woff2
+```
+
+サブディレクトリは保持されますが、トップレベルの `public/` という名前は取り除かれます。`/img/hero.png` へのリクエストは、dev では `<project_root>/public/img/hero.png` に、`zfb build` 後は `dist/img/hero.png` に解決されます。
+
+## アセットの参照
+
+絶対 URL を使ってください。アセットパスはレンダリングされた HTML に現れるものと一致します。
+
+```tsx
+// pages/index.tsx
+export default function Home() {
+  return (
+    <main>
+      <img src="/logo.svg" alt="Site logo" width={128} height={32} />
+      <link rel="icon" href="/favicon.ico" />
+    </main>
+  );
+}
+```
+
+CSS でも同じ方法が使えます。URL はブラウザが最終的にリクエストするものそのものです。
+
+```css
+/* styles/global.css */
+.hero {
+  background-image: url("/img/hero.png");
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter.woff2") format("woff2");
+}
+```
+
+## 静的アセットをモジュールとして import しない
+
+zfb は `public/` に対してバンドラを実行 **しません**。以下のようなパターン（Vite・webpack などのツールチェーンでよく見られるもの）はここでは動作しません。
+
+```tsx
+// ❌ 静的ファイルにこれをしてはいけません。
+import logoUrl from "../public/logo.svg";
+import heroImg from "./hero.png";
+```
+
+これらの import を URL に変換するアセットパイプラインは存在しません。代わりに絶対 URL の形式（`src="/logo.svg"`）を使ってください。import は **コード**（islands が使う `.ts`・`.tsx`・`.css` モジュール）には依然として正しい答えですが、ブラウザにそのまま取得させたい画像・フォント・SVG のようなバイナリファイルには適しません。
+
+CSS がストロークや塗りなどをスタイルできるよう SVG を JSX としてインライン化する必要が本当にある場合は、SVG マークアップを TSX コンポーネントにコピーしてください。それはコードの経路です。`public/` はバイト単位そのままの経路です。
+
+## dev / prod の一致
+
+dev サーバーとプロダクションビルドは URL の形について一致します。これは偶然ではなく保証です。
+
+- **`zfb dev`** — ページハンドラは、ページキャッシュのミスと `dist/` のミスのあと、`<public_root>/<path>` からの読み取りにフォールバックします。`public/` ディレクトリには URL プレフィックスもトップレベルの `nest_service` マウントもなく、ファイルはサイトルートに直接現れます。
+- **`zfb build`** — `copy_public_dir`（`crates/zfb/src/commands/build.rs` 内）が `public/` 配下のすべてのファイルを `dist/<rel>` へ再帰的にコピーします。エッジ CDN が配信する静的な `dist/` ツリーは、dev でブラウザが見たものと同じ形です。
+
+つまり、ページに一度書いた `<img src="/logo.svg">` は、条件分岐・環境チェック・`withBase` 風のヘルパーなしで両モードで動作します。
+
+## 優先順位: ページが public ファイルに優先する
+
+`pages/foo.tsx` ルートと同じ URL を持つ `public/foo` ファイルを持つことは可能です（通常は意図しないものですが）。zfb はこれを決定論的に解決します。
+
+1. **プラグインの dev ミドルウェア** で `/foo` を主張するものが最初に実行されます。
+2. **ページキャッシュ** — `pages/foo.tsx` のレンダリング出力が次に優先されます。
+3. **`dist/` ディレクトリ** — ビルドパイプラインが書き出したファイルが次に配信されます。
+4. **`public/` ディレクトリ** — 上記 3 つすべてがミスした場合にのみ参照されます。
+5. それ以外は **404**。
+
+したがって、同名の TSX ページは常に public ファイルを覆い隠します。逆は不可能です。`public/foo` がルートを上書きすることはできません。ページも主張する URL に静的ファイルを置きたい場合は、どちらか一方をリネームしてください。
+
+## `base` との相互作用
+
+`zfb.config.ts` が `base` プレフィックス（例: サブパス配下へのデプロイのための `base: "/pj/site/"`）を設定すると、`public/` 内のファイルもそのプレフィックスの下へ移動します。
+
+```text
+config: base: "/pj/site/"
+
+public/logo.svg  →  /pj/site/logo.svg   （dev と prod）
+```
+
+dev サーバーの `serve_page` フォールバックも、ビルド時の `copy_public_dir` も、このプレフィックスを尊重します。プロジェクトの他の部分と同じやり方で HTML 内のアセット URL を書いている限り（通常は markdown / TSX パイプラインがすでに実行しているリンクリライターを経由して）、プレフィックスは自動的に適用されます。
+
+## 設定
+
+このディレクトリは設定可能です。デフォルト以外を指すには `zfb.config.ts` に `publicDir` を追加します。
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  publicDir: "static",
+});
+```
+
+デフォルト: `"public"`。パスはプロジェクトルートからの相対で解決されます。ディレクトリが存在しない場合は黙って no-op になります。すべてのプロジェクトに必要なわけではありません。
+
+## `public/` に入れないもの
+
+`public/` が適した置き場所:
+
+- サイト全体のアイコンと favicon（`favicon.ico`・`apple-touch-icon.png`）
+- Open Graph / ソーシャルシェア用画像
+- `robots.txt`・`humans.txt`・security.txt
+- Web アプリマニフェスト（`manifest.webmanifest`）
+- 自前でホストするフォント
+- 多くのページから絶対 URL で参照される装飾的な画像
+
+`public/` が適さない置き場所:
+
+- **変換するソース画像**（リサイズ・最適化・AVIF/WebP への変換）。zfb には組み込みの画像パイプラインがありません。変換が必要なら帯域外で実行し（例: `prebuild` スクリプト経由）、最適化された出力を `public/` にチェックインするか、別のツールを使ってください。
+- **islands のコード依存**。`"use client"` 島がインポートする TSX / JSX / TS / CSS は、島の隣に置いてバンドルすべきです。コードを `public/` に置くとバンドラを完全にスキップしてしまい、ブラウザはランタイムが実行できない生のソースを取得することになります。
+- **拡張子が示すものと異なる `Content-Type` が必要なファイル**。zfb は Content-Type をファイル拡張子から導出します。オーバーライドが必要なら、代わりに TSX ページ経由でファイルをレンダリングしてください（[Non-HTML Pages](/concepts/non-html-pages) を参照）。
+
+## 関連
+
+- [Project structure: `public/`](/getting-started/project-structure) — ディレクトリレイアウトの概観。
+- [Non-HTML Pages](/concepts/non-html-pages) — ヘッダーを制御したい場合や、ページをコレクションデータに依存させたい場合に、`.xml`・`.json`・`.txt` を TSX ページ経由でレンダリングする方法。
+- [Islands](/concepts/islands) — クライアントサイド JS の経路。ここで説明した静的アセットの経路とは別物です。

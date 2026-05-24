@@ -1,0 +1,63 @@
+---
+title: getCollection
+description: コンテンツまたはデータコレクションのすべてのエントリを読み込みます。
+sidebar_position: 2
+---
+
+## シグネチャ
+
+```ts
+getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[]
+```
+
+ページモジュールから `getCollection` を呼び出すと、名前付きコレクション内のすべてのエントリを読み込めます。コレクションは `zfb.config` の `collections` で宣言されている必要があります。この関数は同期的で、Promise ではなくプレーンな配列を返します。スキーマ検証は各エントリの読み込み時に実行されるため、配列がコンポーネントに届く頃にはフロントマターは型付けされ検証済みになっています。
+
+## CollectionEntry の形状
+
+各エントリは以下のフィールドを持ちます。
+
+- `slug: string` — `.md` 拡張子を除いたファイル名で、スラッシュ区切りのパスに正規化されます。ネストしたファイルはパスベースの slug を生成します（例: `"2024/hello"`）。
+- `data: T` — パース済みのフロントマター。ジェネリックパラメータで型付けされます。
+- `body: string` — フロントマターを除いた生のマークダウン本文。
+- `module_specifier: string` — `mdx://<collection>/<slug>` 形式の安定したブリッジキー。レンダラが内部的に使用します。カスタムブリッジを構築する場合は `Content` のルックアップに渡します。
+- `Content: (props: ContentProps) => ContentElement` — このエントリのレンダリング可能なコンポーネント。利用可能な場合はレンダラブリッジ経由でレンダリングし、ブリッジが存在しないテストや dev のコンテキストでは `<pre data-zfb-content-fallback>` ブロックにフォールバックします。
+
+## ContentProps
+
+```ts
+type ContentProps = {
+  components?: Record<string, unknown>;
+};
+```
+
+`components` プロップは Astro の `<Content components={...}>` の慣習を踏襲しており、要素名からオーバーライドするコンポーネントへのフラットなマップです。ベースとして `"@takazudo/zfb"` の `defaultComponents` を使ってください。
+
+```tsx
+import { defaultComponents } from "@takazudo/zfb";
+
+<entry.Content components={{ ...defaultComponents, h2: MyHeading }} />
+```
+
+## 例
+
+典型的なユースケースは、インデックスページでブログ記事の一覧をレンダリングすることです。
+
+```tsx
+import { getCollection } from "zfb/content";
+
+export default function BlogIndex() {
+  const posts = getCollection<{ title: string; date: string }>("blog");
+
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.slug}>
+          <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+`getCollection` は同期的に返るため、`await` は不要です。エントリごとの動的ページには `getCollection` と `paths()` エクスポートを組み合わせます。関連するパターンについては [paginate](/api/paginate) を参照してください。

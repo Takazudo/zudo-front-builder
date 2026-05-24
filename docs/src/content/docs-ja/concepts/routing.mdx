@@ -1,0 +1,67 @@
+---
+title: ルーティング
+description: pages/ 配下のファイルシステムルーティングが zfb で URL にどうマッピングされるか。
+sidebar_position: 1
+category: Concepts
+---
+
+zfb は `pages/` ディレクトリ配下で **ファイルシステムルーティング** を採用しています。ルーターはビルド時（および dev では変更のたびに）`pages/` をスキャンし、各ページのソースファイルをルートへと変換します。この規約は Next.js や Astro で見覚えのあるものと一致します。
+
+## ファイルからルートへのマッピング
+
+| File | Route | Notes |
+| ---- | ----- | ----- |
+| `pages/index.tsx` | `/` | |
+| `pages/about.tsx` | `/about` | |
+| `pages/about.md` | `/about` | SSG 専用。MDX パイプライン |
+| `pages/about.html` | `/about` | SSG 専用。静的アセットのコピー |
+| `pages/blog/index.tsx` | `/blog` | |
+| `pages/blog/[slug].tsx` | `/blog/:slug`（動的） | |
+| `pages/docs/[...slug].tsx` | `/docs/:slug*`（catchall） | |
+| `pages/[lang]/[slug].tsx` | `/:lang/:slug` | |
+
+最初に押さえておきたいルールがいくつかあります。
+
+- `_` で始まるファイル（例: `_app.tsx`）は無視されます。ルートの隣に置きたいが公開はしたくない共有ヘルパーには、このプレフィックスを使ってください。
+- ページとして受け付けられる拡張子は `.tsx`・`.md`・`.html` です。`pages/` 内のそれ以外の拡張子のファイルはスキップされます（警告がログに出ます）。そのため README やメモを置いても問題ありません。
+- 同じルートに解決される 2 つのファイルがあると、ビルド時に `RouterError::AmbiguousRoute` が発生します。ルーターが暗黙のうちに勝者を選ぶことはありません。
+
+`.md` と `.html` のページエントリの完全なコントラクトと v1 の制限については [Markdown and HTML Pages](/concepts/md-html-pages) を参照してください。
+
+スキャンは `zfb-router` クレートの `Router::scan` が行います。結果は **静的ルートが動的ルートより優先され、動的ルートが catchall より優先される** ようにソートされます。より具体的なルートが先にマッチします。
+
+## 静的・動的・catchall ルート
+
+静的ルート（`pages/about.tsx`）は単一の具体的な URL にマッチします。動的ルートはファイル名に `[param]` の角括弧を使って単一のパスセグメントをキャプチャし、catchall ルートは `[...param]` を使って末尾の任意個数のセグメントをキャプチャします。
+
+```tsx
+// pages/blog/[slug].tsx
+export default function BlogPost({ slug }: { slug: string }) {
+  return <article>Post for {slug}</article>;
+}
+```
+
+```tsx
+// pages/docs/[...slug].tsx
+export default function DocsPage({ slug }: { slug: string[] }) {
+  return <main>{slug.join("/")}</main>;
+}
+```
+
+## `paths()` エクスポート
+
+動的ルートと catchall ルートは、ビルド時にどの具体的な URL をレンダリングするかを知る必要があります。これは同じファイルから `paths()` 関数をエクスポートすることで実現します。
+
+```tsx
+// pages/blog/[slug].tsx
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((p) => ({ params: { slug: p.slug } }));
+}
+
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post {params.slug}</article>;
+}
+```
+
+`paths()` はビルド中に組み込みの V8 ホストによって評価されます。`zfb build` は静的・動的・catchall ルートを検出し、各動的・catchall ルートについて `paths()` を評価して、レンダリングすべき具体的な URL を列挙します。静的ルートに `paths()` エクスポートは不要です。
