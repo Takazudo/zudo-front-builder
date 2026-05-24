@@ -70,7 +70,7 @@ const NO_INSTALL_TEMPLATES: &[&str] = &["node-free"];
 /// `scripts/sync-platform-versions.mjs` on every version bump to match
 /// `packages/zfb/package.json`. See:
 /// <https://github.com/Takazudo/zudo-front-builder/issues/343>
-const WORKSPACE_DEP_PLACEHOLDER: &str = "=0.1.0-next.5";
+const WORKSPACE_DEP_PLACEHOLDER: &str = "=0.1.0-next.6";
 
 /// Dependency-section keys we walk inside `package.json` when rewriting
 /// `workspace:*` ranges. Kept as a constant so the rewriter and its tests
