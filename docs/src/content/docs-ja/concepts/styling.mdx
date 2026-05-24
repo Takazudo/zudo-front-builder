@@ -1,0 +1,114 @@
+---
+title: スタイリング
+description: グローバル CSS、Tailwind v4、そして zfb におけるコンポーネントスコープなスタイリングの位置づけ。
+sidebar_position: 4
+category: Concepts
+---
+
+zfb のスタイリングには 2 つのレイヤー（グローバル CSS と Tailwind v4）があり、それ以外のすべてに対しては 1 つの十分にサポートされたパターンがあります。マークアップそのものに付与するユーティリティクラスです。
+
+## グローバル CSS
+
+デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。デザイントークン、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
+
+```css
+:root {
+  --color-text: #1a1a1a;
+  --color-bg: #ffffff;
+  --font-body: system-ui, sans-serif;
+}
+
+body {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: var(--font-body);
+}
+```
+
+CSS 内の `import` は期待どおりに動作します。スタイルを複数のファイルに分割し、`global.css` からまとめて読み込めます。
+
+## Tailwind v4
+
+Tailwind v4 は `zfb.config.{ts,json}` から opt-in で有効化します。
+
+```json
+{
+  "tailwind": {
+    "enabled": true
+  }
+}
+```
+
+有効にすると、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。
+
+Tailwind を有効にすると、ユーティリティクラスはあらゆる `.tsx` ファイルで動作します。
+
+```tsx
+export default function Hero() {
+  return (
+    <section className="mx-auto max-w-2xl px-6 py-12">
+      <h1 className="text-3xl font-bold">Hello</h1>
+    </section>
+  );
+}
+```
+
+Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` ディレクティブを通じてサポートされます。トークンのカスタマイズは JS の設定ファイルではなく CSS を編集して行います。
+
+## コンポーネントスコープなスタイリング
+
+コンポーネントレベルのスタイリングには、十分にサポートされたパターンが 2 つあります。Tailwind ユーティリティクラスと CSS Modules です。
+
+### Tailwind ユーティリティクラス
+
+最もシンプルなパターンは、**サイト全体の関心事にはグローバル CSS を、コンポーネントレベルのスタイリングには Tailwind ユーティリティクラスを使う** というものです。これによりビルドは高速に、ランタイムは些細なものに保たれ、Tailwind v4 のデザイントークンモデルにきれいにマッピングできます。
+
+### CSS Modules
+
+真にコンポーネントスコープな CSS（コンポーネント間で衝突してはならないクラス名）には、zfb は CSS Modules をサポートしています。`*.module.css` という名前のファイルはすべて CSS Module です。そのクラス名はビルド時にスコープ付きでファイル安定な識別子へと書き換えられるため、2 つのコンポーネントが衝突することなく両方とも `.button` クラスを定義できます。
+
+スタイルは `.module.css` ファイルに記述します。
+
+```css title="components/card.module.css"
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.title {
+  font-weight: 700;
+}
+```
+
+モジュールは **デフォルトインポート** でインポートし、インポートしたオブジェクトからクラス名を読み取ります。
+
+```tsx title="components/Card.tsx"
+import styles from "./card.module.css";
+
+export default function Card() {
+  return (
+    <div className={styles.card}>
+      <h3 className={styles.title}>Hello</h3>
+    </div>
+  );
+}
+```
+
+ビルド時に zfb は `styles.card` をスコープ付きのクラス名（例: `KdPA9G_card`）に解決します。レンダリングされた HTML はそのスコープ付きクラスを持ち、スコープ付き CSS は残りの CSS と同じハッシュ付きの `dist/assets/styles-<hash>.css` スタイルシートに畳み込まれます。モジュールごとに別の `.css` ファイルが作られることはなく、ランタイムコストもありません。ルックアップはビルド中に解決されます。
+
+仕組み:
+
+- `import styles from "./x.module.css"` は **デフォルトインポート** でなければなりません。`styles` は元のクラス名をスコープ付きのものへマッピングするプレーンオブジェクトです。
+- クラスへはメンバーアクセスでアクセスします（`styles.card` または `styles["card"]`）。どちらも動作しますが、動的なキーによる計算アクセスは動作しません。書き換えがビルド時に行われるためです。
+- プレーンな `.css` のインポート（`.module.css` で終わら *ない* ファイル）は引き続きグローバル CSS として扱われます。スコープ化を opt-in するのは `.module.css` サフィックスだけです。
+- `.module.css` ファイルは、`pages/`・`components/`・`layouts/`・`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
+
+制限:
+
+- `node_modules` から **ベア specifier** でインポートされる CSS Modules（例: `import s from "@org/pkg/x.module.css"`）はスコープ化されません。スコープ化されるのはプロジェクト相対の `./` / `../` インポートだけです。
+- `:export` ブロックと `composes` ディレクティブはサポートされていません。プレーンなクラスセレクタを使ってください。
+
+## `dist/` に出力されるもの
+
+ビルドパイプラインは Tailwind と PostCSS を実行し、ハッシュ付きのスタイルシートを `dist/assets/` に書き出し、レンダリングされた各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しているため、CDN キャッシュは内容が変わるまでデプロイをまたいで保持できます。
