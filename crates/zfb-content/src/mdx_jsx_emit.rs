@@ -1170,10 +1170,15 @@ fn jsx_element_text(
 ///
 /// Mirrors the coverage of [`mdast_to_hast`](crate::pipeline::mdast_to_hast)
 /// — every node kind that has a meaningful HTML rendering produces a
-/// matching plain-HTML JSX tag. Inside an MDX JSX block we cannot
-/// route through `_components.<tag>` (the children live inside a
-/// JsxRaw string, not a `JsxEmitter` invocation), so plain
-/// `<p>`/`<strong>`/etc. ship to JSX as regular HTML elements.
+/// matching JSX tag. Markdown nodes living inside an MDX JSX block (e.g.
+/// a `## heading` or a list inside `<Outro>…</Outro>`) route through
+/// `_components.<tag>` so callers can override `<p>`/`<h2>`/etc. via the
+/// `components` prop, matching `JsxEmitter::emit_jsx`'s contract on the
+/// non-pipeline path. These tags are emitted into a JsxRaw payload; the
+/// bridge's `collect_components_tag_names` scan (see `emit_node` for the
+/// `HastNode::JsxRaw` arm) harvests the `<_components.<tag>` references
+/// afterwards so the module preamble registers each tag's default
+/// fallback in the `_components` map.
 fn jsx_render_child(node: &MdastNode) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
@@ -1194,14 +1199,17 @@ fn jsx_render_child(node: &MdastNode) -> String {
         MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children),
         MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children),
         MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children),
-        MdastNode::InlineCode(c) => format!("<code>{}</code>", jsx_text_escape(&c.value)),
+        MdastNode::InlineCode(c) => format!(
+            "<_components.code>{}</_components.code>",
+            jsx_text_escape(&c.value),
+        ),
         MdastNode::Code(c) => {
             let mut attrs = String::new();
             if let Some(lang) = &c.lang {
                 attrs.push_str(&format!(" class=\"language-{}\"", jsx_attr_escape(lang)));
             }
             format!(
-                "<pre><code{attrs}>{}</code></pre>",
+                "<_components.pre><_components.code{attrs}>{}</_components.code></_components.pre>",
                 jsx_text_escape(&c.value),
             )
         }
@@ -1211,7 +1219,7 @@ fn jsx_render_child(node: &MdastNode) -> String {
                 attrs.push_str(&format!(" title=\"{}\"", jsx_attr_escape(title)));
             }
             format!(
-                "<a{attrs}>{}</a>",
+                "<_components.a{attrs}>{}</_components.a>",
                 l.children.iter().map(jsx_render_child).collect::<String>(),
             )
         }
@@ -1224,7 +1232,7 @@ fn jsx_render_child(node: &MdastNode) -> String {
             if let Some(title) = &i.title {
                 attrs.push_str(&format!(" title=\"{}\"", jsx_attr_escape(title)));
             }
-            format!("<img{attrs} />")
+            format!("<_components.img{attrs} />")
         }
         MdastNode::List(l) => {
             let tag = if l.ordered { "ol" } else { "ul" };
@@ -1237,26 +1245,25 @@ fn jsx_render_child(node: &MdastNode) -> String {
                 }
             }
             format!(
-                "<{tag}{attrs}>{}</{tag}>",
+                "<_components.{tag}{attrs}>{}</_components.{tag}>",
                 l.children.iter().map(jsx_render_child).collect::<String>(),
             )
         }
         MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children),
         MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children),
-        MdastNode::ThematicBreak(_) => "<hr />".to_string(),
-        MdastNode::Break(_) => "<br />".to_string(),
+        MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
+        MdastNode::Break(_) => "<_components.br />".to_string(),
         MdastNode::Math(m) => format!(
-            "<pre><code class=\"language-math math-display\">{}</code></pre>",
+            "<_components.pre><_components.code class=\"language-math math-display\">{}</_components.code></_components.pre>",
             jsx_text_escape(&m.value),
         ),
         MdastNode::InlineMath(m) => format!(
-            "<code class=\"language-math math-inline\">{}</code>",
+            "<_components.code class=\"language-math math-inline\">{}</_components.code>",
             jsx_text_escape(&m.value),
         ),
         MdastNode::Root(r) => r.children.iter().map(jsx_render_child).collect(),
-        // GFM pipe-table inside MDX JSX body — emit plain HTML table tags
-        // (no _components routing here; jsx_render_child produces JsxRaw
-        // payloads that the bridge embeds verbatim, so plain HTML tags work).
+        // GFM pipe-table inside MDX JSX body — routes table tags through
+        // `_components.<tag>`, matching the non-pipeline `emit_table_jsx`.
         MdastNode::Table(t) => jsx_render_table(t),
         // Footnotes, references, ESM, frontmatter, etc. drop silently here
         // — better than leaking a `Debug` repr.
@@ -1264,11 +1271,13 @@ fn jsx_render_child(node: &MdastNode) -> String {
     }
 }
 
-/// Render a GFM pipe-table as plain HTML inside a JSX-shaped string.
+/// Render a GFM pipe-table as `_components.<tag>`-routed JSX.
 ///
 /// Used by [`jsx_render_child`] for tables that appear inside MDX JSX
-/// element bodies (where `_components.*` routing is not available).
-/// The resulting string is embedded as a [`HastNode::JsxRaw`] payload.
+/// element bodies. Table tags route through `_components.<tag>` so
+/// callers can override them, matching the non-pipeline `emit_table_jsx`.
+/// The resulting string is embedded as a [`HastNode::JsxRaw`] payload;
+/// the bridge's `collect_components_tag_names` scan registers each tag.
 fn jsx_render_table(t: &markdown::mdast::Table) -> String {
     let style_attr = |col: usize| -> String {
         t.align
@@ -1282,24 +1291,26 @@ fn jsx_render_table(t: &markdown::mdast::Table) -> String {
         let MdastNode::TableRow(tr) = row else {
             return String::new();
         };
-        let mut out = String::from("<tr>");
+        let mut out = String::from("<_components.tr>");
         for (col, cell) in tr.children.iter().enumerate() {
             let MdastNode::TableCell(tc) = cell else {
                 continue;
             };
             let style = style_attr(col);
             let inner: String = tc.children.iter().map(jsx_render_child).collect();
-            out.push_str(&format!("<{cell_tag}{style}>{inner}</{cell_tag}>"));
+            out.push_str(&format!(
+                "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
+            ));
         }
-        out.push_str("</tr>");
+        out.push_str("</_components.tr>");
         out
     };
 
-    let mut out = String::from("<table>");
+    let mut out = String::from("<_components.table>");
     if let Some(head_row) = t.children.first() {
-        out.push_str("<thead>");
+        out.push_str("<_components.thead>");
         out.push_str(&emit_row(head_row, "th"));
-        out.push_str("</thead>");
+        out.push_str("</_components.thead>");
     }
     let body_rows = if t.children.len() > 1 {
         &t.children[1..]
@@ -1307,19 +1318,19 @@ fn jsx_render_table(t: &markdown::mdast::Table) -> String {
         &[]
     };
     if !body_rows.is_empty() {
-        out.push_str("<tbody>");
+        out.push_str("<_components.tbody>");
         for row in body_rows {
             out.push_str(&emit_row(row, "td"));
         }
-        out.push_str("</tbody>");
+        out.push_str("</_components.tbody>");
     }
-    out.push_str("</table>");
+    out.push_str("</_components.table>");
     out
 }
 
 fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode]) -> String {
     format!(
-        "<{tag}{attrs}>{}</{tag}>",
+        "<_components.{tag}{attrs}>{}</_components.{tag}>",
         children.iter().map(jsx_render_child).collect::<String>(),
     )
 }
