@@ -21,7 +21,7 @@ All 9 checks PASS. Wave 1 fixes are confirmed working end-to-end.
 | 4a | Consumer: `zfb --version` → `zfb 0.1.0-next.4` | #448 | ✅ PASS | Consumer installed from local tarballs; binary reports correct version |
 | 4b | Consumer: `zfb --help` without EACCES | #447 | ✅ PASS | `--help` output printed cleanly; no EACCES; binary was 0755 in npm-packed tarball |
 | 5 | `zfb build` with `tsconfig.json` `"paths": {"@/*": ["src/*"]}` | #450 | ✅ PASS | `✓ 1 pages built in 0.29s`; `@/components/Greeting` resolved; no "Could not resolve" errors |
-| 6 | `zfb build` with content collection + `getCollection()` | #449 | ✅ PASS | `✓ 1 pages built in 0.29s`; no `cannot load node:fs / node:path` error |
+| 6 | `zfb build` with dynamic route `paths()` + `getCollection()` | #449 | ✅ PASS | `✓ 1 pages built in 0.31s`; `dist/posts/hello/index.html` generated; no `cannot load node:fs / node:path` error; `paths()` ran in worker context via `globalThis.__zfb.contentSnapshot` |
 | 7 | Launcher EACCES detection: 0644 fake binary → stderr message + path | #447 | ✅ PASS | Stderr: `[zfb] binary is not executable; was the install corrupt?\n      /tmp/zfb-eacces-test/.../zfb` |
 | 8 | `sync-platform-versions.mjs` rewrites `WORKSPACE_DEP_PLACEHOLDER` | #451 | ✅ PASS | Bumped `packages/zfb/package.json` to `0.99.0-smoketest`, ran script → `new.rs` shows `=0.99.0-smoketest`; all 7 packages updated; restored to `0.1.0-next.3` |
 | 9 | `pnpm-lock.yaml` diff — only version-string changes, no surprise deps | — | ✅ PASS | `diff <(git show main:pnpm-lock.yaml) <(git show HEAD:pnpm-lock.yaml)` → **empty** (identical); Wave 1 fixes do not touch the npm dependency graph |
@@ -43,8 +43,10 @@ All 9 checks PASS. Wave 1 fixes are confirmed working end-to-end.
 
 ### Sub #449 (paths() snapshot flow via globalThis)
 
-- `getCollection()` call in `getStaticProps()` works without `cannot load node:fs` ✅
-- Fix: `setContentSnapshot()` stores on `globalThis.__zfb.contentSnapshot` so both module instances share state
+- Dynamic route `pages/posts/[slug].tsx` with `export async function paths()` calling `getCollection("posts")` — executed inside the worker (separate Node module context from main)
+- `paths()` resolved `hello.md` → returned `[{ params: { slug: "hello" }, props: { post } }]` → `dist/posts/hello/index.html` generated ✅
+- No `cannot load node:fs / node:path` error ✅
+- Fix: `setContentSnapshot()` stores on `globalThis.__zfb.contentSnapshot` so both module instances share state across the worker boundary
 
 ### Sub #450 (tsconfig @/ alias regression fix)
 
