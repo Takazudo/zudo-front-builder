@@ -61,3 +61,10 @@ __inbox/
 # GH Release, never committed.
 /zfb-*.tar.gz
 /zfb-*.tar.gz.sha256
+
+# Native binary copied into the per-platform npm packages during release
+# builds (scripts/build-macos-x64-local.sh, release.yml). Downloaded from the
+# GH Release at publish time — never committed. Only LICENSE/README/package.json
+# are tracked in these packages.
+/packages/zfb-*/zfb
+/packages/zfb-*/zfb.exe
