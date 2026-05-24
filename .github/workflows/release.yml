@@ -379,18 +379,61 @@ jobs:
           path: artifacts
           merge-multiple: false
 
-      - name: Place binaries in platform packages
+      # Escape-hatch gate (issue #437): when the macOS-x64 leg was skipped, the
+      # binary was built locally and uploaded to the GH Release. Verify both the
+      # archive and its .sha256 are present (fail loud if not), then download and
+      # extract the binary so @takazudo/zfb-darwin-x64 can be published.
+      - name: Verify + fetch pre-built macOS-x64 archive from GH Release
+        if: ${{ inputs.skip_macos_x64 == true && inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+          ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
+          echo "Expecting pre-built asset on Release ${TAG}: ${ARCHIVE} (+ .sha256)"
+
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for f in "$ARCHIVE" "${ARCHIVE}.sha256"; do
+            if ! grep -Fxq "$f" <<<"$ASSETS"; then
+              echo "::error::skip_macos_x64=true but '${f}' is not attached to GH Release ${TAG}."
+              echo "::error::Run ./scripts/build-macos-x64-local.sh --upload ${TAG} on a Mac first."
+              echo "Assets currently on the release:"; echo "$ASSETS"
+              exit 1
+            fi
+          done
+          echo "Both macOS-x64 assets present on the release."
+
+          gh release download "$TAG" --pattern "$ARCHIVE" --dir prebuilt-macos-x64 --clobber
+          tar -C prebuilt-macos-x64 -xzf "prebuilt-macos-x64/${ARCHIVE}"
+          if [[ ! -f prebuilt-macos-x64/zfb ]]; then
+            echo "::error::Archive ${ARCHIVE} did not contain a 'zfb' binary at its root."
+            exit 1
+          fi
+          cp prebuilt-macos-x64/zfb packages/zfb-darwin-x64/zfb
+          chmod +x packages/zfb-darwin-x64/zfb
+          echo "Placed locally-built macOS-x64 binary into packages/zfb-darwin-x64/zfb"
+
+      - name: Place CI-built binaries in platform packages
         shell: bash
         run: |
           cp artifacts/binary-aarch64-apple-darwin/zfb packages/zfb-darwin-arm64/zfb
-          cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
           cp artifacts/binary-aarch64-unknown-linux-gnu/zfb packages/zfb-linux-arm64-gnu/zfb
           cp artifacts/binary-x86_64-unknown-linux-gnu/zfb packages/zfb-linux-x64-gnu/zfb
           cp artifacts/binary-x86_64-pc-windows-msvc/zfb.exe packages/zfb-win32-x64-msvc/zfb.exe
           chmod +x packages/zfb-darwin-arm64/zfb
-          chmod +x packages/zfb-darwin-x64/zfb
           chmod +x packages/zfb-linux-arm64-gnu/zfb
           chmod +x packages/zfb-linux-x64-gnu/zfb
+
+      # When NOT skipping, the macOS-x64 binary comes from the CI build artifact.
+      # When skipping, it was placed by the "Verify + fetch" step above instead.
+      - name: Place CI-built macOS-x64 binary
+        if: ${{ inputs.skip_macos_x64 != true }}
+        shell: bash
+        run: |
+          cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
+          chmod +x packages/zfb-darwin-x64/zfb
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -434,8 +477,21 @@ jobs:
             exit 1
           fi
 
+      # Normal path: every package published with OIDC-attested --provenance.
       - name: Publish to npm
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 != true }}
         run: pnpm -r publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Escape-hatch path (issue #437): the macOS-x64 binary was built locally,
+      # outside this GHA job, so it cannot carry OIDC provenance. Publish that one
+      # package WITHOUT --provenance and every other package WITH --provenance
+      # (option B — mixed provenance). See RELEASE_DAY_CHECKLIST.md.
+      - name: Publish to npm (mixed provenance — local macOS-x64)
+        if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 == true }}
+        run: |
+          pnpm -r --filter '@takazudo/zfb-darwin-x64' publish --tag "$DIST_TAG" --no-git-checks --access public
+          pnpm -r --filter '!@takazudo/zfb-darwin-x64' publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
