@@ -907,6 +907,11 @@ fn boot_dev_renderer(
         match embedded_node_modules() {
             Ok((handle, nm_path)) => {
                 bundler_input.node_modules_dir = Some(nm_path);
+                // Vendored / cargo-install mode: mirror
+                // `commands/build.rs` — see
+                // `BundlerInput::node_modules_preserve_symlinks` for
+                // the full rationale (issues #443 / #450).
+                bundler_input.node_modules_preserve_symlinks = true;
                 _embedded_nm_handle = Some(handle);
             }
             Err(e) => {
