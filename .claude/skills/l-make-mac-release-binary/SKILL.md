@@ -1,7 +1,6 @@
 ---
-description: Build the x86_64-apple-darwin zfb binary locally on a Mac and upload to the draft GH Release for the tag. Saves the slow macos-13 CI leg.
+description: "Build the x86_64-apple-darwin zfb binary locally on a Mac and upload it to the draft GH Release for the tag, saving the slow macos-13 CI leg. Triggers on \"make mac binary\", \"build mac release binary\", \"upload mac binary\". Standalone entry for building on a separate Mac — /l-make-release builds the Mac binary inline when it already runs on macOS."
 user-invocable: true
-disable-model-invocation: true
 argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 ---
 

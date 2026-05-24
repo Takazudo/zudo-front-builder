@@ -1,13 +1,16 @@
 ---
-description: Bump zfb version, write changelog doc, push commit, wait for CI on bump, pre-create draft GH Release, notify about Mac binary option, and stop with next-step instructions.
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), and stop before publishing. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-disable-model-invocation: true
 argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy"
 ---
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, prints the Option A/B handoff message, and **stops**. The user decides when to publish.
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise notifies and defers that leg to CI), and **stops before publishing**. The user decides when to publish.
+
+## Invocation & confirmation
+
+This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it. **It must never mutate anything before the user explicitly confirms.** Steps 1–3 are read-only (preconditions, version computation, change analysis); the first mutation is Step 4. Always present the Step 3 proposal (current → new version + categorized changelog) and **wait for explicit user confirmation** before proceeding to Step 4. If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
 
 The lockstep packages are:
 
@@ -259,42 +262,69 @@ gh release create v<version> --target <bump-sha> --title "v<version>" --notes "$
 
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
 
-## Step 10: Notify + STOP
+## Step 10: Build the macOS x86_64 Binary Locally (default)
 
-Print the following message **verbatim** (substitute the actual version string for `<version>`). Do not paraphrase, do not omit lines, do not change command strings or URLs.
+GitHub's `macos-13` runners are slow and frequently queue-starved, so this skill builds the Mac binary **locally by default** and pre-uploads it to the draft Release. `release.yml`'s detect-mac-local job then skips the `macos-13` leg at publish time.
+
+Detect the host OS:
+
+```bash
+uname -s
+```
+
+### If `Darwin` (macOS)
+
+Build and upload directly via the locked-contract script. The orchestrator is already on `main` at the bump commit with a clean tree, so re-running the `/l-make-mac-release-binary` preconditions would be redundant — **call the script directly**:
+
+```bash
+./scripts/build-macos-x64-local.sh --upload v<version>
+```
+
+Then verify BOTH assets are attached and read the checksum for the report:
+
+```bash
+gh release view v<version> --json assets --jq '.assets[].name'
+awk '{print $1}' "zfb-<version>-x86_64-apple-darwin.tar.gz.sha256"
+```
+
+Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must appear. If either is missing, stop and surface what was found vs. expected.
+
+### If NOT `Darwin`
+
+Do not attempt the build (the cross-target needs an Apple host). **Notify the user** with this message, then continue to Step 11:
+
+```
+⚠️  Not a macOS host (uname = <result>). Skipping the local Mac build.
+    To build the Mac binary locally (recommended — saves the slow macos-13 CI leg),
+    run on a Mac before publishing:
+
+      /l-make-mac-release-binary v<version>
+
+    Otherwise, publishing the draft will let CI build the macos-13 leg (slower).
+```
+
+## Step 11: Notify + STOP
+
+Print the message below **verbatim** (substitute the actual version string for `<version>`), picking the block that matches whether the Mac archive was uploaded in Step 10. Do not paraphrase command strings or URLs.
+
+### If the Mac binary was built + uploaded (Step 10 on macOS)
 
 ````
 ============================================================
 Release bump committed and pushed.
 CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
+macOS x86_64 binary: built locally and uploaded to the draft Release.
 
-NEXT STEP — pick one:
+NEXT STEP — publish the draft to trigger release.yml (from any host):
 
-Option A: Build Mac binary locally (saves ~15-30 min of slow macos-13 CI)
+  gh release edit v<version> --draft=false
+  # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
-  On your Mac (zfb checkout, on main at the bump commit), run:
+release.yml's detect-mac-local job will see the pre-uploaded archive,
+skip the slow macos-13 leg, and publish all 9 packages.
 
-    /l-make-mac-release-binary v<version>
-
-  That uploads the archive to the draft Release.
-
-  Then publish the draft to trigger CI (from any host):
-
-    gh release edit v<version> --draft=false
-    # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
-
-Option B: Let CI build everything (slower if macos-13 runners are queue-starved)
-
-  Publish the draft now (no Mac binary upload):
-
-    gh release edit v<version> --draft=false
-    # or via the web UI
-
-Either way, release.yml auto-detects whether the Mac archive is on the Release at publish time.
-If present → skip macos-13 leg (fast). If absent → build on CI.
-
-After publishing the draft, watch the publish run:
+After publishing, watch the publish run:
 
   gh run watch
 
@@ -303,6 +333,45 @@ After publish completes, update Homebrew (separate manual step):
   ./scripts/update-homebrew-formula.sh v<version> --push
 
 (See RELEASE_DAY_CHECKLIST.md for the Homebrew flow — not handled by this skill.)
+============================================================
+````
+
+### If the Mac build was skipped (Step 10 not on macOS)
+
+````
+============================================================
+Release bump committed and pushed.
+CI on the bump commit: PASSED.
+Draft GH Release created: v<version> (tag exists remotely as a draft).
+macOS x86_64 binary: NOT built (host is not macOS).
+
+NEXT STEP — pick one:
+
+Option A (recommended): build the Mac binary on a Mac first, then publish
+
+  On a Mac (zfb checkout, on main at the bump commit):
+
+    /l-make-mac-release-binary v<version>
+
+  Then publish (from any host):
+
+    gh release edit v<version> --draft=false
+
+Option B: publish now and let CI build the macos-13 leg (slower)
+
+    gh release edit v<version> --draft=false
+    # or via the web UI
+
+Either way, release.yml auto-detects whether the Mac archive is on the Release at
+publish time. If present → skip macos-13 (fast). If absent → build on CI.
+
+After publishing, watch the publish run:
+
+  gh run watch
+
+After publish completes, update Homebrew (separate manual step):
+
+  ./scripts/update-homebrew-formula.sh v<version> --push
 ============================================================
 ````
 
