@@ -405,7 +405,15 @@ jobs:
           done
           echo "Both macOS-x64 assets present on the release."
 
-          gh release download "$TAG" --pattern "$ARCHIVE" --dir prebuilt-macos-x64 --clobber
+          gh release download "$TAG" \
+            --pattern "$ARCHIVE" --pattern "${ARCHIVE}.sha256" \
+            --dir prebuilt-macos-x64 --clobber
+
+          # Validate the archive against its published checksum before trusting
+          # it — guards against a corrupted/interrupted upload or an independent
+          # clobber putting a mismatched binary on the Release.
+          ( cd prebuilt-macos-x64 && sha256sum -c "${ARCHIVE}.sha256" )
+
           tar -C prebuilt-macos-x64 -xzf "prebuilt-macos-x64/${ARCHIVE}"
           if [[ ! -f prebuilt-macos-x64/zfb ]]; then
             echo "::error::Archive ${ARCHIVE} did not contain a 'zfb' binary at its root."
