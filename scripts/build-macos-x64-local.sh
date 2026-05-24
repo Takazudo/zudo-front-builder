@@ -183,12 +183,14 @@ if [[ -n "$upload_tag" ]]; then
     "$archive_path" \
     "${archive_path}.sha256" \
     --clobber
-  echo "==> Uploaded. Now re-dispatch release.yml against tag ${upload_tag} with skip_macos_x64=true."
+  echo "==> Uploaded. Now publish the draft GH Release (gh release edit ${upload_tag} --draft=false or web UI) to trigger release.yml."
+  echo "    The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-13 build leg."
 else
   echo ""
-  echo "Not uploaded. To attach these to the GH Release for <tag>, run:"
+  echo "Not uploaded. To attach these to the draft GH Release for <tag>, run:"
   echo "  gh release upload <tag> \\"
   echo "    \"${archive_path}\" \\"
   echo "    \"${archive_path}.sha256\" --clobber"
-  echo "Then re-dispatch release.yml against <tag> with skip_macos_x64=true."
+  echo "Then publish the draft Release (gh release edit <tag> --draft=false or web UI) to trigger release.yml."
+  echo "The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-13 build leg."
 fi
