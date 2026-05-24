@@ -45,16 +45,18 @@ brew install Takazudo/tap/zfb
 
 The tap is hosted at
 [Takazudo/homebrew-tap](https://github.com/Takazudo/homebrew-tap).
-The formula is updated automatically on each release by
+The formula is updated on each **stable** release by
 `scripts/update-homebrew-formula.sh`.
 
-<Note title="First-release timing">
+<Note title="Homebrew tracks the stable channel">
 
-If you run `brew install Takazudo/tap/zfb` immediately after this epic
-merges and the formula is not yet present, it means the first `vX.Y.Z`
-release that populates the tap has not been cut yet. Wait for the next
-tagged release — the formula is seeded on every release, not on every
-merge to `main`.
+Like the npm `latest` tag, the Homebrew formula follows **stable** releases
+only — it has no per-version pin or prerelease opt-in. To install a specific
+version or a prerelease, use the curl installer with `ZFB_VERSION` (e.g.
+`ZFB_VERSION=latest-prerelease`) instead.
+
+During the current pre-1.0 phase the tap may serve the latest prerelease as
+an early-access build until the first stable `vX.Y.Z` ships.
 
 </Note>
 

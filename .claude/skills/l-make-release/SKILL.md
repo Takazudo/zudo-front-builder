@@ -307,6 +307,8 @@ Do not attempt the build (the cross-target needs an Apple host). **Notify the us
 
 Print the message below **verbatim** (substitute the actual version string for `<version>`), picking the block that matches whether the Mac archive was uploaded in Step 10. Do not paraphrase command strings or URLs.
 
+The Homebrew step is gated to **stable** releases (it tracks the stable channel, like npm `latest`). If `<version>` is a prerelease (`-next.` / `-beta.` / `-rc.`), do NOT run `update-homebrew-formula.sh` — direct prerelease testers to `npm i -g zfb@next` or the curl installer's `ZFB_VERSION=latest-prerelease`.
+
 ### If the Mac binary was built + uploaded (Step 10 on macOS)
 
 ````
@@ -330,8 +332,10 @@ npm packages:
 
   gh run watch
 
-ONLY after that run succeeds, update Homebrew. The Homebrew script fetches every platform's
-.sha256 from the Release and will 404 if the run has not finished:
+If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
+fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
+for prereleases — brew tracks the stable channel; testers use `npm i -g zfb@next` or the curl
+installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 
@@ -374,8 +378,10 @@ remaining platform archives (linux + windows, and the macos-13 leg under Option 
 
   gh run watch
 
-ONLY after that run succeeds, update Homebrew. The Homebrew script fetches every platform's
-.sha256 from the Release and will 404 if the run has not finished:
+If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
+fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
+for prereleases — brew tracks the stable channel; testers use `npm i -g zfb@next` or the curl
+installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 ============================================================
