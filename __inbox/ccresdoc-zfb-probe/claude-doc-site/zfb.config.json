@@ -1,6 +1,0 @@
-{
-  "framework": "preact",
-  "outDir": "dist",
-  "publicDir": "public",
-  "port": 4321
-}
