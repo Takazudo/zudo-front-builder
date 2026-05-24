@@ -1,0 +1,159 @@
+---
+title: Node なしでインストール
+description: zfb を Node.js / npm 不要のスタンドアロンバイナリとしてインストールする方法。curl・Homebrew・Windows PowerShell の各インストール経路を解説します。
+sidebar_position: 1
+---
+
+zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも
+Node.js は不要です** — ビルドエンジン・esbuild・Tailwind はすべてバイナリに
+コンパイル済み、あるいは Go バイナリとして同梱されています。Node が必要になるのは
+一部の機能をオプトインで使う場合だけです（下記の「Node が依然として必要なケース」を
+参照）。
+
+Node なしの経路でもコンテンツサイト向けの全機能が利用できます。Markdown・MDX・
+HTML ページ、**さらに islands** まで対応します — esbuild と Tailwind は zfb バイナリ内に
+組み込まれた Go バイナリとして動作するため、クライアントサイドのハイドレーションも
+Node を一切介さずに動きます。
+
+## インストール経路
+
+### Linux / macOS — curl
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
+```
+
+`zfb` は `$HOME/.local/bin/zfb` にインストールされます。このディレクトリがまだ
+`PATH` に含まれていない場合は追加してください：
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**環境変数：**
+
+| 変数 | デフォルト | 用途 |
+| --- | --- | --- |
+| `ZFB_INSTALL` | `$HOME/.local` | インストール先プレフィックス。バイナリは `$ZFB_INSTALL/bin/zfb` に配置されます。 |
+| `ZFB_VERSION` | （最新の安定版） | リリースを固定します。特定のタグには `v0.X.Y`、プレリリースを使う場合は `latest-prerelease` を指定します。 |
+
+### macOS — Homebrew
+
+```sh
+brew install Takazudo/tap/zfb
+```
+
+tap は
+[Takazudo/homebrew-tap](https://github.com/Takazudo/homebrew-tap)
+でホストされています。formula は **安定版**リリースごとに
+`scripts/update-homebrew-formula.sh` によって更新されます。
+
+<Note title="Homebrew は安定版チャンネルを追跡します">
+
+npm の `latest` タグと同様に、Homebrew の formula は**安定版**リリースのみを
+追跡します — バージョン固定やプレリリースのオプトインの仕組みはありません。特定
+バージョンやプレリリースをインストールしたい場合は、代わりに curl インストーラで
+`ZFB_VERSION`（例：`ZFB_VERSION=latest-prerelease`）を指定してください。
+
+現在の 1.0 未満の期間は、最初の安定版 `vX.Y.Z` がリリースされるまで、tap が最新の
+プレリリースを早期アクセス版として提供する場合があります。
+
+</Note>
+
+後から新しいバージョンへ更新するには：
+
+```sh
+brew upgrade zfb
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.ps1 | iex
+```
+
+`zfb.exe` は `%LOCALAPPDATA%\zfb\bin\zfb.exe` にインストールされます。
+
+**環境変数：**
+
+| 変数 | デフォルト | 用途 |
+| --- | --- | --- |
+| `ZFB_INSTALL` | `%LOCALAPPDATA%\zfb` | インストールルート。バイナリは `$ZFB_INSTALL\bin\zfb.exe` に配置されます。 |
+| `ZFB_VERSION` | （最新の安定版） | リリースタグ（例：`v0.2.0`）または `latest-prerelease` を固定します。 |
+
+バイナリを現在のセッションの `PATH` に追加するには：
+
+```powershell
+$env:PATH = "$env:LOCALAPPDATA\zfb\bin;$env:PATH"
+```
+
+恒久的に追加する場合（実行後は新しいターミナルを開いてください）：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+  'PATH',
+  "$env:LOCALAPPDATA\zfb\bin;" + [System.Environment]::GetEnvironmentVariable('PATH', 'User'),
+  'User'
+)
+```
+
+### Windows — Scoop
+
+<Note title="まだ利用できません">
+
+Scoop バケット（`Takazudo/scoop-bucket`）は計画中ですが、バケットのリポジトリは
+まだ作成されていません。それまでは上記の PowerShell スクリプトを利用してください。
+
+</Note>
+
+## インストールの確認
+
+```sh
+zfb --version
+```
+
+## 設定ファイル：`zfb.config.json` と `zfb.config.ts`
+
+どちらの設定フォーマットも Node なしで動作します。`zfb.config.ts` は、デフォルトの
+`zfb` バイナリに同梱された組み込み V8 アイソレートによってインプロセスで評価されます
+— 実行時の Node 依存はありません。
+
+`zfb.config.ts` は**データ設定**です — `node:*` のインポート、`process.env`、その他
+Node 専用 API は評価器内では利用できません。TypeScript の型・コメント・計算値が
+欲しい場合は `zfb.config.ts` を、プレーンな JSON で済ませたい場合は `zfb.config.json`
+を使ってください。
+
+```jsonc
+// zfb.config.json — こちらも Node なしで動作します
+{
+  "framework": "preact",
+  "outDir": "dist",
+  "collections": {
+    "blog": {
+      "dir": "content/blog",
+      "schema": { "type": "object", "properties": { "title": { "type": "string" } } }
+    }
+  }
+}
+```
+
+`zfb.config.ts` と `zfb.config.json` の両方が存在する場合は `.ts` ファイルが
+優先されます。
+
+## Node が依然として必要なケース
+
+以下の機能は `PATH` 上に Node が必要です：
+
+| 機能 | 理由 |
+| --- | --- |
+| `--skip-tsc` なしの `zfb check` | TypeScript の型チェックは Node パッケージである `tsc` に委譲されます。TS 以外のチェックだけを実行するには `--skip-tsc` を指定してください。 |
+| Cloudflare アダプタ（`@takazudo/zfb-adapter-cloudflare`） | アダプタは Node CLI である Wrangler に依存します。Cloudflare Pages への SSR デプロイでは、デプロイ環境に常に Node が必要です。 |
+
+それ以外 — ビルド、開発サーバー、islands、Tailwind、MDX、コンテンツコレクション、
+`zfb.config.ts` の評価 — はすべて Node なしで動作します。
+
+## zfb のアップグレード
+
+その場でアップグレードする `zfb upgrade` コマンドは将来のリリースで計画されています。
+現時点では、最初に使ったインストールコマンドを再実行してください — 既存のバイナリを
+最新バージョンで上書きします。
