@@ -1,0 +1,236 @@
+---
+title: SSR と Cloudflare バインディング
+description: Cloudflare アダプターで動的ルートを配信し、Worker バインディング（シークレット・KV・D1 データベース）を SSR ハンドラ内から読み取る。
+sidebar_position: 7
+---
+
+<Info title="このページの内容">
+
+ルートをビルド時の静的レンダリングから除外し、`@takazudo/zfb-adapter-cloudflare` で Cloudflare Pages Worker としてデプロイし、ルートの SSR ハンドラ内から Cloudflare Worker バインディング（シークレット、環境変数、**D1 データベース**）を読み取る方法。
+
+</Info>
+
+<Info title="2 種類の Worker — まず区別する">
+
+zfb + Cloudflare のプロジェクトでは、どちらも「Worker」と呼ばれる 2 つの異なる概念があります。これらを混同することが、最もよくある混乱の原因です。
+
+**zfb が生成する `dist/_worker.js`** — `prerender = false` をエクスポートするすべてのルートに対して Cloudflare アダプターが生成します。これは静的ページと同じ TSX パイプラインの中で動作します。共有レイアウト、コンポーネント、MDX 仮想モジュールはすべて、SSG ルートとまったく同じように機能します。
+
+**外部の単独 Worker** — 別途デプロイされる、あなた自身の wrangler でビルドした Worker バンドル（認証 Worker、写真アップロード Worker、決済 Webhook Worker など）です。zfb はこれらをまったく認識しません。zfb と外部 Worker の継ぎ目は常に HTTP/JSON です。外部 Worker を `fetch()` する `pages/api/*.tsx` のプロキシルートか、直接 `fetch()` を呼ぶ `prerender = false` ページのどちらかになります。
+
+これが重要な理由: AI エージェントや人間の読者は、共有レイアウトの TSX を外部 Worker に直接インポートしようとしがちです。それは機能しません。外部 Worker は別のバンドラ、別のランタイムを持ち、zfb の仮想モジュールレイヤーへのアクセスもありません。レイアウトを wrangler プロジェクトに `import` しようとしているなら、間違った境界を越えています。
+
+</Info>
+
+生成された Worker が実際にどう動くかの概念的なメンタルモデルについては、[SSR on a Worker (adapter mode)](/ja/concepts/ssr-on-a-worker) を参照してください。
+
+## zfb における SSG と SSR
+
+デフォルトでは、zfb のすべてのページは**ビルド時に一度だけ**静的 HTML にレンダリングされます（SSG）。これはコンテンツサイトにとって正しいデフォルトです。高速で、キャッシュ可能で、サーバーを必要としません。
+
+**リクエストごとに**実行されなければならないルート（データベースの読み込み、セッションクッキーの確認、`POST` の処理など）は、単一のエクスポートで SSG から除外します:
+
+```tsx
+// pages/api/products.tsx
+export const prerender = false;
+```
+
+`prerender = false` は、静的レンダリング中にこのページをスキップし、代わりに設定済みのアダプターに渡される **SSR バンドル**に含めるよう `zfb build` に指示します。
+
+ルートが `prerender = false` をエクスポートしているのにアダプターが設定されていない場合、ビルドは問題のルート名を示すエラーとともに即座に失敗します。zfb はデプロイできないルートを黙って取りこぼすことはありません。
+
+## `prerender = false` の dev と本番の同等性
+
+`zfb dev` は `prerender = false` のルートを、Cloudflare が本番で実行するのと**同じレンダリングコード**を通して動かします。開発サーバーは埋め込みの V8 アイソレート（ビルド時 SSG を駆動するのと同じもの）をホストし、開発ルーターは `prerender = false` の URL をリクエスト時にそのアイソレートへディスパッチします。ビルド時でも静的スナップショットからでもありません。
+
+同等性の保証は**バイト単位ではなく意味的**です。ステータスコード、レスポンスボディ、`Content-Type` は dev とデプロイされた Cloudflare アダプターの間で一致します。実行ごとに正当に変わる値（レスポンスに刻まれるタイムスタンプ、ランダムに生成されるリクエスト ID など）は異なってもよいとされます。
+
+これが実際に意味すること:
+
+- `?id=…` クエリパラメータに基づいて異なる HTML を返すページは、開発時のページ再読み込みのたびに正しい HTML をレンダリングします。前回のビルドの古いスナップショットではありません。
+- 例外を投げる SSR ハンドラは、`zfb build` + デプロイのあとに初めて失敗するのではなく、開発時にブラウザでインラインに V8 スタックトレースを表示します。
+- プラグインの dev-middleware は依然として登録済みの URL を最初に要求します（プラグインルートは dev 専用のモックレスポンスなどのために SSR をオーバーライドできます）。SSR レイヤーはプラグインミドルウェアと静的ページキャッシュの間に位置します。
+
+現時点での dev 側 SSR パスの意図的な制限が 1 つあります:
+
+**SSR バンドルのライブリロードはありません。** `zfb dev` セッション中に `prerender = false` ページのソースを編集しても、実行中の V8 ホスト内でバンドルが再評価されることはありません。新しいコードを反映するには `zfb dev` を再起動してください。（静的 HTML キャッシュのライブリロードは変わらず機能します。再起動が必要なのは SSR バンドルのパスだけです。）
+
+この制限は**本番**の Cloudflare アダプターには適用されません。開発サーバーが鏡映しているのはそちらです。dev の同等性の要点は、レンダリングされた出力が一致することであって、すべての開発機能が最終的な出荷形態であることではありません。
+
+<Warning title="prerender = false はリテラルなエクスポートでなければならない">
+
+zfb は `prerender` を**ビルド時の静的 AST 検査**で検出します。ランタイムの評価ではありません。エクスポートは**リテラルな `export const`** 宣言でなければなりません:
+
+```tsx
+export const prerender = false;  // ✅ detected correctly
+```
+
+次の形は検出され**ず**、黙って SSG にフォールバックします:
+
+```tsx
+// ❌ indirect assignment — not a literal export const
+const flags = { prerender: false };
+export const prerender = flags.prerender;
+
+// ❌ function call — not a literal export const
+export const prerender = computeFlag();
+```
+
+同じ制約は `frontmatter` エクスポートにも適用されます。リテラルのみのコントラクトについては [Frontmatter](/ja/concepts/frontmatter) を参照してください。
+
+</Warning>
+
+## Cloudflare アダプターの設定
+
+アダプターをインストールし、`zfb.config.json` で名前を指定します:
+
+```sh
+pnpm add -D @takazudo/zfb-adapter-cloudflare
+```
+
+```jsonc
+{
+  "framework": "preact",
+  "adapter": "@takazudo/zfb-adapter-cloudflare"
+}
+```
+
+すると `zfb build` は `dist/` の下に次を生成します:
+
+- すべての SSG ページの静的 HTML、そして
+- `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Cloudflare Pages の**アドバンストモード** Worker エントリ。
+
+`dist/` を通常どおり Cloudflare Pages にデプロイします。Worker が動的ルートを処理し、静的アセットサーバーがそれ以外のすべてを処理します。
+
+<Warning title="compatibility_flags = ['nodejs_compat'] は必須">
+
+アダプターはリクエスト単位の `(env, ctx, request)` コンテキストを `AsyncLocalStorage`（`node:async_hooks` 由来）を通して引き回し、`getCloudflareContext()` がそこから読み取ります。Workerd はデフォルトでは `node:async_hooks` を公開しません。`wrangler.toml` でオプトインする必要があります:
+
+```toml
+# wrangler.toml
+compatibility_flags = ["nodejs_compat"]
+```
+
+このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](/ja/concepts/ssr-on-a-worker#the-getcloudflarecontext-trick) を参照してください。
+
+</Warning>
+
+## SSR ハンドラから Worker の `env` を読む
+
+Cloudflare Worker の `fetch` ハンドラは `(request, env, ctx)` を受け取ります。アダプターは `env` と `ctx` を、リクエスト単位の [`AsyncLocalStorage`][als] スコープを通してページに引き回すため、SSR ルートは `getCloudflareContext()` でそれらを読みます:
+
+```tsx
+// pages/api/whoami.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  ANTHROPIC_API_KEY: string;
+}
+
+export default async function WhoAmI() {
+  const { env, ctx } = getCloudflareContext<Env>();
+  ctx.waitUntil(reportToAnalytics()); // fire-and-forget background work
+  return new Response(env.ANTHROPIC_API_KEY ? "ok" : "missing key");
+}
+```
+
+`Env` ジェネリックがバインディングの形を絞り込むため、TypeScript は `env.ANTRHOPIC_KEY` のようなタイプミスを捕捉します。
+
+<Warning title="SSR リクエストの内部でのみ呼び出すこと">
+
+`getCloudflareContext()` は Worker のリクエストスコープの外（たとえばビルド時 SSG 中）で呼ばれると例外を投げます。これは設計どおりです。バインディングを必要とするルートは**必ず** `prerender = false` をエクスポートしなければなりません。ルートを両方のモードで動かしたい場合は、エラーをキャッチして分岐してください。
+
+</Warning>
+
+## D1 データベース（`env.DB`）を読む
+
+[D1][d1] は Cloudflare のサーバーレス SQLite です。D1 バインディングは他のどのバインディングともまったく同じように `env` に公開されます。アダプターはこれを特別扱いしません。バインディングの TypeScript の形を宣言してクエリします:
+
+```tsx
+// pages/api/products.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  // `D1Database` comes from `@cloudflare/workers-types`. Install it as
+  // a devDependency if you want the full typed surface; otherwise a
+  // minimal structural shape like the one below works too.
+  DB: D1Database;
+}
+
+export default async function Products() {
+  const { env } = getCloudflareContext<Env>();
+
+  // Always use `.bind(...)` for user input — D1 prepared statements
+  // are parameterised, which prevents SQL injection.
+  const { results } = await env.DB
+    .prepare("SELECT id, name, price_cents FROM products ORDER BY id")
+    .all();
+
+  return new Response(JSON.stringify({ products: results }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+```
+
+単一行の読み込みには `.first()` を使います:
+
+```tsx
+const product = await env.DB
+  .prepare("SELECT * FROM products WHERE id = ?")
+  .bind(productId)
+  .first();
+```
+
+書き込み（`INSERT` / `UPDATE` / `DELETE`）には `.run()` を使います:
+
+```tsx
+await env.DB
+  .prepare("INSERT INTO orders (user_id, total_cents) VALUES (?, ?)")
+  .bind(userId, totalCents)
+  .run();
+```
+
+## D1 バインディングの配線
+
+D1 は `wrangler.toml` を通して Pages プロジェクトにバインドされます。バインディングの**名前**（下記の `DB`）が、`env` で読むプロパティになります:
+
+```toml
+# wrangler.toml
+[[d1_databases]]
+binding = "DB"               # → env.DB inside the Worker
+database_name = "webshop"
+database_id = "<uuid>"       # printed by `wrangler d1 create`
+```
+
+エンドツーエンドのライフサイクル:
+
+1. **データベースを作成する** — `wrangler d1 create webshop`。これが `database_id` を出力します。`wrangler.toml` に貼り付けてください。
+2. **マイグレーションを書く** — `.sql` ファイルを `migrations/`（wrangler のデフォルト）の下に置きます。各マイグレーションは素の SQL（`CREATE TABLE` など）です。
+3. **マイグレーションを適用する** — `wrangler d1 migrations apply webshop`（ローカルの開発用データベースには `--local`、デプロイ済みのものには `--remote` を追加）。
+4. **デプロイする** — `zfb build` を実行し、`dist/` を Cloudflare Pages にデプロイします。
+
+**プレビューと本番**を分ける場合は、名前付き環境の下にバインディングを宣言し、それぞれが独自のデータベースを持つようにします:
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "webshop"
+database_id = "<production-uuid>"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "webshop-preview"
+database_id = "<preview-uuid>"
+```
+
+## ローカル開発
+
+`wrangler pages dev dist/` は、ビルドされた `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）とともにローカルで動かします。最初の実行前に、`wrangler d1 migrations apply webshop --local` でマイグレーションを適用してください。
+
+[als]: https://nodejs.org/api/async_context.html
+[d1]: https://developers.cloudflare.com/d1/
