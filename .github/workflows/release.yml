@@ -53,9 +53,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  # X9: trigger on GitHub Release publish, not on tag push.
+  # `/l-make-release` creates a DRAFT Release; publishing that draft (or
+  # creating a non-draft Release directly) fires this event. Draft Releases
+  # do NOT fire `release: published` — only the publish action does.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -63,23 +66,92 @@ on:
         type: boolean
         default: false
       skip_macos_x64:
-        # Escape hatch for the queue-starved macos-13 runner (issue #437).
-        # When true: the darwin-x64 build leg is dropped from the matrix, the
-        # publish job verifies a locally-built macOS-x64 archive + .sha256 are
-        # already attached to the GH Release, downloads that binary, and
-        # publishes @takazudo/zfb-darwin-x64 WITHOUT --provenance (it was not
-        # built inside this GHA job). See RELEASE_DAY_CHECKLIST.md.
-        description: "Skip the macOS-x64 build leg; use the locally-built archive already on the GH Release"
+        # Manual override: forces detect-mac-local to output mac_local_present=true
+        # without querying the GH Release. Use this on workflow_dispatch when you
+        # have already uploaded the macOS-x64 archive + .sha256 to the Release and
+        # want to skip the macos-13 build leg. Under the normal `release: published`
+        # trigger, auto-detection (detect-mac-local job) handles this automatically.
+        # See RELEASE_DAY_CHECKLIST.md.
+        description: "Manual override: treat the macOS-x64 archive as already present (forces mac_local_present=true)"
         type: boolean
         default: false
 
 jobs:
+  # A2: detect whether a locally-built macOS-x64 archive has been pre-uploaded
+  # to the GH Release. Runs before prepare-matrix so the result can gate the
+  # darwin-x64 build leg. On workflow_dispatch with skip_macos_x64=true the
+  # manual override short-circuits the query and outputs true directly.
+  detect-mac-local:
+    name: Detect pre-uploaded macOS-x64 archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      mac_local_present: ${{ steps.detect.outputs.mac_local_present }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - id: detect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_MACOS_X64: ${{ inputs.skip_macos_x64 }}
+          # For release events, prefer the event payload tag name over GITHUB_REF parsing.
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Manual override: workflow_dispatch with skip_macos_x64=true always
+          # reports present so no Release query is needed.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$SKIP_MACOS_X64" == "true" ]]; then
+            echo "workflow_dispatch + skip_macos_x64=true — reporting mac_local_present=true (manual override)"
+            echo "mac_local_present=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Non-release events without the manual override: no Release to query.
+          if [[ "$EVENT_NAME" != "release" ]]; then
+            echo "Event is '${EVENT_NAME}', not 'release' — reporting mac_local_present=false"
+            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # release: published — query the GH Release for both the archive and its
+          # .sha256 companion. A missing Release yields empty output (|| true guard),
+          # which is treated as false.
+          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+          ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
+          echo "Querying GH Release '${TAG}' for '${ARCHIVE}' and '${ARCHIVE}.sha256'"
+
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || echo "")
+
+          TAR_PRESENT=false
+          SHA_PRESENT=false
+          if echo "$ASSETS" | grep -Fxq "$ARCHIVE"; then
+            TAR_PRESENT=true
+          fi
+          if echo "$ASSETS" | grep -Fxq "${ARCHIVE}.sha256"; then
+            SHA_PRESENT=true
+          fi
+
+          if [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "true" ]]; then
+            echo "Both macOS-x64 assets found on the Release — reporting mac_local_present=true"
+            echo "mac_local_present=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "false" ]]; then
+            echo "::warning::macOS-x64 archive '${ARCHIVE}' is present but '${ARCHIVE}.sha256' is missing. Treating as not present (mac_local_present=false). Upload both files to the GH Release to use the fast-Mac path."
+            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "macOS-x64 archive not found on the Release — reporting mac_local_present=false"
+            echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Emits the build matrix as JSON so the darwin-x64 leg can be conditionally
-  # dropped (GitHub's static `matrix.exclude` cannot reference inputs). The full
-  # matrix lives here as the single source of truth; jq removes the x86_64-apple-
-  # darwin entry when skip_macos_x64 is set.
+  # dropped (GitHub's static `matrix.exclude` cannot reference inputs or job
+  # outputs). The full matrix lives here as the single source of truth; jq
+  # removes the x86_64-apple-darwin entry when mac_local_present is true.
   prepare-matrix:
     name: Prepare build matrix
+    needs: detect-mac-local
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -88,7 +160,7 @@ jobs:
       - id: set
         shell: bash
         env:
-          SKIP_MACOS_X64: ${{ inputs.skip_macos_x64 }}
+          MAC_LOCAL_PRESENT: ${{ needs.detect-mac-local.outputs.mac_local_present }}
         run: |
           ALL='[
             {"host":"macos-latest","target":"aarch64-apple-darwin","platform":"darwin-arm64","binary":"zfb","archive_ext":"tar.gz"},
@@ -99,9 +171,9 @@ jobs:
           ]'
           # TODO when ubuntu-22.04 GitHub Actions runner is deprecated: switch to a
           # manylinux_2_28 container or zig-cc cross-compile to maintain the GLIBC 2.35 floor.
-          if [[ "$SKIP_MACOS_X64" == "true" ]]; then
+          if [[ "$MAC_LOCAL_PRESENT" == "true" ]]; then
             SETTINGS="$(echo "$ALL" | jq -c '[.[] | select(.target != "x86_64-apple-darwin")]')"
-            echo "skip_macos_x64=true → dropping the x86_64-apple-darwin (macos-13) build leg"
+            echo "mac_local_present=true → dropping the x86_64-apple-darwin (macos-13) build leg"
           else
             SETTINGS="$(echo "$ALL" | jq -c '.')"
           fi
@@ -116,7 +188,7 @@ jobs:
       fail-fast: false
       matrix:
         # Dynamic matrix from prepare-matrix — the darwin-x64 leg is dropped when
-        # skip_macos_x64 is set (issue #437). See the prepare-matrix job above.
+        # mac_local_present=true (detect-mac-local job). See the prepare-matrix job above.
         settings: ${{ fromJSON(needs.prepare-matrix.outputs.settings) }}
     runs-on: ${{ matrix.settings.host }}
     timeout-minutes: 45
@@ -410,7 +482,7 @@ jobs:
     # pnpm -r publish honors the dependency graph:
     #   platform packages → @takazudo/zfb → @takazudo/zfb-runtime → @takazudo/zfb-adapter-cloudflare → create-zfb
     # pnpm (not npm) is used so workspace:* peer-deps are rewritten at publish time.
-    needs: build
+    needs: [build, detect-mac-local]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -440,25 +512,30 @@ jobs:
           path: artifacts
           merge-multiple: false
 
-      # Escape-hatch gate (issue #437): when the macOS-x64 leg was skipped, the
-      # binary was built locally and uploaded to the GH Release. Verify both the
-      # archive and its .sha256 are present (fail loud if not), then download and
-      # extract the binary so @takazudo/zfb-darwin-x64 can be published.
+      # Fast-Mac gate (A2): when detect-mac-local found the pre-uploaded archive,
+      # download and extract the binary so @takazudo/zfb-darwin-x64 can be
+      # published without running the macos-13 build leg. detect-mac-local already
+      # verified both the archive and its .sha256 are present before outputting true.
       - name: Verify + fetch pre-built macOS-x64 archive from GH Release
-        if: ${{ inputs.skip_macos_x64 == true && inputs.dry_run != true }}
+        if: ${{ needs.detect-mac-local.outputs.mac_local_present == 'true' && inputs.dry_run != true }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          # For release events prefer the event payload tag; fall back to GITHUB_REF
+          # for workflow_dispatch (skip_macos_x64=true path has no event payload tag).
+          TAG="${{ github.event.release.tag_name }}"
+          if [[ -z "$TAG" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
           ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
-          echo "Expecting pre-built asset on Release ${TAG}: ${ARCHIVE} (+ .sha256)"
+          echo "Fetching pre-built macOS-x64 asset from GH Release ${TAG}: ${ARCHIVE} (+ .sha256)"
 
           ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           for f in "$ARCHIVE" "${ARCHIVE}.sha256"; do
             if ! grep -Fxq "$f" <<<"$ASSETS"; then
-              echo "::error::skip_macos_x64=true but '${f}' is not attached to GH Release ${TAG}."
+              echo "::error::mac_local_present=true but '${f}' is not attached to GH Release ${TAG}."
               echo "::error::Run ./scripts/build-macos-x64-local.sh --upload ${TAG} on a Mac first."
               echo "Assets currently on the release:"; echo "$ASSETS"
               exit 1
@@ -495,10 +572,10 @@ jobs:
           chmod +x packages/zfb-linux-arm64-gnu/zfb
           chmod +x packages/zfb-linux-x64-gnu/zfb
 
-      # When NOT skipping, the macOS-x64 binary comes from the CI build artifact.
-      # When skipping, it was placed by the "Verify + fetch" step above instead.
+      # When mac_local_present=false, the macOS-x64 binary comes from the CI build artifact.
+      # When mac_local_present=true, it was placed by the "Verify + fetch" step above instead.
       - name: Place CI-built macOS-x64 binary
-        if: ${{ inputs.skip_macos_x64 != true }}
+        if: ${{ needs.detect-mac-local.outputs.mac_local_present != 'true' }}
         shell: bash
         run: |
           cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
@@ -592,7 +669,7 @@ jobs:
 
       # Normal path: every package published with OIDC-attested --provenance.
       - name: Publish to npm
-        if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 != true }}
+        if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present != 'true' }}
         shell: bash
         run: |
           # Platform packages: use npm publish to preserve the executable bit.
@@ -615,12 +692,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # Escape-hatch path (issue #437): the macOS-x64 binary was built locally,
-      # outside this GHA job, so it cannot carry OIDC provenance. Publish that one
-      # package WITHOUT --provenance and every other package WITH --provenance
-      # (option B — mixed provenance). See RELEASE_DAY_CHECKLIST.md.
+      # Mixed-provenance path: the macOS-x64 binary was built locally (outside this
+      # GHA job) so it cannot carry OIDC provenance. Publish that one package
+      # WITHOUT --provenance and every other package WITH --provenance (option B).
+      # See RELEASE_DAY_CHECKLIST.md.
       - name: Publish to npm (mixed provenance — local macOS-x64)
-        if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 == true }}
+        if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present == 'true' }}
         shell: bash
         run: |
           # Platform packages: use npm publish to preserve the executable bit.

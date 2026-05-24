@@ -1,5 +1,7 @@
 # Changelog
 
+> **Newer releases:** see https://takazudomodular.com/pj/zudo-front-builder/docs/changelog/ for v0.1.0-next.5 and later. Entries below are historical (kept for npm readers).
+
 ## 0.1.0-next.4
 
 Version bump for lockstep release. No API changes in `zfb-runtime` itself. Note: the content-snapshot flow fix (#442) touched `packages/zfb/src/content.ts`, which affects how the CLI calls `setContentSnapshot` — but the `zfb-runtime` API surface is unchanged.
