@@ -22,7 +22,7 @@ zfb + Cloudflare のプロジェクトでは、どちらも「Worker」と呼ば
 
 </Info>
 
-生成された Worker が実際にどう動くかの概念的なメンタルモデルについては、[SSR on a Worker (adapter mode)](/ja/concepts/ssr-on-a-worker) を参照してください。
+生成された Worker が実際にどう動くかの概念的なメンタルモデルについては、[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker) を参照してください。
 
 ## zfb における SSG と SSR
 
@@ -76,7 +76,7 @@ export const prerender = flags.prerender;
 export const prerender = computeFlag();
 ```
 
-同じ制約は `frontmatter` エクスポートにも適用されます。リテラルのみのコントラクトについては [Frontmatter](/ja/concepts/frontmatter) を参照してください。
+同じ制約は `frontmatter` エクスポートにも適用されます。リテラルのみのコントラクトについては [Frontmatter](/concepts/frontmatter) を参照してください。
 
 </Warning>
 
@@ -111,7 +111,7 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 compatibility_flags = ["nodejs_compat"]
 ```
 
-このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](/ja/concepts/ssr-on-a-worker#the-getcloudflarecontext-trick) を参照してください。
+このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker#the-getcloudflarecontext-trick) を参照してください。
 
 </Warning>
 
