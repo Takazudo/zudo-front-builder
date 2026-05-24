@@ -583,3 +583,39 @@ fn nested_and_top_level_same_text_share_dedup_numbering() {
         .compile(&out, &opts)
         .unwrap_or_else(|e| panic!("SWC rejected dedup output: {e}\n--- src ---\n{out}"));
 }
+
+/// Multiple headings — including a deeply-nested one inside a list —
+/// in a single MDX JSX body must each pop the right slug from the
+/// document-order cursor (no off-by-one, no slug bleed between
+/// headings). Also confirms the `in_jsx` flag propagates through a
+/// list/list-item nested under the JSX element.
+#[test]
+fn multiple_and_deeply_nested_headings_in_one_jsx_pop_correct_slugs() {
+    let out = emit_with_defaults(
+        "<Outro>\n\n## Alpha\n\n### Beta\n\n- item\n\n  #### Gamma\n\n</Outro>\n",
+    );
+
+    // Each heading gets its own slug id at the correct depth.
+    for (depth, slug) in [(2, "alpha"), (3, "beta"), (4, "gamma")] {
+        assert!(
+            out.contains(&format!("<_components.h{depth} id=\"{slug}\">")),
+            "nested h{depth} must get id=\"{slug}\":\n{out}",
+        );
+        // …and a TOC entry.
+        assert!(
+            out.contains(&format!("depth: {depth}, slug: \"{slug}\"")),
+            "TOC must include h{depth} `{slug}`:\n{out}",
+        );
+    }
+
+    // Slugs appear in document order in the TOC (alpha < beta < gamma).
+    let a = out.find("slug: \"alpha\"").unwrap();
+    let b = out.find("slug: \"beta\"").unwrap();
+    let g = out.find("slug: \"gamma\"").unwrap();
+    assert!(a < b && b < g, "TOC headings must be in document order:\n{out}");
+
+    let opts = CompileOptions::default().with_filename("multi-nested.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected multi-nested output: {e}\n--- src ---\n{out}"));
+}
