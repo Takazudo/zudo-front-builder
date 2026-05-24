@@ -115,7 +115,9 @@ Next: publish the draft Release (from any host) to trigger CI publish:
 release.yml will auto-detect the pre-uploaded archive,
 skip the macos-13 build leg, and publish all 9 packages.
 
-After publish, update Homebrew (separate manual step):
+After publishing, WAIT for the Release workflow run to finish (gh run watch) — it uploads the
+remaining platform archives (linux + windows) and their .sha256 files. ONLY after it succeeds,
+update Homebrew (the script 404s if any platform's .sha256 is not yet on the Release):
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 ============================================================

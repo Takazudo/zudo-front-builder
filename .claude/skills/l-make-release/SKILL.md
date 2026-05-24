@@ -324,11 +324,14 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
 release.yml's detect-mac-local job will see the pre-uploaded archive,
 skip the slow macos-13 leg, and publish all 9 packages.
 
-After publishing, watch the publish run:
+After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
+remaining platform archives (linux + windows) and their .sha256 files, then publishes the
+npm packages:
 
   gh run watch
 
-After publish completes, update Homebrew (separate manual step):
+ONLY after that run succeeds, update Homebrew. The Homebrew script fetches every platform's
+.sha256 from the Release and will 404 if the run has not finished:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 
@@ -365,11 +368,14 @@ Option B: publish now and let CI build the macos-13 leg (slower)
 Either way, release.yml auto-detects whether the Mac archive is on the Release at
 publish time. If present → skip macos-13 (fast). If absent → build on CI.
 
-After publishing, watch the publish run:
+After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
+remaining platform archives (linux + windows, and the macos-13 leg under Option B) and their
+.sha256 files, then publishes the npm packages:
 
   gh run watch
 
-After publish completes, update Homebrew (separate manual step):
+ONLY after that run succeeds, update Homebrew. The Homebrew script fetches every platform's
+.sha256 from the Release and will 404 if the run has not finished:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 ============================================================
