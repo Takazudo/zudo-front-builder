@@ -71,6 +71,52 @@ function fail(message) {
   process.exit(1);
 }
 
+/**
+ * Rewrite WORKSPACE_DEP_PLACEHOLDER in crates/zfb/src/commands/new.rs to an
+ * exact pin of the given version (e.g. "=0.1.0-next.4").
+ *
+ * Exact pin (not caret) is intentional: npm semver treats "^0.1.0-next.4" as
+ * compatible with stable "0.1.0", which would silently downgrade the SDK once
+ * the stable release lands. "=0.1.0-next.4" pins to the exact prerelease and
+ * prevents that. See: https://github.com/Takazudo/zudo-front-builder/issues/343
+ *
+ * Exported for unit-testing. Accepts an optional `readFile`/`writeFile` pair
+ * so tests can run without touching the real filesystem.
+ */
+export function rewriteWorkspaceDepPlaceholder(
+  repoRoot,
+  srcVersion,
+  {
+    readFile = (p) => readFileSync(p, "utf8"),
+    writeFile = (p, content) => writeFileSync(p, content),
+  } = {},
+) {
+  const newRsPath = resolve(repoRoot, "crates", "zfb", "src", "commands", "new.rs");
+  const raw = readFile(newRsPath);
+  const targetValue = `=${srcVersion}`;
+  // Match the exact const declaration line; capture groups preserve the
+  // surrounding syntax so the replace is surgical.
+  const re = /^(const WORKSPACE_DEP_PLACEHOLDER: &str = ")([^"]*)(";\s*)$/m;
+  const match = raw.match(re);
+  if (!match) {
+    fail(
+      "crates/zfb/src/commands/new.rs: WORKSPACE_DEP_PLACEHOLDER line not found — cannot rewrite",
+    );
+  }
+  const previousVal = match[2];
+  if (previousVal === targetValue) {
+    process.stdout.write(
+      `  crates/zfb/src/commands/new.rs WORKSPACE_DEP_PLACEHOLDER: already ${targetValue} (no change)\n`,
+    );
+    return;
+  }
+  const next = raw.replace(re, `$1${targetValue}$3`);
+  writeFile(newRsPath, next);
+  process.stdout.write(
+    `  crates/zfb/src/commands/new.rs WORKSPACE_DEP_PLACEHOLDER: ${previousVal} -> ${targetValue}\n`,
+  );
+}
+
 function main() {
   // Source-of-truth: packages/zfb/package.json (NOT the workspace root).
   // The workspace root package.json stays private/0.0.0 and is not read here.
@@ -164,7 +210,14 @@ function main() {
     }
   }
 
-  // 5. Rewrite packages/create-zfb/package.json:
+  // 5. Rewrite crates/zfb/src/commands/new.rs WORKSPACE_DEP_PLACEHOLDER.
+  //    Uses an exact pin ("=<version>") so scaffolds never silently upgrade
+  //    from a prerelease channel to a future stable once stable 0.1.0 lands.
+  //    The value is kept in sync with the npm package version by this script;
+  //    do NOT edit the const value in new.rs by hand.
+  rewriteWorkspaceDepPlaceholder(repoRoot, srcVersion);
+
+  // 6. Rewrite packages/create-zfb/package.json:
   //    - version field
   //    - dependencies."@takazudo/zfb" (preserving "workspace:" prefix if present)
   {

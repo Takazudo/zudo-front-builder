@@ -13,7 +13,9 @@ use clap::{Args, Parser, Subcommand};
 
 /// Top-level CLI for the `zfb` binary.
 #[derive(Debug, Parser)]
-#[command(name = "zfb", version, about = "zudo-front-builder")]
+// ZFB_RELEASE_VERSION is set by the release CI (= packages/zfb/package.json version).
+// Local builds without the env var fall back to CARGO_PKG_VERSION (0.0.0 placeholder).
+#[command(name = "zfb", version = option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "zudo-front-builder")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

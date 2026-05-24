@@ -58,4 +58,25 @@ if (!existsSync(binPath)) {
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
+
+// Surface spawn errors that spawnSync stores in result.error rather than
+// propagating to stderr. Without this, a 0644 binary (EACCES) is silently
+// swallowed and the process exits with code 1 and no message — making it
+// impossible for the user to diagnose a corrupted/incomplete npm install.
+// (Issue #447 / #441 — pnpm publish strips the executable bit.)
+if (result.error) {
+  if (result.error.code === "EACCES") {
+    process.stderr.write(
+      `[zfb] binary is not executable; was the install corrupt?\n` +
+        `      ${binPath}\n` +
+        `      Try reinstalling: npm install --include=optional\n`,
+    );
+  } else {
+    process.stderr.write(
+      `[zfb] failed to spawn binary: ${result.error.message}\n` + `      ${binPath}\n`,
+    );
+  }
+  process.exit(1);
+}
+
 process.exit(result.status ?? 1);

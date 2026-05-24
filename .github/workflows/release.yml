@@ -170,11 +170,21 @@ jobs:
       - name: Build zfb binary (native)
         if: ${{ matrix.settings.use_cross != true }}
         shell: bash
+        # ZFB_RELEASE_VERSION stamps the release version into the binary at compile time
+        # via option_env! in cli.rs. Without this the binary would report 0.0.0 (Cargo.toml
+        # placeholder). The variable is already in GITHUB_ENV from the "Resolve version" step.
+        env:
+          ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cargo build -p zfb --release --target ${{ matrix.settings.target }}
 
       - name: Build zfb binary (cross — linux-arm64)
         if: ${{ matrix.settings.use_cross == true }}
         shell: bash
+        # ZFB_RELEASE_VERSION is passed into the cross Docker container via Cross.toml
+        # [build.env] passthrough — without that entry, cross drops host env vars at the
+        # container boundary.
+        env:
+          ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cross build -p zfb --release --target ${{ matrix.settings.target }}
 
       # Verify the arm64 binary runs correctly under QEMU emulation.
@@ -194,6 +204,57 @@ jobs:
             -v "$PWD:/w" -w /w \
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
+
+      # Per-platform version guard (Unix — all non-Windows platforms).
+      # Runs the freshly-built binary and asserts its --version output matches
+      # the release semver. Catches a missed ZFB_RELEASE_VERSION injection on
+      # any single platform instead of silently shipping a 0.0.0 binary.
+      - name: Assert --version equals release semver (Unix)
+        if: ${{ matrix.settings.archive_ext == 'tar.gz' && matrix.settings.use_cross != true }}
+        shell: bash
+        run: |
+          BINARY="target/${{ matrix.settings.target }}/release/zfb"
+          ACTUAL=$("$BINARY" --version)
+          EXPECTED="zfb $ZFB_SEMVER"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$ACTUAL', want '$EXPECTED'"
+            exit 1
+          fi
+
+      # Per-platform version guard for linux-arm64 (QEMU): runs the arm64
+      # binary inside the same QEMU-enabled container used for the smoke test.
+      - name: Assert --version equals release semver (linux-arm64 QEMU)
+        if: ${{ matrix.settings.use_cross == true }}
+        shell: bash
+        run: |
+          ACTUAL=$(docker run --rm --platform linux/arm64 \
+            -v "$PWD:/w" -w /w \
+            debian:stable-slim \
+            ./target/aarch64-unknown-linux-gnu/release/zfb --version)
+          EXPECTED="zfb $ZFB_SEMVER"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::--version mismatch on linux-arm64: got '$ACTUAL', want '$EXPECTED'"
+            exit 1
+          fi
+
+      # Per-platform version guard (Windows).
+      - name: Assert --version equals release semver (Windows)
+        if: ${{ matrix.settings.archive_ext == 'zip' }}
+        shell: pwsh
+        run: |
+          $Binary = "target/${{ matrix.settings.target }}/release/zfb.exe"
+          $Actual = & $Binary --version
+          $Expected = "zfb $env:ZFB_SEMVER"
+          Write-Host "Expected: $Expected"
+          Write-Host "Actual:   $Actual"
+          if ($Actual -ne $Expected) {
+            Write-Host "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$Actual', want '$Expected'"
+            exit 1
+          }
 
       - name: Enforce GLIBC 2.35 floor on the built binary
         if: ${{ contains(matrix.settings.target, 'linux-gnu') }}
@@ -485,10 +546,72 @@ jobs:
             exit 1
           fi
 
+      # ── CI gate: verify binary mode in packed tarballs ────────────────────
+      # pnpm pack normalises all file modes to 0644 (issue #447 / #441).
+      # npm pack preserves the source file mode. This step asserts that each
+      # platform package's binary carries mode 0755 (493 decimal) in the
+      # tarball BEFORE we attempt to publish, so the job fails loudly if
+      # someone reverts to pnpm publish for these packages in the future.
+      # Windows (win32-x64-msvc / zfb.exe) is excluded — execute bits are
+      # not meaningful on Windows and npm/tar may report a different value.
+      - name: Verify binary mode in platform package tarballs
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: |
+          FAILED=0
+          for dir in \
+            packages/zfb-darwin-arm64 \
+            packages/zfb-darwin-x64 \
+            packages/zfb-linux-arm64-gnu \
+            packages/zfb-linux-x64-gnu; do
+            BIN_NAME="zfb"
+            MODE=$(cd "$dir" && npm pack --dry-run --json 2>/dev/null \
+              | jq -r --arg b "$BIN_NAME" '.[] | .files[] | select(.path == $b) | .mode')
+            if [[ "$MODE" != "493" ]]; then
+              echo "::error::${dir}: binary '${BIN_NAME}' mode is '${MODE}', expected 493 (0755). Was pnpm publish used instead of npm publish?"
+              FAILED=1
+            else
+              echo "${dir}: binary '${BIN_NAME}' mode OK (${MODE} = 0755)"
+            fi
+          done
+          if [[ "$FAILED" -ne 0 ]]; then
+            exit 1
+          fi
+
+      # ── Publish ───────────────────────────────────────────────────────────
+      # Platform packages (zfb-darwin-*, zfb-linux-*, zfb-win32-*) MUST be
+      # published via `npm publish` (not pnpm). pnpm pack — which pnpm
+      # publish calls internally — normalises all file modes to 0644,
+      # stripping the executable bit from the zfb binary. npm pack/publish
+      # preserves the source file mode set by the chmod +x steps above.
+      # See issue #447 / #441 for root cause analysis.
+      #
+      # Non-platform packages (@takazudo/zfb, @takazudo/zfb-runtime,
+      # @takazudo/zfb-adapter-cloudflare, create-zfb) continue to use
+      # `pnpm -r publish` so workspace:* peer-dep rewrites are applied.
+
       # Normal path: every package published with OIDC-attested --provenance.
       - name: Publish to npm
         if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 != true }}
-        run: pnpm -r publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
+        shell: bash
+        run: |
+          # Platform packages: use npm publish to preserve the executable bit.
+          for dir in \
+            packages/zfb-darwin-arm64 \
+            packages/zfb-darwin-x64 \
+            packages/zfb-linux-arm64-gnu \
+            packages/zfb-linux-x64-gnu \
+            packages/zfb-win32-x64-msvc; do
+            ( cd "$dir" && npm publish --tag "$DIST_TAG" --access public --provenance )
+          done
+          # Non-platform packages: use pnpm publish for workspace:* rewriting.
+          pnpm -r \
+            --filter '!@takazudo/zfb-darwin-arm64' \
+            --filter '!@takazudo/zfb-darwin-x64' \
+            --filter '!@takazudo/zfb-linux-arm64-gnu' \
+            --filter '!@takazudo/zfb-linux-x64-gnu' \
+            --filter '!@takazudo/zfb-win32-x64-msvc' \
+            publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -498,8 +621,25 @@ jobs:
       # (option B — mixed provenance). See RELEASE_DAY_CHECKLIST.md.
       - name: Publish to npm (mixed provenance — local macOS-x64)
         if: ${{ inputs.dry_run != true && inputs.skip_macos_x64 == true }}
+        shell: bash
         run: |
-          pnpm -r --filter '@takazudo/zfb-darwin-x64' publish --tag "$DIST_TAG" --no-git-checks --access public
-          pnpm -r --filter '!@takazudo/zfb-darwin-x64' publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
+          # Platform packages: use npm publish to preserve the executable bit.
+          # darwin-x64 was built locally (no GHA provenance) — omit --provenance.
+          ( cd packages/zfb-darwin-x64 && npm publish --tag "$DIST_TAG" --access public )
+          for dir in \
+            packages/zfb-darwin-arm64 \
+            packages/zfb-linux-arm64-gnu \
+            packages/zfb-linux-x64-gnu \
+            packages/zfb-win32-x64-msvc; do
+            ( cd "$dir" && npm publish --tag "$DIST_TAG" --access public --provenance )
+          done
+          # Non-platform packages: use pnpm publish for workspace:* rewriting.
+          pnpm -r \
+            --filter '!@takazudo/zfb-darwin-arm64' \
+            --filter '!@takazudo/zfb-darwin-x64' \
+            --filter '!@takazudo/zfb-linux-arm64-gnu' \
+            --filter '!@takazudo/zfb-linux-x64-gnu' \
+            --filter '!@takazudo/zfb-win32-x64-msvc' \
+            publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

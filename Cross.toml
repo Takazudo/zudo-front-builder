@@ -25,5 +25,12 @@
 # TODO when ubuntu-22.04 GitHub Actions runner is deprecated: revisit in case
 # cross-rs publishes an Ubuntu 22.04-based image by then.
 
+[build.env]
+# Pass ZFB_RELEASE_VERSION into the cross Docker container so the linux-arm64
+# cross-compile leg stamps the correct release version into --version output.
+# Without this, cross would drop the env var at the container boundary and
+# produce a binary that reports 0.0.0 regardless of the release version.
+passthrough = ["ZFB_RELEASE_VERSION"]
+
 [target.aarch64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1811a69aab16f39de09df72a991b4d7b33a0337686a827bea4890ccc399ff8f0"

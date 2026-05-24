@@ -164,7 +164,16 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         mock_subprocess_output: None,
         content_snapshot_json: None,
         node_modules_dir: Some(nm_path.clone()),
-        node_modules_preserve_symlinks: false,
+        // Vendored mode: the simulated project has NO node_modules — the
+        // bundler injected the embedded @takazudo extraction. esbuild
+        // must stay anchored at `<shadow>/node_modules/<pkg>` so it
+        // finds the injected vendor tree (and not walk up to a
+        // node_modules-less project root). Mirrors the production
+        // wiring in `crates/zfb/src/commands/build.rs` for the
+        // embedded fallback branch. See
+        // `BundlerInput::node_modules_preserve_symlinks` for the full
+        // rationale (issues #443 / #450 / #434).
+        node_modules_preserve_symlinks: true,
         content_collections: Vec::new(),
         strip_md_ext: false,
         code_highlight_theme: None,
