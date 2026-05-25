@@ -12,7 +12,7 @@ type Post = {
 };
 
 export async function getStaticProps() {
-  const { getCollection } = await import("zfb/content");
+  const { getCollection } = await import("@takazudo/zfb/content");
   const posts = (await getCollection("posts")) as Post[];
   // Sort newest first when dates are present; preserve discovery order otherwise.
   const sorted = [...posts].sort((a, b) => (b.data.date ?? "").localeCompare(a.data.date ?? ""));
