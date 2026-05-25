@@ -603,6 +603,41 @@ jobs:
           echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
           echo "Resolved dist-tag: $DIST_TAG (from tag: $TAG)"
 
+      # ── Prerelease dual-tag gate (fixes #481) ──────────────────────────────
+      # Background: npm assigns `latest` automatically on a package's FIRST
+      # publish, regardless of --tag.  Because we always publish prereleases
+      # with --tag next, `latest` froze at the very first publish (next.2) and
+      # never advanced — leaving documented `create zfb@latest` pointing at a
+      # broken release.
+      #
+      # Self-disabling policy: while the registry `latest` is empty (first ever
+      # publish) OR is itself a prerelease (contains "-"), we are still in the
+      # prerelease phase and must advance `latest` alongside `next`.  As soon as
+      # a real stable version is published as `latest` this step outputs
+      # ALSO_LATEST="" and the dist-tag-add block below is skipped — a
+      # prerelease can never clobber a real stable `latest` after launch.
+      #
+      # We use @takazudo/zfb as the signal package; lockstep guarantees that
+      # create-zfb and all platform packages carry the same version.
+      - name: Check if latest should also advance (prerelease dual-tag)
+        shell: bash
+        run: |
+          if [[ "$DIST_TAG" != "next" ]]; then
+            echo "DIST_TAG is '$DIST_TAG' (not 'next') — dual-tag not applicable."
+            echo "ALSO_LATEST=" >> "$GITHUB_ENV"
+          else
+            CURRENT_LATEST=$(npm view @takazudo/zfb dist-tags.latest 2>/dev/null || echo "")
+            echo "Current @takazudo/zfb dist-tags.latest: '${CURRENT_LATEST}'"
+            # Empty (first publish) OR contains "-" (latest is itself a prerelease → still in prerelease phase)
+            if [[ -z "$CURRENT_LATEST" || "$CURRENT_LATEST" == *-* ]]; then
+              echo "ALSO_LATEST=1" >> "$GITHUB_ENV"
+              echo "Dual-tag ENABLED: will also advance 'latest' after publishing with --tag next."
+            else
+              echo "ALSO_LATEST=" >> "$GITHUB_ENV"
+              echo "Dual-tag DISABLED: latest='${CURRENT_LATEST}' is a stable release — skipping."
+            fi
+          fi
+
       - name: DRY RUN — skip publish
         if: ${{ inputs.dry_run == true }}
         shell: bash
@@ -689,6 +724,50 @@ jobs:
             --filter '!@takazudo/zfb-linux-x64-gnu' \
             --filter '!@takazudo/zfb-win32-x64-msvc' \
             publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
+
+          # ── Prerelease dual-tag: advance `latest` while still in prerelease phase ──
+          # ALSO_LATEST=1 is set by "Check if latest should also advance" when the
+          # current registry `latest` is empty or itself a prerelease.  Runs AFTER
+          # all packages are published so a partial publish never clobbers `latest`.
+          # Each `npm dist-tag add` is retried with backoff; persistent failures are
+          # surfaced loudly with the manual remediation command.  See #481.
+          if [[ "$ALSO_LATEST" == "1" ]]; then
+            ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+            echo "Dual-tag: advancing 'latest' to ${ZFB_SEMVER} for all packages."
+            _tag_with_retry() {
+              local pkg="$1"
+              local ver="$2"
+              local max_attempts=5
+              local delay=5
+              for attempt in $(seq 1 $max_attempts); do
+                if npm dist-tag add "${pkg}@${ver}" latest; then
+                  echo "  dist-tag add ${pkg}@${ver} latest — OK (attempt ${attempt})"
+                  return 0
+                fi
+                echo "  dist-tag add ${pkg}@${ver} latest — attempt ${attempt}/${max_attempts} failed; retrying in ${delay}s..."
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+              done
+              echo "::error::dist-tag add failed for ${pkg}@${ver} after ${max_attempts} attempts."
+              echo "::error::Manual remediation: npm dist-tag add ${pkg}@${ver} latest"
+              return 1
+            }
+            FAILED=0
+            _tag_with_retry "@takazudo/zfb-darwin-arm64" "$ZFB_SEMVER"   || FAILED=1
+            _tag_with_retry "@takazudo/zfb-darwin-x64" "$ZFB_SEMVER"     || FAILED=1
+            _tag_with_retry "@takazudo/zfb-linux-arm64-gnu" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "@takazudo/zfb-linux-x64-gnu" "$ZFB_SEMVER"  || FAILED=1
+            _tag_with_retry "@takazudo/zfb-win32-x64-msvc" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "@takazudo/zfb" "$ZFB_SEMVER"                || FAILED=1
+            _tag_with_retry "@takazudo/zfb-runtime" "$ZFB_SEMVER"        || FAILED=1
+            _tag_with_retry "@takazudo/zfb-adapter-cloudflare" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "create-zfb" "$ZFB_SEMVER"                   || FAILED=1
+            if [[ "$FAILED" -ne 0 ]]; then
+              echo "::error::One or more 'npm dist-tag add ... latest' calls failed (see above). The packages are published but 'latest' was not advanced. Re-run the manual remediation commands listed above."
+              exit 1
+            fi
+            echo "Dual-tag complete: all packages now have latest=${ZFB_SEMVER}."
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -718,5 +797,49 @@ jobs:
             --filter '!@takazudo/zfb-linux-x64-gnu' \
             --filter '!@takazudo/zfb-win32-x64-msvc' \
             publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
+
+          # ── Prerelease dual-tag: advance `latest` while still in prerelease phase ──
+          # ALSO_LATEST=1 is set by "Check if latest should also advance" when the
+          # current registry `latest` is empty or itself a prerelease.  Runs AFTER
+          # all packages are published so a partial publish never clobbers `latest`.
+          # Each `npm dist-tag add` is retried with backoff; persistent failures are
+          # surfaced loudly with the manual remediation command.  See #481.
+          if [[ "$ALSO_LATEST" == "1" ]]; then
+            ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+            echo "Dual-tag: advancing 'latest' to ${ZFB_SEMVER} for all packages."
+            _tag_with_retry() {
+              local pkg="$1"
+              local ver="$2"
+              local max_attempts=5
+              local delay=5
+              for attempt in $(seq 1 $max_attempts); do
+                if npm dist-tag add "${pkg}@${ver}" latest; then
+                  echo "  dist-tag add ${pkg}@${ver} latest — OK (attempt ${attempt})"
+                  return 0
+                fi
+                echo "  dist-tag add ${pkg}@${ver} latest — attempt ${attempt}/${max_attempts} failed; retrying in ${delay}s..."
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+              done
+              echo "::error::dist-tag add failed for ${pkg}@${ver} after ${max_attempts} attempts."
+              echo "::error::Manual remediation: npm dist-tag add ${pkg}@${ver} latest"
+              return 1
+            }
+            FAILED=0
+            _tag_with_retry "@takazudo/zfb-darwin-arm64" "$ZFB_SEMVER"   || FAILED=1
+            _tag_with_retry "@takazudo/zfb-darwin-x64" "$ZFB_SEMVER"     || FAILED=1
+            _tag_with_retry "@takazudo/zfb-linux-arm64-gnu" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "@takazudo/zfb-linux-x64-gnu" "$ZFB_SEMVER"  || FAILED=1
+            _tag_with_retry "@takazudo/zfb-win32-x64-msvc" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "@takazudo/zfb" "$ZFB_SEMVER"                || FAILED=1
+            _tag_with_retry "@takazudo/zfb-runtime" "$ZFB_SEMVER"        || FAILED=1
+            _tag_with_retry "@takazudo/zfb-adapter-cloudflare" "$ZFB_SEMVER" || FAILED=1
+            _tag_with_retry "create-zfb" "$ZFB_SEMVER"                   || FAILED=1
+            if [[ "$FAILED" -ne 0 ]]; then
+              echo "::error::One or more 'npm dist-tag add ... latest' calls failed (see above). The packages are published but 'latest' was not advanced. Re-run the manual remediation commands listed above."
+              exit 1
+            fi
+            echo "Dual-tag complete: all packages now have latest=${ZFB_SEMVER}."
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
