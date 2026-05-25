@@ -542,7 +542,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         islands_bundle_url: Some(Arc::clone(&islands_bundle_url_handle)),
     };
 
-    output::ready(&format!("http://{host}:{port}"));
+    output::ready_with_interfaces("http", &host, port);
 
     // 7. Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
     //    signal so axum drains in-flight connections before exiting. The
