@@ -69,6 +69,7 @@ impl Harness {
             trailing_slash: false,
             mode,
             islands_bundle_url,
+            css_bundle_url: None,
         };
 
         let server = tokio::spawn(async move {
