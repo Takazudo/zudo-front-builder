@@ -127,6 +127,7 @@ async fn boot_with_plugins(
         base_prefix: None,
         trailing_slash: false,
         islands_bundle_url: None,
+        css_bundle_url: None,
     };
     let router = build_router(state);
 

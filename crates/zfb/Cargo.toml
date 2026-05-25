@@ -100,6 +100,10 @@ zfb-watcher = { path = "../zfb-watcher" }
 # packages use.  Pulls ~4 transitive crates (rustc-hash, dashmap, etc.)
 # that are small and not otherwise in the graph.
 oxc_resolver = "11.19.1"
+# IP-enumeration for the dev ready-banner (#487/#499): when the user binds to
+# an unspecified address (0.0.0.0), we list non-loopback IPv4 interfaces so
+# the banner shows actual reachable URLs instead of the literal `0.0.0.0`.
+local-ip-address = "0.6"
 
 [build-dependencies]
 # Binary download and SHA-256 verification in build.rs.

@@ -18,6 +18,7 @@
 //! `success`, `ready`) and to `stderr` for `warn` / `error`, matching
 //! conventional Unix CLI behaviour.
 
+use std::net::IpAddr;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -90,8 +91,101 @@ pub fn error(msg: impl AsRef<str>) {
 ///
 /// Output style: `→ ready on <url>` with the arrow in green and the URL in
 /// bold when colours are supported.
+///
+/// This helper is intentionally kept for callers that already know the exact
+/// final URL (e.g. `zfb preview`, which hardcodes `localhost` and has no
+/// `--host` flag — preview is intentionally untouched by the unspecified-host
+/// banner logic because preview cannot bind to unspecified hosts today; the
+/// helper below (`ready_with_interfaces`) is structured so a future preview
+/// `--host` flag can adopt it with no change to this function).
 pub fn ready(url: &str) {
     println!("{}", fmt_ready(url));
+}
+
+/// Format a multi-line "ready" banner for the unspecified-host case.
+///
+/// Pure formatter: accepts a precomputed `network_urls` slice so the rendering
+/// logic can be unit-tested without any OS-level interface enumeration.
+///
+/// Output shape (following Vite's convention):
+/// ```text
+/// → ready
+///   Local:    http://localhost:PORT/
+///   Network:  http://192.168.x.x:PORT/
+///             http://10.x.x.x:PORT/
+/// ```
+fn fmt_ready_multi(scheme: &str, port: u16, network_urls: &[String]) -> String {
+    let arrow = "→".if_supports_color(Stream::Stdout, |t| t.green().to_string());
+    let local_url = format!("{}://localhost:{}/", scheme, port);
+    let local_styled =
+        local_url.if_supports_color(Stream::Stdout, |t| t.bold().to_string());
+    let mut out = format!("{} ready\n", arrow);
+    out.push_str(&format!("  Local:    {}\n", local_styled));
+    if network_urls.is_empty() {
+        out.push_str("  Network:  (none)\n");
+    } else {
+        for (i, url) in network_urls.iter().enumerate() {
+            let url_styled = url.if_supports_color(Stream::Stdout, |t| t.bold().to_string());
+            if i == 0 {
+                out.push_str(&format!("  Network:  {}\n", url_styled));
+            } else {
+                out.push_str(&format!("            {}\n", url_styled));
+            }
+        }
+    }
+    out
+}
+
+/// Return `true` when `host` represents an unspecified (bind-all) address.
+///
+/// Handles `0.0.0.0`, `::`, and the URL-bracketed form `[::]`.
+fn host_is_unspecified(host: &str) -> bool {
+    // Strip URL brackets from IPv6 addresses (e.g. `[::]` → `::`).
+    let stripped = host.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+    let addr_str = stripped.unwrap_or(host);
+    addr_str
+        .parse::<IpAddr>()
+        .map(|ip| ip.is_unspecified())
+        .unwrap_or(false)
+}
+
+/// Print a "ready" banner for `zfb dev`, choosing single-line or multi-line
+/// output depending on whether the bound host is an unspecified address.
+///
+/// - When `host` is `localhost`, `127.0.0.1`, or any other specific address,
+///   this falls through to the same `→ ready on <url>` single-line shape as
+///   `ready()`, so existing UX is unchanged.
+/// - When `host` is `0.0.0.0` or `::` (bind-all), non-loopback IPv4 interfaces
+///   are enumerated from the OS and printed as `Network:` entries alongside a
+///   `Local: http://localhost:PORT/` entry (following Vite's convention).
+pub fn ready_with_interfaces(scheme: &str, host: &str, port: u16) {
+    if host_is_unspecified(host) {
+        let network_urls = collect_network_urls(scheme, port);
+        print!("{}", fmt_ready_multi(scheme, port, &network_urls));
+    } else {
+        println!("{}", fmt_ready(&format!("{}://{}:{}", scheme, host, port)));
+    }
+}
+
+/// Enumerate non-loopback IPv4 interfaces and build a URL for each.
+fn collect_network_urls(scheme: &str, port: u16) -> Vec<String> {
+    match local_ip_address::list_afinet_netifas() {
+        Ok(interfaces) => interfaces
+            .into_iter()
+            .filter_map(|(_name, ip)| {
+                // IPv4-only for now — IPv6 URL form requires bracketing
+                // (`http://[fe80::1]:PORT/`) which adds surface area; IPv4
+                // covers the common LAN/VPN use-case Vite targets.
+                if let IpAddr::V4(v4) = ip {
+                    if !v4.is_loopback() {
+                        return Some(format!("{}://{}:{}/", scheme, v4, port));
+                    }
+                }
+                None
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +555,110 @@ mod tests {
 
         let line = strip_ansi(&fmt_summary(7, Duration::from_millis(1234)));
         assert_eq!(line, "✓ 7 pages built in 1.23s");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for the multi-line banner (issue #499 / #487)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn host_is_unspecified_recognises_all_ipv4() {
+        assert!(host_is_unspecified("0.0.0.0"));
+    }
+
+    #[test]
+    fn host_is_unspecified_recognises_ipv6_bare() {
+        assert!(host_is_unspecified("::"));
+    }
+
+    #[test]
+    fn host_is_unspecified_recognises_ipv6_bracketed() {
+        assert!(host_is_unspecified("[::]"));
+    }
+
+    #[test]
+    fn host_is_unspecified_returns_false_for_specific_hosts() {
+        for h in ["localhost", "127.0.0.1", "192.168.1.1", "::1"] {
+            assert!(
+                !host_is_unspecified(h),
+                "expected false for {:?}, got true",
+                h
+            );
+        }
+    }
+
+    /// fmt_ready_multi with a mock network_urls slice — no real network state.
+    #[test]
+    fn fmt_ready_multi_renders_expected_shape() {
+        owo_colors::set_override(false);
+        let network_urls = vec![
+            "http://192.168.1.10:3000/".to_string(),
+            "http://10.0.0.5:3000/".to_string(),
+        ];
+        let rendered = fmt_ready_multi("http", 3000, &network_urls);
+        let plain = strip_ansi(&rendered);
+
+        assert!(plain.contains("→ ready\n"), "header missing: {plain:?}");
+        assert!(
+            plain.contains("  Local:    http://localhost:3000/\n"),
+            "local URL missing: {plain:?}"
+        );
+        assert!(
+            plain.contains("  Network:  http://192.168.1.10:3000/\n"),
+            "first network URL missing: {plain:?}"
+        );
+        assert!(
+            plain.contains("            http://10.0.0.5:3000/\n"),
+            "second network URL (continuation indent) missing: {plain:?}"
+        );
+
+        owo_colors::unset_override();
+    }
+
+    /// When network_urls is empty, the banner should still render gracefully.
+    #[test]
+    fn fmt_ready_multi_handles_no_network_interfaces() {
+        owo_colors::set_override(false);
+        let rendered = fmt_ready_multi("http", 8080, &[]);
+        let plain = strip_ansi(&rendered);
+
+        assert!(plain.contains("→ ready\n"), "header missing: {plain:?}");
+        assert!(
+            plain.contains("  Local:    http://localhost:8080/\n"),
+            "local URL missing: {plain:?}"
+        );
+        assert!(
+            plain.contains("  Network:  (none)\n"),
+            "none placeholder missing: {plain:?}"
+        );
+
+        owo_colors::unset_override();
+    }
+
+    /// NO_COLOR suppression: owo-colors override=false means no ANSI in output.
+    #[test]
+    fn fmt_ready_multi_no_color_suppresses_ansi() {
+        owo_colors::set_override(false);
+        let network_urls = vec!["http://192.168.1.1:3000/".to_string()];
+        let rendered = fmt_ready_multi("http", 3000, &network_urls);
+        assert!(
+            !rendered.contains('\u{1b}'),
+            "expected no ANSI when colour override is off: {rendered:?}"
+        );
+        owo_colors::unset_override();
+    }
+
+    /// With colour override on, ANSI escapes must be present.
+    #[test]
+    fn fmt_ready_multi_with_color_emits_ansi() {
+        owo_colors::set_override(true);
+        let network_urls = vec!["http://192.168.1.1:3000/".to_string()];
+        let rendered = fmt_ready_multi("http", 3000, &network_urls);
+        assert!(
+            rendered.contains('\u{1b}'),
+            "expected ANSI when colour override is on: {rendered:?}"
+        );
+        owo_colors::unset_override();
     }
 
     #[test]

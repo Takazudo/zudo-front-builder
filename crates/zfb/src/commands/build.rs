@@ -665,7 +665,7 @@ impl BuildRunner for DefaultRunner {
 /// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
 /// the renderer's head injector and the prod pipeline's URL rewriter
 /// agree on the same key without a separate string channel.
-fn build_default_css_payload(
+pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
@@ -1130,32 +1130,36 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     static_routes.extend(expansion.resolved);
     let still_deferred = expansion.deferred;
 
-    // Phase 2 — embed content snapshot in the bundle so runtime
-    // `paths()` can call `getCollection(...)`.
+    // Phase 2 — embed content snapshot in the bundle.
     //
     // Build the content snapshot from the configured collections and
-    // embed it in the worker bundle. This lets pages whose `paths()`
-    // calls `getCollection(...)` resolve real content entries when
-    // queried via the `/__paths__` endpoint below.
+    // embed it in the worker bundle. This serves TWO consumers:
     //
-    // Errors building the snapshot are non-fatal: if the collection
-    // root is missing or a file is malformed, we warn and fall back to
-    // an empty snapshot. The build will proceed; pages that depend on
-    // the collection data will return empty `paths()` results at render
-    // time, which surfaces as zero dynamic pages — visible in the build
-    // summary.
-    // The snapshot is only needed when at least one route's `paths()`
-    // could not be statically expanded and therefore must be evaluated
-    // at runtime (it may call `getCollection(...)`). Statically-resolved
-    // routes never touch the runtime snapshot, so a project with no
-    // deferred paths() pays nothing. The actual snapshot construction is
-    // shared with `zfb dev` via `build_content_snapshot_json` so the two
-    // commands produce byte-identical snapshots.
-    let content_snapshot_json = if !still_deferred.is_empty() {
-        build_content_snapshot_json(project_root, config)
-    } else {
-        None
-    };
+    // 1. Runtime `paths()` calls — pages whose `paths()` calls
+    //    `getCollection(...)` need the snapshot in the worker bundle so
+    //    the `/__paths__/<route>` endpoint can return real entries.
+    //
+    // 2. `getStaticProps` calls — static pages (no dynamic `[slug].tsx`)
+    //    that call `getCollection(...)` inside `getStaticProps` also need
+    //    the snapshot at render time. The previous `!still_deferred.is_empty()`
+    //    gate skipped snapshot construction for projects with no deferred
+    //    `paths()`, which broke `getCollection(...)` returning `[]` for
+    //    these pages (issue #495).
+    //
+    // The gate is therefore removed. `build_content_snapshot_json` already
+    // short-circuits to `None` when `config.collections.is_empty()`, so
+    // projects without any collections still pay nothing — no file walk,
+    // no JSON serialisation.
+    //
+    // Errors are non-fatal: if the collection root is missing or a file is
+    // malformed, we warn and fall back to an empty snapshot. The build
+    // will proceed; pages that depend on the collection data will see empty
+    // `getCollection(...)` results at render time.
+    //
+    // Snapshot construction is shared with `zfb dev` via
+    // `build_content_snapshot_json` so both commands produce byte-identical
+    // snapshots.
+    let content_snapshot_json = build_content_snapshot_json(project_root, config);
 
     if static_routes.is_empty() && still_deferred.is_empty() {
         // Stay user-friendly: an all-dynamic project where every page
@@ -4434,6 +4438,34 @@ mod tests {
             "deferred-dynamic SSR route must reach the runtime bundle's \
              worker_only_routes; got {:?}",
             worker_only
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_content_snapshot_json — no-collections cost guard (issue #495)
+    // ---------------------------------------------------------------------------
+
+    /// `build_content_snapshot_json` must return `None` immediately when
+    /// `config.collections` is empty. This is the "projects without collections
+    /// still pay nothing" guarantee preserved by the helper's own early-return
+    /// guard after the `!still_deferred.is_empty()` gate was removed from the
+    /// orchestrator (issue #495).
+    ///
+    /// A real project root is not needed — the helper exits before touching the
+    /// filesystem when `config.collections` is empty.
+    #[test]
+    fn build_content_snapshot_json_returns_none_for_empty_collections() {
+        let cfg = Config::default();
+        assert!(
+            cfg.collections.is_empty(),
+            "Config::default() must produce no collections for this test to be meaningful"
+        );
+        let tmp = tempdir().unwrap();
+        let result = build_content_snapshot_json(tmp.path(), &cfg);
+        assert!(
+            result.is_none(),
+            "build_content_snapshot_json must return None when collections is empty \
+             (no-collections cost guard must be preserved after gate removal)"
         );
     }
 }
