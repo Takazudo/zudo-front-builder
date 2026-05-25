@@ -78,6 +78,22 @@ use tracing::info;
 /// bin crate's `run_islands` callback holds another.
 pub type IslandsBundleUrl = Arc<RwLock<Option<String>>>;
 
+/// Shared handle to the currently-emitted dev-mode CSS bundle URL
+/// (issue #494 / #498).
+///
+/// Mirrors [`IslandsBundleUrl`] for CSS. `None` (outer) means "no CSS
+/// path configured for this server" — the page handler skips `<link>`
+/// injection entirely. `Some(url)` inside the lock carries the public
+/// URL the dev orchestrator wrote last (`/assets/styles.css` for
+/// projects without a base prefix, or `/foo/assets/styles.css` when
+/// `base: "/foo/"` is configured).
+///
+/// Reads happen on every served HTML response in dev mode; writes happen
+/// once at boot and again on every CSS-rebuild tick. The contention
+/// is one writer thread vs many short-lived readers — [`RwLock`] is
+/// the right shape (not a plain `Mutex`).
+pub type CssBundleUrl = Arc<RwLock<Option<String>>>;
+
 pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use embed_handlers::{
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
@@ -212,6 +228,18 @@ pub struct ServeOpts {
     /// rebuild ticks rewrite the URL), and threads it into `ServeOpts`
     /// before calling [`serve`].
     pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
+
+    /// Shared handle to the current dev-mode CSS bundle URL
+    /// (issue #494 / #498). Mirrors `islands_bundle_url` for CSS.
+    /// `None` for projects with Tailwind disabled, or when the bin crate
+    /// has not yet seeded a bundle. When `Some`, the page handler splices
+    /// a `<link rel="stylesheet" href="<url>">` tag into every served
+    /// HTML response's `<head>` via
+    /// [`zfb_build::head_inject::inject_prod_head_assets`].
+    ///
+    /// Dev-only: gated the same way as `islands_bundle_url` — Preview
+    /// and Embed callers never inject even if they pass a non-`None` handle.
+    pub css_bundle_url: Option<crate::CssBundleUrl>,
 }
 
 impl ServeOpts {
@@ -295,6 +323,7 @@ where
         base_prefix,
         trailing_slash: opts.trailing_slash,
         islands_bundle_url: opts.islands_bundle_url,
+        css_bundle_url: opts.css_bundle_url,
     };
     let router = build_router(state);
 

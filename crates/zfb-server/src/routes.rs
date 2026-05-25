@@ -408,6 +408,20 @@ pub struct AppState {
     /// callers never inject even if they accidentally pass a non-`None`
     /// handle, so the production-shaped response contract is preserved.
     pub islands_bundle_url: Option<crate::IslandsBundleUrl>,
+
+    /// Optional shared handle to the current dev-mode CSS bundle URL
+    /// (issue #494 / #498). When `Some` and the inner lock holds `Some(url)`,
+    /// every served HTML response in [`crate::ServerMode::Dev`] mode
+    /// has a `<link rel="stylesheet" href="<url>">` spliced into
+    /// `<head>` via [`zfb_build::head_inject::inject_prod_head_assets`].
+    /// `None` (outer) or `None` inside the lock both fall back to "no
+    /// injection" — projects with Tailwind disabled must not ship a
+    /// link tag pointing at a non-existent file.
+    ///
+    /// Gated to Dev mode at the response-shaping site: Preview / Embed
+    /// callers never inject even if they accidentally pass a non-`None`
+    /// handle.
+    pub css_bundle_url: Option<crate::CssBundleUrl>,
 }
 
 /// Build the axum router for the dev server.
@@ -567,6 +581,23 @@ fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Optio
     guard.clone()
 }
 
+/// Read the current dev-mode CSS bundle URL from the shared state
+/// handle, if any. Mirrors [`current_islands_bundle_url`] for CSS.
+/// Returns the locked string by clone so the caller can hold the result
+/// across the response build without keeping the read lock alive. A
+/// poisoned lock is recovered rather than re-panicking.
+fn current_css_bundle_url(handle: &Option<crate::CssBundleUrl>) -> Option<String> {
+    let arc = handle.as_ref()?;
+    let guard = arc.read().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "AppState.css_bundle_url",
+            "rwlock poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    guard.clone()
+}
+
 fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
@@ -593,6 +624,8 @@ fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) ->
         // anchor, so the islands splicer would no-op anyway. Pass None
         // to keep the surface tight — this handler has no AppState in
         // scope.
+        None,
+        // Same reasoning as islands: no AppState in scope, pass None.
         None,
     )
 }
@@ -777,6 +810,7 @@ async fn serve_page(
                 state.trailing_slash,
                 state.mode,
                 current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
             )
             .await;
         }
@@ -808,6 +842,7 @@ async fn serve_page(
                 state.trailing_slash,
                 state.mode,
                 current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
     }
@@ -866,6 +901,7 @@ async fn serve_page(
             state.trailing_slash,
             state.mode,
             current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+            current_css_bundle_url(&state.css_bundle_url).as_deref(),
         );
     }
 
@@ -897,6 +933,7 @@ async fn serve_page(
                 state.trailing_slash,
                 state.mode,
                 current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
     }
@@ -912,6 +949,7 @@ async fn serve_page(
         state.trailing_slash,
         state.mode,
         current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+        current_css_bundle_url(&state.css_bundle_url).as_deref(),
     )
 }
 
@@ -1150,6 +1188,7 @@ async fn dispatch_ssr(
     add_trailing_slash: bool,
     mode: crate::ServerMode,
     islands_bundle_url: Option<&str>,
+    css_bundle_url: Option<&str>,
 ) -> Response {
     let mut req_headers: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
@@ -1191,6 +1230,7 @@ async fn dispatch_ssr(
         add_trailing_slash,
         mode,
         islands_bundle_url,
+        css_bundle_url,
     );
     // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
     // …). Skip headers `page_response_bytes` already wrote
@@ -1445,6 +1485,7 @@ pub(crate) fn page_response_bytes(
     add_trailing_slash: bool,
     mode: crate::ServerMode,
     islands_bundle_url: Option<&str>,
+    css_bundle_url: Option<&str>,
 ) -> Response {
     // Live-reload script injection and the default `Cache-Control: no-
     // store` shaping are Dev-only — Preview and Embed callers want
@@ -1463,6 +1504,15 @@ pub(crate) fn page_response_bytes(
     // when no `"use client"` islands exist).
     let islands_script_url = if is_dev && inject_reload {
         islands_bundle_url
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    } else {
+        None
+    };
+    // Issue #494 / #498: dev-mode injection of the CSS `<link>` tag.
+    // Same gate as islands — Dev mode only, HTML responses only.
+    let css_link_url = if is_dev && inject_reload {
+        css_bundle_url
             .map(str::trim)
             .filter(|u| !u.is_empty())
     } else {
@@ -1497,25 +1547,29 @@ pub(crate) fn page_response_bytes(
                         Err(_) => Cow::Borrowed(html),
                     }
                 };
-                // Splice the islands `<script type="module">` tag into
-                // `<head>` first (so livereload's `</body>`-anchored
-                // tag still trails the rest of the body markup). The
-                // shared helper is idempotent and a passthrough for
-                // bodies that have no `</head>`.
-                let with_islands = match islands_script_url {
-                    Some(url) => {
-                        let assets = zfb_build::head_inject::ProdHeadAssets {
-                            css_url: None,
-                            island_module_urls: vec![url.to_string()],
-                        };
+                // Splice the CSS `<link>` and islands `<script type="module">`
+                // tags into `<head>` (so livereload's `</body>`-anchored tag
+                // still trails the rest of the body markup). The shared helper
+                // is idempotent and a passthrough for bodies that have no
+                // `</head>`. CSS is injected before islands so the stylesheet
+                // loads first on initial page render.
+                let with_head_assets = {
+                    let assets = zfb_build::head_inject::ProdHeadAssets {
+                        css_url: css_link_url.map(str::to_owned),
+                        island_module_urls: islands_script_url
+                            .map(|u| vec![u.to_string()])
+                            .unwrap_or_default(),
+                    };
+                    if assets.is_empty() {
+                        rewritten
+                    } else {
                         Cow::Owned(
                             zfb_build::head_inject::inject_prod_head_assets(&rewritten, &assets)
                                 .into_owned(),
                         )
                     }
-                    None => rewritten,
                 };
-                inject_livereload_with_prefix(&with_islands, base_prefix).into_bytes()
+                inject_livereload_with_prefix(&with_head_assets, base_prefix).into_bytes()
             }
             Err(_) => body,
         }
@@ -1566,6 +1620,7 @@ mod tests {
             base_prefix: None,
             trailing_slash: false,
             islands_bundle_url: None,
+            css_bundle_url: None,
         }
     }
 
@@ -1584,6 +1639,7 @@ mod tests {
             base_prefix: Some(prefix.to_string()),
             trailing_slash: false,
             islands_bundle_url: None,
+            css_bundle_url: None,
         }
     }
 
@@ -1953,6 +2009,175 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // Issue #494 / #498 — dev-mode CSS `<link>` injection
+    // -------------------------------------------------------------------
+    //
+    // Mirror of the islands-injection acceptance criterion: the page
+    // handler must splice a `<link rel="stylesheet">` into `<head>` when
+    // `AppState.css_bundle_url` carries a URL.  Two cases:
+    //   1. `css_bundle_url == Some(url)` → link tag present in `<head>`.
+    //   2. `css_bundle_url == None` → no link tag injected.
+    // A combined case also verifies that CSS and islands co-exist when
+    // both handles are seeded.
+
+    fn make_css_bundle_url(url: &str) -> crate::CssBundleUrl {
+        Arc::new(std::sync::RwLock::new(Some(url.to_string())))
+    }
+
+    fn make_islands_bundle_url(url: &str) -> crate::IslandsBundleUrl {
+        Arc::new(std::sync::RwLock::new(Some(url.to_string())))
+    }
+
+    #[tokio::test]
+    async fn css_link_injected_into_head_when_handle_seeded() {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+        };
+        // HTML must include <head></head> so inject_prod_head_assets has an anchor.
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><head></head><body><p>hello</p></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("<link rel=\"stylesheet\" href=\"/assets/styles.css\">"),
+            "expected css link tag in response body; got:\n{body}",
+        );
+        // Livereload script must also still be present.
+        assert!(body.contains(LIVERELOAD_TAG));
+    }
+
+    #[tokio::test]
+    async fn css_link_absent_when_handle_is_none() {
+        let state = test_state();
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><head></head><body><p>hello</p></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains("stylesheet"),
+            "expected no stylesheet link when css_bundle_url is None; got:\n{body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn css_and_islands_both_injected_when_both_handles_seeded() {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: Some(make_islands_bundle_url("/assets/islands.js")),
+            css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+        };
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><head></head><body><p>hello</p></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("<link rel=\"stylesheet\" href=\"/assets/styles.css\">"),
+            "expected css link tag; got:\n{body}",
+        );
+        assert!(
+            body.contains("<script type=\"module\" src=\"/assets/islands.js\">"),
+            "expected islands script tag; got:\n{body}",
+        );
+        assert!(body.contains(LIVERELOAD_TAG));
+    }
+
+    #[tokio::test]
+    async fn css_link_not_injected_in_preview_mode() {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Preview,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+        };
+        state
+            .pages
+            .insert(
+                "/",
+                "<html><head></head><body><p>hello</p></body></html>",
+            )
+            .await;
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains("stylesheet"),
+            "expected no stylesheet link in Preview mode; got:\n{body}",
+        );
+    }
+
+    // -------------------------------------------------------------------
     // Issue #230 — devMiddleware accepts every HTTP method
     // -------------------------------------------------------------------
     //
@@ -2028,6 +2253,7 @@ mod tests {
             base_prefix: None,
             trailing_slash: false,
             islands_bundle_url: None,
+            css_bundle_url: None,
         }
     }
 

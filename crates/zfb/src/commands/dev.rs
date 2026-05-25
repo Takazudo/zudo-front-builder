@@ -78,7 +78,7 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, DevAssetPipeline, IslandsBundleInfo,
+    BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, IslandsBundleInfo,
     IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
@@ -481,10 +481,114 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }))
     };
 
+    // Issue #494 / #498: wire the CSS runner end-to-end, mirroring the
+    // islands runner above.
+    //
+    // Step 1: shared URL handle — the dev server reads from this on every
+    // HTML response; the runner writes to it on every CSS rebuild tick.
+    let css_bundle_url_handle: zfb_server::CssBundleUrl =
+        Arc::new(std::sync::RwLock::new(None));
+
+    // Step 2: eager initial CSS bundle at boot so the very first page
+    // request already carries a `<link rel="stylesheet">` tag.
+    // Failures are non-fatal — we warn and let the dev server boot with
+    // unstyled HTML. The hot-rebuild path will retry on the next file
+    // change.
+    let dev_css_url_prefix: String =
+        zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
+    match crate::commands::build::build_default_css_payload(&project_root, &dist_root, &cfg) {
+        Ok(Some(payload)) => {
+            // Write the bytes to dist so `GET /assets/styles.css` is
+            // immediately serveable (unlike islands, the CSS pipeline does
+            // not write to disk as a side-effect of building).
+            let out_path = dist_root.join(&payload.relative_path);
+            if let Some(parent) = out_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&out_path, &payload.bytes).is_ok() {
+                let url = if dev_css_url_prefix.is_empty() {
+                    payload.stable_url
+                } else {
+                    format!("{dev_css_url_prefix}{}", payload.stable_url)
+                };
+                if let Ok(mut guard) = css_bundle_url_handle.write() {
+                    *guard = Some(url);
+                }
+            } else {
+                output::warn(
+                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(None) => {
+            // Tailwind disabled or no sources. Leave the handle at None.
+        }
+        Err(err) => {
+            output::warn(format!(
+                "initial CSS bundle failed (no <link rel=\"stylesheet\"> \
+                 will be injected until the next successful rebuild): {err:#}"
+            ));
+        }
+    }
+
+    // Step 3: CssRunner closure — re-invokes the payload builder, writes
+    // fresh bytes to disk, and updates the shared URL handle.
+    let run_css: Option<CssRunner> = {
+        let project_root_for_css = project_root.clone();
+        let dist_root_for_css = dist_root.clone();
+        let cfg_for_css = cfg.clone();
+        let url_prefix = dev_css_url_prefix.clone();
+        let url_handle = Arc::clone(&css_bundle_url_handle);
+        Some(Arc::new(move || -> Result<bool> {
+            let payload = crate::commands::build::build_default_css_payload(
+                &project_root_for_css,
+                &dist_root_for_css,
+                &cfg_for_css,
+            )?;
+            let mut guard = url_handle.write().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "dev.run_css.url_handle",
+                    "rwlock poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            let Some(payload) = payload else {
+                // CSS disabled / no sources this tick — clear the URL so
+                // subsequent HTML responses don't reference a stale file.
+                *guard = None;
+                return Ok(false);
+            };
+            // Write fresh bytes to dist so the dev server serves them
+            // immediately. This is the "freshness proof" the acceptance
+            // test checks (byte-for-byte match between payload.bytes and
+            // GET /assets/styles.css).
+            let out_path = dist_root_for_css.join(&payload.relative_path);
+            if let Some(parent) = out_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(err) = std::fs::write(&out_path, &payload.bytes) {
+                tracing::warn!("css runner: failed to write bytes to dist: {err}");
+                return Ok(false);
+            }
+            let bundle_url = if url_prefix.is_empty() {
+                payload.stable_url
+            } else {
+                format!("{url_prefix}{}", payload.stable_url)
+            };
+            *guard = Some(bundle_url);
+            // Return true unconditionally on a successful emit so the
+            // orchestrator marks outcome.css_changed = true and the
+            // livereload SSE event fires. The URL is stable so the bytes
+            // update in place on disk.
+            Ok(true)
+        }))
+    };
+
     let ctx = BuildContext {
         dist_root: dist_root.clone(),
         render_pages,
-        run_css: None,
+        run_css,
         run_islands,
         // The bundle-rebuild + renderer-reload wiring lands
         // here once the dev-mode bundler is available on a per-tick
@@ -540,6 +644,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // inner Option, page responses read it on every served HTML
         // request. Cloning the Arc is cheap (refcount bump).
         islands_bundle_url: Some(Arc::clone(&islands_bundle_url_handle)),
+        // Issue #494 / #498: same pattern as islands — the dev server
+        // holds the same Arc as the `run_css` callback above; CSS
+        // rebuild ticks rewrite the inner Option, page responses read it
+        // on every served HTML request.
+        css_bundle_url: Some(Arc::clone(&css_bundle_url_handle)),
     };
 
     output::ready(&format!("http://{host}:{port}"));

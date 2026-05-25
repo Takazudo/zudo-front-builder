@@ -665,7 +665,7 @@ impl BuildRunner for DefaultRunner {
 /// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
 /// the renderer's head injector and the prod pipeline's URL rewriter
 /// agree on the same key without a separate string channel.
-fn build_default_css_payload(
+pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
