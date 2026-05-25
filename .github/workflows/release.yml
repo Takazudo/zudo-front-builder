@@ -490,6 +490,8 @@ jobs:
       # id-token: write enables npm OIDC-attested provenance via --provenance below.
       # Each published tarball carries a signed attestation linking to the GHA run + commit SHA.
       id-token: write
+    outputs:
+      dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -592,6 +594,7 @@ jobs:
         run: node scripts/sync-platform-versions.mjs
 
       - name: Determine dist-tag
+        id: dist-tag
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
@@ -601,6 +604,7 @@ jobs:
             DIST_TAG="latest"
           fi
           echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved dist-tag: $DIST_TAG (from tag: $TAG)"
 
       # ── Prerelease dual-tag gate (fixes #481) ──────────────────────────────
@@ -843,3 +847,95 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  smoke-clean-room:
+    # Post-publish clean-room smoke: installs create-zfb@<dist-tag> from the
+    # real registry in a temp dir (no workspace context), scaffolds a project,
+    # runs `pnpm build` (which calls `zfb build`), and asserts dist/ is populated.
+    #
+    # This is an ALERTING GUARD, not a gate — publish has already happened.
+    # Catches the #481-class (broken dist-tag pointing at a bad binary — the
+    # smoke downloads and runs the just-published binary) and the #482-class
+    # (missing scaffold dependencies such as @takazudo/zfb-runtime).
+    # Does NOT catch the #463-class (undeclared esbuild peer-dep) because
+    # esbuild reaches the build transitively via @takazudo/zfb-runtime, so a
+    # clean-room pnpm install still resolves it through the dependency tree.
+    needs: publish
+    # Skip on dry_run — nothing was published, so no registry smoke to run.
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          # No cache: pnpm — there is no lockfile in the runner cwd at setup
+          # time (the smoke scaffold directory hasn't been created yet).
+
+      - name: Wait for registry propagation and verify dist-tag resolves
+        shell: bash
+        env:
+          DIST_TAG: ${{ needs.publish.outputs.dist_tag }}
+        run: |
+          # The just-published version may take a few seconds to propagate.
+          # Poll until `npm view create-zfb@<dist-tag> version` resolves.
+          echo "Waiting for create-zfb@${DIST_TAG} to appear on the registry..."
+          max_attempts=6
+          delay=10
+          for attempt in $(seq 1 $max_attempts); do
+            RESOLVED=$(npm view "create-zfb@${DIST_TAG}" version 2>/dev/null || echo "")
+            if [[ -n "$RESOLVED" ]]; then
+              echo "Registry resolved create-zfb@${DIST_TAG} -> ${RESOLVED} (attempt ${attempt})"
+              break
+            fi
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "::error::create-zfb@${DIST_TAG} did not appear on the registry after ${max_attempts} attempts."
+              exit 1
+            fi
+            echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$(( delay * 2 ))
+          done
+
+      - name: Scaffold project with create-zfb@<dist-tag>
+        shell: bash
+        env:
+          DIST_TAG: ${{ needs.publish.outputs.dist_tag }}
+        run: |
+          # Work in a temp dir completely outside the checked-out workspace to
+          # avoid pnpm picking up the monorepo's pnpm-workspace.yaml.
+          SMOKE_DIR=$(mktemp -d)
+          echo "SMOKE_DIR=$SMOKE_DIR" >> "$GITHUB_ENV"
+          echo "Scaffolding into $SMOKE_DIR ..."
+          cd "$SMOKE_DIR"
+          # `create-zfb <name>` is the non-interactive form (positional arg, no prompts).
+          # --yes suppresses any interactive npm/npx prompts.
+          npx --yes "create-zfb@${DIST_TAG}" smoke-site
+          echo "Scaffold complete. Contents of $SMOKE_DIR/smoke-site:"
+          ls -la "$SMOKE_DIR/smoke-site"
+
+      - name: Install scaffolded project dependencies
+        shell: bash
+        run: |
+          cd "$SMOKE_DIR/smoke-site"
+          pnpm install
+
+      - name: Build scaffolded project
+        shell: bash
+        run: |
+          cd "$SMOKE_DIR/smoke-site"
+          pnpm build
+
+      - name: Assert dist/ is populated
+        shell: bash
+        run: |
+          # find -type f is more robust than `ls -A` (handles dotfile-only outputs).
+          DIST_FILE=$(find "$SMOKE_DIR/smoke-site/dist" -type f | head -1)
+          if [[ -z "$DIST_FILE" ]]; then
+            echo "::error::smoke-clean-room: dist/ is empty after zfb build — scaffold or build is broken."
+            exit 1
+          fi
+          FILE_COUNT=$(find "$SMOKE_DIR/smoke-site/dist" -type f | wc -l)
+          echo "dist/ OK: ${FILE_COUNT} file(s) found. First: $DIST_FILE"
