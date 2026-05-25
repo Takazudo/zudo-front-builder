@@ -26,6 +26,33 @@ on a tag push. The flow is:
 - Installer opt-in to a specific prerelease: set `ZFB_VERSION=v0.X.Y-next.N`
   or `ZFB_VERSION=latest-prerelease` before running the installer.
 
+### Prerelease dual-tag policy (issue #481)
+
+During the prerelease phase, each `*-next.*` publish advances **both** `next`
+and `latest` — so `npm install @takazudo/zfb` (no tag) and `npm create zfb`
+track the latest prerelease and are never left pointing at a stale release.
+
+**Self-disabling condition**: the `publish` job probes `npm view @takazudo/zfb
+dist-tags.latest` before each `*-next.*` publish. If `latest` is empty (first
+ever publish) or is itself a prerelease (version string contains `"-"`), the
+workflow advances `latest` alongside `next` for all 9 workspace packages. Once
+a real stable version holds `latest` the condition is false and prereleases no
+longer touch it — a prerelease can never clobber a real stable `latest` after
+launch.
+
+The retry logic in `release.yml` already retries each `npm dist-tag add` up to
+5 times with exponential backoff. If that exhausts, the workflow prints a manual
+remediation command per package. For the two user-facing install surfaces:
+
+```sh
+npm dist-tag add @takazudo/zfb@0.1.0-next.6 latest
+npm dist-tag add create-zfb@0.1.0-next.6 latest
+```
+
+Run the equivalent commands for the remaining 7 packages if the workflow log
+shows failures across all of them (substitute the actual version for
+`0.1.0-next.6`).
+
 ### What the workflow uploads to the GitHub Release
 
 After all platform builds complete, the `release-assets` job uploads:

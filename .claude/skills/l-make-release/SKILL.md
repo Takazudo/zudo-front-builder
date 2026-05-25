@@ -309,6 +309,13 @@ Print the message below **verbatim** (substitute the actual version string for `
 
 The Homebrew step is gated to **stable** releases (it tracks the stable channel, like npm `latest`). If `<version>` is a prerelease (`-next.` / `-beta.` / `-rc.`), do NOT run `update-homebrew-formula.sh` — direct prerelease testers to `npm i -g zfb@next` or the curl installer's `ZFB_VERSION=latest-prerelease`.
 
+**Note — prerelease dual-tag**: while `@takazudo/zfb dist-tags.latest` is empty or is itself a
+prerelease (contains `"-"`), `release.yml` advances **both** `next` and `latest` on every
+`*-next.*` publish. That means `npm i -g zfb` (no tag) also follows prereleases until the first
+stable is cut. Once a stable holds `latest` the dual-tag is self-disabled and prereleases no
+longer touch it. See RELEASE_DAY_CHECKLIST.md "Prerelease dual-tag policy" for the manual
+remediation commands if the workflow's `dist-tag add` retries exhaust.
+
 ### If the Mac binary was built + uploaded (Step 10 on macOS)
 
 ````
