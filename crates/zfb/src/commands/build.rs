@@ -1144,63 +1144,15 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the collection data will return empty `paths()` results at render
     // time, which surfaces as zero dynamic pages — visible in the build
     // summary.
+    // The snapshot is only needed when at least one route's `paths()`
+    // could not be statically expanded and therefore must be evaluated
+    // at runtime (it may call `getCollection(...)`). Statically-resolved
+    // routes never touch the runtime snapshot, so a project with no
+    // deferred paths() pays nothing. The actual snapshot construction is
+    // shared with `zfb dev` via `build_content_snapshot_json` so the two
+    // commands produce byte-identical snapshots.
     let content_snapshot_json = if !still_deferred.is_empty() {
-        let collections: Vec<zfb_content::CollectionConfig> = config
-            .collections
-            .iter()
-            .map(|c| zfb_content::CollectionConfig {
-                name: c.name.clone(),
-                root: project_root.join(&c.path),
-                include: c.include.clone(),
-                exclude: c.exclude.clone(),
-                id_strip_suffix: c.id_strip_suffix.clone(),
-            })
-            .collect();
-        // Mirror the bundler's pipeline shape (theme, strip-md-ext,
-        // resolve-links). Every plugin the bundler appends to its
-        // `Pipeline::with_defaults_and_theme(...)` MUST also be
-        // appended here, otherwise the JSX content_hash diverges and
-        // `bridge.get(specifier)` misses on every collection page —
-        // dumping the rendered output into a
-        // `<pre data-zfb-content-fallback>` block. See zfb#188.
-        let snapshot_config = zfb_content::SnapshotPipelineConfig {
-            code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
-            code_highlight_themes_dir: config
-                .code_highlight
-                .as_ref()
-                .and_then(|c| c.themes_dir.as_ref())
-                .map(|td| project_root.join(td)),
-            strip_md_ext: config.strip_md_ext,
-            resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
-            gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
-            toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
-            // Thread `markdown.externalLinks` into the snapshot pipeline.
-            // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
-            // classify same-origin absolute URLs as internal.
-            external_links: config
-                .markdown
-                .as_ref()
-                .and_then(|m| m.external_links.clone())
-                .map(|el| (el.into_content_config(), config.site.clone())),
-            cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
-        };
-        match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
-            Ok(snap) => match serde_json::to_string(&snap) {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    output::warn(format!(
-                        "content snapshot serialization failed ({e}); dynamic paths() will see empty collections"
-                    ));
-                    None
-                }
-            },
-            Err(e) => {
-                output::warn(format!(
-                    "content snapshot build failed ({e}); dynamic paths() will see empty collections"
-                ));
-                None
-            }
-        }
+        build_content_snapshot_json(project_root, config)
     } else {
         None
     };
@@ -2228,6 +2180,84 @@ fn strip_jsonc(input: &str) -> String {
 /// (zfb#187 / #188). The shared helper
 /// [`resolve_links_routes_from_config`] guarantees the two sites stay
 /// in sync.
+/// Build the JSON-serialized content snapshot for the configured
+/// collections, mirroring the bundler's content pipeline exactly so the
+/// snapshot's `content_hash` stays byte-identical to the bridge-map keys
+/// the bundler emits (zfb#187 / #188).
+///
+/// Returns `None` when the project declares no collections, or when the
+/// snapshot build / serialization fails (both warned, non-fatal — the
+/// worker still boots with an empty snapshot, surfacing as empty
+/// `getCollection(...)` results).
+///
+/// Shared by `zfb build` (where it feeds the embedded worker bundle so
+/// runtime `paths()` can call `getCollection(...)`) and `zfb dev` (where
+/// it feeds the long-lived dev renderer so a page's `getStaticProps()`
+/// sees the same collection data the build does — without this, dev
+/// `getCollection(...)` resolves against the placeholder empty snapshot
+/// and every collection query returns `[]`).
+pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) -> Option<String> {
+    if config.collections.is_empty() {
+        return None;
+    }
+    let collections: Vec<zfb_content::CollectionConfig> = config
+        .collections
+        .iter()
+        .map(|c| zfb_content::CollectionConfig {
+            name: c.name.clone(),
+            root: project_root.join(&c.path),
+            include: c.include.clone(),
+            exclude: c.exclude.clone(),
+            id_strip_suffix: c.id_strip_suffix.clone(),
+        })
+        .collect();
+    // Mirror the bundler's pipeline shape (theme, strip-md-ext,
+    // resolve-links). Every plugin the bundler appends to its
+    // `Pipeline::with_defaults_and_theme(...)` MUST also be appended
+    // here, otherwise the JSX content_hash diverges and
+    // `bridge.get(specifier)` misses on every collection page — dumping
+    // the rendered output into a `<pre data-zfb-content-fallback>`
+    // block. See zfb#188.
+    let snapshot_config = zfb_content::SnapshotPipelineConfig {
+        code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
+        code_highlight_themes_dir: config
+            .code_highlight
+            .as_ref()
+            .and_then(|c| c.themes_dir.as_ref())
+            .map(|td| project_root.join(td)),
+        strip_md_ext: config.strip_md_ext,
+        resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
+        gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
+        toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
+        // Thread `markdown.externalLinks` into the snapshot pipeline.
+        // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
+        // classify same-origin absolute URLs as internal.
+        external_links: config
+            .markdown
+            .as_ref()
+            .and_then(|m| m.external_links.clone())
+            .map(|el| (el.into_content_config(), config.site.clone())),
+        cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
+    };
+    match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
+        Ok(snap) => match serde_json::to_string(&snap) {
+            Ok(json) => Some(json),
+            Err(e) => {
+                output::warn(format!(
+                    "content snapshot serialization failed ({e}); getCollection(...) will see empty collections"
+                ));
+                None
+            }
+        },
+        Err(e) => {
+            output::warn(format!(
+                "content snapshot build failed ({e}); getCollection(...) will see empty collections"
+            ));
+            None
+        }
+    }
+}
+
 fn build_resolve_source_map_for_snapshot(
     project_root: &Path,
     config: &Config,

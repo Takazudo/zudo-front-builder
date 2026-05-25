@@ -872,10 +872,22 @@ fn boot_dev_renderer(
         ));
     }
 
-    // Dev mode does not embed a content snapshot — runtime paths()
-    // evaluation is a build-mode feature. When dev mode starts the
-    // worker, `getCollection(...)` will see an empty snapshot.
-    //
+    // Embed the content snapshot so a page's `getStaticProps()` (and any
+    // runtime `paths()`) sees the same collection data the production
+    // build does. The published `zfb/content` `getCollection(...)` reads
+    // `globalThis.__zfb.contentSnapshot`, which `createPageRouter`
+    // installs from this JSON at worker boot. Without it, dev resolves
+    // against the bundler's placeholder empty snapshot and every
+    // `getCollection(...)` returns `[]` — the symptom in #493 where the
+    // scaffolded homepage rendered an empty post list under `zfb dev`
+    // even though `zfb build` produced the full list. Built via the same
+    // `build_content_snapshot_json` helper `zfb build` uses, so dev and
+    // build stay byte-identical (returns `None` when no collections are
+    // declared, matching the previous behaviour for collection-less
+    // projects).
+    let content_snapshot_json =
+        crate::commands::build::build_content_snapshot_json(project_root, cfg);
+
     // The intermediate `.zfb-build/` directory lives at
     // `<project_root>/.zfb-build/`, NOT under `<dist_root>/`. This
     // mirrors the production path in `commands/build.rs` (see zfb#231).
@@ -888,7 +900,7 @@ fn boot_dev_renderer(
         cfg_framework_to_render(cfg.framework),
         BundleMode::Development,
         project_root.join(".zfb-build"),
-        None,
+        content_snapshot_json,
     );
     // Mirror the production build CLI: surface project-side
     // `node_modules/` and `tsconfig.json#compilerOptions.paths` to the

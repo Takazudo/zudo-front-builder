@@ -7,7 +7,7 @@ import type { BlogEntry } from "../../lib/types";
  * each.
  */
 export async function paths() {
-  const { getCollection } = await import("zfb/content");
+  const { getCollection } = await import("@takazudo/zfb/content");
   const posts = (await getCollection("blog")) as BlogEntry[];
   const byTag = new Map<string, BlogEntry[]>();
   for (const post of posts) {

@@ -1,4 +1,4 @@
-import type { PaginatedPage } from "zfb/paginate";
+import type { PaginatedPage } from "@takazudo/zfb/paginate";
 
 import DefaultLayout from "../../../layouts/default";
 import type { BlogEntry } from "../../../lib/types";
@@ -10,8 +10,8 @@ import type { BlogEntry } from "../../../lib/types";
  * in the docs.
  */
 export async function paths() {
-  const { getCollection } = await import("zfb/content");
-  const { paginate } = await import("zfb/paginate");
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const { paginate } = await import("@takazudo/zfb/paginate");
   const posts = (await getCollection("blog")) as BlogEntry[];
   const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
   return paginate(sorted, { pageSize: 3, param: "page" });
