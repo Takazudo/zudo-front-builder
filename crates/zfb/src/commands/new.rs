@@ -427,7 +427,8 @@ mod tests {
             r#"{
   "name": "template-default",
   "dependencies": {
-    "@takazudo/zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*",
+    "@takazudo/zfb-runtime": "workspace:*"
   }
 }
 "#,
@@ -442,6 +443,15 @@ mod tests {
         assert_eq!(
             parsed["dependencies"]["@takazudo/zfb"].as_str().unwrap(),
             WORKSPACE_DEP_PLACEHOLDER
+        );
+        // @takazudo/zfb-runtime ships as a workspace:* dep in the template so
+        // it gets pinned to the exact release version, just like @takazudo/zfb.
+        assert_eq!(
+            parsed["dependencies"]["@takazudo/zfb-runtime"]
+                .as_str()
+                .unwrap(),
+            WORKSPACE_DEP_PLACEHOLDER,
+            "@takazudo/zfb-runtime must be pinned to WORKSPACE_DEP_PLACEHOLDER"
         );
         assert!(after.ends_with('\n'), "trailing newline preserved");
     }
@@ -485,6 +495,15 @@ mod tests {
         assert!(
             has_workspace_dep,
             "basic-blog template should declare at least one workspace:* dep"
+        );
+        // Specific regression guard: @takazudo/zfb-runtime must be declared so
+        // scaffolded projects can build without a missing-dep error (#482).
+        assert_eq!(
+            deps.get("@takazudo/zfb-runtime")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            "workspace:*",
+            "basic-blog template must declare @takazudo/zfb-runtime as workspace:*"
         );
     }
 
