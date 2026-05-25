@@ -7,8 +7,8 @@
  * `[slug]` segment into one concrete route per entry; `getStaticProps`
  * receives the per-route props and forwards them to the page component.
  */
-import { defaultComponents } from "zfb";
-import type { ContentProps } from "zfb/content";
+import { defaultComponents } from "@takazudo/zfb";
+import type { ContentProps } from "@takazudo/zfb/content";
 
 // Structural alias for the JSX-element shape returned by `entry.Content`
 // (mirrors `zfb/content`'s `ContentElement` so this template stays
@@ -28,7 +28,7 @@ type Post = {
 };
 
 export async function paths() {
-  const { getCollection } = await import("zfb/content");
+  const { getCollection } = await import("@takazudo/zfb/content");
   const posts = (await getCollection("posts")) as Post[];
   return posts.map((post) => ({
     params: { slug: post.slug },

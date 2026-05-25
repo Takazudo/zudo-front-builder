@@ -7,7 +7,7 @@
  * `zfb.config.future.ts` for the typed sibling that will replace the
  * JSON form once the TS config loader lands).
  */
-import type { ContentProps } from "zfb/content";
+import type { ContentProps } from "@takazudo/zfb/content";
 
 export type BlogFrontmatter = {
   title: string;
@@ -45,7 +45,7 @@ export type BlogEntry = {
    * MDX, e.g. `<Note>`):
    *
    * ```tsx
-   * import { defaultComponents } from "zfb";
+   * import { defaultComponents } from "@takazudo/zfb";
    * import Note from "../components/note";
    *
    * <post.Content components={{ ...defaultComponents, Note }} />
