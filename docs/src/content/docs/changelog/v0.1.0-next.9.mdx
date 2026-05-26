@@ -1,0 +1,19 @@
+---
+title: v0.1.0-next.9
+sidebar_position: 1009
+---
+
+# v0.1.0-next.9
+
+Released: 2026-05-27
+
+## Features
+
+- feat(create-zfb): add startup self-check for stale pnpm install (closes #531) (a1cfc3f)
+
+## Bug Fixes
+
+- fix(zfb-build): normalize entry_key to Hono syntax so worker_only_routes filter matches catch-alls (closes #532) (56b1fcd)
+- fix(zfb-server): prepend &lt;!doctype html&gt; on dev SSR responses (closes #530) (f47927d)
+- fix(renderer): gate doctype on text/html + restore static-html verbatim (3cd43fa)
+- fix(renderer): prepend &lt;!doctype html&gt; to emitted HTML (closes #524) (220b64b)
