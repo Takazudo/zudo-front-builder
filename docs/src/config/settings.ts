@@ -32,7 +32,7 @@ export const settings = {
   defaultLocale: "en",
   siteName: "zfb",
   siteDescription:
-    "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary." as string,
+    "The Rust engine under your content-site framework — router, renderer, content pipeline. Author in TypeScript/JSX, runs as a single binary." as string,
   base: "/pj/zudo-front-builder",
   trailingSlash: false as boolean,
   noindex: false as boolean,
