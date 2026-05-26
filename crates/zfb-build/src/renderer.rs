@@ -913,17 +913,13 @@ fn render_one_inner(
             source: e,
         })?;
         let body = strip_static_html_frontmatter(&raw);
-        // Prepend the HTML5 doctype when the source page omits it (issue
-        // #524). `needs_html5_doctype` is a no-op for pages that already
-        // declare one and for non-`<html>` bodies.
-        let written: std::borrow::Cow<'_, [u8]> = if crate::head_inject::needs_html5_doctype(body) {
-            std::borrow::Cow::Owned(
-                format!("{}{body}", crate::head_inject::HTML5_DOCTYPE_PREFIX).into_bytes(),
-            )
-        } else {
-            std::borrow::Cow::Borrowed(body.as_bytes())
-        };
-        crate::atomic::atomic_write(&dest, &written).map_err(|e| RendererError::Io {
+        // Static-HTML routes are a documented verbatim bypass: the source
+        // body is written as-is (frontmatter stripped) with no
+        // post-processing. We intentionally do NOT inject a doctype here —
+        // a user-authored `.html` page that omits one did so deliberately.
+        // Issue #524 concerns the framework-rendered pages below, not this
+        // bypass.
+        crate::atomic::atomic_write(&dest, body.as_bytes()).map_err(|e| RendererError::Io {
             path: dest.clone(),
             source: std::io::Error::other(format!("{e:#}")),
         })?;
@@ -932,6 +928,17 @@ fn render_one_inner(
 
     let resp = handle.dispatch(&entry.url_path)?;
     let status = resp.status;
+    // Whether this response is HTML — read the media type before the
+    // `;`-delimited parameters (e.g. `text/html; charset=utf-8`). The
+    // framework runtime defaults page responses to `text/html`
+    // (see zfb-runtime's DEFAULT_CONTENT_TYPE), so HTML pages reliably
+    // carry it. Used to gate the doctype prepend below.
+    let is_html_response = resp
+        .content_type
+        .split(';')
+        .next()
+        .map(|m| m.trim().eq_ignore_ascii_case("text/html"))
+        .unwrap_or(false);
     let body = resp.body;
 
     // The URL used in error messages is the rendered path. For HTTP
@@ -959,9 +966,11 @@ fn render_one_inner(
     //    `</head>`. Dev mode (no `prod_head_assets`) and non-HTML output
     //    (no `</head>`) round-trip unchanged.
     // 2. HTML5 doctype prepend (issue #524): runs in BOTH build and dev so
-    //    every served page leaves quirks mode. `needs_html5_doctype` is a
-    //    no-op for non-`<html>` bodies (`feed.xml`) and pages that already
-    //    declare a doctype, so it never doubles.
+    //    every served page leaves quirks mode. Gated on `text/html`
+    //    responses so non-HTML output (`feed.xml`, `text/plain`, etc.) is
+    //    never touched even if its body happens to start with `<html`;
+    //    `needs_html5_doctype` further skips bodies that already declare a
+    //    doctype, so it never doubles.
     let written_bytes: std::borrow::Cow<'_, [u8]> = match std::str::from_utf8(&body) {
         Ok(text) => {
             let injected: std::borrow::Cow<'_, str> = match prod_head_assets {
@@ -970,7 +979,7 @@ fn render_one_inner(
                 }
                 _ => std::borrow::Cow::Borrowed(text),
             };
-            if crate::head_inject::needs_html5_doctype(&injected) {
+            if is_html_response && crate::head_inject::needs_html5_doctype(&injected) {
                 std::borrow::Cow::Owned(
                     format!("{}{injected}", crate::head_inject::HTML5_DOCTYPE_PREFIX).into_bytes(),
                 )
