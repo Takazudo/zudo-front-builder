@@ -144,6 +144,42 @@ pub fn inject_prod_head_assets<'a>(html: &'a str, assets: &ProdHeadAssets) -> Co
     Cow::Owned(out)
 }
 
+/// The HTML5 doctype prefix prepended to documents that lack one. The
+/// trailing newline is cosmetic (no browser-visible effect); it keeps the
+/// emitted `<html>` on its own line.
+pub const HTML5_DOCTYPE_PREFIX: &str = "<!doctype html>\n";
+
+/// `true` when `html` is an HTML document that should have
+/// [`HTML5_DOCTYPE_PREFIX`] prepended.
+///
+/// `preact-render-to-string` renders the page's `<html>…</html>` shell
+/// verbatim and (correctly) does not emit a doctype — a doctype is not a
+/// valid JSX node. Without `<!doctype html>` browsers fall back to quirks
+/// mode, which silently changes the box model and CSS the template relies
+/// on (issue #524). The renderer prepends the doctype host-side because it
+/// is the same constant byte string for every route.
+///
+/// Conservative, non-parsing rules (mirroring the rest of this module):
+///
+/// - Leading ASCII whitespace is ignored when sniffing the document start.
+///   A leading UTF-8 BOM is *not* whitespace, so a BOM-prefixed document
+///   does not match `<html` and is left untouched — this deliberately
+///   avoids inserting the doctype ahead of a BOM.
+/// - Returns `false` when the document already starts with `<!doctype`
+///   (case-insensitive), so the prefix is never doubled.
+/// - Returns `true` only when the document starts with `<html`
+///   (case-insensitive). Non-HTML output (`feed.xml`'s `<rss/>`, fragments,
+///   binary payloads) is left untouched, matching the `</head>`-passthrough
+///   contract of [`inject_prod_head_assets`].
+pub fn needs_html5_doctype(html: &str) -> bool {
+    let sniff = html.trim_start();
+    let starts_with_ci = |prefix: &str| {
+        sniff.len() >= prefix.len()
+            && sniff.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    };
+    !starts_with_ci("<!doctype") && starts_with_ci("<html")
+}
+
 /// Build the canonical `<link rel="stylesheet" href="…">` tag form
 /// this module injects. Exposed so callers and tests can compare
 /// against an authoritative byte string.
@@ -376,5 +412,47 @@ mod tests {
             island_module_script_tag(STABLE_ISLANDS_URL),
             "<script type=\"module\" src=\"/assets/islands.js\"></script>"
         );
+    }
+
+    #[test]
+    fn needs_doctype_for_bare_html_document() {
+        // The preact-render-to-string shell: starts with `<html …>`, no doctype.
+        assert!(needs_html5_doctype("<html lang=\"en\"><head></head><body></body></html>"));
+        assert!(needs_html5_doctype("<html><body>x</body></html>"));
+    }
+
+    #[test]
+    fn no_doctype_when_already_present() {
+        // Case-insensitive; never doubles an existing doctype.
+        assert!(!needs_html5_doctype("<!doctype html><html></html>"));
+        assert!(!needs_html5_doctype("<!DOCTYPE HTML><html></html>"));
+        assert!(!needs_html5_doctype("<!Doctype html>\n<html lang=\"en\"></html>"));
+    }
+
+    #[test]
+    fn no_doctype_for_non_html_output() {
+        // feed.xml and other non-`<html>` payloads must round-trip untouched.
+        assert!(!needs_html5_doctype("<rss/>"));
+        assert!(!needs_html5_doctype("<?xml version=\"1.0\"?><feed></feed>"));
+        assert!(!needs_html5_doctype("{\"json\":true}"));
+        assert!(!needs_html5_doctype(""));
+    }
+
+    #[test]
+    fn leading_whitespace_is_ignored_when_sniffing() {
+        assert!(needs_html5_doctype("\n\t  <html></html>"));
+        assert!(!needs_html5_doctype("  <!doctype html><html></html>"));
+    }
+
+    #[test]
+    fn leading_bom_is_left_untouched() {
+        // A BOM is not ASCII whitespace, so a BOM-prefixed doc does not match
+        // `<html` — we never insert a doctype ahead of a BOM.
+        assert!(!needs_html5_doctype("\u{feff}<html></html>"));
+    }
+
+    #[test]
+    fn doctype_prefix_is_the_lowercase_html5_form() {
+        assert_eq!(HTML5_DOCTYPE_PREFIX, "<!doctype html>\n");
     }
 }
