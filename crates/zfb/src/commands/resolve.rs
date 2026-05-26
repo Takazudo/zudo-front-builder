@@ -7,7 +7,10 @@
 //! here prevents the implementations from drifting independently and gives
 //! one place to add tests.
 
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 
 /// Resolve `path` against `root` if it is relative; absolute paths are
 /// returned unchanged. Pure path arithmetic — no I/O, so it works equally
@@ -34,6 +37,26 @@ pub fn resolve_outdir(root: &Path, path: &Path) -> PathBuf {
 /// either command's constant.
 pub fn resolve_port(cli: Option<u16>, cfg: Option<u16>, default_port: u16) -> u16 {
     cli.or(cfg).unwrap_or(default_port)
+}
+
+/// CLI override > config value > built-in default precedence for the bind
+/// host. Mirrors [`resolve_port`]; `default_host` is the caller's built-in
+/// constant (e.g. `DEFAULT_DEV_HOST` in `dev.rs` or `DEFAULT_PREVIEW_HOST` in
+/// `preview.rs`). Shared by `dev` and `preview` so the two stay symmetric.
+pub fn resolve_host(cli: Option<&str>, cfg: Option<&str>, default_host: &str) -> String {
+    cli.or(cfg).unwrap_or(default_host).to_owned()
+}
+
+/// Resolve a `host:port` pair into a bindable [`SocketAddr`]. Accepts the same
+/// host forms both `dev` and `preview` support (`localhost`, `127.0.0.1`,
+/// `0.0.0.0`, IPv6, …). Returns the first resolved address.
+pub fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
+    let pair = format!("{host}:{port}");
+    let mut iter = pair
+        .to_socket_addrs()
+        .with_context(|| format!("could not resolve bind address {pair}"))?;
+    iter.next()
+        .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
 }
 
 #[cfg(test)]
@@ -112,5 +135,40 @@ mod tests {
         // concrete built-in values used by dev (3000) and preview (4321).
         assert_eq!(resolve_port(None, None, 3000), 3000);
         assert_eq!(resolve_port(None, None, 4321), 4321);
+    }
+
+    // ---- resolve_host -------------------------------------------------------
+
+    #[test]
+    fn resolve_host_prefers_cli_over_config() {
+        assert_eq!(
+            resolve_host(Some("0.0.0.0"), Some("127.0.0.1"), "localhost"),
+            "0.0.0.0"
+        );
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_config_when_cli_absent() {
+        assert_eq!(
+            resolve_host(None, Some("127.0.0.1"), "localhost"),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_builtin_when_neither_supplied() {
+        assert_eq!(resolve_host(None, None, "localhost"), "localhost");
+    }
+
+    // ---- resolve_addr -------------------------------------------------------
+
+    #[test]
+    fn resolve_addr_binds_loopback_and_unspecified() {
+        let loopback = resolve_addr("127.0.0.1", 4321).unwrap();
+        assert_eq!(loopback.port(), 4321);
+        assert!(loopback.ip().is_loopback());
+
+        let any = resolve_addr("0.0.0.0", 4321).unwrap();
+        assert!(any.ip().is_unspecified(), "0.0.0.0 must bind all interfaces");
     }
 }
