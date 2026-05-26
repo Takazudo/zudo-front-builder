@@ -8,14 +8,15 @@
 //!
 //! 1. The `name` field is rewritten to the user's project name (sanitized so
 //!    the value is npm-valid — see [`sanitize_pkg_name`]).
-//! 2. Any dependency value matching `workspace:*` is rewritten to
-//!    [`WORKSPACE_DEP_PLACEHOLDER`]. The template ships its workspace deps
-//!    using pnpm's `workspace:*` protocol so the rewrite has something to
-//!    bite on; the placeholder is now an exact-pinned version string
-//!    (`=<version>`) that matches the CLI release that scaffolded the project.
-//!    Exact pin prevents a silent upgrade to a future stable once the CLI
-//!    moves from prerelease to stable. The value is kept in sync by
-//!    `scripts/sync-platform-versions.mjs`.
+//! 2. Any dependency value matching `workspace:*` is rewritten to the
+//!    exact-pinned version produced by [`workspace_dep_placeholder`]. The
+//!    template ships its workspace deps using pnpm's `workspace:*` protocol so
+//!    the rewrite has something to bite on; the placeholder is an exact-pinned
+//!    version string (`=<version>`) that equals the running binary's own
+//!    version. Exact pin prevents a silent upgrade to a future stable once the
+//!    CLI moves from prerelease to stable. The value is **self-syncing** — it
+//!    is derived from the binary's release version at compile time, so there is
+//!    nothing to hand-maintain or keep in lockstep across releases.
 //!
 //! After patching we attempt to run `pnpm install`; if pnpm is missing we
 //! print a friendly notice and continue successfully so the user can run
@@ -57,20 +58,29 @@ static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 const NO_INSTALL_TEMPLATES: &[&str] = &["node-free"];
 
 /// Replacement value applied to any `workspace:*` dependency found in a
-/// scaffolded `package.json`.
+/// scaffolded `package.json`: an exact pin (`=<version>`) of the version of
+/// the zfb binary doing the scaffolding.
 ///
-/// Uses an exact pin (`=<version>`) rather than a caret range so that
-/// scaffolded projects never silently upgrade to a future stable release.
-/// For example, `^0.1.0-next.4` would match stable `0.1.0` (npm semver
-/// treats stable as greater than any prerelease of the same triplet), causing
-/// an implicit downgrade of the SDK channel once `0.1.0` is published.
-/// `=0.1.0-next.4` pins exactly and prevents that.
+/// **Self-syncing — nothing to hand-maintain.** The version is read at compile
+/// time from `ZFB_RELEASE_VERSION` (the release build injects it — see
+/// [`crate::cli`] and `.github/workflows/release.yml`), falling back to
+/// `CARGO_PKG_VERSION` for local/dev builds (which is the `0.0.0` placeholder
+/// in `crates/zfb/Cargo.toml`). This is the same version source `zfb --version`
+/// uses, so a scaffold always pins exactly the release that produced it. That
+/// closes the drift bug where the binary and the scaffolded pin disagreed
+/// (e.g. a `next.7` binary writing `=0.1.0-next.6`).
 ///
-/// **Do NOT edit this value by hand.** It is overwritten by
-/// `scripts/sync-platform-versions.mjs` on every version bump to match
-/// `packages/zfb/package.json`. See:
-/// <https://github.com/Takazudo/zudo-front-builder/issues/343>
-const WORKSPACE_DEP_PLACEHOLDER: &str = "=0.1.0-next.7";
+/// Exact pin (`=`) — not a caret range — so scaffolds never silently upgrade
+/// to a future stable. For example `^0.1.0-next.4` would match stable `0.1.0`
+/// (npm semver treats stable as greater than any prerelease of the same
+/// triplet), implicitly moving the SDK channel once `0.1.0` is published.
+///
+/// See: <https://github.com/Takazudo/zudo-front-builder/issues/503> (self-sync)
+/// and <https://github.com/Takazudo/zudo-front-builder/issues/343> (exact pin).
+fn workspace_dep_placeholder() -> String {
+    let version = option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    format!("={version}")
+}
 
 /// Dependency-section keys we walk inside `package.json` when rewriting
 /// `workspace:*` ranges. Kept as a constant so the rewriter and its tests
@@ -271,6 +281,7 @@ fn patch_package_json(path: &Path, project_name: &str) -> anyhow::Result<()> {
 /// `workspace:~`, and pinned forms like `workspace:1.2.3`) with the
 /// published-package placeholder.
 fn rewrite_workspace_deps(pkg: &mut Map<String, Value>) {
+    let placeholder = workspace_dep_placeholder();
     for section in DEP_SECTIONS {
         let Some(deps) = pkg.get_mut(*section).and_then(|v| v.as_object_mut()) else {
             continue;
@@ -278,7 +289,7 @@ fn rewrite_workspace_deps(pkg: &mut Map<String, Value>) {
         for (_dep_name, dep_value) in deps.iter_mut() {
             if let Some(s) = dep_value.as_str() {
                 if s.starts_with("workspace:") {
-                    *dep_value = Value::String(WORKSPACE_DEP_PLACEHOLDER.to_string());
+                    *dep_value = Value::String(placeholder.clone());
                 }
             }
         }
@@ -390,6 +401,7 @@ mod tests {
         });
         let obj = pkg.as_object_mut().unwrap();
         rewrite_workspace_deps(obj);
+        let ph = workspace_dep_placeholder();
 
         assert_eq!(
             obj["dependencies"]["preact"].as_str().unwrap(),
@@ -398,11 +410,11 @@ mod tests {
         );
         assert_eq!(
             obj["dependencies"]["@takazudo/zfb"].as_str().unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER
+            ph.as_str()
         );
         assert_eq!(
             obj["devDependencies"]["internal-tool"].as_str().unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER
+            ph.as_str()
         );
         assert_eq!(
             obj["devDependencies"]["typescript"].as_str().unwrap(),
@@ -410,11 +422,11 @@ mod tests {
         );
         assert_eq!(
             obj["peerDependencies"]["react"].as_str().unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER
+            ph.as_str()
         );
         assert_eq!(
             obj["optionalDependencies"]["fsevents"].as_str().unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER
+            ph.as_str()
         );
     }
 
@@ -439,10 +451,11 @@ mod tests {
 
         let after = fs::read_to_string(&path).unwrap();
         let parsed: Value = serde_json::from_str(&after).unwrap();
+        let ph = workspace_dep_placeholder();
         assert_eq!(parsed["name"].as_str().unwrap(), "my-site");
         assert_eq!(
             parsed["dependencies"]["@takazudo/zfb"].as_str().unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER
+            ph.as_str()
         );
         // @takazudo/zfb-runtime ships as a workspace:* dep in the template so
         // it gets pinned to the exact release version, just like @takazudo/zfb.
@@ -450,10 +463,26 @@ mod tests {
             parsed["dependencies"]["@takazudo/zfb-runtime"]
                 .as_str()
                 .unwrap(),
-            WORKSPACE_DEP_PLACEHOLDER,
-            "@takazudo/zfb-runtime must be pinned to WORKSPACE_DEP_PLACEHOLDER"
+            ph.as_str(),
+            "@takazudo/zfb-runtime must be pinned to the binary's version"
         );
         assert!(after.ends_with('\n'), "trailing newline preserved");
+    }
+
+    #[test]
+    fn workspace_dep_placeholder_is_an_exact_pin_of_the_binary_version() {
+        // Self-syncing pin (#503): the placeholder must be an exact pin of the
+        // version this binary reports, derived the same way `zfb --version` is
+        // (ZFB_RELEASE_VERSION when injected, else CARGO_PKG_VERSION). In a test
+        // build ZFB_RELEASE_VERSION is normally unset, so it falls back to
+        // CARGO_PKG_VERSION. If the release env var IS set in the build
+        // environment, the placeholder tracks it — assert against the same
+        // source rather than a hardcoded literal so this never drifts.
+        let expected_version =
+            option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        let ph = workspace_dep_placeholder();
+        assert!(ph.starts_with('='), "placeholder must be an exact pin: {ph}");
+        assert_eq!(ph, format!("={expected_version}"));
     }
 
     #[test]
