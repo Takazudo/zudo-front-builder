@@ -872,10 +872,35 @@ impl DevRenderSession {
         let state = lock
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
+        let project_root = self.inner.project_root.clone();
+        // Delegate the loop to `render_one_with`, injecting the real V8
+        // render call as the per-entry closure. This keeps the fan-out logic
+        // testable without a live renderer (see the seam test below).
+        Self::render_one_with(page, &entries, |entry| {
+            render_one(state, entry, dist_dir, &project_root).map_err(anyhow::Error::from)
+        })
+    }
+
+    /// Fan-out loop: for each `RouteUniverseEntry` in `entries`, call
+    /// `render_entry` to produce the path of the written HTML file, read
+    /// it back, and wrap it in a `RenderedPage` with a synthetic `PageId`
+    /// derived from the entry's `output_path`.
+    ///
+    /// Extracted from `render_one` so the per-entry render step can be
+    /// replaced with a stub in tests, avoiding the need for a live V8
+    /// `RendererState`. The public `render_one` delegates here with the
+    /// real `zfb_build::renderer::render_one` call as the closure.
+    fn render_one_with<F>(
+        page: &PageId,
+        entries: &[RouteUniverseEntry],
+        mut render_entry: F,
+    ) -> Result<Vec<RenderedPage>>
+    where
+        F: FnMut(&RouteUniverseEntry) -> Result<PathBuf>,
+    {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
-            let written = render_one(state, &entry, dist_dir, &self.inner.project_root)
-                .map_err(anyhow::Error::from)?;
+            let written = render_entry(entry)?;
             let html = std::fs::read_to_string(&written)
                 .with_context(|| format!("failed to read rendered page {}", written.display()))?;
             // RouteUniverseEntry::output_path is a PathBuf validated by the
@@ -1595,48 +1620,81 @@ mod tests {
     }
 
     /// A dynamic SSG source whose `paths()` expanded into N concrete URLs
-    /// is recorded as N entries under its single source `PageId`. Each
-    /// resolved URL must get a distinct synthetic `RenderedPage.page` id
-    /// (derived from its output path) so the `DevAssetPipeline` does not
-    /// prune all-but-the-last on a per-`PageId` key (guardrail 1, #507).
+    /// fans out through `render_one_with`'s loop: one `RenderedPage` per
+    /// entry, each with a synthetic `PageId` derived from the entry's
+    /// `output_path` (guardrail 1, #507).
     ///
-    /// We verify the data-structure wiring directly: the source path
-    /// reaches `routes_by_source` with multiple entries (not `Ok(None)`),
-    /// and the synthetic ids differ. (A `None` renderer can't actually
-    /// render, so we assert the fan-out shape on the route table itself.)
+    /// Uses the `render_one_with` seam directly with a stub closure that
+    /// writes known HTML to a tempdir, so the test drives the real loop
+    /// without a live V8 `RendererState`. N=3 entries guard against
+    /// hard-coded two-item expectations.
+    ///
+    /// Falsifiability:
+    /// - If the loop exits early (e.g. a `break` after one entry), the
+    ///   `out.len() == 3` assertion fails.
+    /// - If the synthetic `PageId` is derived from the source path instead
+    ///   of `entry.output_path`, all three ids are identical and the
+    ///   `unique.len() == 3` assertion fails.
     #[test]
     fn dynamic_ssg_source_fans_out_to_multiple_entries_with_distinct_ids() {
-        let mut routes: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
-        let source = PathBuf::from("pages/blog/[slug].tsx");
-        routes.insert(
-            source.clone(),
-            vec![
-                RouteUniverseEntry {
-                    url_path: "/blog/hello".into(),
-                    output_path: PathBuf::from("blog/hello/index.html"),
-                    route_key: "/blog/:slug".into(),
-                    static_html: false,
-                    source_path: None,
-                },
-                RouteUniverseEntry {
-                    url_path: "/blog/world".into(),
-                    output_path: PathBuf::from("blog/world/index.html"),
-                    route_key: "/blog/:slug".into(),
-                    static_html: false,
-                    source_path: None,
-                },
-            ],
-        );
-        // The fan-out URLs reached the route table (not Ok(None)).
-        let entries = routes.get(&source).expect("source must be mapped");
-        assert_eq!(entries.len(), 2, "two paths() URLs under one source");
-        // Synthetic RenderedPage ids are derived from each entry's
-        // output_path, so they are distinct per URL — the property the
-        // pipeline relies on to keep all N artifacts (guardrail 1).
-        let id_a = PageId::new(entries[0].output_path.clone());
-        let id_b = PageId::new(entries[1].output_path.clone());
-        assert_ne!(
-            id_a, id_b,
+        use std::collections::HashSet;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().expect("tempdir");
+
+        // Three slugs — one dynamic SSG source → three concrete URLs.
+        let slugs = ["hello", "world", "rust"];
+        let entries: Vec<RouteUniverseEntry> = slugs
+            .iter()
+            .map(|slug| RouteUniverseEntry {
+                url_path: format!("/blog/{slug}"),
+                output_path: PathBuf::from(format!("blog/{slug}/index.html")),
+                route_key: "/blog/:slug".into(),
+                static_html: false,
+                source_path: None,
+            })
+            .collect();
+
+        let source_page = PageId::new(PathBuf::from("pages/blog/[slug].tsx"));
+
+        // Stub render-fn: create the output file in the tempdir and return
+        // its absolute path — exercises the read_to_string round-trip.
+        let tmp_path = tmp.path().to_path_buf();
+        let out = DevRenderSession::render_one_with(
+            &source_page,
+            &entries,
+            |entry| {
+                let dest = tmp_path.join(&entry.output_path);
+                std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                std::fs::write(&dest, format!("<html>{}</html>", entry.url_path)).unwrap();
+                Ok(dest)
+            },
+        )
+        .expect("render_one_with must succeed");
+
+        // One RenderedPage per entry.
+        assert_eq!(out.len(), 3, "fan-out must emit one page per entry");
+
+        // Every synthetic PageId is derived from the entry's output_path.
+        for (rendered, entry) in out.iter().zip(entries.iter()) {
+            assert_eq!(
+                rendered.page,
+                PageId::new(entry.output_path.clone()),
+                "PageId must be derived from entry.output_path, not source path"
+            );
+            // Verify the loop actually read what the stub wrote.
+            assert!(
+                rendered.html.contains(&entry.url_path),
+                "html must reflect what the stub renderer wrote for {}",
+                entry.url_path
+            );
+        }
+
+        // All synthetic ids are distinct (guardrail 1 property).
+        let unique: HashSet<_> = out.iter().map(|r| &r.page).collect();
+        assert_eq!(
+            unique.len(),
+            3,
             "each resolved URL must get a distinct pipeline page id"
         );
     }
