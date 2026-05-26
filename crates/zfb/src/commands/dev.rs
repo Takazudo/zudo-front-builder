@@ -1364,8 +1364,10 @@ fn boot_dev_renderer(
         let mut paths_cache = PathsCache::new();
 
         // Phase 1 — literal `paths()` arrays (no runtime needed).
+        // A missing `paths()` export on an SSG route is a hard error here
+        // too — consistent with `zfb build` (issue #520).
         let static_expansion =
-            expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache);
+            expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
 
         // Phase 2 — evaluate the routes phase 1 couldn't resolve statically
         // through the running embedded V8 host. We borrow the live host out
