@@ -61,7 +61,7 @@ use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
 #[cfg(feature = "embed_v8")]
 use zfb_build::EmbeddedV8Host;
-use zfb_content::extract_tsx_frontmatter;
+use zfb_content::{extract_tsx_frontmatter, TsxFrontmatterError};
 use zfb_render::paths::{resolve_paths, PathsCache, PathsError, Segment as PathsSegment};
 use zfb_render::paths_extract::{extract_paths, PathsExtractError, PathsExtraction};
 use zfb_router::{Route, RouteKind, Segment};
@@ -1047,11 +1047,15 @@ fn hex_nibble(n: u8) -> char {
 ///   frontmatter extraction does not apply to them. The renderer
 ///   treats a missing prerender entry as `true` (SSG), which is the
 ///   documented default for MDX too.
-/// - TSX pages whose extraction fails are still skipped from the map
-///   (so the renderer's missing-key default of `true` applies), but
-///   the failure is reported through `warn_unreadable` so the user
-///   can fix typos in their `frontmatter` / `prerender` exports
-///   instead of staring at a silent default.
+/// - TSX pages with **malformed** frontmatter (present but unparseable /
+///   computed / wrong-shape) are skipped from the map (so the renderer's
+///   missing-key default of `true` applies) and the failure is reported
+///   through `warn_unreadable` so the user can fix the mistake instead of
+///   staring at a silent default.
+/// - TSX pages with **no** `export const frontmatter` are NOT a failure —
+///   the export is optional and absence means "use the SSG default". These
+///   are skipped silently (no warning). Warning on every frontmatter-less
+///   page was misleading noise — see #505.
 pub fn build_prerender_map(
     routes: &[Route],
     project_root: &Path,
@@ -1091,6 +1095,15 @@ pub fn build_prerender_map(
             Ok(fm) => {
                 map.insert(route.template(), fm.prerender);
             }
+            // A route page with no `export const frontmatter` is valid — the
+            // export is optional and an absent one simply means "use the SSG
+            // default". Warning on it is misleading (it reads as "your page is
+            // broken") and fires on every frontmatter-less page, so stay silent
+            // and let the missing-key default of `true` (SSG) apply. See #505.
+            Err(TsxFrontmatterError::MissingFrontmatter { .. }) => {}
+            // Any other extraction error means the frontmatter IS present but
+            // malformed (parse error, duplicate/computed/wrong-shape export).
+            // That's a real mistake worth surfacing.
             Err(e) => {
                 warn_unreadable(&format!(
                     "frontmatter extraction failed for {} ({}); defaulting to SSG",
@@ -1301,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn build_prerender_map_reads_tsx_frontmatter_and_warns_on_unparseable() {
+    fn build_prerender_map_warns_on_malformed_but_not_on_absent_frontmatter() {
         let dir = tempdir().unwrap();
         let pages = dir.path().join("pages");
         std::fs::create_dir_all(&pages).unwrap();
@@ -1318,30 +1331,44 @@ mod tests {
             "export const frontmatter = { title: 'P' };\nexport const prerender = false;\nexport default function() { return null; }\n",
         )
         .unwrap();
-        // No frontmatter — extraction fails → no entry inserted, but a
-        // warning IS emitted so the user can find their typo.
+        // No frontmatter at all — this is VALID (the export is optional). It
+        // must NOT warn and simply defaults to SSG via the missing-key path. (#505)
         std::fs::write(
-            pages.join("broken.tsx"),
+            pages.join("nofm.tsx"),
             "export default function() { return null; }\n",
+        )
+        .unwrap();
+        // Frontmatter IS present but malformed (non-literal/computed value) —
+        // a real mistake that should still surface a warning.
+        std::fs::write(
+            pages.join("malformed.tsx"),
+            "const titleVar = 'x';\nexport const frontmatter = { title: titleVar };\nexport default function() { return null; }\n",
         )
         .unwrap();
 
         let routes = vec![
             static_route(vec!["about"], "pages/about.tsx"),
             static_route(vec!["preview"], "pages/preview.tsx"),
-            static_route(vec!["broken"], "pages/broken.tsx"),
+            static_route(vec!["nofm"], "pages/nofm.tsx"),
+            static_route(vec!["malformed"], "pages/malformed.tsx"),
         ];
 
         let mut warnings: Vec<String> = Vec::new();
         let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
         assert_eq!(map.get("/about"), Some(&true));
         assert_eq!(map.get("/preview"), Some(&false));
-        assert!(!map.contains_key("/broken"));
-        // broken.tsx triggered exactly one warning naming the file.
-        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        // Absent frontmatter: no entry (default SSG), and crucially no warning.
+        assert!(!map.contains_key("/nofm"));
+        // Malformed frontmatter: no entry, and exactly one warning naming it.
+        assert!(!map.contains_key("/malformed"));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "only the malformed page should warn; got: {warnings:?}"
+        );
         assert!(
-            warnings[0].contains("broken.tsx"),
-            "expected file name in warning, got: {}",
+            warnings[0].contains("malformed.tsx"),
+            "expected malformed.tsx in warning, got: {}",
             warnings[0]
         );
     }
