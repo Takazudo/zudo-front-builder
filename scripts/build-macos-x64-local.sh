@@ -110,7 +110,7 @@ CI=true pnpm install --frozen-lockfile
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 echo "==> cargo build -p zfb --release --target ${target}"
-cargo build -p zfb --release --target "$target"
+ZFB_RELEASE_VERSION="$semver" cargo build -p zfb --release --target "$target"
 
 # Resolve the actual cargo target directory rather than assuming "./target".
 # A host-level ~/.cargo/config.toml (or CARGO_TARGET_DIR) can redirect builds
@@ -120,6 +120,18 @@ target_root="$(cargo metadata --format-version 1 --no-deps \
 built_binary="${target_root}/${target}/release/zfb"
 if [[ ! -f "$built_binary" ]]; then
   echo "ERROR: expected binary not found: ${built_binary}" >&2
+  exit 1
+fi
+
+# ── Assert --version equals release semver (mirrors release.yml:284-296) ──────
+# Catches a missed ZFB_RELEASE_VERSION injection before the binary is archived.
+actual_version="$("$built_binary" --version)"
+expected_version="zfb $semver"
+echo "Expected: $expected_version"
+echo "Actual:   $actual_version"
+if [[ "$actual_version" != "$expected_version" ]]; then
+  echo "ERROR: built binary --version mismatch: got '$actual_version', want '$expected_version'" >&2
+  echo "       (ZFB_RELEASE_VERSION injection likely missing)" >&2
   exit 1
 fi
 
