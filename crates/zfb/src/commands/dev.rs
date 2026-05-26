@@ -134,6 +134,37 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .with_context(|| format!("failed to create dist dir {}", dist_root.display()))?;
     }
 
+    // Issue #534 — dev's per-route HTML writes must NOT land in the
+    // project's `outDir` (`dist/`). When dev was given the same `dist_dir`
+    // as the build pipeline, starting `pnpm dev` after a clean `pnpm build`
+    // overwrote every prod HTML file with a dev-mode rendering that lacked
+    // the production `<link rel="stylesheet">` / islands `<script
+    // type="module">` head injections (`prod_head_assets`). The on-disk
+    // copy then silently broke a subsequent `pnpm preview`, which serves
+    // `dist/` verbatim.
+    //
+    // The dev server primarily serves HTML from its in-memory `PageCache`
+    // (URL-keyed — see `zfb_server::routes::PageCache`), so the on-disk
+    // copy is mostly a stale by-product of the read-back-after-render step
+    // in `DevRenderSession::render_one_with`. Redirecting it to a
+    // dev-only directory under `.zfb-build/` keeps the read-back working
+    // while taking dev out of the production output's write set entirely.
+    //
+    // The dev server's disk-fallback in `read_from_dist` intentionally
+    // still points at `dist_root` (not at `dev_html_root`): on a cold
+    // cache it serves whatever the most recent `pnpm build` left there,
+    // which is what users expect from "build, then dev for a quick check"
+    // and is now safe because dev no longer mutates that file.
+    let dev_html_root = dev_html_root_for(&project_root);
+    if !dev_html_root.exists() {
+        std::fs::create_dir_all(&dev_html_root).with_context(|| {
+            format!(
+                "failed to create dev html dir {}",
+                dev_html_root.display()
+            )
+        })?;
+    }
+
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_DEV_HOST);
     let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
     let addr = resolve_addr(host.as_str(), port)?;
@@ -330,7 +361,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
-        Some(session) => make_render_callback(session.clone(), dist_root.clone()),
+        // Issue #534 — pass `dev_html_root` (under `.zfb-build/`), not
+        // `dist_root`, so per-route dev renders do not overwrite the
+        // production HTML files that `pnpm preview` serves.
+        Some(session) => make_render_callback(session.clone(), dev_html_root.clone()),
         None => Arc::new(|_pages: &[PageId]| Ok(Vec::new())),
     };
 
@@ -1465,6 +1499,25 @@ fn boot_dev_renderer(
     })
 }
 
+/// Per-route HTML output directory for the dev pipeline (issue #534).
+///
+/// Dev's renderer writes one file per route on each tick (initial scan
+/// + every watcher rebuild). Until #534, these writes landed in the
+/// project's `outDir` (`dist/`), silently overwriting the production
+/// HTML produced by a prior `pnpm build` — stripping the prod-only
+/// `<link rel="stylesheet">` / islands `<script type="module">` head
+/// injections and breaking subsequent `pnpm preview`.
+///
+/// Dev now writes to `<project_root>/.zfb-build/dev-pages/`. This sits
+/// under the existing `.zfb-build/` intermediate directory (already
+/// `.gitignore`d by the project templates) and is read back by
+/// `DevRenderSession::render_one_with` to populate the in-memory
+/// `PageCache`. End users of the dev server are unaffected — page
+/// lookups are URL-keyed and never touch this path.
+fn dev_html_root_for(project_root: &Path) -> PathBuf {
+    project_root.join(".zfb-build").join("dev-pages")
+}
+
 /// Build the [`PageRenderer`] callback that the orchestrator hands to
 /// [`DevAssetPipeline`].
 fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
@@ -1585,6 +1638,40 @@ mod tests {
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
+    }
+
+    /// Issue #534 regression — dev's per-route HTML output dir must live
+    /// under `.zfb-build/`, NOT under the project's `outDir` (`dist/`).
+    /// If this contract is broken, `pnpm dev` after a clean `pnpm build`
+    /// silently overwrites prod HTML in `dist/`, stripping the prod-only
+    /// `<link>` / islands `<script type="module">` head injections and
+    /// breaking the subsequent `pnpm preview`.
+    ///
+    /// Falsifiability: changing the helper to return `dist/dev-pages`
+    /// or `dist` itself fails the second / third assertion.
+    #[test]
+    fn dev_html_root_lives_under_dot_zfb_build_not_outdir() {
+        let project_root = PathBuf::from("/tmp/proj");
+        let dev_html_root = dev_html_root_for(&project_root);
+
+        // The exact, documented contract:
+        //   `<project_root>/.zfb-build/dev-pages`.
+        assert_eq!(
+            dev_html_root,
+            PathBuf::from("/tmp/proj/.zfb-build/dev-pages"),
+        );
+
+        // Negative checks against the regressed locations. The default
+        // `outDir` is `dist/`; assert the dev path does not collide
+        // anywhere under it.
+        let dist_root = project_root.join("dist");
+        assert_ne!(dev_html_root, dist_root, "must not equal outDir");
+        assert!(
+            !dev_html_root.starts_with(&dist_root),
+            "dev html dir must not live anywhere under outDir ({}); got {}",
+            dist_root.display(),
+            dev_html_root.display(),
+        );
     }
 
     /// The render callback must:
