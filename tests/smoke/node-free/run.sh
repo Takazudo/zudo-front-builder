@@ -205,5 +205,18 @@ if ! printf '%s' "$DEV_RESPONSE" | grep -q "$EXPECTED_CONTENT"; then
 fi
 pass "dev server returned expected content"
 
+# ── Step 5b: Assert dev server serves dynamic /posts/hello/ slug ─────────────
+# Verifies #502: paths()-expanded dynamic routes are served at HTTP 200 by
+# `zfb dev`. The trailing-slash form is used here, symmetric to the build-side
+# assertion for dist/posts/hello/index.html above.
+
+printf '==> curling http://localhost:%d/posts/hello/ (dynamic slug)\n' "$PORT"
+DEV_POST_RESPONSE=$(curl --retry 30 --retry-connrefused --retry-delay 1 -fsS "http://localhost:${PORT}/posts/hello/")
+
+if ! printf '%s' "$DEV_POST_RESPONSE" | grep -q "$EXPECTED_POST_TITLE"; then
+    fail "dev server /posts/hello/ does not contain expected post title: $EXPECTED_POST_TITLE"
+fi
+pass "dev server served dynamic slug /posts/hello/ with expected post title"
+
 # cleanup trap kills dev server on exit.
 printf '==> All smoke assertions passed.\n'

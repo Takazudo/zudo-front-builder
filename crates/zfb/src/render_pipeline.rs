@@ -437,11 +437,24 @@ pub struct DynamicExpansion {
 /// [`PathsCache`] across multiple invocations (e.g. dev-mode rebuilds);
 /// `cache.miss_count()` and `cache.hit_count()` then reflect the whole
 /// session.
+/// Expand SSG dynamic routes from a static `paths()` extraction.
+///
+/// All routes in `deferred` are expected to be SSG (`prerender = true`).
+/// SSR routes (`prerender = false`) must be pre-filtered by the caller
+/// before calling this function — they bypass `paths()` expansion entirely
+/// (see `build.rs` Approach B pre-filter and the `ssr_deferred` split).
+///
+/// Returns an error immediately if a route has no `paths()` export at all
+/// (`PathsExtraction::Missing`). SSG dynamic routes require an explicit
+/// `paths()` — without one the route would silently produce no pages.
+/// Routes with a non-literal `paths()` (e.g. one that calls
+/// `getCollection(...)`) are collected into [`DynamicExpansion::deferred`]
+/// for Phase-2 runtime evaluation.
 pub fn expand_dynamic_routes(
     deferred: &[PendingDynamicRoute],
     project_root: &Path,
     cache: &mut PathsCache,
-) -> DynamicExpansion {
+) -> anyhow::Result<DynamicExpansion> {
     let mut out = DynamicExpansion::default();
     for route in deferred {
         match try_expand_one(route, project_root, cache) {
@@ -449,7 +462,19 @@ pub fn expand_dynamic_routes(
                 out.resolved.extend(entries);
                 out.resolved_with_params.extend(params_entries);
             }
-            Err(reason) => out.deferred.push(DeferredDynamicRoute {
+            // Missing paths() on an SSG dynamic route is a hard build
+            // error: without it the route produces no pages and would
+            // silently 404 at serve time. Matched on the typed variant
+            // — a future reword of the producer's prose reason can't
+            // silently downgrade this back to a defer.
+            Err(TryExpandFailure::MissingPathsExport { source_display }) => {
+                return Err(anyhow::anyhow!(
+                    "no top-level `paths` export found in {source_display}; \
+                     dynamic routes require one — add an exported `paths()` \
+                     function that returns the list of URL params"
+                ));
+            }
+            Err(TryExpandFailure::Other(reason)) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
                 segments: route.segments.clone(),
@@ -458,19 +483,38 @@ pub fn expand_dynamic_routes(
             }),
         }
     }
-    out
+    Ok(out)
+}
+
+/// Typed failure shape from `try_expand_one`.
+///
+/// Splits the semantically-distinct "no `paths` export at all" case
+/// (hard error for SSG routes — see `expand_dynamic_routes`) from every
+/// other expansion failure (defer to Phase-2 runtime evaluation with the
+/// reason as a diagnostic string). The previous design returned a single
+/// `Result<_, String>` and the caller had to grep for a specific phrase
+/// in the error message; that coupled the caller to the producer's exact
+/// wording.
+enum TryExpandFailure {
+    /// No `paths` export found in the dynamic route's source file.
+    /// `source_display` is the source path formatted for diagnostics.
+    MissingPathsExport { source_display: String },
+    /// Any other failure — non-literal `paths`, parse error, unreadable
+    /// source. The string is the existing one-line diagnostic reason
+    /// (consumed by the deferred-route reason field and downstream
+    /// `warn_deferred_dynamic`).
+    Other(String),
 }
 
 /// Try to expand a single dynamic route into concrete entries. Returns
-/// `(universe_entries, manifest_entries)` on success, or a one-line
-/// reason string on failure (suitable for direct inclusion in a build
-/// warning). `manifest_entries` carries params + metadata for the
-/// postBuild route manifest (#262).
+/// `(universe_entries, manifest_entries)` on success, or a typed
+/// [`TryExpandFailure`] on failure. `manifest_entries` carries params +
+/// metadata for the postBuild route manifest (#262).
 fn try_expand_one(
     route: &PendingDynamicRoute,
     project_root: &Path,
     cache: &mut PathsCache,
-) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), TryExpandFailure> {
     let abs = if route.source_path.is_absolute() {
         route.source_path.clone()
     } else {
@@ -480,27 +524,29 @@ fn try_expand_one(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| route.source_path.display().to_string());
-    let source = std::fs::read_to_string(&abs)
-        .map_err(|e| format!("could not read {} ({e})", abs.display()))?;
+    let source = std::fs::read_to_string(&abs).map_err(|e| {
+        TryExpandFailure::Other(format!("could not read {} ({e})", abs.display()))
+    })?;
     let extraction = match extract_paths(&source, &file_name) {
         Ok(x) => x,
         Err(PathsExtractError::Parse { file, message }) => {
-            return Err(format!("parse error in {file}: {message}"));
+            return Err(TryExpandFailure::Other(format!(
+                "parse error in {file}: {message}"
+            )));
         }
     };
     let json = match extraction {
         PathsExtraction::Literal(v) => v,
         PathsExtraction::Missing => {
-            return Err(format!(
-                "no top-level `paths` export found in {}; dynamic routes require one",
-                abs.display()
-            ));
+            return Err(TryExpandFailure::MissingPathsExport {
+                source_display: abs.display().to_string(),
+            });
         }
         PathsExtraction::NonLiteral { reason } => {
-            return Err(format!(
+            return Err(TryExpandFailure::Other(format!(
                 "{}: paths() not statically resolvable ({reason}); pending runtime evaluation",
                 abs.display()
-            ));
+            )));
         }
     };
 
@@ -519,8 +565,9 @@ fn try_expand_one(
         .collect();
 
     let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
-    let resolved = resolve_paths(cache, &route.template, &segs, &json)
-        .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
+    let resolved = resolve_paths(cache, &route.template, &segs, &json).map_err(|e| {
+        TryExpandFailure::Other(format!("{}: {}", abs.display(), format_paths_error(&e)))
+    })?;
     let extension = route
         .output_extension
         .as_deref()
@@ -1056,6 +1103,23 @@ fn hex_nibble(n: u8) -> char {
 ///   the export is optional and absence means "use the SSG default". These
 ///   are skipped silently (no warning). Warning on every frontmatter-less
 ///   page was misleading noise — see #505.
+/// Returns `true` if the route identified by `template` is SSR
+/// (`prerender = false` in its frontmatter).
+///
+/// The companion to [`build_prerender_map`]: a missing key in the map
+/// means no `prerender` value was explicitly set, which defaults to SSG
+/// (`true`). So a missing key is **not** SSR — the helper inverts the
+/// lookup with that default folded in.
+///
+/// The same predicate was previously inlined at 4+ call sites in
+/// `commands/build.rs` and `commands/dev.rs`; centralising the
+/// "missing key → SSG default" rule here prevents drift if the default
+/// ever changes (and made the post-#520 pre-filter, where this rule is
+/// load-bearing, easier to read).
+pub fn is_ssr_route(prerender_map: &BTreeMap<String, bool>, template: &str) -> bool {
+    !prerender_map.get(template).copied().unwrap_or(true)
+}
+
 pub fn build_prerender_map(
     routes: &[Route],
     project_root: &Path,
@@ -1631,7 +1695,8 @@ mod tests {
         );
 
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("expansion should succeed for a literal paths()");
 
         assert_eq!(out.deferred.len(), 0, "deferred: {:?}", out.deferred);
         assert_eq!(out.resolved.len(), 2);
@@ -1677,7 +1742,8 @@ mod tests {
         pending.output_extension = Some("xml".into());
 
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("expansion should succeed for a literal paths()");
 
         assert_eq!(out.resolved.len(), 1);
         assert_eq!(out.resolved[0].url_path, "/feed-a");
@@ -1708,7 +1774,8 @@ mod tests {
         );
 
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("non-literal paths() should defer, not hard-error");
 
         assert_eq!(out.resolved.len(), 0);
         assert_eq!(out.deferred.len(), 1);
@@ -1725,8 +1792,13 @@ mod tests {
         assert_eq!(out.deferred[0].template, "/blog/:slug");
     }
 
+    /// A missing `paths()` export on an SSG dynamic route is now a hard
+    /// build error (issue #520). SSR routes must be pre-filtered by the
+    /// caller before reaching `expand_dynamic_routes` — this function only
+    /// ever sees SSG routes and a missing `paths()` there means the page
+    /// would produce zero concrete URLs.
     #[test]
-    fn expand_dynamic_routes_defers_when_paths_export_missing() {
+    fn expand_dynamic_routes_errors_when_paths_export_missing() {
         let body = r#"
             export default function P() { return null; }
         "#;
@@ -1738,15 +1810,16 @@ mod tests {
         );
 
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
-        assert_eq!(out.resolved.len(), 0);
-        assert_eq!(out.deferred.len(), 1);
+        let err = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect_err("missing paths() on SSG route should be a hard error");
+        let msg = format!("{err}");
         assert!(
-            out.deferred[0]
-                .reason
-                .contains("no top-level `paths` export"),
-            "reason: {}",
-            out.deferred[0].reason,
+            msg.contains("no top-level `paths` export"),
+            "error message should mention missing paths export, got: {msg}",
+        );
+        assert!(
+            msg.contains("add an exported `paths()` function"),
+            "error message should guide the user, got: {msg}",
         );
     }
 
@@ -1762,7 +1835,8 @@ mod tests {
             output_extension: None,
         };
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("unreadable source should defer, not hard-error");
         assert_eq!(out.resolved.len(), 0);
         assert_eq!(out.deferred.len(), 1);
         assert!(
@@ -1790,7 +1864,8 @@ mod tests {
             body,
         );
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("resolver error (wrong param name) should defer, not hard-error");
         assert_eq!(out.resolved.len(), 0);
         assert_eq!(out.deferred.len(), 1);
         assert!(
@@ -1822,7 +1897,8 @@ mod tests {
             body,
         );
         let mut cache = PathsCache::new();
-        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache);
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("catchall with literal paths() should succeed");
 
         assert_eq!(out.deferred.len(), 0, "deferred: {:?}", out.deferred);
         assert_eq!(out.resolved.len(), 2);
@@ -1884,7 +1960,8 @@ mod tests {
         assert_eq!(plan.deferred_dynamic.len(), 1);
 
         let mut cache = PathsCache::new();
-        let expansion = expand_dynamic_routes(&plan.deferred_dynamic, dir.path(), &mut cache);
+        let expansion = expand_dynamic_routes(&plan.deferred_dynamic, dir.path(), &mut cache)
+            .expect("combined route universe expansion should succeed");
         assert_eq!(expansion.deferred.len(), 0, "{:?}", expansion.deferred);
         assert_eq!(expansion.resolved.len(), 2);
 

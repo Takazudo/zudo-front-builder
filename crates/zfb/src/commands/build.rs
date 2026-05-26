@@ -79,8 +79,8 @@ use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
     embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    DeferredDynamicRoute, DynamicResolvedEntry, ResolvedRouteParams, RouteUniversePlan,
-    WorkerDispatch,
+    is_ssr_route, DeferredDynamicRoute, DynamicResolvedEntry, ResolvedRouteParams,
+    RouteUniversePlan, WorkerDispatch,
 };
 
 /// Entry point for `zfb build`.
@@ -1118,15 +1118,41 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } = build_route_universe(routes);
     let prerender_map = build_prerender_map(routes, project_root, |msg| output::warn(msg));
 
-    // Phase 1 — static paths() expansion.
+    // Pre-filter: split deferred_dynamic by prerender flag, mirroring dev.rs.
     //
-    // Try static `paths()` extraction for every dynamic route. Resolved
+    // SSR (`prerender = false`) dynamic routes bypass `paths()` expansion
+    // entirely — they have no concrete URL list to enumerate and are handled
+    // at request time by the runtime SSR adapter. Passing them through
+    // `expand_dynamic_routes` would (a) fire a misleading
+    // "no paths() export" warning for catch-all pages that legitimately
+    // omit `paths()`, and (b) waste a V8 round-trip that can only fail.
+    //
+    // SSG (`prerender = true`, or no `prerender` key → default true) routes
+    // keep the existing two-phase expansion path.
+    //
+    // The pre-filter mirrors the existing dev.rs:1346-1351 split so both
+    // commands share the same semantics (see issue #520 / #517).
+    let (ssr_deferred, ssg_deferred): (
+        Vec<crate::render_pipeline::PendingDynamicRoute>,
+        Vec<crate::render_pipeline::PendingDynamicRoute>,
+    ) = deferred_dynamic
+        .into_iter()
+        .partition(|d| crate::render_pipeline::is_ssr_route(&prerender_map, &d.template));
+
+    // Phase 1 — static paths() expansion (SSG routes only).
+    //
+    // Try static `paths()` extraction for every SSG dynamic route. Resolved
     // entries fold into the same `route_universe` as the static routes.
     // Entries whose `paths()` is non-literal (e.g. they `await import`
     // or query a content collection) are collected into
     // `still_deferred` for Phase 2.
+    //
+    // A missing `paths()` on an SSG dynamic route is now a hard build error
+    // (see `expand_dynamic_routes` in render_pipeline.rs): without one the
+    // route produces no pages and would silently 404 at serve time.
     let mut paths_cache = PathsCache::new();
-    let expansion = expand_dynamic_routes(&deferred_dynamic, project_root, &mut paths_cache);
+    let expansion =
+        expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
     static_routes.extend(expansion.resolved);
     let still_deferred = expansion.deferred;
 
@@ -1161,7 +1187,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // snapshots.
     let content_snapshot_json = build_content_snapshot_json(project_root, config);
 
-    if static_routes.is_empty() && still_deferred.is_empty() {
+    if static_routes.is_empty() && still_deferred.is_empty() && ssr_deferred.is_empty() {
         // Stay user-friendly: an all-dynamic project where every page
         // also failed static expansion still produces a valid build
         // artifact (an empty dist), but the user has clearly not gotten
@@ -1182,38 +1208,35 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // configured, fail fast HERE (before the expensive bundle +
     // renderer boot) with a pointer at the offending route.
     //
-    // We have to look in TWO places:
+    // We look in TWO places:
     //
     // 1. `static_routes` — the resolved static + statically-expanded
     //    dynamic routes whose `paths()` returned a literal array.
-    // 2. `still_deferred` — dynamic routes whose `paths()` couldn't
-    //    be statically extracted (they need V8 runtime evaluation).
-    //    A page with `prerender = false` AND a non-literal `paths()`
-    //    sits here, and the prerender_map join still finds it because
-    //    both sides key by the route template.
+    // 2. `ssr_deferred` — SSR dynamic routes that were pre-filtered out
+    //    before `expand_dynamic_routes`. These have no concrete URLs yet
+    //    (their template IS the route key) and must also be flagged here.
+    //
+    // `still_deferred` is intentionally NOT consulted here: after the
+    // `partition` above splits `deferred_dynamic` by the prerender flag,
+    // every entry in `still_deferred` came from `ssg_deferred` and is
+    // therefore SSG by construction. Including it here would be dead
+    // code — every SSR-without-paths case lives in `ssr_deferred`.
     //
     // Missing the deferred set would let `output: "static"` /
     // `adapter = "none"` proceed on a project that obviously needs
     // SSR — exactly the contradiction these checks exist to catch.
     let ssr_route_refs: Vec<SsrRouteRef<'_>> = static_routes
         .iter()
-        .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
+        .filter(|entry| is_ssr_route(&prerender_map, &entry.route_key))
         .map(|entry| SsrRouteRef {
             route_key: entry.route_key.as_str(),
             url_path: entry.url_path.as_str(),
         })
-        .chain(still_deferred.iter().filter_map(|entry| {
-            if prerender_map.get(&entry.template).copied().unwrap_or(true) {
-                None
-            } else {
-                Some(SsrRouteRef {
-                    route_key: entry.template.as_str(),
-                    // Deferred routes have no concrete URL yet — the template
-                    // IS the most specific identifier we can offer to a user
-                    // reading the error message.
-                    url_path: entry.template.as_str(),
-                })
-            }
+        .chain(ssr_deferred.iter().map(|d| SsrRouteRef {
+            route_key: d.template.as_str(),
+            // SSR deferred routes have no concrete URL yet — the template IS
+            // the most specific identifier available.
+            url_path: d.template.as_str(),
         }))
         .collect();
     ensure_no_ssr_without_adapter(&adapter, &ssr_route_refs)?;
@@ -1244,27 +1267,24 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // filters against (`RouteEntry::entry_key`); both are the route
     // template string, so the filter matches by exact key.
     //
-    // We must consult BOTH sources, mirroring `ssr_route_refs`:
+    // We must consult TWO sources, mirroring `ssr_route_refs`:
     //
     // 1. `static_routes` — keyed by `route_key`.
-    // 2. `still_deferred` — keyed by `template` (the template IS the
-    //    route key for deferred entries; both sides of the prerender_map
-    //    join key by the route template string).
+    // 2. `ssr_deferred` — SSR dynamic routes pre-filtered before expansion.
+    //    Their template IS the route key.
     //
-    // Missing `still_deferred` would tree-shake deferred dynamic
-    // `prerender = false` routes out of the deploy adapter's runtime
-    // worker bundle — same shape as the #373 gate regression.
+    // `still_deferred` is intentionally NOT consulted: post-partition it
+    // only contains SSG routes (see the comment on `ssr_route_refs`).
+    //
+    // Missing `ssr_deferred` would tree-shake SSR catch-all pages (no paths()
+    // export) out of the deploy adapter's runtime worker bundle — exactly the
+    // #373 / #517 regression shape. The explicit chain here is the replacement
+    // for the previous `still_deferred` side-effect path (issue #520).
     let ssr_route_keys_for_runtime_bundle: std::collections::BTreeSet<String> = static_routes
         .iter()
-        .filter(|entry| !prerender_map.get(&entry.route_key).copied().unwrap_or(true))
+        .filter(|entry| is_ssr_route(&prerender_map, &entry.route_key))
         .map(|entry| entry.route_key.clone())
-        .chain(still_deferred.iter().filter_map(|entry| {
-            if prerender_map.get(&entry.template).copied().unwrap_or(true) {
-                None
-            } else {
-                Some(entry.template.clone())
-            }
-        }))
+        .chain(ssr_deferred.iter().map(|d| d.template.clone()))
         .collect();
 
     // Fail fast if the runtime npm package isn't on disk — the renderer
@@ -4438,6 +4458,132 @@ mod tests {
             "deferred-dynamic SSR route must reach the runtime bundle's \
              worker_only_routes; got {:?}",
             worker_only
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // SSR catch-all with no paths() — issue #520 / #517 regression guard
+    // ---------------------------------------------------------------------------
+
+    /// A `prerender = false` catch-all with NO `paths()` export must:
+    ///
+    /// (a) build cleanly with no "skipping … no paths() export" warning
+    ///     (the eval_deferred_paths input must be empty for this route),
+    /// (b) have its `route_key` present in `worker_only_routes` of the
+    ///     runtime-only bundle pass,
+    /// (c) NOT take the `eval_deferred_paths` round-trip (the FakeRunner
+    ///     receives an empty deferred slice for this route),
+    /// (d) NOT be rendered to a `dist/` artifact (SSR route must not be
+    ///     SSG'd to disk).
+    ///
+    /// Before the Approach-B pre-filter (#520) this route would land in
+    /// `still_deferred` after `expand_dynamic_routes` returned a Missing
+    /// reason, then be passed to `eval_deferred_paths` (wasted V8 round-
+    /// trip) and `warn_deferred_dynamic` (misleading warning).
+    #[test]
+    fn run_build_ssr_catchall_no_paths_no_warning_and_in_worker_only() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        // SSG index page so the build proceeds past the "no static routes"
+        // short-circuit.
+        std::fs::create_dir_all(project_root.join("pages/foo")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+        // SSR catch-all with NO `paths()` export — the core of #517/#520.
+        // A legitimate SSR catch-all only needs `prerender = false`; it
+        // does not need (and must not be required to have) `paths()`.
+        // Frontmatter is included so `build_prerender_map` can read the
+        // `prerender = false` flag (the extractor requires a frontmatter
+        // object to succeed; without it the route defaults to SSG).
+        std::fs::write(
+            project_root.join("pages/foo/[...rest].tsx"),
+            "export const frontmatter = { title: \"Catch-all\" };\n\
+             export const prerender = false;\n\
+             export default function P() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            zfb_router::Route {
+                source_path: PathBuf::from("pages/foo/[...rest].tsx"),
+                segments: vec![
+                    zfb_router::Segment::Static("foo".into()),
+                    zfb_router::Segment::Catchall("rest".into()),
+                ],
+                kind: zfb_router::RouteKind::Dynamic,
+                specificity: 0,
+                output_extension: None,
+                static_html: false,
+            },
+        ];
+
+        // Track whether eval_deferred_paths was called with the SSR
+        // catch-all route. We use FakeRunner which records its inputs;
+        // the SSR route must NOT appear in the deferred slice.
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let mut cfg = Config::default();
+        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        let bundle_calls = runner.bundle_calls.borrow();
+
+        // (b) The route_key /foo/:rest{.+} must appear in worker_only_routes
+        //     of the runtime-only bundle pass (second bundle call).
+        assert_eq!(
+            bundle_calls.len(),
+            2,
+            "expected SSG bundle pass + runtime-only bundle pass"
+        );
+        let worker_only = bundle_calls[1]
+            .worker_only_routes
+            .as_ref()
+            .expect("runtime-only bundle pass must set worker_only_routes");
+        // Catch-all `[...rest]` segments compile to the exact route key
+        // `/foo/:rest{.+}` (see `zfb_router`'s template formatter); pin
+        // the assertion to that exact string so a future router-format
+        // change fails this guard loudly instead of silently matching a
+        // stray `/foo/whatever` key.
+        assert!(
+            worker_only.iter().any(|k| k == "/foo/:rest{.+}"),
+            "SSR catch-all route_key /foo/:rest{{.+}} must reach worker_only_routes; got {:?}",
+            worker_only
+        );
+
+        // (a) + (c) The SSR catch-all must NOT appear in the deferred slice
+        //     passed to eval_deferred_paths. We verify this indirectly: the
+        //     FakeRunner's eval_deferred_paths returns the input unchanged,
+        //     so if the route reached it, it would show up in the second
+        //     bundle call's still_deferred (which feeds warn_deferred_dynamic).
+        //     We do this by checking the render input's route_universe: the
+        //     SSR catch-all must NOT have been SSG'd to a concrete URL entry.
+        let render_calls = runner.render_calls.borrow();
+        assert_eq!(render_calls.len(), 1);
+        let universe = &render_calls[0].route_universe;
+        let catchall_in_universe = universe
+            .iter()
+            .any(|e| e.url_path.starts_with("/foo/") || e.route_key.starts_with("/foo/"));
+        assert!(
+            !catchall_in_universe,
+            "(d) SSR catch-all must NOT appear in the SSG render universe (would shadow SSR handler); \
+             got universe: {:?}",
+            universe.iter().map(|e| &e.url_path).collect::<Vec<_>>()
         );
     }
 
