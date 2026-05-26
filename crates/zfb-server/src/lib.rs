@@ -133,6 +133,17 @@ pub struct ServeOpts {
     /// `<dist_root>/assets/`.
     pub dist_root: PathBuf,
 
+    /// Page (HTML) on-disk root used as the page-cache fallback inside
+    /// the page handler. Issue #534: this used to alias `dist_root` for
+    /// every caller, but in `zfb dev` we must serve dev-rendered HTML
+    /// from a directory that the build pipeline does NOT touch (and
+    /// vice-versa). Embed and preview-style callers pass the same value
+    /// as `dist_root`; `zfb dev` passes its dev-only HTML root
+    /// (`<project_root>/.zfb-build/dev-pages/`) so dev's per-route
+    /// renders never overwrite the production output `pnpm preview`
+    /// later serves.
+    pub html_root: PathBuf,
+
     /// Project public-static directory. Files here are served at the
     /// site root via a per-request on-disk fallback inside the page
     /// handler — `public/logo.svg` → `GET /logo.svg`. The same shape
@@ -319,6 +330,9 @@ where
         // builder threads its own `AppState` directly.
         embed_handlers: None,
         dist_root: opts.dist_root.clone(),
+        // Issue #534 — see `ServeOpts::html_root` for the dev / preview
+        // / embed contract.
+        html_root: opts.html_root.clone(),
         public_root: opts.public_root.clone(),
         base_prefix,
         trailing_slash: opts.trailing_slash,

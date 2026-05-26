@@ -57,7 +57,8 @@ impl Harness {
 
         let opts = ServeOpts {
             project_root: root.clone(),
-            dist_root,
+            dist_root: dist_root.clone(),
+            html_root: dist_root,
             public_root: public_root.clone(),
             addr,
             pages: pages.clone(),

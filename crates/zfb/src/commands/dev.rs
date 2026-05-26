@@ -675,6 +675,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let opts = ServeOpts {
         project_root,
         dist_root,
+        // Issue #534 — point the page-cache disk fallback at the dev
+        // HTML dir, not the project's `outDir`. With `dist_root` here
+        // (the historical wiring) the dev server's `read_from_dist`
+        // would serve whatever `pnpm build` last wrote, hiding the
+        // dev pipeline's edits because nothing populates
+        // `PageCache` for HTML at runtime. Pairing the read with the
+        // write side keeps every dev tick observable in the browser.
+        html_root: dev_html_root.clone(),
         public_root,
         addr,
         pages,
