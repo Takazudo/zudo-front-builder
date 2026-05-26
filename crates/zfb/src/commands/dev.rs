@@ -1304,20 +1304,16 @@ fn boot_dev_renderer(
             .iter()
             .find(|e| e.route_key == route.template())
         {
-            // Default to SSG when the prerender map has no entry
-            // (matches `crates/zfb/src/commands/build.rs` and the
-            // `prerender_map`'s documented default).
-            let is_prerender = prerender_map
-                .get(&route.template())
-                .copied()
-                .unwrap_or(true);
-            if is_prerender {
+            // Default to SSG when the prerender map has no entry —
+            // delegated to `is_ssr_route` for the single source of truth
+            // (matches `crates/zfb/src/commands/build.rs`).
+            if crate::render_pipeline::is_ssr_route(&prerender_map, &route.template()) {
+                ssr_routes.push(entry.clone());
+            } else {
                 routes_by_source
                     .entry(route.source_path.clone())
                     .or_default()
                     .push(entry.clone());
-            } else {
-                ssr_routes.push(entry.clone());
             }
         }
     }
@@ -1335,7 +1331,7 @@ fn boot_dev_renderer(
     // load-bearing for SsrRouteSet (output_path / url_path are never
     // touched by the SSR dispatch path).
     for deferred in &plan.deferred_dynamic {
-        if prerender_map.get(&deferred.template).copied().unwrap_or(true) {
+        if !crate::render_pipeline::is_ssr_route(&prerender_map, &deferred.template) {
             continue;
         }
         ssr_routes.push(RouteUniverseEntry {
@@ -1371,7 +1367,7 @@ fn boot_dev_renderer(
     let ssg_deferred: Vec<crate::render_pipeline::PendingDynamicRoute> = plan
         .deferred_dynamic
         .iter()
-        .filter(|d| prerender_map.get(&d.template).copied().unwrap_or(true))
+        .filter(|d| !crate::render_pipeline::is_ssr_route(&prerender_map, &d.template))
         .cloned()
         .collect();
     if !ssg_deferred.is_empty() {

@@ -462,16 +462,19 @@ pub fn expand_dynamic_routes(
                 out.resolved.extend(entries);
                 out.resolved_with_params.extend(params_entries);
             }
-            Err(reason) if reason.contains("no top-level `paths` export") => {
-                // Missing paths() on an SSG dynamic route is a hard build
-                // error: without it the route produces no pages and would
-                // silently 404 at serve time.
+            // Missing paths() on an SSG dynamic route is a hard build
+            // error: without it the route produces no pages and would
+            // silently 404 at serve time. Matched on the typed variant
+            // — a future reword of the producer's prose reason can't
+            // silently downgrade this back to a defer.
+            Err(TryExpandFailure::MissingPathsExport { source_display }) => {
                 return Err(anyhow::anyhow!(
-                    "{} — add an exported `paths()` function that returns the list of URL params",
-                    reason
+                    "no top-level `paths` export found in {source_display}; \
+                     dynamic routes require one — add an exported `paths()` \
+                     function that returns the list of URL params"
                 ));
             }
-            Err(reason) => out.deferred.push(DeferredDynamicRoute {
+            Err(TryExpandFailure::Other(reason)) => out.deferred.push(DeferredDynamicRoute {
                 source_path: route.source_path.clone(),
                 template: route.template.clone(),
                 segments: route.segments.clone(),
@@ -483,16 +486,35 @@ pub fn expand_dynamic_routes(
     Ok(out)
 }
 
+/// Typed failure shape from `try_expand_one`.
+///
+/// Splits the semantically-distinct "no `paths` export at all" case
+/// (hard error for SSG routes — see `expand_dynamic_routes`) from every
+/// other expansion failure (defer to Phase-2 runtime evaluation with the
+/// reason as a diagnostic string). The previous design returned a single
+/// `Result<_, String>` and the caller had to grep for a specific phrase
+/// in the error message; that coupled the caller to the producer's exact
+/// wording.
+enum TryExpandFailure {
+    /// No `paths` export found in the dynamic route's source file.
+    /// `source_display` is the source path formatted for diagnostics.
+    MissingPathsExport { source_display: String },
+    /// Any other failure — non-literal `paths`, parse error, unreadable
+    /// source. The string is the existing one-line diagnostic reason
+    /// (consumed by the deferred-route reason field and downstream
+    /// `warn_deferred_dynamic`).
+    Other(String),
+}
+
 /// Try to expand a single dynamic route into concrete entries. Returns
-/// `(universe_entries, manifest_entries)` on success, or a one-line
-/// reason string on failure (suitable for direct inclusion in a build
-/// warning). `manifest_entries` carries params + metadata for the
-/// postBuild route manifest (#262).
+/// `(universe_entries, manifest_entries)` on success, or a typed
+/// [`TryExpandFailure`] on failure. `manifest_entries` carries params +
+/// metadata for the postBuild route manifest (#262).
 fn try_expand_one(
     route: &PendingDynamicRoute,
     project_root: &Path,
     cache: &mut PathsCache,
-) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
+) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), TryExpandFailure> {
     let abs = if route.source_path.is_absolute() {
         route.source_path.clone()
     } else {
@@ -502,27 +524,29 @@ fn try_expand_one(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| route.source_path.display().to_string());
-    let source = std::fs::read_to_string(&abs)
-        .map_err(|e| format!("could not read {} ({e})", abs.display()))?;
+    let source = std::fs::read_to_string(&abs).map_err(|e| {
+        TryExpandFailure::Other(format!("could not read {} ({e})", abs.display()))
+    })?;
     let extraction = match extract_paths(&source, &file_name) {
         Ok(x) => x,
         Err(PathsExtractError::Parse { file, message }) => {
-            return Err(format!("parse error in {file}: {message}"));
+            return Err(TryExpandFailure::Other(format!(
+                "parse error in {file}: {message}"
+            )));
         }
     };
     let json = match extraction {
         PathsExtraction::Literal(v) => v,
         PathsExtraction::Missing => {
-            return Err(format!(
-                "no top-level `paths` export found in {}; dynamic routes require one",
-                abs.display()
-            ));
+            return Err(TryExpandFailure::MissingPathsExport {
+                source_display: abs.display().to_string(),
+            });
         }
         PathsExtraction::NonLiteral { reason } => {
-            return Err(format!(
+            return Err(TryExpandFailure::Other(format!(
                 "{}: paths() not statically resolvable ({reason}); pending runtime evaluation",
                 abs.display()
-            ));
+            )));
         }
     };
 
@@ -541,8 +565,9 @@ fn try_expand_one(
         .collect();
 
     let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
-    let resolved = resolve_paths(cache, &route.template, &segs, &json)
-        .map_err(|e| format!("{}: {}", abs.display(), format_paths_error(&e)))?;
+    let resolved = resolve_paths(cache, &route.template, &segs, &json).map_err(|e| {
+        TryExpandFailure::Other(format!("{}: {}", abs.display(), format_paths_error(&e)))
+    })?;
     let extension = route
         .output_extension
         .as_deref()
@@ -1078,6 +1103,23 @@ fn hex_nibble(n: u8) -> char {
 ///   the export is optional and absence means "use the SSG default". These
 ///   are skipped silently (no warning). Warning on every frontmatter-less
 ///   page was misleading noise — see #505.
+/// Returns `true` if the route identified by `template` is SSR
+/// (`prerender = false` in its frontmatter).
+///
+/// The companion to [`build_prerender_map`]: a missing key in the map
+/// means no `prerender` value was explicitly set, which defaults to SSG
+/// (`true`). So a missing key is **not** SSR — the helper inverts the
+/// lookup with that default folded in.
+///
+/// The same predicate was previously inlined at 4+ call sites in
+/// `commands/build.rs` and `commands/dev.rs`; centralising the
+/// "missing key → SSG default" rule here prevents drift if the default
+/// ever changes (and made the post-#520 pre-filter, where this rule is
+/// load-bearing, easier to read).
+pub fn is_ssr_route(prerender_map: &BTreeMap<String, bool>, template: &str) -> bool {
+    !prerender_map.get(template).copied().unwrap_or(true)
+}
+
 pub fn build_prerender_map(
     routes: &[Route],
     project_root: &Path,
