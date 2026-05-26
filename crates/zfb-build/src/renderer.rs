@@ -913,7 +913,17 @@ fn render_one_inner(
             source: e,
         })?;
         let body = strip_static_html_frontmatter(&raw);
-        crate::atomic::atomic_write(&dest, body.as_bytes()).map_err(|e| RendererError::Io {
+        // Prepend the HTML5 doctype when the source page omits it (issue
+        // #524). `needs_html5_doctype` is a no-op for pages that already
+        // declare one and for non-`<html>` bodies.
+        let written: std::borrow::Cow<'_, [u8]> = if crate::head_inject::needs_html5_doctype(body) {
+            std::borrow::Cow::Owned(
+                format!("{}{body}", crate::head_inject::HTML5_DOCTYPE_PREFIX).into_bytes(),
+            )
+        } else {
+            std::borrow::Cow::Borrowed(body.as_bytes())
+        };
+        crate::atomic::atomic_write(&dest, &written).map_err(|e| RendererError::Io {
             path: dest.clone(),
             source: std::io::Error::other(format!("{e:#}")),
         })?;
@@ -939,24 +949,39 @@ fn render_one_inner(
             user_location,
         });
     }
-    // Prod-only head injection. When `prod_head_assets` is `Some` the
-    // helper splices `<link>` / `<script type="module">` tags before
-    // `</head>`. Non-HTML output (no `</head>`) and dev mode (no
-    // `prod_head_assets`) round-trip unchanged.
+    // Two host-side rewrites run here, both UTF-8-only — binary payloads
+    // (rare — favicons via the route universe, etc.) bypass and are
+    // written verbatim. `from_utf8` on bytes the client returned is cheap
+    // because `reqwest` does not validate.
     //
-    // We only attempt the rewrite when the body parses as UTF-8; binary
-    // payloads (rare — favicons via the route universe, etc.) bypass
-    // the rewriter and are written verbatim. `from_utf8` on bytes the
-    // client returned is cheap because `reqwest` does not validate.
-    let written_bytes: std::borrow::Cow<'_, [u8]> = match prod_head_assets {
-        Some(assets) if !assets.is_empty() => match std::str::from_utf8(&body) {
-            Ok(text) => match crate::head_inject::inject_prod_head_assets(text, assets) {
-                std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(body.as_ref()),
-                std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s.into_bytes()),
-            },
-            Err(_) => std::borrow::Cow::Borrowed(body.as_ref()),
-        },
-        _ => std::borrow::Cow::Borrowed(body.as_ref()),
+    // 1. Prod-only head injection: when `prod_head_assets` is `Some` the
+    //    helper splices `<link>` / `<script type="module">` tags before
+    //    `</head>`. Dev mode (no `prod_head_assets`) and non-HTML output
+    //    (no `</head>`) round-trip unchanged.
+    // 2. HTML5 doctype prepend (issue #524): runs in BOTH build and dev so
+    //    every served page leaves quirks mode. `needs_html5_doctype` is a
+    //    no-op for non-`<html>` bodies (`feed.xml`) and pages that already
+    //    declare a doctype, so it never doubles.
+    let written_bytes: std::borrow::Cow<'_, [u8]> = match std::str::from_utf8(&body) {
+        Ok(text) => {
+            let injected: std::borrow::Cow<'_, str> = match prod_head_assets {
+                Some(assets) if !assets.is_empty() => {
+                    crate::head_inject::inject_prod_head_assets(text, assets)
+                }
+                _ => std::borrow::Cow::Borrowed(text),
+            };
+            if crate::head_inject::needs_html5_doctype(&injected) {
+                std::borrow::Cow::Owned(
+                    format!("{}{injected}", crate::head_inject::HTML5_DOCTYPE_PREFIX).into_bytes(),
+                )
+            } else {
+                match injected {
+                    std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s.into_bytes()),
+                    std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(body.as_ref()),
+                }
+            }
+        }
+        Err(_) => std::borrow::Cow::Borrowed(body.as_ref()),
     };
     // Atomic write is consistent with both pipelines (dev and prod) and
     // prevents a half-written .html file from being observed if the
@@ -1355,10 +1380,22 @@ mod tests {
         assert_eq!(out.ssg_files_written.len(), 3);
         let index = fs::read_to_string(dist.path().join("index.html")).unwrap();
         assert!(index.contains("Home"));
+        // Issue #524: doctype is prepended even in dev mode (prod_head_assets
+        // is None here), so the `<html>`-rooted page leaves quirks mode.
+        assert!(
+            index.starts_with("<!doctype html>\n<html"),
+            "index.html must start with the doctype: {index:?}"
+        );
         let about = fs::read_to_string(dist.path().join("about/index.html")).unwrap();
         assert!(about.contains("About"));
+        assert!(about.starts_with("<!doctype html>\n<html"));
         let feed = fs::read_to_string(dist.path().join("feed.xml")).unwrap();
         assert!(feed.contains("<rss/>"));
+        // Non-HTML output (`<rss/>`) must NOT be given a doctype.
+        assert!(
+            !feed.contains("<!doctype"),
+            "feed.xml must not be given a doctype: {feed:?}"
+        );
         // Sentinel: zero pages contain the v0 stub string.
         for p in &out.ssg_files_written {
             let body = fs::read_to_string(p).unwrap();
@@ -1521,6 +1558,55 @@ mod tests {
         assert!(script_at < close_at);
         assert!(written.contains("<title>T</title>"));
         assert!(written.contains("<body>x</body>"));
+    }
+
+    #[test]
+    fn render_all_prod_prepends_doctype_when_body_lacks_one() {
+        // Issue #524: a doctype-less `<html>` body in prod mode must get
+        // BOTH the head-asset injection AND the doctype prefix.
+        let raw_html = b"<html lang=\"en\"><head><title>T</title></head><body>x</body></html>";
+        let raw_html_owned = raw_html.to_vec();
+        let dist = tempfile::tempdir().unwrap();
+        let universe = vec![RouteUniverseEntry {
+            url_path: "/".into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: "/".into(),
+            static_html: false,
+            source_path: None,
+        }];
+        let assets = crate::head_inject::ProdHeadAssets {
+            css_url: Some("/assets/styles.css".into()),
+            island_module_urls: vec![],
+        };
+        render_all(RendererInput {
+            bundle_path: PathBuf::from("/dev/null"),
+            sourcemap_path: PathBuf::from("/dev/null"),
+            manifest: dummy_manifest(),
+            dist_dir: dist.path().to_path_buf(),
+            route_universe: universe,
+            prerender_map: BTreeMap::new(),
+            backend: Backend::Stub {
+                handler: Arc::new(move |_| HttpResponseLike {
+                    status: 200,
+                    content_type: "text/html; charset=utf-8".into(),
+                    body: raw_html_owned.clone(),
+                    ..Default::default()
+                }),
+            },
+            request_timeout: None,
+            prod_head_assets: Some(assets),
+            project_root: PathBuf::new(),
+        })
+        .expect("render_all");
+        let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
+        assert!(
+            written.starts_with("<!doctype html>\n<html"),
+            "prod output must start with the doctype: {written:?}"
+        );
+        // The head-asset injection still ran on the same document.
+        assert!(written.contains("<link rel=\"stylesheet\" href=\"/assets/styles.css\">"));
+        // No double doctype.
+        assert_eq!(written.matches("<!doctype").count(), 1);
     }
 
     #[test]
