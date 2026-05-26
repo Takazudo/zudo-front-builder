@@ -156,14 +156,30 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // which is what users expect from "build, then dev for a quick check"
     // and is now safe because dev no longer mutates that file.
     let dev_html_root = dev_html_root_for(&project_root);
-    if !dev_html_root.exists() {
-        std::fs::create_dir_all(&dev_html_root).with_context(|| {
+    // Wipe the dev HTML dir before the watcher's initial scan refills it.
+    // Without this, a user who restarts `pnpm dev` after deleting or
+    // renaming a route would still see the previous session's HTML on
+    // disk — the page-cache disk fallback would serve it on every
+    // cache-miss request until the exact source file got rebuilt by a
+    // watcher tick. Clearing the dir at boot drops the cross-session
+    // staleness window; the initial render scan that runs immediately
+    // after the orchestrator spawns refills the dir for every current
+    // route. `remove_dir_all` is recursive so nested route directories
+    // (`blog/foo/index.html`) go with the parent.
+    if dev_html_root.exists() {
+        std::fs::remove_dir_all(&dev_html_root).with_context(|| {
             format!(
-                "failed to create dev html dir {}",
+                "failed to clear dev html dir {} before initial render scan",
                 dev_html_root.display()
             )
         })?;
     }
+    std::fs::create_dir_all(&dev_html_root).with_context(|| {
+        format!(
+            "failed to create dev html dir {}",
+            dev_html_root.display()
+        )
+    })?;
 
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_DEV_HOST);
     let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
