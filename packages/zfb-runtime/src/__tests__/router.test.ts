@@ -385,6 +385,111 @@ describe("createPageRouter", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #530 — SSR HTML5 doctype prepend
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — SSR doctype prepend (issue #530)", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  /**
+   * Helper: build a router whose single page returns a canned string body
+   * via renderToString.
+   */
+  function routerWithBody(
+    renderedHtml: string,
+    contentType?: string,
+  ): ReturnType<typeof createPageRouter> {
+    const page: PageModule = {
+      default: () => null,
+      ...(contentType ? { contentType } : {}),
+    };
+    return createPageRouter({
+      pages: [{ route: "/", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => renderedHtml },
+    });
+  }
+
+  // (a) Plain <html> body without doctype — must prepend
+  it("(a) prepends <!doctype html> when renderToString returns doctype-less <html> body", async () => {
+    const router = routerWithBody("<html><head></head><body>hello</body></html>");
+    const res = await router(new Request("http://test.local/"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body.startsWith("<!doctype html>")).toBe(true);
+    expect(body).toContain("<html>");
+  });
+
+  // (b) Already has doctype — no double-prepend (case variation)
+  it("(b) does not double-prepend when renderToString already returns <!DOCTYPE html>", async () => {
+    const router = routerWithBody("<!DOCTYPE html><html><head></head><body>x</body></html>");
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    expect(body.startsWith("<!DOCTYPE html>")).toBe(true);
+    expect(body.toLowerCase().indexOf("<!doctype")).toBe(
+      body.toLowerCase().lastIndexOf("<!doctype"),
+    );
+  });
+
+  // (c-1) BOM-prefixed, no doctype — must prepend
+  it("(c) prepends correctly when body starts with UTF-8 BOM + <html> (no doctype)", async () => {
+    const bom = "﻿";
+    const router = routerWithBody(`${bom}<html><head></head><body>bom</body></html>`);
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    expect(body.startsWith("<!doctype html>")).toBe(true);
+    expect(body).toContain("<html>");
+  });
+
+  // (c-2) BOM-prefixed + doctype already present — no double-prepend.
+  // Note: Hono's c.body() strips the UTF-8 BOM when it encodes the
+  // string to bytes, so the response body starts with `<!doctype html>`
+  // (no BOM). The guard must not add a second doctype — there should be
+  // exactly one `<!doctype` in the response.
+  it("(c) does not double-prepend when BOM-prefixed body already has <!doctype html>", async () => {
+    const bom = "﻿";
+    const router = routerWithBody(`${bom}<!doctype html><html><head></head><body>x</body></html>`);
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    // Exactly one <!doctype in the response (no double-prepend).
+    const count = body.toLowerCase().split("<!doctype").length - 1;
+    expect(count).toBe(1);
+  });
+
+  // (d-1) Leading whitespace, no doctype — must prepend
+  it("(d) prepends correctly when body has leading whitespace before <html> (no doctype)", async () => {
+    const router = routerWithBody("  \n<html><head></head><body>ws</body></html>");
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    expect(body.startsWith("<!doctype html>")).toBe(true);
+    expect(body).toContain("<html>");
+  });
+
+  // (d-2) Leading whitespace + doctype already present — no double-prepend
+  it("(d) does not double-prepend when leading-whitespace body already has <!doctype html>", async () => {
+    const router = routerWithBody("  \n<!doctype html><html><head></head><body>x</body></html>");
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    expect(body.startsWith("<!doctype html>")).toBe(false);
+    expect(body.startsWith("  \n<!doctype html>")).toBe(true);
+  });
+
+  // Non-HTML content type — must not touch the body
+  it("does not prepend doctype for non-text/html content types", async () => {
+    const router = routerWithBody(
+      "<rss><channel><title>feed</title></channel></rss>",
+      "application/xml; charset=utf-8",
+    );
+    const res = await router(new Request("http://test.local/"));
+    const body = await res.text();
+    expect(body.startsWith("<!doctype html>")).toBe(false);
+    expect(body.startsWith("<rss>")).toBe(true);
+  });
+});
+
 describe("createPageRouter — determinism", () => {
   beforeEach(() => {
     setContentSnapshot(undefined);

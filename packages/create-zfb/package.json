@@ -31,6 +31,9 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@takazudo/zfb": "workspace:0.1.0-next.8"
   }
