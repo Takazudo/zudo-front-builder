@@ -621,7 +621,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     };
 
     let ctx = BuildContext {
-        dist_root: dist_root.clone(),
+        // Issue #534 — `DevAssetPipeline::apply` writes
+        // `RenderedPage.html` to `<ctx.dist_root>/<output_path>` on every
+        // watcher tick (see `crates/zfb-build/src/pipeline/dev.rs`). This
+        // is the second HTML writer in the dev pipeline (the first being
+        // the renderer itself, redirected above via `make_render_callback`).
+        // Both must point at `dev_html_root` for dev to fully stop touching
+        // the project's `outDir`; redirecting only the renderer leaves the
+        // pipeline's downstream write to clobber `dist/` again. Note that
+        // dev's `BuildContext` is only consumed by `DevAssetPipeline`, so
+        // this swap is local to dev — production builds use a separate
+        // `BuildContext` constructed in `commands::build`.
+        dist_root: dev_html_root.clone(),
         render_pages,
         run_css,
         run_islands,
