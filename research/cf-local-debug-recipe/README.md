@@ -1,0 +1,3 @@
+# cf-local-debug-recipe
+
+**Exploratory — not shipping code.** The scripts and notes in this directory are a throwaway prototype produced during Wave 1 of issue #538 (epic #537). They represent empirical findings from running `zfb build` + `wrangler pages dev dist/` against the `zfb-example-webshop` sibling project on 2026-05-27. The goal was to verify that a local Cloudflare Workers edit-refresh loop is achievable with userland Node.js tooling alone (no changes to zfb itself), confirm D1 binding persistence across hot rebuilds, and measure latency. Wave 2 reads `findings.md` to decide whether to productise this recipe or request a `zfb build --watch` flag.
