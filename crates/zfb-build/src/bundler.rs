@@ -524,6 +524,11 @@ pub struct BundlerInput {
     /// are unreachable from the entry — esbuild's tree-shaker drops them
     /// and their transitive deps from the final bundle.
     ///
+    /// **The strings in the set MUST be Hono-form** (e.g. `/blog/:slug`,
+    /// `/manuals/:path{.+}`). `RouteEntry::entry_key` is also stored in
+    /// Hono-form (via `bracket_to_hono`), so the filter matches by exact
+    /// string equality for every route shape, including catch-alls (zfb#532).
+    ///
     /// Intended for "runtime-only" bundle passes consumed by deploy
     /// adapters whose dispatch path serves prerendered routes from a
     /// separate static-asset server (e.g. Cloudflare Pages' `ASSETS first,
@@ -696,10 +701,13 @@ pub struct RouteEntry {
     pub route: String,
     /// Source path of the page module, relative to `project_root`.
     pub source_path: PathBuf,
-    /// Key used in the bundle's `routes` object literal. Equal to
-    /// `route` — kept as a separate field so future schemes (e.g. a
-    /// derived symbol identifier) can change without breaking the
-    /// route-string contract.
+    /// Hono-form filter key used in the bundle's `routes` object literal
+    /// and matched against `BundlerInput::worker_only_routes`. Equal to
+    /// `bracket_to_hono(&route)` — bracket syntax (`/blog/[slug]`) is
+    /// normalised to Hono syntax (`/blog/:slug`) so the
+    /// `filter.contains(&r.entry_key)` check matches `worker_only_routes`
+    /// (which is also Hono-form). Kept as a separate field so the filter
+    /// contract can evolve independently of `route`.
     pub entry_key: String,
     /// When `true`, this route was produced from a `.html` source file.
     /// It is recorded in the manifest for plugin consumers but is NOT
@@ -1171,6 +1179,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let entry_content_imports_for_write: &[ContentImport];
     let entry_snapshot_for_write: Option<&str>;
     if let Some(filter) = input.worker_only_routes.as_ref() {
+        // `entry_key` is Hono-form (`/blog/:slug{.+}`); `worker_only_routes`
+        // is also Hono-form (populated from `route.template()`). The
+        // string-equality check therefore matches correctly for every route
+        // shape, including catch-alls.
         entry_routes_filtered_storage = routes
             .iter()
             .filter(|r| filter.contains(&r.entry_key))
@@ -1550,7 +1562,8 @@ fn materialise_shadow(
                 routes.push(RouteEntry {
                     route: route.clone(),
                     source_path: project_rel,
-                    entry_key: route,
+                    // Hono-form so `worker_only_routes` filter matches.
+                    entry_key: bracket_to_hono(&route),
                     static_html: true,
                 });
             }
@@ -1665,7 +1678,8 @@ fn materialise_shadow(
                 routes.push(RouteEntry {
                     route: route.clone(),
                     source_path: project_rel,
-                    entry_key: route,
+                    // Hono-form so `worker_only_routes` filter matches.
+                    entry_key: bracket_to_hono(&route),
                     static_html: false,
                 });
             }
