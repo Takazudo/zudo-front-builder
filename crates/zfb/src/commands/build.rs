@@ -1262,10 +1262,15 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // bundle pass (zfb#283). The set is computed from the same source as
     // `ssr_route_refs` above; keeping it as an owned `BTreeSet` lets the
     // borrow above end before the runtime bundle (built much later in the
-    // function) consumes the data. The set is keyed by the same
-    // `RouteUniverseEntry::route_key` that `BundlerInput::worker_only_routes`
-    // filters against (`RouteEntry::entry_key`); both are the route
-    // template string, so the filter matches by exact key.
+    // function) consumes the data.
+    //
+    // Contract: `worker_only_routes` is Hono-form (e.g. `/blog/:slug{.+}`),
+    // populated from `route_key` (which equals `d.template` for deferred
+    // routes — both are Hono-form). `BundlerInput::worker_only_routes`
+    // filters against `RouteEntry::entry_key`, which the bundler also stores
+    // in Hono-form (`bracket_to_hono(&route)`). The two sets therefore match
+    // by exact string equality for every route shape, including catch-alls
+    // (zfb#532).
     //
     // We must consult TWO sources, mirroring `ssr_route_refs`:
     //
@@ -4463,6 +4468,11 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // SSR catch-all with no paths() — issue #520 / #517 regression guard
+    //
+    // Note: this test covers the build-command population path (FakeRunner
+    // stubbing). The bundler-side filter correctness (entry_key Hono-form so
+    // worker_only_routes lookup matches) is exercised by the real-bundler test
+    // in `crates/zfb-build/tests/worker_only_routes_filter.rs` (zfb#532).
     // ---------------------------------------------------------------------------
 
     /// A `prerender = false` catch-all with NO `paths()` export must:
