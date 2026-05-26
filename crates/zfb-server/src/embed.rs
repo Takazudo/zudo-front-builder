@@ -273,6 +273,11 @@ impl Server {
             ssr_routes: self.ssr_routes,
             embed_handlers: self.embed_handlers,
             dist_root: self.dist_root.clone(),
+            // Embed callers do not have a separate dev HTML dir — the
+            // page-cache disk fallback reads from the same `dist_root`
+            // the build pipeline wrote into. The `html_root` /
+            // `dist_root` split only matters in `zfb dev` (issue #534).
+            html_root: self.dist_root.clone(),
             public_root: self.public_root.clone(),
             base_prefix,
             trailing_slash: self.trailing_slash,

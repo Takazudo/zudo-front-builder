@@ -128,7 +128,8 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
 
     let opts = ServeOpts {
         project_root: project.path().to_path_buf(),
-        dist_root,
+        dist_root: dist_root.clone(),
+        html_root: dist_root,
         public_root,
         addr,
         pages,

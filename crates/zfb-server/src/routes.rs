@@ -370,10 +370,20 @@ pub struct AppState {
     /// after plugin dev-middleware but before the SSR dispatcher, so a
     /// handler claiming the same path as a runtime-rendered page wins.
     pub embed_handlers: Option<EmbedHandlerSet>,
-    /// Build output directory, used as a disk fallback when a page is
-    /// not yet in the in-memory cache. `serve_page` reads
-    /// `<dist_root>/<path>/index.html` when the cache misses.
+    /// Build output directory. Used for `/assets/*` serving (mounted at
+    /// `<dist_root>/assets/`). The HTML page-cache disk fallback lives
+    /// on [`html_root`](Self::html_root) instead so dev's per-route
+    /// renders can target a separate directory from the production
+    /// `outDir` (issue #534).
     pub dist_root: std::path::PathBuf,
+    /// On-disk page root used as the page-cache fallback in
+    /// `serve_page`. `<html_root>/<path>/index.html` and
+    /// `<html_root>/<path>` are probed when the in-memory cache misses
+    /// (issue #534). For preview / embed callers this is the same as
+    /// [`dist_root`](Self::dist_root); for `zfb dev` this points at a
+    /// dev-only directory so dev no longer overwrites the production
+    /// build output `pnpm preview` later serves.
+    pub html_root: std::path::PathBuf,
     /// Project public-static directory. Used as a final on-disk fallback
     /// after the page cache and dist directory miss, so that user files
     /// in `public/` are reachable at the site root (e.g.
@@ -873,12 +883,16 @@ async fn serve_page(
         }
     }
 
-    // In-memory cache miss: fall back to reading from the dist directory
-    // on disk. The dev pipeline writes rendered HTML there after each
-    // watcher tick; serving from disk means the browser always sees the
-    // latest output even when the in-memory cache hasn't been populated
-    // (e.g. on cold start before the first watcher tick fires).
-    if let Some(bytes) = read_from_dist(&state.dist_root, trimmed) {
+    // In-memory cache miss: fall back to reading rendered HTML from
+    // disk. Today the dev pipeline doesn't actively populate
+    // `state.pages` for HTML — the dev server serves nearly every page
+    // via this disk path, with the renderer writing to `html_root` on
+    // every watcher tick. Issue #534: `html_root` is a separate
+    // directory from `dist_root` so dev's writes never overwrite the
+    // production output. For preview / embed callers `html_root` and
+    // `dist_root` point at the same directory, so behaviour is
+    // unchanged there.
+    if let Some(bytes) = read_from_dist(&state.html_root, trimmed) {
         // Mirror the cached-path content-type derivation. Hardcoding
         // `text/html` here used to splice a livereload `<script>` tag
         // into XML feeds (`/sitemap.xml`, `/atom.xml`) and serve them
@@ -1629,6 +1643,7 @@ mod tests {
 
     fn test_state() -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         AppState {
             mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
@@ -1637,7 +1652,9 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            // Tests don't exercise the dev/build split — alias to dist.
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
@@ -1648,6 +1665,7 @@ mod tests {
 
     fn test_state_with_base(prefix: &str) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         AppState {
             mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
@@ -1656,7 +1674,8 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: Some(prefix.to_string()),
             trailing_slash: false,
@@ -1678,6 +1697,90 @@ mod tests {
     async fn body_string(resp: Response) -> String {
         let bytes = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// Issue #534 regression — on a cache miss the page handler must read
+    /// HTML from `state.html_root`, NOT from `state.dist_root`. In `zfb
+    /// dev` the two point at different directories: dev writes per-route
+    /// HTML to `<project>/.zfb-build/dev-pages/`, the production output
+    /// stays in `<project>/dist/`. Wiring this fallback to `dist_root`
+    /// (the historical bug) would mean dev served the most recent
+    /// `pnpm build` output instead of the dev pipeline's edits.
+    ///
+    /// Falsifiability: flipping the read in `serve_page` from
+    /// `&state.html_root` back to `&state.dist_root` causes the
+    /// `assert!(body.contains("dev-page"))` to fail — the request would
+    /// either 404 (no file at the dist_root path) or serve the
+    /// `prod-build` body from the other tempdir.
+    #[tokio::test]
+    async fn disk_fallback_reads_html_root_not_dist_root() {
+        use tempfile::TempDir;
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+
+        // Two separate on-disk roots. `dist_root` mimics what an
+        // earlier `pnpm build` left behind; `html_root` is dev's
+        // own per-route output dir.
+        let dist_dir = TempDir::new().expect("dist tempdir");
+        let html_dir = TempDir::new().expect("html tempdir");
+
+        // The disk fallback probes `<root>/<trimmed>/index.html`
+        // first, so create the file under that shape on the dev side.
+        let html_page_dir = html_dir.path().join("blog");
+        std::fs::create_dir_all(&html_page_dir).expect("mk html subdir");
+        std::fs::write(
+            html_page_dir.join("index.html"),
+            "<html><body>dev-page-from-html_root</body></html>",
+        )
+        .expect("write dev html");
+
+        // Put a different page at the dist_root path so a wrong wiring
+        // would serve THIS body and fail the assertion below.
+        let dist_page_dir = dist_dir.path().join("blog");
+        std::fs::create_dir_all(&dist_page_dir).expect("mk dist subdir");
+        std::fs::write(
+            dist_page_dir.join("index.html"),
+            "<html><body>prod-build-leftover-from-dist_root</body></html>",
+        )
+        .expect("write dist html");
+
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_dir.path().to_path_buf(),
+            html_root: html_dir.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        // Cache miss — the fallback must read from html_root.
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("dev-page-from-html_root"),
+            "disk fallback must read from html_root; got body:\n{body}",
+        );
+        assert!(
+            !body.contains("prod-build-leftover-from-dist_root"),
+            "disk fallback must NOT read from dist_root; got body:\n{body}",
+        );
     }
 
     #[tokio::test]
@@ -2053,6 +2156,7 @@ mod tests {
     #[tokio::test]
     async fn css_link_injected_into_head_when_handle_seeded() {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         let state = AppState {
             mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
@@ -2061,7 +2165,8 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
@@ -2119,6 +2224,7 @@ mod tests {
     #[tokio::test]
     async fn css_and_islands_both_injected_when_both_handles_seeded() {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         let state = AppState {
             mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
@@ -2127,7 +2233,8 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
@@ -2163,6 +2270,7 @@ mod tests {
     #[tokio::test]
     async fn css_link_not_injected_in_preview_mode() {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         let state = AppState {
             mode: crate::ServerMode::Preview,
             pages: PageCache::new(),
@@ -2171,7 +2279,8 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,
@@ -2262,6 +2371,7 @@ mod tests {
             dispatcher: dispatcher.clone()
                 as Arc<dyn crate::plugin_middleware::DevMiddlewareDispatcher>,
         };
+        let dist = std::env::temp_dir().join("zfb-test-dist");
         AppState {
             mode: crate::ServerMode::Dev,
             pages: PageCache::new(),
@@ -2270,7 +2380,8 @@ mod tests {
             injected_routes: None,
             ssr_routes: None,
             embed_handlers: None,
-            dist_root: std::env::temp_dir().join("zfb-test-dist"),
+            dist_root: dist.clone(),
+            html_root: dist,
             public_root: std::env::temp_dir().join("zfb-test-public"),
             base_prefix: None,
             trailing_slash: false,

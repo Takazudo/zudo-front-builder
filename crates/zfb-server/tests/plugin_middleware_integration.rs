@@ -106,7 +106,8 @@ async fn boot_with_dispatcher(
     };
     let opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
-        dist_root,
+        dist_root: dist_root.clone(),
+        html_root: dist_root,
         public_root,
         addr,
         pages: pages.clone(),
