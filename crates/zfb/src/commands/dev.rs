@@ -93,8 +93,10 @@ use crate::config;
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    embedded_node_modules,
+    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes, WorkerDispatch,
 };
+#[cfg(feature = "embed_v8")]
+use zfb_render::paths::PathsCache;
 
 /// Default source directories the watcher follows.
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
@@ -811,12 +813,20 @@ struct DevRenderSession {
 struct DevRenderInner {
     /// Mapped from the page module's project-relative source path
     /// (which is what the dependency graph keys on) to the renderer
-    /// entry. Built once at boot from the router scan.
+    /// entries. Built once at boot from the router scan.
     ///
     /// Issue #367: only pages with `prerender != false` are kept
     /// here. Pages that opted out of SSG go into [`ssr_routes`]
     /// instead and reach the V8 host at request time.
-    routes_by_source: HashMap<PathBuf, RouteUniverseEntry>,
+    ///
+    /// Issue #502/#507: the value is a `Vec` because one dynamic SSG
+    /// source (`pages/blog/[slug].tsx`) expands via `paths()` into N
+    /// concrete URLs that all share the same source `PageId`. A static
+    /// route resolves to a single-element vec; a dynamic SSG route
+    /// resolves to one entry per `paths()` URL. `render_one` emits one
+    /// `RenderedPage` per entry on each tick so every fanned-out URL
+    /// reaches `dist/` (and thus the dev server's disk fallback).
+    routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
     /// URL patterns for `prerender = false` pages (issue #367 /
     /// Gap 1). Empty when every page in the project SSGs. The dev
     /// server reads this list (via [`DevRenderSession::ssr_patterns`])
@@ -839,14 +849,21 @@ struct DevRenderInner {
 }
 
 impl DevRenderSession {
-    /// Drive a single page id against the renderer. Returns a
-    /// [`RenderedPage`] populated with the bytes the renderer just
-    /// wrote, so the dev pipeline's atomic-write + cache layer can
-    /// fold the result through the existing reload broadcast.
-    fn render_one(&self, page: &PageId, dist_dir: &Path) -> Result<Option<RenderedPage>> {
-        let entry = match self.inner.routes_by_source.get(page.path()) {
-            Some(e) => e.clone(),
-            None => return Ok(None),
+    /// Drive a single source page id against the renderer. Returns one
+    /// [`RenderedPage`] per [`RouteUniverseEntry`] mapped to this source
+    /// path, each populated with the bytes the renderer just wrote, so
+    /// the dev pipeline's atomic-write + cache layer can fold the result
+    /// through the existing reload broadcast.
+    ///
+    /// A static route maps to a single entry; a dynamic SSG route
+    /// (`pages/blog/[slug].tsx`) maps to N entries — one per concrete URL
+    /// its `paths()` resolved to (issue #502/#507). Returns an empty Vec
+    /// when the source path is unknown to the renderer (dynamic route
+    /// deferred to SSR, or a page never seen by the router scan).
+    fn render_one(&self, page: &PageId, dist_dir: &Path) -> Result<Vec<RenderedPage>> {
+        let entries = match self.inner.routes_by_source.get(page.path()) {
+            Some(es) => es.clone(),
+            None => return Ok(Vec::new()),
         };
         let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
             tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
@@ -855,21 +872,37 @@ impl DevRenderSession {
         let state = lock
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("renderer not started"))?;
-        let written = render_one(state, &entry, dist_dir, &self.inner.project_root).map_err(anyhow::Error::from)?;
-        let html = std::fs::read_to_string(&written)
-            .with_context(|| format!("failed to read rendered page {}", written.display()))?;
-        // RouteUniverseEntry::output_path is a PathBuf validated by the
-        // router/render_pipeline (relative, no escapes). Wrap it in
-        // RelDistPath for the pipeline's type contract. If the path is
-        // somehow invalid, surface an error rather than silently skipping.
-        let output_path = RelDistPath::new(entry.output_path)
-            .with_context(|| format!("renderer returned invalid output_path for {:?}", page))?;
-        Ok(Some(RenderedPage {
-            page: page.clone(),
-            output_path,
-            html,
-            content_type: None,
-        }))
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let written = render_one(state, &entry, dist_dir, &self.inner.project_root)
+                .map_err(anyhow::Error::from)?;
+            let html = std::fs::read_to_string(&written)
+                .with_context(|| format!("failed to read rendered page {}", written.display()))?;
+            // RouteUniverseEntry::output_path is a PathBuf validated by the
+            // router/render_pipeline (relative, no escapes). Wrap it in
+            // RelDistPath for the pipeline's type contract. If the path is
+            // somehow invalid, surface an error rather than silently skipping.
+            let output_path = RelDistPath::new(entry.output_path.clone())
+                .with_context(|| format!("renderer returned invalid output_path for {:?}", page))?;
+            // Guardrail 1 (#507): `DevAssetPipeline.last_output_path` keys on
+            // the `RenderedPage.page` id and prunes the previous artifact
+            // when a page's output path changes. N URLs that share one source
+            // `PageId` would collide on that key — the pipeline would prune
+            // all but the last fanned-out URL each tick, so only one dynamic
+            // page would survive on disk. Give each resolved URL a distinct,
+            // deterministic synthetic `PageId` derived from its output path so
+            // every URL gets its own pipeline bookkeeping slot (stable across
+            // ticks → byte-dedup still works). The synthetic id is internal to
+            // the pipeline's per-tick bookkeeping; the dependency graph keys
+            // on real source paths only (see `page_ids`).
+            out.push(RenderedPage {
+                page: PageId::new(entry.output_path.clone()),
+                output_path,
+                html,
+                content_type: None,
+            });
+        }
+        Ok(out)
     }
 
     /// Clone the shared handle to the embedded V8 host so the SSR
@@ -974,9 +1007,15 @@ fn boot_dev_renderer(
     let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
 
     let plan = build_route_universe(router.routes());
-    if plan.static_routes.is_empty() {
+    // Guardrail 2 (#507): an all-dynamic SSG project (only `paths()`-based
+    // routes, no static `/`) has an empty `static_routes` but a non-empty
+    // `deferred_dynamic`. Bailing on `static_routes.is_empty()` alone would
+    // skip renderer boot before the dynamic-route expansion below ever runs,
+    // so such a project would never serve any page. Only skip the boot when
+    // the project has neither static nor dynamic routes at all.
+    if plan.static_routes.is_empty() && plan.deferred_dynamic.is_empty() {
         return Err(anyhow::anyhow!(
-            "no static routes to render — dev mode skips renderer boot"
+            "no routes to render — dev mode skips renderer boot"
         ));
     }
 
@@ -1194,6 +1233,14 @@ fn boot_dev_renderer(
     .map_err(anyhow::Error::from)
     .context("renderer start failed")?;
 
+    // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
+    // front so the SSG `paths()` runtime-evaluation phase below can borrow
+    // the live embedded V8 host out of the same handle the SSG render
+    // callback and the SSR adapter use later (#502/#507). One host, shared
+    // across boot-time paths() eval, build-time SSG render, and request-time
+    // SSR.
+    let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
+
     // Issue #367 — extract `export const prerender = …` per page so
     // we can keep SSG-eligible pages in `routes_by_source` (the SSG
     // render callback's lookup table) while routing `prerender =
@@ -1205,10 +1252,12 @@ fn boot_dev_renderer(
         crate::output::warn(msg.to_string())
     });
 
-    // Build the source-path → entry map once. Router source paths are
+    // Build the source-path → entries map once. Router source paths are
     // project-relative; PageId keys on the same value (the orchestrator
-    // tracks pages by their source path).
-    let mut routes_by_source: HashMap<PathBuf, RouteUniverseEntry> = HashMap::new();
+    // tracks pages by their source path). Each value is a Vec so a dynamic
+    // SSG source can hold its N `paths()`-expanded entries (#502/#507);
+    // static routes contribute a single-element vec.
+    let mut routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
     let mut ssr_routes: Vec<RouteUniverseEntry> = Vec::new();
     for route in router.routes() {
         if let Some(entry) = plan
@@ -1224,7 +1273,10 @@ fn boot_dev_renderer(
                 .copied()
                 .unwrap_or(true);
             if is_prerender {
-                routes_by_source.insert(route.source_path.clone(), entry.clone());
+                routes_by_source
+                    .entry(route.source_path.clone())
+                    .or_default()
+                    .push(entry.clone());
             } else {
                 ssr_routes.push(entry.clone());
             }
@@ -1256,11 +1308,121 @@ fn boot_dev_renderer(
         });
     }
 
+    // Issue #502/#507 — expand `prerender = true` (SSG) dynamic routes so
+    // `zfb dev` serves them. `zfb build` does this two-phase expansion;
+    // `boot_dev_renderer` never did, so on a fresh scaffold (no prior
+    // `dist/` to fall back to) every `[slug]`/`[...tag]` SSG URL 404'd. This
+    // mirrors the build path: phase 1 statically extracts literal `paths()`
+    // arrays; phase 2 evaluates the remainder at runtime through the same
+    // embedded V8 host the SSG renderer already owns (basic-blog's `paths()`
+    // resolves slugs from `getCollection()`, which only the runtime path
+    // can answer).
+    //
+    // SSR (`prerender = false`) dynamic routes are deliberately excluded
+    // here — they were already routed into `ssr_routes` above and must reach
+    // the V8 host at request time, NOT be SSG'd to disk (a disk artifact
+    // would shadow the SSR handler). We collect only the SSG-eligible
+    // deferred routes for expansion.
+    //
+    // Scope (#507): this expands `paths()` once, at dev-server boot. Live
+    // re-expansion when collection content is added/removed during a running
+    // dev session (watch-time `paths()` invalidation) is OUT of scope and is
+    // a documented follow-up — a content edit today requires a `zfb dev`
+    // restart to pick up new/removed dynamic URLs.
+    let ssg_deferred: Vec<crate::render_pipeline::PendingDynamicRoute> = plan
+        .deferred_dynamic
+        .iter()
+        .filter(|d| prerender_map.get(&d.template).copied().unwrap_or(true))
+        .cloned()
+        .collect();
+    if !ssg_deferred.is_empty() {
+        // Map each route template back to its source path so the resolved
+        // (concrete-URL) entries — whose `source_path` is `None` and whose
+        // `route_key` is the template — can be filed under the right source
+        // `PageId` in `routes_by_source`. The dependency graph and the
+        // watcher key on source paths, so the fan-out must land under the
+        // dynamic source's path, not under each concrete URL.
+        let template_to_source: HashMap<String, PathBuf> = ssg_deferred
+            .iter()
+            .map(|d| (d.template.clone(), d.source_path.clone()))
+            .collect();
+
+        let mut paths_cache = PathsCache::new();
+
+        // Phase 1 — literal `paths()` arrays (no runtime needed).
+        let static_expansion =
+            expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache);
+
+        // Phase 2 — evaluate the routes phase 1 couldn't resolve statically
+        // through the running embedded V8 host. We borrow the live host out
+        // of the dev session's renderer mutex (the same `Arc<Mutex<Option<
+        // RendererState>>>` the SSG render callback and the SSR adapter
+        // share) and dispatch via `WorkerDispatch::EmbeddedV8`, exactly like
+        // `commands/build.rs::eval_deferred_paths`.
+        let runtime_expansion = {
+            let mut lock = renderer.lock().unwrap_or_else(|p| {
+                tracing::warn!(site = "boot_dev_renderer.paths", "mutex poisoned, recovered");
+                p.into_inner()
+            });
+            let state = lock
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("renderer not started for paths() evaluation"))?;
+            let host = state.embedded_v8_host_mut().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "embedded V8 host unavailable after start; \
+                     Backend::EmbeddedV8 state had no host"
+                )
+            })?;
+            let mut dispatch = WorkerDispatch::EmbeddedV8 { host };
+            eval_deferred_paths_via_worker(
+                &static_expansion.deferred,
+                &mut dispatch,
+                &mut paths_cache,
+                None,
+            )
+        };
+
+        // Surface routes that still couldn't be expanded (after both phases)
+        // as warnings so the user knows why a `[slug]` route didn't appear —
+        // mirrors the build-side diagnostics. These are silently dropped from
+        // `dist/` otherwise.
+        for d in &runtime_expansion.deferred {
+            crate::output::warn(format!(
+                "dynamic SSG route {} not expanded in dev: {}",
+                d.template, d.reason
+            ));
+        }
+
+        // File every resolved concrete-URL entry under its dynamic source's
+        // `PageId`. A single `[slug].tsx` source thus accumulates N entries,
+        // which `render_one` fans out into N `RenderedPage`s per tick.
+        for entry in static_expansion
+            .resolved
+            .into_iter()
+            .chain(runtime_expansion.resolved.into_iter())
+        {
+            if let Some(source) = template_to_source.get(&entry.route_key) {
+                routes_by_source
+                    .entry(source.clone())
+                    .or_default()
+                    .push(entry);
+            } else {
+                // Should not happen: every resolved entry's route_key came
+                // from one of the ssg_deferred routes. Warn rather than drop
+                // silently if the invariant is ever violated.
+                crate::output::warn(format!(
+                    "resolved dynamic URL {} has no matching source route ({}); skipping",
+                    entry.url_path, entry.route_key
+                ));
+            }
+        }
+    }
+
     Ok(DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes_by_source,
             ssr_routes,
-            renderer: Arc::new(Mutex::new(Some(state))),
+            renderer,
             project_root: project_root.to_path_buf(),
         }),
     })
@@ -1273,15 +1435,15 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         let mut out = Vec::with_capacity(pages.len());
         for page in pages {
             match session.render_one(page, &dist_dir) {
-                Ok(Some(rendered)) => out.push(rendered),
-                Ok(None) => {
-                    // Page not in the renderer's route map (e.g.
-                    // dynamic route deferred to the paths() follow-up,
-                    // or a page that was never in the router scan).
-                    // Intentionally a no-op so the watcher tick still
-                    // succeeds — the orchestrator will report the page
-                    // as not-rendered, the user sees the warning at
-                    // boot, and other pages keep rebuilding.
+                Ok(rendered) => {
+                    // A static route yields one page; a dynamic SSG route
+                    // yields one page per `paths()`-resolved URL (#502/#507).
+                    // An empty Vec means the source path is unknown to the
+                    // renderer (dynamic route deferred to SSR, or a page never
+                    // in the router scan) — intentionally a no-op so the
+                    // watcher tick still succeeds and other pages keep
+                    // rebuilding.
+                    out.extend(rendered);
                 }
                 Err(err) => {
                     // One page's render failure must not kill the
@@ -1389,14 +1551,18 @@ mod tests {
     }
 
     /// The render callback must:
-    /// 1. Be tolerant of unknown page ids (dynamic routes, etc.) —
-    ///    return an empty list, never error.
-    /// 2. Hand back a `RenderedPage` for every page id mapped to a
-    ///    [`RouteUniverseEntry`].
+    /// 1. Be tolerant of genuinely-unknown page ids (a source path that
+    ///    maps to no `RouteUniverseEntry` at all) — return an empty list,
+    ///    never error.
+    /// 2. NOT silently drop a source path that DOES map to entries.
     ///
-    /// We exercise both via a [`DevRenderSession`] that uses a `None`
-    /// renderer; an unknown page id therefore always lands on the
-    /// `Ok(None)` branch and never reaches the lock.
+    /// Contract change (#502/#507): previously every dynamic route was
+    /// dropped here because `routes_by_source` only held static routes.
+    /// Now a `[slug]` SSG source resolves (via boot-time `paths()`
+    /// expansion) to N entries under its source path, so the callback
+    /// must fan those out — only a source path absent from the map is
+    /// silently dropped. We use a `None` renderer so the absent-key path
+    /// returns `Ok(empty)` without ever reaching the lock.
     #[test]
     fn render_callback_drops_unknown_pages_silently() {
         let session = DevRenderSession {
@@ -1408,9 +1574,57 @@ mod tests {
             }),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
+        // A source path not present in routes_by_source is still dropped.
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
         let out = cb(&pages).unwrap();
         assert!(out.is_empty());
+    }
+
+    /// A dynamic SSG source whose `paths()` expanded into N concrete URLs
+    /// is recorded as N entries under its single source `PageId`. Each
+    /// resolved URL must get a distinct synthetic `RenderedPage.page` id
+    /// (derived from its output path) so the `DevAssetPipeline` does not
+    /// prune all-but-the-last on a per-`PageId` key (guardrail 1, #507).
+    ///
+    /// We verify the data-structure wiring directly: the source path
+    /// reaches `routes_by_source` with multiple entries (not `Ok(None)`),
+    /// and the synthetic ids differ. (A `None` renderer can't actually
+    /// render, so we assert the fan-out shape on the route table itself.)
+    #[test]
+    fn dynamic_ssg_source_fans_out_to_multiple_entries_with_distinct_ids() {
+        let mut routes: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
+        let source = PathBuf::from("pages/blog/[slug].tsx");
+        routes.insert(
+            source.clone(),
+            vec![
+                RouteUniverseEntry {
+                    url_path: "/blog/hello".into(),
+                    output_path: PathBuf::from("blog/hello/index.html"),
+                    route_key: "/blog/:slug".into(),
+                    static_html: false,
+                    source_path: None,
+                },
+                RouteUniverseEntry {
+                    url_path: "/blog/world".into(),
+                    output_path: PathBuf::from("blog/world/index.html"),
+                    route_key: "/blog/:slug".into(),
+                    static_html: false,
+                    source_path: None,
+                },
+            ],
+        );
+        // The fan-out URLs reached the route table (not Ok(None)).
+        let entries = routes.get(&source).expect("source must be mapped");
+        assert_eq!(entries.len(), 2, "two paths() URLs under one source");
+        // Synthetic RenderedPage ids are derived from each entry's
+        // output_path, so they are distinct per URL — the property the
+        // pipeline relies on to keep all N artifacts (guardrail 1).
+        let id_a = PageId::new(entries[0].output_path.clone());
+        let id_b = PageId::new(entries[1].output_path.clone());
+        assert_ne!(
+            id_a, id_b,
+            "each resolved URL must get a distinct pipeline page id"
+        );
     }
 
     /// On a known page id, but a `None` renderer (boot half-failed),
@@ -1418,16 +1632,16 @@ mod tests {
     /// watcher must keep going.
     #[test]
     fn render_callback_keeps_watcher_alive_on_render_error() {
-        let mut routes = HashMap::new();
+        let mut routes: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
         routes.insert(
             PathBuf::from("pages/index.tsx"),
-            RouteUniverseEntry {
+            vec![RouteUniverseEntry {
                 url_path: "/".into(),
                 output_path: PathBuf::from("index.html"),
                 route_key: "/".into(),
                 static_html: false,
                 source_path: None,
-            },
+            }],
         );
         let session = DevRenderSession {
             inner: Arc::new(DevRenderInner {
