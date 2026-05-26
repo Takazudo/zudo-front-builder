@@ -310,3 +310,69 @@ async fn dev_mode_double_request_is_idempotent_on_head_injection() {
         "second request must still yield exactly one islands script tag, body: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #530 — dev SSR doctype prepend
+// ---------------------------------------------------------------------------
+
+/// Regression test for issue #530: `page_response_bytes` must prepend
+/// `<!doctype html>` on dev-mode `text/html` responses that lack a doctype.
+///
+/// All existing test fixtures seed pages with `<!doctype html>` already
+/// present, which masks the bug.  This test uses a doctype-less body
+/// (as a V8 renderer might produce for a `prerender = false` route) and
+/// asserts the response body begins with `<!doctype html>`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_mode_prepends_doctype_when_body_lacks_one() {
+    let h = Harness::start(zfb_server::ServerMode::Dev, None).await;
+
+    // Insert a doctype-less HTML page — exactly what a V8 renderer
+    // running a `prerender = false` route might hand back.
+    h.pages
+        .insert(
+            "/",
+            "<html><head><title>no-doctype</title></head><body><p>content</p></body></html>",
+        )
+        .await;
+
+    let resp = reqwest::get(h.url("/")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.starts_with("<!doctype html>"),
+        "dev SSR response must begin with <!doctype html> when the cached body lacks one; got: {body}"
+    );
+    // The original content must survive the prepend unchanged.
+    assert!(
+        body.contains("<title>no-doctype</title>"),
+        "original page content must round-trip, body: {body}"
+    );
+    assert!(
+        body.contains("<p>content</p>"),
+        "body content must round-trip, body: {body}"
+    );
+}
+
+/// Regression guard for issue #530: when the cached page body already
+/// starts with `<!doctype html>` the response must not double-prepend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_mode_does_not_double_prepend_doctype_when_already_present() {
+    let h = Harness::start(zfb_server::ServerMode::Dev, None).await;
+
+    h.pages
+        .insert(
+            "/",
+            "<!doctype html><html><head><title>has-doctype</title></head><body></body></html>",
+        )
+        .await;
+
+    let resp = reqwest::get(h.url("/")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    // Exactly one `<!doctype` in the response.
+    let count = body.to_lowercase().matches("<!doctype").count();
+    assert_eq!(
+        count, 1,
+        "must not double-prepend <!doctype html>; found {count} occurrences in: {body}"
+    );
+}

@@ -1577,6 +1577,28 @@ pub(crate) fn page_response_bytes(
         body
     };
 
+    // Issue #530: HTML5 doctype prepend for dev/preview SSR responses.
+    // Mirrors the same guard in `crates/zfb-build/src/renderer.rs::render_one_inner`.
+    // Gated on `text/html` (via the same split on `;` the renderer uses) so
+    // non-HTML routes (XML, JSON, plain-text) are never touched. The helper
+    // `needs_html5_doctype` further skips bodies that already declare a
+    // doctype (case-insensitive, BOM-aware), preventing double-prepend.
+    let is_html_content_type = content_type
+        .split(';')
+        .next()
+        .map(|m| m.trim().eq_ignore_ascii_case("text/html"))
+        .unwrap_or(false);
+    let body_out: Vec<u8> = if is_html_content_type {
+        match std::str::from_utf8(&body_out) {
+            Ok(text) if zfb_build::head_inject::needs_html5_doctype(text) => {
+                format!("{}{text}", zfb_build::head_inject::HTML5_DOCTYPE_PREFIX).into_bytes()
+            }
+            _ => body_out,
+        }
+    } else {
+        body_out
+    };
+
     // The Content-Type may come from a user frontmatter override and
     // therefore can't be statically validated; fall back to a safe
     // default if the value contains characters HTTP rejects.

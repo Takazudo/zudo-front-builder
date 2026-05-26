@@ -139,6 +139,35 @@ export type PageRouter = (request: Request) => Promise<Response>;
 const DEFAULT_CONTENT_TYPE = "text/html; charset=utf-8";
 
 /**
+ * Issue #530: prepend `<!doctype html>\n` to SSR-rendered HTML bodies that
+ * lack a doctype declaration, mirroring the guard in
+ * `crates/zfb-build/src/renderer.rs::render_one_inner` (issue #524).
+ *
+ * Gate conditions (all must hold to prepend):
+ *   1. `contentType` media-type (before `;`) is `text/html` (case-insensitive).
+ *   2. The body, after stripping an optional UTF-8 BOM (U+FEFF) and leading
+ *      ASCII whitespace, starts with `<html` (case-insensitive) — i.e. it is
+ *      an `<html>`-rooted document, not XML / JSON / a fragment.
+ *   3. The body (same stripped prefix) does NOT already begin with `<!doctype`
+ *      (case-insensitive).
+ *
+ * Deliberately NOT shared with the Rust side — duplication of a 5-line guard
+ * is the right call rather than introducing a new cross-language boundary.
+ */
+function ensureHtml5Doctype(body: string, contentType: string): string {
+  const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
+  if (mediaType !== "text/html") return body;
+  // Strip optional BOM and leading whitespace to inspect the root element.
+  const stripped = body.replace(/^﻿/, "").trimStart();
+  if (!stripped.toLowerCase().startsWith("<!doctype")) {
+    if (stripped.toLowerCase().startsWith("<html")) {
+      return `<!doctype html>\n${body}`;
+    }
+  }
+  return body;
+}
+
+/**
  * Build a page router for the SSG-first architecture (ADR-005).
  *
  * Side effects:
@@ -395,7 +424,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       // VNodes.
       const html = typeof result === "string" ? result : opts.framework.renderToString(result);
       const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
-      return c.body(html, 200, { "Content-Type": contentType });
+      return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
     });
   }
 
