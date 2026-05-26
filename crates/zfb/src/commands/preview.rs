@@ -42,7 +42,7 @@
 //! default because the preview command does not consult config for it
 //! today.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -54,7 +54,7 @@ use axum::Router;
 use zfb_build::AdapterChoice;
 
 use crate::cli::PreviewArgs;
-use crate::commands::resolve::{resolve_port, resolve_under_root};
+use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 
@@ -66,6 +66,12 @@ pub use zfb_toolchain_pins::{EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION
 /// project config supplies one. 4321 keeps `dev` (3000) and `preview`
 /// running side-by-side, and matches what npm-side scaffolds expect.
 const DEFAULT_PREVIEW_PORT: u16 = 4321;
+
+/// Built-in default host for `zfb preview` when neither the CLI nor the
+/// project config supplies one. Mirrors `dev`'s `localhost` default; pass
+/// `--host 0.0.0.0` (or set `host` in `zfb.config.json`) to expose the built
+/// site to other devices on the LAN.
+const DEFAULT_PREVIEW_HOST: &str = "localhost";
 
 /// Adapter package name handled in adapter mode. Only one adapter
 /// exists today; if a project configures something else, we error out
@@ -95,6 +101,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     //    the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
     let port = resolve_port(args.port, cfg.port, DEFAULT_PREVIEW_PORT);
+    let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_PREVIEW_HOST);
 
     // Verify the output directory exists *before* binding the port so
     // missing-build errors don't leave a half-started server behind.
@@ -112,9 +119,9 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .context("invalid adapter in zfb.config.json")?;
 
     match adapter {
-        AdapterChoice::None => run_static(&outdir, port).await,
+        AdapterChoice::None => run_static(&outdir, &host, port).await,
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
-            run_via_wrangler(&project_root, &outdir, port).await
+            run_via_wrangler(&project_root, &outdir, &host, port).await
         }
         AdapterChoice::Package(pkg) => anyhow::bail!(
             "preview: adapter {pkg:?} is not supported (only {CLOUDFLARE_ADAPTER:?} today)"
@@ -127,15 +134,18 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Bind the static preview server and run it until Ctrl+C.
-async fn run_static(dist_root: &Path, port: u16) -> Result<()> {
+async fn run_static(dist_root: &Path, host: &str, port: u16) -> Result<()> {
     let app = build_static_router(dist_root.to_path_buf());
 
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let addr: SocketAddr = resolve_addr(host, port)?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind preview server to {addr}"))?;
 
-    output::ready(&format!("http://localhost:{port}"));
+    // Same Local/Network banner as `zfb dev` (#487): when bound to an
+    // unspecified host (`0.0.0.0`/`::`) this enumerates LAN-reachable URLs
+    // instead of printing a bare, unusable `http://0.0.0.0:PORT`.
+    output::ready_with_interfaces("http", host, port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -355,14 +365,14 @@ fn content_type_for_path(path: &Path) -> String {
 /// an actionable error pointing at the version-pin procedure. The gate
 /// can be bypassed by setting the
 /// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env var to `1`.
-async fn run_via_wrangler(project_root: &Path, outdir: &Path, port: u16) -> Result<()> {
+async fn run_via_wrangler(project_root: &Path, outdir: &Path, host: &str, port: u16) -> Result<()> {
     ensure_wrangler_version(project_root).await?;
 
     output::info(format!(
-        "preview: adapter mode — handing off to wrangler pages dev (port {port})"
+        "preview: adapter mode — handing off to wrangler pages dev (host {host}, port {port})"
     ));
 
-    let mut cmd = build_wrangler_command(project_root, outdir, port);
+    let mut cmd = build_wrangler_command(project_root, outdir, host, port);
     let mut child = cmd
         .spawn()
         .context("failed to spawn wrangler — make sure it is installed in this project (pnpm add -D wrangler)")?;
@@ -521,6 +531,7 @@ where
 fn build_wrangler_command(
     project_root: &Path,
     outdir: &Path,
+    host: &str,
     port: u16,
 ) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("pnpm");
@@ -530,8 +541,15 @@ fn build_wrangler_command(
         .arg("dev")
         .arg(outdir)
         .arg("--port")
-        .arg(port.to_string())
-        .current_dir(project_root);
+        .arg(port.to_string());
+    // Only thread `--ip` when the user asked for a non-default host. wrangler
+    // binds loopback by default; passing `--ip 0.0.0.0` exposes it to the LAN,
+    // matching static-mode `--host`. Omitting it for the default keeps the
+    // wrangler invocation unchanged for the common case.
+    if host != DEFAULT_PREVIEW_HOST {
+        cmd.arg("--ip").arg(host);
+    }
+    cmd.current_dir(project_root);
     cmd
 }
 
@@ -965,7 +983,8 @@ mod tests {
     fn wrangler_command_uses_pnpm_exec_with_outdir_and_port() {
         let project_root = Path::new("/tmp/proj");
         let outdir = Path::new("/tmp/proj/dist");
-        let cmd = build_wrangler_command(project_root, outdir, 8788);
+        // Default host: no `--ip` is threaded, so the invocation is unchanged.
+        let cmd = build_wrangler_command(project_root, outdir, DEFAULT_PREVIEW_HOST, 8788);
 
         let std_cmd = cmd.as_std();
         assert_eq!(std_cmd.get_program(), "pnpm");
@@ -979,6 +998,10 @@ mod tests {
         assert_eq!(args[4], outdir.as_os_str());
         assert_eq!(args[5], "--port");
         assert_eq!(args[6], "8788");
+        assert!(
+            !args.iter().any(|a| *a == "--ip"),
+            "default host must not thread --ip"
+        );
 
         assert_eq!(std_cmd.get_current_dir(), Some(project_root));
     }
@@ -987,7 +1010,8 @@ mod tests {
     fn wrangler_command_threads_user_supplied_port() {
         // `--port` must reflect whatever resolve_port produced — so
         // overriding from the CLI propagates all the way through.
-        let cmd = build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), 9000);
+        let cmd =
+            build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), DEFAULT_PREVIEW_HOST, 9000);
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -998,6 +1022,23 @@ mod tests {
             .position(|a| a == "--port")
             .expect("--port must be present");
         assert_eq!(args[port_idx + 1], "9000");
+    }
+
+    #[test]
+    fn wrangler_command_threads_ip_for_non_default_host() {
+        // A non-default host (e.g. 0.0.0.0) must thread `--ip <host>` so the
+        // adapter preview is reachable on the LAN, matching static-mode --host.
+        let cmd = build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), "0.0.0.0", 9000);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let ip_idx = args
+            .iter()
+            .position(|a| a == "--ip")
+            .expect("--ip must be present for a non-default host");
+        assert_eq!(args[ip_idx + 1], "0.0.0.0");
     }
 
     // ---- wrangler version-gate parser --------------------------------

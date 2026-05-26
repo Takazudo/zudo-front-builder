@@ -67,7 +67,6 @@
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -89,7 +88,7 @@ use zfb_server::{
 };
 
 use crate::cli::DevArgs;
-use crate::commands::resolve::{resolve_port, resolve_under_root};
+use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve_under_root};
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
@@ -133,7 +132,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .with_context(|| format!("failed to create dist dir {}", dist_root.display()))?;
     }
 
-    let host = resolve_host(args.host.as_deref(), cfg.host.as_deref());
+    let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_DEV_HOST);
     let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
     let addr = resolve_addr(host.as_str(), port)?;
 
@@ -1375,38 +1374,13 @@ fn colon_template_to_bracket(template: &str) -> String {
 const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
 
-fn resolve_host(cli: Option<&str>, cfg: Option<&str>) -> String {
-    cli.or(cfg).unwrap_or(DEFAULT_DEV_HOST).to_owned()
-}
-
-fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
-    let pair = format!("{host}:{port}");
-    let mut iter = pair
-        .to_socket_addrs()
-        .with_context(|| format!("could not resolve bind address {pair}"))?;
-    iter.next()
-        .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn resolve_host_prefers_cli_over_config() {
-        assert_eq!(resolve_host(Some("0.0.0.0"), Some("127.0.0.1")), "0.0.0.0");
-    }
-
-    #[test]
-    fn resolve_host_falls_back_to_config_when_cli_absent() {
-        assert_eq!(resolve_host(None, Some("127.0.0.1")), "127.0.0.1");
-    }
-
-    #[test]
-    fn resolve_host_falls_back_to_builtin_when_neither_supplied() {
-        assert_eq!(resolve_host(None, None), DEFAULT_DEV_HOST);
-    }
+    // `resolve_host` / `resolve_addr` live in `crate::commands::resolve` (shared
+    // with `preview`); their precedence and binding tests live there too.
 
     #[test]
     fn default_watch_roots_includes_zfb_config_json() {

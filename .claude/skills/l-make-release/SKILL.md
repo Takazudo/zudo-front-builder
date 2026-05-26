@@ -218,7 +218,7 @@ git commit -m "chore(release): bump to v<version>"
 git push origin main
 ```
 
-Note: `git add` of an unchanged file (e.g. `crates/zfb/src/commands/new.rs` when the Rust source doesn't embed the version) is a no-op — include it in the add command regardless.
+Note: `crates/zfb/src/commands/new.rs` no longer changes on a version bump — the scaffold dependency pin is self-syncing (derived at compile time from the binary's own release version; see `workspace_dep_placeholder()` and issue #503). It is kept in the `git add` line purely defensively; the add is a harmless no-op when the file is unchanged.
 
 Record the resulting commit SHA:
 

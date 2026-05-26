@@ -80,9 +80,10 @@ pub struct BuildArgs {
 
 /// Arguments for `zfb preview`.
 ///
-/// `port` is `Option<u16>` for the same reason as `DevArgs::port` — see
-/// the doc-comment there. `outdir` keeps a clap default because the
-/// preview command does not consult config for it today (config's
+/// `port` and `host` are `Option<_>` for the same reason as the `DevArgs`
+/// fields — see the doc-comment there — so the command body can layer
+/// "CLI > config > built-in default" cleanly. `outdir` keeps a clap default
+/// because the preview command does not consult config for it today (config's
 /// `outDir` is already wired through the build command).
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
@@ -90,6 +91,12 @@ pub struct PreviewArgs {
     /// `zfb.config.json`, then to `4321`.
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// Host interface to bind the preview server to. Falls back to `host`
+    /// from `zfb.config.json`, then to `localhost`. Pass `0.0.0.0` to expose
+    /// the built site to other devices on the LAN.
+    #[arg(long)]
+    pub host: Option<String>,
 
     /// Directory to serve the previously built artifacts from.
     #[arg(long, default_value = "dist")]
