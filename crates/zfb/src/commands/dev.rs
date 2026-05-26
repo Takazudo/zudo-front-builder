@@ -156,6 +156,25 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // which is what users expect from "build, then dev for a quick check"
     // and is now safe because dev no longer mutates that file.
     let dev_html_root = dev_html_root_for(&project_root);
+    // Guard against a pathological `outDir` (`.zfb-build/dev-pages`,
+    // its parent, or anything that overlaps): when the dev HTML root
+    // collides with `dist_root` we are back to the #534 condition and
+    // dev's per-route writes corrupt `pnpm preview`'s output. Refuse
+    // to start with a clear error so the user can pick a non-colliding
+    // `outDir`.
+    if dev_html_root == dist_root
+        || dev_html_root.starts_with(&dist_root)
+        || dist_root.starts_with(&dev_html_root)
+    {
+        anyhow::bail!(
+            "zfb dev: configured `outDir` ({}) overlaps with the dev HTML \
+             scratch root ({}). Pick an `outDir` outside `.zfb-build/` \
+             (the default `dist/` is fine) — otherwise dev's per-route \
+             HTML writes would corrupt the production build output.",
+            dist_root.display(),
+            dev_html_root.display(),
+        );
+    }
     if !dev_html_root.exists() {
         std::fs::create_dir_all(&dev_html_root).with_context(|| {
             format!(
