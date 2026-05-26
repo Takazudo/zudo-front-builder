@@ -895,6 +895,20 @@ impl DevRenderSession {
             // ticks → byte-dedup still works). The synthetic id is internal to
             // the pipeline's per-tick bookkeeping; the dependency graph keys
             // on real source paths only (see `page_ids`).
+            //
+            // Coupling landmine (read before adding watch-time router re-scan):
+            // every route — static included — now keys `RenderedPage.page` on
+            // `output_path`, not the source path. The pipeline's stale-output
+            // prune (DevAssetPipeline.last_output_path) was designed around a
+            // *stable source id* whose output_path can flip across ticks (e.g.
+            // sitemap.xml → sitemap.rss); output-path keying makes such a flip
+            // produce two distinct keys, so the old artifact would orphan in
+            // dist/. Unreachable today because `routes_by_source` is built once
+            // at boot and never rebuilt during a session, so each entry's
+            // output_path is frozen. If live `paths()` re-expansion / router
+            // re-scan on watch ticks is added later (see the scope-guard
+            // follow-up below), restore source-path keying for static routes
+            // (or key dynamic entries on (source_path, output_path)).
             out.push(RenderedPage {
                 page: PageId::new(entry.output_path.clone()),
                 output_path,
