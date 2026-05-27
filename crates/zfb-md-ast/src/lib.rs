@@ -19,14 +19,21 @@ use std::path::PathBuf;
 use markdown::mdast::Node as MdastNode;
 
 pub mod diagnostics;
+pub mod directives;
 pub mod features_config;
+pub mod hast_text;
 pub mod heading_registry;
 
+pub use directives::{
+    AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
+    ValidatedAttrValue,
+};
 pub use features_config::{
     CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
     ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig,
     TocExportConfig, TranscludeConfig,
 };
+pub use hast_text::extract_text;
 
 /// Lightweight HTML AST node.
 ///

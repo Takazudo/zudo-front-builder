@@ -643,15 +643,28 @@ impl Pipeline {
     pub fn with_defaults_and_features(
         features: &zfb_md_extras::MarkdownFeaturesConfig,
     ) -> Self {
-        // Wave 2: identical wiring to `with_defaults_and_theme_and_gfm_and_cjk`
-        // with the conservative GFM default and CJK enabled. Wave 3.1 will make
-        // the visitors conditional on the `features` flags.
-        let mut p = Self::build_defaults(None, ResolvedGfmConstructs::CONSERVATIVE, None, true)
-            .expect("no themes_dir — cannot fail");
+        // Wave 3 (#570): build the framework chain WITHOUT the four opt-in
+        // plugins (mermaid, image_enlarge, admonitions_preset,
+        // heading_marker_toc). `register_features` adds them back conditionally
+        // based on the `features.*` flags.
+        //
+        // Visitor ordering contract (see doc comment on this method):
+        //   mdast: CjkFriendlyPlugin → [features mdast] → AdmonitionsPlugin
+        //   hast:  HeadingLinksPlugin → CodeTitlePlugin → [Mermaid] →
+        //          SyntectPlugin → [features hast post-syntect]
+        let highlighter = Arc::new(Highlighter::new());
+        let mut p = Self::with_resolved_gfm_constructs(ResolvedGfmConstructs::CONSERVATIVE);
+        // mdast phase — CjkFriendlyPlugin always on (matches with_defaults).
+        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        // [features mdast visitors inserted by register_features here]
+        // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
+        p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+        p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
         // `register_features` is the single call-path from zfb-content into
-        // zfb-md-extras. In Wave 2 it is a no-op; Wave 4-6 wire feature
-        // visitors here.
+        // zfb-md-extras. It adds the opt-in visitors in the correct phase and
+        // position (before SyntectPlugin for mermaid; after for post-syntect).
         register_features(&mut p, features);
+        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
         p
     }
 
@@ -832,10 +845,55 @@ impl Pipeline {
 /// `Pipeline::add_mdast_visitor` / `Pipeline::add_hast_visitor` with explicit
 /// ordering (document it in the feature module's sub-issue).
 pub fn register_features(
-    _p: &mut Pipeline,
-    _features: &zfb_md_extras::MarkdownFeaturesConfig,
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
-    // Wave 2: no-op. Feature visitor wiring lands in Wave 4-6.
+    // Wave 3 (#570): conditionally wire the four opt-in framework features.
+    //
+    // Ordering contract (MUST match the doc comment on with_defaults_and_features):
+    //   mdast phase:
+    //     - admonitions_preset — MUST run BEFORE the syntect / hast phase.
+    //       Inserted here (after CjkFriendlyPlugin that was added in the caller).
+    //   hast phase (all run BEFORE SyntectPlugin which is appended by the caller
+    //   after register_features returns):
+    //     - image_enlarge — runs before syntect; no ordering constraint vs.
+    //       heading_links (heading_links was already added by the caller).
+    //     - mermaid — MUST run BEFORE SyntectPlugin so syntect can skip mermaid
+    //       blocks. The `data-mermaid` div shape is not a `<pre>`; syntect
+    //       ignores it automatically once it has been replaced.
+    //   heading_marker_toc is wired AFTER headings are slugified by
+    //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
+    //   caller's hast chain, any hast visitor appended here runs after it.
+
+    // ── mdast phase ────────────────────────────────────────────────────────
+    if features.admonitions_preset.is_some() {
+        use crate::plugins::directives::DirectiveRegistry;
+        use zfb_md_extras::admonitions_preset::default_admonition_directives;
+        let mut registry = DirectiveRegistry::new();
+        for def in default_admonition_directives() {
+            registry.register(def);
+        }
+        p.add_mdast_visitor(registry.into_visitor());
+    }
+
+    // ── hast phase (all before SyntectPlugin) ──────────────────────────────
+    if features.heading_marker_toc.is_some() {
+        let cfg = features.heading_marker_toc.clone().unwrap_or_default();
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::heading_marker_toc::TocPlugin::new(cfg),
+        ));
+    }
+    if features.image_enlarge.is_some() {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::image_enlarge::ImageEnlargePlugin::new(),
+        ));
+    }
+    if features.mermaid.is_some() {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::mermaid::MermaidPlugin::new(),
+        ));
+    }
+    // Wave 4-6: additional feature visitor wiring lands here.
 }
 
 /// Strategy for emitting the JSX-shaped Raw payload of `MdxJsxFlow*`,

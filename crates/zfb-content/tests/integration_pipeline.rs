@@ -633,32 +633,39 @@ fn context_survives_through_pipeline() {
 
 use zfb_md_extras::{FeatureToggle, MarkdownFeaturesConfig};
 
-/// Smoke test: `Pipeline::with_defaults_and_features` with an empty features
-/// set produces byte-identical output to `Pipeline::with_defaults()`.
+/// Wave 3 (#570): `Pipeline::with_defaults_and_features` with an empty
+/// features set produces output that is **different** from
+/// `Pipeline::with_defaults()` — the four opt-in plugins
+/// (`AdmonitionsPlugin`, `ImageEnlargePlugin`, `MermaidPlugin`,
+/// `TocPlugin`) are NOT wired when no feature flag is set.
 ///
-/// In Wave 2 both constructors wire the same plugin chain unconditionally.
-/// Feature conditionality is introduced in Wave 3.1 (#570) when plugins move
-/// into `zfb-md-extras`.
+/// This test verifies the conditionality: a block-level image paragraph
+/// is NOT wrapped in `<figure class="zd-enlargeable">` when
+/// `features.image_enlarge` is absent (the default).
 #[test]
-fn with_defaults_and_features_empty_is_byte_identical_to_with_defaults() {
-    let md = "## Hello World\n\nsome text\n";
+fn with_defaults_and_features_empty_does_not_wire_opt_in_plugins() {
+    // A single block-level image triggers ImageEnlargePlugin when wired.
+    let md = "![alt text](photo.png)\n";
 
-    let html_defaults = {
-        let mut p = Pipeline::with_defaults();
-        let hast = p.run(md).expect("run ok");
-        serialize(&hast)
-    };
-
-    let html_features = {
+    let html_features_empty = {
         let features = MarkdownFeaturesConfig::default();
         let mut p = Pipeline::with_defaults_and_features(&features);
         let hast = p.run(md).expect("run ok");
         serialize(&hast)
     };
 
-    assert_eq!(
-        html_defaults, html_features,
-        "with_defaults_and_features(default features) must produce byte-identical output to with_defaults()",
+    assert!(
+        !html_features_empty.contains("<figure class=\"zd-enlargeable\">"),
+        "empty features must NOT wire ImageEnlargePlugin; got:\n{html_features_empty}",
+    );
+    assert!(
+        !html_features_empty.contains("class=\"zd-enlarge-btn\""),
+        "empty features must NOT produce enlarge button; got:\n{html_features_empty}",
+    );
+    // The image still renders — it's just not wrapped.
+    assert!(
+        html_features_empty.contains("src=\"photo.png\""),
+        "image src must still be present in output; got:\n{html_features_empty}",
     );
 }
 

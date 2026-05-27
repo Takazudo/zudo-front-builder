@@ -33,9 +33,28 @@ pub use zfb_md_ast::{
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_harness;
 
-// ── Feature stub modules ────────────────────────────────────────────────────
+// ── Wave 3 feature modules (moved from zfb-content in #570) ────────────────
+
+/// Admonitions preset — the six built-in directive definitions (`note`,
+/// `tip`, `warning`, `danger`, `info`, `details`).
+/// Wire via `features.admonitionsPreset = true` in `zfb.config.ts`.
+pub mod admonitions_preset;
+
+/// Heading-marker TOC visitor. Inserts a `<ul>/<li>` TOC after the
+/// configured anchor heading. Wire via `features.headingMarkerToc`.
+pub mod heading_marker_toc;
+
+/// Image-enlarge visitor. Wraps `<p><img></p>` in
+/// `<figure class="zd-enlargeable">`. Wire via `features.imageEnlarge = true`.
+pub mod image_enlarge;
+
+/// Mermaid visitor. Replaces `<pre><code class="language-mermaid">` with
+/// `<div class="mermaid">`. Wire via `features.mermaid = true`.
+pub mod mermaid;
+
+// ── Feature stub modules (Wave 4-6) ────────────────────────────────────────
 //
-// One module per planned feature. Each is empty in Wave 2 — Wave 4-6
+// One module per planned feature. Each is empty in Wave 3 — Wave 4-6
 // will port the corresponding remark/rehype plugin into each stub.
 
 /// GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.).
