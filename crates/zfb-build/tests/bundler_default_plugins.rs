@@ -61,35 +61,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_render::adapters::Framework;
-
-fn locate_esbuild() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ZFB_ESBUILD_BIN") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-        let slot = workspace.join("crates/zfb/binaries/esbuild/esbuild");
-        if slot.exists() {
-            return Some(slot);
-        }
-    }
-    if let Ok(out) = Command::new("which").arg("esbuild").output() {
-        if out.status.success() {
-            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
+use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal user-project tree exercising all four marker plugin
 /// paths. Returns the project root.
