@@ -51,33 +51,42 @@
 //! are plain relative paths — no alias to rewrite. (Verified against
 //! `Takazudo/zfb-example-corporate-website` via `gh api`.)
 //!
-//! ## Fix layer (for Wave 2 / issue #556)
+//! ## Fix layer (applied in Wave 2 / issue #556)
 //!
-//! `crates/zfb-build/src/bundler.rs::rewrite_css_modules_in_shadow` is
-//! the single place that must change. The minimal fix is to walk
-//! symlinks too — `WalkDir::follow_links(true)` OR replace the
-//! `entry.file_type().is_file()` gate with
-//! `entry.path().is_file() || entry.file_type().is_symlink()` so the
-//! symlink path goes through the rewrite.
+//! Three interacting bugs — all in `crates/zfb-build/src/bundler.rs`:
 //!
-//! **CRITICAL gotcha — symlink-write corruption.** A naive fix that
-//! merely starts walking symlinks but leaves `fs::write(path,
-//! js.as_bytes())` intact will **silently corrupt the user's
-//! original `.module.css` source files**, because `fs::write` opens
-//! through the symlink and writes through it to the target.
-//! Empirically verified: writing `"export default {...}"` through a
-//! Unix symlink overwrites the symlink target's contents in place.
-//! The fix must:
+//! **Layer 1 — symlink-aware walk (`rewrite_css_modules_in_shadow`).**
+//! The old `entry.file_type().is_file()` gate skipped every `.module.css`
+//! symlink because WalkDir with `follow_links(false)` reports a
+//! symlink-to-file as `is_symlink()==true, is_file()==false`. The fix
+//! switches to `path.is_file()` — `Path::is_file()` follows symlinks,
+//! returning `true` for symlinks-to-files and `false` for broken
+//! symlinks. Note: `WalkDir::follow_links(true)` was not used here
+//! because it raises an IO error for broken symlinks inside shadow
+//! `node_modules` trees (pnpm-style dangling symlinks) — `path.is_file()`
+//! handles those gracefully by returning `false`.
 //!
-//! 1. `fs::remove_file(path)` before `fs::write(path, js.as_bytes())`,
-//!    so the symlink is replaced by a new regular file in the shadow
-//!    (and the original source is left untouched), OR
-//! 2. Open with `O_NOFOLLOW` semantics explicitly.
+//! **Layer 2 — symlink-write corruption guard (`rewrite_css_modules_in_shadow`).**
+//! A naive fix that merely starts walking symlinks but leaves
+//! `fs::write(path, js.as_bytes())` intact will **silently corrupt the
+//! user's original `.module.css` source files**, because `fs::write`
+//! opens through the symlink and writes through it to the target.
+//! Empirically verified: writing `"export default {...}"` through a Unix
+//! symlink overwrites the symlink target's contents in place. The fix
+//! adds `fs::remove_file(path)` before `fs::write`, so the symlink is
+//! replaced by a new regular file in the shadow. The source-untouched
+//! assertion in this test explicitly guards against regression.
 //!
-//! The simplest is option (1) — one `fs::remove_file` before the
-//! existing `fs::write`. The same fix should be applied (or verified
-//! already safe) for any future walker that mutates files materialised
-//! via `symlink_or_copy`.
+//! **Layer 3 — anchor esbuild to the shadow (`run_esbuild`).**
+//! Even after Layers 1 and 2, esbuild (without `--preserve-symlinks`)
+//! canonicalises symlinked `.tsx` importers to their real project paths
+//! and resolves relative imports (e.g. `./hero.module.css`) from *there*
+//! — finding the original raw CSS, not the rewritten JS shim in the
+//! shadow. The fix adds `--preserve-symlinks` when
+//! `node_modules_dir.is_none()`, which anchors esbuild to the shadow.
+//! Gated on `is_none()` to avoid the #443/#450 path-alias regression
+//! that fires when `node_modules_dir` is set and workspace-package
+//! importers have `node_modules` in their shadow path.
 //!
 //! ## Test scope
 //!
@@ -229,7 +238,6 @@ fn pascal_case(s: &str) -> String {
 }
 
 #[test]
-#[ignore = "fails until #553 fix lands in Wave 2 (#556) — intentional regression coverage; do NOT un-ignore until the bundler fix is in"]
 fn corp_shape_components_module_css_builds_with_hashed_classes() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
