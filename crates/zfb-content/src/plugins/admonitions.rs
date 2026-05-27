@@ -48,36 +48,42 @@ pub fn default_admonition_directives() -> Vec<DirectiveDef> {
             kind: DirectiveKind::Container,
             component_name: "Note".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
         DirectiveDef {
             name: "tip".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Tip".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
         DirectiveDef {
             name: "warning".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Warning".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
         DirectiveDef {
             name: "danger".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Danger".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
         DirectiveDef {
             name: "info".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Info".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
         DirectiveDef {
             name: "details".to_string(),
             kind: DirectiveKind::Container,
             component_name: "Details".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         },
     ]
 }

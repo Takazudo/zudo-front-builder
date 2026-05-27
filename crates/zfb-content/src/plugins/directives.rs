@@ -66,6 +66,105 @@ pub enum DirectiveKind {
     Text,
 }
 
+/// The expected type for a directive attribute value.
+///
+/// Used in [`AttrSchema`] to validate raw string attrs during expansion.
+/// Type coercion is one-way: the raw string from the MDX source is parsed
+/// into the declared type. On failure a [`DirectiveDiagnostic`] is emitted
+/// (warning, not error — expansion falls back to raw attr pass-through).
+#[derive(Debug, Clone)]
+pub enum AttrType {
+    /// Any string value is accepted verbatim.
+    String,
+    /// Value must be one of the declared enum variants (case-sensitive).
+    ///
+    /// The `Vec<String>` holds the allowed values; if the author supplies
+    /// a value not in this list a diagnostic is emitted.
+    Enum(Vec<std::string::String>),
+    /// Value must be `"true"` or `"false"` (case-insensitive). A bare
+    /// boolean attribute (no `=value`, empty string from parser) also
+    /// counts as `true`. Emits as the string `"true"` / `"false"` in JSX
+    /// (v1 only supports string-literal attributes).
+    Boolean,
+    /// Value must parse as a 64-bit float (`f64::from_str`). The
+    /// validated [`ValidatedAttrValue`] stores the **original string**,
+    /// not the numeric value, so the JSX emitter can pass it through
+    /// unchanged. Diagnostic is emitted if the string is not parseable.
+    Number,
+}
+
+/// Schema entry for one attribute on a [`DirectiveDef`].
+///
+/// Declare one per accepted attribute. Attributes not listed in the
+/// schema are **warnings** (not errors) — unknown attrs still pass
+/// through to the JSX element unchanged.
+///
+/// Unknown-attr policy: **warning** (preserves existing leniency).
+/// Rationale: a typo in an attribute name should surface as a diagnostic,
+/// not break a page build. The author can correct it without having to
+/// unblock the entire pipeline.
+#[derive(Debug, Clone)]
+pub struct AttrSchema {
+    /// Attribute name as written in the MDX source (e.g. `"tone"`, `"data-foo"`).
+    pub name: std::string::String,
+    /// Expected type; controls how the raw string is validated.
+    pub ty: AttrType,
+    /// Default value applied when the attr is absent and `required` is
+    /// `false`. `None` means no default.
+    pub default: Option<std::string::String>,
+    /// If `true`, a missing attr (no default) triggers a diagnostic.
+    pub required: bool,
+}
+
+/// Fully-validated attr value produced by [`DirectiveDef::validate_attrs`].
+///
+/// v1 note: even after validation, the JSX emitter represents every
+/// attribute as a string literal ([`AttributeValue::Literal`]). The
+/// typed enum is available for callers that want to inspect the
+/// semantically-correct value (e.g. to pass a boolean `true` to the
+/// `hProperties` map without wrapping in quotes). Boolean normalises to
+/// `"true"`/`"false"`; Number stores the original source string (already
+/// validated as parseable).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidatedAttrValue {
+    /// Validated string attribute.
+    String(std::string::String),
+    /// Validated enum attribute (value is one of the declared variants).
+    Enum(std::string::String),
+    /// Validated boolean; normalised to `true` / `false`.
+    Boolean(bool),
+    /// Validated number; original source string stored (parseable as f64).
+    Number(std::string::String),
+}
+
+impl ValidatedAttrValue {
+    /// Convert to the string form used in JSX `AttributeValue::Literal`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            ValidatedAttrValue::String(s)
+            | ValidatedAttrValue::Enum(s)
+            | ValidatedAttrValue::Number(s) => s.as_str(),
+            ValidatedAttrValue::Boolean(b) => {
+                if *b { "true" } else { "false" }
+            }
+        }
+    }
+}
+
+/// Return type of [`DirectiveDef::validate_attrs`].
+///
+/// Tuple of:
+/// - `Result<map, errors>` — `Ok` with validated attr map on success;
+///   `Err` with hard-error diagnostics on required-missing or type-coercion
+///   failure.
+/// - `Vec<DirectiveDiagnostic>` — warning-only diagnostics (unknown attrs)
+///   emitted regardless of `Ok`/`Err`.
+pub type AttrValidationResult = (
+    Result<HashMap<String, ValidatedAttrValue>, Vec<DirectiveDiagnostic>>,
+    Vec<DirectiveDiagnostic>,
+);
+
 /// A registered directive: its source-side `name` and the JSX component
 /// it expands to.
 #[derive(Debug, Clone)]
@@ -81,10 +180,17 @@ pub struct DirectiveDef {
     /// child). If false, the `[label]` becomes a single Text child of
     /// the element.
     pub title_from_label: bool,
+    /// Typed attribute schema. Empty by default — all existing call sites
+    /// that use the `container`/`leaf`/`text` constructors or struct
+    /// literals without this field compile unchanged.
+    ///
+    /// When non-empty, [`DirectiveDef::validate_attrs`] validates raw
+    /// attrs from the MDX source against this schema during expansion.
+    pub attrs: Vec<AttrSchema>,
 }
 
 impl DirectiveDef {
-    /// Convenience: container with `title_from_label=false`.
+    /// Convenience: container with `title_from_label=false` and no attr schema.
     #[must_use]
     pub fn container(name: impl Into<String>, component_name: impl Into<String>) -> Self {
         Self {
@@ -92,10 +198,11 @@ impl DirectiveDef {
             kind: DirectiveKind::Container,
             component_name: component_name.into(),
             title_from_label: false,
+            attrs: Vec::new(),
         }
     }
 
-    /// Convenience: leaf with `title_from_label=false`.
+    /// Convenience: leaf with `title_from_label=false` and no attr schema.
     #[must_use]
     pub fn leaf(name: impl Into<String>, component_name: impl Into<String>) -> Self {
         Self {
@@ -103,10 +210,11 @@ impl DirectiveDef {
             kind: DirectiveKind::Leaf,
             component_name: component_name.into(),
             title_from_label: false,
+            attrs: Vec::new(),
         }
     }
 
-    /// Convenience: text directive with `title_from_label=false`.
+    /// Convenience: text directive with `title_from_label=false` and no attr schema.
     #[must_use]
     pub fn text(name: impl Into<String>, component_name: impl Into<String>) -> Self {
         Self {
@@ -114,6 +222,185 @@ impl DirectiveDef {
             kind: DirectiveKind::Text,
             component_name: component_name.into(),
             title_from_label: false,
+            attrs: Vec::new(),
+        }
+    }
+
+    /// Chainable builder: attach a typed attr schema to any directive.
+    ///
+    /// ```
+    /// use zfb_content::plugins::directives::{
+    ///     AttrSchema, AttrType, DirectiveDef,
+    /// };
+    ///
+    /// let def = DirectiveDef::container("callout", "Callout")
+    ///     .with_attrs(vec![
+    ///         AttrSchema {
+    ///             name: "tone".to_string(),
+    ///             ty: AttrType::Enum(vec!["info".to_string(), "warn".to_string()]),
+    ///             default: None,
+    ///             required: true,
+    ///         },
+    ///     ]);
+    /// ```
+    #[must_use]
+    pub fn with_attrs(mut self, attrs: Vec<AttrSchema>) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
+    /// Validate raw `(key, value)` attr pairs against `self.attrs` schema.
+    ///
+    /// Returns a triple:
+    /// - `Ok(map)` — fully-validated attr map with defaults applied, OR
+    /// - `Err(error_diags)` — one or more hard errors (missing required attr,
+    ///   type-coercion failure). The map is empty on `Err`.
+    /// - `warn_diags` — warning-only diagnostics (unknown attrs) emitted
+    ///   regardless of `Ok`/`Err`.
+    ///
+    /// **Unknown attrs** (not in schema) are gathered as warnings only —
+    /// they do NOT cause `Err`. See [`AttrSchema`] doc comment for policy.
+    ///
+    /// Position information (line/column) is NOT filled in here — the
+    /// caller in `transform_children` is responsible for annotating
+    /// returned diagnostics with source position before appending them to
+    /// the registry's diagnostic list.
+    pub fn validate_attrs(&self, raw: &[(String, String)]) -> AttrValidationResult {
+        // If no schema is declared, skip validation entirely.
+        if self.attrs.is_empty() {
+            return (Ok(HashMap::new()), Vec::new());
+        }
+
+        let mut validated: HashMap<String, ValidatedAttrValue> = HashMap::new();
+        let mut errors: Vec<DirectiveDiagnostic> = Vec::new();
+        let mut warnings: Vec<DirectiveDiagnostic> = Vec::new();
+
+        // Build a lookup of raw attrs by name for efficient access.
+        let raw_map: HashMap<&str, &str> =
+            raw.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
+        // Warn about unknown attrs (present in raw but not in schema).
+        // Policy: warning, not error — preserves existing leniency.
+        // Rationale: unknown attrs may be valid HTML attributes (e.g. aria-*,
+        // data-*) that the author wants to pass through without declaring them
+        // in the schema. A strict error here would break existing content.
+        let schema_names: std::collections::HashSet<&str> =
+            self.attrs.iter().map(|s| s.name.as_str()).collect();
+        for (raw_key, _) in raw {
+            if !schema_names.contains(raw_key.as_str()) {
+                warnings.push(DirectiveDiagnostic {
+                    message: format!(
+                        "directive `{}`: unknown attribute `{raw_key}` (warning only — \
+                         attr passes through unchanged)",
+                        self.name
+                    ),
+                    line: None,
+                    column: None,
+                });
+            }
+        }
+
+        // Validate each schema entry.
+        for schema in &self.attrs {
+            let raw_val: Option<&str> = raw_map.get(schema.name.as_str()).copied();
+
+            match raw_val {
+                None => {
+                    // Attr absent — apply default or emit required diagnostic.
+                    if let Some(ref default) = schema.default {
+                        // Validate default value against type.
+                        match coerce_value(&schema.ty, default.as_str()) {
+                            Ok(v) => {
+                                validated.insert(schema.name.clone(), v);
+                            }
+                            Err(msg) => {
+                                // Default value is schema-defined, so this is
+                                // a developer error (wrong default for its type).
+                                errors.push(DirectiveDiagnostic {
+                                    message: format!(
+                                        "directive `{}`: attr `{}` default value `{default}` \
+                                         is not valid for type {:?}: {msg}",
+                                        self.name, schema.name, schema.ty,
+                                    ),
+                                    line: None,
+                                    column: None,
+                                });
+                            }
+                        }
+                    } else if schema.required {
+                        errors.push(DirectiveDiagnostic {
+                            message: format!(
+                                "directive `{}`: required attribute `{}` is missing",
+                                self.name, schema.name
+                            ),
+                            line: None,
+                            column: None,
+                        });
+                    }
+                    // Optional with no default: simply absent from validated map.
+                }
+                Some(val) => {
+                    match coerce_value(&schema.ty, val) {
+                        Ok(v) => {
+                            validated.insert(schema.name.clone(), v);
+                        }
+                        Err(msg) => {
+                            errors.push(DirectiveDiagnostic {
+                                message: format!(
+                                    "directive `{}`: attr `{}` value `{val}` is not valid \
+                                     for type {:?}: {msg}",
+                                    self.name, schema.name, schema.ty,
+                                ),
+                                line: None,
+                                column: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let result = if errors.is_empty() {
+            Ok(validated)
+        } else {
+            Err(errors)
+        };
+        (result, warnings)
+    }
+}
+
+/// Coerce a raw string value to the declared `AttrType`.
+/// Returns `Ok(ValidatedAttrValue)` on success or `Err(message)` on failure.
+fn coerce_value(ty: &AttrType, raw: &str) -> Result<ValidatedAttrValue, String> {
+    match ty {
+        AttrType::String => Ok(ValidatedAttrValue::String(raw.to_string())),
+        AttrType::Enum(variants) => {
+            if variants.iter().any(|v| v == raw) {
+                Ok(ValidatedAttrValue::Enum(raw.to_string()))
+            } else {
+                Err(format!(
+                    "expected one of [{}], got `{raw}`",
+                    variants.join(", ")
+                ))
+            }
+        }
+        AttrType::Boolean => {
+            // Empty string (from bare attr, e.g. `disabled` with no `=value`)
+            // is treated as `true`.
+            match raw.to_lowercase().as_str() {
+                "true" | "" => Ok(ValidatedAttrValue::Boolean(true)),
+                "false" => Ok(ValidatedAttrValue::Boolean(false)),
+                _ => Err(format!(
+                    "expected `true` or `false`, got `{raw}`"
+                )),
+            }
+        }
+        AttrType::Number => {
+            if raw.parse::<f64>().is_ok() {
+                Ok(ValidatedAttrValue::Number(raw.to_string()))
+            } else {
+                Err(format!("expected a number, got `{raw}`"))
+            }
         }
     }
 }
@@ -237,10 +524,18 @@ impl DirectiveRegistry {
                         if let Some(close_idx) = (i + 1..children.len())
                             .find(|j| is_container_close(&children[*j]))
                         {
+                            let (line, column) = paragraph_line_col(&children[i]);
+                            let validated_opt =
+                                self.run_validation(&def, &parsed, line, column);
                             let body: Vec<MdastNode> = children.drain(i..=close_idx).collect();
                             // Strip open + close paragraphs.
                             let inner = body[1..body.len() - 1].to_vec();
-                            let jsx = build_flow_jsx(&def, &parsed, inner);
+                            let jsx = build_flow_jsx(
+                                &def,
+                                &parsed,
+                                inner,
+                                validated_opt.as_ref(),
+                            );
                             children.insert(i, jsx);
                             i += 1;
                             continue;
@@ -282,7 +577,15 @@ impl DirectiveRegistry {
                 if let Some(def) = self.defs.get(&parsed.name).cloned() {
                     if def.kind == DirectiveKind::Leaf {
                         let position = paragraph_position(&children[i]);
-                        let jsx = build_leaf_jsx(&def, &parsed, position);
+                        let (line, column) = paragraph_line_col(&children[i]);
+                        let validated_opt =
+                            self.run_validation(&def, &parsed, line, column);
+                        let jsx = build_leaf_jsx(
+                            &def,
+                            &parsed,
+                            position,
+                            validated_opt.as_ref(),
+                        );
                         children[i] = jsx;
                         i += 1;
                         continue;
@@ -355,7 +658,11 @@ impl DirectiveRegistry {
                                     position: None,
                                 }));
                             }
-                            out.push(build_text_jsx(&def, &parsed));
+                            // Inline text directives have no source position
+                            // from the text scanner — pass None for both.
+                            let validated_opt =
+                                self.run_validation(&def, &parsed, None, None);
+                            out.push(build_text_jsx(&def, &parsed, validated_opt.as_ref()));
                             i = end;
                             last_emit = end;
                             continue;
@@ -416,6 +723,43 @@ impl DirectiveRegistry {
             line,
             column,
         });
+    }
+
+    /// Run `validate_attrs` on `def` against the raw attrs in `parsed`.
+    /// Appends any resulting diagnostics (annotated with position) to
+    /// `self.diagnostics`. Returns `Some(validated_map)` on success
+    /// (or when the schema is empty), `None` on validation error.
+    fn run_validation(
+        &mut self,
+        def: &DirectiveDef,
+        parsed: &ParsedDirective,
+        line: Option<usize>,
+        column: Option<usize>,
+    ) -> Option<HashMap<String, ValidatedAttrValue>> {
+        let (result, warnings) = def.validate_attrs(&parsed.attrs);
+
+        // Append warnings (unknown attrs) — always, regardless of Ok/Err.
+        for mut w in warnings {
+            w.line = line;
+            w.column = column;
+            self.diagnostics.push(w);
+        }
+
+        match result {
+            Ok(validated) => {
+                // Schema is empty or all attrs passed — return validated map.
+                Some(validated)
+            }
+            Err(errors) => {
+                // Hard errors: append with position and fall back to raw attrs.
+                for mut e in errors {
+                    e.line = line;
+                    e.column = column;
+                    self.diagnostics.push(e);
+                }
+                None
+            }
+        }
     }
 }
 
@@ -715,8 +1059,9 @@ fn build_flow_jsx(
     def: &DirectiveDef,
     parsed: &ParsedDirective,
     children: Vec<MdastNode>,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
 ) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+    let attributes = build_attributes(def, parsed, validated);
     MdastNode::MdxJsxFlowElement(MdxJsxFlowElement {
         children,
         position: None,
@@ -731,8 +1076,9 @@ fn build_leaf_jsx(
     def: &DirectiveDef,
     parsed: &ParsedDirective,
     position: Option<markdown::unist::Position>,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
 ) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+    let attributes = build_attributes(def, parsed, validated);
     let children: Vec<MdastNode> = if !def.title_from_label {
         if let Some(label) = &parsed.label {
             vec![MdastNode::Text(Text {
@@ -754,8 +1100,12 @@ fn build_leaf_jsx(
 }
 
 /// Build a text JSX element for an inline Text directive.
-fn build_text_jsx(def: &DirectiveDef, parsed: &ParsedDirective) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+fn build_text_jsx(
+    def: &DirectiveDef,
+    parsed: &ParsedDirective,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
+) -> MdastNode {
+    let attributes = build_attributes(def, parsed, validated);
     let children: Vec<MdastNode> = if !def.title_from_label {
         if let Some(label) = &parsed.label {
             vec![MdastNode::Text(Text {
@@ -778,7 +1128,18 @@ fn build_text_jsx(def: &DirectiveDef, parsed: &ParsedDirective) -> MdastNode {
 
 /// Convert parsed attrs (+ optional title-from-label promotion) into
 /// mdast `AttributeContent::Property` entries.
-fn build_attributes(def: &DirectiveDef, parsed: &ParsedDirective) -> Vec<AttributeContent> {
+///
+/// When `validated` is `Some`, the validated map is used as the source of
+/// truth for schema-declared attrs (with defaults applied). Unknown attrs
+/// (not in the schema) still pass through from `parsed.attrs` verbatim,
+/// as the unknown-attr policy is warning-only. When `validated` is `None`,
+/// `parsed.attrs` is used directly (fallback on validation error or empty
+/// schema).
+fn build_attributes(
+    def: &DirectiveDef,
+    parsed: &ParsedDirective,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
+) -> Vec<AttributeContent> {
     let mut out: Vec<AttributeContent> = Vec::new();
     if def.title_from_label {
         if let Some(label) = &parsed.label {
@@ -788,12 +1149,42 @@ fn build_attributes(def: &DirectiveDef, parsed: &ParsedDirective) -> Vec<Attribu
             }));
         }
     }
-    for (k, v) in &parsed.attrs {
-        out.push(AttributeContent::Property(MdxJsxAttribute {
-            name: k.clone(),
-            value: Some(AttributeValue::Literal(v.clone())),
-        }));
+
+    match validated {
+        None => {
+            // No schema or validation failed — emit raw parsed attrs.
+            for (k, v) in &parsed.attrs {
+                out.push(AttributeContent::Property(MdxJsxAttribute {
+                    name: k.clone(),
+                    value: Some(AttributeValue::Literal(v.clone())),
+                }));
+            }
+        }
+        Some(val_map) => {
+            // Schema-declared attrs: emit from validated map (preserves
+            // defaults and type-normalised values like "true"/"false").
+            let schema_names: std::collections::HashSet<&str> =
+                def.attrs.iter().map(|s| s.name.as_str()).collect();
+            for schema in &def.attrs {
+                if let Some(val) = val_map.get(&schema.name) {
+                    out.push(AttributeContent::Property(MdxJsxAttribute {
+                        name: schema.name.clone(),
+                        value: Some(AttributeValue::Literal(val.as_str().to_string())),
+                    }));
+                }
+            }
+            // Unknown attrs pass through verbatim (warning-only policy).
+            for (k, v) in &parsed.attrs {
+                if !schema_names.contains(k.as_str()) {
+                    out.push(AttributeContent::Property(MdxJsxAttribute {
+                        name: k.clone(),
+                        value: Some(AttributeValue::Literal(v.clone())),
+                    }));
+                }
+            }
+        }
     }
+
     out
 }
 
@@ -1221,6 +1612,7 @@ mod tests {
             kind: DirectiveKind::Container,
             component_name: "Callout".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         });
         let out = run_with_registry(
             &mut r,

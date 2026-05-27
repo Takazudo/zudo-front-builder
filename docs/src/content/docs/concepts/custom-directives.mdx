@@ -190,11 +190,107 @@ The reason for non-fatal-by-default: a typo in a markdown post
 shouldn't break a 1,000-page build. Diagnostics surface the problem
 without blocking output.
 
+## Typed attribute schemas
+
+Declare the accepted attributes for a directive using `AttrSchema` and
+`AttrType`. The registry validates raw MDX attrs against the schema
+during expansion and emits `DirectiveDiagnostic`s for violations. This
+lets content errors surface early rather than silently passing bad data
+to your JSX component.
+
+```rust
+use zfb_content::plugins::directives::{
+    AttrSchema, AttrType, DirectiveDef, DirectiveRegistry,
+};
+
+let mut registry = DirectiveRegistry::new();
+
+registry.register(
+    DirectiveDef::container("callout", "Callout")
+        .with_attrs(vec![
+            // Required enum — must be one of the declared values.
+            AttrSchema {
+                name: "tone".to_string(),
+                ty: AttrType::Enum(vec![
+                    "info".to_string(),
+                    "warn".to_string(),
+                    "tip".to_string(),
+                ]),
+                default: None,
+                required: true,
+            },
+            // Optional string with a default.
+            AttrSchema {
+                name: "title".to_string(),
+                ty: AttrType::String,
+                default: Some("Note".to_string()),
+                required: false,
+            },
+            // Optional boolean, defaults false.
+            AttrSchema {
+                name: "compact".to_string(),
+                ty: AttrType::Boolean,
+                default: Some("false".to_string()),
+                required: false,
+            },
+            // Optional number.
+            AttrSchema {
+                name: "max-width".to_string(),
+                ty: AttrType::Number,
+                default: None,
+                required: false,
+            },
+        ]),
+);
+```
+
+The four `AttrType` variants:
+
+| Variant | Input | Validated as |
+| --- | --- | --- |
+| `String` | Any value | Passed through unchanged |
+| `Enum(variants)` | Must equal one of the declared strings (case-sensitive) | `ValidatedAttrValue::Enum` |
+| `Boolean` | `"true"`, `"false"`, or empty string (bare attr = `true`) | `ValidatedAttrValue::Boolean` — emits `"true"` / `"false"` in JSX |
+| `Number` | Any string parseable as `f64` | `ValidatedAttrValue::Number` (original string stored) |
+
+### Validation rules
+
+- **Missing required attr** → diagnostic emitted; expansion falls back
+  to raw attrs unchanged.
+- **Enum mismatch** (value not in declared variants) → diagnostic.
+- **Type-coercion failure** (`x="abc"` for a `Number` attr) → diagnostic.
+- **Default values** — absent optional attrs get their `default` applied
+  before the JSX is built.
+
+### Unknown-attr policy: **warning only**
+
+Attributes present in the MDX source but not declared in the schema
+emit a **warning** diagnostic — they are NOT errors and they still pass
+through to the JSX element unchanged. This preserves existing leniency
+(authors can pass HTML attributes like `data-*` or `aria-*` without
+declaring them) and means a missing schema entry never breaks a build.
+
+```
+warning: directive `callout`: unknown attribute `data-testid` (warning only — attr passes through unchanged)
+```
+
+If you want strict mode, register all attrs and treat any diagnostic as
+a build error in your orchestrator. The policy is "warn, not error" by
+design; the engine never blocks output on an attr it doesn't recognise.
+
+### Backwards compatibility
+
+Directives registered without `.with_attrs(…)` (i.e. via `container`,
+`leaf`, or `text` constructors without chaining) skip validation
+entirely. All existing call sites continue to compile and behave
+identically.
+
 ## What the engine doesn't do
 
-- **Type-check directive attributes against component prop types.**
-  Out of scope; the engine just hands strings to your component. Use
-  TypeScript on the component side for typing.
+- **Validate attribute values against JSX component prop types.**
+  The engine validates against the `AttrSchema` you declare (type + enum
+  values). TypeScript typing on the JSX component side is still your
+  responsibility.
 - **Provide a default directive set beyond the six admonitions.** No
   built-in `:::callout`, `:::card`, `::youtube`, etc. — every framework
   picks its own.
