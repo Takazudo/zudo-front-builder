@@ -884,6 +884,12 @@ pub fn register_features(
         ));
     }
 
+    if feature_enabled(&features.reading_time) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::reading_time::ReadingTimePlugin::new(),
+        ));
+    }
+
     if feature_enabled(&features.admonitions_preset) {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;
