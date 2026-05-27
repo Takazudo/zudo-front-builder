@@ -1,0 +1,8 @@
+[package]
+name = "zfb-test-utils"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Shared test helpers for zfb integration tests (std-only, no runtime dependencies)"
+
+[lib]

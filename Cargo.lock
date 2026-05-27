@@ -5561,6 +5561,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zfb-test-utils"
+version = "0.0.0"
+
+[[package]]
 name = "zfb-toolchain-pins"
 version = "0.0.0"
 
