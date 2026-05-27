@@ -5546,6 +5546,7 @@ dependencies = [
  "zfb-diagnostics",
  "zfb-graph",
  "zfb-islands",
+ "zfb-md-ast",
  "zfb-render",
  "zfb-router",
  "zfb-server",
@@ -5670,6 +5671,7 @@ name = "zfb-md-ast"
 version = "0.0.0"
 dependencies = [
  "markdown",
+ "serde",
 ]
 
 [[package]]
@@ -5678,8 +5680,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "markdown",
- "serde",
  "tempdir",
+ "zfb-md-ast",
  "zfb-test-utils",
 ]
 

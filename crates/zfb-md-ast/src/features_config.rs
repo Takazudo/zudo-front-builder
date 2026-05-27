@@ -1,0 +1,200 @@
+//! Per-feature markdown pipeline configuration.
+//!
+//! Lives in `zfb-md-ast` (rather than `zfb`) so the visitor-contract crate
+//! and the downstream plugin crate (`zfb-md-extras`) can share a single
+//! canonical definition without a cycle through `zfb`. `zfb` re-exports
+//! these types from its `config` module for backwards compatibility with
+//! existing `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}`
+//! import paths.
+//!
+//! Mirrored 1:1 by `MarkdownFeaturesConfig` and `FeatureToggle` in
+//! `packages/zfb/src/config.ts` for the TypeScript loader.
+
+use serde::{Deserialize, Serialize};
+
+/// Per-feature toggle: `bool` shorthand or a feature-options object.
+///
+/// `true` enables the feature with defaults; `false` (or absent) disables
+/// it. The object form carries per-feature options (fields vary by feature
+/// and are filled in by each feature's port sub-issue — stubs today).
+///
+/// `serde(untagged)` with the `Options` variant listed FIRST ensures serde
+/// tries the object form before the bool, mirroring the `GfmFlag` pattern
+/// used elsewhere in `zfb::config`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum FeatureToggle {
+    /// Per-feature options object (fields are feature-specific).
+    Options(FeatureOptions),
+    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
+    Bool(bool),
+}
+
+/// Empty options object for features that accept `{ ... }` but have no
+/// user-facing knobs yet. Fields are filled in by each feature's port
+/// sub-issue; this stub satisfies the schema shape requirement.
+///
+/// `deny_unknown_fields` is critical here — without it, the `FeatureToggle`
+/// untagged enum would accept ANY object as `Options(FeatureOptions {})`,
+/// silently turning `features.githubAlerts = { bogus: true }` into
+/// "enabled with defaults" instead of failing fast.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureOptions {}
+
+/// Options for the `githubAutolinks` feature. Requires `repo`.
+///
+/// TODO: fill in actual fields when the githubAutolinks feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubAutolinksConfig {
+    /// GitHub repository reference (`owner/repo`) used to build autolink URLs.
+    // Required by the githubAutolinks feature spec; value is set by users.
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// Options stub for the `codeEnrichment` feature.
+///
+/// TODO: fill in actual fields when the codeEnrichment feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodeEnrichmentConfig {}
+
+/// Options stub for the `tocExport` feature.
+///
+/// TODO: fill in actual fields when the tocExport feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TocExportConfig {}
+
+/// Options stub for the `imageDimensions` feature.
+///
+/// TODO: fill in actual fields when the imageDimensions feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageDimensionsConfig {}
+
+/// Options stub for the `linkValidation` feature.
+///
+/// TODO: fill in actual fields when the linkValidation feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkValidationConfig {}
+
+/// Options stub for the `transclude` feature.
+///
+/// TODO: fill in actual fields when the transclude feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscludeConfig {}
+
+/// Configuration for the table-of-contents visitor.
+///
+/// Lives in `zfb-md-ast` so the `MarkdownFeaturesConfig::heading_marker_toc`
+/// field can carry the rich shape without a dep cycle. The TOC visitor
+/// (`zfb_content::plugins::TocPlugin`) reads this type via the `zfb_md_ast`
+/// import path; `zfb-content` re-exports it under the historical
+/// `zfb_content::TocConfig` path for backwards compatibility.
+///
+/// Mirrors `TocConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TocConfig {
+    /// Heading text that triggers TOC insertion. Matched
+    /// case-insensitively after whitespace trimming. Default: `"TOC"`.
+    #[serde(default = "default_toc_heading")]
+    pub heading: String,
+    /// Number of heading levels to include starting from `<h2>`. `1` →
+    /// h2 only, `2` (default) → h2 + h3, `3` → h2–h4, …, max 5 (h2–h6).
+    #[serde(default = "default_toc_max_depth")]
+    pub max_depth: u8,
+}
+
+fn default_toc_heading() -> String {
+    "TOC".to_string()
+}
+
+fn default_toc_max_depth() -> u8 {
+    2
+}
+
+impl Default for TocConfig {
+    fn default() -> Self {
+        Self {
+            heading: default_toc_heading(),
+            max_depth: default_toc_max_depth(),
+        }
+    }
+}
+
+/// Per-feature markdown pipeline configuration.
+///
+/// Each field corresponds to one pluggable markdown feature. All fields are
+/// optional; absent = feature disabled, behaviour unchanged from the
+/// pre-features build. Unknown keys are rejected at deserialization time
+/// (via `#[serde(deny_unknown_fields)]`) so a typo in `zfb.config.ts`
+/// surfaces as a clear error naming the unknown field rather than silently
+/// passing through with the feature disabled.
+///
+/// Mirrors `MarkdownFeaturesConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkdownFeaturesConfig {
+    /// GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.).
+    #[serde(default)]
+    pub github_alerts: Option<FeatureToggle>,
+
+    /// Reading-time estimate injected into the document frontmatter.
+    #[serde(default)]
+    pub reading_time: Option<FeatureToggle>,
+
+    /// GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`.
+    #[serde(default)]
+    pub github_autolinks: Option<GithubAutolinksConfig>,
+
+    /// Code-block enrichment (copy button, language label, etc.).
+    #[serde(default)]
+    pub code_enrichment: Option<CodeEnrichmentConfig>,
+
+    /// Grouped code blocks rendered as tabs.
+    #[serde(default)]
+    pub code_tabs: Option<FeatureToggle>,
+
+    /// Ruby annotation support (`{base}^{ruby}` syntax).
+    #[serde(default)]
+    pub ruby: Option<FeatureToggle>,
+
+    /// Export the page TOC as structured data (e.g. for sidebar rendering).
+    #[serde(default)]
+    pub toc_export: Option<TocExportConfig>,
+
+    /// Auto-detect and inject `width`/`height` on `<img>` elements.
+    #[serde(default)]
+    pub image_dimensions: Option<ImageDimensionsConfig>,
+
+    /// Validate internal and external links at build time.
+    #[serde(default)]
+    pub link_validation: Option<LinkValidationConfig>,
+
+    /// Transclusion of other MDX files (`![[path]]` syntax).
+    #[serde(default)]
+    pub transclude: Option<TranscludeConfig>,
+
+    /// Framework admonitions preset (maps `:::note` etc. to components).
+    #[serde(default)]
+    pub admonitions_preset: Option<FeatureToggle>,
+
+    /// Mermaid diagram rendering.
+    #[serde(default)]
+    pub mermaid: Option<FeatureToggle>,
+
+    /// Lightbox / image-enlarge on click.
+    #[serde(default)]
+    pub image_enlarge: Option<FeatureToggle>,
+
+    /// Inline heading-marker TOC (e.g. `## Heading {#id}` syntax, TOC
+    /// rendered via a heading-marker plugin). Uses [`TocConfig`] shape.
+    #[serde(default)]
+    pub heading_marker_toc: Option<TocConfig>,
+}

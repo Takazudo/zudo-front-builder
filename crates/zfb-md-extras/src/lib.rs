@@ -14,7 +14,15 @@
 //! Wave 4-6 will add visitor builders in each feature module below;
 //! `register_features` will call into them to wire the visitors.
 
-use serde::{Deserialize, Serialize};
+// MarkdownFeaturesConfig + per-feature option structs + TocConfig live in
+// zfb-md-ast. Re-export them here so callers of zfb-md-extras can find them
+// in the natural location (this is the "features" crate, after all) without
+// reaching past it for the type.
+pub use zfb_md_ast::{
+    CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
+    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig,
+    TocExportConfig, TranscludeConfig,
+};
 
 /// Test harness module — `run_fixture` and helpers for fixture-based
 /// snapshot tests. Gated behind `cfg(any(test, feature = "test-utils"))` so
@@ -70,107 +78,8 @@ pub mod link_validation {}
 // TODO: Wave 6 — port transclude
 pub mod transclude {}
 
-// ── Feature config types ────────────────────────────────────────────────────
-//
-// Defined here (not in `zfb`) so that `zfb-content` can accept them without
-// an upward dependency on `zfb`. Mirrors `MarkdownFeaturesConfig` and
-// `FeatureToggle` in `packages/zfb/src/config.ts` and `crates/zfb/src/config.rs`.
-//
-// The `zfb` crate keeps its own copy of these types for config-file
-// deserialization; a conversion step (added in Wave 3.1) bridges between
-// the two so existing config paths are unaffected.
-
-/// Per-feature toggle: `bool` shorthand or a feature-options object.
-///
-/// `true` enables the feature with defaults; `false` (or absent) disables it.
-/// The object form carries per-feature options (fields filled in by each
-/// feature's port sub-issue — stubs today).
-///
-/// `serde(untagged)` with `Options` listed first mirrors the `GfmFlag` pattern
-/// in `zfb::config`: serde tries the object form before the bool.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum FeatureToggle {
-    /// Per-feature options object.
-    Options(FeatureOptions),
-    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
-    Bool(bool),
-}
-
-/// Empty options object for features that accept `{ ... }` but have no
-/// user-facing knobs yet.
-///
-/// `deny_unknown_fields` prevents silently accepting arbitrary objects as
-/// "enabled with defaults" when a user typos a config key.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FeatureOptions {}
-
-/// Per-feature markdown pipeline configuration.
-///
-/// Each field corresponds to one pluggable markdown feature. All fields are
-/// optional; absent = feature disabled, behaviour unchanged from the
-/// pre-features build.
-///
-/// Defined in `zfb-md-extras` (not in `zfb`) so that `zfb-content` can
-/// consume it without a dependency cycle. `zfb` carries a parallel copy for
-/// config-file deserialization; a conversion step bridges the two in Wave 3.1.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MarkdownFeaturesConfig {
-    /// GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.).
-    #[serde(default)]
-    pub github_alerts: Option<FeatureToggle>,
-
-    /// Reading-time estimate injected into the document frontmatter.
-    #[serde(default)]
-    pub reading_time: Option<FeatureToggle>,
-
-    /// GitHub-style `owner/repo#123` and SHA autolinks. Requires `repo`.
-    #[serde(default)]
-    pub github_autolinks: Option<FeatureToggle>,
-
-    /// Code-block enrichment (copy button, language label, etc.).
-    #[serde(default)]
-    pub code_enrichment: Option<FeatureToggle>,
-
-    /// Grouped code blocks rendered as tabs.
-    #[serde(default)]
-    pub code_tabs: Option<FeatureToggle>,
-
-    /// Ruby annotation support (`{base}^{ruby}` syntax).
-    #[serde(default)]
-    pub ruby: Option<FeatureToggle>,
-
-    /// Export the page TOC as structured data (e.g. for sidebar rendering).
-    #[serde(default)]
-    pub toc_export: Option<FeatureToggle>,
-
-    /// Auto-detect and inject `width`/`height` on `<img>` elements.
-    #[serde(default)]
-    pub image_dimensions: Option<FeatureToggle>,
-
-    /// Validate internal and external links at build time.
-    #[serde(default)]
-    pub link_validation: Option<FeatureToggle>,
-
-    /// Transclusion of other MDX files (`![[path]]` syntax).
-    #[serde(default)]
-    pub transclude: Option<FeatureToggle>,
-
-    /// Framework admonitions preset (maps `:::note` etc. to components).
-    #[serde(default)]
-    pub admonitions_preset: Option<FeatureToggle>,
-
-    /// Mermaid diagram rendering.
-    #[serde(default)]
-    pub mermaid: Option<FeatureToggle>,
-
-    /// Lightbox / image-enlarge on click.
-    #[serde(default)]
-    pub image_enlarge: Option<FeatureToggle>,
-
-    /// Inline heading-marker TOC.
-    #[serde(default)]
-    pub heading_marker_toc: Option<FeatureToggle>,
-}
+// Feature config types live in zfb-md-ast and are re-exported at the top
+// of this file. The canonical definitions use the rich per-feature option
+// structs (GithubAutolinksConfig, TocConfig, etc.) so the new
+// Pipeline::with_defaults_and_features API and zfb::config share one
+// authoritative shape.

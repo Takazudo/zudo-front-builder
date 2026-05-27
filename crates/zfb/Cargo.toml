@@ -76,6 +76,10 @@ walkdir = { workspace = true }
 # crates so V8 inclusion is decided in exactly one place.
 zfb-build = { path = "../zfb-build", default-features = false }
 zfb-content = { path = "../zfb-content" }
+# Feature config canonical types (MarkdownFeaturesConfig, FeatureToggle,
+# TocConfig, etc.) re-exported from zfb::config via this path so zfb
+# avoids duplicating the schema in lock-step with zfb-md-ast.
+zfb-md-ast = { path = "../zfb-md-ast" }
 # Production asset emit path (S4): `DefaultRunner::emit_prod_assets`
 # constructs a `CssPipeline` + `EsbuildSubprocessBundler` and feeds
 # their bytes to `ProductionAssetPipeline` for hashing + HTML rewrite.

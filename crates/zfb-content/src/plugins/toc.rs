@@ -25,46 +25,14 @@
 //!   `1` → h2 only, `2` → h2+h3 (default), `3` → h2+h3+h4, etc.
 //!   Maximum is 5 (h2 through h6).
 
-use serde::{Deserialize, Serialize};
-
 use crate::pipeline::{HastNode, HastVisitor};
 use crate::plugins::util::hast_text::extract_text;
 
-/// Configuration for the TOC visitor.
-///
-/// Deserialised from `markdown.toc` in `zfb.config.ts` / `zfb.config.json`
-/// via `zfb::config::TocConfig`, which re-exports this type. Defined here
-/// in `zfb-content` (the lowest crate that touches the pipeline) to mirror
-/// the pattern established by `ResolvedGfmConstructs`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TocConfig {
-    /// Heading text that triggers TOC insertion. Matched
-    /// case-insensitively after whitespace trimming. Default: `"TOC"`.
-    #[serde(default = "default_heading")]
-    pub heading: String,
-    /// Number of heading levels to include starting from `<h2>`. `1` →
-    /// h2 only, `2` (default) → h2 + h3, `3` → h2–h4, …, max 5 (h2–h6).
-    #[serde(default = "default_max_depth")]
-    pub max_depth: u8,
-}
-
-fn default_heading() -> String {
-    "TOC".to_string()
-}
-
-fn default_max_depth() -> u8 {
-    2
-}
-
-impl Default for TocConfig {
-    fn default() -> Self {
-        Self {
-            heading: default_heading(),
-            max_depth: default_max_depth(),
-        }
-    }
-}
+// TocConfig moved to zfb-md-ast so MarkdownFeaturesConfig.heading_marker_toc
+// can carry the rich shape from the canonical visitor-contract crate without
+// a dep cycle. Re-exported below so the historical
+// zfb_content::plugins::toc::TocConfig path still resolves.
+pub use zfb_md_ast::TocConfig;
 
 /// Hast visitor that inserts a `<ul>/<li>` table of contents after the
 /// TOC anchor heading.
