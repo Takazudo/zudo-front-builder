@@ -5409,6 +5409,7 @@ dependencies = [
  "zfb-plugin-resolver",
  "zfb-render",
  "zfb-router",
+ "zfb-test-utils",
  "zfb-types",
  "zfb-watcher",
 ]
@@ -5486,6 +5487,7 @@ dependencies = [
  "tracing",
  "walkdir",
  "zfb-plugin-resolver",
+ "zfb-test-utils",
  "zfb-types",
 ]
 

@@ -28,7 +28,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use zfb_build::{
@@ -37,6 +36,7 @@ use zfb_build::{
 };
 use zfb_content::{build_snapshot, CollectionConfig};
 use zfb_render::adapters::Framework;
+use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
@@ -377,45 +377,6 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // ---------------------------------------------------------------------------
 // Group 3 — EmbeddedV8 render path
 // ---------------------------------------------------------------------------
-
-/// Resolve the esbuild binary. Same precedence as the other integration
-/// tests (`bundler_integration.rs`, `integration_e2e_routing_rendering.rs`):
-///
-/// 1. `ZFB_ESBUILD_BIN` env var (an absolute path).
-/// 2. `crates/zfb/binaries/esbuild/esbuild` (the workspace-staged binary).
-/// 3. `which esbuild` (pnpm-store bin, system PATH).
-fn locate_esbuild() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ZFB_ESBUILD_BIN") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-        let slot = workspace.join("crates/zfb/binaries/esbuild/esbuild");
-        if slot.exists() {
-            return Some(slot);
-        }
-    }
-    // Fallback: any pnpm-staged esbuild reachable from the worktree (the
-    // sibling main-repo's `node_modules/.pnpm/node_modules/esbuild/bin`).
-    if let Some(store) = locate_pnpm_node_modules() {
-        let pnpm_slot = store.join("esbuild/bin/esbuild");
-        if pnpm_slot.exists() {
-            return Some(pnpm_slot);
-        }
-    }
-    if let Ok(out) = Command::new("which").arg("esbuild").output() {
-        if out.status.success() {
-            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
 
 /// Workspace root (two levels up from `CARGO_MANIFEST_DIR`).
 fn workspace_root() -> PathBuf {

@@ -117,3 +117,7 @@ zfb-router = { path = "../zfb-router" }
 # the happy path binary-free; the `#[ignore]`-gated test calls the
 # real Tailwind v4 CLI when the binary slot is staged.
 zfb-css = { path = "../zfb-css" }
+# Shared test utilities: locate_esbuild() and zfb_binary!(). Replaces
+# the duplicated locate_esbuild() bodies that previously lived in each
+# integration test file.
+zfb-test-utils = { path = "../zfb-test-utils" }
