@@ -134,8 +134,12 @@
 //!
 //! ## Status
 //!
-//! Committed `#[ignore]`'d so base-branch CI stays green. Wave 2 (#556)
-//! removes the ignore once the fix lands.
+//! Wave 1 (#555) committed the test `#[ignore]`'d so base-branch CI stayed
+//! green between waves. Wave 2 (#556) landed the bundler fix and un-ignored
+//! the test. A second corp-shape variant
+//! (`corp_shape_with_real_node_modules_and_no_tsconfig_paths_builds`) was
+//! added during Wave 2 deep-review to lock in the `--preserve-symlinks` gate
+//! path 3 — both variants must stay green.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -237,23 +241,14 @@ fn pascal_case(s: &str) -> String {
         .collect()
 }
 
-#[test]
-fn corp_shape_components_module_css_builds_with_hashed_classes() {
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[css_modules_components_build] no esbuild binary available; skipping. \
-             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
-        );
-        return;
-    };
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
-
-    // Project shell. Matches `zfb`'s "is this a project" sniff (needs
-    // a `pages/` dir) and the producer's content-root convention
-    // (`components/`, `layouts/`, etc.). No `tailwind` key → CSS
-    // enabled by default.
+/// Set up the corp-shape fixture (three components under `components/<name>/`,
+/// each with a `.module.css` + `.tsx`, plus `pages/index.tsx` importing them).
+/// Returns the snapshot of the original `.module.css` byte contents so the
+/// caller can verify they are not corrupted by the build (symlink-write
+/// hazard).
+fn write_corp_shape_fixture(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    // No `tailwind` key → CSS enabled by default. `pages/` directory
+    // satisfies `zfb`'s "is this a project" sniff.
     fs::write(
         root.join("zfb.config.json"),
         r#"{ "framework": "preact" }
@@ -261,13 +256,11 @@ fn corp_shape_components_module_css_builds_with_hashed_classes() {
     )
     .unwrap();
 
-    // Three components — `hero`, `about`, `contact`. Each owns its
-    // own `.module.css` under `components/<name>/`, mirroring corp's
-    // layout (`components/hero/hero.module.css`, …). At least 2–3
-    // components are required so the multi-file failure mode is
-    // exercised (one symlink-skipped file in the shadow tree would
-    // still crash the build, but with multiple files the crash is the
-    // expected steady-state behaviour rather than a one-off).
+    // Three components mirroring corp's `components/<name>/<name>.{tsx,module.css}`
+    // layout. At least 2–3 components are required so the multi-file failure
+    // mode is exercised (one symlink-skipped file in the shadow would still
+    // crash the build, but with multiple files the crash is the expected
+    // steady-state behaviour rather than a one-off).
     write_component(root, "hero", &["section", "title", "lede"]);
     write_component(root, "about", &["section", "heading", "body"]);
     write_component(root, "contact", &["section", "form", "field"]);
@@ -294,12 +287,7 @@ export default function HomePage() {
     )
     .unwrap();
 
-    // Snapshot the original `.module.css` byte contents so we can
-    // catch the symlink-write corruption hazard (a naive Wave 2 fix
-    // that merely flips `follow_links(true)` without replacing the
-    // symlink in the shadow would write `export default {...};` THROUGH
-    // the symlink and silently overwrite the user's source).
-    let module_css_paths = [
+    let module_css_paths = vec![
         root.join("components/hero/hero.module.css"),
         root.join("components/about/about.module.css"),
         root.join("components/contact/contact.module.css"),
@@ -309,24 +297,34 @@ export default function HomePage() {
         .map(|p| fs::read_to_string(p).unwrap())
         .collect();
 
-    // Drive the real `zfb build` binary — the same CLI path corp uses.
-    // This routes through `compute_css_module_class_maps` →
-    // `discover_css_source_files` → `scan_css_module_imports` →
-    // `materialise_shadow` (symlinks!) → `rewrite_css_modules_in_shadow`
-    // (symlinks skipped → bug) → esbuild (sees raw CSS → crash).
-    //
-    // Pass the resolved esbuild path through `ZFB_ESBUILD_BIN` so the
-    // subprocess uses the same binary the test discovered. Without
-    // this, `zfb` would only look at `ZFB_ESBUILD_BIN`, the embedded
-    // extraction, and the `crates/zfb/binaries/esbuild/esbuild` slot
-    // — so an environment where `locate_esbuild()` found esbuild only
-    // on `PATH` or under `node_modules/.pnpm` would fail with an
-    // unrelated "esbuild not found" error rather than reproducing the
-    // CSS modules crash. (codex review finding, P2.)
+    (module_css_paths, original_module_css)
+}
+
+/// Run `zfb build` against the corp-shape fixture and run the full assertion
+/// suite: source files unchanged (symlink-write guard), build success,
+/// hashed class names in HTML, scoped selectors in `dist/assets/styles-*.css`.
+///
+/// Drives the real `zfb` binary as a subprocess (the same CLI path corp uses):
+/// `compute_css_module_class_maps` → `discover_css_source_files` →
+/// `scan_css_module_imports` → `materialise_shadow` (symlinks!) →
+/// `rewrite_css_modules_in_shadow` → esbuild.
+///
+/// Pass the resolved esbuild path through `ZFB_ESBUILD_BIN` so the subprocess
+/// uses the same binary the test discovered. Without this, environments where
+/// `locate_esbuild()` only found esbuild on `PATH` or under
+/// `node_modules/.pnpm` would fail with an unrelated "esbuild not found"
+/// error rather than reproducing the CSS modules crash. (codex review
+/// finding, P2.)
+fn build_and_assert_corp_shape(
+    root: &Path,
+    esbuild: &Path,
+    module_css_paths: &[PathBuf],
+    original_module_css: &[String],
+) {
     let output = Command::new(zfb_binary())
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
 
@@ -439,6 +437,76 @@ export default function HomePage() {
             truncate(&css_body, 1200),
         );
     }
+}
+
+/// Wave 2 / #553 regression — embedded-vendor path.
+///
+/// This variant has NO `node_modules/` in the fixture, so `zfb build` falls
+/// back to `embedded_node_modules()` (the cargo-install scenario). That
+/// path sets `BundlerInput::node_modules_preserve_symlinks = true` and the
+/// `--preserve-symlinks` gate fires via path 1 of the comment block in
+/// `bundler.rs::run_esbuild`.
+#[test]
+fn corp_shape_components_module_css_builds_with_hashed_classes() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[css_modules_components_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (module_css_paths, original_module_css) = write_corp_shape_fixture(root);
+    build_and_assert_corp_shape(root, &esbuild, &module_css_paths, &original_module_css);
+}
+
+/// Wave 2 / #553 regression — corp's actual `pnpm install` shape.
+///
+/// This variant stages a real project `node_modules/` (symlinked from the
+/// embedded vendor) so `detect_project_node_modules` returns `Some(...)` and
+/// `BundlerInput::node_modules_preserve_symlinks` defaults to `false`. With
+/// the project also having NO `tsconfig.json` `paths`, the `--preserve-symlinks`
+/// gate fires via path 3 of the comment block in `bundler.rs::run_esbuild`.
+///
+/// Without path 3, this test reproduces the exact `Unexpected "."` crash
+/// corp reports in #553 (or, if the symlink-write hazard isn't guarded,
+/// the source-file corruption assertion catches the regression first).
+///
+/// Unix-only because Windows symlinks need admin/developer mode and the
+/// shadow-walk symlink hazard doesn't apply on the Windows code path in
+/// `symlink_or_copy`.
+#[cfg(unix)]
+#[test]
+fn corp_shape_with_real_node_modules_and_no_tsconfig_paths_builds() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[css_modules_components_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (module_css_paths, original_module_css) = write_corp_shape_fixture(root);
+
+    // Stage a real `node_modules/` so `detect_project_node_modules` returns
+    // `Some(...)` instead of falling back to `embedded_node_modules()`. We
+    // symlink it to the same embedded-vendor tree the `zfb` binary would
+    // have extracted anyway — saving the extraction cost while still
+    // exercising the corp-shape code path. The `_nm_handle` keeps the
+    // tempdir alive for the test's duration.
+    let (_nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
+        .expect("symlink node_modules");
+
+    // No `tsconfig.json` written — corp also has no `compilerOptions.paths`.
+    // This combination is exactly what gate path 3 is meant to handle.
+
+    build_and_assert_corp_shape(root, &esbuild, &module_css_paths, &original_module_css);
 }
 
 fn collect_files(dir: &Path, ext: &str) -> Vec<PathBuf> {

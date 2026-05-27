@@ -1862,6 +1862,15 @@ fn rewrite_css_modules_in_shadow(
         // writing, so we never write THROUGH the symlink and corrupt
         // the user's source file in the project root. Mirrors the same
         // pattern used by symlink_or_copy (bundler.rs:1385).
+        //
+        // The error is intentionally discarded with `let _ =`, NOT
+        // `?`: when the shadow entry is a regular file (no symlink to
+        // remove) or NotFound (already gone), the subsequent
+        // `fs::write` will succeed and overwrite cleanly. A real
+        // permission or filesystem failure will surface immediately on
+        // the `fs::write` call below with a useful error context. Do
+        // not "helpfully" change this to `?` — it would convert
+        // benign NotFound cases into spurious build failures.
         let _ = fs::remove_file(path);
         fs::write(path, js.as_bytes()).with_context(|| {
             format!(
@@ -2945,7 +2954,7 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     // same as `--platform=node`; the bundle stays platform-neutral.
     cmd.arg("--external:node:*");
 
-    // `--preserve-symlinks` has two separate activation paths:
+    // `--preserve-symlinks` has THREE separate activation paths:
     //
     // 1. **Vendored mode** (`node_modules_dir.is_some() &&
     //    node_modules_preserve_symlinks == true`) — `node_modules_dir`
@@ -2966,14 +2975,24 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     //    rather than the rewritten JS in the shadow. With
     //    `--preserve-symlinks`, esbuild stays anchored at the shadow
     //    and resolves the relative import to the rewritten JS file.
-    //    Gated on `node_modules_dir.is_none()` to avoid the path-alias
-    //    regression in #443/#450: when `node_modules_dir` is set,
-    //    workspace-package importers have `node_modules` in their
-    //    shadow path, and `--preserve-symlinks` causes esbuild to skip
-    //    tsconfig discovery for those importers
-    //    (`tsConfigForDir` returns early for `isInsideNodeModules`).
-    //    With no `node_modules_dir` there is no `node_modules` in the
-    //    shadow, so that regression path does not exist.
+    //
+    // 3. **CSS Modules with a project node_modules but no tsconfig
+    //    `paths`** (fix #553, corp's actual shape — `pnpm install`'d
+    //    node_modules + plain relative imports of `*.module.css`,
+    //    NO `compilerOptions.paths` in tsconfig). The .tsx
+    //    canonicalisation problem above ALSO applies here; the only
+    //    reason path 2's `is_none()` gate isn't enough is that corp
+    //    has a real project `node_modules`. Adding
+    //    `--preserve-symlinks` here is safe because the regression in
+    //    #443/#450 that the gate originally protected against
+    //    (`tsConfigForDir` returning early for workspace-package
+    //    importers inside `node_modules`, so the project's
+    //    `compilerOptions.paths` aliases stop applying for them)
+    //    requires `paths` to even exist — without `paths` there is no
+    //    alias resolution to break. The
+    //    `bundler_workspace_pkg_alias` regression test exercises the
+    //    `paths`-present branch and continues to pass because this
+    //    `is_empty()` clause does NOT fire when paths exist.
     if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
         cmd.arg("--preserve-symlinks");
     } else if input.node_modules_dir.is_none() {
@@ -2989,6 +3008,21 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
         // Also covers the `embedded_node_modules()` extraction-failure
         // fallback path in `build.rs` — that build is already headed
         // for failure, so --preserve-symlinks does not make it worse.
+        cmd.arg("--preserve-symlinks");
+    } else if input.tsconfig_paths.is_empty() {
+        // Project has its own node_modules but no tsconfig path aliases.
+        // The #443/#450 regression that the previous gate protected
+        // against is workspace-package importers (files INSIDE
+        // node_modules) failing to resolve via the project's tsconfig
+        // `paths`. With no `paths` map in the user's tsconfig, that
+        // failure mode cannot occur (esbuild has no aliases to apply
+        // anyway). So it is safe to add --preserve-symlinks here, which
+        // is needed to fix the same .tsx-canonicalisation issue
+        // described above for corp's shape (`pnpm install`'d
+        // node_modules + relative imports of `*.module.css`). The
+        // `bundler_workspace_pkg_alias` regression test exercises the
+        // OTHER branch — it has `paths`, so this clause does NOT fire
+        // and the test's protection remains intact.
         cmd.arg("--preserve-symlinks");
     }
 
