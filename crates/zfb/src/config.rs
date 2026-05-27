@@ -843,8 +843,8 @@ pub struct MarkdownConfig {
 // `zfb::config::TocConfig` continue to resolve.
 pub use zfb_md_ast::{
     CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
-    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig,
-    TocExportConfig, TranscludeConfig,
+    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
+    TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 /// Options for the `rehype-external-links` port.

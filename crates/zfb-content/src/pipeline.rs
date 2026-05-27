@@ -872,8 +872,10 @@ pub fn register_features(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
+    use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
+
     // ── mdast phase ────────────────────────────────────────────────────────
-    if features.admonitions_preset.is_some() {
+    if feature_enabled(&features.admonitions_preset) {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;
         let mut registry = DirectiveRegistry::new();
@@ -884,18 +886,26 @@ pub fn register_features(
     }
 
     // ── hast phase (all before SyntectPlugin) ──────────────────────────────
-    if features.heading_marker_toc.is_some() {
-        let cfg = features.heading_marker_toc.clone().unwrap_or_default();
+    // The gating helpers `feature_enabled` and `heading_marker_toc_enabled`
+    // treat `Some(FeatureToggle::Bool(false))` as disabled — `is_some()`
+    // alone would silently wire the plugin even when the user explicitly
+    // turned it off.
+    if heading_marker_toc_enabled(&features.heading_marker_toc) {
+        let cfg = features
+            .heading_marker_toc
+            .as_ref()
+            .map(zfb_md_ast::HeadingMarkerTocFeature::to_config)
+            .unwrap_or_default();
         p.add_hast_visitor(Box::new(
             zfb_md_extras::heading_marker_toc::TocPlugin::new(cfg),
         ));
     }
-    if features.image_enlarge.is_some() {
+    if feature_enabled(&features.image_enlarge) {
         p.add_hast_visitor(Box::new(
             zfb_md_extras::image_enlarge::ImageEnlargePlugin::new(),
         ));
     }
-    if features.mermaid.is_some() {
+    if feature_enabled(&features.mermaid) {
         p.add_hast_visitor(Box::new(
             zfb_md_extras::mermaid::MermaidPlugin::new(),
         ));

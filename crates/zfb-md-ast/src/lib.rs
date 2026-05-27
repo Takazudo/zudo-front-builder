@@ -29,9 +29,9 @@ pub use directives::{
     ValidatedAttrValue,
 };
 pub use features_config::{
-    CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
-    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig,
-    TocExportConfig, TranscludeConfig,
+    feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig, FeatureOptions,
+    FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
 };
 pub use hast_text::extract_text;
 

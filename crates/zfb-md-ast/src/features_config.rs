@@ -128,6 +128,73 @@ impl Default for TocConfig {
     }
 }
 
+/// `headingMarkerToc` feature value: either a `bool` shorthand
+/// (`true` = enable with [`TocConfig::default`], `false` = disable) or a
+/// full [`TocConfig`] options object.
+///
+/// `serde(untagged)` with `Config` listed first ensures serde tries the
+/// object form before the bool — same pattern as [`FeatureToggle`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum HeadingMarkerTocFeature {
+    /// Full options object — TOC heading text + max depth.
+    Config(TocConfig),
+    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
+    Bool(bool),
+}
+
+impl HeadingMarkerTocFeature {
+    /// True when the feature should be wired into the pipeline. `Bool(false)`
+    /// is treated as disabled even though it deserialises to `Some(...)`.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            HeadingMarkerTocFeature::Bool(b) => *b,
+            HeadingMarkerTocFeature::Config(_) => true,
+        }
+    }
+
+    /// Resolve to a concrete [`TocConfig`]. `Bool(true)` and `Bool(false)`
+    /// both fall back to `TocConfig::default()`; the caller must gate on
+    /// [`Self::is_enabled`] first to know whether to wire the visitor.
+    #[must_use]
+    pub fn to_config(&self) -> TocConfig {
+        match self {
+            HeadingMarkerTocFeature::Config(cfg) => cfg.clone(),
+            HeadingMarkerTocFeature::Bool(_) => TocConfig::default(),
+        }
+    }
+}
+
+impl FeatureToggle {
+    /// True when the feature should be wired into the pipeline.
+    /// `Bool(false)` is treated as disabled even though it deserialises
+    /// to `Some(...)`. `Options(_)` is always enabled (the user explicitly
+    /// supplied an options object).
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            FeatureToggle::Bool(b) => *b,
+            FeatureToggle::Options(_) => true,
+        }
+    }
+}
+
+/// Helper for the gating pattern in `Pipeline::with_defaults_and_features`:
+/// `feature_enabled(&cfg.mermaid)` returns true iff the user explicitly
+/// turned the feature on. `None` or `Some(Bool(false))` both return false.
+#[must_use]
+pub fn feature_enabled(toggle: &Option<FeatureToggle>) -> bool {
+    toggle.as_ref().is_some_and(FeatureToggle::is_enabled)
+}
+
+/// Same as [`feature_enabled`] but for the heading-marker-TOC feature, which
+/// accepts the rich `TocConfig` shape via [`HeadingMarkerTocFeature`].
+#[must_use]
+pub fn heading_marker_toc_enabled(toggle: &Option<HeadingMarkerTocFeature>) -> bool {
+    toggle.as_ref().is_some_and(HeadingMarkerTocFeature::is_enabled)
+}
+
 /// Per-feature markdown pipeline configuration.
 ///
 /// Each field corresponds to one pluggable markdown feature. All fields are
@@ -193,8 +260,9 @@ pub struct MarkdownFeaturesConfig {
     #[serde(default)]
     pub image_enlarge: Option<FeatureToggle>,
 
-    /// Inline heading-marker TOC (e.g. `## Heading {#id}` syntax, TOC
-    /// rendered via a heading-marker plugin). Uses [`TocConfig`] shape.
+    /// Inline heading-marker TOC. Accepts either a `bool` shorthand
+    /// (`true` = enable with defaults, `false` = disable) or a full
+    /// [`TocConfig`] options object — see [`HeadingMarkerTocFeature`].
     #[serde(default)]
-    pub heading_marker_toc: Option<TocConfig>,
+    pub heading_marker_toc: Option<HeadingMarkerTocFeature>,
 }
