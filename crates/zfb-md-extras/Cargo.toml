@@ -26,6 +26,7 @@ test-utils = ["dep:zfb-test-utils", "dep:tempdir"]
 [dependencies]
 markdown = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 # Optional: compiled when `features = ["test-utils"]` is requested by a
 # downstream crate's dev-dependencies. The same packages are also listed in
 # [dev-dependencies] so that this crate's own unit tests (which compile

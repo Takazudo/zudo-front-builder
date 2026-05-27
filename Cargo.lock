@@ -5604,6 +5604,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "zfb-md-ast",
+ "zfb-md-extras",
  "zfb-render",
 ]
 
@@ -5677,6 +5678,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "markdown",
+ "serde",
  "tempdir",
  "zfb-test-utils",
 ]
