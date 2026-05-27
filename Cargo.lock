@@ -5378,6 +5378,7 @@ dependencies = [
  "zfb-render",
  "zfb-router",
  "zfb-server",
+ "zfb-test-utils",
  "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
