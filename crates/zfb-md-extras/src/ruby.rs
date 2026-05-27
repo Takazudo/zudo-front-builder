@@ -49,10 +49,14 @@
 //! # Edge cases
 //!
 //! - **Empty base or ruby**: `{|ruby}` or `{base|}` — left as literal text.
-//! - **Multiple pipes**: `{a|b|c}` — uses the first `|` as separator;
-//!   `base = "a"`, `ruby = "b|c"`.
+//! - **Multiple pipes / JS operators**: `{a|b|c}`, `{a || b}`, `{a?b:c|d}`,
+//!   `{obj.prop|filter}`, `{a<b|c}` — left as MDX expressions. The plugin
+//!   only matches plain-text annotations to avoid clobbering valid JS
+//!   expressions that happen to contain `|`.
 //! - **Missing pipe**: a plain MDX expression `{text}` with no `|` — left
 //!   as-is (not converted to a ruby element).
+//! - **HTML escaping**: base/ruby text is HTML-escaped (`<`, `>`, `&`, `"`,
+//!   `'`) before being emitted, so it cannot break the surrounding HTML.
 //! - **Escape sequences in Text nodes**: `\{` and `\|` produce literal `{`
 //!   and `|` characters (only relevant when scanning raw `Text` nodes).
 //!
@@ -82,16 +86,83 @@ use zfb_md_ast::MdastVisitor;
 /// The MDX parser stores the raw expression text (without surrounding `{}`),
 /// so this function expects a string like `"漢字|かんじ"`. Returns
 /// `Some((base, ruby))` when the expression contains exactly one pipe and
-/// both sides are non-empty. Returns `None` otherwise (the expression is
-/// left unchanged).
+/// both halves contain only plain "text" characters (no JS operators).
+/// Returns `None` otherwise (the expression is left unchanged).
+///
+/// # Why a strict check?
+///
+/// `features.ruby` opts the user into rewriting `{base|ruby}` expressions,
+/// but we MUST NOT accidentally swallow a valid MDX/JS expression that
+/// happens to contain a `|`. Cases to guard against:
+///
+/// - `{a || b}` — JS logical-OR. Contains `||` (double pipe).
+/// - `{flag ? x | y : z}` — ternary with bitwise OR. Contains `?` and `:`.
+/// - `{obj.prop | filter}` — pipeline-style. Contains `.`.
+///
+/// The heuristic: reject any value that contains a character that has
+/// special meaning in JS expressions (`&|?:=<>().,;[]{}\`) or that
+/// contains a double-pipe `||`. Plain text — letters (incl. CJK),
+/// digits, spaces, common punctuation that doesn't conflict with JS —
+/// passes through.
 fn parse_expression_as_ruby(value: &str) -> Option<(String, String)> {
+    // Reject `||` (logical-OR) — `{a || b}` must not be treated as ruby.
+    if value.contains("||") {
+        return None;
+    }
+
     let pipe_pos = value.find('|')?;
     let base = &value[..pipe_pos];
     let ruby = &value[pipe_pos + 1..];
     if base.is_empty() || ruby.is_empty() {
         return None;
     }
+
+    // Reject values containing JS-expression-like characters in either half.
+    // Conservative: any char that suggests this is a real JS expression.
+    if has_js_operator_chars(base) || has_js_operator_chars(ruby) {
+        return None;
+    }
+
+    // Reject multiple pipes — `{a|b|c}` looks like bitwise-OR chain, not ruby.
+    if ruby.contains('|') {
+        return None;
+    }
+
     Some((base.to_string(), ruby.to_string()))
+}
+
+/// Return true if `s` contains a character that indicates JS-expression
+/// syntax rather than plain ruby text. Used to filter MDX expressions that
+/// happen to have a pipe but are not ruby annotations.
+fn has_js_operator_chars(s: &str) -> bool {
+    s.chars()
+        .any(|c| matches!(c, '&' | '?' | ':' | '=' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '\\' | '.' | '!' | '+' | '*' | '/' | '%' | '~' | '^'))
+}
+
+// ── HTML escaping ────────────────────────────────────────────────────────────
+
+/// Escape HTML special characters in a text value so it is safe to inline
+/// inside an `MdxJsxTextElement` `Text` child that the HTML-path
+/// reconstruct-JSX serializer will concatenate verbatim.
+///
+/// Without this, base/ruby text containing `<`, `>`, `&`, `"` would break
+/// the surrounding HTML (or worse, allow markup injection through `<` and
+/// `>`). The mdast→hast `HtmlPath` strategy reconstructs `MdxJsxTextElement`
+/// via `reconstruct_jsx`, which clones the `Text.value` directly into the
+/// output string — there is no later escape pass.
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 // ── mdast node builders ──────────────────────────────────────────────────────
@@ -104,13 +175,18 @@ fn parse_expression_as_ruby(value: &str) -> Option<(String, String)> {
 /// inline inside paragraphs. The `HtmlPath` mdast→hast strategy emits these
 /// as `JsxRaw` (verbatim passthrough), which the HTML serializer outputs
 /// literally. This gives us the desired raw HTML output.
+///
+/// Base and ruby text are **HTML-escaped** here because the JsxRaw path
+/// concatenates `Text.value` verbatim without a later escape pass — without
+/// this, a user-supplied `<`, `>`, `&`, or `"` in either half would break
+/// the surrounding HTML.
 fn make_ruby_node(base: &str, ruby_text: &str) -> MdastNode {
     // <rb>base</rb>
     let rb = MdxJsxTextElement {
         name: Some("rb".to_string()),
         attributes: Vec::<AttributeContent>::new(),
         children: vec![MdastNode::Text(Text {
-            value: base.to_string(),
+            value: escape_html(base),
             position: None,
         })],
         position: None,
@@ -120,7 +196,7 @@ fn make_ruby_node(base: &str, ruby_text: &str) -> MdastNode {
         name: Some("rt".to_string()),
         attributes: Vec::<AttributeContent>::new(),
         children: vec![MdastNode::Text(Text {
-            value: ruby_text.to_string(),
+            value: escape_html(ruby_text),
             position: None,
         })],
         position: None,
@@ -267,10 +343,19 @@ fn next_token(input: &str) -> ParseResult<'_> {
     }
 
     if let Some(rest) = rest_after_close {
-        if found_pipe && !base.is_empty() && !ruby.is_empty() {
+        // Mirror the strict check in `parse_expression_as_ruby` — reject
+        // JS-operator-like characters so `{a||b}` etc. stay literal.
+        if found_pipe
+            && !base.is_empty()
+            && !ruby.is_empty()
+            && !has_js_operator_chars(&base)
+            && !has_js_operator_chars(&ruby)
+            && !ruby.contains('|')
+        {
             return ParseResult::Ruby { base, ruby, rest };
         }
-        // Well-formed `{...}` but no pipe / empty half → literal `{`.
+        // Well-formed `{...}` but no pipe / empty half / suspicious chars
+        // → literal `{`.
         return ParseResult::Invalid {
             consumed: "{".to_string(),
             rest: inner_start,
@@ -484,6 +569,18 @@ impl MdastVisitor for RubyPlugin {
                     self.visit(child);
                 }
             }
+            MdastNode::Link(l) => {
+                rewrite_inline_children(&mut l.children);
+                for child in &mut l.children {
+                    self.visit(child);
+                }
+            }
+            MdastNode::LinkReference(lr) => {
+                rewrite_inline_children(&mut lr.children);
+                for child in &mut lr.children {
+                    self.visit(child);
+                }
+            }
             MdastNode::Blockquote(bq) => {
                 for child in &mut bq.children {
                     self.visit(child);
@@ -564,10 +661,34 @@ mod tests {
     }
 
     #[test]
-    fn expression_multiple_pipes_uses_first() {
-        // Multiple pipes: base = "a", ruby = "b|c"
-        let r = parse_expression_as_ruby("a|b|c");
-        assert_eq!(r, Some(("a".to_string(), "b|c".to_string())));
+    fn expression_multiple_pipes_rejected() {
+        // Multiple pipes look like a JS bitwise-OR chain rather than ruby.
+        assert!(parse_expression_as_ruby("a|b|c").is_none());
+    }
+
+    #[test]
+    fn expression_logical_or_rejected() {
+        // `{a || b}` is JS logical-OR, NOT ruby.
+        assert!(parse_expression_as_ruby("a || b").is_none());
+    }
+
+    #[test]
+    fn expression_ternary_rejected() {
+        // `{flag ? x | y : z}` is a JS ternary, NOT ruby.
+        assert!(parse_expression_as_ruby("flag ? x | y : z").is_none());
+    }
+
+    #[test]
+    fn expression_with_dot_rejected() {
+        // `{obj.prop|filter}` looks like a pipeline expression, NOT ruby.
+        assert!(parse_expression_as_ruby("obj.prop|filter").is_none());
+    }
+
+    #[test]
+    fn expression_with_angle_bracket_rejected() {
+        // Reject expressions that contain `<` or `>`.
+        assert!(parse_expression_as_ruby("a<b|c").is_none());
+        assert!(parse_expression_as_ruby("a|b>c").is_none());
     }
 
     // ── next_token (Text-node scanner) ────────────────────────────────────
@@ -888,6 +1009,54 @@ mod tests {
         assert_eq!(format!("{tree:?}"), before, "non-ruby flow expression must not change");
     }
 
+    // ── escape_html ───────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_html_basic() {
+        assert_eq!(escape_html("a & b"), "a &amp; b");
+        assert_eq!(escape_html("<em>"), "&lt;em&gt;");
+        assert_eq!(escape_html("\"q\""), "&quot;q&quot;");
+        assert_eq!(escape_html("plain"), "plain");
+    }
+
+    // ── Link container ────────────────────────────────────────────────────
+
+    #[test]
+    fn visitor_rewrites_inside_link() {
+        // [{漢字|かんじ}](/url) — annotation should be rewritten inside link text.
+        let link = MdastNode::Link(markdown::mdast::Link {
+            url: "/url".to_string(),
+            title: None,
+            children: vec![MdastNode::MdxTextExpression(
+                markdown::mdast::MdxTextExpression {
+                    value: "漢字|かんじ".to_string(),
+                    position: None,
+                    stops: Vec::new(),
+                },
+            )],
+            position: None,
+        });
+        let mut tree = make_root(vec![MdastNode::Paragraph(Paragraph {
+            children: vec![link],
+            position: None,
+        })]);
+        RubyPlugin::new().visit(&mut tree);
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root");
+        };
+        let MdastNode::Paragraph(p) = &root.children[0] else {
+            panic!("expected Paragraph");
+        };
+        let MdastNode::Link(l) = &p.children[0] else {
+            panic!("expected Link");
+        };
+        assert!(
+            matches!(l.children[0], MdastNode::MdxJsxTextElement(_)),
+            "annotation inside link must become MdxJsxTextElement, got {:?}",
+            l.children[0]
+        );
+    }
+
     // ── make_ruby_node structure ──────────────────────────────────────────
 
     #[test]
@@ -906,5 +1075,31 @@ mod tests {
             panic!("expected rt element");
         };
         assert_eq!(rt.name.as_deref(), Some("rt"));
+    }
+
+    #[test]
+    fn make_ruby_node_escapes_html_chars() {
+        // Defensive: the parser already rejects `<>` in base/ruby (they trip
+        // `has_js_operator_chars`), but if a caller somehow gets unsafe text
+        // through (e.g. via the Text-node path), make_ruby_node must still
+        // escape it so the JSX raw output cannot break the surrounding HTML.
+        let node = make_ruby_node("a&b", "c\"d");
+        let MdastNode::MdxJsxTextElement(ruby) = node else {
+            panic!("expected MdxJsxTextElement");
+        };
+        let MdastNode::MdxJsxTextElement(rb) = &ruby.children[0] else {
+            panic!("expected rb");
+        };
+        let MdastNode::Text(t) = &rb.children[0] else {
+            panic!("expected Text");
+        };
+        assert_eq!(t.value, "a&amp;b");
+        let MdastNode::MdxJsxTextElement(rt) = &ruby.children[1] else {
+            panic!("expected rt");
+        };
+        let MdastNode::Text(t) = &rt.children[0] else {
+            panic!("expected Text");
+        };
+        assert_eq!(t.value, "c&quot;d");
     }
 }

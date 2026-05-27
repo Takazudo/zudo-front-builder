@@ -105,3 +105,30 @@ fn empty_ruby_left_as_text() {
         "empty ruby annotation must NOT produce <ruby>: {html}"
     );
 }
+
+/// Ruby annotation inside a link's text is also rewritten.
+#[test]
+fn ruby_inside_link() {
+    let input = "[{漢字|かんじ}](/url)";
+    let mut p = pipeline_with_ruby(true);
+    let hast = p.run(input).expect("pipeline failed");
+    let html = serialize(&hast);
+    assert!(
+        html.contains("<ruby>") && html.contains("<a "),
+        "ruby in link text must be rewritten: {html}"
+    );
+}
+
+/// Defensive: an MDX expression that looks like a JS logical-OR (`{a || b}`)
+/// is NOT a ruby annotation — preserve it.
+#[test]
+fn logical_or_expression_not_ruby() {
+    let input = "{a || b}\n";
+    let mut p = pipeline_with_ruby(true);
+    let hast = p.run(input).expect("pipeline failed");
+    let html = serialize(&hast);
+    assert!(
+        !html.contains("<ruby>"),
+        "JS logical-OR must NOT be treated as ruby: {html}"
+    );
+}
