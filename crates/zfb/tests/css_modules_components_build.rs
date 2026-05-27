@@ -103,6 +103,16 @@
 //! `crates/zfb-build/tests/bundler_css_modules.rs` for that
 //! shortcut).
 //!
+//! ## Why this test lives in `crates/zfb/tests/`
+//!
+//! It must exercise the full producer + bundler pipeline driven by
+//! `zfb build`, which requires the `CARGO_BIN_EXE_zfb` test-time env
+//! var Cargo only sets for integration tests under the `zfb` crate. A
+//! sibling test in `crates/zfb-build/tests/` can only construct
+//! `BundlerInput` directly — that path takes a pre-supplied class
+//! map and bypasses `compute_css_module_class_maps`, which is the
+//! exact step where the producer/consumer contract for `#553` lives.
+//!
 //! The dual assertion checks:
 //!
 //! 1. Built HTML under `dist/` carries **hashed** class names
@@ -219,7 +229,7 @@ fn pascal_case(s: &str) -> String {
 }
 
 #[test]
-#[ignore = "fails until #553 fix — Wave 2"]
+#[ignore = "fails until #553 fix lands in Wave 2 (#556) — intentional regression coverage; do NOT un-ignore until the bundler fix is in"]
 fn corp_shape_components_module_css_builds_with_hashed_classes() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -364,6 +374,15 @@ export default function HomePage() {
     // gets emitted at all (build crashes), so the earlier
     // `output.status.success()` assertion already fails — this is
     // belt-and-braces.
+    //
+    // The chosen subset `[section, title, heading, form]` provides
+    // multi-file coverage: `section` is shared across all three
+    // components (so all three must have been rewritten), while
+    // `title` is unique to hero, `heading` to about, and `form` to
+    // contact — so a single-component build cannot satisfy all four
+    // assertions. Other class names (`lede`, `body`, `field`) are
+    // CSS-only and don't reach the rendered HTML, which is why they
+    // aren't asserted here.
     for local in ["section", "title", "heading", "form"] {
         let needle = format!("_{local}");
         assert!(
@@ -373,16 +392,14 @@ export default function HomePage() {
             truncate(&html_blob, 1200)
         );
     }
-    // Raw class names must NOT leak (the user wrote `styles.section`,
-    // not `class=\"section\"` — any `class=\"section\"` literal would
-    // indicate the rewrite produced an empty `export default {};`,
-    // making `styles.section` undefined).
-    assert!(
-        !html_blob.contains("class=\"section\""),
-        "raw `class=\"section\"` should not appear; either the rewrite \
-         failed or the module map was empty.\n--- html ---\n{}",
-        truncate(&html_blob, 1200),
-    );
+    // Note: we don't add a negative `!html_blob.contains("class=\"section\"")`
+    // assertion. The component sources use `class={styles.section}` (a JSX
+    // expression), so if the rewrite produces `export default {};` then
+    // `styles.section` is `undefined` and Preact omits the attribute
+    // entirely — `class="section"` would never appear as a literal even
+    // in the bug state. The positive `_section` check above already
+    // catches the empty-map case (it would fail to find any hashed
+    // suffix).
 
     // Assertion 2 — `styles-<hash>.css` contains the matching scoped
     // selectors.
@@ -438,8 +455,11 @@ fn collect_files(dir: &Path, ext: &str) -> Vec<PathBuf> {
 
 fn truncate(s: &str, n: usize) -> String {
     if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}…[truncated]", &s[..n])
+        return s.to_string();
     }
+    // Find the largest char boundary <= n so byte-slicing doesn't
+    // panic on multi-byte UTF-8 (the fixture is ASCII today, but the
+    // build output we format into assertion failures may not be).
+    let cut = (0..=n).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+    format!("{}…[truncated]", &s[..cut])
 }
