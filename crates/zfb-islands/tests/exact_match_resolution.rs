@@ -18,36 +18,11 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use zfb_islands::{
     BundleConfig, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, Island,
 };
-
-fn locate_esbuild() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ZFB_ESBUILD_BIN") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-        let slot = workspace.join("crates/zfb/binaries/esbuild/esbuild");
-        if slot.exists() {
-            return Some(slot);
-        }
-    }
-    if let Ok(out) = Command::new("which").arg("esbuild").output() {
-        if out.status.success() {
-            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
+use zfb_test_utils::locate_esbuild;
 
 /// Build a working_dir with a `components/` subtree holding one island
 /// TSX file. `island_source` is the file body; `aliased_target_filename`

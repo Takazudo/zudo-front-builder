@@ -3110,6 +3110,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
     #[test]
     fn render_css_module_js_emits_sorted_default_export() {
@@ -4387,40 +4388,6 @@ mod tests {
             idx("/docs/[...slug]") < idx("/[lang]/[slug]"),
             "/docs/[...slug] should be before /[lang]/[slug]"
         );
-    }
-
-    /// Locate a real esbuild binary for gated integration tests. Order:
-    ///
-    /// 1. `ZFB_ESBUILD_BIN` env var
-    /// 2. `crates/zfb/binaries/esbuild/esbuild` slot relative to the
-    ///    workspace root (resolved relative to `CARGO_MANIFEST_DIR`).
-    /// 3. `which esbuild` on `$PATH`.
-    pub(super) fn locate_real_esbuild() -> Option<PathBuf> {
-        if let Some(p) = std::env::var_os("ZFB_ESBUILD_BIN") {
-            let p = PathBuf::from(p);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-        // CARGO_MANIFEST_DIR is `crates/zfb-build`.
-        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        if let Some(workspace) = here.parent().and_then(|p| p.parent()) {
-            let slot = workspace.join("crates/zfb/binaries/esbuild/esbuild");
-            if slot.exists() {
-                return Some(slot);
-            }
-        }
-        // Fallback to PATH.
-        if let Ok(out) = Command::new("which").arg("esbuild").output() {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                let p = PathBuf::from(p);
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-        None
     }
 
     #[test]

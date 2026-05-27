@@ -68,3 +68,6 @@ lol_html = "2.8.1"
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+# Shared test utilities: locate_esbuild(). Replaces the duplicated
+# locate_esbuild() body that previously lived in each integration test file.
+zfb-test-utils = { path = "../zfb-test-utils" }

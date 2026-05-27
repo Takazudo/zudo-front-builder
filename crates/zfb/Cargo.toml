@@ -119,3 +119,4 @@ tar = "0.4"
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+zfb-test-utils = { path = "../zfb-test-utils" }

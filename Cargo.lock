@@ -5378,6 +5378,7 @@ dependencies = [
  "zfb-render",
  "zfb-router",
  "zfb-server",
+ "zfb-test-utils",
  "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
@@ -5409,6 +5410,7 @@ dependencies = [
  "zfb-plugin-resolver",
  "zfb-render",
  "zfb-router",
+ "zfb-test-utils",
  "zfb-types",
  "zfb-watcher",
 ]
@@ -5486,6 +5488,7 @@ dependencies = [
  "tracing",
  "walkdir",
  "zfb-plugin-resolver",
+ "zfb-test-utils",
  "zfb-types",
 ]
 
@@ -5559,6 +5562,10 @@ dependencies = [
  "zfb-types",
  "zfb-watcher",
 ]
+
+[[package]]
+name = "zfb-test-utils"
+version = "0.0.0"
 
 [[package]]
 name = "zfb-toolchain-pins"
