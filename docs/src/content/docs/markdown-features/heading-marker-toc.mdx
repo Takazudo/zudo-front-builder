@@ -1,0 +1,67 @@
+---
+title: Heading-marker TOC
+description: Auto-insert a table of contents after a designated heading.
+tier: Opt-in
+---
+
+The `headingMarkerToc` feature inserts a nested `<ul>/<li>` table of contents immediately after the first heading whose text matches a configured anchor string (default `"TOC"`).
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      headingMarkerToc: {
+        heading: "TOC",   // default — heading text that triggers insertion
+        maxDepth: 2,      // default — 1 = h2 only, 2 = h2+h3, …, max 5
+      },
+    },
+  },
+});
+```
+
+Pass `true` to use all defaults:
+
+```ts
+headingMarkerToc: true,
+```
+
+## Usage
+
+Place a heading with the configured anchor text in your Markdown file:
+
+```md
+## TOC
+
+## Introduction
+
+### Background
+
+## Conclusion
+```
+
+The plugin inserts a `<ul>` list after the `## TOC` heading containing links to all subsequent headings within `maxDepth` levels:
+
+```html
+<ul>
+  <li><a href="#introduction">Introduction</a>
+    <ul>
+      <li><a href="#background">Background</a></li>
+    </ul>
+  </li>
+  <li><a href="#conclusion">Conclusion</a></li>
+</ul>
+```
+
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `heading` | `"TOC"` | Heading text that triggers TOC insertion. Matched case-insensitively after whitespace trimming. |
+| `maxDepth` | `2` | Heading levels to include starting from `<h2>`. `1` → h2 only, `2` → h2+h3, `3` → h2–h4, max `5` (h2–h6). |
+
+## Visitor ordering
+
+`TocPlugin` runs **after** `HeadingLinksPlugin` in the hast phase so that `id` attributes (deduplicated slugs) are already set on each heading when the TOC links are built. Each `<a href="#id">` in the TOC mirrors the final, deduplicated slug.
