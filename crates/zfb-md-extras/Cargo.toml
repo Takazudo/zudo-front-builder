@@ -1,0 +1,42 @@
+[package]
+name = "zfb-md-extras"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb markdown extras: remark/rehype plugin ports (GFM, footnotes, etc.)"
+
+[lib]
+
+# `test-utils` gates the test_harness module so integration tests in Wave 2+
+# can access run_fixture without exposing it in production builds.
+# Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
+# dev-dependencies of crates that run fixture-based snapshot tests.
+#
+# IMPORTANT: `zfb-test-utils` is listed as an optional *regular* dependency
+# (not just a dev-dependency) because the `test-utils` feature may be activated
+# from non-test builds of downstream crates.  Cargo does not make dev-dependencies
+# available to normal (non-test) compilations, so placing it only in
+# [dev-dependencies] would cause an "unresolved import" error whenever a
+# downstream crate enables `features = ["test-utils"]` outside a `#[cfg(test)]`
+# context.  The optional flag ensures zero production-binary cost when the
+# feature is off.
+[features]
+test-utils = ["dep:zfb-test-utils", "dep:tempdir"]
+
+[dependencies]
+markdown = { workspace = true }
+anyhow = { workspace = true }
+# Optional: compiled when `features = ["test-utils"]` is requested by a
+# downstream crate's dev-dependencies. The same packages are also listed in
+# [dev-dependencies] so that this crate's own unit tests (which compile
+# test_harness.rs via cfg(test)) can resolve them without activating the
+# feature flag.
+zfb-test-utils = { path = "../zfb-test-utils", optional = true }
+tempdir = { version = "0.3", optional = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+# Keep here for cfg(test) builds of this crate's own tests (test_harness tests
+# compile via cfg(test), not via the test-utils feature flag).
+zfb-test-utils = { path = "../zfb-test-utils" }
+tempdir = "0.3"
