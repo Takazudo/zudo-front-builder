@@ -765,9 +765,12 @@ pub use zfb_content::TocConfig;
 /// Markdown / MDX parsing options.
 ///
 /// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Knobs include
-/// [`Self::gfm`], [`Self::toc`], [`Self::external_links`], and
-/// [`Self::cjk_friendly`]; future markdown-pipeline knobs would also live
-/// here.
+/// [`Self::gfm`], [`Self::toc`], [`Self::external_links`],
+/// [`Self::cjk_friendly`], and [`Self::features`]; future markdown-pipeline
+/// knobs would also live here.
+///
+/// See the "Markdown Features" docs category for the per-feature option
+/// reference once individual features are ported.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -815,6 +818,164 @@ pub struct MarkdownConfig {
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     #[serde(default)]
     pub cjk_friendly: Option<bool>,
+
+    /// Per-feature markdown pipeline toggles. Each field is a
+    /// [`FeatureToggle`] (`true` / `false` / per-feature options object)
+    /// or a feature-specific config struct (for features that require
+    /// extra parameters, e.g. `githubAutolinks`).
+    ///
+    /// Absent / `None` means all features are disabled, preserving the
+    /// behaviour of the pre-features build byte-for-byte.
+    ///
+    /// Unknown keys in the `features` object are rejected with a clear
+    /// deserialization error naming the unknown field.
+    #[serde(default)]
+    pub features: Option<MarkdownFeaturesConfig>,
+}
+
+// --- MarkdownFeaturesConfig and per-feature types --------------------------
+
+/// Per-feature toggle: `bool` shorthand or a feature-options object.
+///
+/// `true` enables the feature with defaults; `false` (or absent) disables
+/// it. The object form carries per-feature options (fields vary by feature
+/// and are filled in by each feature's port sub-issue — stubs today).
+///
+/// `serde(untagged)` with the `Options` variant listed FIRST ensures serde
+/// tries the object form before the bool, mirroring the `GfmFlag` pattern
+/// already used in this file.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum FeatureToggle {
+    /// Per-feature options object (fields are feature-specific).
+    Options(FeatureOptions),
+    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
+    Bool(bool),
+}
+
+/// Empty options object for features that accept `{ ... }` but have no
+/// user-facing knobs yet. Fields are filled in by each feature's port
+/// sub-issue; this stub satisfies the schema shape requirement.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureOptions {}
+
+/// Options for the `githubAutolinks` feature. Requires `repo`.
+///
+/// TODO: fill in actual fields when the githubAutolinks feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubAutolinksConfig {
+    /// GitHub repository reference (`owner/repo`) used to build autolink URLs.
+    // Required by the githubAutolinks feature spec; value is set by users.
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// Options stub for the `codeEnrichment` feature.
+///
+/// TODO: fill in actual fields when the codeEnrichment feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeEnrichmentConfig {}
+
+/// Options stub for the `tocExport` feature.
+///
+/// TODO: fill in actual fields when the tocExport feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TocExportConfig {}
+
+/// Options stub for the `imageDimensions` feature.
+///
+/// TODO: fill in actual fields when the imageDimensions feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDimensionsConfig {}
+
+/// Options stub for the `linkValidation` feature.
+///
+/// TODO: fill in actual fields when the linkValidation feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkValidationConfig {}
+
+/// Options stub for the `transclude` feature.
+///
+/// TODO: fill in actual fields when the transclude feature is ported.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscludeConfig {}
+
+/// Per-feature markdown pipeline configuration.
+///
+/// Each field corresponds to one pluggable markdown feature. All fields are
+/// optional; absent = feature disabled, behaviour unchanged from the
+/// pre-features build. Unknown keys are rejected at deserialization time
+/// (via `#[serde(deny_unknown_fields)]`) so a typo in `zfb.config.ts`
+/// surfaces as a clear error naming the unknown field rather than silently
+/// passing through with the feature disabled.
+///
+/// Mirrors `MarkdownFeaturesConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkdownFeaturesConfig {
+    /// GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.).
+    #[serde(default)]
+    pub github_alerts: Option<FeatureToggle>,
+
+    /// Reading-time estimate injected into the document frontmatter.
+    #[serde(default)]
+    pub reading_time: Option<FeatureToggle>,
+
+    /// GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`.
+    #[serde(default)]
+    pub github_autolinks: Option<GithubAutolinksConfig>,
+
+    /// Code-block enrichment (copy button, language label, etc.).
+    #[serde(default)]
+    pub code_enrichment: Option<CodeEnrichmentConfig>,
+
+    /// Grouped code blocks rendered as tabs.
+    #[serde(default)]
+    pub code_tabs: Option<FeatureToggle>,
+
+    /// Ruby annotation support (`{base}^{ruby}` syntax).
+    #[serde(default)]
+    pub ruby: Option<FeatureToggle>,
+
+    /// Export the page TOC as structured data (e.g. for sidebar rendering).
+    #[serde(default)]
+    pub toc_export: Option<TocExportConfig>,
+
+    /// Auto-detect and inject `width`/`height` on `<img>` elements.
+    #[serde(default)]
+    pub image_dimensions: Option<ImageDimensionsConfig>,
+
+    /// Validate internal and external links at build time.
+    #[serde(default)]
+    pub link_validation: Option<LinkValidationConfig>,
+
+    /// Transclusion of other MDX files (`![[path]]` syntax).
+    #[serde(default)]
+    pub transclude: Option<TranscludeConfig>,
+
+    /// Framework admonitions preset (maps `:::note` etc. to components).
+    #[serde(default)]
+    pub admonitions_preset: Option<FeatureToggle>,
+
+    /// Mermaid diagram rendering.
+    #[serde(default)]
+    pub mermaid: Option<FeatureToggle>,
+
+    /// Lightbox / image-enlarge on click.
+    #[serde(default)]
+    pub image_enlarge: Option<FeatureToggle>,
+
+    /// Inline heading-marker TOC (e.g. `## Heading {#id}` syntax, TOC
+    /// rendered via a heading-marker plugin). Uses [`TocConfig`] shape.
+    #[serde(default)]
+    pub heading_marker_toc: Option<TocConfig>,
 }
 
 /// Options for the `rehype-external-links` port.
@@ -3075,6 +3236,7 @@ mod tests {
                 toc: None,
                 external_links: None,
                 cjk_friendly: None,
+                features: None,
             })
         );
     }
@@ -3498,5 +3660,140 @@ mod tests {
             msg.contains("Node.js"),
             "msg should mention Node.js: {msg}"
         );
+    }
+
+    // --- MarkdownFeaturesConfig tests (#566) ---------------------------------
+
+    // Absent `features` field → `None` (all features disabled; output
+    // byte-for-byte identical to the pre-features build).
+    #[test]
+    fn features_absent_yields_none() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty MarkdownConfig deserialises");
+        assert_eq!(cfg.features, None);
+    }
+
+    // `features: {}` — explicit empty object → `Some(MarkdownFeaturesConfig::default())`.
+    #[test]
+    fn features_empty_object_yields_default() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {}
+        }))
+        .expect("empty features object deserialises");
+        assert_eq!(cfg.features, Some(MarkdownFeaturesConfig::default()));
+    }
+
+    // Boolean `true` shorthand: `githubAlerts: true` → `FeatureToggle::Bool(true)`.
+    #[test]
+    fn features_github_alerts_true_shorthand() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": true }
+        }))
+        .expect("githubAlerts: true deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+    }
+
+    // Boolean `false` shorthand: `githubAlerts: false` → `FeatureToggle::Bool(false)`.
+    #[test]
+    fn features_github_alerts_false_shorthand() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": false }
+        }))
+        .expect("githubAlerts: false deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(false)));
+    }
+
+    // Object form: `githubAlerts: {}` → `FeatureToggle::Options(FeatureOptions {})`.
+    #[test]
+    fn features_github_alerts_object_form() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": {} }
+        }))
+        .expect("githubAlerts: {} deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.github_alerts,
+            Some(FeatureToggle::Options(FeatureOptions {}))
+        );
+    }
+
+    // `githubAutolinks` uses a dedicated struct (requires `repo` field).
+    #[test]
+    fn features_github_autolinks_with_repo() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAutolinks": { "repo": "owner/repo" } }
+        }))
+        .expect("githubAutolinks deserialises");
+        let features = cfg.features.expect("features present");
+        let autolinks = features.github_autolinks.expect("githubAutolinks present");
+        assert_eq!(autolinks.repo.as_deref(), Some("owner/repo"));
+    }
+
+    // Multiple features enabled simultaneously in one `features` block.
+    #[test]
+    fn features_multiple_features_in_one_block() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {
+                "githubAlerts": true,
+                "mermaid": true,
+                "ruby": false
+            }
+        }))
+        .expect("multiple features deserialise");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+        assert_eq!(features.mermaid, Some(FeatureToggle::Bool(true)));
+        assert_eq!(features.ruby, Some(FeatureToggle::Bool(false)));
+        // Others absent → None.
+        assert_eq!(features.code_tabs, None);
+    }
+
+    // Unknown feature key must be rejected with a clear error.
+    // This is the spec acceptance criterion: `features: { bogus: true }`
+    // must produce a deserialization error naming the unknown field.
+    #[test]
+    fn features_unknown_key_is_rejected() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "bogus": true }
+        }))
+        .expect_err("unknown feature key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus") || msg.contains("unknown field"),
+            "error must name the unknown field; got: {msg}"
+        );
+    }
+
+    // Top-level Config integration: `markdown.features.githubAlerts: true`
+    // must parse end-to-end via `serde_json::from_value::<Config>`.
+    #[test]
+    fn config_markdown_features_github_alerts_roundtrip() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "markdown": { "features": { "githubAlerts": true } }
+        }))
+        .expect("Config with markdown.features.githubAlerts deserialises");
+        let features = cfg
+            .markdown
+            .as_ref()
+            .expect("markdown present")
+            .features
+            .as_ref()
+            .expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+    }
+
+    // `features` absent from the top-level `markdown` block → `None`.
+    // This ensures existing configs that pre-date the `features` field
+    // still load without errors.
+    #[test]
+    fn config_markdown_features_absent_yields_none() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "markdown": { "gfm": true }
+        }))
+        .expect("Config without features field deserialises");
+        let markdown = cfg.markdown.as_ref().expect("markdown present");
+        assert_eq!(markdown.features, None);
     }
 }
