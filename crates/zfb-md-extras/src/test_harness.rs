@@ -78,16 +78,21 @@ where
 
     let verbatim = is_verbatim(dir);
 
-    let actual_raw = transform(input.trim());
-
     if verbatim {
+        // Verbatim mode: pass the raw input to the transform (no trimming) and
+        // compare the raw output string. This preserves intentional leading/
+        // trailing whitespace that callers may rely on.
+        let actual_raw = transform(&input);
         assert_eq!(
-            actual_raw.trim(),
-            expected_raw.trim(),
+            actual_raw, expected_raw,
             "fixture {}: verbatim output mismatch",
             dir.display()
         );
     } else {
+        // Normalizing mode: trim the Markdown input (common convention —
+        // trailing newline differences are not semantically meaningful) and
+        // run both sides through normalize_html before comparing.
+        let actual_raw = transform(input.trim());
         let actual = normalize_html(&actual_raw);
         let expected = normalize_html(&expected_raw);
         assert_eq!(
@@ -180,8 +185,8 @@ mod tests {
             ("normalize.txt", "verbatim\n"),
         ]);
         let result = std::panic::catch_unwind(|| {
-            // Returns "<p>hello</p>\n" but expected is "<p>hello</p>" — trim
-            // handles this, but let's use a real difference.
+            // Transform returns a string that differs from expected.html.
+            // Verbatim mode: raw strings are compared, so this must fail.
             run_fixture(dir.path(), |_| "different output".to_string());
         });
         assert!(result.is_err(), "verbatim mode must panic on string mismatch");

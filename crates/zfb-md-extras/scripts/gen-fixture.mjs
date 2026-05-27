@@ -98,13 +98,21 @@ const markdown = readFileSync(inputPath, "utf8");
 let html;
 
 if (values.remark) {
-  // Remark-style mode: build a minimal unified pipeline.
-  // We shell out to a pnpm dlx invocation so no permanent install is needed.
-  // The command runs: pnpm dlx <plugin> <input-file>
+  // Remark-style mode placeholder.
   //
-  // This is intentionally minimal — Wave 2 (#569) will replace this with
-  // direct imports once the plugin interface is stabilised.
+  // NOTE: Most remark/rehype plugins (e.g. remark-gfm) are not CLI executables
+  // and cannot be invoked via `pnpm dlx <plugin>`. This mode is a placeholder
+  // for Wave 2 (#569), which will wire the real unified/remark pipeline once
+  // the Pipeline constructor and plugin interface are stabilised.
+  //
+  // For now, --remark mode expects the named package to expose a CLI binary
+  // that accepts Markdown on stdin and emits HTML on stdout. If your plugin
+  // does not do this, use a small wrapper script (e.g. `./run-plugin.mjs`)
+  // in direct-function mode instead.
   console.error(`[gen-fixture] remark mode: invoking pnpm dlx ${values.plugin}`);
+  console.error(
+    "[gen-fixture] NOTE: --remark requires the plugin package to expose a CLI that reads stdin/writes stdout.",
+  );
   const cmd = `pnpm dlx ${values.plugin}`;
   html = execSync(cmd, {
     input: markdown,
