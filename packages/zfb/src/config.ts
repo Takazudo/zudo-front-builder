@@ -380,16 +380,12 @@ export type TocConfig = {
 /**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the knobs are
- * [`gfm`](MarkdownConfig.gfm) and [`toc`](MarkdownConfig.toc); future
- * markdown knobs (e.g. CommonMark variants, custom extensions) would
- * also live here.
- * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`] and
- * [`externalLinks`]; future markdown knobs would also live here.
- * See [`ZfbConfig.markdown`] for the embed point. Today the fields are
- * [`gfm`](MarkdownConfig.gfm) and
- * [`cjkFriendly`](MarkdownConfig.cjkFriendly); future markdown knobs
- * (e.g. CommonMark variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`],
+ * [`toc`], [`externalLinks`], [`cjkFriendly`], and [`features`].
+ * Future markdown knobs would also live here.
+ *
+ * See the "Markdown Features" docs category for the per-feature option
+ * reference once individual features are ported.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -471,6 +467,154 @@ export type MarkdownConfig = {
    * Mirrors `MarkdownConfig::cjk_friendly` in crates/zfb/src/config.rs.
    */
   cjkFriendly?: boolean;
+
+  /**
+   * Per-feature markdown pipeline toggles.
+   *
+   * Each field is a [`FeatureToggle`] (`true` / `false` / options object)
+   * or a feature-specific config type (for features that require extra
+   * parameters). Absent / `undefined` means all features are disabled,
+   * preserving the behaviour of the pre-features build byte-for-byte.
+   *
+   * Unknown keys are rejected at deserialization time by the Rust loader
+   * so a typo in `zfb.config.ts` surfaces as a clear error.
+   *
+   * Mirrors `MarkdownFeaturesConfig` in crates/zfb/src/config.rs.
+   */
+  features?: MarkdownFeaturesConfig;
+};
+
+/**
+ * Per-feature toggle: `boolean` shorthand or an options object.
+ *
+ * `true` enables the feature with defaults; `false` (or absent) disables it.
+ * The object form carries per-feature options (fields vary by feature and
+ * are filled in by each feature's port sub-issue — stubs today).
+ *
+ * Mirrors `FeatureToggle` in crates/zfb/src/config.rs.
+ */
+export type FeatureToggle = boolean | FeatureOptions;
+
+/**
+ * Empty options object for features that accept `{ ... }` but have no
+ * user-facing knobs yet. Fields are filled in by each feature's port
+ * sub-issue; this stub satisfies the schema shape requirement.
+ *
+ * Mirrors `FeatureOptions` in crates/zfb/src/config.rs.
+ */
+export type FeatureOptions = Record<string, never>;
+
+/**
+ * Options for the `githubAutolinks` feature. Requires `repo`.
+ *
+ * TODO: fill in actual fields when the githubAutolinks feature is ported.
+ *
+ * Mirrors `GithubAutolinksConfig` in crates/zfb/src/config.rs.
+ */
+export type GithubAutolinksConfig = {
+  /** GitHub repository reference (`owner/repo`) used to build autolink URLs. */
+  repo?: string;
+};
+
+/**
+ * Options stub for the `codeEnrichment` feature.
+ *
+ * TODO: fill in actual fields when the codeEnrichment feature is ported.
+ *
+ * Mirrors `CodeEnrichmentConfig` in crates/zfb/src/config.rs.
+ */
+export type CodeEnrichmentConfig = Record<string, never>;
+
+/**
+ * Options stub for the `tocExport` feature.
+ *
+ * TODO: fill in actual fields when the tocExport feature is ported.
+ *
+ * Mirrors `TocExportConfig` in crates/zfb/src/config.rs.
+ */
+export type TocExportConfig = Record<string, never>;
+
+/**
+ * Options stub for the `imageDimensions` feature.
+ *
+ * TODO: fill in actual fields when the imageDimensions feature is ported.
+ *
+ * Mirrors `ImageDimensionsConfig` in crates/zfb/src/config.rs.
+ */
+export type ImageDimensionsConfig = Record<string, never>;
+
+/**
+ * Options stub for the `linkValidation` feature.
+ *
+ * TODO: fill in actual fields when the linkValidation feature is ported.
+ *
+ * Mirrors `LinkValidationConfig` in crates/zfb/src/config.rs.
+ */
+export type LinkValidationConfig = Record<string, never>;
+
+/**
+ * Options stub for the `transclude` feature.
+ *
+ * TODO: fill in actual fields when the transclude feature is ported.
+ *
+ * Mirrors `TranscludeConfig` in crates/zfb/src/config.rs.
+ */
+export type TranscludeConfig = Record<string, never>;
+
+/**
+ * Per-feature markdown pipeline configuration.
+ *
+ * All fields are optional; absent = feature disabled, behaviour unchanged
+ * from the pre-features build. Unknown keys are rejected at deserialization
+ * time by the Rust loader so a typo surfaces as a clear error.
+ *
+ * Mirrors `MarkdownFeaturesConfig` in crates/zfb/src/config.rs.
+ */
+export type MarkdownFeaturesConfig = {
+  /** GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.). */
+  githubAlerts?: FeatureToggle;
+
+  /** Reading-time estimate injected into the document frontmatter. */
+  readingTime?: FeatureToggle;
+
+  /** GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`. */
+  githubAutolinks?: GithubAutolinksConfig;
+
+  /** Code-block enrichment (copy button, language label, etc.). */
+  codeEnrichment?: CodeEnrichmentConfig;
+
+  /** Grouped code blocks rendered as tabs. */
+  codeTabs?: FeatureToggle;
+
+  /** Ruby annotation support (`{base}^{ruby}` syntax). */
+  ruby?: FeatureToggle;
+
+  /** Export the page TOC as structured data (e.g. for sidebar rendering). */
+  tocExport?: TocExportConfig;
+
+  /** Auto-detect and inject `width`/`height` on `<img>` elements. */
+  imageDimensions?: ImageDimensionsConfig;
+
+  /** Validate internal and external links at build time. */
+  linkValidation?: LinkValidationConfig;
+
+  /** Transclusion of other MDX files (`![[path]]` syntax). */
+  transclude?: TranscludeConfig;
+
+  /** Framework admonitions preset (maps `:::note` etc. to components). */
+  admonitionsPreset?: FeatureToggle;
+
+  /** Mermaid diagram rendering. */
+  mermaid?: FeatureToggle;
+
+  /** Lightbox / image-enlarge on click. */
+  imageEnlarge?: FeatureToggle;
+
+  /**
+   * Inline heading-marker TOC (e.g. `## Heading {#id}` syntax, TOC
+   * rendered via a heading-marker plugin). Uses [`TocConfig`] shape.
+   */
+  headingMarkerToc?: TocConfig;
 };
 
 /**
