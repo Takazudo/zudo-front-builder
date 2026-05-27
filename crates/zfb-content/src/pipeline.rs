@@ -588,6 +588,73 @@ impl Pipeline {
         Ok(p)
     }
 
+    /// Sibling constructor: default plugin chain driven by a
+    /// [`zfb_md_extras::MarkdownFeaturesConfig`] feature set.
+    ///
+    /// # Purpose
+    ///
+    /// This is the single entry point for feature-flag-driven pipeline
+    /// construction. Callers pass a `MarkdownFeaturesConfig` (from
+    /// `zfb-md-extras`) and this constructor wires the appropriate visitors
+    /// into the pipeline. The existing `with_defaults*` constructors are
+    /// **not touched** — this is a pure sibling, and all current call sites
+    /// remain byte-for-byte unchanged.
+    ///
+    /// # Wave 2 behaviour (stub)
+    ///
+    /// In Wave 2, the full default plugin chain is always wired (identical to
+    /// `with_defaults_and_theme_and_gfm_and_cjk`), and `register_features`
+    /// is called for future extensibility but is a no-op. Wave 3.1 (#570)
+    /// will move zfb-content's own framework-feature visitors
+    /// (`ImageEnlargePlugin`, `MermaidPlugin`, `AdmonitionsPlugin`) into
+    /// `zfb-md-extras` and make them conditional on the corresponding
+    /// `features.*` flags.
+    ///
+    /// Because the default chain is always wired in Wave 2, output is
+    /// **byte-identical** to `with_defaults()` for an empty `features` set,
+    /// and the image-enlarge wrapper is always present regardless of the
+    /// `features.image_enlarge` flag. Wave 3.1 introduces the conditionality.
+    ///
+    /// # Visitor ordering contract
+    ///
+    /// The contract below is documented HERE (Wave 2); Wave 4-6 implement it.
+    /// Feature modules in `zfb-md-extras` that add their own visitors MUST
+    /// respect this order:
+    ///
+    /// **mdast phase** (in order):
+    /// 1. `CjkFriendlyPlugin` — must run before any visitor that depends on
+    ///    emphasis/strong being correctly tokenised around CJK characters.
+    /// 2. *(extras mdast visitors — added by Wave 4-6 per-feature rules)*
+    /// 3. `AdmonitionsPlugin` — directive transforms must fold `:::name` runs
+    ///    before mdast→hast conversion.
+    ///
+    /// **hast phase** (in order):
+    /// 4. `HeadingLinksPlugin` — MUST be first in hast so subsequent plugins
+    ///    see the final slugified ids.
+    /// 5. `CodeTitlePlugin` — MUST run BEFORE `SyntectPlugin` (syntect
+    ///    replaces `<pre>` with a `Raw` fragment; once that happens,
+    ///    `data-meta` is no longer reachable).
+    /// 6. `MermaidPlugin` — MUST run BEFORE `SyntectPlugin` so syntect can
+    ///    identify and skip mermaid blocks.
+    /// 7. `SyntectPlugin` — runs last in the code-block chain.
+    /// 8. *(extras hast visitors that depend on syntect's per-line structure
+    ///    run AFTER `SyntectPlugin`)*
+    #[must_use]
+    pub fn with_defaults_and_features(
+        features: &zfb_md_extras::MarkdownFeaturesConfig,
+    ) -> Self {
+        // Wave 2: identical wiring to `with_defaults_and_theme_and_gfm_and_cjk`
+        // with the conservative GFM default and CJK enabled. Wave 3.1 will make
+        // the visitors conditional on the `features` flags.
+        let mut p = Self::build_defaults(None, ResolvedGfmConstructs::CONSERVATIVE, None, true)
+            .expect("no themes_dir — cannot fail");
+        // `register_features` is the single call-path from zfb-content into
+        // zfb-md-extras. In Wave 2 it is a no-op; Wave 4-6 wire feature
+        // visitors here.
+        register_features(&mut p, features);
+        p
+    }
+
     /// Append an mdast visitor; visitors run in insertion order.
     pub fn add_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) -> &mut Self {
         self.mdast_visitors.push(v);
@@ -735,6 +802,40 @@ impl Pipeline {
             v.visit_with_context(node, ctx);
         }
     }
+}
+
+/// Register feature visitors from `zfb-md-extras` into the pipeline.
+///
+/// This is the **single entry point** from `zfb-content` into `zfb-md-extras`.
+/// No other call path should cross the crate boundary. Called exclusively from
+/// [`Pipeline::with_defaults_and_features`].
+///
+/// # Wave 2 stub
+///
+/// In Wave 2 no `zfb-md-extras` feature modules export visitors yet — the
+/// feature stub modules (`github_alerts`, `reading_time`, etc.) are empty.
+/// This function is a no-op. Wave 4-6 will fill in each feature module and
+/// call into them here, conditionally on the `features.*` flags.
+///
+/// # Ordering contract
+///
+/// When Wave 4-6 add visitors, they MUST be inserted at the correct phase:
+/// - mdast visitors: after `CjkFriendlyPlugin` and BEFORE `AdmonitionsPlugin`.
+/// - hast visitors: AFTER `SyntectPlugin` for visitors that depend on
+///   syntect's per-line structure; BEFORE `SyntectPlugin` for anything that
+///   rewrites `<pre>`/`<code>` shapes.
+///
+/// The caller (`with_defaults_and_features`) already wires the framework
+/// visitors in the correct order before calling this function, so any visitors
+/// appended here run after the framework chain by default. If a feature
+/// visitor must be inserted before `SyntectPlugin`, use
+/// `Pipeline::add_mdast_visitor` / `Pipeline::add_hast_visitor` with explicit
+/// ordering (document it in the feature module's sub-issue).
+pub fn register_features(
+    _p: &mut Pipeline,
+    _features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    // Wave 2: no-op. Feature visitor wiring lands in Wave 4-6.
 }
 
 /// Strategy for emitting the JSX-shaped Raw payload of `MdxJsxFlow*`,

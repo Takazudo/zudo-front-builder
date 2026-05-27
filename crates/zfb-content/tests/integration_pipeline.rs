@@ -628,3 +628,72 @@ fn context_survives_through_pipeline() {
     assert_eq!(entries[0].id, "check");
     drop(checker); // suppress unused warning
 }
+
+// ── Wave-2 register_features / with_defaults_and_features smoke tests ─────
+
+use zfb_md_extras::{FeatureToggle, MarkdownFeaturesConfig};
+
+/// Smoke test: `Pipeline::with_defaults_and_features` with an empty features
+/// set produces byte-identical output to `Pipeline::with_defaults()`.
+///
+/// In Wave 2 both constructors wire the same plugin chain unconditionally.
+/// Feature conditionality is introduced in Wave 3.1 (#570) when plugins move
+/// into `zfb-md-extras`.
+#[test]
+fn with_defaults_and_features_empty_is_byte_identical_to_with_defaults() {
+    let md = "## Hello World\n\nsome text\n";
+
+    let html_defaults = {
+        let mut p = Pipeline::with_defaults();
+        let hast = p.run(md).expect("run ok");
+        serialize(&hast)
+    };
+
+    let html_features = {
+        let features = MarkdownFeaturesConfig::default();
+        let mut p = Pipeline::with_defaults_and_features(&features);
+        let hast = p.run(md).expect("run ok");
+        serialize(&hast)
+    };
+
+    assert_eq!(
+        html_defaults, html_features,
+        "with_defaults_and_features(default features) must produce byte-identical output to with_defaults()",
+    );
+}
+
+/// Smoke test: `Pipeline::with_defaults_and_features` with
+/// `features.image_enlarge = Some(FeatureToggle::Bool(true))` produces output
+/// containing the enlargeable figure wrapper.
+///
+/// In Wave 2, `ImageEnlargePlugin` is always wired unconditionally (identical
+/// to `with_defaults`). This test confirms the end-to-end plumbing works
+/// before Wave 3.1 moves the plugin into `zfb-md-extras` and makes it
+/// conditional.
+#[test]
+fn with_defaults_and_features_image_enlarge_true_produces_wrapper() {
+    // A single block-level image paragraph triggers `ImageEnlargePlugin`.
+    let md = "![alt text](photo.png)\n";
+
+    let features = MarkdownFeaturesConfig {
+        image_enlarge: Some(FeatureToggle::Bool(true)),
+        ..MarkdownFeaturesConfig::default()
+    };
+
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let hast = p.run(md).expect("pipeline ok");
+    let html = serialize(&hast);
+
+    assert!(
+        html.contains("<figure class=\"zd-enlargeable\">"),
+        "expected zd-enlargeable figure wrapper when image_enlarge = true; got:\n{html}",
+    );
+    assert!(
+        html.contains("class=\"zd-enlarge-btn\""),
+        "expected zd-enlarge-btn button when image_enlarge = true; got:\n{html}",
+    );
+    assert!(
+        html.contains("src=\"photo.png\""),
+        "image src must survive into output; got:\n{html}",
+    );
+}
