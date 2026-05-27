@@ -127,3 +127,67 @@ fn both_features_on_alert_renders_correctly() {
         "both features on: alert must render as <Warning>: {html}"
     );
 }
+
+/// Acceptance criterion: `admonitionsPreset` and `githubAlerts` produce the
+/// same HTML output for equivalent single-paragraph content.
+///
+/// `:::note\n\nbody\n\n:::` and `> [!NOTE]\n> body` must both emit `<Note>body</Note>`.
+#[test]
+fn parity_with_admonitions_single_paragraph() {
+    let adm_features = MarkdownFeaturesConfig {
+        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+    let alert_features = MarkdownFeaturesConfig {
+        github_alerts: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+
+    let adm_html = {
+        let mut p = Pipeline::with_defaults_and_features(&adm_features);
+        serialize(&p.run(":::note\n\nnote body\n\n:::").expect("pipeline failed"))
+    };
+    let alert_html = {
+        let mut p = Pipeline::with_defaults_and_features(&alert_features);
+        serialize(&p.run("> [!NOTE]\n> note body").expect("pipeline failed"))
+    };
+
+    assert_eq!(
+        adm_html, alert_html,
+        "admonitions and github_alerts must produce identical HTML for single-paragraph note\n  adm:   {adm_html}\n  alert: {alert_html}"
+    );
+}
+
+/// Acceptance criterion: `admonitionsPreset` and `githubAlerts` produce the
+/// same HTML output for equivalent multi-paragraph content.
+#[test]
+fn parity_with_admonitions_multiple_paragraphs() {
+    let adm_features = MarkdownFeaturesConfig {
+        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+    let alert_features = MarkdownFeaturesConfig {
+        github_alerts: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+
+    let adm_html = {
+        let mut p = Pipeline::with_defaults_and_features(&adm_features);
+        serialize(
+            &p.run(":::note\n\nFirst paragraph.\n\nSecond paragraph.\n\n:::")
+                .expect("pipeline failed"),
+        )
+    };
+    let alert_html = {
+        let mut p = Pipeline::with_defaults_and_features(&alert_features);
+        serialize(
+            &p.run("> [!NOTE]\n> First paragraph.\n>\n> Second paragraph.")
+                .expect("pipeline failed"),
+        )
+    };
+
+    assert_eq!(
+        adm_html, alert_html,
+        "admonitions and github_alerts must produce identical HTML for multi-paragraph note\n  adm:   {adm_html}\n  alert: {alert_html}"
+    );
+}
