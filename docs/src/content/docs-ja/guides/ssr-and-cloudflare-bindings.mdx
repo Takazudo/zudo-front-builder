@@ -230,7 +230,71 @@ database_id = "<preview-uuid>"
 
 ## ローカル開発
 
-`wrangler pages dev dist/` は、ビルドされた `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）とともにローカルで動かします。最初の実行前に、`wrangler d1 migrations apply webshop --local` でマイグレーションを適用してください。
+アプリをローカルで動かす方法は 2 つあり、それぞれ異なる問いに答えます:
+
+- **`zfb dev`** — 高速な HMR スタイルのページ作成ループ。**Worker バインディングなし。** `zfb dev` 下の SSR ルートで `getCloudflareContext<Env>()` を呼び出しても `env` は返らないため、`env.DB`（または他のバインディング）を読むルートはここでは動作しません。バインディングに**触れない**ルートのレイアウト、スタイリング、ルーティングの反復作業に使ってください。
+- **`wrangler pages dev dist/`** — バインディングをリアルに再現するループ。ビルドされた `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）に対して動かし、実際の `compatibility_flags` を反映し、本物のバインディングのバグを表面化します。SSR-D1 ルートの作業をするときはこちらを使ってください。
+
+このセクションの残りはバインディングをリアルに再現するループについて説明します。
+
+### 初回セットアップ
+
+ローカルの SQLite データベースに D1 マイグレーションを適用します（冪等 — 再実行しても安全です）:
+
+```sh
+wrangler d1 migrations apply <your-db-name> --local
+```
+
+`<your-db-name>` 引数は `wrangler.toml` の `database_name` と対応しています。存在しない場合は `.wrangler/state/v3/d1/...` が作成されます。
+
+### 編集→反映のループ
+
+2 つのプロセスを並べて動かします: `wrangler pages dev dist/`（`dist/` が変更されると自動リロード）と、ソースファイルを編集するたびに `zfb build` を再実行するウォッチャーです。最もきれいな方法は `devDependencies` の `concurrently` + `chokidar-cli` を使うことです:
+
+```sh
+pnpm add -D concurrently chokidar-cli
+```
+
+次に `dev:cf` スクリプトを `package.json` に追加します（ウォッチのグロブはプロジェクトのレイアウトに合わせて調整してください）:
+
+```json
+{
+  "scripts": {
+    "dev:cf:setup": "wrangler d1 migrations apply <your-db-name> --local && pnpm build",
+    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler pages dev dist/ --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
+  }
+}
+```
+
+次を実行します:
+
+```sh
+pnpm dev:cf
+```
+
+TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 秒でブラウザに変更が反映されます。ウォッチャーが 200 ms デバウンスし、`pnpm build` が `dist/` を再出力し、`wrangler pages dev` が `_zfb_inner.mjs` の内容の変更に気づいて Worker を自動リロードします。Ctrl-C で両プロセスがきれいに終了します。
+
+<Warning title="`pnpm dev` と `pnpm dev:cf` を同時に実行しないこと">
+
+`zfb dev` の `predev` ステップ（`rm -rf dist .zfb .zfb-build`）は、`wrangler pages dev` が現在配信中の `dist/` ディレクトリを消去します。wrangler プロセスは、その後のリビルドがリロードをトリガーしなくなる劣化状態に入る可能性があります。一度に一つのループを選んでください。誤って両方を実行してしまった場合は、すべてを停止し、`pnpm build` を再実行してから `pnpm dev:cf` を再起動してください。
+
+</Warning>
+
+### トラブルシューティング
+
+**ポート 8788 で `Address already in use`。** 別の `wrangler pages dev` がまだ動いています。`lsof -ti TCP:8788 | xargs kill` で終了させるか、wrangler の呼び出しに `--port 8789` を渡してください。
+
+**ページは表示されるが `env.DB` が undefined。** `wrangler.toml` に `compatibility_flags = ["nodejs_compat"]` がありません。このページの前にある **"compatibility_flags = ['nodejs_compat'] は必須"** の警告を参照してください。このフラグはアダプターが `env` を SSR ルートに引き渡すための必須条件であり、任意のオプトインではありません。
+
+**編集後もブラウザに古いコンテンツが表示される。** 通常、直前の `pnpm build` が失敗しています。`concurrently` の出力内の `[watch]` ストリームでビルドエラーを確認してください。wrangler のリロードは `dist/` が実際に更新されたときにのみ発火します。
+
+**カート / D1 データが消えた。** ローカルの SQLite DB は `.wrangler/state/v3/d1/...` 下に存在し、**リビルドをまたいで永続します**。`.wrangler/` を削除した場合、別の作業ディレクトリに切り替えた場合、または `wrangler.toml` の `database_name` を変更した場合にリセットされます。それらの後に `wrangler d1 migrations apply <your-db-name> --local` を再実行して新鮮なスキーマを取得してください。
+
+<Tip title="なぜ 1 つではなく 2 つのプロセスなのか">
+
+`zfb build` は（小さなプロジェクトではサブ秒で）十分に高速なため、ユーザーランドのウォッチャーを通じて保存のたびに実行することは、組み込みの `--watch` モードと区別がつきません。2 プロセスのレシピは、wrangler の Worker リロードの動作を、再実装不要なブラックボックスとして保持します。
+
+</Tip>
 
 [als]: https://nodejs.org/api/async_context.html
 [d1]: https://developers.cloudflare.com/d1/
