@@ -1,0 +1,11 @@
+[package]
+name = "zfb-md-ast"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb-md-ast: shared MdastVisitor / HastVisitor traits and HastNode type"
+
+[lib]
+
+[dependencies]
+markdown = { workspace = true }
