@@ -875,6 +875,15 @@ pub fn register_features(
     use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
+    // github_alerts MUST run BEFORE admonitions_preset so both features can
+    // coexist: alert blockquotes are rewritten to MdxJsxFlowElement first,
+    // then the admonitions pass handles `:::directive` syntax separately.
+    if feature_enabled(&features.github_alerts) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::github_alerts::GithubAlertsPlugin::new(),
+        ));
+    }
+
     if feature_enabled(&features.admonitions_preset) {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;

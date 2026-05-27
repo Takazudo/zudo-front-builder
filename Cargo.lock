@@ -5681,6 +5681,7 @@ dependencies = [
  "anyhow",
  "markdown",
  "tempdir",
+ "zfb-content",
  "zfb-md-ast",
  "zfb-test-utils",
 ]
