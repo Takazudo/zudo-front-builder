@@ -5432,6 +5432,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "thiserror",
+ "zfb-md-ast",
  "zfb-render",
 ]
 
@@ -5490,6 +5491,13 @@ dependencies = [
  "zfb-plugin-resolver",
  "zfb-test-utils",
  "zfb-types",
+]
+
+[[package]]
+name = "zfb-md-ast"
+version = "0.0.0"
+dependencies = [
+ "markdown",
 ]
 
 [[package]]
