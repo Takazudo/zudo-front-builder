@@ -77,9 +77,9 @@ pub mod code_enrichment {}
 // TODO: Wave 5 — port code-tabs
 pub mod code_tabs {}
 
-/// Ruby annotation support (`{base}^{ruby}` syntax).
-// TODO: Wave 5 — port ruby
-pub mod ruby {}
+/// Ruby annotation support (`{base|ruby}` syntax).
+/// Wire via `features.ruby: true` in `zfb.config.ts`.
+pub mod ruby;
 
 /// Export the page TOC as structured data (e.g. for sidebar rendering).
 // TODO: Wave 6 — port toc-export

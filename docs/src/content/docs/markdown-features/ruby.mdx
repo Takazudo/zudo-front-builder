@@ -1,0 +1,61 @@
+---
+title: Ruby annotations
+description: Render ruby (furigana) annotations with the {base|ruby} syntax.
+tier: Opt-in
+---
+
+The `ruby` feature parses `{base|ruby}` inline syntax and renders it as
+`<ruby><rb>base</rb><rt>ruby</rt></ruby>` HTML — the standard markup for
+phonetic annotations such as Japanese furigana.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      ruby: true,
+    },
+  },
+});
+```
+
+## Usage
+
+Wrap the base text and its annotation in `{...}` separated by `|`:
+
+```md
+{漢字|かんじ}を{学ぶ|まなぶ}
+```
+
+Renders as:
+
+```html
+<ruby><rb>漢字</rb><rt>かんじ</rt></ruby>を<ruby><rb>学ぶ</rb><rt>まなぶ</rt></ruby>
+```
+
+Multiple annotations in one paragraph are supported. Annotations can appear
+anywhere inline — at the start, middle, or end of a sentence:
+
+```md
+私は{東京|とうきょう}に住んでいます。
+```
+
+## Edge cases
+
+| Input | Result |
+|-------|--------|
+| `{漢字|かんじ}` | `<ruby>` element |
+| `{|ruby}` (empty base) | left as literal text |
+| `{base|}` (empty annotation) | left as literal text |
+| `{text}` (no pipe) | left as literal text |
+
+## Scope limitation — no auto-furigana
+
+This feature **only** parses the explicit `{base|ruby}` syntax. It does **not**
+automatically detect kanji and add furigana through morphological analysis
+(e.g. kuromoji-style segmentation). Automatic furigana assignment is a
+separate, much harder problem that is intentionally out of scope.
+
+If you need auto-furigana, a separate dedicated feature would be required.

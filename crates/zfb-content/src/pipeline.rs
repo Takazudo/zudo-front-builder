@@ -884,6 +884,13 @@ pub fn register_features(
         ));
     }
 
+    // ruby runs in the mdast phase so it can scan raw text before mdast→hast.
+    // Order-independent relative to github_alerts and admonitions_preset
+    // (those operate on blockquote/directive shapes; ruby operates on Text).
+    if feature_enabled(&features.ruby) {
+        p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
+    }
+
     if feature_enabled(&features.admonitions_preset) {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;
