@@ -20,8 +20,10 @@
 //! emitted by the layout, not the markdown body.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use crate::pipeline::{HastNode, HastVisitor};
+use crate::heading_registry::HeadingEntry;
+use crate::pipeline::{BuildContext, HastNode, HastVisitor};
 use crate::plugins::util::hast_text::extract_text;
 
 /// Visitor that adds permalink anchors to headings.
@@ -86,18 +88,43 @@ impl HastVisitor for HeadingLinksPlugin {
     }
 
     fn visit(&mut self, node: &mut HastNode) {
+        self.visit_node(node, None, None);
+    }
+
+    /// Context-aware variant: populates the heading-ID registry when one is
+    /// available in `ctx.heading_registry`.
+    ///
+    /// Zero-cost when `ctx.heading_registry` is `None` — no registry writes
+    /// are performed.
+    fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
+        self.visit_node(node, ctx.heading_registry.as_deref_mut(), ctx.source_path.clone());
+    }
+}
+
+impl HeadingLinksPlugin {
+    /// Shared traversal used by both `visit` and `visit_with_context`.
+    ///
+    /// When `registry` and `source_path` are provided, a `HeadingEntry` is
+    /// pushed for each heading processed. When `registry` is `None` the
+    /// behaviour is identical to the pre-wave-6 `visit` method.
+    fn visit_node(
+        &mut self,
+        node: &mut HastNode,
+        mut registry: Option<&mut crate::heading_registry::HeadingRegistry>,
+        source_path: Option<PathBuf>,
+    ) {
         // Compute slug + heading text first (immutable borrow only).
-        let mut slug_and_text: Option<(String, String)> = None;
+        let mut slug_and_text: Option<(String, String, u8)> = None;
         if let HastNode::Element { tag, .. } = node {
-            if is_target_heading(tag) {
+            if let Some(depth) = heading_depth(tag) {
                 let text = extract_text(node);
                 let base = slugify(&text);
                 if !base.is_empty() {
-                    slug_and_text = Some((self.next_slug(&base), text));
+                    slug_and_text = Some((self.next_slug(&base), text, depth));
                 }
             }
         }
-        if let Some((slug, text)) = slug_and_text {
+        if let Some((slug, text, depth)) = slug_and_text {
             if let HastNode::Element {
                 attrs, children, ..
             } = node
@@ -105,12 +132,26 @@ impl HastVisitor for HeadingLinksPlugin {
                 set_attr(attrs, "id", &slug);
                 children.push(anchor(&slug, &text));
             }
+            // Populate the registry when wired — zero cost when None.
+            if let (Some(reg), Some(ref path)) = (registry.as_deref_mut(), &source_path) {
+                reg.insert(
+                    path.clone(),
+                    HeadingEntry {
+                        id: slug,
+                        text,
+                        depth,
+                    },
+                );
+            }
         }
 
+        // We cannot hold `registry` across the recursive calls because we
+        // need to pass it by mutable reference on each child. Build a list
+        // of child indices first, then recurse.
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
                 for c in children {
-                    self.visit(c);
+                    self.visit_node(c, registry.as_deref_mut(), source_path.clone());
                 }
             }
             _ => {}
@@ -118,8 +159,16 @@ impl HastVisitor for HeadingLinksPlugin {
     }
 }
 
-fn is_target_heading(tag: &str) -> bool {
-    matches!(tag, "h2" | "h3" | "h4" | "h5" | "h6")
+/// Returns `Some(depth)` if `tag` is one of `h2`–`h6`, or `None` otherwise.
+fn heading_depth(tag: &str) -> Option<u8> {
+    match tag {
+        "h2" => Some(2),
+        "h3" => Some(3),
+        "h4" => Some(4),
+        "h5" => Some(5),
+        "h6" => Some(6),
+        _ => None,
+    }
 }
 
 fn anchor(slug: &str, heading_text: &str) -> HastNode {

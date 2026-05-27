@@ -19,7 +19,7 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
@@ -196,6 +196,61 @@ pub enum HastNode {
     Comment(String),
 }
 
+// ── BuildContext ─────────────────────────────────────────────────────────────
+
+/// Per-document build context threaded into pipeline visitors when the
+/// orchestrator needs wave-6 features (image dimensions, link validation,
+/// transclusion).
+///
+/// **Backwards-compat:** the existing [`Pipeline::run`] method passes no
+/// context. Wave-6 visitors that depend on the context are only registered
+/// when the orchestrator calls [`Pipeline::run_with_context`]. Callers that
+/// never pass a context pay zero overhead.
+pub struct BuildContext<'a> {
+    /// Absolute path of the markdown source file being rendered, or `None`
+    /// if not available (e.g. rendering an in-memory string in tests).
+    pub source_path: Option<PathBuf>,
+    /// Root directory of the project — used to resolve asset paths and
+    /// build the registry key for the heading-ID lookup.
+    pub project_root: PathBuf,
+    /// The public / static-assets directory — used by the image-dimensions
+    /// plugin (wave 6.1) to locate image files on disk.
+    pub public_dir: PathBuf,
+    /// Optional mutable reference to the build-scoped heading-ID registry.
+    ///
+    /// When `Some`, `HeadingLinksPlugin` writes an entry for each heading it
+    /// processes. When `None`, no registry writes occur (zero cost for callers
+    /// that do not perform link validation).
+    pub heading_registry: Option<&'a mut crate::heading_registry::HeadingRegistry>,
+    /// Optional mutable reference to a diagnostics sink.
+    ///
+    /// Plugins emit [`crate::diagnostics::MarkdownDiagnostic`] values here.
+    /// When `None`, diagnostics are silently discarded (zero cost for callers
+    /// that do not collect diagnostics).
+    pub diagnostics: Option<&'a mut dyn crate::diagnostics::DiagnosticsSink>,
+}
+
+impl<'a> BuildContext<'a> {
+    /// Convenience constructor for tests and simple orchestrators that only
+    /// need paths (no registry or diagnostics wired in yet).
+    #[must_use]
+    pub fn for_paths(
+        source_path: impl Into<PathBuf>,
+        project_root: impl Into<PathBuf>,
+        public_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            source_path: Some(source_path.into()),
+            project_root: project_root.into(),
+            public_dir: public_dir.into(),
+            heading_registry: None,
+            diagnostics: None,
+        }
+    }
+}
+
+// ── Visitor traits ────────────────────────────────────────────────────────────
+
 /// Mdast visitor: mutates an mdast tree in place.
 ///
 /// Implementors typically call [`MdastNode::children_mut`] to recurse, or
@@ -212,6 +267,19 @@ pub trait MdastVisitor {
 pub trait HastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut HastNode);
+
+    /// Visit with optional build context (wave-6 seam).
+    ///
+    /// Plugins that need `BuildContext` (heading-ID registry, diagnostics
+    /// sink, source-path resolution) override this method. The default
+    /// delegates to [`Self::visit`] so all existing visitors are
+    /// automatically backwards-compatible — they receive context-free
+    /// calls via `visit` and never see the context.
+    ///
+    /// Called by [`Pipeline::run_with_context`] / [`Pipeline::apply_hast_visitors_with_context`].
+    fn visit_with_context(&mut self, node: &mut HastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 
     /// Reset any per-document state accumulated during [`Self::visit`].
     ///
@@ -756,6 +824,58 @@ impl Pipeline {
         }
 
         Ok(hast)
+    }
+
+    /// Like [`Pipeline::run`] but threads a [`BuildContext`] through the
+    /// hast visitor chain.
+    ///
+    /// Visitors that opt in to wave-6 features (heading-ID registry,
+    /// diagnostics sink) override [`HastVisitor::visit_with_context`] and
+    /// read from `ctx`. All other visitors receive the same call as in
+    /// [`run`] — the default `visit_with_context` implementation delegates
+    /// to `visit` — so the output is **byte-identical** to `run` when no
+    /// context-aware visitors are registered.
+    ///
+    /// # Errors
+    /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
+    pub fn run_with_context(
+        &mut self,
+        input: &str,
+        ctx: &mut BuildContext<'_>,
+    ) -> Result<HastNode, PipelineError> {
+        let mut mdast = markdown::to_mdast(input, &self.parse_options)
+            .map_err(|m| PipelineError::Parse(m.to_string()))?;
+
+        for v in &mut self.mdast_visitors {
+            v.visit(&mut mdast);
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(&mut mdast);
+        }
+
+        let mut hast = mdast_to_hast(&mdast);
+
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(&mut hast, ctx);
+        }
+
+        Ok(hast)
+    }
+
+    /// Run only the hast visitor chain with build context against an
+    /// externally-built hast tree.
+    ///
+    /// Parallel to [`Pipeline::apply_hast_visitors`] but threads the context
+    /// through each visitor so wave-6 plugins can access the registry and
+    /// diagnostics sink.
+    pub fn apply_hast_visitors_with_context(
+        &mut self,
+        node: &mut HastNode,
+        ctx: &mut BuildContext<'_>,
+    ) {
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(node, ctx);
+        }
     }
 }
 
