@@ -69,9 +69,12 @@ pub mod reading_time {}
 // TODO: Wave 4 — port github-autolinks
 pub mod github_autolinks {}
 
-/// Code-block enrichment (copy button, language label, etc.).
-// TODO: Wave 5 — port code-enrichment
-pub mod code_enrichment {}
+/// Code-block enrichment — diff markers (`// [!code ++]` / `// [!code --]`)
+/// and per-line highlighting via fence meta (`{1,3-5}`).
+/// Wire via `features.codeEnrichment: {}` (or with explicit flags) in
+/// `zfb.config.ts`. Phase: hast (runs AFTER SyntectPlugin on per-line
+/// `<span class="line">` structure). Wave 5 (#575).
+pub mod code_enrichment;
 
 /// Grouped code blocks rendered as tabs.
 // TODO: Wave 5 — port code-tabs

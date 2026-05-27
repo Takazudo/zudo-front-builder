@@ -671,7 +671,12 @@ impl Pipeline {
         // zfb-md-extras. It adds the opt-in visitors in the correct phase and
         // position (before SyntectPlugin for mermaid; after for post-syntect).
         register_features(&mut p, features);
+        // SyntectPlugin MUST be added AFTER register_features so that all
+        // pre-syntect extras visitors (mermaid, image_enlarge, etc.) run first.
         p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+        // Post-syntect extras visitors: these operate on the per-line
+        // <span class="line"> structure that SyntectPlugin emits.
+        register_post_syntect_features(&mut p, features);
         p
     }
 
@@ -919,7 +924,38 @@ pub fn register_features(
             zfb_md_extras::mermaid::MermaidPlugin::new(),
         ));
     }
-    // Wave 4-6: additional feature visitor wiring lands here.
+    // Wave 4-6: additional pre-syntect feature visitor wiring lands here.
+}
+
+/// Register post-syntect feature visitors from `zfb-md-extras` into the pipeline.
+///
+/// Called **after** [`SyntectPlugin`] is added in
+/// [`Pipeline::with_defaults_and_features`]. Visitors registered here operate
+/// on the per-line `<span class="line">` structure that SyntectPlugin emits —
+/// they see already-highlighted structured HAST.
+///
+/// # Wave 5 (#575)
+///
+/// `code_enrichment` is the first visitor registered here. It adds
+/// `data-line-diff` and `data-line-highlight` attributes to matching
+/// `<span class="line">` elements.
+///
+/// # Ordering contract
+///
+/// All visitors registered here run AFTER SyntectPlugin.
+/// They MUST NOT rewrite the `<pre><code>` structure itself — only mutate
+/// existing `<span class="line">` children.
+pub fn register_post_syntect_features(
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    // Wave 5 (#575): code_enrichment — diff markers + line highlighting.
+    if let Some(cfg) = &features.code_enrichment {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::code_enrichment::CodeEnrichmentPlugin::new(cfg.clone()),
+        ));
+    }
+    // Wave 5-6: additional post-syntect feature visitor wiring lands here.
 }
 
 /// Strategy for emitting the JSX-shaped Raw payload of `MdxJsxFlow*`,
