@@ -919,6 +919,16 @@ pub fn register_features(
             zfb_md_extras::mermaid::MermaidPlugin::new(),
         ));
     }
+    // Wave 5 (#574): GitHub-style autolinks — #NNN, user/repo#NNN, SHA.
+    // Uses Option<GithubAutolinksConfig> (not FeatureToggle), so gated with
+    // is_some() + required `repo` field extraction.
+    if let Some(cfg) = features.github_autolinks.as_ref() {
+        if let Some(repo) = cfg.repo.as_ref() {
+            p.add_hast_visitor(Box::new(
+                zfb_md_extras::github_autolinks::GithubAutolinksPlugin::new(repo.clone()),
+            ));
+        }
+    }
     // Wave 4-6: additional feature visitor wiring lands here.
 }
 
