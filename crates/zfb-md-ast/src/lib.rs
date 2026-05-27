@@ -1,10 +1,25 @@
-//! Shared AST types and visitor traits for the zfb markdown/MDX pipeline.
+//! Shared AST types, visitor traits, and visitor-contract context for the
+//! zfb markdown/MDX pipeline.
 //!
-//! This crate is a thin shared-types layer so `zfb-md-extras` (and other
-//! downstream crates) can depend on these definitions without pulling in all
-//! of `zfb-content`.
+//! This crate is the dependency boundary that lets `zfb-md-extras` (and other
+//! downstream plugin crates) implement visitors without depending on
+//! `zfb-content`. It carries the visitor contract end-to-end: the AST type
+//! (`HastNode`), the traits (`MdastVisitor` / `HastVisitor`), and the
+//! orchestration context types those traits reference (`BuildContext`,
+//! `DiagnosticsSink`, `HeadingRegistry`, `MarkdownDiagnostic`).
+//!
+//! Wave 1 scope expansion: this crate originally targeted just the AST + trait
+//! defs (#565). Sub-issue #568 added `HastVisitor::visit_with_context` whose
+//! signature references `BuildContext` and its dependent types — those moved
+//! here too so the contract stays self-contained. `zfb-content` re-exports
+//! everything for backwards-compatible consumer paths.
+
+use std::path::PathBuf;
 
 use markdown::mdast::Node as MdastNode;
+
+pub mod diagnostics;
+pub mod heading_registry;
 
 /// Lightweight HTML AST node.
 ///
@@ -61,6 +76,57 @@ pub enum HastNode {
     Comment(String),
 }
 
+/// Per-document build context threaded into pipeline visitors when the
+/// orchestrator needs wave-6 features (image dimensions, link validation,
+/// transclusion).
+///
+/// **Backwards-compat:** the existing `Pipeline::run` method passes no
+/// context. Wave-6 visitors that depend on the context are only invoked via
+/// `Pipeline::run_with_context`. Callers that never pass a context pay zero
+/// overhead.
+pub struct BuildContext<'a> {
+    /// Absolute path of the markdown source file being rendered, or `None`
+    /// if not available (e.g. rendering an in-memory string in tests).
+    pub source_path: Option<PathBuf>,
+    /// Root directory of the project — used to resolve asset paths and
+    /// build the registry key for the heading-ID lookup.
+    pub project_root: PathBuf,
+    /// The public / static-assets directory — used by the image-dimensions
+    /// plugin (wave 6.1) to locate image files on disk.
+    pub public_dir: PathBuf,
+    /// Optional mutable reference to the build-scoped heading-ID registry.
+    ///
+    /// When `Some`, `HeadingLinksPlugin` writes an entry for each heading it
+    /// processes. When `None`, no registry writes occur (zero cost for callers
+    /// that do not perform link validation).
+    pub heading_registry: Option<&'a mut crate::heading_registry::HeadingRegistry>,
+    /// Optional mutable reference to a diagnostics sink.
+    ///
+    /// Plugins emit [`crate::diagnostics::MarkdownDiagnostic`] values here.
+    /// When `None`, diagnostics are silently discarded (zero cost for callers
+    /// that do not collect diagnostics).
+    pub diagnostics: Option<&'a mut dyn crate::diagnostics::DiagnosticsSink>,
+}
+
+impl<'a> BuildContext<'a> {
+    /// Convenience constructor for tests and simple orchestrators that only
+    /// need paths (no registry or diagnostics wired in yet).
+    #[must_use]
+    pub fn for_paths(
+        source_path: impl Into<PathBuf>,
+        project_root: impl Into<PathBuf>,
+        public_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            source_path: Some(source_path.into()),
+            project_root: project_root.into(),
+            public_dir: public_dir.into(),
+            heading_registry: None,
+            diagnostics: None,
+        }
+    }
+}
+
 /// Mdast visitor: mutates an mdast tree in place.
 ///
 /// Implementors typically call [`MdastNode::children_mut`] to recurse, or
@@ -77,6 +143,19 @@ pub trait MdastVisitor {
 pub trait HastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut HastNode);
+
+    /// Visit with optional build context (wave-6 seam).
+    ///
+    /// Plugins that need `BuildContext` (heading-ID registry, diagnostics
+    /// sink, source-path resolution) override this method. The default
+    /// delegates to [`Self::visit`] so all existing visitors are
+    /// automatically backwards-compatible — they receive context-free
+    /// calls via `visit` and never see the context.
+    ///
+    /// Called by `Pipeline::run_with_context` / `Pipeline::apply_hast_visitors_with_context`.
+    fn visit_with_context(&mut self, node: &mut HastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 
     /// Reset any per-document state accumulated during [`Self::visit`].
     ///

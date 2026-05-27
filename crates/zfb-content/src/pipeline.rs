@@ -141,7 +141,16 @@ pub fn constructs_for_jsx_emit(
 }
 
 
-pub use zfb_md_ast::{HastNode, HastVisitor, MdastVisitor};
+// HastNode, MdastVisitor, HastVisitor, and BuildContext live in
+// `zfb-md-ast` so downstream plugin crates (zfb-md-extras) can depend on
+// the visitor contract without depending on zfb-content. The
+// `diagnostics` and `heading_registry` sub-modules also moved there
+// because BuildContext references them via the visitor contract.
+//
+// Re-exported here under their historical paths so existing consumers of
+// `zfb_content::pipeline::{HastNode, HastVisitor, ...}` continue to
+// resolve.
+pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor};
 
 /// Pipeline error type.
 #[derive(Debug, thiserror::Error)]
@@ -673,6 +682,58 @@ impl Pipeline {
         }
 
         Ok(hast)
+    }
+
+    /// Like [`Pipeline::run`] but threads a [`BuildContext`] through the
+    /// hast visitor chain.
+    ///
+    /// Visitors that opt in to wave-6 features (heading-ID registry,
+    /// diagnostics sink) override [`HastVisitor::visit_with_context`] and
+    /// read from `ctx`. All other visitors receive the same call as in
+    /// [`run`] — the default `visit_with_context` implementation delegates
+    /// to `visit` — so the output is **byte-identical** to `run` when no
+    /// context-aware visitors are registered.
+    ///
+    /// # Errors
+    /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
+    pub fn run_with_context(
+        &mut self,
+        input: &str,
+        ctx: &mut BuildContext<'_>,
+    ) -> Result<HastNode, PipelineError> {
+        let mut mdast = markdown::to_mdast(input, &self.parse_options)
+            .map_err(|m| PipelineError::Parse(m.to_string()))?;
+
+        for v in &mut self.mdast_visitors {
+            v.visit(&mut mdast);
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(&mut mdast);
+        }
+
+        let mut hast = mdast_to_hast(&mdast);
+
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(&mut hast, ctx);
+        }
+
+        Ok(hast)
+    }
+
+    /// Run only the hast visitor chain with build context against an
+    /// externally-built hast tree.
+    ///
+    /// Parallel to [`Pipeline::apply_hast_visitors`] but threads the context
+    /// through each visitor so wave-6 plugins can access the registry and
+    /// diagnostics sink.
+    pub fn apply_hast_visitors_with_context(
+        &mut self,
+        node: &mut HastNode,
+        ctx: &mut BuildContext<'_>,
+    ) {
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(node, ctx);
+        }
     }
 }
 

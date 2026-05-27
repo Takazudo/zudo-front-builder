@@ -2,7 +2,9 @@
 
 pub mod collection;
 pub mod content_bridge;
+pub mod diagnostics;
 pub mod frontmatter;
+pub mod heading_registry;
 pub mod mdx_jsx_emit;
 pub mod pipeline;
 pub mod plugins;

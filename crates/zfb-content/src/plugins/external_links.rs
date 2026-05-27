@@ -66,7 +66,7 @@ impl ExternalLinksPlugin {
     /// absolute HTTP/HTTPS href is treated as external.
     #[must_use]
     pub fn new(config: ExternalLinksConfig, site: Option<&str>) -> Self {
-        let site_origin = site.and_then(|s| extract_origin(s));
+        let site_origin = site.and_then(extract_origin);
         Self {
             config,
             site_origin,
