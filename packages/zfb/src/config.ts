@@ -611,11 +611,21 @@ export type MarkdownFeaturesConfig = {
   imageEnlarge?: FeatureToggle;
 
   /**
-   * Inline heading-marker TOC (e.g. `## Heading {#id}` syntax, TOC
-   * rendered via a heading-marker plugin). Uses [`TocConfig`] shape.
+   * Inline heading-marker TOC. Accepts either a `boolean` shorthand
+   * (`true` = enable with defaults, `false` = disable) or a full
+   * {@link TocConfig} options object — same union shape as the Rust
+   * `HeadingMarkerTocFeature` enum.
    */
-  headingMarkerToc?: TocConfig;
+  headingMarkerToc?: HeadingMarkerTocFeature;
 };
+
+/**
+ * `headingMarkerToc` feature value: either a `boolean` shorthand or a
+ * full {@link TocConfig} options object.
+ *
+ * Mirrors `HeadingMarkerTocFeature` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type HeadingMarkerTocFeature = boolean | TocConfig;
 
 /**
  * Options for the external-link rewriter (port of `rehype-external-links`).

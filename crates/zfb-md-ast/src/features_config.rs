@@ -97,9 +97,14 @@ pub struct TranscludeConfig {}
 /// import path; `zfb-content` re-exports it under the historical
 /// `zfb_content::TocConfig` path for backwards compatibility.
 ///
+/// `deny_unknown_fields` is critical when this struct sits inside
+/// [`HeadingMarkerTocFeature::Config`] (an untagged enum) — without it a
+/// config like `headingMarkerToc: { bogus: true }` would silently fall
+/// back to defaults instead of surfacing the typo.
+///
 /// Mirrors `TocConfig` in `packages/zfb/src/config.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TocConfig {
     /// Heading text that triggers TOC insertion. Matched
     /// case-insensitively after whitespace trimming. Default: `"TOC"`.
