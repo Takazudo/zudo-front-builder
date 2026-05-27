@@ -252,10 +252,10 @@ fn validate_inner(
     }
 
     // Recurse for compound types we matched.
-    if value.is_object() && types.iter().any(|t| *t == "object") {
+    if value.is_object() && types.contains(&"object") {
         validate_object(value.as_object().unwrap(), schema_obj, path, out);
     }
-    if value.is_array() && types.iter().any(|t| *t == "array") {
+    if value.is_array() && types.contains(&"array") {
         if let Some(items) = schema_obj.get("items") {
             for (i, item) in value.as_array().unwrap().iter().enumerate() {
                 let child_path = format!("{path}[{i}]");

@@ -1097,10 +1097,10 @@ fn starts_with_block_level_tag(s: &str) -> bool {
     if bytes.first() != Some(&b'<') { return false; }
     let after_lt = &trimmed[1..];
     let tag_end = after_lt
-        .find(|c: char| c == ' ' || c == '>' || c == '/' || c == '\t' || c == '\n' || c == '\r')
+        .find(|c: char| [' ', '>', '/', '\t', '\n', '\r'].contains(&c))
         .unwrap_or(after_lt.len());
     let tag = after_lt[..tag_end].to_ascii_lowercase();
-    BLOCK_TAGS.iter().any(|b| *b == tag.as_str())
+    BLOCK_TAGS.contains(&tag.as_str())
 }
 
 /// Scan a JSX-shaped string for PascalCase opening-tag identifiers and
