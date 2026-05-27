@@ -89,10 +89,13 @@ where
             dir.display()
         );
     } else {
-        // Normalizing mode: trim the Markdown input (common convention —
-        // trailing newline differences are not semantically meaningful) and
-        // run both sides through normalize_html before comparing.
-        let actual_raw = transform(input.trim());
+        // Normalizing mode: pass the Markdown input through unchanged —
+        // the fixture's `input.md` is the parser's source of truth, and
+        // trimming it can flip parsing for indented code blocks, fenced
+        // blocks with leading blank lines, and other constructs that
+        // depend on document boundaries. Normalization applies only to
+        // the HTML *output* on both sides.
+        let actual_raw = transform(&input);
         let actual = normalize_html(&actual_raw);
         let expected = normalize_html(&expected_raw);
         assert_eq!(

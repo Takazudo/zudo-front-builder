@@ -856,15 +856,20 @@ pub enum FeatureToggle {
 /// Empty options object for features that accept `{ ... }` but have no
 /// user-facing knobs yet. Fields are filled in by each feature's port
 /// sub-issue; this stub satisfies the schema shape requirement.
+///
+/// `deny_unknown_fields` is critical here — without it, the `FeatureToggle`
+/// untagged enum would accept ANY object as `Options(FeatureOptions {})`,
+/// silently turning `features.githubAlerts = { bogus: true }` into
+/// "enabled with defaults" instead of failing fast.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureOptions {}
 
 /// Options for the `githubAutolinks` feature. Requires `repo`.
 ///
 /// TODO: fill in actual fields when the githubAutolinks feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GithubAutolinksConfig {
     /// GitHub repository reference (`owner/repo`) used to build autolink URLs.
     // Required by the githubAutolinks feature spec; value is set by users.
@@ -876,35 +881,35 @@ pub struct GithubAutolinksConfig {
 ///
 /// TODO: fill in actual fields when the codeEnrichment feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeEnrichmentConfig {}
 
 /// Options stub for the `tocExport` feature.
 ///
 /// TODO: fill in actual fields when the tocExport feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TocExportConfig {}
 
 /// Options stub for the `imageDimensions` feature.
 ///
 /// TODO: fill in actual fields when the imageDimensions feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageDimensionsConfig {}
 
 /// Options stub for the `linkValidation` feature.
 ///
 /// TODO: fill in actual fields when the linkValidation feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LinkValidationConfig {}
 
 /// Options stub for the `transclude` feature.
 ///
 /// TODO: fill in actual fields when the transclude feature is ported.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TranscludeConfig {}
 
 /// Per-feature markdown pipeline configuration.
@@ -3795,5 +3800,45 @@ mod tests {
         .expect("Config without features field deserialises");
         let markdown = cfg.markdown.as_ref().expect("markdown present");
         assert_eq!(markdown.features, None);
+    }
+
+    // Unknown keys inside a per-feature OBJECT must reject too — without
+    // `deny_unknown_fields` on the option structs, the untagged
+    // `FeatureToggle` enum would silently accept `{ bogus: true }` as
+    // `Options(FeatureOptions {})` and the feature would turn on
+    // unintentionally. Codex review flag in #564 Wave 1.
+    //
+    // Note: with `#[serde(untagged)]` on `FeatureToggle`, serde swallows
+    // the inner "unknown field" message and reports only the outer
+    // "did not match any variant" error — so we assert on the variant
+    // text rather than the field name itself.
+    #[test]
+    fn features_per_feature_object_rejects_unknown_keys() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "githubAlerts": { "bogus": true } }
+        }))
+        .expect_err("unknown keys inside the per-feature object must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("FeatureToggle") || msg.contains("variant"),
+            "error must indicate the FeatureToggle variant rejection; got: {msg}"
+        );
+    }
+
+    // Same shape via the typed-options struct (`GithubAutolinksConfig`)
+    // — unknown keys alongside the legitimate `repo` field must reject.
+    // `GithubAutolinksConfig` is NOT inside an untagged enum, so the
+    // inner "unknown field" message survives and we can assert on it.
+    #[test]
+    fn features_typed_option_struct_rejects_unknown_keys() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "githubAutolinks": { "repo": "owner/repo", "bogus": true } }
+        }))
+        .expect_err("unknown keys inside a typed feature option struct must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus") || msg.contains("unknown field"),
+            "error must name the unknown field; got: {msg}"
+        );
     }
 }
