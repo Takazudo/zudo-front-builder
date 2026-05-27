@@ -61,9 +61,9 @@ pub mod mermaid;
 /// Wire via `features.githubAlerts: true` in `zfb.config.ts`.
 pub mod github_alerts;
 
-/// Reading-time estimate injected into document frontmatter.
-// TODO: Wave 4 — port reading-time
-pub mod reading_time {}
+/// Reading-time estimate injected into the MDX module as a named export.
+/// Wire via `features.readingTime: true` in `zfb.config.ts`.
+pub mod reading_time;
 
 /// GitHub-style `owner/repo#123` and SHA autolinks.
 // TODO: Wave 4 — port github-autolinks

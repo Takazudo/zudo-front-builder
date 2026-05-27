@@ -1,0 +1,92 @@
+---
+title: Reading time
+description: Inject an estimated reading-time as an MDX named export available alongside frontmatter.
+tier: Opt-in
+---
+
+The `readingTime` feature walks the parsed markdown AST, counts words, and injects
+`export const readingTimeMinutes = N;` into the compiled MDX module. The export is
+then available as `entry.readingTimeMinutes` in any TSX page that imports the
+collection.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      readingTime: true,
+    },
+  },
+});
+```
+
+To customise the words-per-minute rate:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      readingTime: { wpm: 250 },
+    },
+  },
+});
+```
+
+## Usage in a TSX page
+
+```tsx
+// src/pages/blog/[...slug].tsx
+const { readingTimeMinutes, ...rest } = await entry.render();
+
+// readingTimeMinutes is a number — use it in your layout:
+<p>{readingTimeMinutes} min read</p>
+```
+
+## Word counting formula
+
+The plugin combines two passes:
+
+1. **Latin-script text** — the text is split on whitespace; each token counts
+   as one word. Punctuation attached to a token (e.g. `don't`, `hello-world`)
+   counts as one word, consistent with `remark-reading-time`.
+
+2. **CJK characters** — each character in the following Unicode blocks counts
+   as one word, because CJK text does not use spaces between words:
+   - CJK Unified Ideographs + Extension A (U+3400–U+9FFF)
+   - CJK Compatibility Ideographs (U+F900–U+FAFF)
+   - Hiragana (U+3040–U+309F)
+   - Katakana (U+30A0–U+30FF)
+   - Hangul Syllables (U+AC00–U+D7AF)
+
+   Source: [remark-reading-time](https://www.npmjs.com/package/remark-reading-time) —
+   "It also uses CJK character count for languages that don't use spaces between words."
+
+The total word count (Latin tokens + CJK characters) is divided by the WPM value,
+ceiling-rounded to the nearest whole minute, with a minimum of 1.
+
+### Code blocks are excluded
+
+Fenced code blocks and inline code are **not** counted. A document whose code block
+contains hundreds of lines will not be over-estimated based on code content.
+
+## Examples
+
+| Input | WPM | Result |
+|-------|-----|--------|
+| 200 Latin words | 200 (default) | 1 minute |
+| 600 Latin words | 200 (default) | 3 minutes |
+| 200 CJK characters | 200 (default) | 1 minute |
+| 5 words | 200 (default) | 1 minute (minimum) |
+| 400 words | 250 | 2 minutes |
+
+## Notes
+
+- The minimum returned value is always **1 minute**, regardless of article length.
+- Reading time is computed against the **prose content only** — headings, paragraphs,
+  lists, blockquotes, and emphasis all contribute; code blocks, raw HTML, and math
+  blocks do not.
+- The export is injected at the **mdast phase** (before HTML/JSX conversion) so it
+  is always consistent with the document content.
