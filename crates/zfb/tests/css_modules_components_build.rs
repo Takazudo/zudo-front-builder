@@ -229,7 +229,6 @@ fn pascal_case(s: &str) -> String {
 }
 
 #[test]
-#[ignore = "fails until #553 fix lands in Wave 2 (#556) — intentional regression coverage; do NOT un-ignore until the bundler fix is in"]
 fn corp_shape_components_module_css_builds_with_hashed_classes() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

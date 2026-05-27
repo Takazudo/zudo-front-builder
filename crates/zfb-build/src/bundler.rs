@@ -748,8 +748,10 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   `import` statements that workerd cannot resolve.
 /// - `.module.css=js` — CSS Modules support. A `.module.css` file
 ///   imported as `import styles from "./x.module.css"` must yield the
-///   *scoped class-name map*, not empty. The bundler rewrites each
-///   such file in the shadow tree to a JS module
+///   *scoped class-name map*, not empty. The bundler rewrites every
+///   `.module.css` file in the shadow tree — including those placed
+///   there as symlinks by `materialise_shadow` / `symlink_or_copy`
+///   (fix #553) — to a JS module
 ///   (`export default { "orig": "scoped", … }`) using the maps in
 ///   [`BundlerInput::css_module_class_maps`]; this loader tells
 ///   esbuild to parse that rewritten file as JS. esbuild matches the
@@ -757,10 +759,10 @@ const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
 ///   here — plain `.css` still routes to `=empty`. The scoped CSS
 ///   itself is shipped externally via `styles-<hash>.css` exactly
 ///   like Tailwind output. When a `.module.css` file has no map entry
-///   (e.g. the CSS pipeline was not run), the shadow file keeps its
-///   raw CSS bytes and this loader makes esbuild fail with a clear
-///   parse error rather than silently dropping the import — which is
-///   the correct fail-fast signal for a misconfigured build.
+///   (e.g. the CSS pipeline was not run or a deep import was missed),
+///   `rewrite_css_modules_in_shadow` writes `export default {};` —
+///   a graceful degradation: `styles.foo` evaluates to `undefined`
+///   and the build succeeds rather than crashing with a parse error.
 pub const ESBUILD_LOADER_ARGS: &[&str] = &[
     "--loader:.mdx=jsx",
     "--loader:.md=jsx",
@@ -1816,12 +1818,22 @@ fn rewrite_css_modules_in_shadow(
     project_root: &Path,
     class_maps: &HashMap<PathBuf, HashMap<String, String>>,
 ) -> Result<()> {
+    // FIX #553: use `entry.path().is_file()` instead of
+    // `entry.file_type().is_file()` so .module.css symlinks materialised
+    // by symlink_or_copy in materialise_shadow are not skipped.
+    // With the old `entry.file_type().is_file()` gate, WalkDir (running
+    // with follow_links(false)) reports a symlink-to-file as
+    // is_symlink()==true / is_file()==false, so every .module.css symlink
+    // was silently skipped. `Path::is_file()` follows symlinks, so it
+    // returns true for symlinks-to-files and false for broken symlinks,
+    // directories, and symlinks-to-directories — correctly handling the
+    // node_modules symlink structures that shadow trees can contain.
     for entry in WalkDir::new(shadow).follow_links(false) {
         let entry = entry.with_context(|| format!("walking shadow {}", shadow.display()))?;
-        if !entry.file_type().is_file() {
+        let path = entry.path();
+        if !path.is_file() {
             continue;
         }
-        let path = entry.path();
         // Match the `.module.css` double-extension exactly.
         if !path
             .file_name()
@@ -1845,6 +1857,12 @@ fn rewrite_css_modules_in_shadow(
 
         let names = class_maps.get(&original);
         let js = render_css_module_js(names);
+
+        // FIX #553 (critical): replace the symlink in the shadow before
+        // writing, so we never write THROUGH the symlink and corrupt
+        // the user's source file in the project root. Mirrors the same
+        // pattern used by symlink_or_copy (bundler.rs:1385).
+        let _ = fs::remove_file(path);
         fs::write(path, js.as_bytes()).with_context(|| {
             format!(
                 "bundler: failed writing CSS Modules JS shim to {}",
@@ -2927,43 +2945,47 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     // same as `--platform=node`; the bundle stays platform-neutral.
     cmd.arg("--external:node:*");
 
-    // `--preserve-symlinks` is opt-in via [`BundlerInput::node_modules_preserve_symlinks`]
-    // and only applies when a custom `node_modules_dir` is configured.
+    // `--preserve-symlinks` has two separate activation paths:
     //
-    // Why opt-in rather than unconditional:
+    // 1. **Vendored mode** (`node_modules_dir.is_some() &&
+    //    node_modules_preserve_symlinks == true`) — `node_modules_dir`
+    //    points at a synthetic tempdir whose contents live outside the
+    //    project. Without `--preserve-symlinks` esbuild canonicalises
+    //    symlinked source files back to their real paths, walks up
+    //    looking for `node_modules`, and finds none (the injected vendor
+    //    tree only exists at the shadow location). `--preserve-symlinks`
+    //    keeps esbuild anchored at the shadow path.
     //
-    // - **Vendored mode (`node_modules_preserve_symlinks: true`)** —
-    //   `node_modules_dir` points at a synthetic tempdir whose contents
-    //   live outside the project. The shadow tree symlinks source
-    //   files (Wave 3 / #434), so without `--preserve-symlinks`
-    //   esbuild canonicalises those symlinks back to the real source
-    //   path (e.g. `/tmp/my-site/pages/index.tsx`) and walks up
-    //   looking for `node_modules`. The real source path has none —
-    //   the injected vendor tree only exists at the shadow location —
-    //   so resolution fails. `--preserve-symlinks` keeps esbuild
-    //   anchored at the shadow path where `<shadow>/node_modules` is
-    //   the injected vendor tree.
-    //
-    // - **Project-owned mode (`node_modules_preserve_symlinks: false`,
-    //   the default for production builds)** — `node_modules_dir`
-    //   points at the project's **own** `node_modules`. Canonicalising
-    //   the shadow's symlinked source files reaches the real project
-    //   tree, which has `node_modules` directly above it, so the walk
-    //   finds packages correctly. Passing `--preserve-symlinks` here
-    //   would actively break the path-alias regression in #443/#450:
-    //   esbuild keeps workspace-package importers anchored at
-    //   `<shadow>/node_modules/<pkg>/...`, and any importer whose path
-    //   contains a `node_modules` segment is excluded from
-    //   `tsconfig.json` discovery (this is internal esbuild policy —
-    //   `tsConfigForDir` returns early for `isInsideNodeModules`).
-    //   The synthetic tsconfig's `compilerOptions.paths`
-    //   (e.g. `"@/*": ["src/*"]`) would then never apply to imports
-    //   written inside workspace packages, producing
-    //   "Could not resolve `@/...`" errors at bundle time.
-    //
-    // Production builds with no `node_modules_dir` (cargo-install
-    // without a vendored fallback) are unaffected by this flag.
+    // 2. **CSS Modules without a project node_modules** (fix #553) —
+    //    `rewrite_css_modules_in_shadow` replaces the shadow's
+    //    `.module.css` symlinks with real JS files, but `.tsx`/`.jsx`
+    //    importers of those files remain symlinks. Without
+    //    `--preserve-symlinks`, esbuild canonicalises each symlinked
+    //    importer to its real source path and resolves
+    //    `./x.module.css` from *there* — finding the original raw CSS
+    //    rather than the rewritten JS in the shadow. With
+    //    `--preserve-symlinks`, esbuild stays anchored at the shadow
+    //    and resolves the relative import to the rewritten JS file.
+    //    Gated on `node_modules_dir.is_none()` to avoid the path-alias
+    //    regression in #443/#450: when `node_modules_dir` is set,
+    //    workspace-package importers have `node_modules` in their
+    //    shadow path, and `--preserve-symlinks` causes esbuild to skip
+    //    tsconfig discovery for those importers
+    //    (`tsConfigForDir` returns early for `isInsideNodeModules`).
+    //    With no `node_modules_dir` there is no `node_modules` in the
+    //    shadow, so that regression path does not exist.
     if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
+        cmd.arg("--preserve-symlinks");
+    } else if input.node_modules_dir.is_none() {
+        // No node_modules_dir: all package imports are either marked
+        // external or absent. Add --preserve-symlinks so esbuild stays
+        // anchored at the shadow path when processing symlinked source
+        // files. Without it, esbuild canonicalises a symlinked .tsx
+        // importer to its real path, then resolves relative imports
+        // (e.g. `./hero.module.css`) from the real directory — finding
+        // the original raw CSS rather than the rewritten JS shim in the
+        // shadow. Safe here because no node_modules traversal from the
+        // shadow root is needed (no packages to resolve).
         cmd.arg("--preserve-symlinks");
     }
 
