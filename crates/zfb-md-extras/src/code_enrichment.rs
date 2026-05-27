@@ -123,31 +123,65 @@ enum LineDiff {
 /// Returns the classification and the raw HTML with the marker stripped,
 /// or `None` if no marker is found.
 ///
+/// **The marker MUST be preceded by a recognised comment prefix** (`// `,
+/// `# `, or `-- `). A bare `[!code ++]` occurrence inside a string literal
+/// such as `const s = "[!code ++]";` is NOT treated as a marker — this
+/// prevents false positives when the marker text appears as code content
+/// rather than a comment annotation.
+///
 /// The strip logic removes the smallest span that contained the marker. If
 /// the marker occupies an entire `<span>…</span>` node (common when syntect
-/// groups the whole comment), that span is removed. Otherwise the marker
-/// text itself is erased character-by-character from the `<span>` text
-/// content.
+/// groups the whole comment), that span is removed. Otherwise the comment
+/// prefix plus the marker text are erased from the raw text. This ensures
+/// that even when syntect's tokenisation does not isolate the comment, the
+/// visible output does not retain a dangling `//` (or `#`, `--`) prefix.
 ///
 /// After stripping, trailing whitespace runs at the end of the line HTML
 /// are trimmed so the diff-marked line does not gain an extra blank column.
 fn detect_and_strip_marker(raw_html: &str) -> Option<(LineDiff, String)> {
-    let (diff, marker) = if raw_html.contains(MARKER_ADD) {
-        (LineDiff::Added, MARKER_ADD)
-    } else if raw_html.contains(MARKER_DEL) {
-        (LineDiff::Removed, MARKER_DEL)
-    } else {
-        return None;
-    };
+    // Comment prefixes recognised in source code. Order matters only for the
+    // strip pass — detection treats them as alternatives.
+    let comment_prefixes = ["// ", "# ", "-- "];
 
-    // Strip the marker: try to remove the enclosing <span>…</span> if the
-    // span's visible text content is ONLY the marker (possibly prefixed by
-    // a comment introducer like `//`, `#`, or `--`).
-    // Pattern: `<span[^>]*>COMMENT_PREFIX MARKER</span>` where COMMENT_PREFIX
-    // is one of `// `, `# `, `-- `, or empty.
-    let comment_prefixes = ["// ", "# ", "-- ", ""];
+    // Detect: search for any `<prefix><marker>` combination. Bare markers
+    // (without a comment prefix) are deliberately NOT treated as diff
+    // markers — see the function-level doc above.
+    let mut found: Option<(LineDiff, &'static str)> = None;
+    for &marker in &[MARKER_ADD, MARKER_DEL] {
+        for &prefix in &comment_prefixes {
+            let combined = format!("{prefix}{marker}");
+            if raw_html.contains(&combined) {
+                let diff = if marker == MARKER_ADD {
+                    LineDiff::Added
+                } else {
+                    LineDiff::Removed
+                };
+                found = Some((diff, marker));
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let (diff, marker) = found?;
+
+    // Strip: prefer removing the entire `<span>PREFIX MARKER</span>` when
+    // syntect tokenised the whole comment into one span. Fallback path
+    // removes `PREFIX MARKER` text (preserving surrounding markup) so
+    // languages with coarser tokenisation also strip cleanly.
     let stripped = try_strip_whole_span(raw_html, marker, &comment_prefixes)
-        .unwrap_or_else(|| raw_html.replace(marker, ""));
+        .unwrap_or_else(|| {
+            let mut out = raw_html.to_string();
+            for &prefix in &comment_prefixes {
+                let combined = format!("{prefix}{marker}");
+                if out.contains(&combined) {
+                    out = out.replace(&combined, "");
+                    return out.trim_end().to_string();
+                }
+            }
+            out
+        });
 
     // Trim trailing whitespace so that a line like `  x  ` after stripping
     // the trailing ` // [!code ++]` does not leave a dangling space run.
@@ -525,6 +559,52 @@ mod tests {
         // The second span should be entirely removed.
         assert!(!stripped.contains("[!code ++]"));
         assert!(stripped.contains("x = 1"), "code content must remain");
+    }
+
+    /// A bare marker (no comment prefix) inside a string literal must NOT
+    /// be treated as a diff marker. This guards against false positives in
+    /// code that happens to contain the literal marker text.
+    #[test]
+    fn bare_marker_in_string_literal_is_not_detected() {
+        let html = r#"const s = "[!code ++]";"#;
+        assert!(
+            detect_and_strip_marker(html).is_none(),
+            "bare [!code ++] without comment prefix must not be detected"
+        );
+    }
+
+    /// Hash-style comment prefix (`# `) is also recognised — covers Python,
+    /// Ruby, shell scripts.
+    #[test]
+    fn detect_hash_comment_prefix() {
+        let html = "x = 1  # [!code ++]";
+        let (diff, stripped) = detect_and_strip_marker(html).unwrap();
+        assert_eq!(diff, LineDiff::Added);
+        assert!(!stripped.contains("[!code ++]"));
+        assert!(!stripped.contains("# "), "comment prefix must be stripped: {stripped}");
+    }
+
+    /// Double-dash comment prefix (`-- `) is recognised — covers SQL, Lua.
+    #[test]
+    fn detect_double_dash_comment_prefix() {
+        let html = "x = 1 -- [!code --]";
+        let (diff, stripped) = detect_and_strip_marker(html).unwrap();
+        assert_eq!(diff, LineDiff::Removed);
+        assert!(!stripped.contains("[!code --]"));
+        assert!(!stripped.contains("-- "), "comment prefix must be stripped: {stripped}");
+    }
+
+    /// Fallback path (no whole-span match): the comment prefix is removed
+    /// alongside the marker, so the visible output does not retain a
+    /// dangling `// ` / `# ` / `-- ` prefix.
+    #[test]
+    fn fallback_strip_removes_prefix_too() {
+        // No `<span>` wrapping around the marker — forces the fallback
+        // path. The whole `// [!code ++]` must be removed (prefix + marker).
+        let html = "x = 1; // [!code ++]";
+        let (_diff, stripped) = detect_and_strip_marker(html).unwrap();
+        assert!(!stripped.contains("[!code ++]"));
+        assert!(!stripped.contains("// "), "fallback must strip prefix: {stripped}");
     }
 
     // ── enrich_line_span ──────────────────────────────────────────────────────
