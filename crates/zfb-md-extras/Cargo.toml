@@ -1,0 +1,24 @@
+[package]
+name = "zfb-md-extras"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb markdown extras: remark/rehype plugin ports (GFM, footnotes, etc.)"
+
+[lib]
+
+# `test-utils` gates the test_harness module so integration tests in Wave 2+
+# can access run_fixture without exposing it in production builds.
+# Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
+# dev-dependencies of crates that run fixture-based snapshot tests.
+[features]
+test-utils = []
+
+[dependencies]
+markdown = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+zfb-test-utils = { path = "../zfb-test-utils" }
+anyhow = { workspace = true }
+tempdir = "0.3"
