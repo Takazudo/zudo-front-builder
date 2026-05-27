@@ -74,8 +74,8 @@ pub mod github_autolinks {}
 pub mod code_enrichment {}
 
 /// Grouped code blocks rendered as tabs.
-// TODO: Wave 5 — port code-tabs
-pub mod code_tabs {}
+/// Wire via `features.codeTabs: true` in `zfb.config.ts`.
+pub mod code_tabs;
 
 /// Ruby annotation support (`{base}^{ruby}` syntax).
 // TODO: Wave 5 — port ruby

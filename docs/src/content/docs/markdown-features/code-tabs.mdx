@@ -1,0 +1,139 @@
+---
+title: Code tabs
+description: Group related code blocks into a tab strip with the :::code-group directive.
+tier: Opt-in
+---
+
+The `codeTabs` feature converts a `:::code-group` container into a `<CodeGroup>` JSX element.
+Code blocks inside the container become tab panels. The tab label comes from the `title="…"`
+meta on each fence, falling back to the language ID, and finally `"tab"` when neither is set.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      codeTabs: true,
+    },
+  },
+});
+```
+
+## Usage
+
+Wrap two or more fenced code blocks in a `:::code-group` container.
+Use `title="…"` in the opening fence to give each tab a human-readable label.
+
+~~~md
+:::code-group
+
+```ts title="index.ts"
+export const greeting = "hello";
+```
+
+```js title="index.js"
+export const greeting = "hello";
+```
+
+```py title="index.py"
+greeting = "hello"
+```
+
+:::
+~~~
+
+## Output shape
+
+The directive emits a `<CodeGroup>` JSX element. The tab labels are passed as a
+JS array expression on the `tabs` prop. Each code block becomes a `<pre>` child
+with a `data-lang` attribute.
+
+```html
+<CodeGroup tabs={["index.ts","index.js","index.py"]}>
+  <pre data-lang="ts">export const greeting = "hello";</pre>
+  <pre data-lang="js">export const greeting = "hello";</pre>
+  <pre data-lang="py">greeting = "hello"</pre>
+</CodeGroup>
+```
+
+The framework does not ship a built-in `<CodeGroup>` component — you supply one
+in your project and register it with zfb's component map. Here is a minimal
+Preact example:
+
+```tsx title="src/components/CodeGroup.tsx"
+import { useState } from "preact/hooks";
+
+interface Props {
+  tabs: string[];
+  children: preact.ComponentChildren[];
+}
+
+export function CodeGroup({ tabs, children }: Props) {
+  const [active, setActive] = useState(0);
+  return (
+    <div class="code-group">
+      <div class="code-group-tabs" role="tablist">
+        {tabs.map((label, i) => (
+          <button
+            key={label}
+            role="tab"
+            aria-selected={i === active}
+            onClick={() => setActive(i)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div class="code-group-panels">
+        {children.map((panel, i) => (
+          <div key={i} hidden={i !== active}>
+            {panel}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+## Tab label fallback
+
+If a code block has no `title=` meta, the language ID is used as the tab label.
+If neither is available, the label falls back to the literal string `"tab"`.
+
+~~~md
+:::code-group
+
+```ts
+// Tab label → "ts"
+const x = 1;
+```
+
+```
+// Tab label → "tab" (no lang, no title)
+plain text
+```
+
+:::
+~~~
+
+## Typed attribute schema
+
+The `code-group` directive declares a `name` attribute in its typed schema
+(`AttrType::String`, optional). This attribute is reserved for consumer-side
+use such as persisting the active tab across page navigation. It has no effect
+on the rendered output in the current release.
+
+## Edge cases
+
+- **Empty container** — a `:::code-group` with no fenced code blocks is left
+  unchanged in the tree. The pipeline treats it as an unknown directive and
+  emits it as plain paragraph text.
+- **Non-code children** — only fenced code blocks contribute tab panels.
+  Any other block content inside the container (paragraphs, lists, etc.) is
+  silently dropped.
+- **Nested containers** — the inner `:::` closes the outer group. Nesting
+  `:::code-group` inside another `:::code-group` is not supported and
+  produces an empty inner group.
