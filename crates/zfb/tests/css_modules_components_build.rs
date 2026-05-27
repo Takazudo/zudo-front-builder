@@ -221,7 +221,7 @@ fn pascal_case(s: &str) -> String {
 #[test]
 #[ignore = "fails until #553 fix — Wave 2"]
 fn corp_shape_components_module_css_builds_with_hashed_classes() {
-    let Some(_esbuild) = locate_esbuild() else {
+    let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[css_modules_components_build] no esbuild binary available; skipping. \
              Set ZFB_ESBUILD_BIN or install esbuild on PATH."
@@ -296,9 +296,19 @@ export default function HomePage() {
     // `discover_css_source_files` → `scan_css_module_imports` →
     // `materialise_shadow` (symlinks!) → `rewrite_css_modules_in_shadow`
     // (symlinks skipped → bug) → esbuild (sees raw CSS → crash).
+    //
+    // Pass the resolved esbuild path through `ZFB_ESBUILD_BIN` so the
+    // subprocess uses the same binary the test discovered. Without
+    // this, `zfb` would only look at `ZFB_ESBUILD_BIN`, the embedded
+    // extraction, and the `crates/zfb/binaries/esbuild/esbuild` slot
+    // — so an environment where `locate_esbuild()` found esbuild only
+    // on `PATH` or under `node_modules/.pnpm` would fail with an
+    // unrelated "esbuild not found" error rather than reproducing the
+    // CSS modules crash. (codex review finding, P2.)
     let output = Command::new(zfb_binary())
         .arg("build")
         .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
         .output()
         .expect("spawn `zfb build`");
 
