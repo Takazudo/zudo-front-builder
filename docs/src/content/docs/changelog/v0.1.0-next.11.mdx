@@ -1,0 +1,20 @@
+---
+title: v0.1.0-next.11
+sidebar_position: 1011
+---
+
+# v0.1.0-next.11
+
+Released: 2026-05-27
+
+## Bug Fixes
+
+- fix(bundler): rewrite .module.css symlinks in shadow and anchor esbuild to shadow path (#553) (9ec98e4)
+- fix(bundler): broaden --preserve-symlinks gate for #553 (Wave 2 deep-review) (e61df28)
+
+## Other Changes
+
+- test(zfb): add dual-variant regression test for #553 CSS Modules build crash (#555) (60582c2)
+- test(zfb): forward ZFB_ESBUILD_BIN to the subprocess in #555 regression test (86b2ee2)
+- test(zfb): polish #555 regression test per Wave 1 deep-review findings (0a89029)
+- docs(bundler): update on-branch spec comment to reflect three-layer fix (#553) (e2560b5)
