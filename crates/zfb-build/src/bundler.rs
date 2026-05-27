@@ -2986,6 +2986,9 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
         // the original raw CSS rather than the rewritten JS shim in the
         // shadow. Safe here because no node_modules traversal from the
         // shadow root is needed (no packages to resolve).
+        // Also covers the `embedded_node_modules()` extraction-failure
+        // fallback path in `build.rs` — that build is already headed
+        // for failure, so --preserve-symlinks does not make it worse.
         cmd.arg("--preserve-symlinks");
     }
 
