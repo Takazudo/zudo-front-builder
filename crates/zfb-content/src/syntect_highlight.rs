@@ -132,6 +132,34 @@ impl Highlighter {
         lang: Option<&str>,
         theme: Option<&str>,
     ) -> Result<String, HighlightError> {
+        let result = self.highlight_lines(code, lang, theme)?;
+        let spans: String = result.lines.concat();
+        Ok(format!(
+            "<pre class=\"syntect-{}\"><code>{spans}</code></pre>",
+            result.theme_slug
+        ))
+    }
+
+    /// Highlight a code block, returning per-line HTML fragments and the theme
+    /// slug rather than a single HTML string.
+    ///
+    /// * `code` - raw source code (no surrounding HTML).
+    /// * `lang` - language identifier from the markdown fence.
+    /// * `theme` - optional theme override; falls back to the configured default.
+    ///
+    /// Returns a [`HighlightedLines`] value carrying:
+    /// - `theme_slug`: the CSS-safe theme name (used as the `syntect-{slug}`
+    ///   class on `<pre>`).
+    /// - `lines`: one HTML fragment per source line (from
+    ///   `styled_line_to_highlighted_html`). On the fallback path (unknown lang
+    ///   or tokenization error) each line is the HTML-escaped source text with
+    ///   a trailing newline preserved; the `fallback` flag is `true` in that case.
+    pub fn highlight_lines(
+        &self,
+        code: &str,
+        lang: Option<&str>,
+        theme: Option<&str>,
+    ) -> Result<HighlightedLines, HighlightError> {
         // Normalize empty theme to the configured default for symmetry with `lang`.
         let theme_name = theme
             .filter(|s| !s.is_empty())
@@ -153,28 +181,43 @@ impl Highlighter {
         });
 
         let Some(syntax) = syntax else {
-            return Ok(fallback_html(code, &slug));
+            return Ok(fallback_lines(code, &slug));
         };
 
         let mut h = HighlightLines::new(syntax, theme_obj);
-        let mut spans = String::new();
+        let mut lines: Vec<String> = Vec::new();
         for line in LinesWithEndings::from(code) {
             let regions = match h.highlight_line(line, &self.syntax_set) {
                 Ok(r) => r,
                 // Path B: tokenization error — degrade to themed fallback instead of
                 // bubbling Err so callers never see a bare unthemed <pre><code>.
-                Err(_) => return Ok(fallback_html(code, &slug)),
+                Err(_) => return Ok(fallback_lines(code, &slug)),
             };
             match styled_line_to_highlighted_html(&regions[..], IncludeBackground::No) {
-                Ok(line_html) => spans.push_str(&line_html),
-                Err(_) => return Ok(fallback_html(code, &slug)),
+                Ok(line_html) => lines.push(line_html),
+                Err(_) => return Ok(fallback_lines(code, &slug)),
             }
         }
 
-        Ok(format!(
-            "<pre class=\"syntect-{slug}\"><code>{spans}</code></pre>"
-        ))
+        Ok(HighlightedLines {
+            theme_slug: slug,
+            lines,
+            fallback: false,
+        })
     }
+}
+
+/// Per-line highlighting result returned by [`Highlighter::highlight_lines`].
+#[derive(Debug, Clone)]
+pub struct HighlightedLines {
+    /// CSS-safe theme slug (used as `syntect-{slug}` class on `<pre>`).
+    pub theme_slug: String,
+    /// One HTML fragment per source line from syntect.
+    /// On the fallback path each entry is the HTML-escaped source line.
+    pub lines: Vec<String>,
+    /// `true` when the output used the themed-fallback path (unknown lang or
+    /// tokenization error) rather than per-token syntect highlighting.
+    pub fallback: bool,
 }
 
 impl Default for Highlighter {
@@ -235,15 +278,18 @@ fn theme_slug(name: &str) -> String {
     out
 }
 
-/// HTML-escape and wrap in a themed `<pre class="syntect-{slug}"><code>…</code></pre>`.
-///
-/// Used when syntax lookup fails (Path A) or tokenization errors (Path B).
-/// The `slug` is the pre-computed `theme_slug(theme_name)` from the call site.
-fn fallback_html(code: &str, slug: &str) -> String {
-    format!(
-        "<pre class=\"syntect-{slug}\"><code>{}</code></pre>",
-        html_escape(code)
-    )
+/// Build a [`HighlightedLines`] for the fallback path (unknown lang or
+/// tokenization error). Splits `code` on `LinesWithEndings` so the per-line
+/// vector has the same granularity as the normal path.
+fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
+    let lines: Vec<String> = LinesWithEndings::from(code)
+        .map(html_escape)
+        .collect();
+    HighlightedLines {
+        theme_slug: slug.to_string(),
+        lines,
+        fallback: true,
+    }
 }
 
 fn html_escape(s: &str) -> String {

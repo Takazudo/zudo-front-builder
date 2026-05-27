@@ -428,9 +428,10 @@ impl Pipeline {
     /// 4. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
     ///    in `<div class="code-block-container">` +
     ///    `<div class="code-block-title">`. Must run BEFORE
-    ///    [`SyntectPlugin`] because syntect replaces the whole `<pre>`
-    ///    with a [`HastNode::Raw`] HTML fragment; once that happens,
-    ///    the `data-meta` attribute is no longer reachable.
+    ///    [`SyntectPlugin`] because syntect replaces the `<pre>` element
+    ///    with structured HAST (`<pre><code><span class="line">…</span>
+    ///    </code></pre>`); once that happens, the original `data-meta`
+    ///    attribute on the input `<code>` is no longer reachable.
     /// 5. [`ImageEnlargePlugin`] — wraps any `<p>` whose only
     ///    non-whitespace child is `<img>` in
     ///    `<figure class="zd-enlargeable">` + an enlarge `<button>`.
@@ -441,9 +442,11 @@ impl Pipeline {
     ///    Must run BEFORE [`SyntectPlugin`] so the latter can identify
     ///    and skip mermaid blocks rather than syntect-highlighting them.
     /// 7. [`SyntectPlugin`] — replaces remaining fenced code blocks
-    ///    with syntect-highlighted HTML. Runs last in the code-block
-    ///    chain so the title-figure wrapper and the mermaid-skip
-    ///    decision are already baked in.
+    ///    with per-line structured HAST. Runs last among CORE hast
+    ///    visitors so the title-wrapper and mermaid-skip decision are
+    ///    already baked in. Extras-side enrichment visitors (registered
+    ///    via `register_features`) run AFTER syntect on the per-line
+    ///    `<span class="line">` structure they expose.
     ///
     /// `ResolveLinksPlugin` and `StripMdExtensionPlugin` are NOT in
     /// the defaults: the former needs a project-specific path-to-URL
@@ -632,13 +635,17 @@ impl Pipeline {
     /// 4. `HeadingLinksPlugin` — MUST be first in hast so subsequent plugins
     ///    see the final slugified ids.
     /// 5. `CodeTitlePlugin` — MUST run BEFORE `SyntectPlugin` (syntect
-    ///    replaces `<pre>` with a `Raw` fragment; once that happens,
-    ///    `data-meta` is no longer reachable).
+    ///    replaces the input `<pre>` element with structured HAST; once
+    ///    that happens, the original `data-meta` attribute is no longer
+    ///    reachable).
     /// 6. `MermaidPlugin` — MUST run BEFORE `SyntectPlugin` so syntect can
     ///    identify and skip mermaid blocks.
-    /// 7. `SyntectPlugin` — runs last in the code-block chain.
-    /// 8. *(extras hast visitors that depend on syntect's per-line structure
-    ///    run AFTER `SyntectPlugin`)*
+    /// 7. `SyntectPlugin` — runs last among CORE hast visitors in the
+    ///    code-block chain; emits `<pre><code><span class="line">…</span>
+    ///    </code></pre>` structured HAST so each line is a mutable Element.
+    /// 8. *(extras hast visitors registered via `register_features` run
+    ///    AFTER `SyntectPlugin` on the per-line `<span class="line">`
+    ///    structure — e.g. wave-5 diff markers and line-highlighting)*
     #[must_use]
     pub fn with_defaults_and_features(
         features: &zfb_md_extras::MarkdownFeaturesConfig,
