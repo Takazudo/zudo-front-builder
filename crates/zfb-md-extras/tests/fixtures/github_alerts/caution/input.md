@@ -1,0 +1,2 @@
+> [!CAUTION]
+> This is a caution.

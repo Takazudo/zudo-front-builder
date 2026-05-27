@@ -7,6 +7,12 @@ description = "zfb markdown extras: remark/rehype plugin ports (GFM, footnotes, 
 
 [lib]
 
+# Integration test for github_alerts feature: enable `test-utils` so that
+# `test_harness::run_fixture` is accessible from the external test binary.
+[[test]]
+name = "github_alerts"
+required-features = ["test-utils"]
+
 # `test-utils` gates the test_harness module so integration tests in Wave 2+
 # can access run_fixture without exposing it in production builds.
 # Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
@@ -41,3 +47,10 @@ anyhow = { workspace = true }
 # compile via cfg(test), not via the test-utils feature flag).
 zfb-test-utils = { path = "../zfb-test-utils" }
 tempdir = "0.3"
+# Dev-dep cycle is intentional and Cargo-supported: zfb-md-extras integration
+# tests need to run content through the full pipeline (which lives in
+# zfb-content). The workspace already uses this pattern elsewhere (e.g.
+# zfb-content has zfb-render as a dev-dep while zfb-render depends on
+# zfb-content).
+zfb-content = { path = "../zfb-content" }
+zfb-md-ast = { path = "../zfb-md-ast" }

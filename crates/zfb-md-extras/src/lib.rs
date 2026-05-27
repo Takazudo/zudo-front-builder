@@ -58,8 +58,8 @@ pub mod mermaid;
 // will port the corresponding remark/rehype plugin into each stub.
 
 /// GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.).
-// TODO: Wave 4 — port github-alerts
-pub mod github_alerts {}
+/// Wire via `features.githubAlerts: true` in `zfb.config.ts`.
+pub mod github_alerts;
 
 /// Reading-time estimate injected into document frontmatter.
 // TODO: Wave 4 — port reading-time

@@ -1,0 +1,62 @@
+---
+title: GitHub alerts
+description: Render GitHub-style alert blockquotes (> [!NOTE], > [!WARNING], etc.) as styled components.
+tier: Opt-in
+---
+
+The `githubAlerts` feature rewrites GitHub-style alert blockquotes into JSX components.
+This is the same syntax that GitHub renders natively in README files and issue comments.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      githubAlerts: true,
+    },
+  },
+});
+```
+
+## Usage
+
+Use the `> [!TYPE]` prefix on a blockquote. The type is case-insensitive.
+
+```md
+> [!NOTE]
+> Useful information that users should know.
+
+> [!TIP]
+> Helpful advice for doing things better or more easily.
+
+> [!IMPORTANT]
+> Key information users need to know to achieve their goal.
+
+> [!WARNING]
+> Urgent info that needs immediate user attention to avoid problems.
+
+> [!CAUTION]
+> Advises about risks or negative outcomes of certain actions.
+```
+
+## Supported types
+
+| Prefix        | Component      |
+|---------------|----------------|
+| `[!NOTE]`     | `<Note>`       |
+| `[!TIP]`      | `<Tip>`        |
+| `[!IMPORTANT]`| `<Important>`  |
+| `[!WARNING]`  | `<Warning>`    |
+| `[!CAUTION]`  | `<Caution>`    |
+
+## Notes
+
+- **No inline titles.** The `[!TYPE]` prefix is the only supported syntax. A trailing
+  label like `[!NOTE] My Title` is treated as a plain blockquote (not an alert).
+- **Multiple paragraphs** inside an alert are supported — all body content is placed
+  inside the JSX element.
+- **Coexists with `admonitionsPreset`.** Both features can be enabled simultaneously.
+  GitHub-style alerts are converted before the admonitions pass runs, so the two
+  syntaxes are completely independent.
