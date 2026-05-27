@@ -12,6 +12,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use zfb_test_utils::zfb_binary;
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -19,17 +21,10 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn zfb_binary() -> PathBuf {
-    // `CARGO_BIN_EXE_<bin>` is set by Cargo when building integration
-    // tests for the same package — the value is the absolute path to
-    // the built binary, no `cargo run` overhead.
-    PathBuf::from(env!("CARGO_BIN_EXE_zfb"))
-}
-
 #[test]
 fn check_passes_on_valid_fixture() {
     let dir = fixture("check-good");
-    let output = Command::new(zfb_binary())
+    let output = Command::new(zfb_binary!())
         .args(["check", "--skip-tsc"])
         .current_dir(&dir)
         .output()
@@ -53,7 +48,7 @@ fn check_passes_on_valid_fixture() {
 #[test]
 fn check_fails_with_schema_violation() {
     let dir = fixture("check-bad-schema");
-    let output = Command::new(zfb_binary())
+    let output = Command::new(zfb_binary!())
         .args(["check", "--skip-tsc"])
         .current_dir(&dir)
         .output()

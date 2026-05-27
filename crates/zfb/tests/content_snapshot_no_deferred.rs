@@ -36,15 +36,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use zfb_test_utils::zfb_binary;
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("collection-static-getStaticProps")
-}
-
-fn zfb_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_zfb"))
 }
 
 /// Run `zfb build` against the fixture in a fresh tempdir copy so parallel
@@ -59,7 +57,7 @@ fn getstaticprops_collection_appears_in_rendered_html() {
     copy_dir(&fixture, root).expect("copy fixture into tempdir");
 
     // Run `zfb build` against the copy.
-    let output = Command::new(zfb_binary())
+    let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
         .output()
