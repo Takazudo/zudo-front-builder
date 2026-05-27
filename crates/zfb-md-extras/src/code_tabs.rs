@@ -38,9 +38,9 @@
 //!
 //! # Edge cases
 //!
-//! - **Empty `:::code-group`** (no `Code` children): the container is left
-//!   as-is (opener + closer paragraphs remain in the tree). A well-behaved
-//!   pipeline will surface these as unknown-directive warnings.
+//! - **Empty `:::code-group`** (no `Code` children between opener and closer):
+//!   the entire run is left as-is — opener, any inner body nodes, and the
+//!   closer all remain in the tree as plain paragraphs. Nothing is dropped.
 //! - **Non-`Code` children** inside `:::code-group`: only `Code` nodes
 //!   contribute tab panels; other node types are silently dropped. Document
 //!   to users that only fenced code blocks are supported inside code groups.
@@ -166,6 +166,20 @@ fn rewrite_code_groups(children: &mut Vec<MdastNode>) {
             continue;
         };
 
+        // Peek at the body (i+1 .. close_idx-1) to check for Code nodes
+        // BEFORE mutating the children vec. If there are no Code nodes,
+        // leave the entire run (opener + body + closer) as plain paragraphs.
+        let has_code = children[i + 1..close_idx]
+            .iter()
+            .any(|n| matches!(n, MdastNode::Code(_)));
+
+        if !has_code {
+            // Skip past the closer so we don't re-examine opener on next
+            // iteration; the run stays as plain paragraphs.
+            i = close_idx + 1;
+            continue;
+        }
+
         // Collect the body nodes (between opener and closer).
         // Extract from close_idx down to i+1 (inclusive) to avoid index
         // shifting issues.
@@ -186,23 +200,6 @@ fn rewrite_code_groups(children: &mut Vec<MdastNode>) {
             .iter()
             .filter(|n| matches!(n, MdastNode::Code(_)))
             .collect();
-
-        if codes.is_empty() {
-            // Empty code group — leave the opener + inner + closer
-            // paragraphs in place. Re-insert them so the pipeline sees
-            // them as plain paragraphs. Skip past the re-inserted nodes
-            // to avoid re-processing.
-            // (They were already drained; we simply don't insert a JSX
-            // element — the opener was removed so we accept a slight
-            // lossy fallback here: the opener paragraph is dropped and
-            // the body is re-inserted without the opener.)
-            let inner_len = inner.len();
-            for (offset, node) in inner.into_iter().enumerate() {
-                children.insert(i + offset, node);
-            }
-            i += inner_len.max(1);
-            continue;
-        }
 
         // Build tab labels.
         let tabs: Vec<String> = codes
@@ -612,5 +609,59 @@ mod tests {
         let snapshot = format!("{tree:?}");
         CodeTabsPlugin::new().visit(&mut tree);
         assert_eq!(format!("{tree:?}"), snapshot, "second pass must be no-op");
+    }
+
+    // ── empty code group ──────────────────────────────────────────────────
+
+    #[test]
+    fn empty_code_group_is_left_unchanged() {
+        // A `:::code-group` with no fenced code blocks between the opener
+        // and closer must not be rewritten — the 3 nodes remain as-is.
+        let mut tree = make_root(vec![
+            para(":::code-group"),
+            para(":::"),
+        ]);
+        CodeTabsPlugin::new().visit(&mut tree);
+
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root");
+        };
+        assert_eq!(root.children.len(), 2, "opener + closer must remain");
+        assert!(
+            matches!(root.children[0], MdastNode::Paragraph(_)),
+            "opener paragraph must be preserved"
+        );
+        assert!(
+            matches!(root.children[1], MdastNode::Paragraph(_)),
+            "closer paragraph must be preserved"
+        );
+    }
+
+    // ── DirectiveDef / AttrSchema ─────────────────────────────────────────
+
+    #[test]
+    fn directive_def_validates_name_attr() {
+        // Exercises the AttrSchema API (#584) that declares the optional
+        // `name` attribute on the `:::code-group` directive.
+        // validate_attrs returns (Result<..., ...>, Vec<warnings>).
+        let def = code_group_directive_def();
+        let (result, warnings) = def.validate_attrs(&[("name".to_string(), "my-group".to_string())]);
+        assert!(
+            result.is_ok(),
+            "valid `name` attribute must pass validation: {result:?}"
+        );
+        assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
+    }
+
+    #[test]
+    fn directive_def_accepts_empty_attrs() {
+        // `name` is optional, so an empty attr list is also valid.
+        let def = code_group_directive_def();
+        let (result, warnings) = def.validate_attrs(&[]);
+        assert!(
+            result.is_ok(),
+            "empty attr list must be valid (name is optional): {result:?}"
+        );
+        assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
     }
 }
