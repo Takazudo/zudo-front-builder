@@ -880,6 +880,17 @@ pub fn register_features(
     use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
+    // code_tabs MUST run BEFORE admonitions_preset and github_alerts so that
+    // `:::code-group` opener paragraphs are consumed before the directive
+    // registry or alert scanner inspects them. The CodeTabsPlugin looks for
+    // the literal `:::code-group` opener and the closing `:::` separator so
+    // it must see raw paragraph nodes, not already-rewritten JSX elements.
+    if feature_enabled(&features.code_tabs) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::code_tabs::CodeTabsPlugin::new(),
+        ));
+    }
+
     // github_alerts MUST run BEFORE admonitions_preset so both features can
     // coexist: alert blockquotes are rewritten to MdxJsxFlowElement first,
     // then the admonitions pass handles `:::directive` syntax separately.

@@ -28,6 +28,11 @@ required-features = ["test-utils"]
 name = "code_enrichment"
 required-features = ["test-utils"]
 
+# Integration test for code_tabs feature.
+[[test]]
+name = "code_tabs"
+required-features = ["test-utils"]
+
 # `test-utils` gates the test_harness module so integration tests in Wave 2+
 # can access run_fixture without exposing it in production builds.
 # Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
