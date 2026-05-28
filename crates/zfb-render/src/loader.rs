@@ -229,7 +229,8 @@ impl ModuleLoader {
     /// when the project's `zfb.config.ts` sets `markdown.cjkFriendly`
     /// so dev rendering agrees with the bundler.
     ///
-    /// `markdown.features` is left at `None` (legacy always-on chain). Use
+    /// `markdown.features` is left at `None` (an empty feature set → the four
+    /// former-Core framework features are OFF, the opt-in default). Use
     /// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] to
     /// honour the feature surface so dev preview matches a featured build.
     pub fn with_strip_md_ext_and_gfm_and_cjk(
@@ -252,8 +253,15 @@ impl ModuleLoader {
     /// feature-aware entry point
     /// [`Pipeline::with_defaults_and_full_config`] so dev rendering and the
     /// bundler agree on every knob — including which opt-in feature plugins
-    /// fire. `features = None` routes through the legacy always-on chain,
-    /// byte-for-byte identical to the pre-features dev render.
+    /// fire. `features = None` is an empty feature set: the four former-Core
+    /// framework features are off (the opt-in default).
+    ///
+    /// Note: the `zfb dev` CLI does NOT render through this loader — it threads
+    /// `markdown.features` via the V8 `RendererState` in `zfb-build`
+    /// (`BundlerInput::markdown_features`). This constructor is for library /
+    /// embedder callers of `zfb-render` who want feature-aware MDX loading; an
+    /// embedder still calling [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk`]
+    /// runs with the four framework features off.
     pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
         jsx_runtime: JsxRuntime,
         strip_md_ext: bool,

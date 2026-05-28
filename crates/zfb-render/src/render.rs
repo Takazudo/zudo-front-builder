@@ -92,7 +92,8 @@ impl<H: RenderHost> Renderer<H> {
 
     /// Constructor: forwards `strip_md_ext`, GFM constructs, and
     /// CJK-friendly toggle to the loader. `markdown.features` is left at
-    /// `None` (legacy always-on chain); use
+    /// `None` (an empty feature set → the four former-Core framework features
+    /// are OFF, the opt-in default); use
     /// [`Renderer::with_strip_md_ext_and_gfm_and_cjk_and_features`] to honour
     /// the feature surface.
     pub fn with_strip_md_ext_and_gfm_and_cjk(
@@ -115,8 +116,12 @@ impl<H: RenderHost> Renderer<H> {
     /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
     /// CJK-friendly toggle, and `markdown.features` to the loader so dev
     /// rendering agrees with the bundler on every knob — including which
-    /// opt-in feature plugins fire. `features = None` is byte-for-byte
-    /// identical to the pre-features dev render.
+    /// opt-in feature plugins fire. `features = None` is an empty feature set:
+    /// the four former-Core framework features are off (the opt-in default).
+    ///
+    /// Note: the `zfb dev` CLI renders through the V8 `RendererState` in
+    /// `zfb-build`, threading features via `BundlerInput` — not through this
+    /// `Renderer`. These constructors are for library / embedder callers.
     pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
         host: H,
         jsx_runtime: JsxRuntime,

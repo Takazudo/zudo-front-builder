@@ -247,9 +247,10 @@ pub struct SnapshotPipelineConfig {
     /// `content_hash` and every `<Content />` lookup falls back to
     /// `<pre data-zfb-content-fallback>`.
     ///
-    /// `Default` is `None` — no feature surface configured — which routes the
-    /// snapshot pipeline through the legacy always-on chain, byte-for-byte
-    /// identical to the pre-features build.
+    /// `Default` is `None` — no feature surface configured — which is treated
+    /// as an empty feature set: the four former-Core framework features
+    /// (mermaid, image-enlarge, admonitions-preset, heading-marker TOC) are
+    /// OFF (the post-epic opt-in default, #583 / #586).
     pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
 }
 
@@ -275,8 +276,8 @@ impl SnapshotPipelineConfig {
     fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
         // Single feature-aware entry point — MUST match the bundler's dispatch
         // (see `crates/zfb-build/src/bundler.rs`) so `content_hash` stays
-        // byte-identical. `features = None` routes through the legacy always-on
-        // chain (byte-for-byte parity with the pre-features build).
+        // byte-identical. `features = None` is an empty feature set: the four
+        // former-Core framework features are off (the post-epic opt-in default).
         let mut p = Pipeline::with_defaults_and_full_config(
             self.code_highlight_theme.as_deref(),
             self.gfm_constructs,
@@ -621,6 +622,46 @@ mod tests {
             hash_canonical(&s1),
             hash_canonical(&s2),
             "two snapshot calls over the same fixture must hash identically",
+        );
+    }
+
+    // #586 — `markdown.features` must thread into the snapshot pipeline. The
+    // compiled JSX `content_hash` is baked into each entry's
+    // `module_specifier`, so enabling a feature that changes the rendered
+    // output (mermaid) must change that hash. This is the snapshot-side
+    // counterpart to `bundler_default_plugins`'s features test in `zfb-build`;
+    // both feed the SAME constructor, so matching dispatch keeps the snapshot ↔
+    // bundler `content_hash` byte-identical.
+    #[test]
+    fn snapshot_threads_markdown_features_into_content_hash() {
+        let tmp = TmpDir::new("md-features");
+        // A mermaid fence is only transformed when `features.mermaid` is on.
+        tmp.write(
+            "docs/diagram.mdx",
+            "---\ntitle: \"Diagram\"\n---\n\n```mermaid\ngraph TD; A-->B;\n```\n",
+        );
+        let collection = || CollectionConfig::new("docs", tmp.path.join("docs"));
+
+        // Default (no features) → mermaid OFF.
+        let off = build_snapshot_with_config(&[collection()], &SnapshotPipelineConfig::default())
+            .expect("snapshot (features off)");
+        // `features.mermaid: true` → mermaid ON.
+        let on_cfg = SnapshotPipelineConfig {
+            features: Some(zfb_md_extras::MarkdownFeaturesConfig {
+                mermaid: Some(zfb_md_extras::FeatureToggle::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let on = build_snapshot_with_config(&[collection()], &on_cfg)
+            .expect("snapshot (features on)");
+
+        let spec_off = &off.collections.get("docs").expect("docs off")[0].module_specifier;
+        let spec_on = &on.collections.get("docs").expect("docs on")[0].module_specifier;
+        assert_ne!(
+            spec_off, spec_on,
+            "enabling features.mermaid must change the snapshot's content_hash \
+             (proves markdown.features threads into the snapshot pipeline)",
         );
     }
 

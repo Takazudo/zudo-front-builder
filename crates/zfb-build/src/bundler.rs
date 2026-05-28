@@ -498,8 +498,10 @@ pub struct BundlerInput {
     /// pipeline is built via the feature-aware
     /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
     /// (mermaid, image-enlarge, admonitions, …) fire per the configured
-    /// toggles. When `None` (the default), the legacy always-on chain is
-    /// used and output is byte-identical to the pre-features build.
+    /// toggles. When `None` (the default), it is treated as an empty feature
+    /// set: the four former-Core framework features (mermaid, image-enlarge,
+    /// admonitions-preset, heading-marker TOC) are OFF — the post-epic opt-in
+    /// default (#583 / #586), NOT the pre-features always-on behaviour.
     ///
     /// Must match the `SnapshotPipelineConfig::features` value used by the
     /// snapshot walker — otherwise the `content_hash` baked into every
@@ -1496,9 +1498,9 @@ fn materialise_shadow(
     // rendered route URL. The `source_dir` is updated per-file below.
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` routes
-    // through the legacy always-on chain (byte-for-byte parity with the
-    // pre-features build).
+    // `content_hash` stays byte-identical. `markdown_features = None` is an
+    // empty feature set: the four former-Core framework features are off
+    // (the post-epic opt-in default).
     let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
         code_highlight_theme,
         gfm_constructs,
@@ -1507,6 +1509,8 @@ fn materialise_shadow(
         markdown_features,
     )
     .with_context(|| {
+        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
+        // so the `unwrap_or_default()` empty-string branch is unreachable.
         format!(
             "codeHighlight.themesDir: failed to load themes from {}",
             code_highlight_themes_dir
@@ -2035,9 +2039,9 @@ fn materialise_collection(
     // `source_dir` is updated per-file inside the walk loop.
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` routes
-    // through the legacy always-on chain (byte-for-byte parity with the
-    // pre-features build).
+    // `content_hash` stays byte-identical. `markdown_features = None` is an
+    // empty feature set: the four former-Core framework features are off
+    // (the post-epic opt-in default).
     let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
         code_highlight_theme,
         gfm_constructs,
@@ -2046,6 +2050,8 @@ fn materialise_collection(
         markdown_features,
     )
     .with_context(|| {
+        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
+        // so the `unwrap_or_default()` empty-string branch is unreachable.
         format!(
             "codeHighlight.themesDir: failed to load themes from {}",
             code_highlight_themes_dir
