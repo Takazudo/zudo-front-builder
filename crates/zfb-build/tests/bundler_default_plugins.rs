@@ -2,13 +2,27 @@
 //! (zfb#127 / #128).
 //!
 //! Pins the contract that
-//! [`zfb_build::bundler::bundle`] threads
-//! [`zfb_content::pipeline::Pipeline::with_defaults()`] through
-//! `compile_mdx_to_jsx_module_cached` at every MDX pre-compile call
+//! [`zfb_build::bundler::bundle`] threads a fully-wired content pipeline
+//! through `compile_mdx_to_jsx_module_cached` at every MDX pre-compile call
 //! site. Without this wiring, none of the seven default plugins
 //! (admonitions, CJK-friendly emphasis, heading-links, code-title,
 //! image-enlarge, mermaid, syntect) fire on built `dist/` output —
 //! which is exactly the bug zfb#126 surfaced.
+//!
+//! ## `markdown.features` branch (#586)
+//!
+//! Since #586 the bundler builds its pipeline via
+//! [`Pipeline::with_defaults_and_full_config`], dispatching on
+//! `BundlerInput::markdown_features`. This test leaves `markdown_features`
+//! at `None` — the **legacy always-on branch**, byte-for-byte equivalent to
+//! [`Pipeline::with_defaults()`] — so the four markers below MUST still
+//! appear (a default `zfb.config.ts` with no `features` key is unchanged by
+//! #586). The opt-in `Some(..)` branch (where mermaid/image-enlarge/etc.
+//! become toggle-controlled) is covered by
+//! `bundler_threads_markdown_features_through_mdx_compile` below.
+//!
+//! [`Pipeline::with_defaults_and_full_config`]: zfb_content::pipeline::Pipeline::with_defaults_and_full_config
+//! [`Pipeline::with_defaults()`]: zfb_content::pipeline::Pipeline::with_defaults
 //!
 //! ## Scope vs. the wider plugin matrix
 //!
@@ -19,21 +33,21 @@
 //! markers — one per plugin path the source issue's test plan called
 //! out — are enough signal to catch a `pipeline=None` regression.
 //!
-//! ## Markers (from zfb#126's test plan)
+//! ## Markers (from zfb#126's test plan, inverted for the opt-in default)
 //!
-//! - **Admonition** (`:::note Title\nbody\n:::`): the directive markers
-//!   must be CONSUMED, and the JSX must contain a `<Note>` element.
-//!   The directive previously passed through verbatim because the
-//!   bundler skipped the mdast-phase plugin chain.
-//! - **Mermaid** (` ```mermaid `): the bundle must contain
-//!   `data-mermaid` (the canonical attribute the source issue named).
-//! - **Syntect** (a non-mermaid fenced code block): the bundle must
-//!   contain a `syntect-` class hook (the actual class shape
-//!   `SyntectPlugin` emits — see
-//!   `crates/zfb-content/src/plugins/syntect_plugin.rs`).
-//! - **Image-enlarge** (a block-level paragraph image): the bundle
-//!   must contain `zd-enlargeable` (the class on the wrapping
-//!   `<figure>`).
+//! Since #586 wired `markdown.features` and the four framework features
+//! became opt-in, the no-features default INVERTS three of the four markers:
+//!
+//! - **Admonition** (`:::note … :::`): `admonitionsPreset` is OFF by default,
+//!   so the directive is NOT transformed — the `:::note` markers survive
+//!   verbatim and NO `<Note>` JSX component is emitted.
+//! - **Mermaid** (` ```mermaid `): `mermaid` is OFF by default, so the bundle
+//!   must NOT contain `data-mermaid`.
+//! - **Image-enlarge** (a block-level paragraph image): `imageEnlarge` is OFF
+//!   by default, so the bundle must NOT contain `zd-enlargeable`.
+//! - **Syntect** (a non-mermaid fenced code block): syntect is a CORE plugin
+//!   (not opt-in), so the bundle must STILL contain a `syntect-` class hook
+//!   (see `crates/zfb-content/src/plugins/syntect_plugin.rs`).
 //!
 //! Because the bundler emits JSX text and esbuild compiles it to JS,
 //! the assertions look at the final bundle body — JSX string-literal
@@ -159,72 +173,59 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
     assert!(!body.is_empty(), "bundle should be non-empty");
 
-    // ---- Admonition (mdast-phase plugin) -----------------------------
+    // Under the post-epic opt-in default (no `markdown.features` key), the four
+    // former-Core framework features are OFF. Only the always-on Core plugins
+    // (heading-links, code-title, CJK-friendly, syntect) fire. The opt-in
+    // (`Some(..)`) path is covered by
+    // `bundler_threads_markdown_features_through_mdx_compile` below.
+
+    // ---- Admonition (admonitionsPreset) — OFF by default -------------
     //
-    // The `:::note` directive markers must be CONSUMED — if they
-    // survive verbatim in the bundle, the admonition plugin did not
-    // fire (the source-issue regression). Conversely the JSX must
-    // contain a `<Note>` reference, which esbuild renders as a
-    // `Note`/`_components.Note` identifier in the compiled output.
+    // Without the admonitions directive registry the `:::note` container is
+    // not transformed: markdown-rs emits the lines as plain paragraphs, so the
+    // marker survives verbatim and NO `<Note>` JSX component is emitted.
     assert!(
-        !body.contains(":::note"),
-        ":::note directive markers must be consumed by the admonition plugin (regression: pipeline=None lets them survive verbatim).\n--- bundle excerpt ---\n{}",
+        body.contains(":::note"),
+        "without `features.admonitionsPreset` the :::note directive is left untransformed and survives verbatim.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
-    // The PascalCase preamble baked by the JSX emitter is the most
-    // reliable bundle-side proof that `<Note>` survived the hast
-    // detour into the JSX output (see
-    // `crates/zfb-content/tests/mdx_jsx_emit_hast.rs::mdx_component_passthrough_survives_hast_detour`).
-    // The emitter source emits
-    // `const Note = _components.Note ?? components.Note;` —
-    // esbuild may rename the local through minification but the
-    // property-access `_components.Note` (or the destructure
-    // `Note: ` in the `_components` literal) survives.
     assert!(
-        body.contains("_components.Note") || body.contains("Note: ") || body.contains("Note:"),
-        "compiled bundle should reference the <Note> JSX component the admonition plugin emits (looked for `_components.Note` / `Note: ` / `Note:` in the bundle).\n--- bundle excerpt ---\n{}",
+        !body.contains("_components.Note"),
+        "no <Note> JSX component should be emitted when `features.admonitionsPreset` is off.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
-    // ---- Mermaid (hast-phase plugin) ---------------------------------
+    // ---- Mermaid (mermaid) — OFF by default --------------------------
     //
-    // Source issue #126's canonical marker. The mermaid plugin
-    // replaces ```mermaid blocks with `<div class="mermaid"
-    // data-mermaid>`; the `data-mermaid` attribute is the unique
-    // marker we look for in the bundle.
+    // The mermaid wrapper (`<div class="mermaid" data-mermaid>`) is only
+    // emitted when `features.mermaid` is on. By default the ```mermaid fence
+    // falls through to syntect like any other code block.
     assert!(
-        body.contains("data-mermaid"),
-        "mermaid plugin should emit the data-mermaid attribute in the bundle.\n--- bundle excerpt ---\n{}",
-        snippet(&body)
-    );
-    // The original `language-mermaid` class must NOT survive — the
-    // mermaid plugin replaces the entire <pre> wrapper.
-    assert!(
-        !body.contains("language-mermaid"),
-        "language-mermaid class must not leak past mermaid plugin (the <pre> shell should be replaced with <div class=\"mermaid\">).\n--- bundle excerpt ---\n{}",
+        !body.contains("data-mermaid"),
+        "the mermaid wrapper must NOT be emitted when `features.mermaid` is off.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
-    // ---- Syntect (hast-phase plugin) ---------------------------------
+    // ---- Syntect (Core) — ALWAYS on ----------------------------------
     //
-    // Syntect emits HTML that the JSX bridge wraps in
-    // `dangerouslySetInnerHTML`. The `syntect-` class hook is the
-    // unique marker (`<pre class="syntect-…">` per
+    // Syntect is a Core plugin (not part of the opt-in feature surface), so
+    // the ```rust block is still highlighted. The `syntect-` class hook is
+    // the unique marker (`<pre class="syntect-…">` per
     // `crates/zfb-content/src/plugins/syntect_plugin.rs`).
     assert!(
         body.contains("syntect-"),
-        "syntect plugin should emit a `syntect-` class hook in the bundle.\n--- bundle excerpt ---\n{}",
+        "syntect is a Core plugin and must still emit a `syntect-` class hook by default.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
-    // ---- Image-enlarge (hast-phase plugin) ---------------------------
+    // ---- Image-enlarge (imageEnlarge) — OFF by default ---------------
     //
-    // A block-level <p><img></p> becomes <figure class="zd-enlargeable">.
-    // The class string survives in the bundle as a JSX `className`
-    // string-literal value.
+    // Block-level images are only wrapped in `<figure class="zd-enlargeable">`
+    // when `features.imageEnlarge` is on. By default the image stays a plain
+    // `<img>`.
     assert!(
-        body.contains("zd-enlargeable"),
-        "image-enlarge plugin should wrap block-level images in <figure class=\"zd-enlargeable\">.\n--- bundle excerpt ---\n{}",
+        !body.contains("zd-enlargeable"),
+        "block images must NOT be wrapped in <figure class=\"zd-enlargeable\"> when `features.imageEnlarge` is off.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
@@ -234,8 +235,8 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     // assert byte-identical output. With `pipeline = Some(&mut _)` the
     // MDX cache is bypassed by design (see
     // `crates/zfb-content/src/mdx_jsx_emit.rs` near `cache_for_lookup`),
-    // so this is a determinism / regression check on
-    // `Pipeline::with_defaults()` itself, not a cache-path check.
+    // so this is a determinism / regression check on the feature-aware
+    // default emit itself, not a cache-path check.
     let second_input = make_input(&root, &esbuild, "dist2");
     let second_out = bundle(second_input).expect("second bundle should succeed");
     let second_body =
@@ -243,6 +244,79 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     assert_eq!(
         body, second_body,
         "bundler output should be byte-identical across runs (deterministic Pipeline::with_defaults emit)"
+    );
+}
+
+/// Minimal fixture exercising only the mermaid plugin path, for the
+/// `markdown.features`-driven test below. Keeping it to a single mermaid
+/// fence isolates the feature toggle from the other plugins' output.
+fn write_mermaid_fixture(root: &std::path::Path) {
+    for d in ["pages", "components", "layouts"] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+    fs::write(
+        root.join("layouts/default.tsx"),
+        "export default function DefaultLayout({ children }) { return children; }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.mdx"),
+        "---\ntitle: Mermaid Feature\n---\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n",
+    )
+    .unwrap();
+}
+
+/// #586 — the opt-in `Some(..)` branch of the feature-aware pipeline.
+///
+/// Setting `markdown.features.mermaid` flips whether the mermaid wrapper is
+/// emitted, proving `BundlerInput::markdown_features` is actually threaded
+/// into the MDX pre-compile pipeline (the bug the issue describes was that it
+/// was parsed but dropped on the floor).
+#[test]
+fn bundler_threads_markdown_features_through_mdx_compile() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[bundler_default_plugins] no esbuild binary available; skipping \
+             markdown.features wiring test."
+        );
+        return;
+    };
+
+    // features.mermaid: true → the mermaid wrapper is emitted.
+    let tmp_on = tempfile::tempdir().expect("tempdir");
+    let root_on = tmp_on.path().to_path_buf();
+    write_mermaid_fixture(&root_on);
+    let mut input_on = make_input(&root_on, &esbuild, "dist");
+    input_on.content_collections = Vec::new();
+    input_on.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
+        mermaid: Some(zfb_content::FeatureToggle::Bool(true)),
+        ..Default::default()
+    });
+    let out_on = bundle(input_on).expect("bundle (mermaid on) should succeed");
+    let body_on = fs::read_to_string(&out_on.bundle_path).expect("read bundle");
+    assert!(
+        body_on.contains("data-mermaid"),
+        "features.mermaid:true must emit the mermaid wrapper (data-mermaid).\n--- bundle excerpt ---\n{}",
+        snippet(&body_on)
+    );
+
+    // features.mermaid: false → the wrapper is NOT emitted (the fence falls
+    // through to syntect like any other code block).
+    let tmp_off = tempfile::tempdir().expect("tempdir");
+    let root_off = tmp_off.path().to_path_buf();
+    write_mermaid_fixture(&root_off);
+    let mut input_off = make_input(&root_off, &esbuild, "dist");
+    input_off.content_collections = Vec::new();
+    input_off.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
+        mermaid: Some(zfb_content::FeatureToggle::Bool(false)),
+        ..Default::default()
+    });
+    let out_off = bundle(input_off).expect("bundle (mermaid off) should succeed");
+    let body_off = fs::read_to_string(&out_off.bundle_path).expect("read bundle");
+    assert!(
+        !body_off.contains("data-mermaid"),
+        "features.mermaid:false must NOT emit the mermaid wrapper.\n--- bundle excerpt ---\n{}",
+        snippet(&body_off)
     );
 }
 
@@ -295,6 +369,7 @@ fn make_input(
         toc: None,
             external_links: None,
             cjk_friendly: true,
+        markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

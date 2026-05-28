@@ -1482,6 +1482,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .map(|el| (el.into_content_config(), config.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
+    // #586 — thread `markdown.features` into the bundler so opt-in feature
+    // plugins (mermaid, image-enlarge, …) fire per the configured toggles.
+    // `None` keeps the legacy always-on chain, byte-identical to today.
+    bundler_input.markdown_features =
+        config.markdown.as_ref().and_then(|m| m.features.clone());
     // #268 — thread plugin-registered aliases and virtual modules into the
     // main bundler's esbuild invocation so page / layout / shared SSR-only
     // modules can consume them. The SAME data already feeds the islands path
@@ -2267,6 +2272,9 @@ pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) 
             .and_then(|m| m.external_links.clone())
             .map(|el| (el.into_content_config(), config.site.clone())),
         cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
+        // #586 — MUST match `BundlerInput::markdown_features` so the snapshot's
+        // JSX `content_hash` stays byte-identical to the bundler's bridge key.
+        features: config.markdown.as_ref().and_then(|m| m.features.clone()),
     };
     match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
         Ok(snap) => match serde_json::to_string(&snap) {

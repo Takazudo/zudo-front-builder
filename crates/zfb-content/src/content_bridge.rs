@@ -240,6 +240,17 @@ pub struct SnapshotPipelineConfig {
     ///
     /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
+
+    /// `markdown.features` from `zfb.config.ts`. MUST match the bundler's
+    /// `BundlerInput::markdown_features` exactly — the feature-aware pipeline
+    /// changes which visitors fire, so any divergence shifts the JSX
+    /// `content_hash` and every `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// `Default` is `None` — no feature surface configured — which routes the
+    /// snapshot pipeline through the legacy always-on chain, byte-for-byte
+    /// identical to the pre-features build.
+    pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
 }
 
 impl Default for SnapshotPipelineConfig {
@@ -253,6 +264,7 @@ impl Default for SnapshotPipelineConfig {
             cjk_friendly: true,
             toc: None,
             external_links: None,
+            features: None,
         }
     }
 }
@@ -261,21 +273,18 @@ impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
     fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
-        let mut p = if let Some(dir) = self.code_highlight_themes_dir.as_deref() {
-            Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
-                self.code_highlight_theme.as_deref(),
-                self.gfm_constructs,
-                dir,
-                self.cjk_friendly,
-            )
-            .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?
-        } else {
-            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-                self.code_highlight_theme.as_deref(),
-                self.gfm_constructs,
-                self.cjk_friendly,
-            )
-        };
+        // Single feature-aware entry point — MUST match the bundler's dispatch
+        // (see `crates/zfb-build/src/bundler.rs`) so `content_hash` stays
+        // byte-identical. `features = None` routes through the legacy always-on
+        // chain (byte-for-byte parity with the pre-features build).
+        let mut p = Pipeline::with_defaults_and_full_config(
+            self.code_highlight_theme.as_deref(),
+            self.gfm_constructs,
+            self.code_highlight_themes_dir.as_deref(),
+            self.cjk_friendly,
+            self.features.as_ref(),
+        )
+        .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?;
         if self.strip_md_ext {
             p.add_strip_md_ext();
         }

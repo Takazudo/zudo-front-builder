@@ -494,6 +494,21 @@ pub struct BundlerInput {
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
 
+    /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
+    /// pipeline is built via the feature-aware
+    /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
+    /// (mermaid, image-enlarge, admonitions, …) fire per the configured
+    /// toggles. When `None` (the default), the legacy always-on chain is
+    /// used and output is byte-identical to the pre-features build.
+    ///
+    /// Must match the `SnapshotPipelineConfig::features` value used by the
+    /// snapshot walker — otherwise the `content_hash` baked into every
+    /// compiled MDX module diverges and every `<Content />` lookup falls back
+    /// to `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`Pipeline::with_defaults_and_full_config`]: zfb_content::pipeline::Pipeline::with_defaults_and_full_config
+    pub markdown_features: Option<zfb_content::MarkdownFeaturesConfig>,
+
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
     /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
@@ -637,6 +652,7 @@ impl BundlerInput {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -862,6 +878,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.markdown_features.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -908,6 +925,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.markdown_features.as_ref(),
                 col.include.as_deref(),
                 col.exclude.as_deref(),
                 col.id_strip_suffix.as_deref(),
@@ -945,6 +963,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.markdown_features.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -975,6 +994,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.markdown_features.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -1004,6 +1024,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.markdown_features.as_ref(),
             &mut broken,
         )
         .with_context(|| {
@@ -1067,6 +1088,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.markdown_features.as_ref(),
                 &mut broken,
             )
             .with_context(|| {
@@ -1416,6 +1438,7 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
 /// content/components/layouts the caller passes a throwaway vec.
 /// Detected routes are recorded in WalkDir traversal order, then sorted
 /// by route string later so the manifest is deterministic.
+#[allow(clippy::too_many_arguments)]
 fn materialise_shadow(
     src: &Path,
     dest: &Path,
@@ -1429,6 +1452,7 @@ fn materialise_shadow(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1470,26 +1494,26 @@ fn materialise_shadow(
     // also wired into the mdast phase after `AdmonitionsPlugin` so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
-            code_highlight_theme,
-            gfm_constructs,
-            dir,
-            cjk_friendly,
+    // Single feature-aware entry point — MUST match the snapshot walker's
+    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
+    // `content_hash` stays byte-identical. `markdown_features = None` routes
+    // through the legacy always-on chain (byte-for-byte parity with the
+    // pre-features build).
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
+        code_highlight_theme,
+        gfm_constructs,
+        code_highlight_themes_dir,
+        cjk_friendly,
+        markdown_features,
+    )
+    .with_context(|| {
+        format!(
+            "codeHighlight.themesDir: failed to load themes from {}",
+            code_highlight_themes_dir
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
         )
-        .with_context(|| {
-            format!(
-                "codeHighlight.themesDir: failed to load themes from {}",
-                dir.display()
-            )
-        })?
-    } else {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-            code_highlight_theme,
-            gfm_constructs,
-            cjk_friendly,
-        )
-    };
+    })?;
     if let Some(toc_cfg) = toc {
         pipeline.add_toc(toc_cfg);
     }
@@ -1963,6 +1987,7 @@ fn materialise_collection(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     include: Option<&[String]>,
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
@@ -2008,26 +2033,26 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after `AdmonitionsPlugin` in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = if let Some(dir) = code_highlight_themes_dir {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
-            code_highlight_theme,
-            gfm_constructs,
-            dir,
-            cjk_friendly,
+    // Single feature-aware entry point — MUST match the snapshot walker's
+    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
+    // `content_hash` stays byte-identical. `markdown_features = None` routes
+    // through the legacy always-on chain (byte-for-byte parity with the
+    // pre-features build).
+    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
+        code_highlight_theme,
+        gfm_constructs,
+        code_highlight_themes_dir,
+        cjk_friendly,
+        markdown_features,
+    )
+    .with_context(|| {
+        format!(
+            "codeHighlight.themesDir: failed to load themes from {}",
+            code_highlight_themes_dir
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
         )
-        .with_context(|| {
-            format!(
-                "codeHighlight.themesDir: failed to load themes from {}",
-                dir.display()
-            )
-        })?
-    } else {
-        zfb_content::pipeline::Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-            code_highlight_theme,
-            gfm_constructs,
-            cjk_friendly,
-        )
-    };
+    })?;
     if let Some(toc_cfg) = toc {
         pipeline.add_toc(toc_cfg);
     }
@@ -3227,6 +3252,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -3653,6 +3679,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -3743,6 +3770,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
             None,
@@ -3911,6 +3939,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
             None,
@@ -4230,6 +4259,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -4355,6 +4385,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4568,6 +4599,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
@@ -4774,6 +4806,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4850,6 +4883,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4889,6 +4923,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4944,6 +4979,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5024,6 +5060,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -5055,6 +5092,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -5104,6 +5142,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5144,6 +5183,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5399,6 +5439,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5458,6 +5499,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
             None,
@@ -5522,6 +5564,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 &mut Vec::new(),
             )
             .unwrap();

@@ -381,6 +381,7 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        features: None,
     };
     let snap = build_snapshot_with_config(
         &[CollectionConfig::new("docs", &root)],

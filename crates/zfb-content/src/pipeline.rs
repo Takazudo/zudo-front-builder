@@ -650,34 +650,108 @@ impl Pipeline {
     pub fn with_defaults_and_features(
         features: &zfb_md_extras::MarkdownFeaturesConfig,
     ) -> Self {
-        // Wave 3 (#570): build the framework chain WITHOUT the four opt-in
-        // plugins (mermaid, image_enlarge, admonitions_preset,
-        // heading_marker_toc). `register_features` adds them back conditionally
-        // based on the `features.*` flags.
+        // Default theme, conservative GFM, no themes_dir, CJK on — the shape
+        // Wave 2/3 hard-coded here. The chain itself now lives in
+        // [`Pipeline::with_defaults_and_full_config`] so the bundler, snapshot
+        // walker, and dev loader all share one feature-aware code path.
+        Self::with_defaults_and_full_config(
+            None,
+            ResolvedGfmConstructs::CONSERVATIVE,
+            None,
+            true,
+            Some(features),
+        )
+        .expect("with_defaults_and_features passes no themes_dir — cannot fail")
+    }
+
+    /// Feature-aware default constructor — the single entry point the bundler,
+    /// snapshot walker, and dev loader use to honour `markdown.features` from
+    /// `zfb.config.ts`.
+    ///
+    /// The pipeline is the always-on Core chain (CJK-friendly emphasis,
+    /// heading-links, code-title, syntect) plus exactly the opt-in
+    /// `zfb-md-extras` feature visitors whose `features.*` flags are enabled
+    /// ([`register_features`] / [`register_post_syntect_features`]).
+    ///
+    /// `features = None` is treated as an **empty** feature set: the four
+    /// former-Core framework features (`mermaid`, `image_enlarge`,
+    /// `admonitions_preset`, `heading_marker_toc`) are **off**. This is the
+    /// post-epic opt-in default documented in the v0.1.0-next.12 changelog
+    /// (#583): a default `zfb.config.ts` build omits them, and users opt in via
+    /// `markdown.features.*`. The legacy [`Pipeline::with_defaults`] /
+    /// `with_defaults_and_theme*` constructors retain the pre-epic always-on
+    /// chain for backwards-compatible direct callers (tests, embedders).
+    ///
+    /// All three production pipelines MUST thread the SAME `features` value
+    /// through this one constructor so the snapshot ↔ bundler `content_hash`
+    /// stays byte-identical (see `crates/zfb-content/src/content_bridge.rs`).
+    ///
+    /// `theme`, `resolved`, `themes_dir`, and `cjk_friendly` carry the same
+    /// meaning as on
+    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`]. Returns
+    /// `Err` only when `themes_dir` is `Some` and a `.tmTheme` file fails to
+    /// load.
+    pub fn with_defaults_and_full_config(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+        cjk_friendly: bool,
+        features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        // `markdown.features` absent → empty feature set (post-epic opt-in
+        // default, #583 / #586): the four former-Core framework features
+        // (mermaid, image_enlarge, admonitions_preset, heading_marker_toc) are
+        // OFF. The legacy `with_defaults*` constructors / `build_defaults`
+        // retain the pre-epic always-on chain for backwards-compatible direct
+        // callers, but the bundler/snapshot/dev pipelines route through here.
+        let empty;
+        let features = match features {
+            Some(f) => f,
+            None => {
+                empty = zfb_md_extras::MarkdownFeaturesConfig::default();
+                &empty
+            }
+        };
+
+        // Feature-aware chain. Mirrors `build_defaults` for the framework
+        // plugins that are ALWAYS on (cjk, heading-links, code-title, syntect)
+        // but routes the opt-in plugins (mermaid, image_enlarge,
+        // admonitions_preset, …) through `register_features`.
         //
-        // Visitor ordering contract (see doc comment on this method):
-        //   mdast: CjkFriendlyPlugin → [features mdast] → AdmonitionsPlugin
-        //   hast:  HeadingLinksPlugin → CodeTitlePlugin → [Mermaid] →
-        //          SyntectPlugin → [features hast post-syntect]
-        let highlighter = Arc::new(Highlighter::new());
-        let mut p = Self::with_resolved_gfm_constructs(ResolvedGfmConstructs::CONSERVATIVE);
-        // mdast phase — CjkFriendlyPlugin always on (matches with_defaults).
-        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
-        // [features mdast visitors inserted by register_features here]
+        // Visitor ordering contract (see doc comment on
+        // `with_defaults_and_features`):
+        //   mdast: CjkFriendlyPlugin → [features mdast] → [admonitions_preset]
+        //   hast:  HeadingLinksPlugin → CodeTitlePlugin → [features hast] →
+        //          SyntectPlugin → [features post-syntect]
+        let mut highlighter = Highlighter::new();
+        if let Some(dir) = themes_dir {
+            highlighter.load_themes_from_dir(dir)?;
+        }
+        let highlighter = Arc::new(highlighter);
+        let mut p = Self::with_resolved_gfm_constructs(resolved);
+        // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
+        if cjk_friendly {
+            p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        }
         // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-        // `register_features` is the single call-path from zfb-content into
-        // zfb-md-extras. It adds the opt-in visitors in the correct phase and
-        // position (before SyntectPlugin for mermaid; after for post-syntect).
+        // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
+        // visitors in the correct phase/position (before SyntectPlugin for
+        // mermaid; after for post-syntect).
         register_features(&mut p, features);
-        // SyntectPlugin MUST be added AFTER register_features so that all
-        // pre-syntect extras visitors (mermaid, image_enlarge, etc.) run first.
-        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
-        // Post-syntect extras visitors: these operate on the per-line
-        // <span class="line"> structure that SyntectPlugin emits.
+        // SyntectPlugin MUST be added AFTER register_features so pre-syntect
+        // extras visitors (mermaid, image_enlarge, …) run first.
+        let syntect = if let Some(t) = theme {
+            SyntectPlugin::new(highlighter).with_theme(t)
+        } else {
+            SyntectPlugin::new(highlighter)
+        };
+        p.add_hast_visitor(Box::new(syntect));
+        // Post-syntect extras visitors operate on the per-line
+        // <span class="line"> structure SyntectPlugin emits.
         register_post_syntect_features(&mut p, features);
-        p
+        Ok(p)
     }
 
     /// Append an mdast visitor; visitors run in insertion order.

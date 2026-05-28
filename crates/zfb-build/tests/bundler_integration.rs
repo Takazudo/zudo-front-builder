@@ -177,6 +177,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         toc: None,
             external_links: None,
             cjk_friendly: true,
+            markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

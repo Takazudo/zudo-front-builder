@@ -228,14 +228,48 @@ impl ModuleLoader {
     /// Full constructor: strip-md-ext + GFM + CJK-friendly toggle. Use
     /// when the project's `zfb.config.ts` sets `markdown.cjkFriendly`
     /// so dev rendering agrees with the bundler.
+    ///
+    /// `markdown.features` is left at `None` (legacy always-on chain). Use
+    /// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] to
+    /// honour the feature surface so dev preview matches a featured build.
     pub fn with_strip_md_ext_and_gfm_and_cjk(
         jsx_runtime: JsxRuntime,
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
         cjk_friendly: bool,
     ) -> Self {
-        let mut content_pipeline =
-            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(None, gfm_constructs, cjk_friendly);
+        Self::with_strip_md_ext_and_gfm_and_cjk_and_features(
+            jsx_runtime,
+            strip_md_ext,
+            gfm_constructs,
+            cjk_friendly,
+            None,
+        )
+    }
+
+    /// Most-explicit constructor: strip-md-ext + GFM + CJK-friendly toggle +
+    /// `markdown.features`. The content pipeline is built via the single
+    /// feature-aware entry point
+    /// [`Pipeline::with_defaults_and_full_config`] so dev rendering and the
+    /// bundler agree on every knob — including which opt-in feature plugins
+    /// fire. `features = None` routes through the legacy always-on chain,
+    /// byte-for-byte identical to the pre-features dev render.
+    pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+        cjk_friendly: bool,
+        features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    ) -> Self {
+        // No themes_dir in the dev loader → infallible.
+        let mut content_pipeline = Pipeline::with_defaults_and_full_config(
+            None,
+            gfm_constructs,
+            None,
+            cjk_friendly,
+            features,
+        )
+        .expect("dev loader passes no themes_dir — cannot fail");
         if strip_md_ext {
             content_pipeline.add_strip_md_ext();
         }

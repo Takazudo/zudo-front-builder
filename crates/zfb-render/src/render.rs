@@ -90,8 +90,11 @@ impl<H: RenderHost> Renderer<H> {
         Self::with_strip_md_ext_and_gfm_and_cjk(host, jsx_runtime, strip_md_ext, gfm_constructs, true)
     }
 
-    /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
-    /// and CJK-friendly toggle to the loader.
+    /// Constructor: forwards `strip_md_ext`, GFM constructs, and
+    /// CJK-friendly toggle to the loader. `markdown.features` is left at
+    /// `None` (legacy always-on chain); use
+    /// [`Renderer::with_strip_md_ext_and_gfm_and_cjk_and_features`] to honour
+    /// the feature surface.
     pub fn with_strip_md_ext_and_gfm_and_cjk(
         host: H,
         jsx_runtime: JsxRuntime,
@@ -99,12 +102,36 @@ impl<H: RenderHost> Renderer<H> {
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
         cjk_friendly: bool,
     ) -> Self {
+        Self::with_strip_md_ext_and_gfm_and_cjk_and_features(
+            host,
+            jsx_runtime,
+            strip_md_ext,
+            gfm_constructs,
+            cjk_friendly,
+            None,
+        )
+    }
+
+    /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
+    /// CJK-friendly toggle, and `markdown.features` to the loader so dev
+    /// rendering agrees with the bundler on every knob — including which
+    /// opt-in feature plugins fire. `features = None` is byte-for-byte
+    /// identical to the pre-features dev render.
+    pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
+        host: H,
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+        cjk_friendly: bool,
+        features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    ) -> Self {
         Self {
-            loader: ModuleLoader::with_strip_md_ext_and_gfm_and_cjk(
+            loader: ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features(
                 jsx_runtime,
                 strip_md_ext,
                 gfm_constructs,
                 cjk_friendly,
+                features,
             ),
             host,
         }

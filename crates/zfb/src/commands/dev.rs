@@ -1302,6 +1302,11 @@ fn boot_dev_renderer(
         .map(|el| (el.into_content_config(), cfg.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
+    // #586 — thread `markdown.features` so dev rendering honours the opt-in
+    // feature plugins, matching the production build. Mirrors
+    // `commands/build.rs`. `None` keeps the legacy always-on chain.
+    bundler_input.markdown_features =
+        cfg.markdown.as_ref().and_then(|m| m.features.clone());
     // #268 — thread plugin-registered aliases and virtual modules into the
     // dev-mode bundler's esbuild invocation. Mirrors `commands/build.rs`
     // wiring so `zfb dev` and `zfb build` produce identical alias resolution
