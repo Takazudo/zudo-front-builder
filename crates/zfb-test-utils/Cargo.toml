@@ -6,3 +6,18 @@ license = "MIT"
 description = "Shared test helpers for zfb integration tests (std-only, no runtime dependencies)"
 
 [lib]
+
+[dependencies]
+# HTML5-spec-compliant parser used by normalize_html. html5ever + markup5ever_rcdom
+# is the standard pairing: html5ever parses; markup5ever_rcdom provides a mutable
+# DOM tree that lets us walk, sort attributes, and re-serialize with the built-in
+# html5ever serializer. This gives us canonical attribute order, void-element
+# handling, and entity encoding "for free" from the browser-grade serializer.
+# Versions must stay in lockstep (both track the html5ever release line).
+# html5ever 0.27 is the version that markup5ever_rcdom 0.3 depends on.
+# The three crates (html5ever, markup5ever, markup5ever_rcdom) must share the
+# same markup5ever version — using html5ever 0.29 would pull markup5ever 0.14
+# while markup5ever_rcdom 0.3 uses markup5ever 0.12, causing trait-mismatch
+# errors at compile time.
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"

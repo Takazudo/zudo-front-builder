@@ -1,0 +1,70 @@
+---
+title: Admonitions preset
+description: Enable the six built-in admonition directive types (note, tip, warning, danger, info, details).
+tier: Opt-in
+---
+
+The `admonitionsPreset` feature registers the six built-in admonition directive types: `note`, `tip`, `warning`, `danger`, `info`, and `details`.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      admonitionsPreset: true,
+    },
+  },
+});
+```
+
+## Usage
+
+Use the CommonMark Directives syntax with `:::` fences, separating each fence from surrounding content with blank lines:
+
+```md
+:::note[Optional title]
+
+Note body text.
+
+:::
+
+:::tip
+
+Tip body text.
+
+:::
+
+:::warning
+
+Warning body text.
+
+:::
+```
+
+All six kinds: `note`, `tip`, `warning`, `danger`, `info`, `details`.
+
+The bracketed `[label]` is promoted to a `title="…"` attribute on the emitted JSX element:
+
+```jsx
+<Note title="Optional title">Note body text.</Note>
+```
+
+The `:::details` kind also accepts the legacy unbraced form for `title`:
+
+```md
+:::details title="Click me"
+
+Hidden content.
+
+:::
+```
+
+## Blank-line requirement
+
+Each fence line (`:::note` and the closing `:::`) **must** be separated from surrounding content by blank lines so the Markdown parser treats them as separate paragraphs. Without blank lines the content is not recognised as a directive and a warning diagnostic is emitted at build time.
+
+## Custom directives
+
+To register additional directives (e.g. `:::card`) or override the built-ins, use `DirectiveRegistry` directly via the pipeline API instead of this preset.

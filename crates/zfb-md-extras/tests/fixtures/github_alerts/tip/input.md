@@ -1,0 +1,2 @@
+> [!TIP]
+> This is a tip.

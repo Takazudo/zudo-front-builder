@@ -4,15 +4,17 @@
 //! [`super::directives::DirectiveRegistry`]. The hardcoded 5-arm
 //! match (`note`/`tip`/`warning`/`danger`/`info`/`details`) used to
 //! live here; it has been replaced by a runtime-configurable directive
-//! registry. This file continues to export:
+//! registry. This file exports:
 //!
 //! - [`AdmonitionsPlugin`] — backwards-compatible visitor that wires up
 //!   the six built-in admonitions, equivalent to constructing
 //!   [`DirectiveRegistry::with_defaults`] and using it as the visitor.
 //!   New code should prefer the registry directly so it can register
 //!   additional directives such as `:::card`, `:::badge`, etc.
-//! - [`default_admonition_directives`] — the six directive definitions
-//!   the registry uses.
+//! - [`default_admonition_directives`] — thin delegation to
+//!   `zfb_md_extras::admonitions_preset::default_admonition_directives`
+//!   (moved there in Wave 3 #570 so `zfb-md-extras` can produce the
+//!   preset list independently of `zfb-content`).
 //!
 //! Rust port of zudo-doc's `remarkAdmonitions`. Detects directive-style
 //! admonition blocks at the mdast level and converts them to MDX
@@ -24,62 +26,16 @@ use markdown::mdast::Node as MdastNode;
 
 use crate::pipeline::MdastVisitor;
 
-use super::directives::{DirectiveDef, DirectiveKind, DirectiveRegistry};
+use super::directives::{DirectiveDef, DirectiveRegistry};
 
 /// The six built-in admonition directives.
 ///
-/// Returned in the historical match order (`note`, `tip`, `warning`,
-/// `danger`, `info`, `details`) so callers building a registry from
-/// these get a deterministic order. All six have `title_from_label =
-/// true` so `:::note[Custom Title]` promotes the bracketed label to a
-/// `title="…"` attribute — matching the behaviour of Docusaurus and
-/// Starlight. `:::details` continues to accept the legacy unbraced form
-/// (`:::details title="Click me"`) since attribute parsing is additive:
-/// the label path and the unbraced-attr path both set `title`, and the
-/// unbraced form writes directly to `attrs` (not `label`), so both
-/// co-exist without conflict. Consumers that want the old label-as-child
-/// behaviour can register their own `DirectiveDef` with
-/// `title_from_label: false`.
+/// Delegates to [`zfb_md_extras::admonitions_preset::default_admonition_directives`]
+/// which owns the canonical definition since Wave 3 (#570). Kept here for
+/// backwards compatibility with callers that import from this module path.
 #[must_use]
 pub fn default_admonition_directives() -> Vec<DirectiveDef> {
-    vec![
-        DirectiveDef {
-            name: "note".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Note".to_string(),
-            title_from_label: true,
-        },
-        DirectiveDef {
-            name: "tip".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Tip".to_string(),
-            title_from_label: true,
-        },
-        DirectiveDef {
-            name: "warning".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Warning".to_string(),
-            title_from_label: true,
-        },
-        DirectiveDef {
-            name: "danger".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Danger".to_string(),
-            title_from_label: true,
-        },
-        DirectiveDef {
-            name: "info".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Info".to_string(),
-            title_from_label: true,
-        },
-        DirectiveDef {
-            name: "details".to_string(),
-            kind: DirectiveKind::Container,
-            component_name: "Details".to_string(),
-            title_from_label: true,
-        },
-    ]
+    zfb_md_extras::admonitions_preset::default_admonition_directives()
 }
 
 /// Visitor that converts `:::kind … :::` paragraph runs into

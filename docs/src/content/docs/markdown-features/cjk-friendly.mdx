@@ -1,0 +1,47 @@
+---
+title: CJK-friendly emphasis
+description: Ensures bold and italic markers adjacent to CJK ideographs and kana are interpreted correctly.
+tier: Core
+sidebar_position: 50
+---
+
+`CjkFriendlyPlugin` is always active. It post-processes the parsed markdown AST and re-tokenises emphasis flanking rules for CJK content.
+
+## Why this exists
+
+CommonMark's emphasis flanking rules treat CJK ideographs and kana as
+non-whitespace non-punctuation. This means a `**` adjacent to CJK text —
+such as `**テスト。**テスト` — is not considered right-flanking by the base
+parser, and renders as literal stars instead of `<strong>`.
+
+`CjkFriendlyPlugin` post-processes the parsed markdown AST and
+re-tokenises these cases. The result matches the intuitive expectation for
+Japanese, Chinese, and Korean content sites.
+
+## Behaviour
+
+**Default:** always on. No configuration key required.
+
+**Opt-out** (rare): set `cjkFriendly: false` in `zfb.config.ts` only when
+you need strict CommonMark output and your content has no CJK emphasis:
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    cjkFriendly: false,
+  },
+});
+```
+
+## Scope
+
+This plugin handles `**bold**` and `_italic_` adjacent to CJK characters.
+GFM strikethrough (`~~foo~~`) does not need the toggle — markdown-rs's GFM
+tokeniser handles `~~` delimiter runs independently, so strikethrough works
+correctly at CJK boundaries in both modes.
+
+## See also
+
+- [Customizing Markdown](/guides/customizing-markdown) — full pipeline overview.

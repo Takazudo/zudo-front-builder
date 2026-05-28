@@ -380,16 +380,12 @@ export type TocConfig = {
 /**
  * Markdown / MDX parsing options.
  *
- * See [`ZfbConfig.markdown`] for the embed point. Today the knobs are
- * [`gfm`](MarkdownConfig.gfm) and [`toc`](MarkdownConfig.toc); future
- * markdown knobs (e.g. CommonMark variants, custom extensions) would
- * also live here.
- * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`] and
- * [`externalLinks`]; future markdown knobs would also live here.
- * See [`ZfbConfig.markdown`] for the embed point. Today the fields are
- * [`gfm`](MarkdownConfig.gfm) and
- * [`cjkFriendly`](MarkdownConfig.cjkFriendly); future markdown knobs
- * (e.g. CommonMark variants, custom extensions) would also live here.
+ * See [`ZfbConfig.markdown`] for the embed point. Fields: [`gfm`],
+ * [`toc`], [`externalLinks`], [`cjkFriendly`], and [`features`].
+ * Future markdown knobs would also live here.
+ *
+ * See the "Markdown Features" docs category for the per-feature option
+ * reference once individual features are ported.
  *
  * Mirrors `MarkdownConfig` in crates/zfb/src/config.rs.
  */
@@ -471,7 +467,197 @@ export type MarkdownConfig = {
    * Mirrors `MarkdownConfig::cjk_friendly` in crates/zfb/src/config.rs.
    */
   cjkFriendly?: boolean;
+
+  /**
+   * Per-feature markdown pipeline toggles.
+   *
+   * Each field is a [`FeatureToggle`] (`true` / `false` / options object)
+   * or a feature-specific config type (for features that require extra
+   * parameters). Absent / `undefined` means all features are disabled,
+   * preserving the behaviour of the pre-features build byte-for-byte.
+   *
+   * Unknown keys are rejected at deserialization time by the Rust loader
+   * so a typo in `zfb.config.ts` surfaces as a clear error.
+   *
+   * Mirrors `MarkdownFeaturesConfig` in crates/zfb/src/config.rs.
+   */
+  features?: MarkdownFeaturesConfig;
 };
+
+/**
+ * Per-feature toggle: `boolean` shorthand or an options object.
+ *
+ * `true` enables the feature with defaults; `false` (or absent) disables it.
+ * The object form carries per-feature options (fields vary by feature and
+ * are filled in by each feature's port sub-issue — stubs today).
+ *
+ * Mirrors `FeatureToggle` in crates/zfb/src/config.rs.
+ */
+export type FeatureToggle = boolean | FeatureOptions;
+
+/**
+ * Empty options object for features that accept `{ ... }` but have no
+ * user-facing knobs yet. Fields are filled in by each feature's port
+ * sub-issue; this stub satisfies the schema shape requirement.
+ *
+ * Mirrors `FeatureOptions` in crates/zfb/src/config.rs.
+ */
+export type FeatureOptions = Record<string, never>;
+
+/**
+ * Options for the `githubAutolinks` feature. Requires `repo`.
+ *
+ * TODO: fill in actual fields when the githubAutolinks feature is ported.
+ *
+ * Mirrors `GithubAutolinksConfig` in crates/zfb/src/config.rs.
+ */
+export type GithubAutolinksConfig = {
+  /** GitHub repository reference (`owner/repo`) used to build autolink URLs. */
+  repo?: string;
+};
+
+/**
+ * Options stub for the `codeEnrichment` feature.
+ *
+ * TODO: fill in actual fields when the codeEnrichment feature is ported.
+ *
+ * Mirrors `CodeEnrichmentConfig` in crates/zfb/src/config.rs.
+ */
+export type CodeEnrichmentConfig = Record<string, never>;
+
+/**
+ * Options for the `tocExport` feature.
+ *
+ * Controls which headings are included in the exported `toc` JSON.
+ * `maxDepth` is the **absolute** heading depth (2–6):
+ *   - `2` → h2 only
+ *   - `3` (default) → h2 + h3
+ *
+ * This differs from `headingMarkerToc.maxDepth`, which counts levels
+ * starting from h2. The two features are independent.
+ *
+ * Mirrors `TocExportConfig` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type TocExportConfig = {
+  /** Maximum heading depth to include (absolute, 2–6). Default: 3. */
+  maxDepth?: number;
+};
+
+/**
+ * Options stub for the `imageDimensions` feature.
+ *
+ * TODO: fill in actual fields when the imageDimensions feature is ported.
+ *
+ * Mirrors `ImageDimensionsConfig` in crates/zfb/src/config.rs.
+ */
+export type ImageDimensionsConfig = Record<string, never>;
+
+/**
+ * Options for the `linkValidation` feature.
+ *
+ * Validates internal `[text](file.md#anchor)` and `[text](#anchor)` links at
+ * build time. External URLs (`http://`, `https://`, `mailto:`) are skipped by
+ * default.
+ *
+ * Mirrors `LinkValidationConfig` in `crates/zfb-md-ast/src/features_config.rs`.
+ */
+export type LinkValidationConfig = {
+  /**
+   * When `true`, broken links are reported as errors (build can fail).
+   * Default: `false` (warn-only).
+   */
+  failOnBroken?: boolean;
+  /**
+   * When `true` (default), external URLs are silently skipped.
+   * Set to `false` to validate external links as well.
+   */
+  allowExternal?: boolean;
+};
+
+/**
+ * Options for the `transclude` feature.
+ *
+ * Enables `:::include{file="./path.md"}` directives that inline another
+ * file's parsed mdast at the include site.
+ *
+ * Mirrors `TranscludeConfig` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type TranscludeConfig = {
+  /**
+   * Maximum transclusion depth (chain length A→B→C→…).
+   *
+   * A depth of `1` allows only direct includes (the included file itself
+   * cannot include further files). Default: `5`. A cycle (A→B→A) is
+   * always detected regardless of `maxDepth` and treated as an error.
+   */
+  maxDepth?: number;
+};
+
+/**
+ * Per-feature markdown pipeline configuration.
+ *
+ * All fields are optional; absent = feature disabled, behaviour unchanged
+ * from the pre-features build. Unknown keys are rejected at deserialization
+ * time by the Rust loader so a typo surfaces as a clear error.
+ *
+ * Mirrors `MarkdownFeaturesConfig` in crates/zfb/src/config.rs.
+ */
+export type MarkdownFeaturesConfig = {
+  /** GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.). */
+  githubAlerts?: FeatureToggle;
+
+  /** Reading-time estimate injected into the document frontmatter. */
+  readingTime?: FeatureToggle;
+
+  /** GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`. */
+  githubAutolinks?: GithubAutolinksConfig;
+
+  /** Code-block enrichment (copy button, language label, etc.). */
+  codeEnrichment?: CodeEnrichmentConfig;
+
+  /** Grouped code blocks rendered as tabs. */
+  codeTabs?: FeatureToggle;
+
+  /** Ruby annotation support (`{base}^{ruby}` syntax). */
+  ruby?: FeatureToggle;
+
+  /** Export the page TOC as structured data (e.g. for sidebar rendering). */
+  tocExport?: TocExportConfig;
+
+  /** Auto-detect and inject `width`/`height` on `<img>` elements. */
+  imageDimensions?: ImageDimensionsConfig;
+
+  /** Validate internal and external links at build time. */
+  linkValidation?: LinkValidationConfig;
+
+  /** Transclusion of other MDX files (`![[path]]` syntax). */
+  transclude?: TranscludeConfig;
+
+  /** Framework admonitions preset (maps `:::note` etc. to components). */
+  admonitionsPreset?: FeatureToggle;
+
+  /** Mermaid diagram rendering. */
+  mermaid?: FeatureToggle;
+
+  /** Lightbox / image-enlarge on click. */
+  imageEnlarge?: FeatureToggle;
+
+  /**
+   * Inline heading-marker TOC. Accepts either a `boolean` shorthand
+   * (`true` = enable with defaults, `false` = disable) or a full
+   * {@link TocConfig} options object — same union shape as the Rust
+   * `HeadingMarkerTocFeature` enum.
+   */
+  headingMarkerToc?: HeadingMarkerTocFeature;
+};
+
+/**
+ * `headingMarkerToc` feature value: either a `boolean` shorthand or a
+ * full {@link TocConfig} options object.
+ *
+ * Mirrors `HeadingMarkerTocFeature` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type HeadingMarkerTocFeature = boolean | TocConfig;
 
 /**
  * Options for the external-link rewriter (port of `rehype-external-links`).

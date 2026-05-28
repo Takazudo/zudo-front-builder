@@ -141,90 +141,16 @@ pub fn constructs_for_jsx_emit(
 }
 
 
-/// Lightweight HTML AST node.
-///
-/// Plugins (mdast and hast visitors) operate on this representation in
-/// memory; the serializer turns it into an HTML string later.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HastNode {
-    /// Document root.
-    Root {
-        /// Top-level children.
-        children: Vec<HastNode>,
-    },
-    /// HTML element.
-    Element {
-        /// Tag name (e.g. `"p"`, `"h1"`, `"a"`).
-        tag: String,
-        /// Attribute list as `(name, value)` pairs.
-        ///
-        /// Attribute order is preserved so the serializer produces stable
-        /// output and so plugins can assert on ordering when useful.
-        attrs: Vec<(String, String)>,
-        /// Child nodes; empty for void elements.
-        children: Vec<HastNode>,
-        /// True for self-closing void elements (`img`, `br`, `hr`, etc.).
-        void: bool,
-    },
-    /// Plain text content (escaped on serialization).
-    Text(String),
-    /// Raw HTML passthrough; the serializer emits this verbatim without
-    /// escaping. Produced by the mdast→hast conversion for
-    /// [`MdastNode::Html`](markdown::mdast::Node::Html), and by hast
-    /// plugins that synthesize complete HTML fragments (e.g. syntect).
-    ///
-    /// On the JSX-emit path (`mdx_jsx_emit::mdx_to_jsx_module_with_pipeline`),
-    /// `Raw` cannot be embedded verbatim — JSX does not understand
-    /// arbitrary HTML such as `class="…"` or inline `<span style="…">`.
-    /// The hast→JSX bridge wraps `Raw` content in a span with
-    /// `dangerouslySetInnerHTML` so the rendered DOM still receives the
-    /// original markup. See [`HastNode::JsxRaw`] for the JSX-shaped
-    /// counterpart that IS safe to inline.
-    Raw(String),
-    /// JSX-shaped passthrough — MDX components (`<Note>…</Note>`),
-    /// flow / text expressions (`{1 + 1}`), and synthesized JSX
-    /// fragments. The serializer treats this identically to
-    /// [`HastNode::Raw`] (verbatim, no escaping); the JSX-emit path
-    /// embeds it verbatim into the output module so PascalCase
-    /// component references and `{…}` expression containers survive
-    /// untouched.
-    ///
-    /// Splitting JSX from HTML at the hast level lets the JSX bridge
-    /// pick the right embedding strategy without parsing the payload.
-    JsxRaw(String),
-    /// HTML comment body (without the `<!--` / `-->` delimiters).
-    Comment(String),
-}
-
-/// Mdast visitor: mutates an mdast tree in place.
-///
-/// Implementors typically call [`MdastNode::children_mut`] to recurse, or
-/// implement their own walk. The pipeline does NOT auto-recurse for
-/// visitors; each visitor decides its own traversal strategy.
-pub trait MdastVisitor {
-    /// Visit (and possibly mutate) `node`.
-    fn visit(&mut self, node: &mut MdastNode);
-}
-
-/// Hast visitor: mutates a hast tree in place.
-///
-/// Same recursion contract as [`MdastVisitor`].
-pub trait HastVisitor {
-    /// Visit (and possibly mutate) `node`.
-    fn visit(&mut self, node: &mut HastNode);
-
-    /// Reset any per-document state accumulated during [`Self::visit`].
-    ///
-    /// Called by [`Pipeline::reset_per_entry`] between documents so
-    /// cross-document state (e.g. duplicate-slug counters in
-    /// [`HeadingLinksPlugin`]) cannot leak from one entry to the next.
-    /// The default implementation is a no-op, which is correct for
-    /// stateless visitors. Stateful visitors (currently only
-    /// [`HeadingLinksPlugin`]) override this method.
-    ///
-    /// [`HeadingLinksPlugin`]: crate::plugins::HeadingLinksPlugin
-    fn reset(&mut self) {}
-}
+// HastNode, MdastVisitor, HastVisitor, and BuildContext live in
+// `zfb-md-ast` so downstream plugin crates (zfb-md-extras) can depend on
+// the visitor contract without depending on zfb-content. The
+// `diagnostics` and `heading_registry` sub-modules also moved there
+// because BuildContext references them via the visitor contract.
+//
+// Re-exported here under their historical paths so existing consumers of
+// `zfb_content::pipeline::{HastNode, HastVisitor, ...}` continue to
+// resolve.
+pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor};
 
 /// Pipeline error type.
 #[derive(Debug, thiserror::Error)]
@@ -502,9 +428,10 @@ impl Pipeline {
     /// 4. [`CodeTitlePlugin`] — wraps `<pre>` with a titled `data-meta`
     ///    in `<div class="code-block-container">` +
     ///    `<div class="code-block-title">`. Must run BEFORE
-    ///    [`SyntectPlugin`] because syntect replaces the whole `<pre>`
-    ///    with a [`HastNode::Raw`] HTML fragment; once that happens,
-    ///    the `data-meta` attribute is no longer reachable.
+    ///    [`SyntectPlugin`] because syntect replaces the `<pre>` element
+    ///    with structured HAST (`<pre><code><span class="line">…</span>
+    ///    </code></pre>`); once that happens, the original `data-meta`
+    ///    attribute on the input `<code>` is no longer reachable.
     /// 5. [`ImageEnlargePlugin`] — wraps any `<p>` whose only
     ///    non-whitespace child is `<img>` in
     ///    `<figure class="zd-enlargeable">` + an enlarge `<button>`.
@@ -515,9 +442,11 @@ impl Pipeline {
     ///    Must run BEFORE [`SyntectPlugin`] so the latter can identify
     ///    and skip mermaid blocks rather than syntect-highlighting them.
     /// 7. [`SyntectPlugin`] — replaces remaining fenced code blocks
-    ///    with syntect-highlighted HTML. Runs last in the code-block
-    ///    chain so the title-figure wrapper and the mermaid-skip
-    ///    decision are already baked in.
+    ///    with per-line structured HAST. Runs last among CORE hast
+    ///    visitors so the title-wrapper and mermaid-skip decision are
+    ///    already baked in. Extras-side enrichment visitors (registered
+    ///    via `register_features`) run AFTER syntect on the per-line
+    ///    `<span class="line">` structure they expose.
     ///
     /// `ResolveLinksPlugin` and `StripMdExtensionPlugin` are NOT in
     /// the defaults: the former needs a project-specific path-to-URL
@@ -662,6 +591,95 @@ impl Pipeline {
         Ok(p)
     }
 
+    /// Sibling constructor: default plugin chain driven by a
+    /// [`zfb_md_extras::MarkdownFeaturesConfig`] feature set.
+    ///
+    /// # Purpose
+    ///
+    /// This is the single entry point for feature-flag-driven pipeline
+    /// construction. Callers pass a `MarkdownFeaturesConfig` (from
+    /// `zfb-md-extras`) and this constructor wires the appropriate visitors
+    /// into the pipeline. The existing `with_defaults*` constructors are
+    /// **not touched** — this is a pure sibling, and all current call sites
+    /// remain byte-for-byte unchanged.
+    ///
+    /// # Wave 2 behaviour (stub)
+    ///
+    /// In Wave 2, the full default plugin chain is always wired (identical to
+    /// `with_defaults_and_theme_and_gfm_and_cjk`), and `register_features`
+    /// is called for future extensibility but is a no-op. Wave 3.1 (#570)
+    /// will move zfb-content's own framework-feature visitors
+    /// (`ImageEnlargePlugin`, `MermaidPlugin`, `AdmonitionsPlugin`) into
+    /// `zfb-md-extras` and make them conditional on the corresponding
+    /// `features.*` flags.
+    ///
+    /// Because the default chain is always wired in Wave 2, output is
+    /// **byte-identical** to `with_defaults()` for an empty `features` set,
+    /// and the image-enlarge wrapper is always present regardless of the
+    /// `features.image_enlarge` flag. Wave 3.1 introduces the conditionality.
+    ///
+    /// # Visitor ordering contract
+    ///
+    /// The contract below is documented HERE (Wave 2); Wave 4-6 implement it.
+    /// Feature modules in `zfb-md-extras` that add their own visitors MUST
+    /// respect this order:
+    ///
+    /// **mdast phase** (in order):
+    /// 1. `CjkFriendlyPlugin` — must run before any visitor that depends on
+    ///    emphasis/strong being correctly tokenised around CJK characters.
+    /// 2. *(extras mdast visitors — added by Wave 4-6 per-feature rules)*
+    /// 3. `AdmonitionsPlugin` — directive transforms must fold `:::name` runs
+    ///    before mdast→hast conversion.
+    ///
+    /// **hast phase** (in order):
+    /// 4. `HeadingLinksPlugin` — MUST be first in hast so subsequent plugins
+    ///    see the final slugified ids.
+    /// 5. `CodeTitlePlugin` — MUST run BEFORE `SyntectPlugin` (syntect
+    ///    replaces the input `<pre>` element with structured HAST; once
+    ///    that happens, the original `data-meta` attribute is no longer
+    ///    reachable).
+    /// 6. `MermaidPlugin` — MUST run BEFORE `SyntectPlugin` so syntect can
+    ///    identify and skip mermaid blocks.
+    /// 7. `SyntectPlugin` — runs last among CORE hast visitors in the
+    ///    code-block chain; emits `<pre><code><span class="line">…</span>
+    ///    </code></pre>` structured HAST so each line is a mutable Element.
+    /// 8. *(extras hast visitors registered via `register_features` run
+    ///    AFTER `SyntectPlugin` on the per-line `<span class="line">`
+    ///    structure — e.g. wave-5 diff markers and line-highlighting)*
+    #[must_use]
+    pub fn with_defaults_and_features(
+        features: &zfb_md_extras::MarkdownFeaturesConfig,
+    ) -> Self {
+        // Wave 3 (#570): build the framework chain WITHOUT the four opt-in
+        // plugins (mermaid, image_enlarge, admonitions_preset,
+        // heading_marker_toc). `register_features` adds them back conditionally
+        // based on the `features.*` flags.
+        //
+        // Visitor ordering contract (see doc comment on this method):
+        //   mdast: CjkFriendlyPlugin → [features mdast] → AdmonitionsPlugin
+        //   hast:  HeadingLinksPlugin → CodeTitlePlugin → [Mermaid] →
+        //          SyntectPlugin → [features hast post-syntect]
+        let highlighter = Arc::new(Highlighter::new());
+        let mut p = Self::with_resolved_gfm_constructs(ResolvedGfmConstructs::CONSERVATIVE);
+        // mdast phase — CjkFriendlyPlugin always on (matches with_defaults).
+        p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        // [features mdast visitors inserted by register_features here]
+        // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
+        p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+        p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        // `register_features` is the single call-path from zfb-content into
+        // zfb-md-extras. It adds the opt-in visitors in the correct phase and
+        // position (before SyntectPlugin for mermaid; after for post-syntect).
+        register_features(&mut p, features);
+        // SyntectPlugin MUST be added AFTER register_features so that all
+        // pre-syntect extras visitors (mermaid, image_enlarge, etc.) run first.
+        p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+        // Post-syntect extras visitors: these operate on the per-line
+        // <span class="line"> structure that SyntectPlugin emits.
+        register_post_syntect_features(&mut p, features);
+        p
+    }
+
     /// Append an mdast visitor; visitors run in insertion order.
     pub fn add_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) -> &mut Self {
         self.mdast_visitors.push(v);
@@ -757,6 +775,288 @@ impl Pipeline {
 
         Ok(hast)
     }
+
+    /// Like [`Pipeline::run`] but threads a [`BuildContext`] through both
+    /// the mdast and hast visitor chains.
+    ///
+    /// Mdast visitors that override [`MdastVisitor::visit_with_context`]
+    /// (e.g. the wave-6 `TranscludePlugin`) receive the context so they can
+    /// resolve source-relative file paths. Hast visitors that override
+    /// [`HastVisitor::visit_with_context`] receive context for the registry
+    /// and diagnostics sink.
+    ///
+    /// All other visitors fall back to the no-context `visit` call via the
+    /// default trait implementations, so the output is **byte-identical** to
+    /// [`Pipeline::run`] when no context-aware visitors are registered.
+    ///
+    /// # Errors
+    /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
+    pub fn run_with_context(
+        &mut self,
+        input: &str,
+        ctx: &mut BuildContext<'_>,
+    ) -> Result<HastNode, PipelineError> {
+        let mut mdast = markdown::to_mdast(input, &self.parse_options)
+            .map_err(|m| PipelineError::Parse(m.to_string()))?;
+
+        for v in &mut self.mdast_visitors {
+            v.visit_with_context(&mut mdast, ctx);
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(&mut mdast);
+        }
+
+        let mut hast = mdast_to_hast(&mdast);
+
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(&mut hast, ctx);
+        }
+
+        Ok(hast)
+    }
+
+    /// Run only the mdast visitor chain with build context against an
+    /// externally-parsed mdast tree.
+    ///
+    /// Parallel to [`Pipeline::apply_mdast_visitors`] but threads the context
+    /// through each visitor so wave-6 mdast plugins (e.g. `TranscludePlugin`)
+    /// can access source path and project root for file resolution.
+    pub fn apply_mdast_visitors_with_context(
+        &mut self,
+        node: &mut MdastNode,
+        ctx: &mut BuildContext<'_>,
+    ) {
+        for v in &mut self.mdast_visitors {
+            v.visit_with_context(node, ctx);
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(node);
+        }
+    }
+
+    /// Run only the hast visitor chain with build context against an
+    /// externally-built hast tree.
+    ///
+    /// Parallel to [`Pipeline::apply_hast_visitors`] but threads the context
+    /// through each visitor so wave-6 plugins can access the registry and
+    /// diagnostics sink.
+    pub fn apply_hast_visitors_with_context(
+        &mut self,
+        node: &mut HastNode,
+        ctx: &mut BuildContext<'_>,
+    ) {
+        for v in &mut self.hast_visitors {
+            v.visit_with_context(node, ctx);
+        }
+    }
+}
+
+/// Register feature visitors from `zfb-md-extras` into the pipeline.
+///
+/// This is the **single entry point** from `zfb-content` into `zfb-md-extras`.
+/// No other call path should cross the crate boundary. Called exclusively from
+/// [`Pipeline::with_defaults_and_features`].
+///
+/// # Wave 2 stub
+///
+/// In Wave 2 no `zfb-md-extras` feature modules export visitors yet — the
+/// feature stub modules (`github_alerts`, `reading_time`, etc.) are empty.
+/// This function is a no-op. Wave 4-6 will fill in each feature module and
+/// call into them here, conditionally on the `features.*` flags.
+///
+/// # Ordering contract
+///
+/// When Wave 4-6 add visitors, they MUST be inserted at the correct phase:
+/// - mdast visitors: after `CjkFriendlyPlugin` and BEFORE `AdmonitionsPlugin`.
+/// - hast visitors: AFTER `SyntectPlugin` for visitors that depend on
+///   syntect's per-line structure; BEFORE `SyntectPlugin` for anything that
+///   rewrites `<pre>`/`<code>` shapes.
+///
+/// The caller (`with_defaults_and_features`) already wires the framework
+/// visitors in the correct order before calling this function, so any visitors
+/// appended here run after the framework chain by default. If a feature
+/// visitor must be inserted before `SyntectPlugin`, use
+/// `Pipeline::add_mdast_visitor` / `Pipeline::add_hast_visitor` with explicit
+/// ordering (document it in the feature module's sub-issue).
+pub fn register_features(
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    // Wave 3 (#570): conditionally wire the four opt-in framework features.
+    //
+    // Ordering contract (MUST match the doc comment on with_defaults_and_features):
+    //   mdast phase:
+    //     - admonitions_preset — MUST run BEFORE the syntect / hast phase.
+    //       Inserted here (after CjkFriendlyPlugin that was added in the caller).
+    //   hast phase (all run BEFORE SyntectPlugin which is appended by the caller
+    //   after register_features returns):
+    //     - image_enlarge — runs before syntect; no ordering constraint vs.
+    //       heading_links (heading_links was already added by the caller).
+    //     - mermaid — MUST run BEFORE SyntectPlugin so syntect can skip mermaid
+    //       blocks. The `data-mermaid` div shape is not a `<pre>`; syntect
+    //       ignores it automatically once it has been replaced.
+    //   heading_marker_toc is wired AFTER headings are slugified by
+    //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
+    //   caller's hast chain, any hast visitor appended here runs after it.
+
+    use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
+
+    // ── mdast phase ────────────────────────────────────────────────────────
+    // transclude MUST run FIRST in the mdast phase — before code_tabs,
+    // admonitions_preset, and all other mdast visitors — so that included
+    // content is spliced into the tree and then processed by subsequent
+    // visitors normally. The TranscludePlugin implements
+    // `MdastVisitor::visit_with_context` and requires a BuildContext
+    // (source_path + project_root) to resolve file paths. When the pipeline
+    // is driven via `run_with_context`, the context is automatically threaded.
+    if let Some(cfg) = &features.transclude {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone()),
+        ));
+    }
+
+    // code_tabs MUST run BEFORE admonitions_preset and github_alerts so that
+    // `:::code-group` opener paragraphs are consumed before the directive
+    // registry or alert scanner inspects them. The CodeTabsPlugin looks for
+    // the literal `:::code-group` opener and the closing `:::` separator so
+    // it must see raw paragraph nodes, not already-rewritten JSX elements.
+    if feature_enabled(&features.code_tabs) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::code_tabs::CodeTabsPlugin::new(),
+        ));
+    }
+
+    // github_alerts MUST run BEFORE admonitions_preset so both features can
+    // coexist: alert blockquotes are rewritten to MdxJsxFlowElement first,
+    // then the admonitions pass handles `:::directive` syntax separately.
+    if feature_enabled(&features.github_alerts) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::github_alerts::GithubAlertsPlugin::new(),
+        ));
+    }
+
+    if feature_enabled(&features.reading_time) {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::reading_time::ReadingTimePlugin::new(),
+        ));
+    }
+
+    // ruby runs in the mdast phase so it can scan raw text before mdast→hast.
+    // Order-independent relative to github_alerts and admonitions_preset
+    // (those operate on blockquote/directive shapes; ruby operates on Text).
+    if feature_enabled(&features.ruby) {
+        p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
+    }
+
+    if feature_enabled(&features.admonitions_preset) {
+        use crate::plugins::directives::DirectiveRegistry;
+        use zfb_md_extras::admonitions_preset::default_admonition_directives;
+        let mut registry = DirectiveRegistry::new();
+        for def in default_admonition_directives() {
+            registry.register(def);
+        }
+        p.add_mdast_visitor(registry.into_visitor());
+    }
+
+    // ── hast phase (all before SyntectPlugin) ──────────────────────────────
+    // The gating helpers `feature_enabled` and `heading_marker_toc_enabled`
+    // treat `Some(FeatureToggle::Bool(false))` as disabled — `is_some()`
+    // alone would silently wire the plugin even when the user explicitly
+    // turned it off.
+    if heading_marker_toc_enabled(&features.heading_marker_toc) {
+        let cfg = features
+            .heading_marker_toc
+            .as_ref()
+            .map(zfb_md_ast::HeadingMarkerTocFeature::to_config)
+            .unwrap_or_default();
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::heading_marker_toc::TocPlugin::new(cfg),
+        ));
+    }
+    if feature_enabled(&features.image_enlarge) {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::image_enlarge::ImageEnlargePlugin::new(),
+        ));
+    }
+    if feature_enabled(&features.mermaid) {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::mermaid::MermaidPlugin::new(),
+        ));
+    }
+    // Wave 5 (#574): GitHub-style autolinks — #NNN, user/repo#NNN, SHA.
+    // Uses Option<GithubAutolinksConfig> (not FeatureToggle), so gated with
+    // is_some() + required `repo` field extraction.
+    if let Some(cfg) = features.github_autolinks.as_ref() {
+        if let Some(repo) = cfg.repo.as_ref() {
+            p.add_hast_visitor(Box::new(
+                zfb_md_extras::github_autolinks::GithubAutolinksPlugin::new(repo.clone()),
+            ));
+        }
+    }
+
+    // Wave 5 (#578): toc_export — emit page TOC as MDX named export.
+    // Gated on `is_some()` (the config type carries its own fields; no outer
+    // `FeatureToggle` wrapper). Must run AFTER HeadingLinksPlugin (already in
+    // the hast chain) so IDs are stable. Inserted before SyntectPlugin so the
+    // export node lands at the front of the document root before code blocks
+    // are transformed.
+    if let Some(cfg) = &features.toc_export {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::toc_export::TocExportPlugin::new(cfg.clone()),
+        ));
+    }
+    // Wave 6 (#579): image_dimensions — inject width/height on local <img> elements.
+    // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
+    // MUST run AFTER image_enlarge (which also touches <img>/<p> shapes) so the
+    // figure-wrapper is already in place when dimensions are injected.
+    // Uses visit_with_context — pipeline must call run_with_context for this to fire.
+    if let Some(cfg) = features.image_dimensions.clone() {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg),
+        ));
+    }
+
+    // Wave 6 (#580): link_validation — validate internal links + anchor
+    // fragments against the heading-ID registry. Runs VERY LATE in the hast
+    // phase — after all heading-mutating visitors — so registry entries for the
+    // current file are already populated by HeadingLinksPlugin. Gated on
+    // `is_some()` (uses a rich options struct, not a FeatureToggle).
+    if let Some(cfg) = &features.link_validation {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone()),
+        ));
+    }
+}
+
+/// Register post-syntect feature visitors from `zfb-md-extras` into the pipeline.
+///
+/// Called **after** [`SyntectPlugin`] is added in
+/// [`Pipeline::with_defaults_and_features`]. Visitors registered here operate
+/// on the per-line `<span class="line">` structure that SyntectPlugin emits —
+/// they see already-highlighted structured HAST.
+///
+/// # Wave 5 (#575)
+///
+/// `code_enrichment` is the first visitor registered here. It adds
+/// `data-line-diff` and `data-line-highlight` attributes to matching
+/// `<span class="line">` elements.
+///
+/// # Ordering contract
+///
+/// All visitors registered here run AFTER SyntectPlugin.
+/// They MUST NOT rewrite the `<pre><code>` structure itself — only mutate
+/// existing `<span class="line">` children.
+pub fn register_post_syntect_features(
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    // Wave 5 (#575): code_enrichment — diff markers + line highlighting.
+    if let Some(cfg) = &features.code_enrichment {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::code_enrichment::CodeEnrichmentPlugin::new(cfg.clone()),
+        ));
+    }
+    // Wave 5-6: additional post-syntect feature visitor wiring lands here.
 }
 
 /// Strategy for emitting the JSX-shaped Raw payload of `MdxJsxFlow*`,

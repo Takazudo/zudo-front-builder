@@ -757,17 +757,20 @@ pub struct PluginConfig {
 
 // --- markdown / GFM config -------------------------------------------------
 
-/// Re-export [`TocConfig`] from `zfb-content` so `zfb.config.ts`
-/// consumers (and the bundler / snapshot callers) reach the type without
-/// a direct `zfb-content` dependency.
-pub use zfb_content::TocConfig;
+// TocConfig now lives in `zfb-md-ast::features_config` (re-exported below
+// alongside the other feature config types). `zfb-content` still
+// re-exports it under the historical `zfb_content::TocConfig` path for
+// downstream code that imports through that crate's lib surface.
 
 /// Markdown / MDX parsing options.
 ///
 /// Mirrors `MarkdownConfig` in `packages/zfb/src/config.ts`. Knobs include
-/// [`Self::gfm`], [`Self::toc`], [`Self::external_links`], and
-/// [`Self::cjk_friendly`]; future markdown-pipeline knobs would also live
-/// here.
+/// [`Self::gfm`], [`Self::toc`], [`Self::external_links`],
+/// [`Self::cjk_friendly`], and [`Self::features`]; future markdown-pipeline
+/// knobs would also live here.
+///
+/// See the "Markdown Features" docs category for the per-feature option
+/// reference once individual features are ported.
 ///
 /// `#[serde(rename_all = "camelCase")]` on this struct (and on the
 /// parent [`Config`]) makes the TS shape (`{ gfm: ... }`) round-trip 1:1
@@ -815,7 +818,34 @@ pub struct MarkdownConfig {
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     #[serde(default)]
     pub cjk_friendly: Option<bool>,
+
+    /// Per-feature markdown pipeline toggles. Each field is a
+    /// [`FeatureToggle`] (`true` / `false` / per-feature options object)
+    /// or a feature-specific config struct (for features that require
+    /// extra parameters, e.g. `githubAutolinks`).
+    ///
+    /// Absent / `None` means all features are disabled, preserving the
+    /// behaviour of the pre-features build byte-for-byte.
+    ///
+    /// Unknown keys in the `features` object are rejected with a clear
+    /// deserialization error naming the unknown field.
+    #[serde(default)]
+    pub features: Option<MarkdownFeaturesConfig>,
 }
+
+// --- MarkdownFeaturesConfig and per-feature types --------------------------
+//
+// Canonical definitions live in `zfb-md-ast::features_config` so the
+// visitor-contract crate, `zfb-md-extras`, AND this user-facing `zfb`
+// crate all share a single source of truth — no parallel definitions,
+// no conversion bridges. Re-exported here so existing import paths
+// like `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}` and
+// `zfb::config::TocConfig` continue to resolve.
+pub use zfb_md_ast::{
+    CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
+    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
+    TocConfig, TocExportConfig, TranscludeConfig,
+};
 
 /// Options for the `rehype-external-links` port.
 ///
@@ -3075,6 +3105,7 @@ mod tests {
                 toc: None,
                 external_links: None,
                 cjk_friendly: None,
+                features: None,
             })
         );
     }
@@ -3497,6 +3528,181 @@ mod tests {
         assert!(
             msg.contains("Node.js"),
             "msg should mention Node.js: {msg}"
+        );
+    }
+
+    // --- MarkdownFeaturesConfig tests (#566) ---------------------------------
+
+    // Absent `features` field → `None` (all features disabled; output
+    // byte-for-byte identical to the pre-features build).
+    #[test]
+    fn features_absent_yields_none() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty MarkdownConfig deserialises");
+        assert_eq!(cfg.features, None);
+    }
+
+    // `features: {}` — explicit empty object → `Some(MarkdownFeaturesConfig::default())`.
+    #[test]
+    fn features_empty_object_yields_default() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {}
+        }))
+        .expect("empty features object deserialises");
+        assert_eq!(cfg.features, Some(MarkdownFeaturesConfig::default()));
+    }
+
+    // Boolean `true` shorthand: `githubAlerts: true` → `FeatureToggle::Bool(true)`.
+    #[test]
+    fn features_github_alerts_true_shorthand() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": true }
+        }))
+        .expect("githubAlerts: true deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+    }
+
+    // Boolean `false` shorthand: `githubAlerts: false` → `FeatureToggle::Bool(false)`.
+    #[test]
+    fn features_github_alerts_false_shorthand() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": false }
+        }))
+        .expect("githubAlerts: false deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(false)));
+    }
+
+    // Object form: `githubAlerts: {}` → `FeatureToggle::Options(FeatureOptions {})`.
+    #[test]
+    fn features_github_alerts_object_form() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAlerts": {} }
+        }))
+        .expect("githubAlerts: {} deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.github_alerts,
+            Some(FeatureToggle::Options(FeatureOptions {}))
+        );
+    }
+
+    // `githubAutolinks` uses a dedicated struct (requires `repo` field).
+    #[test]
+    fn features_github_autolinks_with_repo() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "githubAutolinks": { "repo": "owner/repo" } }
+        }))
+        .expect("githubAutolinks deserialises");
+        let features = cfg.features.expect("features present");
+        let autolinks = features.github_autolinks.expect("githubAutolinks present");
+        assert_eq!(autolinks.repo.as_deref(), Some("owner/repo"));
+    }
+
+    // Multiple features enabled simultaneously in one `features` block.
+    #[test]
+    fn features_multiple_features_in_one_block() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {
+                "githubAlerts": true,
+                "mermaid": true,
+                "ruby": false
+            }
+        }))
+        .expect("multiple features deserialise");
+        let features = cfg.features.expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+        assert_eq!(features.mermaid, Some(FeatureToggle::Bool(true)));
+        assert_eq!(features.ruby, Some(FeatureToggle::Bool(false)));
+        // Others absent → None.
+        assert_eq!(features.code_tabs, None);
+    }
+
+    // Unknown feature key must be rejected with a clear error.
+    // This is the spec acceptance criterion: `features: { bogus: true }`
+    // must produce a deserialization error naming the unknown field.
+    #[test]
+    fn features_unknown_key_is_rejected() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "bogus": true }
+        }))
+        .expect_err("unknown feature key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus") || msg.contains("unknown field"),
+            "error must name the unknown field; got: {msg}"
+        );
+    }
+
+    // Top-level Config integration: `markdown.features.githubAlerts: true`
+    // must parse end-to-end via `serde_json::from_value::<Config>`.
+    #[test]
+    fn config_markdown_features_github_alerts_roundtrip() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "markdown": { "features": { "githubAlerts": true } }
+        }))
+        .expect("Config with markdown.features.githubAlerts deserialises");
+        let features = cfg
+            .markdown
+            .as_ref()
+            .expect("markdown present")
+            .features
+            .as_ref()
+            .expect("features present");
+        assert_eq!(features.github_alerts, Some(FeatureToggle::Bool(true)));
+    }
+
+    // `features` absent from the top-level `markdown` block → `None`.
+    // This ensures existing configs that pre-date the `features` field
+    // still load without errors.
+    #[test]
+    fn config_markdown_features_absent_yields_none() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "markdown": { "gfm": true }
+        }))
+        .expect("Config without features field deserialises");
+        let markdown = cfg.markdown.as_ref().expect("markdown present");
+        assert_eq!(markdown.features, None);
+    }
+
+    // Unknown keys inside a per-feature OBJECT must reject too — without
+    // `deny_unknown_fields` on the option structs, the untagged
+    // `FeatureToggle` enum would silently accept `{ bogus: true }` as
+    // `Options(FeatureOptions {})` and the feature would turn on
+    // unintentionally. Codex review flag in #564 Wave 1.
+    //
+    // Note: with `#[serde(untagged)]` on `FeatureToggle`, serde swallows
+    // the inner "unknown field" message and reports only the outer
+    // "did not match any variant" error — so we assert on the variant
+    // text rather than the field name itself.
+    #[test]
+    fn features_per_feature_object_rejects_unknown_keys() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "githubAlerts": { "bogus": true } }
+        }))
+        .expect_err("unknown keys inside the per-feature object must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("FeatureToggle") || msg.contains("variant"),
+            "error must indicate the FeatureToggle variant rejection; got: {msg}"
+        );
+    }
+
+    // Same shape via the typed-options struct (`GithubAutolinksConfig`)
+    // — unknown keys alongside the legitimate `repo` field must reject.
+    // `GithubAutolinksConfig` is NOT inside an untagged enum, so the
+    // inner "unknown field" message survives and we can assert on it.
+    #[test]
+    fn features_typed_option_struct_rejects_unknown_keys() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "githubAutolinks": { "repo": "owner/repo", "bogus": true } }
+        }))
+        .expect_err("unknown keys inside a typed feature option struct must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus") || msg.contains("unknown field"),
+            "error must name the unknown field; got: {msg}"
         );
     }
 }

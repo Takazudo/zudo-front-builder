@@ -1,0 +1,55 @@
+---
+title: External links
+description: Automatically adds target and rel attributes to outbound links.
+tier: Core
+sidebar_position: 53
+---
+
+`ExternalLinksPlugin` adds `target` and `rel` attributes to links whose
+destination is outside your site. It is always active when configured.
+
+## Enable
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+  },
+});
+```
+
+Omitting the `externalLinks` key leaves the rendered output byte-for-byte
+identical to the pre-feature behaviour — no extra attributes are emitted.
+
+## What counts as external
+
+A link is external when its destination is an absolute `http:` or `https:`
+URL and its origin differs from your site's origin (determined by the
+top-level `site` config option, once configured). When `site` is absent,
+any absolute HTTP/HTTPS URL is treated as external.
+
+`mailto:`, `tel:`, and other non-HTTP(S) schemes are always left unchanged.
+Relative paths (`/internal/`, `./page.mdx`, `#anchor`) are always internal.
+
+## Merging with existing rel
+
+If an `<a>` element already carries a `rel` attribute, the configured tokens
+are merged in (deduplicated, case-insensitive). Existing tokens appear first,
+so author intent is preserved.
+
+<Note>
+
+Same-origin classification depends on the `site` config option. Until `site`
+is configured, every absolute HTTP/HTTPS URL is treated as external.
+
+</Note>
+
+## See also
+
+- [Resolve links](/markdown-features/resolve-links) — companion Core plugin
+  that normalises internal link targets.

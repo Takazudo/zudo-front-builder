@@ -20,6 +20,8 @@ const docsSchema = z.object({
   standalone: z.boolean().optional(),
   slug: z.string().optional(),
   generated: z.boolean().optional(),
+  /** Feature tier badge rendered near the page title on Markdown Features pages. */
+  tier: z.enum(["Core", "Opt-in"]).optional(),
 });
 
 const docs = defineCollection({

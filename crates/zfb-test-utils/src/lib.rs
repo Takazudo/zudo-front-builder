@@ -1,3 +1,6 @@
+mod html_normalize;
+pub use html_normalize::normalize_html;
+
 use std::path::PathBuf;
 
 /// Locate an esbuild binary suitable for integration tests.

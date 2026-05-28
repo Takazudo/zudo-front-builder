@@ -15,8 +15,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use zfb_content::diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic};
 use zfb_content::frontmatter::{self};
-use zfb_content::pipeline::Pipeline;
+use zfb_content::heading_registry::HeadingRegistry;
+use zfb_content::pipeline::{BuildContext, HastNode, HastVisitor, Pipeline};
 use zfb_content::plugins::{ResolveLinksPlugin, ResolveMarkdownLinksOptions};
 use zfb_content::serializer::serialize;
 
@@ -444,5 +446,261 @@ fn fixture_08_mermaid_block_replaced_with_div() {
     assert!(
         snapshot.contains("graph TD"),
         "mermaid source must be preserved:\n{snapshot}",
+    );
+}
+
+// ── Wave-6 seam tests (issue #568) ────────────────────────────────────────────
+
+/// Acceptance criterion: a pipeline run WITHOUT a `BuildContext` produces
+/// byte-identical output to today (backwards-compat).
+#[test]
+fn run_without_context_is_byte_identical_to_run() {
+    let md = "## Hello World\n\nsome text\n";
+    let mut pipeline = Pipeline::with_defaults();
+
+    let html_no_ctx = {
+        let hast = pipeline.run(md).expect("run ok");
+        serialize(&hast)
+    };
+    pipeline.reset_per_entry();
+    let html_with_ctx = {
+        let mut ctx = BuildContext::for_paths(
+            "/docs/page.md",
+            "/project",
+            "/project/public",
+        );
+        let hast = pipeline.run_with_context(md, &mut ctx).expect("run_with_context ok");
+        serialize(&hast)
+    };
+
+    assert_eq!(
+        html_no_ctx, html_with_ctx,
+        "run_with_context must produce byte-identical output to run when no context-aware visitors are wired",
+    );
+}
+
+/// Acceptance criterion: `HeadingLinksPlugin` populates the registry when
+/// attached; emits zero registry writes when absent.
+#[test]
+fn heading_links_populates_registry_when_present() {
+    let md = "## Introduction\n\n## Setup\n\n### Details\n";
+    let source = PathBuf::from("/docs/guide.md");
+
+    let mut registry = HeadingRegistry::new();
+    let mut ctx = BuildContext {
+        source_path: Some(source.clone()),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: None,
+    };
+
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+
+    let entries = registry.get(&source).expect("entries must be recorded");
+    assert_eq!(entries.len(), 3, "expected 3 headings: {entries:?}");
+    assert_eq!(entries[0].id, "introduction");
+    assert_eq!(entries[0].text, "Introduction");
+    assert_eq!(entries[0].depth, 2);
+    assert_eq!(entries[1].id, "setup");
+    assert_eq!(entries[2].id, "details");
+    assert_eq!(entries[2].depth, 3);
+}
+
+/// Zero-cost path: when no registry is in the context, no entries are written.
+#[test]
+fn heading_links_zero_writes_without_registry() {
+    let md = "## Hello\n";
+    let mut ctx = BuildContext::for_paths("/docs/page.md", "/project", "/project/public");
+    // heading_registry is None — no writes should occur.
+
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+    // No registry to query — this test just asserts no panic + context is accessible.
+    assert!(ctx.source_path.as_deref() == Some(std::path::Path::new("/docs/page.md")));
+}
+
+/// Acceptance criterion: `DiagnosticsSink` smoke test — a test visitor
+/// emits a warning, the sink receives it.
+#[test]
+fn diagnostics_sink_smoke_test() {
+    // A minimal hast visitor that emits a warning diagnostic for every
+    // paragraph it encounters.
+    struct ParagraphWarner;
+    impl HastVisitor for ParagraphWarner {
+        fn visit(&mut self, _node: &mut HastNode) {}
+
+        fn visit_with_context(
+            &mut self,
+            node: &mut HastNode,
+            ctx: &mut BuildContext<'_>,
+        ) {
+            match node {
+                HastNode::Element { tag, children, .. } if tag == "p" => {
+                    if let Some(sink) = ctx.diagnostics.as_deref_mut() {
+                        sink.emit(MarkdownDiagnostic::warning("paragraph encountered"));
+                    }
+                    for c in children {
+                        self.visit_with_context(c, ctx);
+                    }
+                }
+                HastNode::Root { children } | HastNode::Element { children, .. } => {
+                    for c in children {
+                        self.visit_with_context(c, ctx);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let md = "hello\n\nworld\n";
+
+    let mut sink = CollectingSink::new();
+    let mut ctx = BuildContext {
+        source_path: None,
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: None,
+        diagnostics: Some(&mut sink),
+    };
+
+    let mut pipeline = Pipeline::with_mdx();
+    pipeline.add_hast_visitor(Box::new(ParagraphWarner));
+    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+
+    let diags = sink.take();
+    assert!(
+        !diags.is_empty(),
+        "expected at least one diagnostic from ParagraphWarner",
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.severity() == DiagnosticSeverity::Warning),
+        "all diagnostics must be warnings: {diags:?}",
+    );
+}
+
+/// Acceptance criterion: pipeline run WITH a `BuildContext` exposes the
+/// context to visitors via `visit_with_context`.
+#[test]
+fn context_survives_through_pipeline() {
+    // A hast visitor that reads the source_path from context and records
+    // whether it was accessible.
+    struct ContextChecker {
+        saw_path: Option<PathBuf>,
+    }
+    impl HastVisitor for ContextChecker {
+        fn visit(&mut self, _node: &mut HastNode) {}
+
+        fn visit_with_context(
+            &mut self,
+            _node: &mut HastNode,
+            ctx: &mut BuildContext<'_>,
+        ) {
+            self.saw_path = ctx.source_path.clone();
+        }
+    }
+
+    let checker = ContextChecker { saw_path: None };
+
+    // We can't add the visitor and use it after - use the pipeline-owned approach.
+    // Instead, test by querying registry after a full run.
+    let md = "## Check\n";
+    let source = PathBuf::from("/docs/check.md");
+    let mut registry = HeadingRegistry::new();
+
+    let mut ctx = BuildContext {
+        source_path: Some(source.clone()),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: None,
+    };
+
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+
+    // The registry was populated from context — proving context reached the visitor.
+    let entries = registry.get(&source).expect("context must have reached HeadingLinksPlugin");
+    assert_eq!(entries[0].id, "check");
+    drop(checker); // suppress unused warning
+}
+
+// ── Wave-2 register_features / with_defaults_and_features smoke tests ─────
+
+use zfb_md_extras::{FeatureToggle, MarkdownFeaturesConfig};
+
+/// Wave 3 (#570): `Pipeline::with_defaults_and_features` with an empty
+/// features set produces output that is **different** from
+/// `Pipeline::with_defaults()` — the four opt-in plugins
+/// (`AdmonitionsPlugin`, `ImageEnlargePlugin`, `MermaidPlugin`,
+/// `TocPlugin`) are NOT wired when no feature flag is set.
+///
+/// This test verifies the conditionality: a block-level image paragraph
+/// is NOT wrapped in `<figure class="zd-enlargeable">` when
+/// `features.image_enlarge` is absent (the default).
+#[test]
+fn with_defaults_and_features_empty_does_not_wire_opt_in_plugins() {
+    // A single block-level image triggers ImageEnlargePlugin when wired.
+    let md = "![alt text](photo.png)\n";
+
+    let html_features_empty = {
+        let features = MarkdownFeaturesConfig::default();
+        let mut p = Pipeline::with_defaults_and_features(&features);
+        let hast = p.run(md).expect("run ok");
+        serialize(&hast)
+    };
+
+    assert!(
+        !html_features_empty.contains("<figure class=\"zd-enlargeable\">"),
+        "empty features must NOT wire ImageEnlargePlugin; got:\n{html_features_empty}",
+    );
+    assert!(
+        !html_features_empty.contains("class=\"zd-enlarge-btn\""),
+        "empty features must NOT produce enlarge button; got:\n{html_features_empty}",
+    );
+    // The image still renders — it's just not wrapped.
+    assert!(
+        html_features_empty.contains("src=\"photo.png\""),
+        "image src must still be present in output; got:\n{html_features_empty}",
+    );
+}
+
+/// Smoke test: `Pipeline::with_defaults_and_features` with
+/// `features.image_enlarge = Some(FeatureToggle::Bool(true))` produces output
+/// containing the enlargeable figure wrapper.
+///
+/// In Wave 2, `ImageEnlargePlugin` is always wired unconditionally (identical
+/// to `with_defaults`). This test confirms the end-to-end plumbing works
+/// before Wave 3.1 moves the plugin into `zfb-md-extras` and makes it
+/// conditional.
+#[test]
+fn with_defaults_and_features_image_enlarge_true_produces_wrapper() {
+    // A single block-level image paragraph triggers `ImageEnlargePlugin`.
+    let md = "![alt text](photo.png)\n";
+
+    let features = MarkdownFeaturesConfig {
+        image_enlarge: Some(FeatureToggle::Bool(true)),
+        ..MarkdownFeaturesConfig::default()
+    };
+
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let hast = p.run(md).expect("pipeline ok");
+    let html = serialize(&hast);
+
+    assert!(
+        html.contains("<figure class=\"zd-enlargeable\">"),
+        "expected zd-enlargeable figure wrapper when image_enlarge = true; got:\n{html}",
+    );
+    assert!(
+        html.contains("class=\"zd-enlarge-btn\""),
+        "expected zd-enlarge-btn button when image_enlarge = true; got:\n{html}",
+    );
+    assert!(
+        html.contains("src=\"photo.png\""),
+        "image src must survive into output; got:\n{html}",
     );
 }

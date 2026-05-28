@@ -214,12 +214,26 @@ fn mdx_to_jsx_module_inner(
         p.apply_mdast_visitors(&mut root);
     }
 
-    let children: Vec<MdastNode> = match root {
+    let all_children: Vec<MdastNode> = match root {
         MdastNode::Root(r) => r.children,
         // markdown-rs always produces a Root for to_mdast, but be
         // defensive — never panic on unexpected shape.
         other => vec![other],
     };
+
+    // Partition out synthesized module-level exports injected by mdast
+    // visitors (e.g. ReadingTimePlugin). These carry a `/* zfb-synth-export */`
+    // marker so they can be distinguished from user-authored MDX ESM nodes
+    // (which the emitter drops because the bundler handles them). Synthesized
+    // exports are lifted to the module scope alongside `headings`.
+    let (synth_exports, children): (Vec<MdastNode>, Vec<MdastNode>) =
+        all_children.into_iter().partition(|n| {
+            if let MdastNode::MdxjsEsm(esm) = n {
+                esm.value.contains("/* zfb-synth-export */")
+            } else {
+                false
+            }
+        });
 
     // Heading metadata is collected from the post-mdast-visitor tree
     // either way — hast plugins like `HeadingLinksPlugin` mutate the
@@ -291,6 +305,23 @@ fn mdx_to_jsx_module_inner(
     out.push_str("import { Fragment as _Fragment } from \"react/jsx-runtime\";\n\n");
     out.push_str(&render_headings_export(&headings));
     out.push('\n');
+    // Emit synthesized module-level exports (e.g. readingTimeMinutes).
+    // These were injected by mdast visitors and partitioned out above.
+    // Strip the `/* zfb-synth-export */` marker prefix before emitting.
+    for esm_node in &synth_exports {
+        if let MdastNode::MdxjsEsm(esm) = esm_node {
+            // The marker is always at the start; strip it plus the space after.
+            let export_stmt = esm
+                .value
+                .trim_start_matches("/* zfb-synth-export */")
+                .trim_start();
+            out.push_str(export_stmt);
+            out.push('\n');
+        }
+    }
+    if !synth_exports.is_empty() {
+        out.push('\n');
+    }
     out.push_str("function _createMdxContent({components = {}} = {}) {\n");
     out.push_str("  const _components = {\n");
 
@@ -1097,10 +1128,10 @@ fn starts_with_block_level_tag(s: &str) -> bool {
     if bytes.first() != Some(&b'<') { return false; }
     let after_lt = &trimmed[1..];
     let tag_end = after_lt
-        .find(|c: char| c == ' ' || c == '>' || c == '/' || c == '\t' || c == '\n' || c == '\r')
+        .find(|c: char| [' ', '>', '/', '\t', '\n', '\r'].contains(&c))
         .unwrap_or(after_lt.len());
     let tag = after_lt[..tag_end].to_ascii_lowercase();
-    BLOCK_TAGS.iter().any(|b| *b == tag.as_str())
+    BLOCK_TAGS.contains(&tag.as_str())
 }
 
 /// Scan a JSX-shaped string for PascalCase opening-tag identifiers and

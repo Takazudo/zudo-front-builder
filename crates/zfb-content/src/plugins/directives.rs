@@ -55,85 +55,14 @@ use markdown::mdast::{
 
 use crate::pipeline::MdastVisitor;
 
-/// Which CommonMark-Directives shape this directive responds to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectiveKind {
-    /// `:::name … :::` (block, with body).
-    Container,
-    /// `::name[label]{attrs}` (block, no body).
-    Leaf,
-    /// `:name[label]{attrs}` (inline).
-    Text,
-}
-
-/// A registered directive: its source-side `name` and the JSX component
-/// it expands to.
-#[derive(Debug, Clone)]
-pub struct DirectiveDef {
-    /// Lowercase source-side name (`note`, `card`, …).
-    pub name: String,
-    /// Container/leaf/text shape.
-    pub kind: DirectiveKind,
-    /// JSX component identifier (`Note`, `Card`, …).
-    pub component_name: String,
-    /// If true, the bracketed `[label]` is promoted to a `title="…"`
-    /// attribute on the emitted JSX (and is NOT also emitted as a
-    /// child). If false, the `[label]` becomes a single Text child of
-    /// the element.
-    pub title_from_label: bool,
-}
-
-impl DirectiveDef {
-    /// Convenience: container with `title_from_label=false`.
-    #[must_use]
-    pub fn container(name: impl Into<String>, component_name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            kind: DirectiveKind::Container,
-            component_name: component_name.into(),
-            title_from_label: false,
-        }
-    }
-
-    /// Convenience: leaf with `title_from_label=false`.
-    #[must_use]
-    pub fn leaf(name: impl Into<String>, component_name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            kind: DirectiveKind::Leaf,
-            component_name: component_name.into(),
-            title_from_label: false,
-        }
-    }
-
-    /// Convenience: text directive with `title_from_label=false`.
-    #[must_use]
-    pub fn text(name: impl Into<String>, component_name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            kind: DirectiveKind::Text,
-            component_name: component_name.into(),
-            title_from_label: false,
-        }
-    }
-}
-
-/// A non-fatal diagnostic produced while expanding directives — typically
-/// "unknown directive name" with the source location of the offending
-/// paragraph.
-///
-/// File path is intentionally not stored here: the registry visitor sees
-/// only an mdast tree and has no idea which file it came from. The
-/// orchestrator pairs the diagnostic with the file it just processed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectiveDiagnostic {
-    /// Human-readable message.
-    pub message: String,
-    /// 1-based line of the offending construct, if known.
-    pub line: Option<usize>,
-    /// 1-based column of the offending construct, if known.
-    pub column: Option<usize>,
-}
+// Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
+// (which cannot depend on `zfb-content`) can produce `Vec<DirectiveDef>`
+// for preset functions. Re-export them here so all existing
+// `zfb_content::plugins::directives::*` import paths keep compiling.
+pub use zfb_md_ast::{
+    AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
+    ValidatedAttrValue,
+};
 
 /// Runtime registry mapping directive names to JSX components.
 ///
@@ -237,10 +166,18 @@ impl DirectiveRegistry {
                         if let Some(close_idx) = (i + 1..children.len())
                             .find(|j| is_container_close(&children[*j]))
                         {
+                            let (line, column) = paragraph_line_col(&children[i]);
+                            let validated_opt =
+                                self.run_validation(&def, &parsed, line, column);
                             let body: Vec<MdastNode> = children.drain(i..=close_idx).collect();
                             // Strip open + close paragraphs.
                             let inner = body[1..body.len() - 1].to_vec();
-                            let jsx = build_flow_jsx(&def, &parsed, inner);
+                            let jsx = build_flow_jsx(
+                                &def,
+                                &parsed,
+                                inner,
+                                validated_opt.as_ref(),
+                            );
                             children.insert(i, jsx);
                             i += 1;
                             continue;
@@ -282,7 +219,15 @@ impl DirectiveRegistry {
                 if let Some(def) = self.defs.get(&parsed.name).cloned() {
                     if def.kind == DirectiveKind::Leaf {
                         let position = paragraph_position(&children[i]);
-                        let jsx = build_leaf_jsx(&def, &parsed, position);
+                        let (line, column) = paragraph_line_col(&children[i]);
+                        let validated_opt =
+                            self.run_validation(&def, &parsed, line, column);
+                        let jsx = build_leaf_jsx(
+                            &def,
+                            &parsed,
+                            position,
+                            validated_opt.as_ref(),
+                        );
                         children[i] = jsx;
                         i += 1;
                         continue;
@@ -355,7 +300,11 @@ impl DirectiveRegistry {
                                     position: None,
                                 }));
                             }
-                            out.push(build_text_jsx(&def, &parsed));
+                            // Inline text directives have no source position
+                            // from the text scanner — pass None for both.
+                            let validated_opt =
+                                self.run_validation(&def, &parsed, None, None);
+                            out.push(build_text_jsx(&def, &parsed, validated_opt.as_ref()));
                             i = end;
                             last_emit = end;
                             continue;
@@ -416,6 +365,43 @@ impl DirectiveRegistry {
             line,
             column,
         });
+    }
+
+    /// Run `validate_attrs` on `def` against the raw attrs in `parsed`.
+    /// Appends any resulting diagnostics (annotated with position) to
+    /// `self.diagnostics`. Returns `Some(validated_map)` on success
+    /// (or when the schema is empty), `None` on validation error.
+    fn run_validation(
+        &mut self,
+        def: &DirectiveDef,
+        parsed: &ParsedDirective,
+        line: Option<usize>,
+        column: Option<usize>,
+    ) -> Option<HashMap<String, ValidatedAttrValue>> {
+        let (result, warnings) = def.validate_attrs(&parsed.attrs);
+
+        // Append warnings (unknown attrs) — always, regardless of Ok/Err.
+        for mut w in warnings {
+            w.line = line;
+            w.column = column;
+            self.diagnostics.push(w);
+        }
+
+        match result {
+            Ok(validated) => {
+                // Schema is empty or all attrs passed — return validated map.
+                Some(validated)
+            }
+            Err(errors) => {
+                // Hard errors: append with position and fall back to raw attrs.
+                for mut e in errors {
+                    e.line = line;
+                    e.column = column;
+                    self.diagnostics.push(e);
+                }
+                None
+            }
+        }
     }
 }
 
@@ -715,8 +701,9 @@ fn build_flow_jsx(
     def: &DirectiveDef,
     parsed: &ParsedDirective,
     children: Vec<MdastNode>,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
 ) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+    let attributes = build_attributes(def, parsed, validated);
     MdastNode::MdxJsxFlowElement(MdxJsxFlowElement {
         children,
         position: None,
@@ -731,8 +718,9 @@ fn build_leaf_jsx(
     def: &DirectiveDef,
     parsed: &ParsedDirective,
     position: Option<markdown::unist::Position>,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
 ) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+    let attributes = build_attributes(def, parsed, validated);
     let children: Vec<MdastNode> = if !def.title_from_label {
         if let Some(label) = &parsed.label {
             vec![MdastNode::Text(Text {
@@ -754,8 +742,12 @@ fn build_leaf_jsx(
 }
 
 /// Build a text JSX element for an inline Text directive.
-fn build_text_jsx(def: &DirectiveDef, parsed: &ParsedDirective) -> MdastNode {
-    let attributes = build_attributes(def, parsed);
+fn build_text_jsx(
+    def: &DirectiveDef,
+    parsed: &ParsedDirective,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
+) -> MdastNode {
+    let attributes = build_attributes(def, parsed, validated);
     let children: Vec<MdastNode> = if !def.title_from_label {
         if let Some(label) = &parsed.label {
             vec![MdastNode::Text(Text {
@@ -778,7 +770,18 @@ fn build_text_jsx(def: &DirectiveDef, parsed: &ParsedDirective) -> MdastNode {
 
 /// Convert parsed attrs (+ optional title-from-label promotion) into
 /// mdast `AttributeContent::Property` entries.
-fn build_attributes(def: &DirectiveDef, parsed: &ParsedDirective) -> Vec<AttributeContent> {
+///
+/// When `validated` is `Some`, the validated map is used as the source of
+/// truth for schema-declared attrs (with defaults applied). Unknown attrs
+/// (not in the schema) still pass through from `parsed.attrs` verbatim,
+/// as the unknown-attr policy is warning-only. When `validated` is `None`,
+/// `parsed.attrs` is used directly (fallback on validation error or empty
+/// schema).
+fn build_attributes(
+    def: &DirectiveDef,
+    parsed: &ParsedDirective,
+    validated: Option<&HashMap<String, ValidatedAttrValue>>,
+) -> Vec<AttributeContent> {
     let mut out: Vec<AttributeContent> = Vec::new();
     if def.title_from_label {
         if let Some(label) = &parsed.label {
@@ -788,12 +791,42 @@ fn build_attributes(def: &DirectiveDef, parsed: &ParsedDirective) -> Vec<Attribu
             }));
         }
     }
-    for (k, v) in &parsed.attrs {
-        out.push(AttributeContent::Property(MdxJsxAttribute {
-            name: k.clone(),
-            value: Some(AttributeValue::Literal(v.clone())),
-        }));
+
+    match validated {
+        None => {
+            // No schema or validation failed — emit raw parsed attrs.
+            for (k, v) in &parsed.attrs {
+                out.push(AttributeContent::Property(MdxJsxAttribute {
+                    name: k.clone(),
+                    value: Some(AttributeValue::Literal(v.clone())),
+                }));
+            }
+        }
+        Some(val_map) => {
+            // Schema-declared attrs: emit from validated map (preserves
+            // defaults and type-normalised values like "true"/"false").
+            let schema_names: std::collections::HashSet<&str> =
+                def.attrs.iter().map(|s| s.name.as_str()).collect();
+            for schema in &def.attrs {
+                if let Some(val) = val_map.get(&schema.name) {
+                    out.push(AttributeContent::Property(MdxJsxAttribute {
+                        name: schema.name.clone(),
+                        value: Some(AttributeValue::Literal(val.as_str().to_string())),
+                    }));
+                }
+            }
+            // Unknown attrs pass through verbatim (warning-only policy).
+            for (k, v) in &parsed.attrs {
+                if !schema_names.contains(k.as_str()) {
+                    out.push(AttributeContent::Property(MdxJsxAttribute {
+                        name: k.clone(),
+                        value: Some(AttributeValue::Literal(v.clone())),
+                    }));
+                }
+            }
+        }
     }
+
     out
 }
 
@@ -1221,6 +1254,7 @@ mod tests {
             kind: DirectiveKind::Container,
             component_name: "Callout".to_string(),
             title_from_label: true,
+            attrs: Vec::new(),
         });
         let out = run_with_registry(
             &mut r,

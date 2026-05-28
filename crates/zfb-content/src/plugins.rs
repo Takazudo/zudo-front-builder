@@ -24,7 +24,10 @@ pub mod util;
 pub use admonitions::{AdmonitionsPlugin, default_admonition_directives};
 pub use cjk_friendly::CjkFriendlyPlugin;
 pub use code_title::CodeTitlePlugin;
-pub use directives::{DirectiveDef, DirectiveDiagnostic, DirectiveKind, DirectiveRegistry};
+pub use directives::{
+    AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
+    DirectiveRegistry, ValidatedAttrValue,
+};
 pub use external_links::{ExternalLinksConfig, ExternalLinksPlugin};
 pub use heading_links::HeadingLinksPlugin;
 pub use image_enlarge::ImageEnlargePlugin;

@@ -1,0 +1,58 @@
+---
+title: Link validation
+description: Validate internal links and anchor fragments at build time to catch broken references before they reach production.
+tier: Opt-in
+---
+
+The `linkValidation` feature walks every `<a href>` and `<img src>` in the build and validates that internal links and anchor fragments resolve correctly. Broken links produce build diagnostics — warnings by default, errors when `failOnBroken: true` is set.
+
+External URLs (`http://`, `https://`, `mailto:`, etc.) are silently skipped by default.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      linkValidation: {},   // defaults: warn-only, skip external URLs
+    },
+  },
+});
+```
+
+To make broken links fail the build:
+
+```ts
+linkValidation: { failOnBroken: true },
+```
+
+## What is validated
+
+- **Bare anchor fragments** — `#section-id` must match a heading ID in the current file.
+- **File links without anchor** — `./other.md` must resolve to an existing file under the project root.
+- **File links with anchor** — `./other.md#section-id` requires both a resolvable file and a matching heading ID in that file.
+
+Heading IDs come from [`HeadingLinksPlugin`](/docs/markdown-features/heading-links), which runs earlier in the same hast phase. The cross-file heading-ID registry is populated during the build so anchor validation works across files.
+
+## What is skipped
+
+- External URLs starting with `http://`, `https://`, `mailto:`, or `tel:`.
+- Links in files rendered without a `BuildContext` (e.g. simple in-memory pipeline calls without context).
+
+## Options
+
+- `failOnBroken` — when `true`, broken links emit `Error` diagnostics (build fails). Default: `false` (warnings only).
+- `allowExternal` — when `false`, external URLs are no longer silently skipped (network validation is still out of scope; the flag is reserved for future use). Default: `true`.
+
+## Diagnostic format
+
+Diagnostics follow the shared `BrokenLink` variant in `MarkdownDiagnostic`:
+
+- `severity` — `Warning` or `Error` depending on `failOnBroken`.
+- `url` — the raw href or src value as written by the author.
+- `location.path` — absolute path of the source file containing the broken link.
+
+## Phase
+
+Runs in the **hast phase**, very late — after `HeadingLinksPlugin` has assigned stable IDs to all headings and populated the cross-file registry. Order in `register_features`: after `tocExport`.
