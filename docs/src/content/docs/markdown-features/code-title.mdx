@@ -1,0 +1,46 @@
+---
+title: Code block title
+description: Renders a visible filename or label above a fenced code block from the title= meta attribute.
+tier: Core
+sidebar_position: 52
+---
+
+`CodeTitlePlugin` is always active. It reads the `title="…"` token from a
+fenced code block's info string and renders a `<div class="code-title">`
+label immediately above the block.
+
+## Usage
+
+Add `title="…"` after the language tag in the fence:
+
+````md
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: { cjkFriendly: true },
+});
+```
+````
+
+Rendered output:
+
+```html
+<div class="code-title">zfb.config.ts</div>
+<pre class="syntect-…"><code>…</code></pre>
+```
+
+## Config
+
+Always on, no config key.
+
+## Ordering note
+
+`CodeTitlePlugin` runs **before** `SyntectPlugin` in the hast phase.
+`SyntectPlugin` replaces the entire `<pre>` element with a raw HTML fragment;
+once that happens, the `data-meta` attribute carrying `title="…"` is no
+longer reachable as structured AST. Running `CodeTitlePlugin` first ensures
+it reads the meta before syntect erases it.
+
+## See also
+
+- [Syntax highlighting](/markdown-features/syntax-highlighting) — the syntect
+  plugin that runs after this one.

@@ -1,0 +1,94 @@
+---
+title: Markdown Features
+description: "Every feature zfb's Markdown pipeline provides — Core (always-on) and Opt-in (enabled via zfb.config.ts)."
+sidebar_position: 0
+---
+
+zfb's Markdown pipeline is layered. A set of **Core** features runs
+unconditionally for every content collection, giving you heading anchors,
+server-side syntax highlighting, CJK-friendly emphasis, and more.
+On top of that, a catalog of **Opt-in** features can be enabled one-by-one
+in `zfb.config.ts` under `markdown.features.*`.
+
+This page is the map. Each feature has its own page with a usage example,
+config key, and ordering notes.
+
+## Dependency graph
+
+```
+zfb-content          — Core features live here; always compiled in
+  └─ zfb-md-extras   — Opt-in features; compiled in but gated at runtime
+       └─ zfb-md-ast — Shared AST types (MdastNode, HastNode, visitors)
+```
+
+The `zfb-md-ast` crate defines the `MdastVisitor` and `HastVisitor` traits
+and the shared node types. Both Core and Opt-in features implement these
+traits.
+
+## Tier convention
+
+- **Core** — active in every build. No config key. Lives in `zfb-content`.
+- **Opt-in** — inactive by default. Enable via `markdown.features.*` in
+  `zfb.config.ts`. Lives in `zfb-md-extras`.
+
+Each feature page shows a `Core` or `Opt-in` badge near its title.
+
+## Enabling Opt-in features
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      mermaid: true,
+      admonitionsPreset: true,
+      imageEnlarge: true,
+    },
+  },
+});
+```
+
+Pass `true` (use defaults) or a config object (override specific options).
+Omitting a key means the feature is off; no extra bytes are emitted.
+
+## Core features
+
+These always-on plugins ship as part of `zfb-content`'s default pipeline.
+
+- [CJK-friendly emphasis](/markdown-features/cjk-friendly) — re-tokenises bold/italic adjacent to CJK ideographs and kana.
+- [Heading links](/markdown-features/heading-links) — slugified `id` attributes and self-referencing anchor links on every heading.
+- [Code block title](/markdown-features/code-title) — renders a filename label above a fenced code block from `title="…"`.
+- [External links](/markdown-features/external-links) — adds `target` and `rel` attributes to outbound links (configurable).
+- [Resolve links](/markdown-features/resolve-links) — rewrites internal link targets using the content source map.
+- [Strip .md extension](/markdown-features/strip-md-ext) — removes `.md`/`.mdx` suffixes from internal link hrefs.
+- [Syntax highlighting](/markdown-features/syntax-highlighting) — server-side highlighting via syntect; always on, theme-configurable.
+- [Directives registry](/markdown-features/directives-registry) — maps `:::name`/`::name`/`:name` directive syntax to JSX components.
+
+## Opt-in features
+
+Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
+
+- [Admonitions preset](/markdown-features/admonitions-preset) — the six built-in admonition directive types (`note`, `tip`, `warning`, `danger`, `info`, `details`).
+- [Mermaid diagrams](/markdown-features/mermaid) — renders Mermaid flowcharts from fenced code blocks.
+- [Image enlarge](/markdown-features/image-enlarge) — wraps block-level images in an enlargeable figure with a zoom button.
+- [Heading-marker TOC](/markdown-features/heading-marker-toc) — auto-inserts a table of contents after a designated heading.
+- [GitHub alerts](/markdown-features/github-alerts) — renders `> [!NOTE]` / `> [!WARNING]` blockquotes as styled components.
+- [Reading time](/markdown-features/reading-time) — computes estimated reading time and injects it into frontmatter.
+- [GitHub autolinks](/markdown-features/github-autolinks) — links GitHub issue/PR/commit references (`#123`, `org/repo#456`, `abc1234`) automatically.
+- [Code-block enrichment](/markdown-features/code-enrichment) — adds diff markers and per-line highlighting to fenced code blocks.
+- [Code tabs](/markdown-features/code-tabs) — groups consecutive fenced code blocks into a tabbed switcher.
+- [Ruby annotation](/markdown-features/ruby) — renders `{漢字|かんじ}` syntax as HTML `<ruby>` elements.
+- [TOC export](/markdown-features/toc-export) — exports a structured heading tree into the compiled JSX module for framework-side rendering.
+- [Image dimensions](/markdown-features/image-dimensions) — injects `width` and `height` attributes on `<img>` elements from the actual file.
+- [Link validation](/markdown-features/link-validation) — treats broken internal links as hard build errors.
+- [Transclusion](/markdown-features/transclude) — inlines the content of another file using the `:::include` directive.
+
+## See also
+
+- [Design Philosophy](/concepts/design-philosophy) — the three-consumer
+  threshold for promoting a recipe to an Opt-in feature.
+- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+  — write a Rust visitor and wire it into the engine.
+- [Custom Directives](/concepts/custom-directives) — register new directive
+  names without writing Rust.

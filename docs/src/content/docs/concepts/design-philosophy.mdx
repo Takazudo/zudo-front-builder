@@ -104,10 +104,33 @@ project's convenience is a recipe. Three independent projects converging on the
 same solution is evidence of a universal need. At that point, and only at that
 point, the extraction into a plugin API earns its maintenance cost.
 
+## The opt-in extras catalog
+
+Between "engine primitive" and "recipe" sits a third tier: the opt-in
+Markdown extras in `zfb-md-extras`. These are features that have cleared
+the three-consumer bar — Mermaid diagrams, GitHub-style alerts, image
+enlarge, link validation, transclusion, and eleven others — but are
+deliberately **not** made universal defaults. They ship compiled into the
+binary and enabled per-project via `markdown.features.*` in `zfb.config.ts`.
+
+This is a curated v1 set, not a JS plugin point. The list closes when it
+closes. Future additions must clear the same three-consumer threshold before
+landing. The goal is that every item in the catalog is something a measurable
+plurality of zfb sites actually uses — not a long tail of one-off conveniences
+that inflate the engine's apparent surface without earning their maintenance cost.
+
+If you have a Markdown feature that does not clear the bar, the recipe path
+is the right answer. Write the visitor in-tree for your project.
+
+See [Markdown Features](/markdown-features) for the full opt-in catalog
+and [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+for the in-tree visitor path.
+
 ## Where to go next
 
 - [Engine vs Framework](/concepts/engine-vs-framework) — the six primitives
   zfb commits to, and the line between engine and framework concerns.
+- [Markdown Features](/markdown-features) — the opt-in extras catalog.
 - [Plugins](/concepts/plugins) — the narrow exception: the four lifecycle hooks
   and what they do and do not cover.
 - [Choosing zfb](/concepts/choosing-zfb) — when the narrow-on-purpose tradeoff

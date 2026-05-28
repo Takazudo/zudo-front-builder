@@ -1,0 +1,55 @@
+---
+title: Heading links
+description: Automatically adds slug-based id attributes and anchor links to every heading.
+tier: Core
+sidebar_position: 51
+---
+
+`HeadingLinksPlugin` is always active. It slugifies every `<h2>`–`<h6>`
+and injects a self-referencing anchor link so readers can copy a deep-link
+to any section.
+
+## Behaviour
+
+For each heading the plugin:
+
+1. Computes a GitHub-slugger-compatible slug from the heading text.
+2. Deduplicates repeated slugs within the same document by appending a
+   counter (`overview`, `overview-1`, `overview-2`, …).
+3. Sets the `id` attribute on the `<h*>` element.
+4. Wraps the heading text in an `<a href="#slug">` anchor.
+
+## Example
+
+```md
+## Introduction
+
+## Introduction
+```
+
+Produces:
+
+```html
+<h2 id="introduction"><a href="#introduction">Introduction</a></h2>
+<h2 id="introduction-1"><a href="#introduction-1">Introduction</a></h2>
+```
+
+## Config
+
+Always on, no config key. The slug algorithm is fixed (GitHub-slugger
+rules) and cannot be customised from `zfb.config.ts`.
+
+## Ordering note
+
+`HeadingLinksPlugin` runs **first** in the hast phase. Plugins that depend
+on stable heading `id` values — such as `TocPlugin` (opt-in
+[heading-marker-toc](/markdown-features/heading-marker-toc)) and
+`TocExportPlugin` (opt-in [toc-export](/markdown-features/toc-export)) —
+must run after it.
+
+## See also
+
+- [Heading-marker TOC](/markdown-features/heading-marker-toc) — opt-in TOC
+  insertion that reads the `id` attributes this plugin produces.
+- [TOC export](/markdown-features/toc-export) — opt-in structured TOC data
+  export.

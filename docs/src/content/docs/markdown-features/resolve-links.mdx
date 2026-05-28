@@ -1,0 +1,38 @@
+---
+title: Resolve links
+description: Rewrites internal link targets using the content source map so links survive the build.
+tier: Core
+sidebar_position: 54
+---
+
+`ResolveLinksPlugin` normalises internal Markdown links (`[text](./page.mdx)`,
+`[text](../other/page)`) using the content source map built at startup.
+It is wired in at the project level when a source map is available.
+
+## What it does
+
+During the mdast phase, before any HTML is produced, the plugin walks every
+`Link` node. For each relative link:
+
+1. Resolves the path relative to the current source file.
+2. Looks up the resolved path in the content source map.
+3. If found, rewrites the `url` to the final output URL for that entry.
+4. If not found, emits a warning diagnostic and leaves the link unchanged.
+
+This ensures that link targets written as relative file paths (the natural
+way to cross-link content while editing locally) produce correct output
+URLs in the built site, regardless of how the file-to-URL mapping is
+configured.
+
+## Config
+
+`ResolveLinksPlugin` is wired in per-project and does not appear as a key
+in `zfb.config.ts`. When a content source map is present (the default for
+content collections), it is active automatically.
+
+## See also
+
+- [Link validation](/markdown-features/link-validation) — opt-in plugin that
+  treats broken internal links as hard build errors.
+- [External links](/markdown-features/external-links) — companion Core plugin
+  for outbound links.

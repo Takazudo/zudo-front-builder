@@ -112,26 +112,62 @@ a `HashMap<String, usize>` for github-slugger-equivalent dedup;
 `SyntectPlugin` holds an `Arc<Highlighter>` so the syntax theme is
 shared across all code blocks in the build.
 
+## When to add a Core vs. Opt-in feature
+
+Both live as Rust visitors, but where you wire them depends on how many
+consumers need them.
+
+**Core (wire into `Pipeline::with_defaults`)** when the behaviour is
+universal: every content-collection consumer would want it the same way,
+with no legitimate reason to opt out. Examples: `HeadingLinksPlugin`,
+`CodeTitlePlugin`, `SyntectPlugin`.
+
+**Opt-in (wire into `Pipeline::with_defaults_and_features`)** when the
+feature is valuable but not universally needed, or when it requires
+project-specific config (a source map, a feature flag, custom options).
+Examples: all 14 features in `zfb-md-extras`.
+
+The promotion threshold follows the [three-consumer rule](/concepts/design-philosophy):
+don't extract until the same pattern has been written by hand in three
+different zfb consumer projects. One project's convenience is a recipe.
+
 ## Where files go
 
-Plugins live under `crates/zfb-content/src/plugins/`. The convention
-is one file per plugin, named after the feature:
+Core plugins live under `crates/zfb-content/src/plugins/`. Opt-in
+features live under `crates/zfb-md-extras/src/`. The convention is
+one file per feature:
 
 ```
 crates/zfb-content/src/plugins/
-├── admonitions.rs
+├── cjk_friendly.rs
 ├── code_title.rs
 ├── directives.rs
+├── external_links.rs
 ├── heading_links.rs
-├── image_enlarge.rs
-├── mermaid.rs
 ├── resolve_links.rs
 ├── strip_md_ext.rs
 ├── syntect_plugin.rs
-└── util/        # helpers shared by multiple plugins
+├── toc.rs                  # heading-marker TOC (wired via features)
+└── util/
+
+crates/zfb-md-extras/src/
+├── admonitions_preset.rs
+├── code_enrichment.rs
+├── code_tabs.rs
+├── github_alerts.rs
+├── github_autolinks.rs
+├── heading_marker_toc.rs
+├── image_dimensions.rs
+├── image_enlarge.rs
+├── link_validation.rs
+├── mermaid.rs
+├── reading_time.rs
+├── ruby.rs
+├── toc_export.rs
+└── transclude.rs
 ```
 
-Add your file, then re-export the public type from
+For Core plugins, add your file and re-export from
 `crates/zfb-content/src/plugins.rs`:
 
 ```rust
@@ -139,6 +175,10 @@ Add your file, then re-export the public type from
 pub mod my_plugin;
 pub use my_plugin::MyPlugin;
 ```
+
+For Opt-in features, add your file and expose the feature from
+`crates/zfb-md-extras/src/lib.rs`, gated on the corresponding
+`MarkdownConfig::features` flag.
 
 Tests typically live in a `#[cfg(test)] mod tests {}` block alongside
 the plugin, with cross-plugin integration cases in
@@ -168,22 +208,22 @@ p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
 p
 ```
 
-If your plugin is opt-in (project-specific link rewriting, optional
-extensions a particular framework wants), do **not** put it in
-`with_defaults()`. Construct a pipeline via `Pipeline::with_mdx()`
-(which is plugin-free) and append the visitors the caller wants —
-that is exactly how `ResolveLinksPlugin` and
-`StripMdExtensionPlugin` are wired today, since both need a
-project-specific source map.
+If your plugin is opt-in, do **not** put it in `with_defaults()`.
+Wire it into `Pipeline::with_defaults_and_features()`, which accepts
+a `MarkdownFeatures` config struct and appends only the visitors whose
+flags are set. That is how all 14 features in `zfb-md-extras` are wired.
+`ResolveLinksPlugin` and `StripMdExtensionPlugin` are handled separately
+because they need a project-specific source map, not just a feature flag.
 
 ## Ordering matters
 
 Visitor order is **load-bearing**. The defaults document the full
-rationale in `Pipeline::with_defaults`'s doc comment, but the rules
-that bite most often:
+rationale in `Pipeline::with_defaults_and_features`'s doc comment, but the
+rules that bite most often:
 
 - **`HeadingLinksPlugin` runs first in the hast phase.** Anything
   that mutates headings later sees the slugified `id` attributes.
+  `TocPlugin` and `TocExportPlugin` depend on these `id` values.
 - **`CodeTitlePlugin` runs before `SyntectPlugin`.** SyntectPlugin
   replaces the entire `<pre>` element with a `HastNode::Raw` HTML
   fragment; once that happens, the `data-meta` attribute that
@@ -192,8 +232,17 @@ that bite most often:
   flags mermaid code blocks with `data-mermaid="true"`; SyntectPlugin
   uses that flag to skip them rather than syntax-highlighting the
   diagram source.
-- **`ImageEnlargePlugin` is order-independent** relative to the code
-  pipeline above — it only touches `<img>` elements.
+- **`CodeEnrichmentPlugin` runs after `SyntectPlugin`.** It
+  post-processes the per-line `<span class="line">` structure that
+  syntect emits; it cannot run before syntect produces those spans.
+- **`ImageEnlargePlugin` and `ImageDimensionsPlugin` are
+  order-independent** relative to the code pipeline — they only
+  touch `<img>` elements.
+- **`GithubAlertsPlugin` runs in the mdast phase**, before the mdast
+  → hast conversion. It rewrites blockquote nodes; the `AdmonitionsPlugin`
+  (which also runs in the mdast phase) reads the results independently.
+- **`TranscludePlugin` runs first in the mdast phase.** Included
+  content must be merged into the AST before any other visitor sees it.
 
 When inserting a new plugin, ask: do I need to see element shapes
 that a later plugin will erase? Run before that plugin. Do I need
@@ -247,6 +296,8 @@ when the rest of the codebase moves.
 
 ## See also
 
+- [Markdown Features](/markdown-features) — full catalog of Core and
+  Opt-in features, with per-feature ordering notes.
 - [Custom Directives](/concepts/custom-directives) — author-facing
   story for `:::name` / `::name` / `:name` syntax, no Rust required.
 - [Customizing Markdown](/guides/customizing-markdown) — what the
