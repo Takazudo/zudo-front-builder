@@ -1,10 +1,27 @@
-//! Ruby annotation support (`{base|ruby}` syntax).
+//! Ruby annotation support — caret `{base}^{ruby}` (primary) and pipe
+//! `{base|ruby}` (legacy alias).
 //!
-//! Rust port of [`@lowlighter/remark-ruby`](https://www.npmjs.com/package/@lowlighter/remark-ruby).
-//! Scans the mdast tree for `{base|ruby}` patterns and rewrites them into
+//! Loosely based on [`@lowlighter/remark-ruby`](https://www.npmjs.com/package/@lowlighter/remark-ruby),
+//! but the grammar here is project-specific (see #600 / #603). Scans the mdast
+//! tree for ruby patterns and rewrites them into
 //! `<ruby><rb>base</rb><rt>ruby</rt></ruby>` HTML elements.
 //!
 //! # Syntax
+//!
+//! The **primary, documented** form is the caret syntax:
+//!
+//! ```text
+//! {これは}^{これ}      (braced base)
+//! これは^{これ}         (bare base)
+//! ```
+//!
+//! Both produce:
+//!
+//! ```html
+//! <ruby><rb>これは</rb><rt>これ</rt></ruby>
+//! ```
+//!
+//! The pipe form is a **legacy alias**, preserved for backward compatibility:
 //!
 //! ```text
 //! {漢字|かんじ}
@@ -27,6 +44,44 @@
 //! ```html
 //! <ruby><rb>日本語</rb><rt>にほんご</rt></ruby>を<ruby><rb>学ぶ</rb><rt>まなぶ</rt></ruby>
 //! ```
+//!
+//! # Caret syntax — base-delimiting grammar (PINNED, product decision)
+//!
+//! `base` = the immediately-preceding braced `{…}` expression if present, else
+//! the contiguous run of the immediately-preceding `Text` node up to (but NOT
+//! including) the caret `^`. A "trailing word run" is undefined for CJK
+//! (no word boundaries), so the **bare form takes the whole preceding Text
+//! run** as the base.
+//!
+//! Because MDX parses `{ruby}` as an `MdxTextExpression`, the caret forms
+//! arrive as multi-node sibling sequences (see `to_mdast` shapes):
+//!
+//! - braced base = 3-node sequence `Expr("base"), Text("^"), Expr("ruby")`
+//! - bare base   = 2-node sequence `Text("…base^"), Expr("ruby")`
+//!   (the trailing `^` must be split off the `Text` node)
+//!
+//! so the rewrite is a **look-behind** over the previous sibling(s), not an
+//! in-place one-node replacement.
+//!
+//! ## False-positive guard (CRITICAL)
+//!
+//! With ruby enabled, superscript-style prose such as `2^{n}` or `x^{i}`
+//! parses to the *same* mdast shape as the bare caret form
+//! (`Text("…^"), MdxTextExpression(ident)`). A pure plain-text check on the
+//! ruby half cannot tell `これは^{これ}` (valid ruby) from `2^{n}`
+//! (superscript), because `n`, `i`, and `これ` are all plain text. The
+//! distinguishing signal is the **base**:
+//!
+//! - **Bare form** additionally requires the base run to contain at least one
+//!   **non-ASCII** character. `これは` → ruby; `2`, `x`, `e` → untouched.
+//!   This is a product decision (CJK ruby vs. ASCII superscript); a future
+//!   reader cannot recover it from code alone.
+//! - **Braced form** does NOT apply the non-ASCII rule: the author explicitly
+//!   wrote `{base}^{ruby}`, so `{ABC}^{xyz}` is honored. It still requires the
+//!   base expression to be plain text (so `{a||b}^{c}` is left alone).
+//! - Empty base (`^{jsExpr}` at the start of a Text run) → untouched.
+//! - The `{ruby}` half must pass the same plain-text strictness the pipe path
+//!   uses (`has_js_operator_chars`), so `x^{n+1}`, `^{a.b}` etc. stay JS.
 //!
 //! # Implementation notes
 //!
@@ -439,11 +494,105 @@ fn merge_adjacent_text(nodes: Vec<MdastNode>) -> Vec<MdastNode> {
     out
 }
 
+// ── Caret-syntax helpers ───────────────────────────────────────────────────────
+
+/// Validate a `{…}` half of a caret annotation (the braced base or the ruby
+/// expression). The MDX parser hands us the raw expression value (without
+/// braces), so this mirrors the plain-text strictness of
+/// `parse_expression_as_ruby`: reject empty values, values containing a pipe
+/// `|` (so `{a || b}^{c}` stays JS logical-OR), and anything with JS-operator
+/// characters (so `x^{n+1}`, `^{a.b}` stay JS).
+fn caret_ruby_value_ok(value: &str) -> bool {
+    !value.is_empty() && !value.contains('|') && !has_js_operator_chars(value)
+}
+
+/// True if `s` contains at least one non-ASCII char. Used as the bare-form
+/// base discriminator: CJK ruby (`これは^{これ}`) vs. ASCII superscript
+/// (`2^{n}`, `x^{i}`). This is a product decision — see the module doc.
+fn has_non_ascii(s: &str) -> bool {
+    !s.is_ascii()
+}
+
+/// Try to rewrite a caret ruby annotation ending at the `MdxTextExpression`
+/// currently at `children[i]` (the `{ruby}` half), using look-behind into the
+/// previous sibling(s).
+///
+/// Per the pinned grammar:
+/// - **braced** `{base}^{ruby}` = `[Expr(base), Text("^"), Expr(ruby)]`
+/// - **bare**   `base^{ruby}`   = `[Text("…base^"), Expr(ruby)]`
+///
+/// Ordering matters: we strip the trailing `^` off the preceding `Text` node;
+/// if the remainder is empty the `Text` was exactly `^`, so we try the braced
+/// form (consume the `Expr` two slots back as base); otherwise the remainder
+/// is the bare base (subject to the non-ASCII discriminator).
+///
+/// On success, the preceding node(s) and the ruby `Expr` are replaced by a
+/// single ruby element and `i` is advanced past it; returns `true`.
+fn try_caret_rewrite(children: &mut Vec<MdastNode>, i: &mut usize) -> bool {
+    // The `{ruby}` half must be a plain-text MDX expression.
+    let MdastNode::MdxTextExpression(ruby_expr) = &children[*i] else {
+        return false;
+    };
+    if !caret_ruby_value_ok(&ruby_expr.value) {
+        return false;
+    }
+    let ruby_text = ruby_expr.value.clone();
+
+    // Need a preceding `Text` node whose value ends with the caret `^`.
+    if *i == 0 {
+        return false;
+    }
+    let MdastNode::Text(prev_text) = &children[*i - 1] else {
+        return false;
+    };
+    let Some(before_caret) = prev_text.value.strip_suffix('^') else {
+        return false;
+    };
+    let before_caret = before_caret.to_string();
+
+    if before_caret.is_empty() {
+        // The preceding Text was exactly `^` → try the braced form:
+        // `[Expr(base), Text("^"), Expr(ruby)]`.
+        if *i < 2 {
+            return false;
+        }
+        let MdastNode::MdxTextExpression(base_expr) = &children[*i - 2] else {
+            return false;
+        };
+        // Base expression must be plain text (so `{a||b}^{c}` is left alone).
+        if !caret_ruby_value_ok(&base_expr.value) {
+            return false;
+        }
+        let base = base_expr.value.clone();
+        let ruby_node = make_ruby_node(&base, &ruby_text);
+        // Replace the 3-node sequence [i-2, i-1, i] with the single ruby node.
+        children.splice((*i - 2)..=*i, std::iter::once(ruby_node));
+        *i -= 2; // ruby now lives at the old (i-2) index
+        true
+    } else {
+        // Bare form: base = whole preceding Text run (minus the trailing `^`).
+        // Discriminator: bare base must contain a non-ASCII char, else this is
+        // ASCII superscript (`2^{n}`, `x^{i}`) and must stay untouched.
+        if !has_non_ascii(&before_caret) {
+            return false;
+        }
+        let ruby_node = make_ruby_node(&before_caret, &ruby_text);
+        // Replace the 2-node sequence [i-1, i] with the single ruby node.
+        children.splice((*i - 1)..=*i, std::iter::once(ruby_node));
+        *i -= 1; // ruby now lives at the old (i-1) index
+        true
+    }
+}
+
 // ── Inline-child rewriter ────────────────────────────────────────────────────
 
-/// Rewrite inline children by expanding any `MdxTextExpression` with a
-/// `base|ruby` value (or any `Text` node with `{base|ruby}` literal syntax)
-/// into `MdxJsxTextElement` ruby nodes.
+/// Rewrite inline children by expanding ruby annotations into
+/// `MdxJsxTextElement` ruby nodes. Handles three sources:
+///
+/// 1. Pipe `{base|ruby}` parsed as a single `MdxTextExpression` (legacy alias).
+/// 2. Caret `{base}^{ruby}` / `base^{ruby}` — a multi-node look-behind rewrite
+///    (primary syntax).
+/// 3. `{base|ruby}` literal syntax inside a raw `Text` node (non-MDX edge case).
 ///
 /// Returns `true` when at least one rewrite happened.
 fn rewrite_inline_children(children: &mut Vec<MdastNode>) -> bool {
@@ -459,6 +608,15 @@ fn rewrite_inline_children(children: &mut Vec<MdastNode>) -> bool {
                 i += 1;
                 continue;
             }
+        }
+
+        // ── Caret syntax: `{base}^{ruby}` or `base^{ruby}` ────────────────
+        // The pipe path above already declined this Expr (no `|`); now try the
+        // caret look-behind. On success `i` is advanced past the inserted ruby.
+        if matches!(&children[i], MdastNode::MdxTextExpression(_)) && try_caret_rewrite(children, &mut i) {
+            changed = true;
+            i += 1;
+            continue;
         }
 
         // ── Text node: `{base|ruby}` literal (non-MDX or edge-cases) ──────
@@ -689,6 +847,131 @@ mod tests {
         // Reject expressions that contain `<` or `>`.
         assert!(parse_expression_as_ruby("a<b|c").is_none());
         assert!(parse_expression_as_ruby("a|b>c").is_none());
+    }
+
+    // ── caret helpers ─────────────────────────────────────────────────────
+
+    #[test]
+    fn caret_ruby_value_ok_accepts_plain_text() {
+        assert!(caret_ruby_value_ok("これ"));
+        assert!(caret_ruby_value_ok("kanji"));
+        assert!(caret_ruby_value_ok("2"));
+    }
+
+    #[test]
+    fn caret_ruby_value_ok_rejects_empty_pipe_and_js() {
+        assert!(!caret_ruby_value_ok(""));
+        assert!(!caret_ruby_value_ok("a || b")); // pipe / logical-OR
+        assert!(!caret_ruby_value_ok("n+1")); // JS operator
+        assert!(!caret_ruby_value_ok("a.b")); // dot
+    }
+
+    #[test]
+    fn has_non_ascii_discriminates_cjk_from_ascii() {
+        assert!(has_non_ascii("これは"));
+        assert!(has_non_ascii("a漢b"));
+        assert!(!has_non_ascii("2"));
+        assert!(!has_non_ascii("x"));
+        assert!(!has_non_ascii("foo bar"));
+    }
+
+    // Build a Paragraph from explicit inline children for caret look-behind tests.
+    fn make_para_children(children: Vec<MdastNode>) -> MdastNode {
+        MdastNode::Paragraph(Paragraph {
+            children,
+            position: None,
+        })
+    }
+
+    fn text(value: &str) -> MdastNode {
+        MdastNode::Text(Text {
+            value: value.to_string(),
+            position: None,
+        })
+    }
+
+    fn expr(value: &str) -> MdastNode {
+        MdastNode::MdxTextExpression(markdown::mdast::MdxTextExpression {
+            value: value.to_string(),
+            position: None,
+            stops: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn caret_bare_text_run_becomes_ruby() {
+        // [Text("これは^"), Expr("これ")] → [<ruby>]
+        let mut tree = make_root(vec![make_para_children(vec![
+            text("これは^"),
+            expr("これ"),
+        ])]);
+        RubyPlugin::new().visit(&mut tree);
+        let MdastNode::Root(root) = &tree else { panic!() };
+        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        assert_eq!(p.children.len(), 1);
+        assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
+    }
+
+    #[test]
+    fn caret_braced_three_node_becomes_ruby() {
+        // [Expr("これは"), Text("^"), Expr("これ")] → [<ruby>]
+        let mut tree = make_root(vec![make_para_children(vec![
+            expr("これは"),
+            text("^"),
+            expr("これ"),
+        ])]);
+        RubyPlugin::new().visit(&mut tree);
+        let MdastNode::Root(root) = &tree else { panic!() };
+        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        assert_eq!(p.children.len(), 1);
+        assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
+    }
+
+    #[test]
+    fn caret_ascii_superscript_untouched() {
+        // [Text("2^"), Expr("n")] → unchanged (ASCII base discriminator).
+        let mut tree = make_root(vec![make_para_children(vec![text("2^"), expr("n")])]);
+        let before = format!("{tree:?}");
+        RubyPlugin::new().visit(&mut tree);
+        assert_eq!(format!("{tree:?}"), before, "2^{{n}} must stay untouched");
+    }
+
+    #[test]
+    fn caret_empty_base_untouched() {
+        // [Text("^"), Expr("jsExpr")] → unchanged (empty base, no preceding Expr).
+        let mut tree = make_root(vec![make_para_children(vec![text("^"), expr("jsExpr")])]);
+        let before = format!("{tree:?}");
+        RubyPlugin::new().visit(&mut tree);
+        assert_eq!(format!("{tree:?}"), before, "^{{jsExpr}} must stay untouched");
+    }
+
+    #[test]
+    fn caret_braced_with_js_base_untouched() {
+        // [Expr("a || b"), Text("^"), Expr("c")] → unchanged (JS base).
+        let mut tree = make_root(vec![make_para_children(vec![
+            expr("a || b"),
+            text("^"),
+            expr("c"),
+        ])]);
+        let before = format!("{tree:?}");
+        RubyPlugin::new().visit(&mut tree);
+        assert_eq!(format!("{tree:?}"), before, "{{a || b}}^{{c}} must stay untouched");
+    }
+
+    #[test]
+    fn caret_preserves_trailing_text() {
+        // [Text("私はこれ^"), Expr("これ"), Text("と書く")] → [<ruby>, Text("と書く")]
+        let mut tree = make_root(vec![make_para_children(vec![
+            text("私はこれ^"),
+            expr("これ"),
+            text("と書く"),
+        ])]);
+        RubyPlugin::new().visit(&mut tree);
+        let MdastNode::Root(root) = &tree else { panic!() };
+        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        assert_eq!(p.children.len(), 2);
+        assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
+        assert!(matches!(p.children[1], MdastNode::Text(_)));
     }
 
     // ── next_token (Text-node scanner) ────────────────────────────────────

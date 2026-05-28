@@ -322,7 +322,11 @@ pub struct MarkdownFeaturesConfig {
     #[serde(default)]
     pub code_tabs: Option<FeatureToggle>,
 
-    /// Ruby annotation support (`{base}^{ruby}` syntax).
+    /// Ruby annotation support. Primary syntax is caret `{base}^{ruby}`
+    /// (e.g. `これは^{これ}`, also accepts a bare base `base^{ruby}`); pipe
+    /// `{base|ruby}` is kept as a legacy alias. For the bare caret form the
+    /// base must contain a non-ASCII char so ASCII superscripts like `2^{n}`
+    /// stay untouched (see `zfb-md-extras/src/ruby.rs` for the pinned grammar).
     #[serde(default)]
     pub ruby: Option<FeatureToggle>,
 
