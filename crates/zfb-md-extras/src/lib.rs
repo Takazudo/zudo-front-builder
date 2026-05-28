@@ -108,9 +108,12 @@ pub mod image_dimensions;
 /// Wave 6 (#580).
 pub mod link_validation;
 
-/// Transclusion of other MDX files (`![[path]]` syntax).
-// TODO: Wave 6 — port transclude
-pub mod transclude {}
+/// Transclusion of other MDX files (`:::include{file="./path.md"}` syntax).
+///
+/// Wire via `features.transclude: {}` (or with explicit options) in
+/// `zfb.config.ts`. Phase: mdast (runs early so included content is
+/// processed by subsequent visitors). Wave 6 (#581).
+pub mod transclude;
 
 // Feature config types live in zfb-md-ast and are re-exported at the top
 // of this file. The canonical definitions use the rich per-feature option

@@ -150,12 +150,33 @@ pub struct LinkValidationConfig {
     pub allow_external: Option<bool>,
 }
 
-/// Options stub for the `transclude` feature.
+/// Options for the `transclude` feature.
 ///
-/// TODO: fill in actual fields when the transclude feature is ported.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+/// Enables `:::include{file="./path.md"}` directives that inline another
+/// file's parsed mdast at the include site.
+///
+/// Ported in Wave 6 (#581).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TranscludeConfig {}
+pub struct TranscludeConfig {
+    /// Maximum transclusion depth (chain length A→B→C→…).
+    ///
+    /// A depth of `1` allows only direct includes (the included file itself
+    /// cannot include further files). Default: `5`. A cycle (A→B→A) is
+    /// always detected regardless of `max_depth` and treated as an error.
+    #[serde(default = "default_transclude_max_depth")]
+    pub max_depth: u8,
+}
+
+fn default_transclude_max_depth() -> u8 {
+    5
+}
+
+impl Default for TranscludeConfig {
+    fn default() -> Self {
+        Self { max_depth: 5 }
+    }
+}
 
 /// Configuration for the table-of-contents visitor.
 ///

@@ -575,13 +575,23 @@ export type LinkValidationConfig = {
 };
 
 /**
- * Options stub for the `transclude` feature.
+ * Options for the `transclude` feature.
  *
- * TODO: fill in actual fields when the transclude feature is ported.
+ * Enables `:::include{file="./path.md"}` directives that inline another
+ * file's parsed mdast at the include site.
  *
- * Mirrors `TranscludeConfig` in crates/zfb/src/config.rs.
+ * Mirrors `TranscludeConfig` in crates/zfb-md-ast/src/features_config.rs.
  */
-export type TranscludeConfig = Record<string, never>;
+export type TranscludeConfig = {
+  /**
+   * Maximum transclusion depth (chain length A→B→C→…).
+   *
+   * A depth of `1` allows only direct includes (the included file itself
+   * cannot include further files). Default: `5`. A cycle (A→B→A) is
+   * always detected regardless of `maxDepth` and treated as an error.
+   */
+  maxDepth?: number;
+};
 
 /**
  * Per-feature markdown pipeline configuration.

@@ -48,6 +48,11 @@ required-features = ["test-utils"]
 name = "image_dimensions"
 required-features = ["test-utils"]
 
+# Integration test for transclude feature.
+[[test]]
+name = "transclude"
+required-features = ["test-utils"]
+
 # `test-utils` gates the test_harness module so integration tests in Wave 2+
 # can access run_fixture without exposing it in production builds.
 # Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
