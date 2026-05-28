@@ -54,11 +54,12 @@
 //!
 //! # Wave 5 (#576)
 //!
-//! Initial port. `name` attribute is accepted and validated as a string
-//! (via `AttrSchema` from #584) but currently has no effect on output —
-//! it is reserved for future consumer-side use (e.g. persisting the active
-//! tab across page navigation). Declare it with `AttrType::String` and
-//! `required: false`.
+//! Initial port. The `name` attribute is accepted on the opener
+//! (e.g. `:::code-group name="shell"`) and validated as a string via
+//! `AttrSchema` from #584, but currently has no effect on the emitted
+//! JSX — it is reserved for future consumer-side use (e.g. persisting
+//! the active tab across page navigation). Declared with
+//! `AttrType::String` and `required: false`.
 
 use markdown::mdast::{
     AttributeContent, AttributeValue, AttributeValueExpression, MdxJsxAttribute,
@@ -237,7 +238,13 @@ fn rewrite_code_groups(children: &mut Vec<MdastNode>) {
 // ── Node predicates ─────────────────────────────────────────────────────────
 
 /// Returns `true` if `node` is a single-text paragraph whose first line
-/// is exactly `:::code-group` (case-sensitive, no trailing attrs for now).
+/// begins with `:::code-group` (case-sensitive).
+///
+/// Accepts both the bare opener `:::code-group` and the attribute-bearing
+/// form `:::code-group name="shell"` (any trailing whitespace + key="value"
+/// attrs are tolerated). Attribute parsing/validation itself happens via
+/// [`code_group_directive_def`]/`AttrSchema`; this predicate only needs to
+/// recognise the opener so the rewrite can fire.
 fn is_code_group_open(node: &MdastNode) -> bool {
     let MdastNode::Paragraph(p) = node else {
         return false;
@@ -245,7 +252,13 @@ fn is_code_group_open(node: &MdastNode) -> bool {
     let Some(MdastNode::Text(t)) = p.children.first() else {
         return false;
     };
-    first_line(&t.value).trim() == ":::code-group"
+    let line = first_line(&t.value).trim();
+    let Some(rest) = line.strip_prefix(":::code-group") else {
+        return false;
+    };
+    // Either bare `:::code-group` or `:::code-group<whitespace>...`.
+    // Reject `:::code-groupx` (no boundary after `code-group`).
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
 }
 
 /// Returns `true` if `node` is a single-text paragraph whose first line
@@ -350,13 +363,24 @@ fn build_pre_element(code: &markdown::mdast::Code) -> MdastNode {
 
 /// Escape a string for use as a JS string literal value.
 ///
-/// Only `\` and `"` need escaping inside a `"..."`-delimited JS string.
+/// Escapes `\`, `"`, and the control characters that would otherwise
+/// break a single-line JS string literal (`\n`, `\r`, `\t`, plus a
+/// `\u00XX` fallback for any other character < 0x20). A pathological
+/// `title="line1\nline2"` in fenced-code meta would otherwise produce
+/// invalid JS output once embedded in the `tabs={[...]}` expression.
 fn js_string_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             other => out.push(other),
         }
     }
@@ -443,6 +467,22 @@ mod tests {
         assert_eq!(js_string_escape("a\\b"), "a\\\\b");
     }
 
+    #[test]
+    fn js_escape_newline() {
+        assert_eq!(js_string_escape("a\nb"), "a\\nb");
+    }
+
+    #[test]
+    fn js_escape_carriage_return_and_tab() {
+        assert_eq!(js_string_escape("a\rb\tc"), "a\\rb\\tc");
+    }
+
+    #[test]
+    fn js_escape_control_char_uses_unicode_fallback() {
+        // 0x01 (SOH) is below 0x20 and not one of the named escapes.
+        assert_eq!(js_string_escape("a\u{0001}b"), "a\\u0001b");
+    }
+
     // ── is_code_group_open ────────────────────────────────────────────────
 
     fn para(text: &str) -> MdastNode {
@@ -470,6 +510,26 @@ mod tests {
     }
 
     #[test]
+    fn is_code_group_open_detects_opener_with_name_attr() {
+        // The documented `name` attribute (declared via AttrSchema) must
+        // not block the rewrite from firing.
+        assert!(is_code_group_open(&para(":::code-group name=\"shell\"")));
+    }
+
+    #[test]
+    fn is_code_group_open_detects_opener_with_trailing_whitespace() {
+        assert!(is_code_group_open(&para(":::code-group   ")));
+    }
+
+    #[test]
+    fn is_code_group_open_rejects_prefix_collision() {
+        // `:::code-groupx` is NOT a code-group opener — the directive name
+        // must end at a word boundary.
+        assert!(!is_code_group_open(&para(":::code-groupx")));
+        assert!(!is_code_group_open(&para(":::code-group-extra")));
+    }
+
+    #[test]
     fn is_code_group_open_rejects_other_text() {
         assert!(!is_code_group_open(&para(":::note")));
         assert!(!is_code_group_open(&para("hello")));
@@ -492,6 +552,27 @@ mod tests {
             children,
             position: None,
         })
+    }
+
+    #[test]
+    fn rewrites_code_group_with_name_attr_opener() {
+        // End-to-end smoke test: `:::code-group name="shell"` must trigger
+        // the rewrite, not be left as a stray paragraph.
+        let mut tree = make_root(vec![
+            para(":::code-group name=\"shell\""),
+            code_node("ts", "const x = 1;"),
+            para(":::"),
+        ]);
+        CodeTabsPlugin::new().visit(&mut tree);
+
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root");
+        };
+        assert_eq!(root.children.len(), 1, "should collapse to 1 JSX node");
+        let MdastNode::MdxJsxFlowElement(jsx) = &root.children[0] else {
+            panic!("expected MdxJsxFlowElement, got {:?}", root.children[0]);
+        };
+        assert_eq!(jsx.name.as_deref(), Some("CodeGroup"));
     }
 
     #[test]
