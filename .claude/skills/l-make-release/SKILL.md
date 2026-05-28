@@ -1,7 +1,7 @@
 ---
 description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), and stop before publishing. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy"
+argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
@@ -11,6 +11,8 @@ Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. 
 ## Invocation & confirmation
 
 This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it. **It must never mutate anything before the user explicitly confirms.** Steps 1–3 are read-only (preconditions, version computation, change analysis); the first mutation is Step 4. Always present the Step 3 proposal (current → new version + categorized changelog) and **wait for explicit user confirmation** before proceeding to Step 4. If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
+
+**Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
 The lockstep packages are:
 
@@ -42,6 +44,13 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
 2. Working tree is clean (`git status --porcelain` returns empty)
 3. `gh` CLI is authenticated (`gh auth status`)
 4. At least one `v*` tag exists (`git tag -l 'v*'`). If no tag exists, tell the user to create the initial tag first (e.g. `git tag v0.1.0 && git push --tags`).
+5. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
+
+   ```bash
+   gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
+   ```
+
+   If this prints any tag, surface it to the user. A draft for a version **other than** the one you are about to release is an orphan from an abandoned run — offer to delete it per ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) before continuing. (A draft for the version you are about to release is handled later in Step 8.) Do not auto-delete; wait for the user — unless the user has already authorized cleanup this session.
 
 ## Step 2: Determine Next Version
 
@@ -250,6 +259,8 @@ If it exists, present the user with three options and wait for their choice:
 - **Delete and recreate**: `gh release delete v<version> --yes --cleanup-tag` then re-create.
 - **Abort**: stop.
 
+This check is scoped to the **target** version. A draft for a *different* (earlier, superseded) version is an orphan from an abandoned run — that case is caught by Step 1's draft scan and cleaned up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft).
+
 Also verify that the most-recent commit on `main` matches the version in the mdx (the `Released:` date and the filename `v<version>.mdx` should align with the current HEAD). If there is a mismatch, surface it and recommend rollback before proceeding.
 
 ## Step 9: Pre-create Draft GH Release
@@ -287,7 +298,7 @@ gh release view v<version> --json assets --jq '.assets[].name'
 awk '{print $1}' "zfb-<version>-x86_64-apple-darwin.tar.gz.sha256"
 ```
 
-Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must appear. If either is missing, stop and surface what was found vs. expected.
+Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must appear. If either is missing, stop and surface what was found vs. expected. The draft Release already exists at this point — if the user chooses to abandon this release rather than retry the upload, tear it down via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) so the next run starts clean.
 
 ### If NOT `Darwin`
 
@@ -396,6 +407,61 @@ installer with ZFB_VERSION=latest-prerelease:
 
 Then **STOP**. Do NOT publish the draft from this skill.
 
+## Cancelling a release / cleaning up an orphaned draft
+
+A draft GH Release is created at Step 9 and may have a Mac binary uploaded at Step 10, **before** the skill stops (Step 11) for the user to publish. If the release is then abandoned — a problem is found, or the user keeps developing without ever publishing — that draft is left **orphaned** on GitHub. Drafts never fire the `release: published` webhook, so they are harmless to CI, but they accumulate and confuse the next run's partial-state detection.
+
+Invoke this cleanup when:
+
+- The user runs `/l-make-release cancel` (or asks to "cancel/abort the release", "remove the draft"), or
+- A problem is found mid-release after the draft was created (e.g. a Step 10 failure the user does not want to retry), or
+- Step 1's orphaned-draft scan surfaces a leftover draft the user wants gone.
+
+### Identify the draft(s)
+
+If no version is implied by context, list all drafts and let the user pick:
+
+```bash
+gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
+```
+
+- **None** → nothing to cancel; report that and stop.
+- **Exactly one** → propose deleting it (state the tag), then act once the user has authorized cleanup.
+- **Multiple** → list them and ask which to delete.
+
+### What to remove
+
+1. **Delete the draft GH Release** (this also deletes its uploaded assets — the Mac archive + `.sha256`):
+
+   ```bash
+   gh release delete v<version> --yes --cleanup-tag
+   ```
+
+   `--cleanup-tag` deletes the associated git tag. For a **never-published draft** the tag ref does not exist yet, so this is a safe no-op on the tag and only the draft + its assets are removed. **NEVER** run this against a **published** Release — that would delete a live tag consumers may depend on. Confirm `isDraft == true` first:
+
+   ```bash
+   gh release view v<version> --json isDraft --jq '.isDraft'   # must be true
+   ```
+
+2. **Decide whether to undo the bump commit.** Check where the bump sits relative to HEAD:
+
+   ```bash
+   git rev-list --count <bump-sha>..HEAD
+   ```
+
+   - **`0` — the bump is still HEAD** (created this run, nothing built on top): revert it. The Step 6 commit is atomic, so one revert undoes `package.json` + the lockfile **and** removes the new `v<version>.mdx` together:
+
+     ```bash
+     git revert --no-edit <bump-sha>
+     git push origin main
+     ```
+
+   - **`>0` — the bump is buried under later commits** (the common "abandoned then kept developing" case): do **NOT** revert or rewrite history. The stale version number in `packages/zfb/package.json` is harmless — the next release simply bumps from it and supersedes the abandoned version (e.g. an abandoned `…-next.11` is superseded by the next `…-next.12`). Delete **only** the orphaned draft Release (step 1) and stop.
+
+### After cleanup
+
+Report what was deleted (tag + assets) and which case applied (reverted bump vs. left buried). The repo is now clean for a fresh `/l-make-release` run when the user is ready.
+
 ## Failure Recovery
 
 ### pnpm-lock.yaml drift
@@ -416,16 +482,19 @@ Prompt: reuse / delete-and-recreate / abort. Wait for user choice before acting.
 
 ### Mismatched mdx + commit (Step 8)
 
-Surface the mismatch clearly. Recommend: roll back with `git revert <bump-sha> && git push origin main`, delete the orphan changelog mdx, then re-run `/l-make-release`. Wait for user decision.
+Surface the mismatch clearly. Recommend rolling back (see "Rolling back the bump" below), then re-run `/l-make-release`. Wait for user decision.
+
+### Orphaned / abandoned draft Release
+
+A draft created in a prior run that was never published — the most common leftover. Detected by Step 1's draft scan (or `gh release list --json name,isDraft,tagName`). Clean it up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft): delete the draft (and its assets) with `gh release delete v<version> --yes --cleanup-tag`, and do **not** rewrite history if the bump commit is already buried under later commits.
 
 ### Rolling back the bump
 
-Instruct the user:
+If a draft Release was already created for this version, delete it first (see ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft)). Then, **only if the bump commit is still HEAD** (`git rev-list --count <bump-sha>..HEAD` is `0`):
 
 ```bash
-git revert <bump-sha>
+git revert --no-edit <bump-sha>
 git push origin main
-rm docs/src/content/docs/changelog/v<version>.mdx
 ```
 
-Then re-run `/l-make-release` from the start.
+The atomic Step 6 commit means one revert undoes `package.json`, the lockfile, **and** the new `v<version>.mdx` together — a separate `rm` is not needed. If the bump is buried under later commits, do NOT revert; leave the version and let the next release supersede it. Then re-run `/l-make-release` from the start.
