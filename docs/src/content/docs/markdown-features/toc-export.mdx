@@ -1,0 +1,121 @@
+---
+title: TOC export
+description: Export the page table of contents as structured JSON for sidebar and floating-TOC components.
+tier: Opt-in
+---
+
+The `tocExport` feature walks the document's headings and injects an MDX named export at the top of each processed file:
+
+```ts
+export const toc: TocEntry[];
+```
+
+Frameworks consume `entry.toc` to render sidebars and floating-TOC components without scraping rendered HTML — the same pattern used by [Fumadocs](https://fumadocs.vercel.app/) and similar documentation frameworks.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      tocExport: {},         // defaults: maxDepth 3 (h2 + h3)
+    },
+  },
+});
+```
+
+To cap the export at h2 only:
+
+```ts
+tocExport: { maxDepth: 2 },
+```
+
+## Output shape
+
+Each entry in the exported array has the following fields:
+
+```ts
+type TocEntry = {
+  depth: number;        // absolute heading depth: 2 | 3 | 4 | 5
+  id: string;           // slug assigned by HeadingLinksPlugin
+  text: string;         // plain-text heading content (hash-link stripped)
+  children: TocEntry[]; // nested sub-headings within maxDepth
+};
+```
+
+### Example
+
+For the Markdown source:
+
+```md
+## Introduction
+
+### Background
+
+## Conclusion
+```
+
+The plugin injects (before the document HTML):
+
+```ts
+export const toc = [
+  {
+    "depth": 2,
+    "id": "introduction",
+    "text": "Introduction",
+    "children": [
+      { "depth": 3, "id": "background", "text": "Background", "children": [] }
+    ]
+  },
+  { "depth": 2, "id": "conclusion", "text": "Conclusion", "children": [] }
+];
+```
+
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `maxDepth` | `3` | Maximum heading depth to include (absolute, 2–6). `2` → h2 only; `3` → h2 + h3; `4` → h2–h4; etc. |
+
+<Note>
+
+`maxDepth` for `tocExport` is an **absolute** depth (2 = h2, 3 = h3, …), unlike `headingMarkerToc.maxDepth` which counts levels *starting from h2*. The two features use different semantics intentionally — consult each feature's option reference.
+
+</Note>
+
+## Relationship with `headingMarkerToc`
+
+`tocExport` and `headingMarkerToc` are **independent** features — either, both, or neither may be enabled. They do not interfere with each other:
+
+- `headingMarkerToc` inserts a `<ul>/<li>` list into the document body after a designated anchor heading.
+- `tocExport` emits a structured `export const toc = [...]` for consumption by the framework's sidebar/TOC component.
+
+Enable both if you want in-body insertion AND a sidebar-ready data export simultaneously.
+
+## Consuming `toc` in a TSX page
+
+After enabling `tocExport`, import the generated export in your framework's page wrapper:
+
+```tsx
+import { toc } from "./my-page.mdx";
+
+export default function Page() {
+  return (
+    <>
+      <aside>
+        <TocComponent entries={toc} />
+      </aside>
+      <main>
+        <MyContent />
+      </main>
+    </>
+  );
+}
+```
+
+## Visitor ordering
+
+`TocExportPlugin` runs **after** `HeadingLinksPlugin` in the hast phase so that the `id` attributes placed on each `<h2>`–`<h6>` are the final, deduplicated slugs. The `id` values in the exported `toc` array exactly match those in the rendered HTML — there is no drift.
+
+The export node (`JsxRaw`) is inserted at the **front** of the document root, matching the ESM convention that `export` statements appear at module top level.

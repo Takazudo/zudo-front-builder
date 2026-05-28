@@ -526,13 +526,22 @@ export type GithubAutolinksConfig = {
 export type CodeEnrichmentConfig = Record<string, never>;
 
 /**
- * Options stub for the `tocExport` feature.
+ * Options for the `tocExport` feature.
  *
- * TODO: fill in actual fields when the tocExport feature is ported.
+ * Controls which headings are included in the exported `toc` JSON.
+ * `maxDepth` is the **absolute** heading depth (2–6):
+ *   - `2` → h2 only
+ *   - `3` (default) → h2 + h3
  *
- * Mirrors `TocExportConfig` in crates/zfb/src/config.rs.
+ * This differs from `headingMarkerToc.maxDepth`, which counts levels
+ * starting from h2. The two features are independent.
+ *
+ * Mirrors `TocExportConfig` in crates/zfb-md-ast/src/features_config.rs.
  */
-export type TocExportConfig = Record<string, never>;
+export type TocExportConfig = {
+  /** Maximum heading depth to include (absolute, 2–6). Default: 3. */
+  maxDepth?: number;
+};
 
 /**
  * Options stub for the `imageDimensions` feature.

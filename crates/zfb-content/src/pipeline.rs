@@ -958,6 +958,18 @@ pub fn register_features(
             ));
         }
     }
+
+    // Wave 5 (#578): toc_export — emit page TOC as MDX named export.
+    // Gated on `is_some()` (the config type carries its own fields; no outer
+    // `FeatureToggle` wrapper). Must run AFTER HeadingLinksPlugin (already in
+    // the hast chain) so IDs are stable. Inserted before SyntectPlugin so the
+    // export node lands at the front of the document root before code blocks
+    // are transformed.
+    if let Some(cfg) = &features.toc_export {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::toc_export::TocExportPlugin::new(cfg.clone()),
+        ));
+    }
     // Wave 4-6: additional pre-syntect feature visitor wiring lands here.
 }
 

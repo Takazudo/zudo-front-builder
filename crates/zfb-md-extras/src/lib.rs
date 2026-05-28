@@ -85,8 +85,16 @@ pub mod code_tabs;
 pub mod ruby;
 
 /// Export the page TOC as structured data (e.g. for sidebar rendering).
-// TODO: Wave 6 — port toc-export
-pub mod toc_export {}
+///
+/// Walks the hast tree after `HeadingLinksPlugin` has assigned stable `id`
+/// attributes to each heading, collects h2–h{maxDepth} entries into a nested
+/// `TocEntry` tree, and injects `export const toc = [...]` as a `JsxRaw`
+/// node at the front of the document root. Wire via
+/// `features.tocExport: {}` (defaults) or `features.tocExport: { maxDepth: N }`.
+///
+/// Ported in Wave 5 (#578). Independent of `heading_marker_toc` (#570) —
+/// either or both may be enabled simultaneously.
+pub mod toc_export;
 
 /// Auto-detect and inject `width`/`height` on `<img>` elements.
 // TODO: Wave 6 — port image-dimensions

@@ -78,12 +78,36 @@ pub struct CodeEnrichmentConfig {
     pub line_highlight: Option<bool>,
 }
 
-/// Options stub for the `tocExport` feature.
+/// Options for the `tocExport` feature.
 ///
-/// TODO: fill in actual fields when the tocExport feature is ported.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+/// Controls which headings are included in the exported `toc` JSON.
+///
+/// **Depth semantics:** `max_depth` is the **absolute heading depth** (2–6),
+/// not a count from h2. `max_depth: 2` → h2 only; `max_depth: 3` (default)
+/// → h2 + h3. This differs from [`TocConfig::max_depth`] (heading_marker_toc),
+/// which counts levels *starting from h2*. The two features are independent
+/// and can be enabled simultaneously without conflict.
+///
+/// Ported in Wave 5 (#578). TS mirror: `TocExportConfig` in
+/// `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TocExportConfig {}
+pub struct TocExportConfig {
+    /// Maximum heading depth to include in the export (absolute, 2–6).
+    /// Default: 3 (includes h2 and h3).
+    #[serde(default = "default_toc_export_max_depth")]
+    pub max_depth: u8,
+}
+
+fn default_toc_export_max_depth() -> u8 {
+    3
+}
+
+impl Default for TocExportConfig {
+    fn default() -> Self {
+        Self { max_depth: 3 }
+    }
+}
 
 /// Options stub for the `imageDimensions` feature.
 ///
