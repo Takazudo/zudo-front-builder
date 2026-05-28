@@ -903,6 +903,30 @@ jobs:
             delay=$(( delay * 2 ))
           done
 
+          # Wait until the runner-arch platform tarball is actually fetchable.
+          # npm metadata propagates faster than the ~78 MB binary tarballs; when
+          # a tarball hasn't propagated yet, npm SILENTLY SKIPS the optionalDep
+          # install and the `zfb` launcher fails at runtime.  `npm pack --dry-run`
+          # forces npm to resolve and fetch the actual tarball (not just metadata),
+          # confirming it is available before we invoke `npx create-zfb`.
+          # The runner for this job is ubuntu-latest (linux x64).
+          echo "Waiting for @takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball to be fetchable..."
+          max_attempts=6
+          delay=10
+          for attempt in $(seq 1 $max_attempts); do
+            if npm pack --dry-run "@takazudo/zfb-linux-x64-gnu@${DIST_TAG}" > /dev/null 2>&1; then
+              echo "Registry resolved @takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball (attempt ${attempt})"
+              break
+            fi
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "::error::@takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball did not become fetchable after ${max_attempts} attempts."
+              exit 1
+            fi
+            echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$(( delay * 2 ))
+          done
+
       - name: Scaffold project with create-zfb@<dist-tag>
         shell: bash
         env:
@@ -914,9 +938,23 @@ jobs:
           echo "SMOKE_DIR=$SMOKE_DIR" >> "$GITHUB_ENV"
           echo "Scaffolding into $SMOKE_DIR ..."
           cd "$SMOKE_DIR"
+          # Belt-and-suspenders: retry the scaffold up to 3 times with backoff in
+          # case of a momentary registry blip after the tarball-propagation wait.
           # `create-zfb <name>` is the non-interactive form (positional arg, no prompts).
           # --yes suppresses any interactive npm/npx prompts.
-          npx --yes "create-zfb@${DIST_TAG}" smoke-site
+          scaffold_delay=15
+          for scaffold_attempt in 1 2 3; do
+            if npx --yes "create-zfb@${DIST_TAG}" smoke-site; then
+              break
+            fi
+            if [[ "$scaffold_attempt" -eq 3 ]]; then
+              echo "::error::npx create-zfb@${DIST_TAG} failed after 3 attempts."
+              exit 1
+            fi
+            echo "  Scaffold attempt ${scaffold_attempt}/3 failed; retrying in ${scaffold_delay}s..."
+            sleep "$scaffold_delay"
+            scaffold_delay=$(( scaffold_delay * 2 ))
+          done
           echo "Scaffold complete. Contents of $SMOKE_DIR/smoke-site:"
           ls -la "$SMOKE_DIR/smoke-site"
 
