@@ -53,6 +53,11 @@ required-features = ["test-utils"]
 name = "transclude"
 required-features = ["test-utils"]
 
+# Cross-feature integration tests (#582) — combinations of multiple opt-in features.
+[[test]]
+name = "cross_feature_integration"
+required-features = ["test-utils"]
+
 # `test-utils` gates the test_harness module so integration tests in Wave 2+
 # can access run_fixture without exposing it in production builds.
 # Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in
