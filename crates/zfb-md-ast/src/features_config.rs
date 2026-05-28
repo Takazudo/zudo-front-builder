@@ -109,12 +109,23 @@ impl Default for TocExportConfig {
     }
 }
 
-/// Options stub for the `imageDimensions` feature.
+/// Options for the `imageDimensions` feature.
 ///
-/// TODO: fill in actual fields when the imageDimensions feature is ported.
+/// Injecting `width`/`height` on `<img>` elements referencing local image
+/// files via `BuildContext.public_dir`. Ported in Wave 6 (#579).
+///
+/// Mirrors `ImageDimensionsConfig` in `packages/zfb/src/config.ts`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ImageDimensionsConfig {}
+pub struct ImageDimensionsConfig {
+    /// When `true` (the default), `http://` and `https://` image sources are
+    /// silently skipped and not probed for dimensions.
+    ///
+    /// Set to `false` only for testing or unusual setups — remote images
+    /// require network access at build time and slow the pipeline.
+    #[serde(default)]
+    pub skip_remote: Option<bool>,
+}
 
 /// Options stub for the `linkValidation` feature.
 ///

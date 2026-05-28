@@ -970,7 +970,16 @@ pub fn register_features(
             zfb_md_extras::toc_export::TocExportPlugin::new(cfg.clone()),
         ));
     }
-    // Wave 4-6: additional pre-syntect feature visitor wiring lands here.
+    // Wave 6 (#579): image_dimensions — inject width/height on local <img> elements.
+    // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
+    // MUST run AFTER image_enlarge (which also touches <img>/<p> shapes) so the
+    // figure-wrapper is already in place when dimensions are injected.
+    // Uses visit_with_context — pipeline must call run_with_context for this to fire.
+    if let Some(cfg) = features.image_dimensions.clone() {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg),
+        ));
+    }
 }
 
 /// Register post-syntect feature visitors from `zfb-md-extras` into the pipeline.

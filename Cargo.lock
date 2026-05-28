@@ -1847,6 +1847,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "imagesize"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
+
+[[package]]
 name = "include_dir"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5679,6 +5685,7 @@ name = "zfb-md-extras"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "imagesize",
  "markdown",
  "tempdir",
  "zfb-content",
