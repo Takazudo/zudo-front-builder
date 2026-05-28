@@ -247,11 +247,15 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     );
 }
 
-/// Minimal fixture exercising only the mermaid plugin path, for the
-/// `markdown.features`-driven test below. Keeping it to a single mermaid
-/// fence isolates the feature toggle from the other plugins' output.
+/// Minimal fixture exercising the mermaid plugin path through BOTH the page
+/// shadow walker (`materialise_shadow`) and the content-collection walker
+/// (`materialise_collection`), for the `markdown.features`-driven test below.
+/// Both walkers construct their pipeline via the same
+/// `with_defaults_and_full_config` entry point, so covering both proves the
+/// feature toggle threads through every bundler pipeline (the snapshot walker
+/// shares the same constructor — see `content_bridge.rs`).
 fn write_mermaid_fixture(root: &std::path::Path) {
-    for d in ["pages", "components", "layouts"] {
+    for d in ["pages", "content/posts", "components", "layouts"] {
         fs::create_dir_all(root.join(d)).unwrap();
     }
     fs::write(
@@ -259,9 +263,17 @@ fn write_mermaid_fixture(root: &std::path::Path) {
         "export default function DefaultLayout({ children }) { return children; }",
     )
     .unwrap();
+    let mermaid_doc = "```mermaid\ngraph TD;\n  A-->B;\n```\n";
     fs::write(
         root.join("pages/index.mdx"),
-        "---\ntitle: Mermaid Feature\n---\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n",
+        format!("---\ntitle: Mermaid Feature\n---\n\n{mermaid_doc}"),
+    )
+    .unwrap();
+    // Collection entry → exercises `materialise_collection` under the same
+    // `markdown.features` value.
+    fs::write(
+        root.join("content/posts/intro.mdx"),
+        format!("---\ntitle: Intro\n---\n\n{mermaid_doc}"),
     )
     .unwrap();
 }
@@ -287,7 +299,6 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     let root_on = tmp_on.path().to_path_buf();
     write_mermaid_fixture(&root_on);
     let mut input_on = make_input(&root_on, &esbuild, "dist");
-    input_on.content_collections = Vec::new();
     input_on.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(true)),
         ..Default::default()
@@ -306,7 +317,6 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     let root_off = tmp_off.path().to_path_buf();
     write_mermaid_fixture(&root_off);
     let mut input_off = make_input(&root_off, &esbuild, "dist");
-    input_off.content_collections = Vec::new();
     input_off.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(false)),
         ..Default::default()
