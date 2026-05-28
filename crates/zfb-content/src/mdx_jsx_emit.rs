@@ -249,7 +249,7 @@ fn mdx_to_jsx_module_inner(
         nested_slugs,
     } = collect_headings(&children);
 
-    let (body, html_tags, component_names) = if take_hast_detour {
+    let (body, html_tags, component_names, hoisted_esm) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
         // recurse through them as a single node — its public signature
         // takes `&MdastNode`.
@@ -294,11 +294,14 @@ fn mdx_to_jsx_module_inner(
         }
         let mut bridge = HastJsxBridge::new();
         let body = bridge.emit_root(&hast);
-        (body, bridge.html_tags, bridge.component_names)
+        (body, bridge.html_tags, bridge.component_names, bridge.hoisted_esm)
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
-        (body, emitter.html_tags, emitter.component_names)
+        // The no-pipeline JsxEmitter path is byte-stable and does not hoist
+        // hast-phase JsxRaw nodes (it never runs hast visitors). Return an
+        // empty Vec so the tuple shape is uniform.
+        (body, emitter.html_tags, emitter.component_names, Vec::new())
     };
 
     let mut out = String::new();
@@ -320,6 +323,17 @@ fn mdx_to_jsx_module_inner(
         }
     }
     if !synth_exports.is_empty() {
+        out.push('\n');
+    }
+    // Emit module-level ESM statements hoisted from hast-phase JsxRaw nodes
+    // (e.g. `export const toc = …` from TocExportPlugin). These were
+    // collected by HastJsxBridge::emit_root and must appear at column 0,
+    // at module scope, before `function _createMdxContent`.
+    for stmt in &hoisted_esm {
+        out.push_str(stmt);
+        out.push('\n');
+    }
+    if !hoisted_esm.is_empty() {
         out.push('\n');
     }
     out.push_str("function _createMdxContent({components = {}} = {}) {\n");
@@ -914,6 +928,28 @@ fn emit_table_jsx(
     out
 }
 
+/// Returns `true` if `s` is a module-level ESM statement that must appear
+/// at column 0 in the emitted JS module.
+///
+/// Recognises the four forms that unambiguously open a module declaration:
+/// - `export const` — named constant export (e.g. `export const toc = …`)
+/// - `export default` — default export
+/// - `export {` — re-export / named-export shorthand
+/// - `import ` — import declaration (note the trailing space to avoid
+///   matching `importFoo`)
+///
+/// The check is intentionally conservative: it only matches these four
+/// prefixes (not a bare `export ` or `import`) so a JsxRaw node that
+/// merely mentions "export" in its first line (e.g. a comment) is not
+/// mis-hoisted.
+fn is_module_level_esm(s: &str) -> bool {
+    let trimmed = s.trim_start();
+    trimmed.starts_with("export const ")
+        || trimmed.starts_with("export default ")
+        || trimmed.starts_with("export {")
+        || trimmed.starts_with("import ")
+}
+
 /// Walks a [`HastNode`] tree and emits JSX source — the post-#121
 /// counterpart to [`JsxEmitter`].
 ///
@@ -942,6 +978,17 @@ fn emit_table_jsx(
 struct HastJsxBridge {
     html_tags: std::collections::BTreeSet<String>,
     component_names: std::collections::BTreeSet<String>,
+    /// Module-level ESM statements hoisted out of the Fragment body.
+    ///
+    /// When `emit_root` sees a top-level `HastNode::JsxRaw` whose payload
+    /// is a module-level ESM statement (`export const`, `export default`,
+    /// `export {`, or `import `), it collects the payload here instead of
+    /// placing it inside the `<_Fragment>` body (which would indent it ~6
+    /// spaces and make MDX parsers treat it as content rather than a
+    /// module declaration). The outer assembler emits these at column 0,
+    /// before `function _createMdxContent`, so the emitted module is valid
+    /// ESM regardless of which hast plugin injected the node.
+    hoisted_esm: Vec<String>,
 }
 
 impl HastJsxBridge {
@@ -949,11 +996,19 @@ impl HastJsxBridge {
         Self {
             html_tags: std::collections::BTreeSet::new(),
             component_names: std::collections::BTreeSet::new(),
+            hoisted_esm: Vec::new(),
         }
     }
 
     /// Emit the body of `<_Fragment>`. Each top-level child of `Root`
     /// goes on its own line so the generated module stays readable.
+    ///
+    /// Top-level `HastNode::JsxRaw` nodes that contain a module-level ESM
+    /// statement (`export const`, `export default`, `export {`, `import `)
+    /// are collected into `self.hoisted_esm` instead of being placed in the
+    /// Fragment body — those declarations must appear at column 0 in the
+    /// emitted module, not indented inside JSX. The caller retrieves them
+    /// via `self.hoisted_esm` and emits them before `_createMdxContent`.
     fn emit_root(&mut self, node: &HastNode) -> String {
         let HastNode::Root { children } = node else {
             // Defensive: hast plugins should never replace Root with a
@@ -969,6 +1024,18 @@ impl HastJsxBridge {
         };
         let mut out = String::new();
         for child in children {
+            // Detect root-level JsxRaw nodes that carry a module-level ESM
+            // statement and hoist them to module scope instead of emitting
+            // them indented inside the Fragment body. This is necessary
+            // because MDX (and tools like esbuild) require `export`/`import`
+            // declarations at column 0 to recognise them as module-level ESM
+            // rather than treating them as content.
+            if let HastNode::JsxRaw(s) = child {
+                if is_module_level_esm(s) {
+                    self.hoisted_esm.push(s.trim_end().to_string());
+                    continue;
+                }
+            }
             let rendered = self.emit_node(child);
             if rendered.trim().is_empty() {
                 continue;
