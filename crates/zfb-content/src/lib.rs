@@ -25,6 +25,12 @@ pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};
 
 pub use plugins::toc::TocConfig;
 
+// Re-export the markdown-features config types so downstream crates that only
+// depend on `zfb-content` (e.g. `zfb-build`, `zfb-render`) can name them when
+// threading `markdown.features` into the feature-aware pipeline constructor,
+// without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
+pub use zfb_md_extras::{FeatureToggle, MarkdownFeaturesConfig};
+
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,

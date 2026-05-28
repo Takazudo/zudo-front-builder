@@ -90,8 +90,12 @@ impl<H: RenderHost> Renderer<H> {
         Self::with_strip_md_ext_and_gfm_and_cjk(host, jsx_runtime, strip_md_ext, gfm_constructs, true)
     }
 
-    /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
-    /// and CJK-friendly toggle to the loader.
+    /// Constructor: forwards `strip_md_ext`, GFM constructs, and
+    /// CJK-friendly toggle to the loader. `markdown.features` is left at
+    /// `None` (an empty feature set → the four former-Core framework features
+    /// are OFF, the opt-in default); use
+    /// [`Renderer::with_strip_md_ext_and_gfm_and_cjk_and_features`] to honour
+    /// the feature surface.
     pub fn with_strip_md_ext_and_gfm_and_cjk(
         host: H,
         jsx_runtime: JsxRuntime,
@@ -99,12 +103,40 @@ impl<H: RenderHost> Renderer<H> {
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
         cjk_friendly: bool,
     ) -> Self {
+        Self::with_strip_md_ext_and_gfm_and_cjk_and_features(
+            host,
+            jsx_runtime,
+            strip_md_ext,
+            gfm_constructs,
+            cjk_friendly,
+            None,
+        )
+    }
+
+    /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
+    /// CJK-friendly toggle, and `markdown.features` to the loader so dev
+    /// rendering agrees with the bundler on every knob — including which
+    /// opt-in feature plugins fire. `features = None` is an empty feature set:
+    /// the four former-Core framework features are off (the opt-in default).
+    ///
+    /// Note: the `zfb dev` CLI renders through the V8 `RendererState` in
+    /// `zfb-build`, threading features via `BundlerInput` — not through this
+    /// `Renderer`. These constructors are for library / embedder callers.
+    pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
+        host: H,
+        jsx_runtime: JsxRuntime,
+        strip_md_ext: bool,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs,
+        cjk_friendly: bool,
+        features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    ) -> Self {
         Self {
-            loader: ModuleLoader::with_strip_md_ext_and_gfm_and_cjk(
+            loader: ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features(
                 jsx_runtime,
                 strip_md_ext,
                 gfm_constructs,
                 cjk_friendly,
+                features,
             ),
             host,
         }

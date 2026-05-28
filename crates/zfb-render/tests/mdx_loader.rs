@@ -117,20 +117,36 @@ fn malformed_mdx_yields_compile_error_with_specifier_and_message() {
 // (`:::note`) and other mdast-phase plugins fire on MDX content.
 // ---------------------------------------------------------------------------
 
-/// A `:::note … :::` block must be transformed by the admonitions
-/// plugin into a `<Note>` MDX JSX element before JSX emission. The
-/// emitter then declares `const Note = …` in the compiled module's
-/// preamble, so the `Note` identifier survives into the SWC-lowered
-/// JS. Pre-zfb#116 the loader passed no pipeline, the directive ran
-/// untouched, and `:::note` text leaked through verbatim as a plain
-/// paragraph.
+/// A `:::note … :::` block must be transformed by the admonitions plugin into
+/// a `<Note>` MDX JSX element before JSX emission. The emitter then declares
+/// `const Note = …` in the compiled module's preamble, so the `Note`
+/// identifier survives into the SWC-lowered JS.
 ///
-/// The blank lines around `body` mirror the directive registry's
-/// expected shape — each `:::` opener / closer needs its own paragraph
-/// block at the mdast level.
+/// Since #586 `admonitionsPreset` is an OPT-IN feature (no longer always-on),
+/// so the loader is constructed via
+/// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] with the
+/// feature enabled. This still pins the regression from zfb#116: the loader
+/// must thread the content pipeline through the MDX→JSX emitter so the
+/// admonition plugin fires. (With features off — `ModuleLoader::new` — the
+/// directive is intentionally left untransformed; see `bundler_default_plugins`
+/// in `zfb-build` for the off-by-default contract.)
+///
+/// The blank lines around `body` mirror the directive registry's expected
+/// shape — each `:::` opener / closer needs its own paragraph block at the
+/// mdast level.
 #[test]
 fn mdx_admonition_directive_runs_through_pipeline() {
-    let mut loader = ModuleLoader::new(JsxRuntime::Preact);
+    let features = zfb_content::MarkdownFeaturesConfig {
+        admonitions_preset: Some(zfb_content::FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+    let mut loader = ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features(
+        JsxRuntime::Preact,
+        false,
+        zfb_content::ResolvedGfmConstructs::default(),
+        true,
+        Some(&features),
+    );
 
     let src = ":::note\n\nbody text\n\n:::\n";
     let compiled = loader

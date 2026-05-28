@@ -113,11 +113,24 @@ interactions between Opt-in features (e.g. `githubAlerts` + `admonitionsPreset`,
 `transclude` + `headingMarkerToc`, `codeEnrichment` after `SyntectPlugin`).
 These tests live in `crates/zfb-md-extras/tests/`.
 
-### Deferred (#586)
+### Caller migration landed (#586)
 
-Caller migration of existing pipeline construction sites from
-`Pipeline::with_defaults()` to `Pipeline::with_defaults_and_features()` is
-tracked separately in #586 and is not required before using the new features.
+The build, dev, and snapshot pipelines now thread `markdown.features` end-to-end
+through a single feature-aware entry point
+(`Pipeline::with_defaults_and_full_config`). This is what makes the opt-in
+behavior above **actually take effect**:
+
+- A default `zfb.config.ts` with **no** `features` key builds with the four
+  former-Core framework features (`mermaid`, `imageEnlarge`,
+  `admonitionsPreset`, `headingMarkerToc`) **off**.
+- Setting e.g. `features: { mermaid: true }` now emits the mermaid wrapper;
+  `features: { mermaid: false }` (or omitting it) does not.
+- `zfb build`, `zfb dev`, and the content-collection snapshot walker all share
+  the same dispatch, so the JSX `content_hash` stays byte-identical across the
+  build and snapshot surfaces.
+
+The legacy `Pipeline::with_defaults*` constructors are retained unchanged for
+backwards-compatible direct (library / test) callers.
 
 ### Docs
 

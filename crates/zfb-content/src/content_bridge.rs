@@ -240,6 +240,18 @@ pub struct SnapshotPipelineConfig {
     ///
     /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
+
+    /// `markdown.features` from `zfb.config.ts`. MUST match the bundler's
+    /// `BundlerInput::markdown_features` exactly — the feature-aware pipeline
+    /// changes which visitors fire, so any divergence shifts the JSX
+    /// `content_hash` and every `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// `Default` is `None` — no feature surface configured — which is treated
+    /// as an empty feature set: the four former-Core framework features
+    /// (mermaid, image-enlarge, admonitions-preset, heading-marker TOC) are
+    /// OFF (the post-epic opt-in default, #583 / #586).
+    pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
 }
 
 impl Default for SnapshotPipelineConfig {
@@ -253,6 +265,7 @@ impl Default for SnapshotPipelineConfig {
             cjk_friendly: true,
             toc: None,
             external_links: None,
+            features: None,
         }
     }
 }
@@ -261,21 +274,18 @@ impl SnapshotPipelineConfig {
     /// Construct a pipeline shaped by this config. Used by
     /// [`build_snapshot_with_config`] once per collection.
     fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
-        let mut p = if let Some(dir) = self.code_highlight_themes_dir.as_deref() {
-            Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir(
-                self.code_highlight_theme.as_deref(),
-                self.gfm_constructs,
-                dir,
-                self.cjk_friendly,
-            )
-            .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?
-        } else {
-            Pipeline::with_defaults_and_theme_and_gfm_and_cjk(
-                self.code_highlight_theme.as_deref(),
-                self.gfm_constructs,
-                self.cjk_friendly,
-            )
-        };
+        // Single feature-aware entry point — MUST match the bundler's dispatch
+        // (see `crates/zfb-build/src/bundler.rs`) so `content_hash` stays
+        // byte-identical. `features = None` is an empty feature set: the four
+        // former-Core framework features are off (the post-epic opt-in default).
+        let mut p = Pipeline::with_defaults_and_full_config(
+            self.code_highlight_theme.as_deref(),
+            self.gfm_constructs,
+            self.code_highlight_themes_dir.as_deref(),
+            self.cjk_friendly,
+            self.features.as_ref(),
+        )
+        .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?;
         if self.strip_md_ext {
             p.add_strip_md_ext();
         }
@@ -612,6 +622,46 @@ mod tests {
             hash_canonical(&s1),
             hash_canonical(&s2),
             "two snapshot calls over the same fixture must hash identically",
+        );
+    }
+
+    // #586 — `markdown.features` must thread into the snapshot pipeline. The
+    // compiled JSX `content_hash` is baked into each entry's
+    // `module_specifier`, so enabling a feature that changes the rendered
+    // output (mermaid) must change that hash. This is the snapshot-side
+    // counterpart to `bundler_default_plugins`'s features test in `zfb-build`;
+    // both feed the SAME constructor, so matching dispatch keeps the snapshot ↔
+    // bundler `content_hash` byte-identical.
+    #[test]
+    fn snapshot_threads_markdown_features_into_content_hash() {
+        let tmp = TmpDir::new("md-features");
+        // A mermaid fence is only transformed when `features.mermaid` is on.
+        tmp.write(
+            "docs/diagram.mdx",
+            "---\ntitle: \"Diagram\"\n---\n\n```mermaid\ngraph TD; A-->B;\n```\n",
+        );
+        let collection = || CollectionConfig::new("docs", tmp.path.join("docs"));
+
+        // Default (no features) → mermaid OFF.
+        let off = build_snapshot_with_config(&[collection()], &SnapshotPipelineConfig::default())
+            .expect("snapshot (features off)");
+        // `features.mermaid: true` → mermaid ON.
+        let on_cfg = SnapshotPipelineConfig {
+            features: Some(zfb_md_extras::MarkdownFeaturesConfig {
+                mermaid: Some(zfb_md_extras::FeatureToggle::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let on = build_snapshot_with_config(&[collection()], &on_cfg)
+            .expect("snapshot (features on)");
+
+        let spec_off = &off.collections.get("docs").expect("docs off")[0].module_specifier;
+        let spec_on = &on.collections.get("docs").expect("docs on")[0].module_specifier;
+        assert_ne!(
+            spec_off, spec_on,
+            "enabling features.mermaid must change the snapshot's content_hash \
+             (proves markdown.features threads into the snapshot pipeline)",
         );
     }
 
