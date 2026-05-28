@@ -407,24 +407,39 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       // `await` so async page modules (e.g. API routes typed as
       // `(): Promise<Response>`) resolve before we inspect the value.
       // For sync pages that return a VNode/string the await is a no-op.
-      const result = await mod.default(componentInput);
-      // API route short-circuit: a page module that returns a Response
-      // directly (e.g. `pages/api/*.tsx` handlers that use Web Fetch
-      // primitives instead of returning JSX) is responsible for its own
-      // status, headers, and body — return it as-is rather than running
-      // it through the framework SSR path.
-      if (result instanceof Response) {
-        return result;
+      //
+      // Wrapped in a try/catch so that any error thrown by the component
+      // or by renderToString surfaces as a descriptive 500 rather than
+      // escaping to Hono's generic error handler (which discards the real
+      // message). Mirrors the getStaticProps catch above.
+      try {
+        const result = await mod.default(componentInput);
+        // API route short-circuit: a page module that returns a Response
+        // directly (e.g. `pages/api/*.tsx` handlers that use Web Fetch
+        // primitives instead of returning JSX) is responsible for its own
+        // status, headers, and body — return it as-is rather than running
+        // it through the framework SSR path. A `return` from inside a
+        // `try` does not trigger the `catch`, so this passes through
+        // correctly without special-casing.
+        if (result instanceof Response) {
+          return result;
+        }
+        // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
+        // return their body as a pre-serialised `string` instead of a
+        // VNode. Routing those through `framework.renderToString` would
+        // HTML-escape the angle brackets and ampersands, producing
+        // garbage XML. Pass strings through verbatim; only wrap actual
+        // VNodes.
+        const html = typeof result === "string" ? result : opts.framework.renderToString(result);
+        const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
+        return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+        return c.body(`[zfb-runtime] render threw for "${page.route}": ${msg}${stack}`, 500, {
+          "Content-Type": "text/plain; charset=utf-8",
+        });
       }
-      // Non-HTML routes (e.g. `sitemap.xml.tsx`, `feed.xml.tsx`) commonly
-      // return their body as a pre-serialised `string` instead of a
-      // VNode. Routing those through `framework.renderToString` would
-      // HTML-escape the angle brackets and ampersands, producing
-      // garbage XML. Pass strings through verbatim; only wrap actual
-      // VNodes.
-      const html = typeof result === "string" ? result : opts.framework.renderToString(result);
-      const contentType = mod.contentType ?? DEFAULT_CONTENT_TYPE;
-      return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
     });
   }
 
