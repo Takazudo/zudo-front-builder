@@ -39,6 +39,10 @@ crates/zfb/binaries/esbuild/esbuild
 # Ephemeral / temp files (e.g. agent prompts, review diffs)
 __inbox/
 
+# Locally-downloaded dev tool binaries (e.g. actionlint for linting
+# GitHub Actions workflows) — never committed.
+/actionlint
+
 # Claude Code scheduler session state (CronCreate / scheduled tasks).
 # Per-session lock + job store — never committed.
 .claude/scheduled_tasks.lock
