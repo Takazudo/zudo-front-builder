@@ -1,0 +1,43 @@
+---
+title: Strip .md extension
+description: Removes the .md or .mdx suffix from internal link hrefs at build time.
+tier: Core
+sidebar_position: 55
+---
+
+`StripMdExtensionPlugin` removes the `.md` or `.mdx` suffix from internal
+link `href` values so that links authored as `[page](./other.md)` produce
+clean output URLs like `/docs/other`.
+
+## What it does
+
+In the hast phase, the plugin walks every `<a>` element. For each link whose
+`href` ends with `.md` or `.mdx`:
+
+1. Strips the extension.
+2. Leaves the rest of the path, query string, and fragment intact.
+
+The plugin only touches relative and root-relative paths — absolute URLs
+(`https://…`) and non-link elements are left unchanged.
+
+## Config
+
+Always on when a source map is available, no config key. The plugin runs
+after `ResolveLinksPlugin` so it sees the already-resolved paths.
+
+## Example
+
+```md
+See [setup](./installation.mdx) for details.
+```
+
+Produces:
+
+```html
+<a href="./installation">See setup for details.</a>
+```
+
+## See also
+
+- [Resolve links](/markdown-features/resolve-links) — runs before this plugin
+  to normalise the target path.

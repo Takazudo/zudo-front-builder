@@ -128,6 +128,12 @@ export const settings = {
       categoryMatch: "claude",
     },
     {
+      label: "Markdown Features",
+      labelKey: "nav.markdownFeatures",
+      path: "/docs/markdown-features",
+      categoryMatch: "markdown-features",
+    },
+    {
       label: "Changelog",
       labelKey: "nav.changelog",
       path: "/docs/changelog",

@@ -1,0 +1,41 @@
+---
+title: Syntax highlighting
+description: Server-side syntax highlighting via syntect — always on, theme-configurable.
+tier: Core
+sidebar_position: 56
+---
+
+`SyntectPlugin` runs server-side syntax highlighting at build time.
+It is always active. Every fenced code block in your Markdown is
+highlighted via [syntect](https://github.com/trishume/syntect) —
+a Rust library using Sublime Text–compatible grammars — and the
+colour-annotated HTML is baked into the output. No JavaScript is
+shipped to the browser for highlighting.
+
+## Theme configuration
+
+The default theme is `"base16-ocean.dark"`. Change it in `zfb.config.ts`:
+
+```ts title="zfb.config.ts"
+export default {
+  codeHighlight: {
+    theme: "Solarized (light)",
+  },
+};
+```
+
+Custom `.tmTheme` files and supplementary client-side patterns are
+covered in the dedicated guide below.
+
+## Full documentation
+
+For theme names, custom `.tmTheme` loading, client-side supplementary
+highlighting, and post-build custom grammar patterns, see
+[Syntax Highlighting](/guides/syntax-highlighting).
+
+## Ordering note
+
+`SyntectPlugin` runs **last** in the hast phase, after `CodeTitlePlugin`,
+`MermaidPlugin`, and all other code-block visitors. It replaces each
+`<pre><code>` element with a raw HTML fragment; any plugin that needs to
+read the structured `<pre>` must run before it.

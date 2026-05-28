@@ -198,6 +198,17 @@ const slug = autoIndex
     ) : (
       <Fragment>
         <h1 class="text-heading font-futura font-normal mb-vsp-xs">{entry.data.title}</h1>
+        {entry.data.tier && (
+          <span
+            class={`inline-block mb-vsp-xs px-hsp-xs py-0.5 text-caption font-medium rounded border ${
+              entry.data.tier === "Core"
+                ? "border-accent/40 bg-accent/10 text-accent"
+                : "border-muted bg-surface text-muted"
+            }`}
+          >
+            {entry.data.tier}
+          </span>
+        )}
         {settings.docMetainfo && (
           <DocMetainfo filePath={`${contentDir}/${entry.id}`} locale={lang} />
         )}

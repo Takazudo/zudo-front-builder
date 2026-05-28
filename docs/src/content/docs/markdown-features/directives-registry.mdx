@@ -1,0 +1,79 @@
+---
+title: Directives registry
+description: The Core primitive that maps :::name / ::name / :name directive syntax to JSX components.
+tier: Core
+sidebar_position: 57
+---
+
+`DirectiveRegistry` is the Core primitive that maps CommonMark Directives
+syntax — container (`:::name`), leaf (`::name[label]`), and text
+(`:name[label]`) — to JSX component calls in the compiled output.
+
+It is always active. You interact with it in two ways:
+
+- **Consuming the registry** — register your own directive names from a
+  project-side config without writing Rust. See
+  [Custom Directives](/concepts/custom-directives).
+- **Using the built-in preset** — enable the six bundled admonition
+  directive types (`note`, `tip`, `warning`, `danger`, `info`, `details`)
+  via the opt-in `admonitionsPreset` feature described below.
+
+## Directive shapes
+
+The registry handles three directive shapes:
+
+- **Container** — `:::name[label]` … `:::` wraps multi-paragraph body
+  content into a JSX component.
+- **Leaf** — `::name[label]{attrs}` produces a self-closing component with
+  no children.
+- **Text** — `:name[label]{attrs}` is an inline component.
+
+## Admonitions preset
+
+The six built-in admonition types are opt-in — they are not registered by
+default. Enable them in `zfb.config.ts`:
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      admonitionsPreset: true,
+    },
+  },
+});
+```
+
+See [Admonitions preset](/markdown-features/admonitions-preset) for the
+full directive syntax and blank-line requirements.
+
+## Typed attribute schemas (from #584)
+
+The registry accepts typed attribute schemas for each registered directive.
+Unknown attributes or type mismatches emit a build-time warning rather than
+silently passing raw strings. The schema is declared alongside the
+`register` call:
+
+```rust
+registry.register_typed(
+    "badge",
+    DirectiveShape::Text,
+    BadgeSchema::schema(),
+);
+```
+
+## Custom directives
+
+To register additional directives or override built-ins, see
+[Custom Directives](/concepts/custom-directives) — the author-facing path
+that does not require writing Rust.
+
+## See also
+
+- [Custom Directives](/concepts/custom-directives) — register new
+  `:::name` / `::name` / `:name` directive names.
+- [Admonitions preset](/markdown-features/admonitions-preset) — opt-in
+  preset of six built-in admonition types.
+- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+  — engine-side extension surface.
