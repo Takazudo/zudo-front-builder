@@ -18,6 +18,11 @@ required-features = ["test-utils"]
 name = "reading_time"
 required-features = ["test-utils"]
 
+# Integration test for github_autolinks feature.
+[[test]]
+name = "github_autolinks"
+required-features = ["test-utils"]
+
 # `test-utils` gates the test_harness module so integration tests in Wave 2+
 # can access run_fixture without exposing it in production builds.
 # Usage: add `zfb-md-extras = { path = "...", features = ["test-utils"] }` in

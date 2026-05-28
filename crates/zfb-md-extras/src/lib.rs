@@ -66,8 +66,8 @@ pub mod github_alerts;
 pub mod reading_time;
 
 /// GitHub-style `owner/repo#123` and SHA autolinks.
-// TODO: Wave 4 — port github-autolinks
-pub mod github_autolinks {}
+/// Wire via `features.githubAutolinks: { repo: "owner/repo" }` in `zfb.config.ts`.
+pub mod github_autolinks;
 
 /// Code-block enrichment (copy button, language label, etc.).
 // TODO: Wave 5 — port code-enrichment
