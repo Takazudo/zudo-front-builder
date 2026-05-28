@@ -52,13 +52,19 @@ use zfb_md_ast::{
 
 /// Returns true if the href should be skipped as an external URL.
 ///
-/// Matches `http://`, `https://`, `mailto:`, `ftp://`, and any other
-/// scheme-prefixed URL (contains `://` or starts with `mailto:`). Fragment-only
-/// links (`#anchor`) and relative file paths are NOT external.
+/// Matches `http://`, `https://`, `mailto:`, `ftp://`, `data:`, `javascript:`,
+/// and any other scheme-prefixed URL. Fragment-only links (`#anchor`) and
+/// relative file paths are NOT external.
 fn is_external_url(href: &str) -> bool {
-    // Scheme detection: contains "://" (http, https, ftp, …) or starts with
-    // "mailto:", "tel:", "data:", etc. (scheme without "//").
-    href.contains("://") || href.starts_with("mailto:") || href.starts_with("tel:")
+    // Scheme detection: contains "://" (http, https, ftp, …) or starts with a
+    // known schemeless prefix (mailto:, tel:, data:, javascript:). Checking for
+    // "://" covers the vast majority of external URLs; the explicit prefixes
+    // cover the common non-"//" schemes used in markdown documents.
+    href.contains("://")
+        || href.starts_with("mailto:")
+        || href.starts_with("tel:")
+        || href.starts_with("data:")
+        || href.starts_with("javascript:")
 }
 
 // ── Link parsing ──────────────────────────────────────────────────────────────
@@ -102,17 +108,76 @@ fn parse_link(href: &str) -> ParsedLink {
 
 // ── Path resolution ───────────────────────────────────────────────────────────
 
-/// Resolve a relative file path reference against the source file's directory.
+/// Resolve a relative file path reference against the source file's directory,
+/// returning a normalized (`.`/`..`-collapsed) path.
 ///
 /// Returns `None` if `source_path` has no parent (shouldn't happen in
-/// practice), or the resolved `PathBuf` otherwise. The path is not
-/// canonicalized — callers should use `exists()` / registry lookup.
+/// practice). Uses [`normalize_path`] to collapse `..` and `.` components
+/// without requiring the path to exist on disk — so the project-root boundary
+/// check works before the filesystem-existence check.
 fn resolve_relative(source_path: &Path, file_ref: &str) -> Option<PathBuf> {
     let dir = source_path.parent()?;
-    let resolved = dir.join(file_ref);
-    // Normalize `./` prefixes by using the path as-is; std `PathBuf::join`
-    // handles `./` correctly on all platforms.
-    Some(resolved)
+    let joined = dir.join(file_ref);
+    Some(normalize_path(&joined))
+}
+
+/// Collapse `.` and `..` components in `path` without accessing the filesystem.
+///
+/// This is a lightweight lexical normalization — it does not resolve symlinks
+/// or require the path to exist. Sufficient for the project-root boundary check
+/// that guards against `../outside.md` traversal.
+///
+/// Algorithm: iterate components and maintain a stack; `..` pops the last
+/// component (unless the stack is empty or the last component is also `..`),
+/// `.` is dropped, and everything else is pushed.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut components: Vec<std::ffi::OsString> = Vec::new();
+    let mut has_root = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(p) => {
+                components.clear();
+                components.push(p.as_os_str().to_os_string());
+            }
+            Component::RootDir => {
+                has_root = true;
+                components.clear();
+            }
+            Component::CurDir => {
+                // `.` — skip.
+            }
+            Component::ParentDir => {
+                // `..` — pop last component if possible; otherwise keep it
+                // (for relative paths that start with `../`).
+                if let Some(last) = components.last() {
+                    // Don't pop if the last component is already `..`.
+                    if last != ".." {
+                        components.pop();
+                        continue;
+                    }
+                }
+                if !has_root {
+                    // Preserve leading `../` for purely relative paths.
+                    components.push("..".into());
+                }
+                // For absolute paths, `..` above the root is silently dropped.
+            }
+            Component::Normal(n) => {
+                components.push(n.to_os_string());
+            }
+        }
+    }
+
+    let mut result = PathBuf::new();
+    if has_root {
+        result.push(std::path::MAIN_SEPARATOR_STR);
+    }
+    for c in components {
+        result.push(c);
+    }
+    result
 }
 
 // ── Visitor ───────────────────────────────────────────────────────────────────
@@ -163,7 +228,8 @@ impl HastVisitor for LinkValidationPlugin {
         // Walk the tree collecting (href, severity) diagnostics.
         let severity = self.severity();
         let allow_external = self.allow_external();
-        collect_diagnostics(node, &source_path, ctx, severity, allow_external);
+        let project_root = ctx.project_root.clone();
+        collect_diagnostics(node, &source_path, &project_root, ctx, severity, allow_external);
     }
 }
 
@@ -173,6 +239,7 @@ impl HastVisitor for LinkValidationPlugin {
 fn collect_diagnostics(
     node: &HastNode,
     source_path: &Path,
+    project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
     allow_external: bool,
@@ -192,6 +259,7 @@ fn collect_diagnostics(
                 validate_link(
                     &href,
                     source_path,
+                    project_root,
                     ctx,
                     severity,
                     allow_external,
@@ -200,12 +268,12 @@ fn collect_diagnostics(
 
             // Recurse into children.
             for child in children {
-                collect_diagnostics(child, source_path, ctx, severity, allow_external);
+                collect_diagnostics(child, source_path, project_root, ctx, severity, allow_external);
             }
         }
         HastNode::Root { children } => {
             for child in children {
-                collect_diagnostics(child, source_path, ctx, severity, allow_external);
+                collect_diagnostics(child, source_path, project_root, ctx, severity, allow_external);
             }
         }
         // Leaf nodes.
@@ -217,6 +285,7 @@ fn collect_diagnostics(
 fn validate_link(
     href: &str,
     source_path: &Path,
+    project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
     allow_external: bool,
@@ -237,12 +306,13 @@ fn validate_link(
             validate_fragment_in_file(href, &fragment, source_path, ctx, severity);
         }
         ParsedLink::FilePath(path) => {
-            // Check that the file exists on disk relative to source_path.
-            validate_file_exists(href, &path, source_path, ctx, severity);
+            // Check that the file exists on disk relative to source_path,
+            // and that the resolved path stays within project_root.
+            validate_file_exists(href, &path, source_path, project_root, ctx, severity);
         }
         ParsedLink::FileWithFragment { path, fragment } => {
             // Resolve the target file, then check the fragment in that file.
-            validate_file_with_fragment(href, &path, &fragment, source_path, ctx, severity);
+            validate_file_with_fragment(href, &path, &fragment, source_path, project_root, ctx, severity);
         }
     }
 }
@@ -269,11 +339,13 @@ fn validate_fragment_in_file(
     }
 }
 
-/// Validate that a file-only reference (`./other.md`) exists on disk.
+/// Validate that a file-only reference (`./other.md`) exists on disk and
+/// does not escape the project root via path traversal (`../outside.md`).
 fn validate_file_exists(
     raw_href: &str,
     file_ref: &str,
     source_path: &Path,
+    project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
 ) {
@@ -281,19 +353,27 @@ fn validate_file_exists(
         Some(p) => p,
         None => return,
     };
+    // Reject path traversal that escapes the project root. `resolved` is
+    // already lexically normalized by `resolve_relative` (no `..` components)
+    // so `starts_with` is a reliable boundary check.
+    if !resolved.starts_with(project_root) {
+        emit_broken_link(raw_href, source_path, ctx, severity);
+        return;
+    }
     // Check filesystem existence.
     if !resolved.exists() {
         emit_broken_link(raw_href, source_path, ctx, severity);
     }
 }
 
-/// Validate a `./other.md#fragment` link: file must exist and the fragment
-/// must be in the target file's heading registry.
+/// Validate a `./other.md#fragment` link: file must exist within the project
+/// root and the fragment must be in the target file's heading registry.
 fn validate_file_with_fragment(
     raw_href: &str,
     file_ref: &str,
     fragment: &str,
     source_path: &Path,
+    project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
 ) {
@@ -301,6 +381,12 @@ fn validate_file_with_fragment(
         Some(p) => p,
         None => return,
     };
+
+    // Reject path traversal that escapes the project root.
+    if !resolved.starts_with(project_root) {
+        emit_broken_link(raw_href, source_path, ctx, severity);
+        return;
+    }
 
     // Check filesystem existence first.
     if !resolved.exists() {
@@ -350,6 +436,8 @@ mod tests {
         assert!(is_external_url("mailto:user@example.com"));
         assert!(is_external_url("ftp://files.example.com"));
         assert!(is_external_url("tel:+1234567890"));
+        assert!(is_external_url("data:image/png;base64,abc"));
+        assert!(is_external_url("javascript:void(0)"));
         assert!(!is_external_url("#fragment"));
         assert!(!is_external_url("./other.md"));
         assert!(!is_external_url("other.md#anchor"));
@@ -395,5 +483,31 @@ mod tests {
         let source = PathBuf::from("/docs/guide/page.md");
         let resolved = resolve_relative(&source, "./other.md").unwrap();
         assert_eq!(resolved, PathBuf::from("/docs/guide/other.md"));
+    }
+
+    #[test]
+    fn resolve_relative_normalizes_parent_traversal() {
+        let source = PathBuf::from("/project/docs/page.md");
+        let resolved = resolve_relative(&source, "../outside.md").unwrap();
+        // `..` should collapse: /project/docs/../outside.md → /project/outside.md
+        assert_eq!(resolved, PathBuf::from("/project/outside.md"));
+    }
+
+    #[test]
+    fn normalize_path_collapses_dot_dot() {
+        let p = PathBuf::from("/a/b/../c");
+        assert_eq!(normalize_path(&p), PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn normalize_path_collapses_dot() {
+        let p = PathBuf::from("/a/./b");
+        assert_eq!(normalize_path(&p), PathBuf::from("/a/b"));
+    }
+
+    #[test]
+    fn normalize_path_double_parent() {
+        let p = PathBuf::from("/a/b/c/../../d");
+        assert_eq!(normalize_path(&p), PathBuf::from("/a/d"));
     }
 }

@@ -12,8 +12,8 @@
 //! operate (every file is processed through `HeadingLinksPlugin` with context
 //! before link validation runs on the linking file).
 //!
-//! All source-file and target-file paths are fake absolute paths backed by
-//! a `tempdir` so filesystem-existence checks work correctly.
+//! All source-file and target-file paths for filesystem tests use `tempdir` so
+//! existence checks and project-root boundary checks work correctly.
 
 use std::path::PathBuf;
 
@@ -36,17 +36,19 @@ fn make_pipeline(cfg: LinkValidationConfig) -> Pipeline {
 }
 
 /// Run the pipeline on `md` with a pre-populated registry and collect
-/// diagnostics. The `source_path` is the file being rendered.
+/// diagnostics. `source_path` is the file being rendered; `project_root` is
+/// the boundary used for path-traversal checks.
 fn run(
     md: &str,
     source_path: PathBuf,
+    project_root: PathBuf,
     registry: &mut HeadingRegistry,
     cfg: LinkValidationConfig,
 ) -> Vec<MarkdownDiagnostic> {
     let mut sink = CollectingSink::new();
     let mut ctx = BuildContext {
         source_path: Some(source_path),
-        project_root: PathBuf::from("/project"),
+        project_root,
         public_dir: PathBuf::from("/project/public"),
         heading_registry: Some(registry),
         diagnostics: Some(&mut sink),
@@ -66,7 +68,13 @@ fn external_url_skipped() {
     let mut registry = HeadingRegistry::new();
     let source = PathBuf::from("/project/docs/page.md");
     let md = "[foo](https://example.com)\n";
-    let diags = run(md, source, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert!(
         diags.is_empty(),
         "external URL must not emit a diagnostic: {diags:?}"
@@ -89,7 +97,13 @@ fn bare_anchor_known_heading_no_diagnostic() {
         },
     );
     let md = "[foo](#known-heading)\n";
-    let diags = run(md, source, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert!(
         diags.is_empty(),
         "known anchor must not emit a diagnostic: {diags:?}"
@@ -113,7 +127,13 @@ fn bare_anchor_missing_heading_emits_warning() {
         },
     );
     let md = "[foo](#missing-heading)\n";
-    let diags = run(md, source, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
     assert_eq!(
         diags[0].severity(),
@@ -131,13 +151,13 @@ fn bare_anchor_missing_heading_emits_warning() {
 /// `[foo](./other.md#known-heading)` where `other.md` defines that heading → ok.
 #[test]
 fn cross_file_known_anchor_no_diagnostic() {
-    // Create a real tempdir so the filesystem-existence check passes.
+    // Create a real tempdir so the filesystem-existence and project-root checks pass.
     let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
-    // Create the target file on disk so the file-exists check passes.
+    // Create files on disk so existence checks pass.
     std::fs::write(&other_path, "# Other\n").expect("write other.md");
-    // Also create the source file (used as the context path).
     std::fs::write(&source_path, "").expect("write page.md");
 
     let mut registry = HeadingRegistry::new();
@@ -151,7 +171,13 @@ fn cross_file_known_anchor_no_diagnostic() {
     );
 
     let md = "[foo](./other.md#known-heading)\n";
-    let diags = run(md, source_path, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert!(
         diags.is_empty(),
         "cross-file known anchor must not emit a diagnostic: {diags:?}"
@@ -164,6 +190,7 @@ fn cross_file_known_anchor_no_diagnostic() {
 #[test]
 fn cross_file_missing_anchor_emits_warning() {
     let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
     std::fs::write(&other_path, "# Other\n").expect("write other.md");
@@ -181,7 +208,13 @@ fn cross_file_missing_anchor_emits_warning() {
     );
 
     let md = "[foo](./other.md#missing-heading)\n";
-    let diags = run(md, source_path, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
     assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
     assert!(
@@ -197,12 +230,19 @@ fn cross_file_missing_anchor_emits_warning() {
 #[test]
 fn missing_file_emits_warning() {
     let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     std::fs::write(&source_path, "").expect("write page.md");
 
     let mut registry = HeadingRegistry::new();
     let md = "[foo](./missing.md)\n";
-    let diags = run(md, source_path, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
     assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
     assert!(
@@ -224,7 +264,13 @@ fn fail_on_broken_true_emits_error() {
         fail_on_broken: Some(true),
         allow_external: None,
     };
-    let diags = run(md, source, &mut registry, cfg);
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        cfg,
+    );
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
     assert_eq!(
         diags[0].severity(),
@@ -270,7 +316,13 @@ fn multiple_broken_links_all_emitted() {
     let source = PathBuf::from("/project/docs/page.md");
     let mut registry = HeadingRegistry::new();
     let md = "[a](#missing-a)\n\n[b](#missing-b)\n";
-    let diags = run(md, source, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert_eq!(
         diags.len(),
         2,
@@ -284,6 +336,7 @@ fn multiple_broken_links_all_emitted() {
 #[test]
 fn existing_file_no_anchor_no_diagnostic() {
     let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let target_path = tmpdir.path().join("existing.md");
     std::fs::write(&target_path, "# Target\n").expect("write existing.md");
@@ -291,9 +344,52 @@ fn existing_file_no_anchor_no_diagnostic() {
 
     let mut registry = HeadingRegistry::new();
     let md = "[foo](./existing.md)\n";
-    let diags = run(md, source_path, &mut registry, LinkValidationConfig::default());
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
     assert!(
         diags.is_empty(),
         "existing file without anchor must not emit a diagnostic: {diags:?}"
+    );
+}
+
+// ── Fixture 11: path traversal → diagnostic ───────────────────────────────────
+
+/// `[foo](../outside.md)` that escapes project_root → diagnostic, even if
+/// the file happens to exist on disk.
+#[test]
+fn path_traversal_outside_project_root_emits_diagnostic() {
+    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    // Create a sub-directory as the project root; source is inside it.
+    let project_root = tmpdir.path().join("project");
+    std::fs::create_dir_all(&project_root).expect("create project dir");
+    let source_path = project_root.join("page.md");
+    std::fs::write(&source_path, "").expect("write page.md");
+    // Create a file OUTSIDE the project root so existence alone would pass.
+    let outside = tmpdir.path().join("outside.md");
+    std::fs::write(&outside, "# Outside\n").expect("write outside.md");
+
+    let mut registry = HeadingRegistry::new();
+    let md = "[foo](../outside.md)\n";
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "path traversal outside project root must emit a diagnostic: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. }
+            if url == "../outside.md"),
+        "url must be the raw href: {diags:?}"
     );
 }
