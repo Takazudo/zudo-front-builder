@@ -431,17 +431,14 @@ gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagN
 
 ### What to remove
 
-1. **Delete the draft GH Release** (this also deletes its uploaded assets — the Mac archive + `.sha256`):
-
-   ```bash
-   gh release delete v<version> --yes --cleanup-tag
-   ```
-
-   `--cleanup-tag` deletes the associated git tag. For a **never-published draft** the tag ref does not exist yet, so this is a safe no-op on the tag and only the draft + its assets are removed. **NEVER** run this against a **published** Release — that would delete a live tag consumers may depend on. Confirm `isDraft == true` first:
+1. **Confirm it is a draft, then delete it** (deletion also removes its uploaded assets — the Mac archive + `.sha256`):
 
    ```bash
    gh release view v<version> --json isDraft --jq '.isDraft'   # must be true
+   gh release delete v<version> --yes
    ```
+
+   Do **NOT** pass `--cleanup-tag` for a never-published draft. GitHub stores the intended tag name but has not created the git ref, so `--cleanup-tag` returns `HTTP 422: Reference does not exist` and a non-zero exit *after* the release is already gone — noisy and misleading (the release deletion itself succeeded). A draft has no tag to clean up. And **NEVER** delete a **published** Release here — that would remove a live tag consumers may depend on.
 
 2. **Decide whether to undo the bump commit.** Check where the bump sits relative to HEAD:
 
@@ -486,7 +483,7 @@ Surface the mismatch clearly. Recommend rolling back (see "Rolling back the bump
 
 ### Orphaned / abandoned draft Release
 
-A draft created in a prior run that was never published — the most common leftover. Detected by Step 1's draft scan (or `gh release list --json name,isDraft,tagName`). Clean it up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft): delete the draft (and its assets) with `gh release delete v<version> --yes --cleanup-tag`, and do **not** rewrite history if the bump commit is already buried under later commits.
+A draft created in a prior run that was never published — the most common leftover. Detected by Step 1's draft scan (or `gh release list --json name,isDraft,tagName`). Clean it up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft): delete the draft (and its assets) with `gh release delete v<version> --yes` (no `--cleanup-tag` — a never-published draft has no tag ref), and do **not** rewrite history if the bump commit is already buried under later commits.
 
 ### Rolling back the bump
 
