@@ -1,0 +1,82 @@
+---
+title: Image dimensions
+description: Auto-detect and inject width/height attributes on local img elements to eliminate Cumulative Layout Shift.
+tier: Opt-in
+---
+
+The `imageDimensions` feature reads image file headers at build time and injects `width` and `height` attributes on `<img>` elements that reference local files. Providing these attributes lets browsers allocate the correct space before the image loads, eliminating Cumulative Layout Shift (CLS).
+
+Reference: [`rehype-img-size`](https://www.npmjs.com/package/rehype-img-size).
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      imageDimensions: {},
+    },
+  },
+});
+```
+
+## Behaviour
+
+For each `<img>` element, the plugin:
+
+1. Skips elements that already carry `width` or `height` attributes.
+2. Skips remote URLs (`http://`, `https://`, `//`) and `data:` URLs.
+3. Resolves the `src` to an absolute path (see **Source resolution** below).
+4. Reads only the image file header — no full decode occurs — and injects `width="W" height="H"`.
+5. If the file cannot be found or is not a recognised image format, emits a build warning and leaves the element unchanged.
+
+Supported formats: **PNG, JPEG, GIF, WebP, AVIF**.
+
+## Source resolution
+
+The plugin resolves `src` values against the file system using `BuildContext`:
+
+- **Absolute paths** (e.g. `/img/hero.png`) are resolved against the project's `public` directory.
+- **Relative paths** (e.g. `./assets/hero.png`, `assets/hero.png`) are resolved relative to the markdown source file's directory.
+- **Remote and `data:` URLs** are skipped silently.
+
+## Options
+
+- `skipRemote` (default `true`) — when `true`, `http://` and `https://` image sources are skipped. Set to `false` only for unusual setups; probing remote images requires network access at build time.
+
+```ts
+imageDimensions: { skipRemote: false },
+```
+
+## Example
+
+Given a 400×300 PNG at `public/images/hero.png` and this markdown:
+
+```md
+![Hero image](/images/hero.png)
+```
+
+The plugin produces:
+
+```html
+<img src="/images/hero.png" alt="Hero image" width="400" height="300">
+```
+
+An `<img>` with explicit dimensions is left unchanged:
+
+```md
+<img src="/images/hero.png" width="200" height="150" />
+```
+
+## Caching
+
+The plugin caches `(path, mtime) → (width, height)` in memory. A second `<img>` reference to the same file within the same build hits the cache rather than re-reading the file header.
+
+## Ordering
+
+`ImageDimensionsPlugin` runs in the hast phase, **after** `ImageEnlargePlugin` (which wraps block-level images in a `<figure>`). The plugin reads the already-wrapped structure and injects dimensions on the `<img>` inside the figure, if any.
+
+## Requirements
+
+This feature uses the wave-6 `BuildContext` seam. The pipeline must be invoked via `Pipeline::run_with_context` (or `Pipeline::apply_hast_visitors_with_context`) for dimensions to be injected. When the feature is wired but `run` (without context) is called, the plugin is a no-op.

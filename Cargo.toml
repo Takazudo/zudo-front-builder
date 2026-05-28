@@ -22,6 +22,10 @@ async-trait = "0.1"
 # `globset` is the BurntSushi crate used by ripgrep — single GlobSet
 # compiles many patterns into one matcher.
 globset = "0.4"
+# Header-only image-dimension probing — PNG/JPG/GIF/WebP/AVIF.
+# Used by zfb-md-extras::image_dimensions (Wave 6 #579) to inject
+# width/height attrs without decoding the full image payload.
+imagesize = "0.14"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and

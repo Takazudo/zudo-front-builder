@@ -97,8 +97,10 @@ pub mod ruby;
 pub mod toc_export;
 
 /// Auto-detect and inject `width`/`height` on `<img>` elements.
-// TODO: Wave 6 — port image-dimensions
-pub mod image_dimensions {}
+/// Wire via `features.imageDimensions: {}` in `zfb.config.ts`.
+/// Ported in Wave 6 (#579). Requires `BuildContext.public_dir` (uses
+/// `visit_with_context`).
+pub mod image_dimensions;
 
 /// Validate internal and external links at build time.
 // TODO: Wave 6 — port link-validation
