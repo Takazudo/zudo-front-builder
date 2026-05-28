@@ -2888,6 +2888,52 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
         cmd.arg("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime");
     }
 
+    // React-only: route conditional-exports resolution through the
+    // `worker` condition so `react-dom/server` resolves to its
+    // `server.browser.js` build instead of the `default` →
+    // `server.node.js` build. The node build does
+    // `require("stream")` / `require("util")`, which esbuild cannot
+    // satisfy under `--platform=neutral` (this bundle runs as a
+    // workerd-style ES module in the embedded V8 host, where node
+    // builtins do not exist) — without this it fails with
+    // `Could not resolve "stream"`. react-dom's exports map keys the
+    // browser-safe SSR entry under the `worker`/`browser`/`deno`
+    // conditions; `worker` is the surgical choice because react-dom
+    // honors it for the server-render entry while Preact's packages do
+    // not use it, so the Preact bundle's resolution is unaffected.
+    // Gated on `Framework::React` so the Preact path adds no new arg and
+    // cannot regress. esbuild's exports-map resolution takes precedence
+    // over `--main-fields`, so no main-fields change is needed for the
+    // exports-based react-dom package.
+    if matches!(input.framework, Framework::React) {
+        cmd.arg("--conditions=worker");
+    }
+
+    // React-only: set `--main-fields=main,module` so esbuild can resolve
+    // main-only CJS packages that have NO `exports` map. Under
+    // `--platform=neutral` esbuild's main-fields list is EMPTY by default,
+    // so a package resolved purely via `package.json` `main`/`module`
+    // (rather than an `exports` map) fails with
+    // `Could not resolve "<pkg>" … The "main" field here was ignored.
+    // Main fields must be configured explicitly when using the "neutral"
+    // platform.` This bites the React UI-library chain — e.g.
+    // `@headlessui/react` → `@floating-ui/react` → `tabbable`, where
+    // `tabbable` ships `main`/`module` and no `exports` — which the T6
+    // configurator depends on. `--conditions=worker` cannot help here
+    // because it only steers `exports`-map resolution.
+    //
+    // Safe to scope to React (and would be safe unconditionally):
+    // `--main-fields` only affects packages WITHOUT an `exports` map.
+    // `exports` always takes precedence, so react/react-dom/preact and any
+    // exports-based dep are untouched. The flag can only turn a currently
+    // *failing* main-only resolution into a success, never alter a working
+    // one. It is React-gated to mirror `--conditions=worker` and keep the
+    // Preact bundle's arg set byte-identical (zero regression). `main,module`
+    // matches esbuild's own node-platform default ordering.
+    if matches!(input.framework, Framework::React) {
+        cmd.arg("--main-fields=main,module");
+    }
+
     // User code consults the public SDK via the bare `zfb` namespace
     // (`zfb/content`, `zfb/config`, `zfb/paginate`, …) — these are the
     // documented import paths surfaced by `@takazudo/zfb`'s `exports`
@@ -2951,6 +2997,22 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     let prod = input.mode.is_prod();
     cmd.arg(format!("--define:import.meta.env.PROD={}", prod));
     cmd.arg(format!("--define:import.meta.env.DEV={}", !prod));
+
+    // process.env.NODE_ENV — always emitted, mode-driven, framework-agnostic.
+    //
+    // React's CJS entry (`react`, `react-dom/server`) reads
+    // `process.env.NODE_ENV` at module-init time to pick its
+    // production-vs-development code path. In the SSR/main bundle this
+    // runs inside V8 with no Node `process` global, so without inlining
+    // the value the bundle throws `ReferenceError: process is not defined`
+    // before any React component can render. The islands *client* bundle
+    // already defines this unconditionally (see
+    // `zfb-islands/src/esbuild.rs::bundle_one_entry`); mirror it here so
+    // both pipelines agree. Preact does not need it but the define is
+    // harmless for Preact (esbuild just folds the unused branch away), so
+    // it is not framework-gated — matching the client bundle's behaviour.
+    let node_env = if prod { "production" } else { "development" };
+    cmd.arg(format!("--define:process.env.NODE_ENV=\"{}\"", node_env));
 
     // PUBLIC_-prefixed env vars only. Anything else is dropped server-
     // side and never reaches the bundle.

@@ -640,8 +640,13 @@ impl BuildRunner for DefaultRunner {
         // `"use client"` components, etc.).
         let css = build_default_css_payload(project_root, outdir, config)
             .context("CSS emitter (DefaultRunner) failed")?;
-        let islands = build_default_islands_payload(project_root, outdir, &self.islands_plugin_config)
-            .context("islands emitter (DefaultRunner) failed")?;
+        let islands = build_default_islands_payload(
+            project_root,
+            outdir,
+            config.framework,
+            &self.islands_plugin_config,
+        )
+        .context("islands emitter (DefaultRunner) failed")?;
         Ok(ProdAssetEmitterInputs { css, islands })
     }
 }
@@ -926,6 +931,7 @@ pub(crate) fn compute_css_module_class_maps(
 pub(crate) fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
+    framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
 ) -> Result<Option<AssetEmitterPayload>> {
     // Walk the conventional islands roots. The scanner DFS-walks
@@ -1073,8 +1079,20 @@ pub(crate) fn build_default_islands_payload(
     // bundler so the synthetic islands entry picks up the client-router
     // runtime's side-effect import. When false the generated entry is
     // byte-identical to a pre-#289 build.
+    // Thread the configured framework's JSX import source into the
+    // islands BundleConfig (gap: previously hardcoded to Preact via the
+    // `BundleConfig::production()` default). This drives BOTH esbuild's
+    // `--jsx-import-source` AND — because `produce_bundle_js` derives the
+    // mount-glue framework back from this same field — the React vs
+    // Preact hydration glue emitted into the shared bundle.
+    let islands_jsx_import_source = match framework {
+        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
+        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
+    }
+    .jsx_import_source();
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
+        .with_jsx_import_source(islands_jsx_import_source)
         .with_client_router(scan_meta.uses_client_router);
 
     match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
@@ -3739,6 +3757,7 @@ mod tests {
         let payload = build_default_islands_payload(
             project_root,
             &project_root.join("dist"),
+            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
         )
         .expect("should not error");
@@ -3765,6 +3784,7 @@ mod tests {
         let payload = build_default_islands_payload(
             project_root,
             &project_root.join("dist"),
+            crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
         )
         .expect("should not error");

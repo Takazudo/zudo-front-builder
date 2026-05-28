@@ -453,6 +453,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     match crate::commands::build::build_default_islands_payload(
         &project_root,
         &dist_root,
+        cfg.framework,
         &islands_plugin_config,
     ) {
         Ok(Some(payload)) => {
@@ -477,12 +478,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let project_root = project_root.clone();
         let dist_root_for_islands = dist_root.clone();
         let plugin_cfg = islands_plugin_config.clone();
+        let framework = cfg.framework;
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
             let payload = crate::commands::build::build_default_islands_payload(
                 &project_root,
                 &dist_root_for_islands,
+                framework,
                 &plugin_cfg,
             )?;
             // Rewrite the shared handle so the next initial GET (a fresh

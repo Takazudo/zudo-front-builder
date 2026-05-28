@@ -393,6 +393,23 @@ impl FrameworkKind {
             FrameworkKind::React => "react",
         }
     }
+
+    /// Recover the [`FrameworkKind`] from a `jsx_import_source` string
+    /// (the inverse of [`Self::jsx_import_source`]). Used by the
+    /// shared-bundle path to derive the mount-glue framework from
+    /// [`BundleConfig::jsx_import_source`] — the single source of truth
+    /// the orchestrator already sets via `with_jsx_import_source`. Keeping
+    /// one field drive both the esbuild `--jsx-import-source` flag AND the
+    /// emitted hydration glue makes the two structurally incapable of
+    /// diverging (a React JSX transform with a Preact `h()` mount thunk
+    /// would crash at hydrate time). Anything other than `"react"` maps to
+    /// `Preact`, matching the default.
+    pub fn from_jsx_import_source(s: &str) -> Self {
+        match s {
+            "react" => FrameworkKind::React,
+            _ => FrameworkKind::Preact,
+        }
+    }
 }
 
 /// Build the public URL for a per-island JS asset.
@@ -598,6 +615,35 @@ mod tests {
         // and the hydrated bundle disagree on how JSX compiles.
         assert_eq!(FrameworkKind::Preact.jsx_import_source(), "preact");
         assert_eq!(FrameworkKind::React.jsx_import_source(), "react");
+    }
+
+    #[test]
+    fn framework_kind_from_jsx_import_source_round_trips() {
+        // `from_jsx_import_source` is the inverse used by the shared-bundle
+        // path to derive the mount-glue framework from
+        // `BundleConfig::jsx_import_source` (one field driving both the
+        // esbuild flag and the emitted glue). Round-trip both variants and
+        // confirm the default fallback for unknown sources.
+        for fw in [FrameworkKind::Preact, FrameworkKind::React] {
+            assert_eq!(FrameworkKind::from_jsx_import_source(fw.jsx_import_source()), fw);
+        }
+        assert_eq!(
+            FrameworkKind::from_jsx_import_source("react"),
+            FrameworkKind::React
+        );
+        assert_eq!(
+            FrameworkKind::from_jsx_import_source("preact"),
+            FrameworkKind::Preact
+        );
+        // Unknown / empty falls back to the Preact default.
+        assert_eq!(
+            FrameworkKind::from_jsx_import_source("solid"),
+            FrameworkKind::Preact
+        );
+        assert_eq!(
+            FrameworkKind::from_jsx_import_source(""),
+            FrameworkKind::Preact
+        );
     }
 
     #[test]

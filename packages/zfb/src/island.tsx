@@ -149,52 +149,41 @@ export function Island(props: IslandProps): IslandElement {
     const skipSsrProps: Record<string, unknown> = {
       [SKIP_SSR_MARKER_ATTR]: componentName,
       "data-when": when,
-      children: props.ssrFallback ?? null,
     };
     if (dataProps !== undefined) skipSsrProps[PROPS_DATA_ATTR] = dataProps;
-    return makeVNode({
-      type: "div",
-      props: skipSsrProps,
-      key: null,
-    });
+    return makeWrapper(skipSsrProps, props.ssrFallback ?? null);
   }
 
   const hydrateProps: Record<string, unknown> = {
     [HYDRATE_MARKER_ATTR]: componentName,
     "data-when": when,
-    children: props.children,
   };
   if (dataProps !== undefined) hydrateProps[PROPS_DATA_ATTR] = dataProps;
-  return makeVNode({
-    type: "div",
-    props: hydrateProps,
-    key: null,
-  });
+  return makeWrapper(hydrateProps, props.children);
 }
 
 /**
- * Construct the structural JSX-element shape with `constructor` set to
- * `undefined`.
+ * Construct the wrapper element through the **per-project JSX runtime**.
  *
- * Why: `preact-render-to-string` (and Preact's diff path) recognise a
- * VNode by checking `vnode.constructor === undefined`. A plain object
- * literal `{ type, props, key }` inherits `Object` for `.constructor`,
- * so the renderer treats it as foreign data and emits no markup —
- * which would silently strip every `<Island>` from SSG output. Marking
- * `constructor: undefined` is the documented sentinel that both
- * Preact's and React's renderers treat as a structural VNode.
+ * Why JSX delegation rather than a hand-rolled `{ type, props, key }`
+ * object literal: a plain literal is only valid for Preact (whose diff
+ * path / `preact-render-to-string` recognise a VNode by
+ * `vnode.constructor === undefined`). React's renderer rejects such an
+ * object as a child with "Objects are not valid as a React child"
+ * (minified error #31) because a real React element carries
+ * `$$typeof: Symbol.for("react.element")`, which a literal cannot fake
+ * portably. By emitting actual JSX here, esbuild's automatic transform —
+ * driven by the consuming project's `--jsx-import-source` (`react` or
+ * `preact`) — produces the right element shape for whichever framework
+ * the project configured. The SDK source itself stays framework-agnostic;
+ * the build step picks the runtime. (zfb issue: React islands SSR.)
  *
  * The cast back to `IslandElement` keeps the public type tight; the
- * extra runtime field is JS-only and is invisible to type consumers.
+ * concrete element shape produced by the runtime is invisible to type
+ * consumers.
  */
-function makeVNode(shape: {
-  type: string;
-  props: Record<string, unknown>;
-  key: unknown;
-}): IslandElement {
-  const v = shape as unknown as { constructor?: unknown };
-  v.constructor = undefined;
-  return shape as IslandElement;
+function makeWrapper(props: Record<string, unknown>, children: unknown): IslandElement {
+  return (<div {...props}>{children as never}</div>) as unknown as IslandElement;
 }
 
 /**
