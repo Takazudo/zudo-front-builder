@@ -150,10 +150,12 @@ This propagates the new version to all lockstep packages and updates `optionalDe
 ### 4c. Regenerate lockfile
 
 ```bash
-pnpm install
+pnpm install --lockfile-only
 ```
 
-This regenerates `pnpm-lock.yaml` so CI's `pnpm install --frozen-lockfile` succeeds.
+This regenerates `pnpm-lock.yaml` (so CI's `pnpm install --frozen-lockfile` succeeds) **without touching `node_modules`**. Use `--lockfile-only` rather than a plain `pnpm install`: bumping the workspace versions makes pnpm consider `node_modules` stale, so a full install wants to **purge and relink it** — and under a non-interactive shell (no TTY) that aborts with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. For a version-only bump the lockfile diff is just the `specifier: workspace:<old>` → `<new>` lines (a registry-sourced `deprecated:` annotation on an unrelated transitive dep may also appear — benign; keep it, a fresh resolve produces it too).
+
+If a later step needs a consistent `node_modules` (the commit hook's `pnpm exec prettier`, or the Step 5 tests), do one full sync with the purge auto-confirmed: `CI=1 pnpm install`.
 
 **Lockfile drift heuristic** — before staging, run (the goal is to surface added/removed lines that are NOT simple two-space-indented entries; `grep -E` cannot do a negative lookahead, so use `grep -P` where available, else the awk fallback):
 
@@ -214,6 +216,8 @@ pnpm --filter @takazudo/zfb test && cargo test --package zfb
 ```
 
 If anything fails, stop and tell the user. Do not proceed.
+
+If you used `--lockfile-only` in 4c (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
 
 Note: the Rust CLI binary is built by `.github/workflows/release.yml` — do not attempt to build it here.
 

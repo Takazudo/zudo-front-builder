@@ -59,7 +59,14 @@ Before doing anything else, verify ALL of the following. Abort with a clear mess
 
 6. **Build script exists** — verify `scripts/build-macos-x64-local.sh` is present. Abort if missing.
 
-7. **Rust toolchain present** — run `rustup --version`. Abort if rustup is not installed. (The build script runs `rustup target add x86_64-apple-darwin` itself — that step is idempotent.)
+7. **Rust toolchain present, and `cargo` resolves to rustup (not Homebrew).** Run `rustup --version` (abort if missing). Then run `cargo --version`: if it prints `(Homebrew)` — or `which cargo` points into `/opt/homebrew` — a standalone Homebrew `rust` is shadowing the rustup shims (happens when `~/.cargo/bin` is not ahead of `/opt/homebrew/bin` on PATH). Homebrew's rust is **host-only** and cannot cross-compile `x86_64-apple-darwin`; the build then dies with `error[E0463]: can't find crate for core`. Put the rustup toolchain first for the build:
+
+   ```bash
+   export PATH="$HOME/.rustup/toolchains/$(rustup show active-toolchain | awk '{print $1}')/bin:$PATH"
+   cargo --version   # must NOT say (Homebrew)
+   ```
+
+   The build script runs `rustup target add x86_64-apple-darwin` itself (idempotent). On a **first-ever** install of that target the `rust-std` download can lag behind `cargo build`, producing the same E0463 error on the first run — just confirm `rustup target list --installed` shows `x86_64-apple-darwin` and re-run.
 
 ## Run the build and upload
 
@@ -133,3 +140,6 @@ the stable channel; testers use `npm i -g zfb@next` or ZFB_VERSION=latest-prerel
 - The build script has a fallback that creates a GH Release if none exists. With the X9 flow, `/l-make-release` creates the draft first, so the fallback does not fire — precondition 5 above ensures the draft exists before invoking the script.
 - The build script reads the semver from `packages/zfb/package.json` — the tag argument is used only for the `gh release upload` target. The semver in the archive name comes from the package.json, not the tag string.
 - **Abandoning the draft.** This skill uploads to an existing draft Release; it never tears one down. If the release is abandoned (problem found, or never published), clean up the orphaned draft via `/l-make-release cancel` (see its "Cancelling a release / cleaning up an orphaned draft" section) — it deletes the draft + the uploaded archive/`.sha256` assets and decides whether to revert the bump.
+- **Apple Silicon + no Rosetta 2: the script's `--version` assertion fails.** `build-macos-x64-local.sh` runs `"$built_binary" --version` to verify the `ZFB_RELEASE_VERSION` stamp. On an Apple Silicon host **without Rosetta 2** the x86_64 binary cannot execute and the step dies with `Bad CPU type in executable` (verify Rosetta with `arch -x86_64 /usr/bin/true`). The cross-compile itself has already succeeded by then. Two ways forward:
+  - Install Rosetta once (`softwareupdate --install-rosetta --agree-to-license`, needs admin) and re-run — `cargo build` is cached so the re-run is fast.
+  - Or, if Rosetta cannot be installed, **verify the stamp statically** and finish the post-build steps by hand. The clap version comes from `option_env!("ZFB_RELEASE_VERSION")` (see `crates/zfb/src/cli.rs`); since the script always injects it, confirm it landed in rodata: `strings <binary> | grep -F "<semver>"` should show the literal next to `zfb`/`zudo-front-builder`. Then replicate the script's tail: `cp` the binary to `packages/zfb-darwin-x64/zfb`, `tar -C packages/zfb-darwin-x64 -czf zfb-<semver>-x86_64-apple-darwin.tar.gz zfb`, write the `.sha256` (GNU two-space format), and `gh release upload <tag> <archive> <archive>.sha256 --clobber`.
