@@ -76,7 +76,7 @@ impl HastVisitor for SyntectPlugin {
 
 fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, theme: Option<&str>) {
     for child in children.iter_mut() {
-        if let Some((lang, code)) = lang_and_code(child) {
+        if let Some((lang, meta, code)) = lang_and_code(child) {
             if lang == "mermaid" {
                 continue;
             }
@@ -97,9 +97,16 @@ fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, theme:
                         void: false,
                     })
                     .collect();
+                // Preserve `data-meta` on the new <code> element so downstream
+                // hast visitors (e.g. wave-5 CodeEnrichmentPlugin) can read the
+                // fence info-string (e.g. `{1,3-5}` for line highlighting).
+                let mut code_attrs: Vec<(String, String)> = Vec::new();
+                if let Some(m) = meta {
+                    code_attrs.push(("data-meta".to_string(), m));
+                }
                 let code_el = HastNode::Element {
                     tag: "code".to_string(),
-                    attrs: vec![],
+                    attrs: code_attrs,
                     children: line_spans,
                     void: false,
                 };
@@ -118,8 +125,8 @@ fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, theme:
 }
 
 /// If `node` is `<pre><code data-lang="…">TEXT</code></pre>`, return
-/// `(lang, code_text)`.
-fn lang_and_code(node: &HastNode) -> Option<(String, String)> {
+/// `(lang, meta, code_text)` where `meta` is the optional `data-meta` value.
+fn lang_and_code(node: &HastNode) -> Option<(String, Option<String>, String)> {
     let HastNode::Element { tag, children, .. } = node else {
         return None;
     };
@@ -142,13 +149,17 @@ fn lang_and_code(node: &HastNode) -> Option<(String, String)> {
         .iter()
         .find(|(k, _)| k == "data-lang")
         .map(|(_, v)| v.clone())?;
+    let meta = attrs
+        .iter()
+        .find(|(k, _)| k == "data-meta")
+        .map(|(_, v)| v.clone());
     let mut code = String::new();
     for c in code_children {
         if let HastNode::Text(t) = c {
             code.push_str(t);
         }
     }
-    Some((lang, code))
+    Some((lang, meta, code))
 }
 
 #[cfg(test)]

@@ -1,0 +1,100 @@
+---
+title: Code-block enrichment
+description: Add diff markers and per-line highlighting to fenced code blocks.
+tier: Opt-in
+---
+
+The `codeEnrichment` feature adds two interactive code-block enrichments:
+
+1. **Diff markers** — annotate added/removed lines via `// [!code ++]` / `// [!code --]` comments.
+2. **Line highlighting** — highlight specific lines by adding a range like `{1,3-5}` to the fence info-string.
+
+Both behaviors run as a hast-phase visitor after the syntect highlighter, operating on the per-line
+`<span class="line">` structure it emits. Reference: [rehype-pretty-code](https://rehype-pretty-code.netlify.app/).
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      codeEnrichment: {},
+    },
+  },
+});
+```
+
+Both `diffMarkers` and `lineHighlight` are **on by default** when the feature is enabled.
+To disable either independently:
+
+```ts
+codeEnrichment: {
+  diffMarkers: false,   // disable diff-marker processing
+  lineHighlight: true,
+},
+```
+
+## Diff markers
+
+Add `// [!code ++]` or `// [!code --]` as a comment at the end of a line.
+The marker comment is stripped from the visible output. The matching
+`<span class="line">` receives `data-line-diff="added"` or `data-line-diff="removed"`.
+
+````md
+```js
+const unchanged = 1;
+const removed = 2; // [!code --]
+const added = 3; // [!code ++]
+```
+````
+
+Use these data attributes in CSS to style the diff:
+
+```css
+span.line[data-line-diff="added"]   { background: rgba(0, 255, 0, 0.1); }
+span.line[data-line-diff="removed"] { background: rgba(255, 0, 0, 0.1); }
+```
+
+Supported comment styles: `//` (JS/TS/Rust), `#` (Python/Ruby/Shell), `--` (SQL/Lua).
+
+## Line highlighting
+
+Add a brace-delimited range after the language identifier in the fence info-string.
+Matching lines receive `data-line-highlight="true"` on their `<span class="line">`.
+
+````md
+```js {1,3-5}
+const a = 1;
+const b = 2;
+const c = 3;
+const d = 4;
+const e = 5;
+const f = 6;
+```
+````
+
+Lines 1, 3, 4, and 5 get `data-line-highlight="true"`. Style them in CSS:
+
+```css
+span.line[data-line-highlight="true"] { background: rgba(255, 255, 0, 0.1); }
+```
+
+The range syntax supports:
+
+- Single numbers: `{3}`
+- Ranges: `{3-5}` (inclusive)
+- Combinations: `{1,3-5,8}`
+
+## Combining both
+
+Diff markers and line highlighting work independently on each line, so the same line can have both:
+
+````md
+```js {2}
+const x = 1; // [!code ++]
+const y = 2;
+```
+````
+
+Line 1 gets `data-line-diff="added"` (diff marker). Line 2 gets `data-line-highlight="true"` (highlight range).

@@ -54,12 +54,29 @@ pub struct GithubAutolinksConfig {
     pub repo: Option<String>,
 }
 
-/// Options stub for the `codeEnrichment` feature.
+/// Options for the `codeEnrichment` feature.
 ///
-/// TODO: fill in actual fields when the codeEnrichment feature is ported.
+/// Both flags default to `true` (ON) when the feature is enabled with the
+/// shorthand `codeEnrichment: {}` or when a field is absent.
+///
+/// Mirrors `CodeEnrichmentConfig` in `packages/zfb/src/config.ts`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CodeEnrichmentConfig {}
+pub struct CodeEnrichmentConfig {
+    /// Enable diff-marker processing: lines containing `// [!code ++]` or
+    /// `// [!code --]` (and language-appropriate equivalents) gain
+    /// `data-line-diff="added"` / `data-line-diff="removed"` on their
+    /// `<span class="line">` element; the marker comment is stripped from
+    /// the visible content. Defaults to `true` when absent.
+    #[serde(default)]
+    pub diff_markers: Option<bool>,
+    /// Enable line-highlight processing: the fence info-string may carry a
+    /// range like `{1,3-5}` after the language identifier; matching lines
+    /// gain `data-line-highlight="true"` on their `<span class="line">`.
+    /// Defaults to `true` when absent.
+    #[serde(default)]
+    pub line_highlight: Option<bool>,
+}
 
 /// Options stub for the `tocExport` feature.
 ///
