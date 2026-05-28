@@ -61,6 +61,46 @@ fn adjacent() {
     run("adjacent");
 }
 
+// ── Caret-syntax fixtures (primary form) ───────────────────────────────────────
+
+/// Exact issue repro (#600): bare base `これは^{これ}` → `<ruby>`.
+#[test]
+fn caret_bare() {
+    run("caret-bare");
+}
+
+/// Braced base `{これは}^{これ}` → `<ruby>`.
+#[test]
+fn caret_braced() {
+    run("caret-braced");
+}
+
+/// Caret annotation embedded after other inline markup in a sentence.
+#[test]
+fn caret_sentence() {
+    run("caret-sentence");
+}
+
+/// Bare base takes the whole preceding Text run (CJK has no word
+/// boundaries); trailing text after the ruby is preserved.
+#[test]
+fn caret_adjacent_text() {
+    run("caret-adjacent-text");
+}
+
+/// False-positive guard: `2^{n}`, `x^{i}`, `^{jsExpr}` (ASCII superscript /
+/// empty base) must NOT be rewritten into `<ruby>`.
+#[test]
+fn caret_superscript_guard() {
+    run("caret-superscript-guard");
+}
+
+/// A plain `{expr}` with neither caret nor pipe stays unchanged.
+#[test]
+fn caret_plain_expr_untouched() {
+    run("caret-plain-expr-untouched");
+}
+
 // ── Feature-disabled smoke tests ──────────────────────────────────────────────
 
 /// When `ruby: false`, `{漢字|かんじ}` must remain as literal text.

@@ -28,6 +28,7 @@
 
 use zfb_content::pipeline::Pipeline;
 use zfb_content::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
+use zfb_md_ast::TocExportConfig;
 use zfb_render::{CompileOptions, SwcPipeline};
 
 fn emit_with_defaults(src: &str) -> String {
@@ -618,4 +619,173 @@ fn multiple_and_deeply_nested_headings_in_one_jsx_pop_correct_slugs() {
     SwcPipeline::new()
         .compile(&out, &opts)
         .unwrap_or_else(|e| panic!("SWC rejected multi-nested output: {e}\n--- src ---\n{out}"));
+}
+
+/// Confirm test for #605 (Wave 2): guards regressions #599 + #600 together on
+/// the JSX-emit / compile path.
+///
+/// When both `ruby` (caret syntax) and `tocExport` are enabled:
+/// - (a) the bare `{これ}` expression must NOT appear in the output — the caret
+///   ruby annotation `これは^{これ}` must be transformed into ruby markup
+///   (#600 / Sub B fix). Pre-fix, JSX emitter left `{これ}` as a raw expression
+///   referencing an undefined JS variable, which compiles fine but fails at
+///   runtime as a ReferenceError.
+/// - (b) `export const toc = [...]` must be at column 0 (module scope), NOT
+///   indented inside the `<_Fragment>` body (#599 / Sub A fix). Pre-fix, the
+///   6-space indented form caused esbuild/SWC parse errors.
+/// - (c) The emitted JSX module must compile via SWC with no parse errors —
+///   the compound guard for both regressions on the actual compile path.
+#[test]
+fn ruby_caret_and_toc_export_together_on_jsx_compile_path() {
+    // Wire BOTH features manually: RubyPlugin (mdast phase) + TocExportPlugin
+    // (hast phase, after HeadingLinksPlugin has assigned ids).
+    let mut p = Pipeline::with_defaults();
+    // RubyPlugin runs in the mdast phase — must be added before the pipeline
+    // converts mdast → hast. `with_defaults()` ships no mdast visitors so
+    // this registration is safe to do right after construction.
+    p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
+    p.add_hast_visitor(Box::new(
+        zfb_md_extras::toc_export::TocExportPlugin::new(TocExportConfig::default()),
+    ));
+
+    // The document contains both repro inputs:
+    // - `これは^{これ}` — caret ruby syntax from #600 (Sub B repro, bare-base form)
+    // - two headings so TocExportPlugin produces a non-empty toc array
+    let src = "## Introduction\n\nこれは^{これ} is ruby annotation.\n\n## Conclusion\n\nMore text.\n";
+    let out = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
+        .expect("pipeline emit with ruby + toc_export ok");
+
+    // (a) Sub B guard — two-part check for the caret ruby annotation.
+    //
+    //     Positive: the caret annotation must produce ruby markup. On the
+    //     JSX-emit path, lowercase tags route through `_components.<tag>`, so
+    //     the expected form is `<_components.ruby>` (not a bare `<ruby>` literal).
+    //     The `rb`/`rt` children follow the same pattern.
+    assert!(
+        out.contains("<_components.ruby>"),
+        "caret ruby annotation must emit `<_components.ruby>` markup (#600 regression):\n{out}",
+    );
+    assert!(
+        out.contains("<_components.rb>これは</_components.rb>"),
+        "ruby base (これは) must be wrapped in `<_components.rb>` (#600 regression):\n{out}",
+    );
+    assert!(
+        out.contains("<_components.rt>これ</_components.rt>"),
+        "ruby text (これ) must be wrapped in `<_components.rt>` (#600 regression):\n{out}",
+    );
+
+    //     Negative: the bare `{これ}` expression must NOT appear.
+    //     Before Sub B's fix, the caret was not parsed as ruby, so the
+    //     `{これ}` part landed as a raw MdxTextExpression in the JSX output,
+    //     causing a runtime ReferenceError (`これ` is not defined). SWC
+    //     compiles it fine, so compile-only checks do NOT catch this regression.
+    assert!(
+        !out.contains("{これ}"),
+        "bare `{{これ}}` expression must NOT appear — caret ruby must be transformed (#600 regression):\n{out}",
+    );
+
+    // (b) Sub A guard: `export const toc` must be at column 0 (module scope).
+    assert!(
+        out.contains("\nexport const toc = ["),
+        "export const toc must appear at column 0 (no leading spaces) (#599 regression):\n{out}",
+    );
+    assert!(
+        !out.contains("      export const toc"),
+        "export const toc must NOT be 6-space-indented (Fragment-body regression #599):\n{out}",
+    );
+    // Module-scope position: before `function _createMdxContent`.
+    let toc_pos = out
+        .find("export const toc")
+        .expect("export const toc must be present in output");
+    let fn_pos = out
+        .find("function _createMdxContent")
+        .expect("function _createMdxContent must be present");
+    assert!(
+        toc_pos < fn_pos,
+        "export const toc must appear before function _createMdxContent (module scope):\n{out}",
+    );
+    // Toc payload must reference both headings (both qualify at depth 2 with default max_depth=3).
+    assert!(
+        out.contains("\"id\":\"introduction\"") && out.contains("\"id\":\"conclusion\""),
+        "toc array must contain both heading ids:\n{out}",
+    );
+
+    // (c) SWC compile guard: the combined output must be valid TSX.
+    //     Before Sub A's fix, SWC rejected with `Expected "}" but found ":"`.
+    let opts = CompileOptions::default().with_filename("ruby-toc-confirm.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| {
+            panic!(
+                "SWC rejected ruby + toc_export combined output (#605 regression guard): {e}\n--- src ---\n{out}"
+            )
+        });
+}
+
+/// Regression for #599 / fix in #602: `TocExportPlugin` injects
+/// `export const toc = …` as a `HastNode::JsxRaw` at the front of the
+/// hast Root. On the JSX-emit pipeline path, `HastJsxBridge::emit_root`
+/// used to prepend 6 spaces of indent before every child, making the
+/// export land inside the `<_Fragment>` body — in MDX an indented `export`
+/// is parsed as content so esbuild rejected the JSON object literal with
+/// `Expected "}" but found ":"`. The fix hoists root-level module-level
+/// ESM JsxRaw nodes to column 0 at module scope.
+#[test]
+fn toc_export_plugin_emits_at_column_0_on_jsx_path() {
+    // Build a pipeline with the default plugins PLUS TocExportPlugin.
+    // We wire it generically via add_hast_visitor rather than adding a
+    // dedicated `add_toc_export` method — generic wiring is all the fix
+    // requires, and it avoids touching files outside the scope of #602.
+    let mut p = Pipeline::with_defaults();
+    p.add_hast_visitor(Box::new(
+        zfb_md_extras::toc_export::TocExportPlugin::new(TocExportConfig::default()),
+    ));
+    let src = "## Introduction\n\nSome body text.\n\n## Conclusion\n\nMore text.\n";
+    let out = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
+        .expect("pipeline emit with toc_export ok");
+
+    // (1) The export must start at column 0 — no leading whitespace.
+    // A substring search for the newline-prefixed form catches both the
+    // "indented inside Fragment body" regression and any accidental
+    // whitespace introduced between the preceding line and the export.
+    assert!(
+        out.contains("\nexport const toc = ["),
+        "export const toc must appear at column 0 (no leading spaces):\n{out}",
+    );
+
+    // (2) The buggy 6-space indented form must NOT be present.
+    assert!(
+        !out.contains("      export const toc"),
+        "export const toc must NOT be indented (6 spaces = Fragment body regression):\n{out}",
+    );
+
+    // (3) The export must be at module scope, before _createMdxContent.
+    let toc_pos = out
+        .find("export const toc")
+        .expect("export const toc must be present in output");
+    let fn_pos = out
+        .find("function _createMdxContent")
+        .expect("function _createMdxContent must be present");
+    assert!(
+        toc_pos < fn_pos,
+        "export const toc must appear before function _createMdxContent (module scope):\n{out}",
+    );
+
+    // (4) The toc payload must contain the two headings (h2 only, default
+    // max_depth=3; both "Introduction" and "Conclusion" qualify).
+    assert!(
+        out.contains("\"id\":\"introduction\"") && out.contains("\"id\":\"conclusion\""),
+        "toc array must contain both heading ids:\n{out}",
+    );
+
+    // (5) SWC must accept the emitted module — this is the headline
+    // regression check. Before the fix, SWC rejected the module with the
+    // same class of error esbuild reported in #599:
+    // `Expected "}" but found ":"` on the first colon in the JSON literal.
+    let opts = CompileOptions::default().with_filename("toc-export.tsx".to_string());
+    SwcPipeline::new()
+        .compile(&out, &opts)
+        .unwrap_or_else(|e| {
+            panic!("SWC rejected toc-export output (#599 regression): {e}\n--- src ---\n{out}")
+        });
 }

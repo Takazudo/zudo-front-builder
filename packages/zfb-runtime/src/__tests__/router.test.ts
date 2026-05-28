@@ -383,6 +383,69 @@ describe("createPageRouter", () => {
     expect(body).toContain("did not export a default component");
     expect(body).toContain('"/x"');
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #604 — SSR render errors must surface the real JS error message
+  // -------------------------------------------------------------------------
+
+  it("returns 500 with the real error message when the page component throws during render", async () => {
+    // Regression test for #604: previously a thrown ReferenceError escaped
+    // to Hono's default error handler, which returned a generic 500
+    // "Internal Server Error" body that discarded the real message.
+    const throwingPage: PageModule = {
+      default: () => {
+        throw new ReferenceError("someUndefinedVar is not defined");
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
+      contentSnapshot: { collections: {} },
+      framework: stubFramework(),
+    });
+    const res = await router(new Request("http://test.local/throws"));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    const body = await res.text();
+    // Must contain the real JS error message — not the opaque generic phrase.
+    expect(body).toContain("someUndefinedVar is not defined");
+    // Must contain the route so the build pipeline can identify the failing page.
+    expect(body).toContain('"/throws"');
+  });
+
+  it("returns 500 with the real error message when renderToString throws during SSR", async () => {
+    // Covers the second half of the guarded path: errors thrown inside
+    // opts.framework.renderToString (e.g. preact-render-to-string choking
+    // on malformed markup like the ruby <rt>/<rb> shape from #600) must
+    // also surface rather than being swallowed.
+    const page: PageModule = {
+      default: () => ({ type: "ruby", props: { children: "broken" }, key: null }),
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/ruby-page", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: {
+        renderToString: () => {
+          throw new Error("renderToString: unexpected element shape");
+        },
+      },
+    });
+    const res = await router(new Request("http://test.local/ruby-page"));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    const body = await res.text();
+    expect(body).toContain("renderToString: unexpected element shape");
+    expect(body).toContain('"/ruby-page"');
+  });
+
+  it("successful renders are unaffected after adding the render try/catch", async () => {
+    // Happy-path guard: the try/catch must not interfere with 200 renders.
+    const { pages, contentSnapshot } = buildFixture();
+    const router = createPageRouter({ pages, contentSnapshot, framework: stubFramework() });
+    const res = await router(new Request("http://test.local/"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("<h1>Blog</h1>");
+  });
 });
 
 // ---------------------------------------------------------------------------
