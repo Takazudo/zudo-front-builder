@@ -1,0 +1,24 @@
+---
+title: v0.1.0-next.15
+sidebar_position: 1015
+---
+
+# v0.1.0-next.15
+
+Released: 2026-05-29
+
+## Features
+
+- feat(islands): add React framework support to the islands pipeline (f663b19)
+
+  Projects with `framework: "react"` in `zfb.config` can now hydrate React
+  islands. The configured framework is threaded through the islands pipeline:
+  the shared client bundle emits React mount glue (`createElement` +
+  `hydrateRoot`/`createRoot`) instead of the hardcoded Preact glue, the SSR/main
+  bundle defines `process.env.NODE_ENV` and (React-only) passes
+  `--conditions=worker` and `--main-fields=main,module` so `react-dom/server`
+  and main-only CJS deps (e.g. `tabbable` via `@headlessui/react`) resolve under
+  `--platform=neutral`. The `@takazudo/zfb` `Island` wrapper now mints its
+  element through JSX delegation so esbuild's per-project `--jsx-import-source`
+  produces the right element for either framework; the published type surface
+  stays framework-agnostic. Preact remains the unchanged default.
