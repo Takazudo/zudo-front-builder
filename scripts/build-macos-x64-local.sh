@@ -92,10 +92,50 @@ semver="$(node -p "require('./packages/zfb/package.json').version")"
 archive="zfb-${semver}-${target}.tar.gz"
 echo "==> Building zfb ${semver} for ${target}"
 
+# ── Fix (a): Homebrew rust shadows rustup → ensure rustup toolchain wins ──────
+# When ~/.cargo/bin is not ahead of /opt/homebrew/bin on PATH, `cargo` may
+# resolve to Homebrew's host-only rust which cannot cross-compile x86_64-apple-
+# darwin (error[E0463]: can't find crate for `core`). Detect and fix it here,
+# before any cargo/rustup invocation, so the whole script uses the right cargo.
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "ERROR: rustup not found. Install rustup (https://rustup.rs/) and ensure" >&2
+  echo "       ~/.cargo/bin precedes /opt/homebrew/bin on PATH." >&2
+  exit 1
+fi
+if cargo --version 2>/dev/null | grep -q '(Homebrew)'; then
+  echo "==> Homebrew rust detected on PATH — prepending rustup toolchain bin"
+  _rustup_toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+  _rustup_toolchain_bin="$HOME/.rustup/toolchains/${_rustup_toolchain}/bin"
+  if [[ ! -d "$_rustup_toolchain_bin" ]]; then
+    echo "ERROR: resolved rustup toolchain bin not found: ${_rustup_toolchain_bin}" >&2
+    echo "       Run 'rustup toolchain install ${_rustup_toolchain}' and retry." >&2
+    exit 1
+  fi
+  export PATH="${_rustup_toolchain_bin}:$PATH"
+  echo "    cargo now: $(cargo --version)"
+fi
+
 # ── Toolchain target (idempotent — Apple Silicon hosts need this once) ────────
 
 echo "==> Ensuring rust target ${target} is installed"
 rustup target add "$target"
+
+# Fix (c): wait for the target to be fully registered before building.
+# On first-ever install the rust-std download can lag behind cargo build and
+# produce the same E0463 error. Poll until the target is listed (bounded).
+_target_wait=0
+_target_timeout=60
+until rustup target list --installed | grep -qx "$target"; do
+  if [[ $_target_wait -ge $_target_timeout ]]; then
+    echo "ERROR: ${target} still not listed by 'rustup target list --installed'" >&2
+    echo "       after ${_target_timeout}s. Check your rustup installation." >&2
+    exit 1
+  fi
+  echo "    Waiting for ${target} to finish installing... (${_target_wait}s)"
+  sleep 2
+  _target_wait=$(( _target_wait + 2 ))
+done
+echo "    Target ${target} is ready."
 
 # ── Install node deps before cargo build ──────────────────────────────────────
 # build.rs embeds framework packages from node_modules at compile time.
@@ -125,14 +165,33 @@ fi
 
 # ── Assert --version equals release semver (mirrors release.yml:284-296) ──────
 # Catches a missed ZFB_RELEASE_VERSION injection before the binary is archived.
-actual_version="$("$built_binary" --version)"
+# Fix (b): on Apple Silicon without Rosetta 2 the x86_64 binary cannot execute
+# (Bad CPU type in executable), so guard the runtime assertion behind a Rosetta
+# check and fall back to a static rodata grep when Rosetta is absent.
+# The version string is embedded via option_env!("ZFB_RELEASE_VERSION") in
+# crates/zfb/src/cli.rs and appears literally in the binary's read-only data.
 expected_version="zfb $semver"
-echo "Expected: $expected_version"
-echo "Actual:   $actual_version"
-if [[ "$actual_version" != "$expected_version" ]]; then
-  echo "ERROR: built binary --version mismatch: got '$actual_version', want '$expected_version'" >&2
-  echo "       (ZFB_RELEASE_VERSION injection likely missing)" >&2
-  exit 1
+if arch -x86_64 /usr/bin/true 2>/dev/null; then
+  # Rosetta present — execute the binary directly (original assertion).
+  actual_version="$("$built_binary" --version)"
+  echo "Expected: $expected_version"
+  echo "Actual:   $actual_version"
+  if [[ "$actual_version" != "$expected_version" ]]; then
+    echo "ERROR: built binary --version mismatch: got '$actual_version', want '$expected_version'" >&2
+    echo "       (ZFB_RELEASE_VERSION injection likely missing)" >&2
+    exit 1
+  fi
+else
+  # No Rosetta — verify the version stamp statically by grepping rodata.
+  echo "==> Rosetta absent — verifying version stamp via static rodata grep"
+  echo "Expected: $expected_version"
+  if grep -aF "$semver" "$built_binary" >/dev/null 2>&1; then
+    echo "Actual:   $semver found in binary rodata — OK"
+  else
+    echo "ERROR: '$semver' not found in binary rodata." >&2
+    echo "       ZFB_RELEASE_VERSION injection likely failed." >&2
+    exit 1
+  fi
 fi
 
 # ── Place binary in the platform package (mirrors release.yml) ────────────────
