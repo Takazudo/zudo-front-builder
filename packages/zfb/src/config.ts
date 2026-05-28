@@ -553,13 +553,26 @@ export type TocExportConfig = {
 export type ImageDimensionsConfig = Record<string, never>;
 
 /**
- * Options stub for the `linkValidation` feature.
+ * Options for the `linkValidation` feature.
  *
- * TODO: fill in actual fields when the linkValidation feature is ported.
+ * Validates internal `[text](file.md#anchor)` and `[text](#anchor)` links at
+ * build time. External URLs (`http://`, `https://`, `mailto:`) are skipped by
+ * default.
  *
- * Mirrors `LinkValidationConfig` in crates/zfb/src/config.rs.
+ * Mirrors `LinkValidationConfig` in `crates/zfb-md-ast/src/features_config.rs`.
  */
-export type LinkValidationConfig = Record<string, never>;
+export type LinkValidationConfig = {
+  /**
+   * When `true`, broken links are reported as errors (build can fail).
+   * Default: `false` (warn-only).
+   */
+  failOnBroken?: boolean;
+  /**
+   * When `true` (default), external URLs are silently skipped.
+   * Set to `false` to validate external links as well.
+   */
+  allowExternal?: boolean;
+};
 
 /**
  * Options stub for the `transclude` feature.

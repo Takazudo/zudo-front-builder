@@ -101,8 +101,10 @@ pub mod toc_export;
 pub mod image_dimensions {}
 
 /// Validate internal and external links at build time.
-// TODO: Wave 6 — port link-validation
-pub mod link_validation {}
+/// Wire via `features.linkValidation: {}` (or with explicit flags) in
+/// `zfb.config.ts`. Phase: hast (runs AFTER all heading-mutating visitors).
+/// Wave 6 (#580).
+pub mod link_validation;
 
 /// Transclusion of other MDX files (`![[path]]` syntax).
 // TODO: Wave 6 — port transclude

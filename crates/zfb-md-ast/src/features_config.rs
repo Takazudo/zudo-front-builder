@@ -116,12 +116,28 @@ impl Default for TocExportConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageDimensionsConfig {}
 
-/// Options stub for the `linkValidation` feature.
+/// Options for the `linkValidation` feature.
 ///
-/// TODO: fill in actual fields when the linkValidation feature is ported.
+/// Validates internal `[text](file.md#anchor)` and `[text](#anchor)` links at
+/// build time using the cross-file heading-ID registry built by
+/// `HeadingLinksPlugin` (wave 6, #568). External URLs (`http://`, `https://`,
+/// `mailto:`, etc.) are skipped by default.
+///
+/// Mirrors `LinkValidationConfig` in `packages/zfb/src/config.ts`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LinkValidationConfig {}
+pub struct LinkValidationConfig {
+    /// When `true`, broken links are emitted as `Error` diagnostics instead
+    /// of `Warning`, which the orchestrator can use to fail the build. Default:
+    /// `false` (warn-only; build continues).
+    #[serde(default)]
+    pub fail_on_broken: Option<bool>,
+    /// When `true` (default), external URLs (`http://`, `https://`, `mailto:`,
+    /// etc.) are silently skipped. Set to `false` to validate external links
+    /// too (useful in CI link-checking pipelines).
+    #[serde(default)]
+    pub allow_external: Option<bool>,
+}
 
 /// Options stub for the `transclude` feature.
 ///

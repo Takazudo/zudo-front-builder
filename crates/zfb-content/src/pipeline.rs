@@ -970,7 +970,17 @@ pub fn register_features(
             zfb_md_extras::toc_export::TocExportPlugin::new(cfg.clone()),
         ));
     }
-    // Wave 4-6: additional pre-syntect feature visitor wiring lands here.
+
+    // Wave 6 (#580): link_validation — validate internal links + anchor
+    // fragments against the heading-ID registry. Runs VERY LATE in the hast
+    // phase — after all heading-mutating visitors — so registry entries for the
+    // current file are already populated by HeadingLinksPlugin. Gated on
+    // `is_some()` (uses a rich options struct, not a FeatureToggle).
+    if let Some(cfg) = &features.link_validation {
+        p.add_hast_visitor(Box::new(
+            zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone()),
+        ));
+    }
 }
 
 /// Register post-syntect feature visitors from `zfb-md-extras` into the pipeline.
