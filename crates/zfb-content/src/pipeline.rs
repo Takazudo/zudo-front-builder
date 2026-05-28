@@ -776,15 +776,18 @@ impl Pipeline {
         Ok(hast)
     }
 
-    /// Like [`Pipeline::run`] but threads a [`BuildContext`] through the
-    /// hast visitor chain.
+    /// Like [`Pipeline::run`] but threads a [`BuildContext`] through both
+    /// the mdast and hast visitor chains.
     ///
-    /// Visitors that opt in to wave-6 features (heading-ID registry,
-    /// diagnostics sink) override [`HastVisitor::visit_with_context`] and
-    /// read from `ctx`. All other visitors receive the same call as in
-    /// [`run`] — the default `visit_with_context` implementation delegates
-    /// to `visit` — so the output is **byte-identical** to `run` when no
-    /// context-aware visitors are registered.
+    /// Mdast visitors that override [`MdastVisitor::visit_with_context`]
+    /// (e.g. the wave-6 `TranscludePlugin`) receive the context so they can
+    /// resolve source-relative file paths. Hast visitors that override
+    /// [`HastVisitor::visit_with_context`] receive context for the registry
+    /// and diagnostics sink.
+    ///
+    /// All other visitors fall back to the no-context `visit` call via the
+    /// default trait implementations, so the output is **byte-identical** to
+    /// [`Pipeline::run`] when no context-aware visitors are registered.
     ///
     /// # Errors
     /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
@@ -797,7 +800,7 @@ impl Pipeline {
             .map_err(|m| PipelineError::Parse(m.to_string()))?;
 
         for v in &mut self.mdast_visitors {
-            v.visit(&mut mdast);
+            v.visit_with_context(&mut mdast, ctx);
         }
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(&mut mdast);
@@ -810,6 +813,25 @@ impl Pipeline {
         }
 
         Ok(hast)
+    }
+
+    /// Run only the mdast visitor chain with build context against an
+    /// externally-parsed mdast tree.
+    ///
+    /// Parallel to [`Pipeline::apply_mdast_visitors`] but threads the context
+    /// through each visitor so wave-6 mdast plugins (e.g. `TranscludePlugin`)
+    /// can access source path and project root for file resolution.
+    pub fn apply_mdast_visitors_with_context(
+        &mut self,
+        node: &mut MdastNode,
+        ctx: &mut BuildContext<'_>,
+    ) {
+        for v in &mut self.mdast_visitors {
+            v.visit_with_context(node, ctx);
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.visit(node);
+        }
     }
 
     /// Run only the hast visitor chain with build context against an
@@ -880,6 +902,19 @@ pub fn register_features(
     use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
+    // transclude MUST run FIRST in the mdast phase — before code_tabs,
+    // admonitions_preset, and all other mdast visitors — so that included
+    // content is spliced into the tree and then processed by subsequent
+    // visitors normally. The TranscludePlugin implements
+    // `MdastVisitor::visit_with_context` and requires a BuildContext
+    // (source_path + project_root) to resolve file paths. When the pipeline
+    // is driven via `run_with_context`, the context is automatically threaded.
+    if let Some(cfg) = &features.transclude {
+        p.add_mdast_visitor(Box::new(
+            zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone()),
+        ));
+    }
+
     // code_tabs MUST run BEFORE admonitions_preset and github_alerts so that
     // `:::code-group` opener paragraphs are consumed before the directive
     // registry or alert scanner inspects them. The CodeTabsPlugin looks for

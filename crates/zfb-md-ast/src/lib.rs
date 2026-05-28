@@ -149,6 +149,19 @@ impl<'a> BuildContext<'a> {
 pub trait MdastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut MdastNode);
+
+    /// Visit with optional build context (wave-6 seam).
+    ///
+    /// Plugins that need `BuildContext` (source path, project root) to
+    /// perform file resolution or diagnostics override this method. The
+    /// default delegates to [`Self::visit`] so all existing visitors are
+    /// automatically backwards-compatible.
+    ///
+    /// Called by `Pipeline::apply_mdast_visitors_with_context` /
+    /// `Pipeline::run_with_context` when context is available.
+    fn visit_with_context(&mut self, node: &mut MdastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 }
 
 /// Hast visitor: mutates a hast tree in place.

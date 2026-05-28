@@ -1,0 +1,87 @@
+---
+title: Transclusion
+description: Inline the content of another file using the :::include directive.
+tier: Opt-in
+---
+
+The `transclude` feature lets you inline content from other files using the `:::include` directive.
+The referenced file is parsed as Markdown and its AST is merged into the including document before
+all other processing runs.
+
+## Enable
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      transclude: {},
+    },
+  },
+});
+```
+
+Optional config:
+
+```ts
+transclude: {
+  maxDepth: 5, // maximum include chain depth (default 5)
+},
+```
+
+## Basic usage
+
+Use `:::include` with a `file` attribute pointing to the file you want to inline.
+The path is resolved relative to the **current source file**.
+
+```md
+# My Document
+
+:::include{file="./snippets/intro.md"}
+
+More content follows.
+```
+
+The included file is inserted in place of the directive, so its headings, paragraphs,
+code blocks, and other elements appear directly in the output.
+
+## Including source code
+
+Set `code=true` to treat the file contents as a code block instead of parsed Markdown.
+The `lang` attribute sets the syntax-highlighting language.
+
+```md
+:::include{file="./examples/hello.rs" code=true lang="rust"}
+```
+
+## Line ranges
+
+The `lines` attribute slices the file to the specified lines before including.
+Use with `code=true` to show a specific excerpt from a source file.
+
+```md
+:::include{file="./src/lib.rs" code=true lang="rust" lines="10-30"}
+```
+
+Line numbers are 1-based and both endpoints are inclusive.
+
+## Chaining
+
+Included files can themselves contain `:::include` directives. The default `maxDepth` of 5
+allows chains up to five levels deep. Deeper chains are rejected with an error diagnostic.
+
+## Cycle detection
+
+If file A includes file B and file B includes file A (directly or transitively), the build
+emits an Error diagnostic and skips the offending directive rather than looping indefinitely.
+
+## Path restrictions
+
+- **Relative paths only** — absolute paths are rejected with an error diagnostic.
+- **Project-root confinement** — the resolved path must remain inside the project root.
+  Path traversal (e.g. `../../outside`) is rejected.
+
+## Blank-line requirement
+
+The `:::include` fence line must be separated from surrounding content by blank lines so the
+Markdown parser treats it as a block directive, not inline content.
