@@ -151,9 +151,8 @@ jobs:
           exit 1
 
       - name: Upsert PR preview comment
-        # NOTE: pinned to v7.1.0 — v8.0.0 (Node 24) had token-handling issues
-        # for us. v7 (Node 20) is battle-tested in this exact comment-upsert
-        # pattern. `github-token` passed explicitly because the implicit
+        # NOTE: bumped to v8.0.0 (Node 24) as part of the Node-20 deprecation
+        # migration. `github-token` passed explicitly because the implicit
         # detection failed with 401 Bad credentials on SHA-pinned action runs.
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
