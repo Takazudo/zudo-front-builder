@@ -44,12 +44,13 @@ anywhere inline — at the start, middle, or end of a sentence:
 
 ## Edge cases
 
-| Input | Result |
-|-------|--------|
-| `{漢字|かんじ}` | `<ruby>` element |
-| `{|ruby}` (empty base) | left as literal text |
-| `{base|}` (empty annotation) | left as literal text |
-| `{text}` (no pipe) | left as literal text |
+Inputs as authored in markdown (not in a table because the pipe in the
+ruby syntax collides with markdown table cell separators):
+
+- `` `{漢字|かんじ}` `` → `<ruby>` element
+- `` `{|ruby}` `` (empty base) → left as literal text
+- `` `{base|}` `` (empty annotation) → left as literal text
+- `` `{text}` `` (no pipe) → left as literal text
 
 ## Scope limitation — no auto-furigana
 
