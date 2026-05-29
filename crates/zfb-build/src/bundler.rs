@@ -3975,6 +3975,65 @@ mod tests {
         );
     }
 
+    // C1 — file-map layer: proves the entry module installs the mdx-components
+    // default export using the canonical #616 shape.
+    //
+    // The canonical export shape pinned by #616 is a **default export object**:
+    //   export default { h2: MyH2, … }
+    //
+    // The bundler must (a) emit a default import of the materialised file and
+    // (b) install it as `globalThis.__zfb.mdxComponents = __zfb_mdx_components`.
+    // The default import form is the only contract — named exports or namespace
+    // imports are not supported. This test pins that contract so a future
+    // refactor that accidentally switches to `import { h2 } from …` or
+    // `import * as …` will be caught here.
+    #[test]
+    fn entry_module_uses_default_import_for_mdx_components_file_map_layer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+            Some("./mdx-components.tsx"),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        // (a) Must be a DEFAULT import, not a namespace or named import.
+        // The canonical #616 shape is `export default { h2: MyH2, … }`, so
+        // entry.mjs must read it as the default binding.
+        assert!(
+            body.contains("import __zfb_mdx_components from \"./mdx-components.tsx\";"),
+            "file-map layer must use a default import (canonical #616 shape); got:\n{body}"
+        );
+        // Absence of namespace and named import forms specifically for the
+        // mdx-components file — these would fail to read a plain default-export
+        // object. (Other named imports in the entry module, like renderToString,
+        // are unrelated and must not be checked here.)
+        assert!(
+            !body.contains("import * as __zfb_mdx_components"),
+            "namespace import must not be used for the file-map layer; got:\n{body}"
+        );
+        assert!(
+            !body.contains("import { __zfb_mdx_components"),
+            "named import of __zfb_mdx_components must not be used for the file-map layer; got:\n{body}"
+        );
+
+        // (b) The installed binding is assigned to the mdxComponents slot.
+        // This is the precedence seam read by mergeMdxComponents in content.ts
+        // (defaultComponents → this slot → per-call components).
+        assert!(
+            body.contains("globalThis.__zfb.mdxComponents = __zfb_mdx_components;"),
+            "file-map layer must install to the mdxComponents precedence slot; got:\n{body}"
+        );
+    }
+
     #[test]
     fn materialise_collection_records_imports_and_compiles_mdx() {
         // The per-collection materialiser must:
