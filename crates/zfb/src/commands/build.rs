@@ -1507,7 +1507,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
     // #586 — thread `markdown.features` into the bundler so opt-in feature
-    // plugins (mermaid, image-enlarge, …) fire per the configured toggles.
+    // plugins (mermaid, …) fire per the configured toggles.
     // `None` keeps the legacy always-on chain, byte-identical to today.
     bundler_input.markdown_features =
         config.markdown.as_ref().and_then(|m| m.features.clone());

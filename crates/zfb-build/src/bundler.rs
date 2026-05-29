@@ -497,9 +497,9 @@ pub struct BundlerInput {
     /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
     /// pipeline is built via the feature-aware
     /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
-    /// (mermaid, image-enlarge, admonitions, …) fire per the configured
+    /// (mermaid, admonitions, …) fire per the configured
     /// toggles. When `None` (the default), it is treated as an empty feature
-    /// set: the four former-Core framework features (mermaid, image-enlarge,
+    /// set: the three former-Core framework features (mermaid,
     /// admonitions-preset, heading-marker TOC) are OFF — the post-epic opt-in
     /// default (#583 / #586), NOT the pre-features always-on behaviour.
     ///
@@ -1560,11 +1560,11 @@ fn materialise_shadow(
     let is_pages_dir = dest.file_name().map(|s| s == "pages").unwrap_or(false);
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
-    // walk loop so the seven default plugins (admonitions, CJK-friendly
-    // emphasis, heading-links, code-title, image-enlarge, mermaid,
+    // walk loop so the six default plugins (admonitions, CJK-friendly
+    // emphasis, heading-links, code-title, mermaid,
     // syntect) all fire on every MDX file the walker visits. The dev
     // loader at `crates/zfb-render/src/loader.rs` reuses one pipeline
-    // for the same reason — constructing a `Highlighter` and seven boxed
+    // for the same reason — constructing a `Highlighter` and six boxed
     // visitors per file would be wasteful. Borrow is linear (`&mut`), so
     // a single hoisted pipeline serves every MDX file sequentially.
     // See zfb#127 / #128.
@@ -1583,7 +1583,7 @@ fn materialise_shadow(
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
     // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the four former-Core framework features are off
+    // empty feature set: the three former-Core framework features are off
     // (the post-epic opt-in default).
     let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
         code_highlight_theme,
@@ -2124,7 +2124,7 @@ fn materialise_collection(
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
     // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the four former-Core framework features are off
+    // empty feature set: the three former-Core framework features are off
     // (the post-epic opt-in default).
     let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
         code_highlight_theme,

@@ -4,7 +4,7 @@
 //! Pins the contract that
 //! [`zfb_build::bundler::bundle`] threads a fully-wired content pipeline
 //! through `compile_mdx_to_jsx_module_cached` at every MDX pre-compile call
-//! site. Without this wiring, none of the seven default plugins
+//! site. Without this wiring, none of the six default plugins
 //! (admonitions, CJK-friendly emphasis, heading-links, code-title,
 //! mermaid, syntect) fire on built `dist/` output —
 //! which is exactly the bug zfb#126 surfaced.
@@ -15,9 +15,9 @@
 //! [`Pipeline::with_defaults_and_full_config`], dispatching on
 //! `BundlerInput::markdown_features`. This test leaves `markdown_features`
 //! at `None` — the **legacy always-on branch**, byte-for-byte equivalent to
-//! [`Pipeline::with_defaults()`] — so the four markers below MUST still
+//! [`Pipeline::with_defaults()`] — so the three markers below MUST still
 //! appear (a default `zfb.config.ts` with no `features` key is unchanged by
-//! #586). The opt-in `Some(..)` branch (where mermaid/image-enlarge/etc.
+//! #586). The opt-in `Some(..)` branch (where mermaid/etc.
 //! become toggle-controlled) is covered by
 //! `bundler_threads_markdown_features_through_mdx_compile` below.
 //!
@@ -27,16 +27,16 @@
 //! ## Scope vs. the wider plugin matrix
 //!
 //! This is a **wiring** test, not a re-test of every plugin's output.
-//! The full seven-plugin coverage matrix lives in
+//! The full plugin coverage matrix lives in
 //! `crates/zfb-content/tests/mdx_jsx_emit_hast.rs`. Here we only need
-//! to prove the bundler now passes the pipeline through. Four
+//! to prove the bundler now passes the pipeline through. Three
 //! markers — one per plugin path the source issue's test plan called
 //! out — are enough signal to catch a `pipeline=None` regression.
 //!
 //! ## Markers (from zfb#126's test plan, inverted for the opt-in default)
 //!
-//! Since #586 wired `markdown.features` and the four framework features
-//! became opt-in, the no-features default INVERTS three of the four markers:
+//! Since #586 wired `markdown.features` and the three framework features
+//! became opt-in, the no-features default INVERTS two of the three markers:
 //!
 //! - **Admonition** (`:::note … :::`): `admonitionsPreset` is OFF by default,
 //!   so the directive is NOT transformed — the `:::note` markers survive
@@ -75,7 +75,7 @@ use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
-/// Build a minimal user-project tree exercising all four marker plugin
+/// Build a minimal user-project tree exercising all three marker plugin
 /// paths. Returns the project root.
 fn write_fixture_project(root: &std::path::Path) {
     for d in ["pages", "content/posts", "components", "layouts"] {
@@ -93,7 +93,7 @@ fn write_fixture_project(root: &std::path::Path) {
     )
     .unwrap();
 
-    // A page MDX that exercises the four marker plugin paths in one
+    // A page MDX that exercises the three marker plugin paths in one
     // file:
     //
     // 1. `:::note\n\nbody\n\n:::`          → admonition (mdast plugin)
@@ -103,7 +103,10 @@ fn write_fixture_project(root: &std::path::Path) {
     //                                          `crates/zfb-content/src/plugins/directives.rs`)
     // 2. ```mermaid graph TD; A-->B; ```   → mermaid (hast plugin)
     // 3. ```rust fn main() {} ```          → syntect (hast plugin)
-    // 4. `![alt](pic.png)` (block image)   → image-enlarge (hast plugin)
+    //
+    // A block image `![alt](pic.png)` is also present but, with the
+    // image_enlarge feature removed, it now renders as a plain
+    // `<p><img>` — no marker, so it is not asserted on.
     //
     // Frontmatter is stripped by the bundler before the body reaches
     // `compile_mdx_to_jsx_module_cached`, so no special handling
@@ -168,7 +171,7 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
     assert!(!body.is_empty(), "bundle should be non-empty");
 
-    // Under the post-epic opt-in default (no `markdown.features` key), the four
+    // Under the post-epic opt-in default (no `markdown.features` key), the three
     // former-Core framework features are OFF. Only the always-on Core plugins
     // (heading-links, code-title, CJK-friendly, syntect) fire. The opt-in
     // (`Some(..)`) path is covered by

@@ -776,7 +776,7 @@ impl Pipeline {
     /// Mirror of [`Pipeline::apply_mdast_visitors`], added for #121 so
     /// the JSX emit path can detour through hast — `mdast → hast →
     /// hast visitors → JSX emit` — and pick up the project's hast-phase
-    /// plugins (heading-links, code-title, image-enlarge, mermaid,
+    /// plugins (heading-links, code-title, mermaid,
     /// syntect, optional strip-md-ext) on MDX content. The HTML
     /// serializer path keeps using [`Pipeline::run`] unchanged.
     pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
@@ -796,7 +796,7 @@ impl Pipeline {
     /// `content_hash` and breaking the `mdx://<collection>/<slug>#<hash>`
     /// bridge lookup (zfb#187).
     ///
-    /// Stateless visitors (code-title, image-enlarge, mermaid, syntect,
+    /// Stateless visitors (code-title, mermaid, syntect,
     /// strip-md-ext) provide the default no-op implementation of
     /// [`HastVisitor::reset`], so calling this unconditionally is safe.
     ///

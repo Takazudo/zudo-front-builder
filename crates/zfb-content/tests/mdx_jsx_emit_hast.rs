@@ -217,7 +217,7 @@ fn defaults_compose_for_titled_rust_block() {
 fn jsx_with_hast_detour_compiles_via_swc() {
     let pipeline_compile = SwcPipeline::new();
 
-    // Cover heading-links + syntect + code-title + image-enlarge +
+    // Cover heading-links + syntect + code-title +
     // mermaid + an MDX component in one document so the smoke covers
     // the full default chain end-to-end.
     let src = "# Title\n\

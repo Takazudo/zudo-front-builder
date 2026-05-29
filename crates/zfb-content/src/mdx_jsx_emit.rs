@@ -102,15 +102,15 @@ pub fn mdx_to_jsx_module(input: &str, opts: MdxJsxOptions) -> Result<String, Pip
 ///
 /// Use this entry point when MDX content must be transformed by
 /// content-pipeline plugins (admonitions, CJK-friendly emphasis,
-/// heading anchors, syntax highlighting, mermaid, image-enlarge,
+/// heading anchors, syntax highlighting, mermaid,
 /// strip-md-ext, …) before reaching the JSX emitter — typically by
 /// passing a [`Pipeline::with_defaults`] from the loader.
 ///
 /// Implementation note (#121): the JSX path internally takes a hast
 /// detour — `mdast → mdast visitors → mdast_to_hast → hast visitors →
-/// hast→JSX walker` — so the same five hast plugins
+/// hast→JSX walker` — so the same four hast plugins
 /// `Pipeline::with_defaults` ships (heading-links, code-title,
-/// image-enlarge, mermaid, syntect) plus the opt-in strip-md-ext fire
+/// mermaid, syntect) plus the opt-in strip-md-ext fire
 /// on MDX content. Pre-#121 this entry point only applied mdast
 /// visitors; the HTML serializer path ([`Pipeline::run`]) already ran
 /// both phases. The two paths now exercise the same plugin chain.
@@ -142,7 +142,7 @@ pub fn mdx_to_jsx_module_with_pipeline(
 /// tree, then hast visitors run, then a hast→JSX walker emits the
 /// module body. This lets hast-phase plugins from
 /// [`Pipeline::with_defaults`] (heading-links, code-title,
-/// image-enlarge, mermaid, syntect) plus opt-in strip-md-ext fire on
+/// mermaid, syntect) plus opt-in strip-md-ext fire on
 /// MDX content. The HTML serializer path ([`Pipeline::run`]) is
 /// unchanged.
 fn mdx_to_jsx_module_inner(
@@ -954,7 +954,7 @@ fn is_module_level_esm(s: &str) -> bool {
 /// counterpart to [`JsxEmitter`].
 ///
 /// The mdast→hast detour means hast plugins (heading-links, syntect,
-/// mermaid, image-enlarge, code-title, strip-md-ext) have already
+/// mermaid, code-title, strip-md-ext) have already
 /// rewritten the tree by the time this bridge runs. The bridge keeps
 /// the same component-routing contract as [`JsxEmitter`]:
 ///
