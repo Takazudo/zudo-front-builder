@@ -7,7 +7,7 @@ category: Concepts
 
 <Info title="What this page covers">
 
-How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, and where the convention comes from.
+How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, how the global `mdx-components.tsx` convention works, and the complete props contract each override receives.
 
 </Info>
 
@@ -35,7 +35,7 @@ You don't construct `MDXContent` yourself. The collection layer wraps every entr
 ```tsx
 import { getCollection } from "zfb/content";
 
-const posts = await getCollection("blog");
+const posts = getCollection("blog");
 const post = posts[0];
 
 // `post.Content` is a renderable component:
@@ -76,6 +76,129 @@ The current `defaultComponents` set covers:
 | `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
 
 Each is also exported individually (`import { ContentLink } from "zfb"`) for cases where you want a single override without dragging in the whole map.
+
+`h1` is intentionally absent: page titles render `<h1>` from frontmatter, per the zudo-doc convention. Adding `h1` to your overrides would silently double-render the title.
+
+## The global `mdx-components.tsx` convention
+
+For project-wide element overrides you want applied to every `<entry.Content />` call without per-call spreading, place an `mdx-components.tsx` file at your project root (next to `zfb.config.ts`) with a **default export** that is a flat `{ tag: Component }` map:
+
+```tsx
+// mdx-components.tsx (project root)
+import MyH2 from "./components/my-h2";
+
+export default {
+  h2: MyH2,
+};
+```
+
+The build pipeline discovers this file, copies it into the shadow bundle, and installs its default export on `globalThis.__zfb.mdxComponents` before the page router runs. From that point every `<entry.Content />` call picks it up automatically — no spreading required at the call site.
+
+### Precedence order
+
+When components are merged, later entries win. The merge order is:
+
+1. `defaultComponents` (lowest priority — the 11 built-in passthroughs)
+2. `mdx-components.tsx` default export (project-wide overrides)
+3. `components` prop on `<entry.Content />` (highest priority — per-call overrides)
+
+So a per-call `components={{ h2: MyCallSiteH2 }}` beats the project-root file, which beats the built-in defaults. Under the hood, `mergeMdxComponents` (exported from `"zfb"`) performs this three-way spread:
+
+```ts
+{ ...defaultComponents, ...globalSlot, ...perCall }
+```
+
+### Runnable example — wrapping `<h2>` with a `<span>`
+
+A common pattern is to wrap headings in a styled container:
+
+```tsx
+// mdx-components.tsx (project root)
+type Props = { id?: string; children?: unknown };
+
+function MyH2({ id, children }: Props) {
+  return (
+    <h2 id={id}>
+      <span>{children}</span>
+    </h2>
+  );
+}
+
+export default { h2: MyH2 };
+```
+
+Every `##` heading in every content entry now renders `<h2 id="…"><span>…</span></h2>` project-wide, with no per-page wiring needed.
+
+## The canonical mappable element set
+
+The following HTML tags are routed through `_components.<tag>` by the MDX emitter, making them overridable via the `components` map. Tags not on this list are either not emitted by markdown at all, or emit as raw HTML literals (not overridable by the components map).
+
+**Core CommonMark:**
+
+`a` `blockquote` `br` `code` `em` `h1` `h2` `h3` `h4` `h5` `h6` `hr` `img` `li` `ol` `p` `pre` `strong` `ul`
+
+**GFM extensions** (available when GFM constructs are enabled in `zfb.config.ts`):
+
+`del` `input` `section` `sup` `table` `tbody` `td` `th` `thead` `tr`
+
+The `defaultComponents` map pre-wires 11 of these (h2–h4, p, a, strong, blockquote, ul, ol, table, code). The rest default to their plain HTML string, but you can override any of them by including the key in your `components` map.
+
+## Props contract
+
+Each override component receives only the attributes that the markdown pipeline actually produces for that element. There is no universal `{...props}` spread of arbitrary HTML attributes — only the fields listed below are passed:
+
+| Element(s)    | Props received                                        |
+| ------------- | ----------------------------------------------------- |
+| `a`           | `href`, `title` (optional), `children`               |
+| `img`         | `src`, `alt`, `title` (optional) — void, no children |
+| `h2`–`h6`    | `id` (present when the heading-links plugin is active and has slugged the heading), `children` |
+| `h1`          | `children` only — `h1` is not slugged                |
+| `pre`         | `children` (wraps a `<code>` child)                  |
+| `code`        | `className="language-*"` (fenced blocks only; inline code receives `children` only) |
+| `ol`          | `start` (only when non-1), `children`                |
+| all others    | `children` only                                       |
+
+If you add `{...rest}` to an override and spread it onto the HTML element, no unknown attributes will arrive — the emitter does not forward arbitrary attributes from the markdown source.
+
+## Lowercase vs. PascalCase asymmetry
+
+There is a deliberate behavioural difference between lowercase HTML tags and PascalCase component names in the `components` map:
+
+- **Lowercase tags** (`h2`, `p`, `a`, …) default to their plain HTML string in the emitted `_components` map. If you omit a lowercase key, the raw element renders — no error.
+- **PascalCase names** (`Note`, `Callout`, …) are looked up from the caller's `components` prop with a hard throw:
+
+  ```js
+  // Inside compiled MDX output:
+  const Note = _components.Note ?? components.Note;
+  if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
+  ```
+
+  A PascalCase component referenced in an `.mdx` file that is not present in the `components` map at render time throws at runtime — not at build time. This is intentional: the compiled module stays portable; the caller is responsible for passing all required components.
+
+## Islands constraint
+
+A `components` map is a plain JavaScript object resolved at SSR time. It cannot cross the hydration boundary as JSON, because the values are function references. This means:
+
+- Components in the map are **server-side only**. They render on the server and their HTML is delivered to the browser as static markup.
+- If a component in your map needs client-side interactivity (state, event handlers, browser APIs), wrap the interactive part in an `<Island>` component instead of putting the interactive component directly in the map.
+
+```tsx
+// Correct: interactive content goes through Island
+import { Island } from "zfb";
+import MyCounter from "./my-counter";
+
+function WrappedCounter() {
+  return <Island component={MyCounter} />;
+}
+
+export default { div: WrappedCounter };
+```
+
+The `components` map runs through SSR; `<Island>` is the escape hatch for the browser.
+
+## Deferred open item — `wrapper`
+
+MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
 
 ## Authoring `.mdx` with custom components
 
@@ -149,3 +272,5 @@ The full source lives in the [zfb-example-blog standalone repo](https://github.c
 
 - [Content Collections](/concepts/content-collections) — how entries are discovered and exposed via `getCollection()`.
 - [Build Pipeline](/concepts/build-pipeline) — where MDX-to-JSX compilation sits in the end-to-end flow.
+- [Custom Directives](/concepts/custom-directives) — adding new MDX directive syntax (e.g. `:::callout`) that maps to your JSX components.
+- [Islands](/concepts/islands) — how to make interactive components work inside a content entry.
