@@ -897,6 +897,7 @@ describe("composed precedence chain — C1", () => {
     const [entry] = await getCollection("blog");
     // No per-call override.
     entry?.Content({});
+    expect(captured).toHaveLength(1);
     const merged = captured[0]!;
     // Every defaultComponents entry must be present in the merged map.
     for (const [key, val] of Object.entries(defaultComponents)) {
@@ -927,6 +928,7 @@ describe("composed precedence chain — C1", () => {
     const [entry] = await getCollection("blog");
     // No per-call override — global slot must win over defaults for h2.
     entry?.Content({});
+    expect(captured).toHaveLength(1);
     const merged = captured[0]!;
     // Global slot wins over defaultComponents.
     expect(merged["h2"]).toBe(GlobalH2);
@@ -956,6 +958,7 @@ describe("composed precedence chain — C1", () => {
     const [entry] = await getCollection("blog");
     // Per-call overrides h2 only — per-call must win for h2; global wins for p.
     entry?.Content({ components: { h2: PerCallH2 } });
+    expect(captured).toHaveLength(1);
     const merged = captured[0]!;
     // Per-call h2 wins over global slot h2, which in turn won over defaults.
     expect(merged["h2"]).toBe(PerCallH2);
