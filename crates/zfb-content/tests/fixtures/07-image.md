@@ -2,7 +2,7 @@ Block-level images render as plain `<p><img …></p>`:
 
 ![bare](bare.png)
 
-A second block image — also wrapped:
+A second block image:
 
 ![hero](pic.png)
 
