@@ -202,26 +202,6 @@ export interface ContentProps {
 }
 
 /**
- * Merge component maps with the documented precedence order:
- * built-in `defaultComponents` → global slot (`globalThis.__zfb?.mdxComponents`)
- * → per-call `props.components`.
- *
- * Spread in stable key order so the resulting map is deterministic; later
- * entries in the spread win on collision (lowest → highest priority). Absent
- * layers (`undefined`) are no-ops via spread-of-undefined.
- *
- * **Output-neutral by design:** `defaultComponents` entries are pure
- * passthroughs (e.g. `ContentH2` → `<h2>{...props}</h2>`), so introducing
- * this merge into `buildContentComponent` does not change the rendered output.
- */
-export function mergeMdxComponents(
-  globalSlot: MdxComponents | undefined,
-  perCall: MdxComponents | undefined,
-): MdxComponents {
-  return { ...defaultComponents, ...globalSlot, ...perCall };
-}
-
-/**
  * Public JSX-element shape returned by [`CollectionEntry.Content`].
  *
  * Matches the structural shape that both Preact's and React's `jsx-runtime`
@@ -824,3 +804,23 @@ export const defaultComponents = {
   table: ContentTable,
   code: ContentCode,
 } as const;
+
+/**
+ * Merge component maps with the documented precedence order:
+ * built-in `defaultComponents` → global slot (`globalThis.__zfb?.mdxComponents`)
+ * → per-call `props.components`.
+ *
+ * Spread in stable key order so the resulting map is deterministic; later
+ * entries in the spread win on collision (lowest → highest priority). Absent
+ * layers (`undefined`) are no-ops via spread-of-undefined.
+ *
+ * **Output-neutral by design:** `defaultComponents` entries are pure
+ * passthroughs (e.g. `ContentH2` → `<h2>{...props}</h2>`), so introducing
+ * this merge into `buildContentComponent` does not change the rendered output.
+ */
+export function mergeMdxComponents(
+  globalSlot: MdxComponents | undefined,
+  perCall: MdxComponents | undefined,
+): MdxComponents {
+  return { ...defaultComponents, ...globalSlot, ...perCall };
+}
