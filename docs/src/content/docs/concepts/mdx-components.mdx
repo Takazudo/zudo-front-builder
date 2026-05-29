@@ -188,7 +188,11 @@ import { Island } from "zfb";
 import MyCounter from "./my-counter";
 
 function WrappedCounter() {
-  return <Island component={MyCounter} />;
+  return (
+    <Island>
+      <MyCounter />
+    </Island>
+  );
 }
 
 export default { div: WrappedCounter };
