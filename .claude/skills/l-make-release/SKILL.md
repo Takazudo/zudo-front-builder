@@ -271,7 +271,7 @@ Also verify that the most-recent commit on `main` matches the version in the mdx
 
 ```bash
 NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/v<version>.mdx)
-case "<version>" in *-next.*|*-beta.*|*-rc.*) PRERELEASE_FLAG=--prerelease ;; *) PRERELEASE_FLAG= ;; esac
+PRERELEASE_FLAG=$([[ "<version>" =~ -next\.|-beta\.|-rc\. ]] && echo "--prerelease" || echo "")
 gh release create v<version> --target <bump-sha> --title "v<version>" --notes "$NOTES" --draft $PRERELEASE_FLAG
 ```
 
