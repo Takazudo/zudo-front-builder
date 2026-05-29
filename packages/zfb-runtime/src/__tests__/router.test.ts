@@ -437,6 +437,56 @@ describe("createPageRouter", () => {
     expect(body).toContain('"/ruby-page"');
   });
 
+  // -------------------------------------------------------------------------
+  // Issue #607 — env-gate: stack absent in production, present with flag
+  // -------------------------------------------------------------------------
+
+  it("omits the stack trace by default (production Workers path — no globalThis.__zfb.ssrDebug)", async () => {
+    // Default behaviour (no includeErrorStack option, no host flag):
+    // the 500 body must contain message + route but NO stack trace.
+    // Use includeErrorStack: false to keep the test hermetic against
+    // any globalThis.__zfb mutation by other suites.
+    const throwingPage: PageModule = {
+      default: () => {
+        throw new Error("boom");
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
+      contentSnapshot: { collections: {} },
+      framework: stubFramework(),
+      includeErrorStack: false,
+    });
+    const res = await router(new Request("http://test.local/throws"));
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    // Exact body — message + route only, no trailing stack.
+    expect(body).toBe('[zfb-runtime] render threw for "/throws": boom');
+  });
+
+  it("includes the full stack trace when includeErrorStack is true (embedded V8 / test path)", async () => {
+    // Explicit includeErrorStack: true simulates the embedded V8 host
+    // (where globalThis.__zfb.ssrDebug would be true).
+    const throwingPage: PageModule = {
+      default: () => {
+        throw new Error("boom");
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/throws", module: () => Promise.resolve(throwingPage) }],
+      contentSnapshot: { collections: {} },
+      framework: stubFramework(),
+      includeErrorStack: true,
+    });
+    const res = await router(new Request("http://test.local/throws"));
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    // Must start with the message + route header.
+    expect(body.startsWith('[zfb-runtime] render threw for "/throws": boom')).toBe(true);
+    // Must also contain a stack frame (V8 stacks have lines starting with "    at ").
+    expect(body).toContain("\n    at ");
+  });
+
   it("successful renders are unaffected after adding the render try/catch", async () => {
     // Happy-path guard: the try/catch must not interfere with 200 renders.
     const { pages, contentSnapshot } = buildFixture();
