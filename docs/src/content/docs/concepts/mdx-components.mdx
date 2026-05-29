@@ -198,7 +198,7 @@ The `components` map runs through SSR; `<Island>` is the escape hatch for the br
 
 ## Deferred open item — `wrapper`
 
-MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter currently wraps the body in `<_Fragment>` directly — the `wrapper` key is emitted but not passed to a wrapping component. Support for `wrapper` is a tracked open item and is not implemented in the current release.
+MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
 
 ## Authoring `.mdx` with custom components
 
