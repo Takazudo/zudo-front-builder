@@ -179,15 +179,26 @@ pub(crate) fn build_static_router(dist_root: PathBuf) -> Router {
 /// One handler covering every path. Easier than wiring `/`, `/*path`
 /// separately because we want identical behaviour for both.
 async fn static_fallback(State(state): State<StaticState>, uri: Uri) -> Response {
-    serve_static(&state.dist_root, uri.path()).await
+    serve_static(&state.dist_root, uri.path(), uri.query()).await
 }
 
 /// Apply the Cloudflare-Pages-style routing rule to a request, then
 /// either serve a file, redirect, or 404.
-async fn serve_static(dist_root: &Path, url_path: &str) -> Response {
+///
+/// `query` is the raw (already percent-encoded) query string from the
+/// request URI, if any. It is appended verbatim to redirect targets so
+/// that `/m?c=1a` → `301 /m/?c=1a` rather than silently dropping
+/// the query.
+async fn serve_static(dist_root: &Path, url_path: &str, query: Option<&str>) -> Response {
     match resolve_static(dist_root, url_path) {
         Resolution::File(path) => serve_file(&path, dist_root).await,
-        Resolution::Redirect(target) => redirect_response(&target),
+        Resolution::Redirect(target) => {
+            let target = match query {
+                Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                _ => target,
+            };
+            redirect_response(&target)
+        }
         Resolution::NotFound => not_found_response(dist_root).await,
     }
 }
@@ -806,6 +817,64 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert_eq!(location, "/about/");
+    }
+
+    #[tokio::test]
+    async fn handler_redirects_directory_with_query_string() {
+        // GET /about?c=1a (no trailing slash, dist/about/index.html exists)
+        // must redirect to /about/?c=1a — query string must be preserved
+        // exactly (verbatim, no re-encoding).
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/about?c=1a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            location, "/about/?c=1a",
+            "redirect must carry the query string verbatim (got {location:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_redirects_directory_no_bare_question_mark_when_no_query() {
+        // GET /about (no query) must redirect to /about/ — NOT /about/? (bare ?).
+        let dist = fixture_dist();
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            location, "/about/",
+            "no query string means no bare ? in Location (got {location:?})"
+        );
     }
 
     #[tokio::test]

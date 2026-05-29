@@ -501,11 +501,19 @@ pub fn build_router(state: AppState) -> Router {
         // Bare `/` lands the developer on the home page — but only `/`
         // exactly, never `<prefix>/...`, because the prefixed routes
         // above already catch those and a redirect there would loop.
+        // The Uri is extracted so any query string on `/?x=1` is carried
+        // through to `<prefix>/?x=1` rather than silently dropped.
         .route(
             "/",
-            get(move || {
+            get(move |uri: Uri| {
                 let target = redirect_target.clone();
-                async move { Redirect::to(&target).into_response() }
+                async move {
+                    let target = match uri.query() {
+                        Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                        _ => target,
+                    };
+                    Redirect::to(&target).into_response()
+                }
             }),
         )
         // Any other unprefixed path (e.g. an HTML link that forgot the
@@ -2719,6 +2727,37 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert_eq!(location, "/foo/", "expected redirect to /foo/, got {location}");
+    }
+
+    #[tokio::test]
+    async fn base_prefix_redirects_bare_root_with_query_to_prefix() {
+        // GET /?x=1 must redirect to /foo/?x=1 — the query string must
+        // be preserved so shareable URLs (e.g. /?c=1a) survive the
+        // base-prefix redirect without silently losing their params.
+        let state = test_state_with_base("/foo");
+        let router = test_router_with_base(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/?x=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            location, "/foo/?x=1",
+            "query string must be carried through the bare-root redirect (got {location:?})"
+        );
     }
 
     #[tokio::test]
