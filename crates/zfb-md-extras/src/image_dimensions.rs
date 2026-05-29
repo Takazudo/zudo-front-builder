@@ -32,9 +32,8 @@
 //! `Pipeline::run_with_context` or `Pipeline::apply_hast_visitors_with_context`
 //! — the plugin is a no-op when called via the context-free `visit` path.
 //!
-//! **Ordering:** must run AFTER `ImageEnlargePlugin` (which also touches `<img>`
-//! elements) but BEFORE `SyntectPlugin` (which does not touch `<img>`). Wired
-//! in `register_features` in `zfb-content::pipeline`.
+//! **Ordering:** must run BEFORE `SyntectPlugin` (which does not touch `<img>`).
+//! Wired in `register_features` in `zfb-content::pipeline`.
 //!
 //! Ported in Wave 6 (#579).
 

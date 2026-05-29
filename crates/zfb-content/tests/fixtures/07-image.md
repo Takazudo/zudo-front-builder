@@ -1,4 +1,4 @@
-Block-level images get wrapped in an enlargeable `<figure>`:
+Block-level images render as plain `<p><img …></p>`:
 
 ![bare](bare.png)
 

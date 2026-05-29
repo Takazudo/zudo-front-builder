@@ -10,9 +10,8 @@
 //! 2. `heading_marker_toc` + `toc_export` — both features read the same heading
 //!    registry; duplicate headings produce identical de-duplicated IDs in both
 //!    outputs.
-//! 3. `image_enlarge` + `image_dimensions` — `image_enlarge` wraps `<p><img>` in
-//!    `<figure>`, then `image_dimensions` injects `width`/`height` on the inner
-//!    `<img>`. Order: enlarge → dimensions per pipeline doc.
+//! 3. `image_dimensions` — injects `width`/`height` on local `<img>` elements;
+//!    the plugin reads the image file and wires via `run_with_context`.
 //! 4. `admonitions_preset` + `github_alerts` — both alert systems fire
 //!    independently in the same document.
 //! 5. `code_enrichment` + `code_tabs` — code-tabs creates tab markup; code
@@ -22,7 +21,7 @@
 //!    NOT a `BrokenLink` diagnostic.
 //! 7. `ruby` + admonitions — `{base|ruby}` syntax inside an admonition block
 //!    survives wrapping by other plugins.
-//! 8. All 15 features on simultaneously — build must not crash; output must
+//! 8. All 14 features on simultaneously — build must not crash; output must
 //!    contain plausible HTML markers.
 
 use std::path::PathBuf;
@@ -156,20 +155,18 @@ fn heading_marker_toc_and_toc_export_share_deduped_ids() {
     );
 }
 
-// ── Case 3: image_enlarge + image_dimensions ─────────────────────────────────
+// ── Case 3: image_dimensions ─────────────────────────────────────────────────
 
-/// A local image paragraph must be BOTH wrapped in `<figure class="zd-enlargeable">`
-/// by `image_enlarge` AND have `width`/`height` injected by `image_dimensions`.
+/// `image_dimensions` injects `width`/`height` on a local `<img>` element,
+/// reading the image file via `run_with_context`.
 ///
-/// Pipeline order: image_enlarge runs first (wraps `<p><img>` → `<figure><img>`),
-/// then image_dimensions injects dimensions onto the `<img>` now inside `<figure>`.
+/// Block-level images render as `<p><img …></p>` — no figure wrapper.
 #[test]
-fn image_enlarge_and_image_dimensions_both_fire() {
+fn image_dimensions_injects_width_and_height() {
     // Use the fixture image from the image_dimensions fixtures directory.
     let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/image_dimensions");
 
     let features = MarkdownFeaturesConfig {
-        image_enlarge: Some(FeatureToggle::Bool(true)),
         image_dimensions: Some(ImageDimensionsConfig::default()),
         ..Default::default()
     };
@@ -189,11 +186,6 @@ fn image_enlarge_and_image_dimensions_both_fire() {
     let hast = pipeline.run_with_context(input, &mut ctx).expect("pipeline must not fail");
     let html = serialize(&hast);
 
-    // image_enlarge must have wrapped the paragraph in a figure.
-    assert!(
-        html.contains("zd-enlargeable"),
-        "image_enlarge must produce figure.zd-enlargeable: {html}"
-    );
     // image_dimensions must have injected width and height.
     assert!(
         html.contains("width=\"100\""),
@@ -203,10 +195,10 @@ fn image_enlarge_and_image_dimensions_both_fire() {
         html.contains("height=\"50\""),
         "image_dimensions must inject height=50: {html}"
     );
-    // The <img> must still be present inside the figure, not replaced or lost.
+    // The <img> must still be present as a plain paragraph image.
     assert!(
-        html.contains("<img"),
-        "img element must still be present: {html}"
+        html.contains("<p><img"),
+        "img element must render as a plain <p><img …></p>: {html}"
     );
 }
 
@@ -487,7 +479,6 @@ fn all_features_on_does_not_crash() {
 
     let features = MarkdownFeaturesConfig {
         mermaid: Some(FeatureToggle::Bool(true)),
-        image_enlarge: Some(FeatureToggle::Bool(true)),
         admonitions_preset: Some(FeatureToggle::Bool(true)),
         heading_marker_toc: Some(HeadingMarkerTocFeature::Config(TocConfig {
             heading: "TOC".to_string(),
@@ -547,12 +538,6 @@ fn all_features_on_does_not_crash() {
     assert!(
         html.contains("width=\"100\""),
         "image_dimensions must inject width: {html}"
-    );
-
-    // image_enlarge must wrap the paragraph image.
-    assert!(
-        html.contains("zd-enlargeable"),
-        "image_enlarge must wrap block image: {html}"
     );
 
     // code_tabs must produce a CodeGroup wrapper.
