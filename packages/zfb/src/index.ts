@@ -57,6 +57,8 @@ export {
   ContentTable,
   ContentUl,
   defaultComponents,
+  mergeMdxComponents,
   type ContentComponentElement,
   type ContentComponentProps,
+  type MdxComponents,
 } from "./content.js";
