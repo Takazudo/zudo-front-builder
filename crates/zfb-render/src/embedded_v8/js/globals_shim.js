@@ -23,6 +23,9 @@ const __zfb_state = {
 };
 
 globalThis.__zfb = {
+  // ssrDebug: present only in the embedded build/dev V8 host, never in the
+  // production Cloudflare Workers runtime — gates verbose SSR error output.
+  ssrDebug: true,
   setBundle(defaultExport) {
     __zfb_state.bundle = defaultExport;
   },
