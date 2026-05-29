@@ -125,7 +125,7 @@ with no legitimate reason to opt out. Examples: `HeadingLinksPlugin`,
 **Opt-in (wire into `Pipeline::with_defaults_and_features`)** when the
 feature is valuable but not universally needed, or when it requires
 project-specific config (a source map, a feature flag, custom options).
-Examples: all 14 features in `zfb-md-extras`.
+Examples: all 13 features in `zfb-md-extras`.
 
 The promotion threshold follows the [three-consumer rule](/concepts/design-philosophy):
 don't extract until the same pattern has been written by hand in three
@@ -158,7 +158,6 @@ crates/zfb-md-extras/src/
 ├── github_autolinks.rs
 ├── heading_marker_toc.rs
 ├── image_dimensions.rs
-├── image_enlarge.rs
 ├── link_validation.rs
 ├── mermaid.rs
 ├── reading_time.rs
@@ -202,7 +201,6 @@ p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
 p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
 p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
 p.add_hast_visitor(Box::new(MyPlugin));     // <-- new
-p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
 p.add_hast_visitor(Box::new(MermaidPlugin::new()));
 p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
 p
@@ -211,7 +209,7 @@ p
 If your plugin is opt-in, do **not** put it in `with_defaults()`.
 Wire it into `Pipeline::with_defaults_and_features()`, which accepts
 a `MarkdownFeatures` config struct and appends only the visitors whose
-flags are set. That is how all 14 features in `zfb-md-extras` are wired.
+flags are set. That is how all 13 features in `zfb-md-extras` are wired.
 `ResolveLinksPlugin` and `StripMdExtensionPlugin` are handled separately
 because they need a project-specific source map, not just a feature flag.
 
@@ -235,9 +233,9 @@ rules that bite most often:
 - **`CodeEnrichmentPlugin` runs after `SyntectPlugin`.** It
   post-processes the per-line `<span class="line">` structure that
   syntect emits; it cannot run before syntect produces those spans.
-- **`ImageEnlargePlugin` and `ImageDimensionsPlugin` are
-  order-independent** relative to the code pipeline — they only
-  touch `<img>` elements.
+- **`ImageDimensionsPlugin`** runs in the hast phase before `SyntectPlugin`.
+  It only touches `<img>` elements and is order-independent relative to
+  heading / code-block visitors.
 - **`GithubAlertsPlugin` runs in the mdast phase**, before the mdast
   → hast conversion. It rewrites blockquote nodes; the `AdmonitionsPlugin`
   (which also runs in the mdast phase) reads the results independently.

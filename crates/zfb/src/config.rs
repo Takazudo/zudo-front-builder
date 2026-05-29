@@ -825,11 +825,11 @@ pub struct MarkdownConfig {
     /// extra parameters, e.g. `githubAutolinks`).
     ///
     /// Absent / `None` means all features are disabled. As of the
-    /// v0.1.0-next.12 epic (#583, wired in #586) this includes the four
-    /// former-Core framework features (`mermaid`, `imageEnlarge`,
-    /// `admonitionsPreset`, `headingMarkerToc`), which are now OFF by default
-    /// and must be opted into via this object — so the default build is NOT
-    /// byte-identical to the pre-epic always-on behaviour.
+    /// v0.1.0-next.12 epic (#583, wired in #586) this includes the three
+    /// former-Core framework features (`mermaid`, `admonitionsPreset`,
+    /// `headingMarkerToc`), which are now OFF by default and must be opted into
+    /// via this object — so the default build is NOT byte-identical to the
+    /// pre-epic always-on behaviour.
     ///
     /// Unknown keys in the `features` object are rejected with a clear
     /// deserialization error naming the unknown field.

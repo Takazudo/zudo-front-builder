@@ -75,7 +75,7 @@ The plugin caches `(path, mtime) → (width, height)` in memory. A second `<img>
 
 ## Ordering
 
-`ImageDimensionsPlugin` runs in the hast phase, **after** `ImageEnlargePlugin` (which wraps block-level images in a `<figure>`). The plugin reads the already-wrapped structure and injects dimensions on the `<img>` inside the figure, if any.
+`ImageDimensionsPlugin` runs in the hast phase, before `SyntectPlugin`. It injects `width` and `height` on `<img>` elements found in the document.
 
 ## Requirements
 

@@ -347,23 +347,22 @@ fn convergence_resolve_links_and_strip_md_share_url_shape() {
 }
 
 #[test]
-fn fixture_07_image_wraps_with_enlargeable_figure() {
+fn fixture_07_image_renders_plain_paragraph() {
     check_fixture("07-image.md", "07-image.html");
     let snapshot = std::fs::read_to_string(snapshots_dir().join("07-image.html"))
         .expect("snapshot present after first run");
-    // Both block-level paragraph-only images get wrapped now (the
-    // selector is "paragraph with only an <img>", no width gating).
+    // Block-level images render as plain <p><img …></p> — no figure, no button.
     assert!(
-        snapshot.contains("<figure class=\"zd-enlargeable\">"),
-        "expected zd-enlargeable figure in snapshot:\n{snapshot}",
+        snapshot.contains("<p><img"),
+        "block image must render as plain <p><img …></p>:\n{snapshot}",
     );
     assert!(
-        snapshot.contains("class=\"zd-enlarge-btn\""),
-        "expected zd-enlarge-btn button in snapshot:\n{snapshot}",
+        !snapshot.contains("<figure"),
+        "block image must NOT be wrapped in a <figure>:\n{snapshot}",
     );
     assert!(
-        snapshot.contains("aria-label=\"Enlarge image\""),
-        "expected enlarge-button aria-label in snapshot:\n{snapshot}",
+        !snapshot.contains("zd-enlarge"),
+        "no enlarge markup must be present:\n{snapshot}",
     );
     // Both images present in the snapshot.
     assert!(
@@ -373,31 +372,6 @@ fn fixture_07_image_wraps_with_enlargeable_figure() {
     assert!(
         snapshot.contains("src=\"pic.png\""),
         "pic image must still appear in snapshot:\n{snapshot}",
-    );
-    // The legacy `<ImageEnlarge>` JSX-marker path is gone — no consumer
-    // depends on it post-cutover.
-    assert!(
-        !snapshot.contains("<ImageEnlarge"),
-        "legacy <ImageEnlarge> marker must not leak into output:\n{snapshot}",
-    );
-}
-
-/// Opt-out: `title="no-enlarge"` leaves the `<p>` alone and strips the
-/// title sentinel from the `<img>` so it never reaches the rendered DOM.
-#[test]
-fn fixture_07b_image_opt_out_strips_title() {
-    let actual = render_fixture("07b-image-opt-out.md");
-    assert!(
-        !actual.contains("<figure class=\"zd-enlargeable\">"),
-        "opt-out must skip the enlargeable wrap:\n{actual}",
-    );
-    assert!(
-        !actual.contains("title=\"no-enlarge\""),
-        "title=\"no-enlarge\" sentinel must be stripped from <img>:\n{actual}",
-    );
-    assert!(
-        actual.contains("src=\"keep.png\""),
-        "image src must survive the opt-out:\n{actual}",
     );
 }
 
@@ -631,21 +605,19 @@ fn context_survives_through_pipeline() {
 
 // ── Wave-2 register_features / with_defaults_and_features smoke tests ─────
 
-use zfb_md_extras::{FeatureToggle, MarkdownFeaturesConfig};
+use zfb_md_extras::MarkdownFeaturesConfig;
 
-/// Wave 3 (#570): `Pipeline::with_defaults_and_features` with an empty
-/// features set produces output that is **different** from
-/// `Pipeline::with_defaults()` — the four opt-in plugins
-/// (`AdmonitionsPlugin`, `ImageEnlargePlugin`, `MermaidPlugin`,
-/// `TocPlugin`) are NOT wired when no feature flag is set.
+/// `Pipeline::with_defaults_and_features` with an empty features set produces
+/// output that is **different** from `Pipeline::with_defaults()` — the opt-in
+/// plugins (`AdmonitionsPlugin`, `MermaidPlugin`, `TocPlugin`, etc.) are NOT
+/// wired when no feature flag is set.
 ///
-/// This test verifies the conditionality: a block-level image paragraph
-/// is NOT wrapped in `<figure class="zd-enlargeable">` when
-/// `features.image_enlarge` is absent (the default).
+/// This test verifies the conditionality using `mermaid` as the probe: a
+/// fenced mermaid code block is NOT replaced with `<div class="mermaid">`
+/// when `features.mermaid` is absent.
 #[test]
 fn with_defaults_and_features_empty_does_not_wire_opt_in_plugins() {
-    // A single block-level image triggers ImageEnlargePlugin when wired.
-    let md = "![alt text](photo.png)\n";
+    let md = "```mermaid\ngraph TD;\n  A-->B;\n```\n";
 
     let html_features_empty = {
         let features = MarkdownFeaturesConfig::default();
@@ -654,53 +626,14 @@ fn with_defaults_and_features_empty_does_not_wire_opt_in_plugins() {
         serialize(&hast)
     };
 
+    // MermaidPlugin is opt-in and must NOT fire with an empty feature set.
     assert!(
-        !html_features_empty.contains("<figure class=\"zd-enlargeable\">"),
-        "empty features must NOT wire ImageEnlargePlugin; got:\n{html_features_empty}",
+        !html_features_empty.contains("<div class=\"mermaid\""),
+        "empty features must NOT wire MermaidPlugin; got:\n{html_features_empty}",
     );
+    // The code block still renders — it's just not rewritten by mermaid.
     assert!(
-        !html_features_empty.contains("class=\"zd-enlarge-btn\""),
-        "empty features must NOT produce enlarge button; got:\n{html_features_empty}",
-    );
-    // The image still renders — it's just not wrapped.
-    assert!(
-        html_features_empty.contains("src=\"photo.png\""),
-        "image src must still be present in output; got:\n{html_features_empty}",
-    );
-}
-
-/// Smoke test: `Pipeline::with_defaults_and_features` with
-/// `features.image_enlarge = Some(FeatureToggle::Bool(true))` produces output
-/// containing the enlargeable figure wrapper.
-///
-/// In Wave 2, `ImageEnlargePlugin` is always wired unconditionally (identical
-/// to `with_defaults`). This test confirms the end-to-end plumbing works
-/// before Wave 3.1 moves the plugin into `zfb-md-extras` and makes it
-/// conditional.
-#[test]
-fn with_defaults_and_features_image_enlarge_true_produces_wrapper() {
-    // A single block-level image paragraph triggers `ImageEnlargePlugin`.
-    let md = "![alt text](photo.png)\n";
-
-    let features = MarkdownFeaturesConfig {
-        image_enlarge: Some(FeatureToggle::Bool(true)),
-        ..MarkdownFeaturesConfig::default()
-    };
-
-    let mut p = Pipeline::with_defaults_and_features(&features);
-    let hast = p.run(md).expect("pipeline ok");
-    let html = serialize(&hast);
-
-    assert!(
-        html.contains("<figure class=\"zd-enlargeable\">"),
-        "expected zd-enlargeable figure wrapper when image_enlarge = true; got:\n{html}",
-    );
-    assert!(
-        html.contains("class=\"zd-enlarge-btn\""),
-        "expected zd-enlarge-btn button when image_enlarge = true; got:\n{html}",
-    );
-    assert!(
-        html.contains("src=\"photo.png\""),
-        "image src must survive into output; got:\n{html}",
+        html_features_empty.contains("graph TD"),
+        "mermaid source must still be present in output; got:\n{html_features_empty}",
     );
 }

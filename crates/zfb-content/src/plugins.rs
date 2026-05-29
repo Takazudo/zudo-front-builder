@@ -13,7 +13,6 @@ pub mod code_title;
 pub mod directives;
 pub mod external_links;
 pub mod heading_links;
-pub mod image_enlarge;
 pub mod mermaid;
 pub mod resolve_links;
 pub mod strip_md_ext;
@@ -30,7 +29,6 @@ pub use directives::{
 };
 pub use external_links::{ExternalLinksConfig, ExternalLinksPlugin};
 pub use heading_links::HeadingLinksPlugin;
-pub use image_enlarge::ImageEnlargePlugin;
 pub use mermaid::MermaidPlugin;
 pub use resolve_links::{BrokenLinkDiagnostic, ResolveLinksPlugin, ResolveMarkdownLinksOptions};
 pub use strip_md_ext::StripMdExtensionPlugin;

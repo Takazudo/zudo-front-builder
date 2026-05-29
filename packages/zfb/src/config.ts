@@ -639,9 +639,6 @@ export type MarkdownFeaturesConfig = {
   /** Mermaid diagram rendering. */
   mermaid?: FeatureToggle;
 
-  /** Lightbox / image-enlarge on click. */
-  imageEnlarge?: FeatureToggle;
-
   /**
    * Inline heading-marker TOC. Accepts either a `boolean` shorthand
    * (`true` = enable with defaults, `false` = disable) or a full

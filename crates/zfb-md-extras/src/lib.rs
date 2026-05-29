@@ -44,10 +44,6 @@ pub mod admonitions_preset;
 /// configured anchor heading. Wire via `features.headingMarkerToc`.
 pub mod heading_marker_toc;
 
-/// Image-enlarge visitor. Wraps `<p><img></p>` in
-/// `<figure class="zd-enlargeable">`. Wire via `features.imageEnlarge = true`.
-pub mod image_enlarge;
-
 /// Mermaid visitor. Replaces `<pre><code class="language-mermaid">` with
 /// `<div class="mermaid">`. Wire via `features.mermaid = true`.
 pub mod mermaid;

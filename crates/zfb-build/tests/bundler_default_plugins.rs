@@ -6,7 +6,7 @@
 //! through `compile_mdx_to_jsx_module_cached` at every MDX pre-compile call
 //! site. Without this wiring, none of the seven default plugins
 //! (admonitions, CJK-friendly emphasis, heading-links, code-title,
-//! image-enlarge, mermaid, syntect) fire on built `dist/` output —
+//! mermaid, syntect) fire on built `dist/` output —
 //! which is exactly the bug zfb#126 surfaced.
 //!
 //! ## `markdown.features` branch (#586)
@@ -43,18 +43,13 @@
 //!   verbatim and NO `<Note>` JSX component is emitted.
 //! - **Mermaid** (` ```mermaid `): `mermaid` is OFF by default, so the bundle
 //!   must NOT contain `data-mermaid`.
-//! - **Image-enlarge** (a block-level paragraph image): `imageEnlarge` is OFF
-//!   by default, so the bundle must NOT contain `zd-enlargeable`.
 //! - **Syntect** (a non-mermaid fenced code block): syntect is a CORE plugin
 //!   (not opt-in), so the bundle must STILL contain a `syntect-` class hook
 //!   (see `crates/zfb-content/src/plugins/syntect_plugin.rs`).
 //!
 //! Because the bundler emits JSX text and esbuild compiles it to JS,
 //! the assertions look at the final bundle body — JSX string-literal
-//! attributes survive verbatim in the compiled output (e.g.
-//! `class="zd-enlargeable"` becomes `className:"zd-enlargeable"` or a
-//! similar string-bearing form, but the substring `zd-enlargeable`
-//! survives).
+//! attributes survive verbatim in the compiled output.
 //!
 //! ## Esbuild gating
 //!
@@ -65,7 +60,7 @@
 //!
 //! ## Determinism
 //!
-//! After asserting all four markers, the bundler is run a second time
+//! After asserting all three markers, the bundler is run a second time
 //! against the same project tree and the two bundle bodies are
 //! compared byte-for-byte. This is a regression check on
 //! `Pipeline::with_defaults()` determinism, NOT a cache-path check
@@ -215,17 +210,6 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     assert!(
         body.contains("syntect-"),
         "syntect is a Core plugin and must still emit a `syntect-` class hook by default.\n--- bundle excerpt ---\n{}",
-        snippet(&body)
-    );
-
-    // ---- Image-enlarge (imageEnlarge) — OFF by default ---------------
-    //
-    // Block-level images are only wrapped in `<figure class="zd-enlargeable">`
-    // when `features.imageEnlarge` is on. By default the image stays a plain
-    // `<img>`.
-    assert!(
-        !body.contains("zd-enlargeable"),
-        "block images must NOT be wrapped in <figure class=\"zd-enlargeable\"> when `features.imageEnlarge` is off.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
