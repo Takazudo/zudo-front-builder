@@ -1349,6 +1349,12 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         project_root.join(".zfb-build"),
         content_snapshot_json,
     );
+    // Discover the Next-style root `mdx-components.tsx` convention (#616):
+    // a project-wide element→component override map applied to every
+    // `<Content>`. Gated on the file existing so a project without it gets
+    // byte-for-byte identical output. The bundler copies it into the shadow
+    // root and emits the `globalThis.__zfb.mdxComponents` installer.
+    bundler_input.mdx_components_file = discover_mdx_components_file(&project_root);
     // Inject project-side resolution context so esbuild can find
     // user dependencies + path aliases. Without these the shadow
     // tempdir has no `node_modules` to walk into and no tsconfig
@@ -2062,6 +2068,21 @@ pub(crate) fn detect_project_node_modules(project_root: &Path) -> Option<std::pa
     } else {
         None
     }
+}
+
+/// Discover the Next-style root `mdx-components.tsx` convention (#616): a
+/// project-wide element→component override map applied to every `<Content>`
+/// without per-call spreading. The file lives next to `zfb.config.ts` at the
+/// project root; its default export is the canonical `{ h2: MyH2, … }` map.
+///
+/// Returns the absolute path when the file exists, else `None` — the "no
+/// file ⇒ unchanged output" acceptance criterion depends on this gate.
+/// Shared by both `zfb build` and `zfb dev`; the shadow is a fresh tempdir
+/// per `bundle()` so discovery re-runs every build and dev/preview picks up
+/// edits with no special-casing.
+pub(crate) fn discover_mdx_components_file(project_root: &Path) -> Option<std::path::PathBuf> {
+    let candidate = project_root.join("mdx-components.tsx");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Read `<project_root>/tsconfig.json` and return its

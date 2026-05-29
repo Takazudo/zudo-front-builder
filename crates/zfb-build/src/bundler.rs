@@ -602,6 +602,35 @@ pub struct BundlerInput {
     /// previous behaviour, where `.module.css` falls through to the
     /// `.css=empty` loader.
     pub css_module_class_maps: HashMap<PathBuf, HashMap<String, String>>,
+
+    /// Optional absolute path to a project-root `mdx-components.tsx` file
+    /// (the Next-style global element→component override map convention,
+    /// sub-issue #616). When `Some`, the bundler copies the file into the
+    /// shadow root (so its relative imports + tsconfig `paths` resolve
+    /// in-shadow) and emits, in the synthetic `entry.mjs`:
+    ///
+    /// ```js
+    /// import __zfb_mdx_components from "./mdx-components.tsx";
+    /// globalThis.__zfb = globalThis.__zfb ?? {};
+    /// globalThis.__zfb.mdxComponents = __zfb_mdx_components;
+    /// ```
+    ///
+    /// The file's **default export** is the canonical contract — a flat
+    /// `{ h2: MyH2, … }` map read by `mergeMdxComponents` in
+    /// `@takazudo/zfb`'s `content.ts` (the precedence seam from #614:
+    /// defaultComponents → this global slot → per-`<Content>` `components`).
+    ///
+    /// Emission is **independent of `content_imports`** — a project may
+    /// define overrides with zero content-collection entries, so the
+    /// install is gated only on this field being `Some`, guarded by the
+    /// idempotent `__zfb ??= {}` namespacing. When `None`, zero bytes are
+    /// emitted and no file is copied, so the build output is byte-for-byte
+    /// identical to a project without the convention.
+    ///
+    /// The shadow is a fresh tempdir per `bundle()` call, so discovery
+    /// re-runs every build and `zfb dev` / preview pick up edits with no
+    /// special-casing. Default: `None`.
+    pub mdx_components_file: Option<PathBuf>,
 }
 
 impl BundlerInput {
@@ -660,6 +689,7 @@ impl BundlerInput {
             worker_only_routes: None,
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
+            mdx_components_file: None,
         }
     }
 }
@@ -738,6 +768,10 @@ pub struct RouteEntry {
 const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
 const SHADOW_ENTRY_FILENAME: &str = "entry.mjs";
 const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
+/// Filename of the project-root global override map (sub-issue #616). Both
+/// the on-disk source convention and the materialised shadow copy use this
+/// exact name; it is the public file-convention contract relied on by #618.
+const MDX_COMPONENTS_FILENAME: &str = "mdx-components.tsx";
 
 /// Esbuild `--loader:` flags for the Worker bundle.
 ///
@@ -1176,6 +1210,21 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     rewrite_css_modules_in_shadow(shadow, &input.project_root, &input.css_module_class_maps)
         .context("bundler: failed rewriting CSS Modules in shadow tree")?;
 
+    // 2e. Project-root `mdx-components.tsx` global override map (#616).
+    //     A root-level FILE is not materialised by any pass above, so copy
+    //     it into the shadow root here. The returned spec is threaded into
+    //     `write_entry_module`, which emits the `import` + the
+    //     `globalThis.__zfb.mdxComponents` installer. `None` when the file
+    //     is absent — keeps output byte-for-byte identical to a project
+    //     without the convention.
+    let mdx_components_import_spec: Option<String> = match input.mdx_components_file.as_ref() {
+        Some(src) => Some(
+            materialise_mdx_components_file(src, shadow)
+                .context("bundler: failed materialising mdx-components.tsx into shadow")?,
+        ),
+        None => None,
+    };
+
     // 3. Hydration shim.
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
     fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
@@ -1235,6 +1284,9 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         entry_content_imports_for_write,
         input.site.as_deref(),
         input.prefetch_disabled,
+        // Emitted independently of `content_imports` / `worker_only_routes`:
+        // a project may define overrides with zero content entries (#616).
+        mdx_components_import_spec.as_deref(),
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -1387,6 +1439,38 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
         out.push(entry.path().to_path_buf());
     }
     out
+}
+
+/// Materialise the project-root `mdx-components.tsx` (sub-issue #616) into
+/// the shadow root.
+///
+/// The file is a top-level **file**, not a directory, so none of the
+/// existing materialise passes pick it up: `pages`/`content`/`components`/
+/// `layouts` are explicit directories, and [`enumerate_extra_top_level_dirs`]
+/// skips non-directories (`if !ft.is_dir() { continue; }`). This step copies
+/// it explicitly so esbuild sees an in-shadow importer.
+///
+/// **Copy, not symlink** — production builds run esbuild with
+/// `node_modules_preserve_symlinks = false`, which canonicalises a symlink
+/// back to its real path; a symlinked override file would then resolve its
+/// `./components/X` imports against the *real* project root instead of the
+/// shadow tree, defeating the purpose. A plain copy keeps the importer
+/// physically inside the shadow so its relative imports and the synthetic
+/// `tsconfig.json#paths` apply. (Mirrors the "extra dirs" pass, which
+/// materialises source; only `node_modules` is symlinked.)
+///
+/// Returns the shadow-relative import specifier (always
+/// `./mdx-components.tsx`) that the synthetic `entry.mjs` imports.
+fn materialise_mdx_components_file(src: &Path, shadow: &Path) -> Result<String> {
+    let dst = shadow.join(MDX_COMPONENTS_FILENAME);
+    fs::copy(src, &dst).with_context(|| {
+        format!(
+            "bundler: failed copying mdx-components file {} → {}",
+            src.display(),
+            dst.display()
+        )
+    })?;
+    Ok(format!("./{MDX_COMPONENTS_FILENAME}"))
 }
 
 /// Symlink `from` at `to`, falling back to `fs::copy` on platforms that
@@ -2464,6 +2548,7 @@ fn write_synthetic_tsconfig(
 /// runtime `bridge?.get(...)` calls fall through to the
 /// `<pre data-zfb-content-fallback>` shape, matching the behaviour of
 /// builds with no content collections.
+#[allow(clippy::too_many_arguments)]
 fn write_entry_module(
     shadow: &Path,
     routes: &[RouteEntry],
@@ -2472,6 +2557,10 @@ fn write_entry_module(
     content_imports: &[ContentImport],
     site: Option<&str>,
     prefetch_disabled: bool,
+    // Shadow-relative specifier of the materialised `mdx-components.tsx`
+    // (sub-issue #616). When `Some`, emit a default `import` of the file
+    // plus the `globalThis.__zfb.mdxComponents` installer. `None` => omit.
+    mdx_components_import_spec: Option<&str>,
 ) -> Result<()> {
     use std::fmt::Write as _;
 
@@ -2523,6 +2612,19 @@ fn write_entry_module(
             &mut src,
             "import * as __zfb_content_{idx} from \"./{path}\";",
             path = ci.shadow_rel_path,
+        )
+        .unwrap();
+    }
+
+    // Default import of the project-root `mdx-components.tsx` global override
+    // map (#616). The file's default export is the canonical `{ h2, … }`
+    // contract; the matching installer (`globalThis.__zfb.mdxComponents`) is
+    // emitted in the globalThis section below, before `createPageRouter`.
+    if let Some(spec) = mdx_components_import_spec {
+        writeln!(
+            &mut src,
+            "import __zfb_mdx_components from {spec};",
+            spec = json_str(spec),
         )
         .unwrap();
     }
@@ -2646,6 +2748,28 @@ fn write_entry_module(
     if prefetch_disabled {
         src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
         src.push_str("globalThis.__zfb.prefetchDisabled = true;\n\n");
+    }
+
+    // ---------------------------------------------------------------
+    // Global MDX component-override map installer (sub-issue #616).
+    //
+    // Populates the `globalThis.__zfb.mdxComponents` slot read by
+    // `mergeMdxComponents` in `@takazudo/zfb`'s `content.ts` (the
+    // precedence seam from #614: defaultComponents → this slot →
+    // per-`<Content>` `components`). `buildContentComponent` does a lazy
+    // per-render lookup, so install-ordering is a non-issue; we still
+    // emit before `createPageRouter` alongside the other setters.
+    //
+    // Emitted independently of `content_imports`: a project may define
+    // overrides with zero content-collection entries. The idempotent
+    // `__zfb ??= {}` guard makes the install safe regardless of which
+    // other setters above already ran. When the file is absent, zero
+    // bytes are emitted so the output is byte-for-byte identical to a
+    // project without the convention.
+    // ---------------------------------------------------------------
+    if mdx_components_import_spec.is_some() {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str("globalThis.__zfb.mdxComponents = __zfb_mdx_components;\n\n");
     }
 
     // ---------------------------------------------------------------
@@ -3326,6 +3450,7 @@ mod tests {
             worker_only_routes: None,
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
+            mdx_components_file: None,
         }
     }
 
@@ -3390,6 +3515,7 @@ mod tests {
             &[],
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -3472,6 +3598,7 @@ mod tests {
             &imports,
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -3545,6 +3672,7 @@ mod tests {
             &[],
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -3577,6 +3705,7 @@ mod tests {
             &[],
             Some("https://example.com"),
             false,
+            None,
         )
         .unwrap();
 
@@ -3621,6 +3750,7 @@ mod tests {
             &[],
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -3648,6 +3778,7 @@ mod tests {
             &[],
             None,
             true,
+            None,
         )
         .unwrap();
 
@@ -3692,6 +3823,7 @@ mod tests {
             &[],
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -3699,6 +3831,147 @@ mod tests {
         assert!(
             !body.contains("globalThis.__zfb.prefetchDisabled"),
             "prefetch_disabled=false → no prefetch setter; got:\n{body}"
+        );
+    }
+
+    // --- mdx-components.tsx global override map (#616) ------------------------
+
+    #[test]
+    fn materialise_mdx_components_file_copies_into_shadow_root_and_returns_spec() {
+        // The "easily-missed" step: a root-level FILE is copied (not
+        // symlinked) into the shadow root so esbuild sees an in-shadow
+        // importer whose relative imports + tsconfig `paths` resolve. The
+        // returned spec is the shadow-relative import specifier.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("mdx-components.tsx");
+        let contents = "export default { h2: function MyH2() {} };\n";
+        fs::write(&src, contents).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_root = shadow.path();
+
+        let spec = materialise_mdx_components_file(&src, shadow_root).unwrap();
+        assert_eq!(spec, "./mdx-components.tsx");
+
+        // A real copy lands in the shadow root (so esbuild resolves its
+        // relative imports against the shadow tree, not the project root).
+        let dst = shadow_root.join("mdx-components.tsx");
+        assert!(dst.is_file(), "copied file must exist at shadow root");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), contents);
+    }
+
+    #[test]
+    fn entry_module_emits_mdx_components_installer_when_present() {
+        // When the global override map is discovered, the entry module must
+        // (a) default-import the materialised file, (b) install it onto
+        // `globalThis.__zfb.mdxComponents`, and (c) place the setter before
+        // `createPageRouter` (alongside the other __zfb setters).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+            Some("./mdx-components.tsx"),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        // (a) Default import of the materialised override map.
+        assert!(
+            body.contains("import __zfb_mdx_components from \"./mdx-components.tsx\";"),
+            "must default-import the override map; got:\n{body}"
+        );
+        // (b) Idempotent namespacing guard + setter.
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "mdxComponents branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.mdxComponents = __zfb_mdx_components;"),
+            "mdxComponents setter must be present; got:\n{body}"
+        );
+
+        // (c) The setter must precede createPageRouter so the very first
+        // SSR call already sees the populated slot.
+        let setter_idx = body
+            .find("globalThis.__zfb.mdxComponents = ")
+            .expect("mdxComponents setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            setter_idx < router_idx,
+            "mdxComponents setter must precede createPageRouter; setter at {setter_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_emits_mdx_components_installer_with_zero_content_imports() {
+        // Acceptance criterion: the override map installs even with ZERO
+        // content-collection entries. The install is gated only on the file
+        // being present, NOT on `content_imports` being non-empty — so an
+        // empty `content_imports` slice must still produce the installer and
+        // must NOT produce the content-bridge installer.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[], // zero content imports
+            None,
+            false,
+            Some("./mdx-components.tsx"),
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            body.contains("globalThis.__zfb.mdxComponents = __zfb_mdx_components;"),
+            "mdxComponents installer must be emitted with zero content imports; got:\n{body}"
+        );
+        // The content bridge installer is gated on content_imports and must
+        // stay absent — proving the two installers are independent.
+        assert!(
+            !body.contains("globalThis.__zfb.content = "),
+            "content bridge installer must NOT appear with zero content imports; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_mdx_components_installer_when_none() {
+        // When no override file is discovered, zero bytes related to the
+        // installer are emitted — preserving byte-for-byte parity with a
+        // project that does not use the convention (#616 acceptance).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            "preact-render-to-string",
+            None,
+            &[],
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("__zfb_mdx_components"),
+            "no file → no override import; got:\n{body}"
+        );
+        assert!(
+            !body.contains("globalThis.__zfb.mdxComponents"),
+            "no file → no override setter; got:\n{body}"
         );
     }
 
@@ -3895,6 +4168,7 @@ mod tests {
             &imports,
             None,
             false,
+            None,
         )
         .unwrap();
         let entry = fs::read_to_string(shadow_root.join(SHADOW_ENTRY_FILENAME)).unwrap();
@@ -4026,7 +4300,7 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None, &[], None, false).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", None, &[], None, false, None).unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -4041,7 +4315,7 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None, false).unwrap();
+        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None, false, None).unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
@@ -4333,6 +4607,7 @@ mod tests {
             worker_only_routes: None,
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
+            mdx_components_file: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -4349,6 +4624,96 @@ mod tests {
         assert!(
             body.contains("https://example.test"),
             "PUBLIC_API_URL value should be inlined"
+        );
+    }
+
+    #[test]
+    fn mdx_components_file_resolves_through_esbuild_with_relative_import() {
+        // Real esbuild test (gated). Proves the two resolutions the whole
+        // #616 feature hinges on — neither is covered by the text/copy
+        // unit tests:
+        //   1. esbuild resolves the `import ... from "./mdx-components.tsx"`
+        //      that `entry.mjs` emits from the shadow root.
+        //   2. the override file's OWN relative import (`./components/MyH2`)
+        //      resolves against the SHADOW tree — i.e. the file was copied
+        //      into shadow (not symlinked back to the project root). This is
+        //      the "easily-missed materialization step" the issue flags.
+        let Some(bin) = locate_real_esbuild() else {
+            eprintln!("[mdx_components_file_resolves_through_esbuild] no esbuild binary; skipping");
+            return;
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+        // The override component lives under components/ — materialised to
+        // shadow/components, so a shadow-ROOT importer reaching it via
+        // `./components/MyH2` only resolves if mdx-components.tsx was
+        // physically copied into the shadow root.
+        fs::write(
+            root.join("components/MyH2.tsx"),
+            "export default function MyH2(props) { return props.children; }\n",
+        )
+        .unwrap();
+        // Default export object — the single canonical contract (#616).
+        fs::write(
+            root.join("mdx-components.tsx"),
+            "import MyH2 from \"./components/MyH2\";\nexport default { h2: MyH2 };\n",
+        )
+        .unwrap();
+
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .expect("workspace root from CARGO_MANIFEST_DIR");
+        let workspace_node_modules = workspace_root.join("node_modules");
+        let zfb_pkg_node_modules = workspace_root.join("packages/zfb/node_modules");
+        let nm_dir = if zfb_pkg_node_modules.join("@takazudo/zfb-runtime").exists() {
+            Some(zfb_pkg_node_modules)
+        } else if workspace_node_modules
+            .join("@takazudo/zfb-runtime")
+            .exists()
+        {
+            Some(workspace_node_modules)
+        } else {
+            eprintln!(
+                "[mdx_components_file_resolves_through_esbuild] @takazudo/zfb-runtime not found; skipping (run pnpm install first)"
+            );
+            return;
+        };
+
+        let input = BundlerInput {
+            esbuild_binary: Some(bin),
+            external: vec!["preact".into()],
+            node_modules_dir: nm_dir,
+            // The override file is discovered at the project root.
+            mdx_components_file: Some(root.join("mdx-components.tsx")),
+            ..BundlerInput::for_project(
+                root.clone(),
+                Framework::Preact,
+                BundleMode::Production,
+                root.join("dist"),
+                None,
+            )
+        };
+
+        // The bundle must succeed: both `import "./mdx-components.tsx"` and
+        // its transitive `import "./components/MyH2"` resolved in-shadow.
+        let out = bundle(input).expect("real esbuild bundle with mdx-components.tsx should succeed");
+        let body = fs::read_to_string(&out.bundle_path).unwrap();
+        // The installer must be present in the final bundle.
+        assert!(
+            body.contains("mdxComponents"),
+            "bundled output should install the mdxComponents slot"
         );
     }
 

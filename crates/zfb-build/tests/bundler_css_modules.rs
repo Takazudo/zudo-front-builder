@@ -71,6 +71,7 @@ fn make_input(
         worker_only_routes: None,
         bundle_basename: None,
         css_module_class_maps: class_maps,
+        mdx_components_file: None,
     }
 }
 
