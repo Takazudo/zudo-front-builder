@@ -180,6 +180,14 @@ export function getContentSnapshot(): Snapshot | undefined {
 }
 
 /**
+ * Flat map of element-name → override component, used by both
+ * [`ContentProps.components`] and the global slot
+ * (`globalThis.__zfb?.mdxComponents`). Keys are lowercase HTML tag names
+ * (`h2`, `p`, `a`, …) or PascalCase custom-component names.
+ */
+export type MdxComponents = Record<string, unknown>;
+
+/**
  * Props accepted by an entry's [`CollectionEntry.Content`] component.
  *
  * `components` mirrors Astro's `<Content components={...}>` contract:
@@ -190,7 +198,7 @@ export function getContentSnapshot(): Snapshot | undefined {
  */
 export interface ContentProps {
   /** Element-name → override component map. Optional. */
-  components?: Record<string, unknown>;
+  components?: MdxComponents;
 }
 
 /**
@@ -232,6 +240,11 @@ type ContentBridge = {
 
 type ZfbBridgeNamespace = {
   content?: ContentBridge;
+  /**
+   * Global component-override slot. Populated by sub-task A2 (bridge
+   * installer); A1 only reads it. Absent ⇒ no-op in the merge.
+   */
+  mdxComponents?: MdxComponents;
 };
 
 type BridgeGlobal = typeof globalThis & {
@@ -400,14 +413,23 @@ function buildContentComponent(
   body: string,
 ): (props: ContentProps) => ContentElement {
   return function Content(props: ContentProps): ContentElement {
-    const bridge = (globalThis as BridgeGlobal).__zfb?.content;
+    const zfb = (globalThis as BridgeGlobal).__zfb;
+    const bridge = zfb?.content;
     const renderer = bridge?.get(module_specifier);
     if (typeof renderer === "function") {
+      // Merge components in documented precedence order before delegating:
+      //   defaultComponents → globalThis.__zfb.mdxComponents → props.components
+      // This is output-neutral because defaultComponents entries are pure
+      // passthroughs; the seam is established here for A2 to populate.
+      const mergedProps: ContentProps = {
+        ...props,
+        components: mergeMdxComponents(zfb?.mdxComponents, props.components),
+      };
       // Trust the bridge to return a JSX-element-shaped value — we don't
       // try to validate; both Preact and React JSX runtimes accept any
       // structural `{ type, props, key }` object on either side of the
       // boundary, and the renderer is the source of truth here.
-      return renderer(props) as ContentElement;
+      return renderer(mergedProps) as ContentElement;
     }
     return renderFallback(body);
   };
@@ -782,3 +804,23 @@ export const defaultComponents = {
   table: ContentTable,
   code: ContentCode,
 } as const;
+
+/**
+ * Merge component maps with the documented precedence order:
+ * built-in `defaultComponents` → global slot (`globalThis.__zfb?.mdxComponents`)
+ * → per-call `props.components`.
+ *
+ * Spread in stable key order so the resulting map is deterministic; later
+ * entries in the spread win on collision (lowest → highest priority). Absent
+ * layers (`undefined`) are no-ops via spread-of-undefined.
+ *
+ * **Output-neutral by design:** `defaultComponents` entries are pure
+ * passthroughs (e.g. `ContentH2` → `<h2>{...props}</h2>`), so introducing
+ * this merge into `buildContentComponent` does not change the rendered output.
+ */
+export function mergeMdxComponents(
+  globalSlot: MdxComponents | undefined,
+  perCall: MdxComponents | undefined,
+): MdxComponents {
+  return { ...defaultComponents, ...globalSlot, ...perCall };
+}
