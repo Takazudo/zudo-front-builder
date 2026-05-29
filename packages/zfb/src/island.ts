@@ -40,6 +40,8 @@
 // values and fall back to the default. In production we silently fall
 // back to keep the bundle path small.
 
+import { jsx } from "react/jsx-runtime";
+
 import type { VNode } from "./jsx-types.js";
 import { resolveWhen, type When } from "./types.js";
 
@@ -163,27 +165,39 @@ export function Island(props: IslandProps): IslandElement {
 }
 
 /**
- * Construct the wrapper element through the **per-project JSX runtime**.
+ * Construct the wrapper element through the **automatic JSX runtime
+ * factory**, called explicitly so this file stays plain `.ts` (no JSX
+ * syntax).
  *
- * Why JSX delegation rather than a hand-rolled `{ type, props, key }`
- * object literal: a plain literal is only valid for Preact (whose diff
- * path / `preact-render-to-string` recognise a VNode by
+ * Why the explicit `jsx(...)` call rather than a hand-rolled
+ * `{ type, props, key }` object literal: a plain literal is only valid for
+ * Preact (whose diff path / `preact-render-to-string` recognise a VNode by
  * `vnode.constructor === undefined`). React's renderer rejects such an
  * object as a child with "Objects are not valid as a React child"
  * (minified error #31) because a real React element carries
  * `$$typeof: Symbol.for("react.element")`, which a literal cannot fake
- * portably. By emitting actual JSX here, esbuild's automatic transform —
- * driven by the consuming project's `--jsx-import-source` (`react` or
- * `preact`) — produces the right element shape for whichever framework
- * the project configured. The SDK source itself stays framework-agnostic;
- * the build step picks the runtime. (zfb issue: React islands SSR.)
+ * portably. Calling `jsx` from `react/jsx-runtime` mints a real element:
+ * in React mode it resolves natively; in Preact mode the engine rewrites
+ * `react/jsx-runtime` → `preact/jsx-runtime` (bundler.rs ~2886), so the
+ * Preact runtime mints the element. Same result the JSX `<div>` delegation
+ * produced — but as plain `.ts`.
+ *
+ * Why `.ts` and NOT `.tsx`: esbuild rewrites a `.js` import specifier to
+ * `.ts` but NOT to `.tsx`. The barrel `index.ts` imports `./island.js`;
+ * when this file was `island.tsx`, source consumers (the dev `exports`
+ * point at `src/*.ts`, e.g. the node-free template / smoke path) failed
+ * with `Could not resolve "./island.js"`. The published `dist` worked
+ * (tsc emits a real `island.js`), which masked the regression in
+ * pnpm-pack/dist probes. Keeping this a `.ts` file makes the barrel resolve
+ * `./island.js` → `./island.ts` from source everywhere, while tsc still
+ * emits `dist/island.js` for the published package.
  *
  * The cast back to `IslandElement` keeps the public type tight; the
  * concrete element shape produced by the runtime is invisible to type
  * consumers.
  */
 function makeWrapper(props: Record<string, unknown>, children: unknown): IslandElement {
-  return (<div {...props}>{children as never}</div>) as unknown as IslandElement;
+  return jsx("div", { ...props, children }) as unknown as IslandElement;
 }
 
 /**

@@ -44,6 +44,8 @@
 // loaded synchronously on first fs-path use. Type-only imports below stay
 // at the top because TypeScript erases them at compile time — they leave
 // no runtime traces for esbuild to chase.
+import { jsx } from "react/jsx-runtime";
+
 import type * as NodeFs from "node:fs";
 import type * as NodePath from "node:path";
 
@@ -412,18 +414,28 @@ function buildContentComponent(
 }
 
 /**
- * Stamp the `constructor: undefined` sentinel on a structural JSX-element
- * shape so `preact-render-to-string` (and Preact's diff path) treat it
- * as a real VNode. Without this, Preact reads `.constructor` as `Object`
- * — the value inherited from the literal — and silently drops the node,
- * which is what produced the empty MDX bodies tracked in zudo-doc#505.
+ * Mint a content element through the per-project JSX runtime.
  *
- * Same trick `Island`'s `makeVNode` uses; kept private here so callers
- * keep treating `ContentElement` / `ContentComponentElement` as opaque.
+ * Calls `jsx` from `react/jsx-runtime` — alias-rewritten to
+ * `preact/jsx-runtime` in Preact mode by the engine (bundler.rs ~2886),
+ * native in React mode — so the returned value is a real element for
+ * whichever framework the project configured. This replaces the previous
+ * hand-rolled `{ type, props, key, constructor: undefined }` object literal
+ * (the Preact diff-path sentinel): that shape made `preact-render-to-string`
+ * treat it as a VNode, but React's renderer rejects it as a child with
+ * error #31 ("Objects are not valid as a React child") because a real React
+ * element carries `$$typeof: Symbol.for("react.element")`. `children` is
+ * passed inside `props` so a single child or an array both pass through
+ * verbatim. Same migration as `Island` in this package. Kept private so
+ * callers keep treating `ContentElement` / `ContentComponentElement` as
+ * opaque. (Empty-MDX-body history: zudo-doc#505.)
  */
-function stampVNode<T extends { type: unknown; props: unknown; key: unknown }>(shape: T): T {
-  (shape as { constructor?: unknown }).constructor = undefined;
-  return shape;
+function mintElement(type: string, props: Record<string, unknown>): ContentElement {
+  // `jsx`'s `type` param is typed `ElementType` (string-literal intrinsic
+  // tags or component types), which rejects an arbitrary runtime `string`.
+  // The tag is dynamic here, so cast to the factory's own first-param type —
+  // robust whether the engine aliases `jsx` to react or preact at build time.
+  return jsx(type as Parameters<typeof jsx>[0], props) as unknown as ContentElement;
 }
 
 /**
@@ -435,13 +447,9 @@ function stampVNode<T extends { type: unknown; props: unknown; key: unknown }>(s
  * pin both the attribute and the marker line.
  */
 function renderFallback(body: string): ContentElement {
-  return stampVNode({
-    type: "pre",
-    props: {
-      "data-zfb-content-fallback": "",
-      children: `${FALLBACK_MARKER}\n${body}`,
-    },
-    key: null,
+  return mintElement("pre", {
+    "data-zfb-content-fallback": "",
+    children: `${FALLBACK_MARKER}\n${body}`,
   });
 }
 
@@ -680,14 +688,10 @@ export interface ContentComponentProps {
 /** Internal helper: build a structural JSX element of the given tag. */
 function buildOverrideElement(tag: string, props: ContentComponentProps): ContentComponentElement {
   const { children, ...rest } = props;
-  // `stampVNode` sets `constructor: undefined` so Preact recognises the
-  // returned object as a VNode rather than foreign data — see the helper's
-  // docblock for context (zudo-doc#505).
-  return stampVNode({
-    type: tag,
-    props: { ...rest, children },
-    key: null,
-  });
+  // Minted through the per-project JSX runtime (`mintElement`) so the
+  // override is a real element under both React and Preact — see the
+  // helper's docblock (zudo-doc#505; React error #31 rationale).
+  return mintElement(tag, { ...rest, children }) as unknown as ContentComponentElement;
 }
 
 /**

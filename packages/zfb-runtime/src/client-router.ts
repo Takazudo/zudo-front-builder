@@ -12,13 +12,19 @@
 //   via `init()`. The component calls `init()` as a side effect on first import.
 //   No inline <script> dangerouslySetInnerHTML is emitted.
 //
-// Named-cause deviation — no JSX (W1B: "follow existing component-emission pattern"):
-//   `@takazudo/zfb-runtime` does not depend on Preact and has no JSX compiler
-//   options configured in its tsconfig. The existing component-emission pattern
-//   (established by `Island` in @takazudo/zfb, and `ViewTransitions` in this
-//   package) uses plain VNode-shaped objects with `constructor: undefined` — the
-//   sentinel recognised by both Preact and React renderers. Following that pattern
-//   avoids adding Preact as a dependency and avoids tsconfig JSX changes.
+// Framework-agnostic element minting (no JSX syntax):
+//   `@takazudo/zfb-runtime` does not depend on a framework runtime. Head nodes
+//   are minted by calling `jsx` from `react/jsx-runtime` directly — NOT JSX
+//   syntax, so this stays a plain `.ts` file with no tsconfig JSX changes. The
+//   engine alias-rewrites `react/jsx-runtime` → `preact/jsx-runtime` in Preact
+//   mode (bundler.rs ~2886) and resolves it natively in React mode, so the same
+//   call mints a real element for whichever framework the project configured.
+//   The previous approach (a hand-rolled `{ type, props, key, constructor:
+//   undefined }` object literal — the Preact diff-path sentinel) only worked for
+//   Preact: React's renderer rejects such an object as a child with React error
+//   #31 ("Objects are not valid as a React child"), because a real React element
+//   carries `$$typeof: Symbol.for("react.element")` a literal cannot fake. Same
+//   migration as `Island` in @takazudo/zfb.
 //
 // The component renders three sibling elements to <head>:
 //   1. A <style> tag with the `.zfb-route-announcer` ARIA helper class.
@@ -27,6 +33,8 @@
 //
 // The route-announcer <div> is injected into <body> by `announce()` in
 // `client-router/router.ts` on every navigation.
+
+import { jsx } from "react/jsx-runtime";
 
 import { init } from "./client-router/router.js";
 import { init as prefetchInit } from "./client-router/prefetch.js";
@@ -64,19 +72,23 @@ export type ClientRouterElement = {
 };
 
 /**
- * Construct a VNode-shaped object. Sets `constructor: undefined` so that both
- * Preact's and React's renderers treat it as a structural VNode rather than
- * foreign data. (Mirrors the `makeVNode` pattern in `@takazudo/zfb`'s Island.)
+ * Mint a head element through the per-project JSX runtime.
+ *
+ * Calls `jsx` from `react/jsx-runtime` (alias-rewritten to
+ * `preact/jsx-runtime` in Preact mode by the engine, native in React mode)
+ * so the returned value is a real element for whichever framework the
+ * project configured — NOT a hand-rolled `{ type, props, key }` literal,
+ * which only Preact accepts and which makes React throw error #31. A stable
+ * `key` is passed because `ClientRouter()` returns these nodes in a plain
+ * array (React warns about keyless list children otherwise). Mirrors the
+ * `Island` migration in `@takazudo/zfb`.
  */
-function makeVNode(type: string, props: Record<string, unknown>): ClientRouterElement {
-  const v = { type, props, key: null } as {
-    type: string;
-    props: Record<string, unknown>;
-    key: null;
-    constructor?: unknown;
-  };
-  v.constructor = undefined;
-  return v as ClientRouterElement;
+function makeVNode(type: string, props: Record<string, unknown>, key: string): ClientRouterElement {
+  // `jsx`'s `type` param is typed `ElementType` (string-literal intrinsic
+  // tags or component types), which rejects an arbitrary runtime `string`.
+  // The tag is dynamic here, so cast to the factory's own first-param type —
+  // robust whether the engine aliases `jsx` to react or preact at build time.
+  return jsx(type as Parameters<typeof jsx>[0], props, key) as unknown as ClientRouterElement;
 }
 
 // CSS for the route-announcer element. Ported verbatim from Astro's
@@ -127,11 +139,15 @@ export function ClientRouter({
 
   const nodes: ClientRouterElement[] = [
     // Global styles for the ARIA route-announcer div injected into <body>.
-    makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }),
+    makeVNode("style", { dangerouslySetInnerHTML: { __html: announcerCss } }, "zfb-vt-style"),
     // Opt-in meta tag: router checks for this to decide whether to intercept navigations.
-    makeVNode("meta", { name: "zfb-view-transitions-enabled", content: "true" }),
+    makeVNode("meta", { name: "zfb-view-transitions-enabled", content: "true" }, "zfb-vt-enabled"),
     // Fallback strategy meta tag: read by getFallback() in router.ts.
-    makeVNode("meta", { name: "zfb-view-transitions-fallback", content: fallback }),
+    makeVNode(
+      "meta",
+      { name: "zfb-view-transitions-fallback", content: fallback },
+      "zfb-vt-fallback",
+    ),
   ];
 
   // Prefetch-disabled meta tag (#277): emitted when the bundler set
@@ -147,7 +163,13 @@ export function ClientRouter({
   // Pin the contract verbatim — the attribute names and content value are
   // shared with the sibling prefetch-core sub-issue (#276).
   if ((globalThis as { __zfb?: { prefetchDisabled?: boolean } }).__zfb?.prefetchDisabled === true) {
-    nodes.push(makeVNode("meta", { name: "zfb-prefetch-disabled", content: "true" }));
+    nodes.push(
+      makeVNode(
+        "meta",
+        { name: "zfb-prefetch-disabled", content: "true" },
+        "zfb-prefetch-disabled",
+      ),
+    );
   }
 
   return nodes;

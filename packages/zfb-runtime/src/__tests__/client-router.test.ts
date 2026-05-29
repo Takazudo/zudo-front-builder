@@ -67,14 +67,24 @@ describe("ClientRouter — prefetch disabled flag", () => {
     expect(nodes).toHaveLength(4);
   });
 
-  it("the zfb-prefetch-disabled meta VNode has constructor === undefined (VNode shape)", () => {
+  it("the zfb-prefetch-disabled meta node is a real JSX-runtime element (not a hand-rolled literal)", () => {
     (globalThis as { __zfb?: { prefetchDisabled?: boolean } }).__zfb = { prefetchDisabled: true };
     const nodes = ClientRouter();
     const prefetchMeta = nodes.find(
       (n) => n.type === "meta" && n.props["name"] === "zfb-prefetch-disabled",
     );
-    // constructor: undefined is the sentinel for Preact/React structural VNodes.
-    expect((prefetchMeta as { constructor?: unknown } | undefined)?.constructor).toBeUndefined();
+    // Head nodes are minted via `jsx` from the per-project JSX runtime
+    // (react in this test's config; preact in a Preact project via the engine
+    // alias), NOT a hand-rolled `{ type, props, key, constructor: undefined }`
+    // literal. A real element carries the `$$typeof` element brand
+    // (`Symbol.for("react.element" | "react.transitional.element")`), which a
+    // plain literal cannot have. This is what makes the node render under React
+    // without error #31. The structural `.type`/`.props` surface is unchanged.
+    expect(prefetchMeta).toBeDefined();
+    const brand = (prefetchMeta as { $$typeof?: unknown } | undefined)?.$$typeof;
+    expect(typeof brand).toBe("symbol");
+    expect(prefetchMeta?.type).toBe("meta");
+    expect(prefetchMeta?.props["content"]).toBe("true");
   });
 });
 

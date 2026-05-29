@@ -18,7 +18,10 @@ Released: 2026-05-29
   bundle defines `process.env.NODE_ENV` and (React-only) passes
   `--conditions=worker` and `--main-fields=main,module` so `react-dom/server`
   and main-only CJS deps (e.g. `tabbable` via `@headlessui/react`) resolve under
-  `--platform=neutral`. The `@takazudo/zfb` `Island` wrapper now mints its
-  element through JSX delegation so esbuild's per-project `--jsx-import-source`
-  produces the right element for either framework; the published type surface
-  stays framework-agnostic. Preact remains the unchanged default.
+  `--platform=neutral`. The `@takazudo/zfb` SDK and `@takazudo/zfb-runtime` now
+  mint all SSR-reachable elements (the `Island` wrapper, the `ClientRouter`
+  head tags, and the MDX component overrides) through the per-project JSX
+  runtime, so esbuild's `--jsx-import-source` produces the right element shape
+  for either framework instead of a Preact-only VNode literal (which React's
+  renderer rejected); the published type surface stays framework-agnostic.
+  Preact remains the unchanged default.
