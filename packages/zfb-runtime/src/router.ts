@@ -116,6 +116,17 @@ export interface CreatePageRouterOptions {
   readonly contentSnapshot: ContentSnapshot;
   /** Framework adapter pinning the SSR call. */
   readonly framework: FrameworkAdapter;
+  /**
+   * When `true`, the 500 body for render errors includes the full JS stack
+   * trace. When `false`, only the message + route are included. When
+   * omitted, the runtime checks `globalThis.__zfb.ssrDebug` at request time:
+   * that flag is set by the embedded V8 build/dev host (`globals_shim.js`)
+   * and is absent on the production Cloudflare Workers runtime.
+   *
+   * Default is effectively OFF for production (no flag ⇒ message + route only).
+   * Useful for explicit injection in unit tests without global mutation.
+   */
+  readonly includeErrorStack?: boolean;
 }
 
 /**
@@ -435,7 +446,12 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         return c.body(ensureHtml5Doctype(html, contentType), 200, { "Content-Type": contentType });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+        // __zfb.ssrDebug is set only by the embedded V8 build/dev host
+        // (globals_shim.js), never by the production Workers runtime.
+        const includeStack =
+          opts.includeErrorStack ??
+          (globalThis as { __zfb?: { ssrDebug?: boolean } }).__zfb?.ssrDebug === true;
+        const stack = includeStack && err instanceof Error && err.stack ? `\n${err.stack}` : "";
         return c.body(`[zfb-runtime] render threw for "${page.route}": ${msg}${stack}`, 500, {
           "Content-Type": "text/plain; charset=utf-8",
         });

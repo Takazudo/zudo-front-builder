@@ -99,6 +99,27 @@ pub const NODE_STUB_SPECIFIERS: &[&str] = &[
     "node:async_hooks",
 ];
 
+#[cfg(test)]
+mod tests {
+    use super::HOST_GLOBALS_SHIM_SRC;
+
+    /// Verify the embedded globals shim sets the `ssrDebug` flag inside the
+    /// `globalThis.__zfb` literal. The flag is the runtime discriminator that
+    /// gates verbose SSR error output to the embedded V8 host — absent on the
+    /// production Cloudflare Workers runtime. A string-match here is the
+    /// lightest-weight way to confirm the shim source (embedded via
+    /// `include_str!`) contains the expected token without spinning up a JS
+    /// runtime.
+    #[test]
+    fn globals_shim_contains_ssr_debug_flag() {
+        assert!(
+            HOST_GLOBALS_SHIM_SRC.contains("ssrDebug"),
+            "globals_shim.js must set the `ssrDebug` flag inside globalThis.__zfb \
+             so the router can gate verbose SSR error output to the embedded V8 host"
+        );
+    }
+}
+
 /// Lookup the synthetic source for a `node:*` specifier. Returns
 /// `None` for any specifier outside [`NODE_STUB_SPECIFIERS`] — the
 /// loader treats that as "not a node stub, fall through".
