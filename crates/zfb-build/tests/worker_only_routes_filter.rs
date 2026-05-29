@@ -124,6 +124,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         worker_only_routes: Some(worker_only),
         bundle_basename: None,
         css_module_class_maps: HashMap::new(),
+        mdx_components_file: None,
     };
 
     let out = bundle(input).expect("bundle should succeed");

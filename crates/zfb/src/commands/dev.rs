@@ -1163,6 +1163,12 @@ fn boot_dev_renderer(
         project_root.join(".zfb-build"),
         content_snapshot_json,
     );
+    // Discover the Next-style root `mdx-components.tsx` convention (#616),
+    // mirroring `commands/build.rs`. Re-runs every bundle (shadow is a fresh
+    // tempdir), so `zfb dev` / preview pick up edits to the file with no
+    // special-casing. `None` when absent ⇒ output identical to no-file.
+    bundler_input.mdx_components_file =
+        crate::commands::build::discover_mdx_components_file(project_root);
     // Mirror the production build CLI: surface project-side
     // `node_modules/` and `tsconfig.json#compilerOptions.paths` to the
     // bundler so esbuild can resolve user-installed packages and TS
