@@ -1,0 +1,284 @@
+---
+title: "Recipe: Enlargeable Images"
+description: Reproduce the old built-in image-enlarge behavior in userland via the MDX component override API.
+sidebar_position: 2
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+How to replace the removed `imageEnlarge` built-in feature by wiring a userland `EnlargeableImg` component through the [MDX override API](/concepts/mdx-components). Both a fully server-side variant (no JavaScript shipped per page) and an islands variant (client-side interactivity via `<Island>`) are shown.
+
+</Info>
+
+## Background
+
+Up to v0.1.0-next.12, zfb included a built-in `imageEnlarge` Markdown feature that wrapped block-level images in a `<figure class="zd-enlargeable">` with a zoom button. That feature was removed in v0.1.0-next.17 because it depended on pipeline internals not available to userland code and had no clean configuration surface.
+
+The same behavior is now achievable entirely in userland using the `img` key in the `components` map. This recipe shows how.
+
+## How the override receives image props
+
+When MDX compiles a Markdown image:
+
+```md
+![A sunset over the ocean](/images/sunset.jpg "A warm evening")
+```
+
+it renders `<img>` with the following props — the same attributes the HTML element accepts:
+
+- `src` — the image source URL
+- `alt` — the alt text
+- `title` — the title attribute (from the quoted string after the URL, if present)
+
+Your `img` override receives all of these as props, which is the key insight the `no-enlarge` opt-out relies on.
+
+## The `no-enlarge` opt-out
+
+The old pipeline used a build-time sentinel to skip wrapping certain images. The userland equivalent is a **component-read prop**: set `title="no-enlarge"` in the Markdown source and check it in the component.
+
+Author writes:
+
+```md
+![A diagram](/images/diagram.png "no-enlarge")
+```
+
+Component reads:
+
+```tsx
+if (props.title === "no-enlarge") {
+  // render a plain <img> without the enlargeable wrapper
+}
+```
+
+## Variant A — server-side only (no islands)
+
+This is the simpler variant. `EnlargeableImg` is a server component: it renders a `<figure>` with a disclosure-style zoom button and delegates all interactivity to a small global click script in the layout. No JavaScript is shipped per page; the click script is a one-time layout-level inline `<script>`.
+
+### Component
+
+```tsx title="components/enlargeable-img.tsx"
+type Props = {
+  src?: string;
+  alt?: string;
+  title?: string;
+  [key: string]: unknown;
+};
+
+export default function EnlargeableImg({ src, alt, title, ...rest }: Props) {
+  // opt-out: title="no-enlarge" → plain <img>, no wrapper
+  if (title === "no-enlarge") {
+    return <img src={src} alt={alt} {...rest} />;
+  }
+
+  return (
+    <figure class="zd-enlargeable" data-enlarged="false">
+      <img src={src} alt={alt} title={title} {...rest} />
+      <button
+        type="button"
+        class="zd-enlarge-btn"
+        aria-label="Enlarge image"
+      >
+        {/* zoom-in SVG icon */}
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <line x1="11" y1="8" x2="11" y2="14" />
+          <line x1="8" y1="11" x2="14" y2="11" />
+        </svg>
+      </button>
+    </figure>
+  );
+}
+```
+
+### Global click script
+
+Add this once to your layout. It uses event delegation — one listener for the whole page, regardless of how many images are present.
+
+```tsx title="layouts/default.tsx (excerpt)"
+// Inside your <head> or at the end of <body>:
+<script
+  dangerouslySetInnerHTML={{
+    __html: `
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".zd-enlarge-btn");
+        if (!btn) return;
+        const fig = btn.closest(".zd-enlargeable");
+        if (!fig) return;
+        const enlarged = fig.dataset.enlarged === "true";
+        fig.dataset.enlarged = enlarged ? "false" : "true";
+      });
+    `,
+  }}
+/>
+```
+
+### CSS (minimal)
+
+```css
+.zd-enlargeable {
+  position: relative;
+  display: inline-block;
+  margin: 0;
+}
+
+.zd-enlargeable img {
+  display: block;
+  transition: transform 0.2s ease;
+}
+
+.zd-enlargeable[data-enlarged="true"] img {
+  transform: scale(1.5);
+  z-index: 10;
+  position: relative;
+}
+
+.zd-enlarge-btn {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem;
+  cursor: pointer;
+  line-height: 0;
+}
+```
+
+### Mounting the override
+
+Per-route mounting:
+
+```tsx title="pages/blog/[slug].tsx"
+import { defaultComponents } from "zfb";
+import EnlargeableImg from "../../components/enlargeable-img";
+
+export default function PostPage({ post }) {
+  return (
+    <article>
+      <post.Content
+        components={{ ...defaultComponents, img: EnlargeableImg }}
+      />
+    </article>
+  );
+}
+```
+
+Global mounting via `mdx-components.tsx` (zfb v0.1.0-next.16+):
+
+```tsx title="mdx-components.tsx"
+import { defaultComponents } from "zfb";
+import EnlargeableImg from "./components/enlargeable-img";
+
+// Default export: merged with defaultComponents before every Content render.
+export default {
+  ...defaultComponents,
+  img: EnlargeableImg,
+};
+```
+
+When `mdx-components.tsx` exists at the project root, zfb automatically installs it on `globalThis.__zfb.mdxComponents` at build time. Every `entry.Content` render merges it under `defaultComponents` and above the per-call `components` prop, so you do not need to pass `img: EnlargeableImg` on every route.
+
+## Variant B — interactive island
+
+Use this variant when you need richer client-side behavior — for example, a true lightbox that traps focus, supports keyboard navigation, and renders an overlay. The component wraps an `<Island>` whose child island receives `src` and `alt` as serializable props.
+
+<Info title="Why the wrapper is needed">
+
+A `components` map is applied at server render time. If you put `"use client"` directly on `EnlargeableImg` and tried to mount it via `components={{ img: EnlargeableImg }}`, zfb would call it during SSR — the hydrate boundary cannot be crossed through the components map alone because functions are not JSON-serializable into `data-props`. The solution is a **server wrapper** (`EnlargeableImg`) that renders an `<Island>` whose child (`ImageLightbox`) carries only JSON-safe props.
+
+</Info>
+
+### The island (client component)
+
+```tsx title="components/image-lightbox.tsx"
+"use client";
+
+import { useState } from "preact/hooks";
+
+type Props = {
+  src: string;
+  alt: string;
+};
+
+export default function ImageLightbox({ src, alt }: Props) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <figure class="zd-enlargeable">
+        <img src={src} alt={alt} onClick={() => setOpen(true)} style="cursor:zoom-in" />
+        <button
+          type="button"
+          class="zd-enlarge-btn"
+          aria-label="Enlarge image"
+          onClick={() => setOpen(true)}
+        >
+          {/* zoom-in icon — same SVG as Variant A */}
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            <line x1="11" y1="8" x2="11" y2="14" />
+            <line x1="8" y1="11" x2="14" y2="11" />
+          </svg>
+        </button>
+      </figure>
+      {open && (
+        <dialog
+          open
+          class="zd-lightbox"
+          onClick={() => setOpen(false)}
+          aria-modal="true"
+          aria-label={alt}
+        >
+          <img src={src} alt={alt} />
+        </dialog>
+      )}
+    </>
+  );
+}
+```
+
+### The server wrapper
+
+```tsx title="components/enlargeable-img.tsx (island variant)"
+import { Island } from "zfb";
+import ImageLightbox from "./image-lightbox";
+
+type Props = {
+  src?: string;
+  alt?: string;
+  title?: string;
+  [key: string]: unknown;
+};
+
+export default function EnlargeableImg({ src, alt, title }: Props) {
+  // opt-out: title="no-enlarge" → plain <img>, no island overhead
+  if (title === "no-enlarge") {
+    return <img src={src} alt={alt} title={title} />;
+  }
+
+  // Island serializes the child's own non-children props as data-props.
+  // `src` and `alt` are plain strings — they survive JSON serialization
+  // and arrive at the hydrated ImageLightbox intact.
+  return (
+    <Island when="load">
+      <ImageLightbox src={src ?? ""} alt={alt ?? ""} />
+    </Island>
+  );
+}
+```
+
+Mount it exactly as in Variant A — either per-route or via `mdx-components.tsx`.
+
+## One implicit limitation
+
+The old built-in operated on the Markdown AST and could distinguish **block-level images** (standalone paragraph containing only an `<img>`) from inline images (an image inside a sentence). An `img` override fires for **every** image — block or inline — because that distinction is lost by the time MDX calls the component. If you need to skip inline images, use `title="no-enlarge"` on those authors. The `no-enlarge` opt-out is the supported mechanism; block-level detection is not reproducible from userland.
+
+## See also
+
+- [MDX Components](/concepts/mdx-components) — the `components` prop, `defaultComponents`, and the `mdx-components.tsx` global convention.
+- [Islands](/concepts/islands) — the `<Island>` wrapper, hydration strategies, and the `"use client"` directive.

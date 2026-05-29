@@ -14,16 +14,14 @@
 //!    permalink anchor child.
 //! 2. code-title: `<pre data-meta='title="…"'>` is wrapped in a
 //!    `code-block-container` div.
-//! 3. image-enlarge: a `<p>` whose only child is `<img>` becomes a
-//!    `<figure class="zd-enlargeable">` with an enlarge button.
-//! 4. mermaid: a fenced ```mermaid block becomes a
+//! 3. mermaid: a fenced ```mermaid block becomes a
 //!    `<div class="mermaid" data-mermaid>…</div>`.
-//! 5. syntect: a non-mermaid fenced code block routes through
+//! 4. syntect: a non-mermaid fenced code block routes through
 //!    syntect (output reaches the JSX module wrapped in
 //!    `dangerouslySetInnerHTML`).
-//! 6. strip-md-ext (opt-in): internal `[x](./guide.md)` links lose
+//! 5. strip-md-ext (opt-in): internal `[x](./guide.md)` links lose
 //!    the `.md` and gain a trailing slash on the JSX path.
-//! 7. MDX component passthrough: a `<Note>` reference still triggers
+//! 6. MDX component passthrough: a `<Note>` reference still triggers
 //!    the PascalCase preamble and survives in the JSX body.
 
 use zfb_content::pipeline::Pipeline;
@@ -85,24 +83,6 @@ fn code_title_plugin_fires_on_jsx_path() {
     assert!(
         out.contains("\"main.rs\""),
         "title text should survive into the JSX body:\n{out}",
-    );
-}
-
-#[test]
-fn image_enlarge_plugin_fires_on_jsx_path() {
-    // A standalone <p><img></p> becomes <figure class="zd-enlargeable">…</figure>.
-    let out = emit_with_defaults("![alt](pic.png)\n");
-    assert!(
-        out.contains("class=\"zd-enlargeable\""),
-        "image-enlarge should produce a zd-enlargeable figure:\n{out}",
-    );
-    assert!(
-        out.contains("class=\"zd-enlarge-btn\""),
-        "image-enlarge should attach the enlarge button:\n{out}",
-    );
-    assert!(
-        out.contains("aria-label=\"Enlarge image\""),
-        "enlarge button must carry aria-label:\n{out}",
     );
 }
 
@@ -237,7 +217,7 @@ fn defaults_compose_for_titled_rust_block() {
 fn jsx_with_hast_detour_compiles_via_swc() {
     let pipeline_compile = SwcPipeline::new();
 
-    // Cover heading-links + syntect + code-title + image-enlarge +
+    // Cover heading-links + syntect + code-title +
     // mermaid + an MDX component in one document so the smoke covers
     // the full default chain end-to-end.
     let src = "# Title\n\

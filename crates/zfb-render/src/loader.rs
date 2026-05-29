@@ -229,7 +229,7 @@ impl ModuleLoader {
     /// when the project's `zfb.config.ts` sets `markdown.cjkFriendly`
     /// so dev rendering agrees with the bundler.
     ///
-    /// `markdown.features` is left at `None` (an empty feature set → the four
+    /// `markdown.features` is left at `None` (an empty feature set → the three
     /// former-Core framework features are OFF, the opt-in default). Use
     /// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] to
     /// honour the feature surface so dev preview matches a featured build.
@@ -253,7 +253,7 @@ impl ModuleLoader {
     /// feature-aware entry point
     /// [`Pipeline::with_defaults_and_full_config`] so dev rendering and the
     /// bundler agree on every knob — including which opt-in feature plugins
-    /// fire. `features = None` is an empty feature set: the four former-Core
+    /// fire. `features = None` is an empty feature set: the three former-Core
     /// framework features are off (the opt-in default).
     ///
     /// Note: the `zfb dev` CLI does NOT render through this loader — it threads
@@ -439,7 +439,7 @@ impl ModuleLoader {
     ///   `:::note` directives, `<Note>` rewrites, and similar
     ///   structural changes happen in time. See zfb#116.
     /// - **hast-phase** plugins (heading-links, code-title, mermaid,
-    ///   image-enlarge, syntect, strip-md-ext) also fire — since
+    ///   syntect, strip-md-ext) also fire — since
     ///   zfb#121 the JSX emit path detours through hast inside
     ///   [`mdx_to_jsx_module_with_pipeline`], so the same plugin chain
     ///   that runs on the HTML serializer path ([`Pipeline::run`])

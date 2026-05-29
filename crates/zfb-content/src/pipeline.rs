@@ -26,7 +26,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
     AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
-    ExternalLinksConfig, ExternalLinksPlugin, HeadingLinksPlugin, ImageEnlargePlugin,
+    ExternalLinksConfig, ExternalLinksPlugin, HeadingLinksPlugin,
     MermaidPlugin, ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin,
     SyntectPlugin, TocConfig, TocPlugin,
 };
@@ -432,16 +432,11 @@ impl Pipeline {
     ///    with structured HAST (`<pre><code><span class="line">…</span>
     ///    </code></pre>`); once that happens, the original `data-meta`
     ///    attribute on the input `<code>` is no longer reachable.
-    /// 5. [`ImageEnlargePlugin`] — wraps any `<p>` whose only
-    ///    non-whitespace child is `<img>` in
-    ///    `<figure class="zd-enlargeable">` + an enlarge `<button>`.
-    ///    Order-independent relative to syntect/mermaid (it only
-    ///    touches `<p>`/`<img>` shapes).
-    /// 6. [`MermaidPlugin`] — replaces `<pre><code class="language-mermaid">`
+    /// 5. [`MermaidPlugin`] — replaces `<pre><code class="language-mermaid">`
     ///    blocks with `<div class="mermaid" data-mermaid>…</div>`.
     ///    Must run BEFORE [`SyntectPlugin`] so the latter can identify
     ///    and skip mermaid blocks rather than syntect-highlighting them.
-    /// 7. [`SyntectPlugin`] — replaces remaining fenced code blocks
+    /// 6. [`SyntectPlugin`] — replaces remaining fenced code blocks
     ///    with per-line structured HAST. Runs last among CORE hast
     ///    visitors so the title-wrapper and mermaid-skip decision are
     ///    already baked in. Extras-side enrichment visitors (registered
@@ -580,7 +575,6 @@ impl Pipeline {
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-        p.add_hast_visitor(Box::new(ImageEnlargePlugin::new()));
         p.add_hast_visitor(Box::new(MermaidPlugin::new()));
         let syntect = if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
@@ -602,21 +596,6 @@ impl Pipeline {
     /// into the pipeline. The existing `with_defaults*` constructors are
     /// **not touched** — this is a pure sibling, and all current call sites
     /// remain byte-for-byte unchanged.
-    ///
-    /// # Wave 2 behaviour (stub)
-    ///
-    /// In Wave 2, the full default plugin chain is always wired (identical to
-    /// `with_defaults_and_theme_and_gfm_and_cjk`), and `register_features`
-    /// is called for future extensibility but is a no-op. Wave 3.1 (#570)
-    /// will move zfb-content's own framework-feature visitors
-    /// (`ImageEnlargePlugin`, `MermaidPlugin`, `AdmonitionsPlugin`) into
-    /// `zfb-md-extras` and make them conditional on the corresponding
-    /// `features.*` flags.
-    ///
-    /// Because the default chain is always wired in Wave 2, output is
-    /// **byte-identical** to `with_defaults()` for an empty `features` set,
-    /// and the image-enlarge wrapper is always present regardless of the
-    /// `features.image_enlarge` flag. Wave 3.1 introduces the conditionality.
     ///
     /// # Visitor ordering contract
     ///
@@ -673,9 +652,9 @@ impl Pipeline {
     /// `zfb-md-extras` feature visitors whose `features.*` flags are enabled
     /// ([`register_features`] / [`register_post_syntect_features`]).
     ///
-    /// `features = None` is treated as an **empty** feature set: the four
-    /// former-Core framework features (`mermaid`, `image_enlarge`,
-    /// `admonitions_preset`, `heading_marker_toc`) are **off**. This is the
+    /// `features = None` is treated as an **empty** feature set: the three
+    /// former-Core framework features (`mermaid`, `admonitions_preset`,
+    /// `heading_marker_toc`) are **off**. This is the
     /// post-epic opt-in default documented in the v0.1.0-next.12 changelog
     /// (#583): a default `zfb.config.ts` build omits them, and users opt in via
     /// `markdown.features.*`. The legacy [`Pipeline::with_defaults`] /
@@ -699,8 +678,8 @@ impl Pipeline {
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
-        // default, #583 / #586): the four former-Core framework features
-        // (mermaid, image_enlarge, admonitions_preset, heading_marker_toc) are
+        // default, #583 / #586): the three former-Core framework features
+        // (mermaid, admonitions_preset, heading_marker_toc) are
         // OFF. The legacy `with_defaults*` constructors / `build_defaults`
         // retain the pre-epic always-on chain for backwards-compatible direct
         // callers, but the bundler/snapshot/dev pipelines route through here.
@@ -715,8 +694,8 @@ impl Pipeline {
 
         // Feature-aware chain. Mirrors `build_defaults` for the framework
         // plugins that are ALWAYS on (cjk, heading-links, code-title, syntect)
-        // but routes the opt-in plugins (mermaid, image_enlarge,
-        // admonitions_preset, …) through `register_features`.
+        // but routes the opt-in plugins (mermaid, admonitions_preset, …)
+        // through `register_features`.
         //
         // Visitor ordering contract (see doc comment on
         // `with_defaults_and_features`):
@@ -741,7 +720,7 @@ impl Pipeline {
         // mermaid; after for post-syntect).
         register_features(&mut p, features);
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
-        // extras visitors (mermaid, image_enlarge, …) run first.
+        // extras visitors (mermaid, …) run first.
         let syntect = if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
         } else {
@@ -797,7 +776,7 @@ impl Pipeline {
     /// Mirror of [`Pipeline::apply_mdast_visitors`], added for #121 so
     /// the JSX emit path can detour through hast — `mdast → hast →
     /// hast visitors → JSX emit` — and pick up the project's hast-phase
-    /// plugins (heading-links, code-title, image-enlarge, mermaid,
+    /// plugins (heading-links, code-title, mermaid,
     /// syntect, optional strip-md-ext) on MDX content. The HTML
     /// serializer path keeps using [`Pipeline::run`] unchanged.
     pub fn apply_hast_visitors(&mut self, node: &mut HastNode) {
@@ -817,7 +796,7 @@ impl Pipeline {
     /// `content_hash` and breaking the `mdx://<collection>/<slug>#<hash>`
     /// bridge lookup (zfb#187).
     ///
-    /// Stateless visitors (code-title, image-enlarge, mermaid, syntect,
+    /// Stateless visitors (code-title, mermaid, syntect,
     /// strip-md-ext) provide the default no-op implementation of
     /// [`HastVisitor::reset`], so calling this unconditionally is safe.
     ///
@@ -964,8 +943,6 @@ pub fn register_features(
     //       Inserted here (after CjkFriendlyPlugin that was added in the caller).
     //   hast phase (all run BEFORE SyntectPlugin which is appended by the caller
     //   after register_features returns):
-    //     - image_enlarge — runs before syntect; no ordering constraint vs.
-    //       heading_links (heading_links was already added by the caller).
     //     - mermaid — MUST run BEFORE SyntectPlugin so syntect can skip mermaid
     //       blocks. The `data-mermaid` div shape is not a `<pre>`; syntect
     //       ignores it automatically once it has been replaced.
@@ -1047,11 +1024,6 @@ pub fn register_features(
             zfb_md_extras::heading_marker_toc::TocPlugin::new(cfg),
         ));
     }
-    if feature_enabled(&features.image_enlarge) {
-        p.add_hast_visitor(Box::new(
-            zfb_md_extras::image_enlarge::ImageEnlargePlugin::new(),
-        ));
-    }
     if feature_enabled(&features.mermaid) {
         p.add_hast_visitor(Box::new(
             zfb_md_extras::mermaid::MermaidPlugin::new(),
@@ -1081,8 +1053,6 @@ pub fn register_features(
     }
     // Wave 6 (#579): image_dimensions — inject width/height on local <img> elements.
     // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
-    // MUST run AFTER image_enlarge (which also touches <img>/<p> shapes) so the
-    // figure-wrapper is already in place when dimensions are injected.
     // Uses visit_with_context — pipeline must call run_with_context for this to fire.
     if let Some(cfg) = features.image_dimensions.clone() {
         p.add_hast_visitor(Box::new(

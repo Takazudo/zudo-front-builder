@@ -517,3 +517,77 @@ fn real_world_fixtures_round_trip_through_emitter() {
         assert_swc_accepts(&jsx, &label);
     }
 }
+
+// ───────────────────────────────────────────────────────────────────
+// C1 — Composed emit invariants: lowercase-degrade + PascalCase-throw
+// in the same MDX document.
+//
+// The two invariants from issue #617:
+//   a. An unmapped lowercase tag degrades to the native HTML element.
+//      The emitter pre-seeds `_components.span = "span"` so a caller
+//      that passes no `span` override gets the intrinsic tag back.
+//   b. A missing PascalCase component hard-throws.
+//      The emitter emits `if (!Note) throw new Error(...)` for every
+//      PascalCase identifier referenced in the MDX source.
+//
+// Both paths coexist in a single emitted function — this test proves
+// they compose correctly and that neither path interferes with the other.
+// ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn c1_lowercase_degrade_and_pascal_throw_compose_in_same_document() {
+    // A document with BOTH a lowercase MDX JSX element (<span>) and a
+    // PascalCase component (<Note>). The emitter must handle both paths
+    // in a single _createMdxContent function.
+    let out = emit("A <span>low</span> and a <Note>high</Note>.\n");
+
+    // Invariant (a) — lowercase `span` degrades to the intrinsic tag.
+    // The emitter pre-seeds `_components.span = "span"` so that when no
+    // `components.span` override is supplied, the browser renders a native
+    // <span> element. The emitted form routes through `_components.span`.
+    assert!(
+        out.contains("span: \"span\","),
+        "lowercase span must be pre-seeded as the intrinsic tag; got:\n{out}"
+    );
+    assert!(
+        out.contains("<_components.span>"),
+        "span element must route through _components.span; got:\n{out}"
+    );
+    assert!(
+        out.contains("</_components.span>"),
+        "span close tag must use _components.span; got:\n{out}"
+    );
+
+    // Invariant (b) — PascalCase `Note` hard-throws when missing.
+    // The emitter emits a guard that throws if `_components.Note` and
+    // `components.Note` are both falsy. This is the "missing PascalCase
+    // component still hard-throws" invariant from #617.
+    assert!(
+        out.contains("const Note = _components.Note ?? components.Note;"),
+        "PascalCase Note must be resolved via _components/components; got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "if (!Note) throw new Error(\"MDX requires `Note` to be passed via the `components` prop\");"
+        ),
+        "PascalCase Note must emit a hard-throw guard; got:\n{out}"
+    );
+    assert!(
+        out.contains("<Note>"),
+        "Note element must be rendered; got:\n{out}"
+    );
+
+    // Both paths exist in the same function body — neither suppresses the other.
+    let span_idx = out
+        .find("span: \"span\",")
+        .expect("span pre-seed must be present");
+    let note_throw_idx = out
+        .find("if (!Note) throw")
+        .expect("Note throw guard must be present");
+    // The _components initialization (with span pre-seed) must appear before
+    // the PascalCase guard (which runs after _components is built).
+    assert!(
+        span_idx < note_throw_idx,
+        "span pre-seed (idx {span_idx}) must precede Note throw guard (idx {note_throw_idx})"
+    );
+}

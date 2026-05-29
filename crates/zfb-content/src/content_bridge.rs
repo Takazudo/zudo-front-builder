@@ -248,8 +248,8 @@ pub struct SnapshotPipelineConfig {
     /// `<pre data-zfb-content-fallback>`.
     ///
     /// `Default` is `None` — no feature surface configured — which is treated
-    /// as an empty feature set: the four former-Core framework features
-    /// (mermaid, image-enlarge, admonitions-preset, heading-marker TOC) are
+    /// as an empty feature set: the three former-Core framework features
+    /// (mermaid, admonitions-preset, heading-marker TOC) are
     /// OFF (the post-epic opt-in default, #583 / #586).
     pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
 }
@@ -276,7 +276,7 @@ impl SnapshotPipelineConfig {
     fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
         // Single feature-aware entry point — MUST match the bundler's dispatch
         // (see `crates/zfb-build/src/bundler.rs`) so `content_hash` stays
-        // byte-identical. `features = None` is an empty feature set: the four
+        // byte-identical. `features = None` is an empty feature set: the three
         // former-Core framework features are off (the post-epic opt-in default).
         let mut p = Pipeline::with_defaults_and_full_config(
             self.code_highlight_theme.as_deref(),
@@ -805,7 +805,7 @@ mod tests {
         // the bundler ran with `Some(&mut Pipeline::with_defaults())`
         // (post-pipeline JSX, post-pipeline hash). Any page whose body
         // the pipeline actually transformed — admonitions, mermaid,
-        // syntect-highlighted fences, image-enlarge, heading-links,
+        // syntect-highlighted fences, heading-links,
         // CJK-friendly emphasis — produced two divergent specifiers,
         // and `globalThis.__zfb.content.get(snapshot.module_specifier)`
         // missed at render time → silent fallback render.

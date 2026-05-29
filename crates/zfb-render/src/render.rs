@@ -92,7 +92,7 @@ impl<H: RenderHost> Renderer<H> {
 
     /// Constructor: forwards `strip_md_ext`, GFM constructs, and
     /// CJK-friendly toggle to the loader. `markdown.features` is left at
-    /// `None` (an empty feature set → the four former-Core framework features
+    /// `None` (an empty feature set → the three former-Core framework features
     /// are OFF, the opt-in default); use
     /// [`Renderer::with_strip_md_ext_and_gfm_and_cjk_and_features`] to honour
     /// the feature surface.
@@ -117,7 +117,7 @@ impl<H: RenderHost> Renderer<H> {
     /// CJK-friendly toggle, and `markdown.features` to the loader so dev
     /// rendering agrees with the bundler on every knob — including which
     /// opt-in feature plugins fire. `features = None` is an empty feature set:
-    /// the four former-Core framework features are off (the opt-in default).
+    /// the three former-Core framework features are off (the opt-in default).
     ///
     /// Note: the `zfb dev` CLI renders through the V8 `RendererState` in
     /// `zfb-build`, threading features via `BundlerInput` — not through this

@@ -166,6 +166,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         worker_only_routes: None,
         bundle_basename: None,
         css_module_class_maps: HashMap::new(),
+        mdx_components_file: None,
     };
 
     let out = bundle(input).expect(

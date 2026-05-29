@@ -20,15 +20,17 @@ import {
   defaultComponents,
   getCollection,
   getContentSnapshot,
+  mergeMdxComponents,
   parseFrontmatter,
   setContentSnapshot,
 } from "../content.js";
-import type { Snapshot } from "../content.js";
+import type { MdxComponents, Snapshot } from "../content.js";
 
 /**
  * Test-only handle on the `__zfb` bridge namespace. Mirrors the ambient
  * declaration the production renderer installs, narrowed to what these
- * tests touch (the `content.get(specifier)` lookup).
+ * tests touch (the `content.get(specifier)` lookup and the `mdxComponents`
+ * global slot).
  */
 type TestBridge = {
   __zfb?: {
@@ -37,6 +39,7 @@ type TestBridge = {
         specifier: string,
       ): ((props: { components?: Record<string, unknown> }) => unknown) | undefined;
     };
+    mdxComponents?: MdxComponents;
   };
 };
 
@@ -316,7 +319,7 @@ describe("CollectionEntry.Content", () => {
     expect(node?.props.children as string).toContain("lonely body");
   });
 
-  it("delegates to the bridge component when present, forwarding props verbatim", async () => {
+  it("delegates to the bridge component with merged components (per-call wins over defaults)", async () => {
     await writeFile(
       join(dir, "blog", "wired.md"),
       "---\ntitle: Wired\n---\nignored when bridge active\n",
@@ -336,15 +339,20 @@ describe("CollectionEntry.Content", () => {
     };
     const [entry] = await getCollection("blog");
     expect(entry?.module_specifier).toBe("mdx://blog/wired");
-    const overrides = { h1: function CustomH1() {} };
+    function CustomH1() {}
+    const overrides = { h1: CustomH1 };
     const node = entry?.Content({ components: overrides });
     // The bridge return value is passed through verbatim.
     expect(node).toBe(sentinel);
-    // The bridge was consulted with the entry's module_specifier and
-    // received the same props the caller supplied.
+    // The bridge was consulted with the entry's module_specifier.
     expect(calls).toHaveLength(1);
     expect(calls[0]?.specifier).toBe("mdx://blog/wired");
-    expect(calls[0]?.props.components).toBe(overrides);
+    // Per-call components win over defaultComponents (h1 not in defaults).
+    const merged = calls[0]?.props.components;
+    expect(merged?.["h1"]).toBe(CustomH1);
+    // defaultComponents entries are present in the merged map.
+    expect(merged?.["h2"]).toBe(defaultComponents.h2);
+    expect(merged?.["p"]).toBe(defaultComponents.p);
   });
 
   it("re-consults the bridge on every call (late-installed bridge wins)", async () => {
@@ -364,6 +372,206 @@ describe("CollectionEntry.Content", () => {
     // Second call: bridge present → delegates.
     const after = entry?.Content({});
     expect(after).toBe(sentinel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `mergeMdxComponents` — precedence-merge helper (A1 seam).
+//
+// Precedence (lowest → highest):
+//   defaultComponents → globalThis.__zfb.mdxComponents → per-call components
+// ---------------------------------------------------------------------------
+
+describe("mergeMdxComponents", () => {
+  it("with no global slot and no per-call map, returns exactly defaultComponents keys", () => {
+    const merged = mergeMdxComponents(undefined, undefined);
+    expect(Object.keys(merged).sort()).toEqual(Object.keys(defaultComponents).sort());
+    // Each value must be the same reference as in defaultComponents.
+    for (const [key, val] of Object.entries(defaultComponents)) {
+      expect(merged[key]).toBe(val);
+    }
+  });
+
+  it("per-call components override defaultComponents entries", () => {
+    function CustomH2() {}
+    const merged = mergeMdxComponents(undefined, { h2: CustomH2 });
+    expect(merged["h2"]).toBe(CustomH2);
+    // Other defaults are still present.
+    expect(merged["p"]).toBe(defaultComponents.p);
+  });
+
+  it("global slot overrides defaultComponents but loses to per-call", () => {
+    function GlobalH2() {}
+    function PerCallH2() {}
+    const merged = mergeMdxComponents({ h2: GlobalH2 }, { h2: PerCallH2 });
+    // per-call wins over global slot.
+    expect(merged["h2"]).toBe(PerCallH2);
+  });
+
+  it("global slot wins over defaultComponents when per-call does not override", () => {
+    function GlobalH2() {}
+    const merged = mergeMdxComponents({ h2: GlobalH2 }, undefined);
+    expect(merged["h2"]).toBe(GlobalH2);
+    // Other defaults are unaffected.
+    expect(merged["p"]).toBe(defaultComponents.p);
+  });
+
+  it("global slot can add new keys not in defaultComponents", () => {
+    function GlobalCustom() {}
+    const merged = mergeMdxComponents({ MyCustom: GlobalCustom }, undefined);
+    expect(merged["MyCustom"]).toBe(GlobalCustom);
+  });
+
+  it("per-call can add new keys not in defaultComponents or global slot", () => {
+    function PerCallCustom() {}
+    const merged = mergeMdxComponents(undefined, { MyWidget: PerCallCustom });
+    expect(merged["MyWidget"]).toBe(PerCallCustom);
+  });
+
+  it("is idempotent: spreading defaultComponents in per-call yields same values", () => {
+    // Existing call sites that spread ...defaultComponents keep working.
+    const merged = mergeMdxComponents(undefined, { ...defaultComponents });
+    for (const [key, val] of Object.entries(defaultComponents)) {
+      expect(merged[key]).toBe(val);
+    }
+  });
+
+  it("key order is stable: spread in defaultComponents → globalSlot → perCall order", () => {
+    function GlobalP() {}
+    function PerCallA() {}
+    const merged = mergeMdxComponents({ p: GlobalP }, { a: PerCallA });
+    // All default keys present, overridden ones replaced.
+    const keys = Object.keys(merged);
+    const defaultKeys = Object.keys(defaultComponents);
+    // Every default key appears.
+    for (const k of defaultKeys) {
+      expect(keys).toContain(k);
+    }
+    // p was overridden by global slot.
+    expect(merged["p"]).toBe(GlobalP);
+    // a was overridden by per-call.
+    expect(merged["a"]).toBe(PerCallA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildContentComponent merge seam — integration tests (A1 seam).
+//
+// Verify the merge is applied before delegating to the bridge renderer, and
+// that all three precedence layers work correctly end-to-end.
+// ---------------------------------------------------------------------------
+
+describe("buildContentComponent — merge seam (A1)", () => {
+  let dir: string;
+  let prevRoot: string | undefined;
+  let prevBridge: TestBridge["__zfb"];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "zfb-merge-seam-"));
+    await mkdir(join(dir, "blog"), { recursive: true });
+    prevRoot = process.env["ZFB_CONTENT_ROOT"];
+    process.env["ZFB_CONTENT_ROOT"] = dir;
+    prevBridge = (globalThis as unknown as TestBridge).__zfb;
+    delete (globalThis as unknown as TestBridge).__zfb;
+  });
+
+  afterEach(async () => {
+    if (prevRoot === undefined) {
+      delete process.env["ZFB_CONTENT_ROOT"];
+    } else {
+      process.env["ZFB_CONTENT_ROOT"] = prevRoot;
+    }
+    if (prevBridge === undefined) {
+      delete (globalThis as unknown as TestBridge).__zfb;
+    } else {
+      (globalThis as unknown as TestBridge).__zfb = prevBridge;
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("output-neutral: with no per-call components, merged map equals defaultComponents keys/values", async () => {
+    await writeFile(join(dir, "blog", "neutral.md"), "---\ntitle: Neutral\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+    };
+    const [entry] = await getCollection("blog");
+    entry?.Content({});
+    expect(captured).toHaveLength(1);
+    const merged = captured[0]!;
+    // Keys must match defaultComponents exactly (output-neutral).
+    expect(Object.keys(merged).sort()).toEqual(Object.keys(defaultComponents).sort());
+    for (const [key, val] of Object.entries(defaultComponents)) {
+      expect(merged[key]).toBe(val);
+    }
+  });
+
+  it("per-call components override defaultComponents", async () => {
+    await writeFile(join(dir, "blog", "override.md"), "---\ntitle: Override\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    function CustomH2() {}
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+    };
+    const [entry] = await getCollection("blog");
+    entry?.Content({ components: { h2: CustomH2 } });
+    const merged = captured[0]!;
+    expect(merged["h2"]).toBe(CustomH2);
+    // Other defaults still present.
+    expect(merged["p"]).toBe(defaultComponents.p);
+  });
+
+  it("global slot merges between defaults and per-call", async () => {
+    await writeFile(join(dir, "blog", "global.md"), "---\ntitle: Global\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    function GlobalH3() {}
+    function PerCallH2() {}
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+      mdxComponents: { h3: GlobalH3 },
+    };
+    const [entry] = await getCollection("blog");
+    entry?.Content({ components: { h2: PerCallH2 } });
+    const merged = captured[0]!;
+    // Global slot wins over defaultComponents.
+    expect(merged["h3"]).toBe(GlobalH3);
+    // Per-call wins over global slot.
+    expect(merged["h2"]).toBe(PerCallH2);
+    // Other defaults still present.
+    expect(merged["p"]).toBe(defaultComponents.p);
+  });
+
+  it("absent global slot is a no-op (same as undefined)", async () => {
+    await writeFile(join(dir, "blog", "no-global.md"), "---\ntitle: NoGlobal\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+      // No mdxComponents set on the bridge namespace.
+    };
+    const [entry] = await getCollection("blog");
+    entry?.Content({});
+    const merged = captured[0]!;
+    expect(Object.keys(merged).sort()).toEqual(Object.keys(defaultComponents).sort());
   });
 });
 
@@ -608,5 +816,227 @@ describe("setContentSnapshot bridge", () => {
     expect(node?.props["data-zfb-content-fallback"]).toBe("");
     expect(node?.props.children as string).toContain("[zfb fallback render]");
     expect(node?.props.children as string).toContain("ignored when bridge active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 — Composed precedence chain end-to-end integration tests.
+//
+// Exercises the full three-layer merge through a real `.md` entry loaded
+// via `getCollection`, with the bridge renderer wired to capture the merged
+// `components` map. This suite proves each layer independently and asserts
+// the two invariants:
+//
+//   1. Layer ordering (lowest → highest):
+//        built-in `defaultComponents`
+//        → `globalThis.__zfb.mdxComponents` (file-map global slot, #616)
+//        → per-call `<Content components={...}>` prop
+//
+//   2. Invariants:
+//      a. An unmapped lowercase HTML tag absent from all three layers is
+//         absent from the merged map. The MDX emitter pre-seeds such tags
+//         as `_components.tag = "tag"` (the intrinsic HTML string), so the
+//         browser degrades to the native element — `mergeMdxComponents`
+//         correctly produces no override entry for it.
+//      b. A PascalCase component absent from all three layers is absent
+//         from the merged map. The MDX emitter emits
+//         `if (!Note) throw new Error(...)` for any PascalCase identifier
+//         referenced in the MDX source, so a missing entry is a hard throw
+//         at render time (tested by `mdx_jsx_pascal_case_components_require_prop`
+//         in crates/zfb-content/tests/mdx_jsx_emit.rs). Here we verify the
+//         TS-side merge produces no entry for it, confirming the throw path
+//         is reachable when PascalCase is unresolved.
+//
+// The global slot tests simulate what `entry.mjs` does at runtime after the
+// bundler processes a `mdx-components.tsx` file with a default export object
+// (the canonical #616 shape: `export default { h2: MyH2, … }`).
+// ---------------------------------------------------------------------------
+
+describe("composed precedence chain — C1", () => {
+  let dir: string;
+  let prevRoot: string | undefined;
+  let prevBridge: TestBridge["__zfb"];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "zfb-c1-chain-"));
+    await mkdir(join(dir, "blog"), { recursive: true });
+    prevRoot = process.env["ZFB_CONTENT_ROOT"];
+    process.env["ZFB_CONTENT_ROOT"] = dir;
+    prevBridge = (globalThis as unknown as TestBridge).__zfb;
+    delete (globalThis as unknown as TestBridge).__zfb;
+  });
+
+  afterEach(async () => {
+    if (prevRoot === undefined) {
+      delete process.env["ZFB_CONTENT_ROOT"];
+    } else {
+      process.env["ZFB_CONTENT_ROOT"] = prevRoot;
+    }
+    if (prevBridge === undefined) {
+      delete (globalThis as unknown as TestBridge).__zfb;
+    } else {
+      (globalThis as unknown as TestBridge).__zfb = prevBridge;
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // Layer 1 of 3: baseline — defaults populate the map when neither the
+  // global slot nor per-call supply anything.
+  it("layer 1: defaultComponents populate the map when no overrides are set", async () => {
+    await writeFile(join(dir, "blog", "layer1.md"), "---\ntitle: Layer1\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+      // No mdxComponents — simulates a project without mdx-components.tsx
+    };
+    const [entry] = await getCollection("blog");
+    // No per-call override.
+    entry?.Content({});
+    expect(captured).toHaveLength(1);
+    const merged = captured[0]!;
+    // Every defaultComponents entry must be present in the merged map.
+    for (const [key, val] of Object.entries(defaultComponents)) {
+      expect(merged[key]).toBe(val);
+    }
+    // No extra keys beyond defaultComponents.
+    expect(Object.keys(merged).sort()).toEqual(Object.keys(defaultComponents).sort());
+  });
+
+  // Layer 2 of 3: the global slot (populated by the bundler from
+  // `mdx-components.tsx` via `globalThis.__zfb.mdxComponents = __zfb_mdx_components`)
+  // wins over defaultComponents when per-call is absent.
+  it("layer 2: global slot overrides defaultComponents — simulates mdx-components.tsx install", async () => {
+    await writeFile(join(dir, "blog", "layer2.md"), "---\ntitle: Layer2\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    function GlobalH2() {}
+    // Simulate `export default { h2: GlobalH2 }` from mdx-components.tsx,
+    // installed by the bundler as `globalThis.__zfb.mdxComponents = __zfb_mdx_components`.
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+      mdxComponents: { h2: GlobalH2 },
+    };
+    const [entry] = await getCollection("blog");
+    // No per-call override — global slot must win over defaults for h2.
+    entry?.Content({});
+    expect(captured).toHaveLength(1);
+    const merged = captured[0]!;
+    // Global slot wins over defaultComponents.
+    expect(merged["h2"]).toBe(GlobalH2);
+    // Other defaults remain.
+    expect(merged["p"]).toBe(defaultComponents.p);
+    expect(merged["h3"]).toBe(defaultComponents.h3);
+  });
+
+  // Layer 3 of 3: per-call `components` prop wins over both the global slot
+  // and defaultComponents. This is the highest-precedence layer.
+  it("layer 3: per-call prop wins over global slot and defaults — highest precedence", async () => {
+    await writeFile(join(dir, "blog", "layer3.md"), "---\ntitle: Layer3\n---\nbody\n", "utf8");
+    const captured: Record<string, unknown>[] = [];
+    function GlobalH2() {}
+    function GlobalP() {}
+    function PerCallH2() {}
+    // Global slot has both h2 and p.
+    (globalThis as unknown as TestBridge).__zfb = {
+      content: {
+        get: (_spec) => (props) => {
+          if (props.components) captured.push(props.components);
+          return { type: "div", props: {}, key: null };
+        },
+      },
+      mdxComponents: { h2: GlobalH2, p: GlobalP },
+    };
+    const [entry] = await getCollection("blog");
+    // Per-call overrides h2 only — per-call must win for h2; global wins for p.
+    entry?.Content({ components: { h2: PerCallH2 } });
+    expect(captured).toHaveLength(1);
+    const merged = captured[0]!;
+    // Per-call h2 wins over global slot h2, which in turn won over defaults.
+    expect(merged["h2"]).toBe(PerCallH2);
+    // Global slot p wins over defaultComponents.p (global is still present when
+    // per-call doesn't override it).
+    expect(merged["p"]).toBe(GlobalP);
+    // Unrelated defaults still present.
+    expect(merged["h3"]).toBe(defaultComponents.h3);
+  });
+
+  // Invariant (a): an unmapped lowercase HTML tag that appears in `.md` source
+  // is handled by the MDX emitter itself — it pre-seeds the tag as the
+  // intrinsic string ("span" → _components.span = "span") so the browser
+  // degrades to the native element. `mergeMdxComponents` correctly omits such
+  // a tag from the merged map when no layer supplies an override.
+  it("invariant — unmapped lowercase tag absent from all layers: absent from merged map", () => {
+    // None of the three layers (defaults, global slot, per-call) supply "span".
+    const merged = mergeMdxComponents(
+      undefined, // no global slot
+      undefined, // no per-call
+    );
+    // "span" is not in defaultComponents — no override entry.
+    expect(merged["span"]).toBeUndefined();
+    // The MDX emitter (crates/zfb-content/src/mdx_jsx_emit.rs) pre-seeds
+    // `_components.span = "span"` so the browser renders native <span>.
+    // mergeMdxComponents does not interfere — the degrade is handled at
+    // the MDX emit layer, not by this map.
+  });
+
+  it("invariant — unmapped lowercase overridable when a layer supplies it", () => {
+    // Confirm that any layer CAN override a tag like "span" that is not in
+    // defaultComponents — the spread is open-ended. This proves the
+    // degrade-to-default is optional, not forced.
+    function CustomSpan() {}
+    const mergedViaGlobal = mergeMdxComponents({ span: CustomSpan }, undefined);
+    expect(mergedViaGlobal["span"]).toBe(CustomSpan);
+
+    function PerCallSpan() {}
+    const mergedViaPerCall = mergeMdxComponents(undefined, { span: PerCallSpan });
+    expect(mergedViaPerCall["span"]).toBe(PerCallSpan);
+  });
+
+  // Invariant (b): a PascalCase component absent from all three layers produces
+  // no entry in the merged map. The MDX emitter emits:
+  //   const Note = _components.Note ?? components.Note;
+  //   if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
+  // for any PascalCase reference in the source. When `mergeMdxComponents`
+  // produces no "Note" entry the emitted guard fires — a hard throw, not a
+  // silent undefined render. Proven at the emit layer by
+  // `mdx_jsx_pascal_case_components_require_prop` (crates/zfb-content/tests/mdx_jsx_emit.rs).
+  it("invariant — PascalCase key absent from all layers: absent from merged map (emitter hard-throws)", () => {
+    const merged = mergeMdxComponents(
+      undefined, // no global slot
+      undefined, // no per-call
+    );
+    // "Note" is not in defaultComponents and not in any override layer.
+    expect(merged["Note"]).toBeUndefined();
+    // An uppercase first character confirms the PascalCase identifier contract.
+    // The MDX emitter's throw guard (see crates/zfb-content/src/mdx_jsx_emit.rs
+    // line ~361) fires when `_components.Note` and `components.Note` are both
+    // falsy — which is the case here.
+  });
+
+  it("invariant — PascalCase component resolves when any layer supplies it (no throw)", () => {
+    // A layer supplying the PascalCase key prevents the emitter's throw.
+    function MyNote() {}
+    // Via global slot (mdx-components.tsx).
+    const mergedViaGlobal = mergeMdxComponents({ Note: MyNote }, undefined);
+    expect(mergedViaGlobal["Note"]).toBe(MyNote);
+
+    // Via per-call prop.
+    function PerCallNote() {}
+    const mergedViaPerCall = mergeMdxComponents(undefined, { Note: PerCallNote });
+    expect(mergedViaPerCall["Note"]).toBe(PerCallNote);
+
+    // Per-call wins over global slot for PascalCase too.
+    function OverrideNote() {}
+    const mergedBoth = mergeMdxComponents({ Note: MyNote }, { Note: OverrideNote });
+    expect(mergedBoth["Note"]).toBe(OverrideNote);
   });
 });

@@ -354,10 +354,6 @@ pub struct MarkdownFeaturesConfig {
     #[serde(default)]
     pub mermaid: Option<FeatureToggle>,
 
-    /// Lightbox / image-enlarge on click.
-    #[serde(default)]
-    pub image_enlarge: Option<FeatureToggle>,
-
     /// Inline heading-marker TOC. Accepts either a `bool` shorthand
     /// (`true` = enable with defaults, `false` = disable) or a full
     /// [`TocConfig`] options object — see [`HeadingMarkerTocFeature`].

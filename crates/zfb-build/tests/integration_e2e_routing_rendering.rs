@@ -318,6 +318,7 @@ fn build_bundle(
         worker_only_routes: None,
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
+        mdx_components_file: None,
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");
