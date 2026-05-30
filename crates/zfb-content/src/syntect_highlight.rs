@@ -601,7 +601,7 @@ mod tests {
             "CSS",
         ] {
             assert!(
-                names.iter().any(|n| *n == expected),
+                names.contains(&expected),
                 "bundled SyntaxSet missing expected alias target: {expected}\navailable: {names:?}"
             );
         }
@@ -615,7 +615,7 @@ mod tests {
         // TOML is not in the bundled default set — alias maps to empty result
         // (no fallback chain available), which degrades to themed fallback.
         // This is acceptable; the test simply documents the current state.
-        let has_toml = names.iter().any(|n| *n == "TOML");
+        let has_toml = names.contains(&"TOML");
         // Not asserting presence — just recording for documentation.
         let _ = has_toml;
     }

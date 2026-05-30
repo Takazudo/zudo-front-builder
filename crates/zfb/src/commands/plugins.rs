@@ -102,46 +102,6 @@ impl DevMiddlewareDispatcher for HostDispatcher {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::PluginConfig;
-
-    fn cfg_with_plugins(entries: Vec<PluginConfig>) -> Config {
-        let mut c = Config::default();
-        c.plugins = entries;
-        c
-    }
-
-    #[test]
-    fn unresolved_plugins_are_filtered_out() {
-        let c = cfg_with_plugins(vec![
-            PluginConfig {
-                name: "a".into(),
-                options: serde_json::json!({}),
-                resolved_module: None,
-            },
-            PluginConfig {
-                name: "b".into(),
-                options: serde_json::json!({"x": 1}),
-                resolved_module: Some("file:///abs/b.mjs".into()),
-            },
-        ]);
-        let specs = build_plugin_specs(&c);
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "b");
-        assert_eq!(specs[0].module, "file:///abs/b.mjs");
-        assert_eq!(specs[0].options, serde_json::json!({"x": 1}));
-    }
-
-    #[tokio::test]
-    async fn maybe_spawn_host_is_none_for_pluginless_config() {
-        let c = Config::default();
-        let host = maybe_spawn_host(&c).await.unwrap();
-        assert!(host.is_none());
-    }
-}
-
 /// Register every plugin's `devMiddleware` hook against the supplied
 /// host and produce the [`DevMiddlewareSet`] the dev server consumes.
 /// Returns `Ok(None)` when no plugin declared the hook.
@@ -178,4 +138,42 @@ pub async fn build_dev_middleware_set(
         registrations: Arc::new(registrations),
         dispatcher,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PluginConfig;
+
+    fn cfg_with_plugins(entries: Vec<PluginConfig>) -> Config {
+        Config { plugins: entries, ..Config::default() }
+    }
+
+    #[test]
+    fn unresolved_plugins_are_filtered_out() {
+        let c = cfg_with_plugins(vec![
+            PluginConfig {
+                name: "a".into(),
+                options: serde_json::json!({}),
+                resolved_module: None,
+            },
+            PluginConfig {
+                name: "b".into(),
+                options: serde_json::json!({"x": 1}),
+                resolved_module: Some("file:///abs/b.mjs".into()),
+            },
+        ]);
+        let specs = build_plugin_specs(&c);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "b");
+        assert_eq!(specs[0].module, "file:///abs/b.mjs");
+        assert_eq!(specs[0].options, serde_json::json!({"x": 1}));
+    }
+
+    #[tokio::test]
+    async fn maybe_spawn_host_is_none_for_pluginless_config() {
+        let c = Config::default();
+        let host = maybe_spawn_host(&c).await.unwrap();
+        assert!(host.is_none());
+    }
 }

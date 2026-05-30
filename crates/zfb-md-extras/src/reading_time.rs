@@ -246,7 +246,7 @@ pub fn compute_reading_time_minutes(node: &MdastNode, wpm: u32) -> u32 {
     let words = count_words(&text);
     let wpm = wpm.max(1); // guard against divide-by-zero
     // Ceiling division: always at least 1 minute.
-    ((words + wpm - 1) / wpm).max(1)
+    words.div_ceil(wpm).max(1)
 }
 
 // ── Plugin ────────────────────────────────────────────────────────────────────
@@ -305,7 +305,7 @@ impl MdastVisitor for ReadingTimePlugin {
             }
             let words = count_words(&text);
             let wpm = self.wpm.max(1);
-            ((words + wpm - 1) / wpm).max(1)
+            words.div_ceil(wpm).max(1)
         };
 
         // Append a synthesized MdxjsEsm node. The value is the export
@@ -435,9 +435,7 @@ mod tests {
     fn code_blocks_excluded_from_word_count() {
         // A code block with 200 words inside should NOT count toward reading
         // time — the prose body (5 words) should be 1 minute.
-        let long_code: String = std::iter::repeat("word ")
-            .take(200)
-            .collect::<String>();
+        let long_code = "word ".repeat(200);
         let md = format!("Some prose here.\n\n```\n{}\n```\n", long_code);
         let node = parse_mdast(&md);
         // prose: ~3 words → 1 minute (still below 200)
@@ -471,7 +469,7 @@ mod tests {
 
     #[test]
     fn plugin_200_word_article_exports_1() {
-        let words: String = std::iter::repeat("word ").take(200).collect();
+        let words = "word ".repeat(200);
         let mut node = parse_mdast(&words);
         ReadingTimePlugin::new().visit(&mut node);
         let MdastNode::Root(root) = &node else {
@@ -489,7 +487,7 @@ mod tests {
 
     #[test]
     fn plugin_600_word_article_exports_3() {
-        let words: String = std::iter::repeat("word ").take(600).collect();
+        let words = "word ".repeat(600);
         let mut node = parse_mdast(&words);
         ReadingTimePlugin::new().visit(&mut node);
         let MdastNode::Root(root) = &node else {

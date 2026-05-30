@@ -146,7 +146,7 @@ mod tests {
             ("expected.html", "<p>hello</p>"),
         ]);
         // Use markdown::to_html as the transform — produces <p>hello</p>.
-        run_fixture(dir.path(), |input| markdown::to_html(input));
+        run_fixture(dir.path(), markdown::to_html);
     }
 
     // ── run_fixture: divergence path ─────────────────────────────────────
@@ -159,7 +159,7 @@ mod tests {
             ("expected.html", "<p>completely-different</p>"),
         ]);
         let result = std::panic::catch_unwind(|| {
-            run_fixture(dir.path(), |input| markdown::to_html(input));
+            run_fixture(dir.path(), markdown::to_html);
         });
         assert!(result.is_err(), "run_fixture must panic on divergence");
     }

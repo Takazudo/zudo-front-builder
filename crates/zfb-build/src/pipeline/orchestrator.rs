@@ -142,6 +142,8 @@ pub fn apply_prod_asset_pipeline(
     // determinism helps `BuildOutcome::pages_written`).
     let dist_root = dist_dir.to_path_buf();
     let pages_for_callback = pages.clone();
+    // Local type alias would require naming the concrete closure, which is not possible.
+    #[allow(clippy::type_complexity)]
     let render_pages: Arc<
         dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static,
     > = Arc::new(move |_requested: &[PageId]| {

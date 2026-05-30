@@ -154,7 +154,7 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
                 );
             }
             PnpmOutcome::Failed(msg) => {
-                output::warn(&format!(
+                output::warn(format!(
                     "pnpm install failed: {msg}. Run pnpm install manually before zfb dev."
                 ));
             }
@@ -163,7 +163,7 @@ pub async fn run(args: &NewArgs) -> anyhow::Result<()> {
 
     // `output::success` already prefixes a green checkmark; do not include
     // one in the message body or the user sees `✓ ✓ Created ...`.
-    output::success(&format!(
+    output::success(format!(
         "Created {} (template: {}). Next: cd {} && zfb dev",
         args.name, args.template, args.name
     ));

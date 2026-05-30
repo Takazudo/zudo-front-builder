@@ -444,7 +444,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], None, false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), None, false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body);
     }
@@ -455,7 +455,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body);
     }
@@ -465,7 +465,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<!doctype html><html><body><a href="/about">About</a></body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"href="/foo/about""#),
@@ -478,7 +478,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"href="/foo/about""#),
@@ -492,7 +492,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("https://cdn.example.com/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("https://cdn.example.com/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body, "user links should stay same-origin");
     }
@@ -502,7 +502,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let xml_body = r#"<?xml version="1.0"?><feed><link href="/post/1"/></feed>"#;
         let xml = write_file(tmp.path(), "feed.xml", xml_body);
-        apply_link_base_rewrite(tmp.path(), &[xml.clone()], Some("/foo"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&xml), Some("/foo"), false).unwrap();
         let after = fs::read_to_string(&xml).unwrap();
         assert_eq!(
             after, xml_body,
@@ -517,7 +517,7 @@ mod tests {
             <form action="/submit" method="post"><button>go</button></form>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"action="/foo/submit""#),
@@ -532,9 +532,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
         let after_first = fs::read_to_string(&p).unwrap();
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
         let after_second = fs::read_to_string(&p).unwrap();
         assert_eq!(after_first, after_second);
         assert!(after_second.contains(r#"href="/foo/about""#));
@@ -549,7 +549,7 @@ mod tests {
             <a href="/legal" data-no-base>legal-stays-bare</a>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), &[p.clone()], Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(after.contains(r#"href="/foo/about""#), "got: {after}");
         assert!(after.contains(r#"href="/legal""#), "got: {after}");

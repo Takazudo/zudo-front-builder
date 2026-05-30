@@ -196,7 +196,7 @@ async fn surfaces_v8_stack_with_parseable_frame() {
     // somewhere in the body.
     let has_line_col_token = msg
         .lines()
-        .any(|l| matches!(extract_line_col(l), Some(_)));
+        .any(|l| extract_line_col(l).is_some());
     assert!(
         has_line_col_token,
         "expected V8 stack with `<specifier>:LINE:COL` frames, got:\n{msg}"

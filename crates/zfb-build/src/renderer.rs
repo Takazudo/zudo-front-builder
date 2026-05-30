@@ -1026,39 +1026,35 @@ fn strip_static_html_frontmatter(input: &str) -> &str {
     };
     // Scan for closing `---` on its own line.
     let mut search = after_newline;
-    loop {
-        if let Some(pos) = search.find("---") {
-            let before = &search[..pos];
-            // Must be at the start of a line.
-            if before.is_empty() || before.ends_with('\n') {
-                let rest = &search[pos + 3..];
-                // After `---` must come a newline or end of input.
-                if rest.is_empty() {
-                    return "";
-                }
-                if let Some(body) = rest.strip_prefix('\n') {
-                    return body;
-                }
-                if let Some(body) = rest.strip_prefix("\r\n") {
-                    return body;
-                }
-                // `---` followed by non-newline is not a closing marker;
-                // advance past it and keep searching.
-                if rest.len() > 1 {
-                    search = &rest[1..];
-                } else {
-                    break;
-                }
+    while let Some(pos) = search.find("---") {
+        let before = &search[..pos];
+        // Must be at the start of a line.
+        if before.is_empty() || before.ends_with('\n') {
+            let rest = &search[pos + 3..];
+            // After `---` must come a newline or end of input.
+            if rest.is_empty() {
+                return "";
+            }
+            if let Some(body) = rest.strip_prefix('\n') {
+                return body;
+            }
+            if let Some(body) = rest.strip_prefix("\r\n") {
+                return body;
+            }
+            // `---` followed by non-newline is not a closing marker;
+            // advance past it and keep searching.
+            if rest.len() > 1 {
+                search = &rest[1..];
             } else {
-                // `---` not at line start; advance past it.
-                if search.len() > pos + 1 {
-                    search = &search[pos + 1..];
-                } else {
-                    break;
-                }
+                break;
             }
         } else {
-            break;
+            // `---` not at line start; advance past it.
+            if search.len() > pos + 1 {
+                search = &search[pos + 1..];
+            } else {
+                break;
+            }
         }
     }
     // No closing marker found — return entire input.
@@ -2005,7 +2001,7 @@ mod tests {
             source_path: Some(PathBuf::from("pages/index.html")),
         }];
 
-        let out = render_all(RendererInput {
+        render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
             manifest: dummy_manifest(),

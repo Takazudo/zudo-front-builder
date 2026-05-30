@@ -236,6 +236,9 @@ pub fn project_relative(path: &Path, project_root: Option<&Path>) -> String {
 /// JSON string, a line, and a column, returns `Option<DecodedPosition>`.
 /// Callers from `zfb` pass `zfb_render::sourcemap::decode_position` here;
 /// other callers (tests, other crates) can supply a stub.
+// All 8 params carry independent caller-owned data; a builder struct would add
+// boilerplate with no clarity gain.
+#[allow(clippy::too_many_arguments)]
 pub fn from_js_runtime_error_with_decoder<F, D>(
     bundle_path: &Path,
     bundle_source: &str,

@@ -4,7 +4,7 @@
 //! ## What this tests
 //!
 //! A project shaped as "static homepage lists a collection via `getStaticProps`
-//! + `getCollection`, but has NO dynamic `[slug].tsx` page" used to get empty
+//! and `getCollection`, but has NO dynamic `[slug].tsx` page" used to get empty
 //! `getCollection(...)` results in the production build. The bug was that
 //! `build.rs` only called `build_content_snapshot_json` when
 //! `!still_deferred.is_empty()`, so a project with no deferred `paths()` routes

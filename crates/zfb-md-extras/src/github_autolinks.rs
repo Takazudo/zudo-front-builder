@@ -187,7 +187,7 @@ fn parse_segments(text: &str) -> Vec<Segment> {
                 }
                 let len = j - sha_start;
                 let right_ok = j == n || !is_word_char(chars[j]);
-                if len >= 7 && len <= 40 && right_ok {
+                if (7..=40).contains(&len) && right_ok {
                     // Additionally: must not also be a decimal digit run
                     // (all digits = likely a plain number, not a SHA).
                     let all_digits = chars[sha_start..j].iter().all(|ch| ch.is_ascii_digit());

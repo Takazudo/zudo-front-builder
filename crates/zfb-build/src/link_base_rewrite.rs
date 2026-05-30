@@ -157,8 +157,7 @@ pub fn compute_prefixed(value: &str, prefix: &str) -> Option<String> {
     // end-of-string, `/` (path segment), `?` (query suffix), or `#`
     // (fragment suffix). So `/foobar` is NOT considered already-prefixed
     // by `/foo`, but `/foo`, `/foo/x`, `/foo?x=1`, `/foo#top` are.
-    if value.starts_with(prefix) {
-        let rest = &value[prefix.len()..];
+    if let Some(rest) = value.strip_prefix(prefix) {
         if rest.is_empty()
             || rest.starts_with('/')
             || rest.starts_with('?')
@@ -272,7 +271,7 @@ fn maybe_insert_trailing_slash(value: &str) -> String {
     }
     // Split off the suffix (?... or #...) so we only touch the path.
     let suffix_idx = value
-        .find(|c: char| c == '?' || c == '#')
+        .find(['?', '#'])
         .unwrap_or(value.len());
     let (path, suffix) = value.split_at(suffix_idx);
     if path.is_empty() {

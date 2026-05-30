@@ -627,7 +627,7 @@ mod tests {
     fn parse_attrs_code_without_lang() {
         let m = parse_attr_string(r#"file="./foo.txt" code=true"#);
         assert_eq!(m.get("code").map(String::as_str), Some("true"));
-        assert!(m.get("lang").is_none());
+        assert!(!m.contains_key("lang"));
     }
 
     // ── parse_line_range ──────────────────────────────────────────────────

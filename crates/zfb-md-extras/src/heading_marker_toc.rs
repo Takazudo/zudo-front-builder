@@ -272,18 +272,15 @@ mod tests {
     }
 
     fn collect_hrefs_inner(node: &HastNode, out: &mut Vec<String>) {
-        match node {
-            HastNode::Element { tag, attrs, children, .. } => {
-                if tag == "a" {
-                    if let Some((_, v)) = attrs.iter().find(|(k, _)| k == "href") {
-                        out.push(v.clone());
-                    }
-                }
-                for c in children {
-                    collect_hrefs_inner(c, out);
+        if let HastNode::Element { tag, attrs, children, .. } = node {
+            if tag == "a" {
+                if let Some((_, v)) = attrs.iter().find(|(k, _)| k == "href") {
+                    out.push(v.clone());
                 }
             }
-            _ => {}
+            for c in children {
+                collect_hrefs_inner(c, out);
+            }
         }
     }
 

@@ -52,7 +52,7 @@
 //!    that names the missing `default` export. The CLI
 //!    surfaces that error verbatim instead of swallowing it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -564,7 +564,7 @@ fn try_expand_one(
         })
         .collect();
 
-    let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
+    let segs: Vec<PathsSegment> = route.segments.to_vec();
     let resolved = resolve_paths(cache, &route.template, &segs, &json).map_err(|e| {
         TryExpandFailure::Other(format!("{}: {}", abs.display(), format_paths_error(&e)))
     })?;
@@ -980,7 +980,7 @@ fn resolve_json_paths(
     route: &DeferredDynamicRoute,
     cache: &mut PathsCache,
 ) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
-    let segs: Vec<PathsSegment> = route.segments.iter().cloned().collect();
+    let segs: Vec<PathsSegment> = route.segments.to_vec();
 
     // Which param names are catchall (need array form in the manifest).
     let catchall_names: std::collections::HashSet<&str> = route
@@ -1103,6 +1103,7 @@ fn hex_nibble(n: u8) -> char {
 ///   the export is optional and absence means "use the SSG default". These
 ///   are skipped silently (no warning). Warning on every frontmatter-less
 ///   page was misleading noise — see #505.
+///
 /// Returns `true` if the route identified by `template` is SSR
 /// (`prerender = false` in its frontmatter).
 ///
@@ -2017,10 +2018,7 @@ mod tests {
         //   5. Assert the resolved entries match the blog posts in the
         //      fixture content collection.
         //
-        // For now, assert that the test is reachable (not dead code):
-        assert!(
-            true,
-            "skeleton test — fill in after EmbeddedV8RenderHost (Sub 2) is merged"
-        );
+        // Skeleton test — fill in after EmbeddedV8RenderHost (Sub 2) is merged.
+        // (assert!(true) removed; test body will be added in a follow-up.)
     }
 }

@@ -276,8 +276,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     virtual_sources.insert(specifier.clone(), source);
                 }
                 Err(e) => {
-                    return Err(e)
-                        .map_err(zfb_build::annotate_with_plugin_error)
+                    return Err(zfb_build::annotate_with_plugin_error(e))
                         .with_context(|| {
                             format!(
                                 "plugin lifecycle: failed to load virtual module \
@@ -356,7 +355,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // from DependencyGraph to prevent silent empty-graph construction
     // elsewhere.
     let graph = Arc::new(Mutex::new(
-        initial_graph.unwrap_or_else(DependencyGraph::new),
+        initial_graph.unwrap_or_default(),
     ));
 
     // Seed the graph with all page source paths from the router scan so
@@ -573,8 +572,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             } else {
                 output::warn(
-                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)"
-                        .to_string(),
+                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)",
                 );
             }
         }
@@ -1430,7 +1428,7 @@ fn boot_dev_renderer(
     // every watcher tick and the dist fallback would shadow the SSR
     // handler.
     let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
-        crate::output::warn(msg.to_string())
+        crate::output::warn(msg)
     });
 
     // Build the source-path → entries map once. Router source paths are
@@ -1610,7 +1608,7 @@ fn boot_dev_renderer(
 /// Per-route HTML output directory for the dev pipeline (issue #534).
 ///
 /// Dev's renderer writes one file per route on each tick (initial scan
-/// + every watcher rebuild). Until #534, these writes landed in the
+/// and every watcher rebuild). Until #534, these writes landed in the
 /// project's `outDir` (`dist/`), silently overwriting the production
 /// HTML produced by a prior `pnpm build` — stripping the prod-only
 /// `<link rel="stylesheet">` / islands `<script type="module">` head
