@@ -1579,13 +1579,14 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // For any dynamic routes whose `paths()` couldn't be statically
     // extracted (Phase 1), start the embedded V8 host against the freshly-
     // bundled worker and query the `/__paths__/<route>` endpoint for each.
-    // The running host is reused for SSG rendering in step 3 (via
-    // `Backend::Existing`) so we only pay the host startup cost once.
-    // `_worker_handle` deliberately keeps the host alive through the
-    // subsequent `render_all` call: dropping it earlier would shut the host
-    // down before rendering completes. The `_` prefix suppresses
-    // the unused-variable warning without triggering immediate drop
-    // (only `_` alone drops immediately; `_name` lives to end of scope).
+    // `eval_deferred_paths` returns `Backend::EmbeddedV8` (with a factory)
+    // in both the empty-deferred and non-empty branches; `render_all` always
+    // constructs a fresh host from that factory — there is no host reuse.
+    // `_worker_handle` keeps the eval-phase RendererState alive through the
+    // subsequent `render_all` call so its resources (e.g. temp files) are
+    // not dropped prematurely. The `_` prefix suppresses the unused-variable
+    // warning without triggering immediate drop (only `_` alone drops
+    // immediately; `_name` lives to end of scope).
     let (runtime_expansion, backend, _worker_handle) = runner
         .eval_deferred_paths(&still_deferred, &bundler_out, &mut paths_cache)
         .context("runtime paths() evaluation step failed")?;
