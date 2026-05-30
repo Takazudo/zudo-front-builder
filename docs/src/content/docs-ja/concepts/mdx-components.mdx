@@ -1,23 +1,23 @@
 ---
 title: MDX Components
-description: How MDX entries reach your pages as renderable React/Preact components, and how to override individual elements via the components prop.
+description: MDX エントリがレンダリング可能な React/Preact コンポーネントとしてページに届く仕組みと、components prop で個々の要素をオーバーライドする方法。
 sidebar_position: 2.5
 category: Concepts
 ---
 
-<Info title="What this page covers">
+<Info title="このページの内容">
 
-How `.mdx` content collection entries become renderable JSX components, what arrives by default through `getCollection()`, how to override individual HTML elements with your own components, and where the convention comes from.
+`.mdx` コンテンツコレクションのエントリがどのようにレンダリング可能な JSX コンポーネントになるのか、`getCollection()` を通じてデフォルトで何が届くのか、個々の HTML 要素を自前のコンポーネントでオーバーライドする方法、グローバルな `mdx-components.tsx` 規約の仕組み、そして各オーバーライドが受け取る完全な props の契約を解説します。
 
 </Info>
 
-## The mental model
+## メンタルモデル
 
-Every `.mdx` file in a content collection is compiled to a JSX module at build time. The compiled module exports an `MDXContent({ components })` function — a regular component whose only job is to render the post body, with optional per-element overrides supplied through the `components` prop.
+コンテンツコレクション内のすべての `.mdx` ファイルは、ビルド時に JSX モジュールへコンパイルされます。コンパイル後のモジュールは `MDXContent({ components })` 関数をエクスポートします。これは投稿本文をレンダリングするだけが役割の通常のコンポーネントで、`components` prop を通じて要素ごとのオーバーライドを任意に差し込めます。
 
-This is the same contract Astro's `@astrojs/mdx` exposes via `<Content components={...} />`. zfb adopts it directly so the mental model transfers across the Astro ecosystem.
+これは Astro の `@astrojs/mdx` が `<Content components={...} />` で公開しているものと同じ契約です。zfb はこれをそのまま採用しているため、Astro エコシステム全体でメンタルモデルがそのまま通用します。
 
-The shape is:
+その形は次のとおりです。
 
 ```tsx
 // Conceptually, your `hello-zfb.mdx` becomes:
@@ -26,29 +26,29 @@ export default function MDXContent({ components }: { components?: Record<string,
 }
 ```
 
-When MDX encounters `<p>some text</p>` (which is what a markdown paragraph compiles to), it looks up `p` in the `components` map. If you supply one, your component renders. If you don't, the raw HTML element renders. The same lookup applies to your custom JSX — `<Note>...</Note>` in the post body is resolved against `components.Note` at evaluation time.
+MDX が `<p>some text</p>`（Markdown の段落がコンパイルされた結果）に出会うと、`components` マップから `p` を探します。自前のコンポーネントを渡していればそれがレンダリングされ、渡していなければ素の HTML 要素がレンダリングされます。同じルックアップはカスタム JSX にも適用されます。投稿本文中の `<Note>...</Note>` は、評価時に `components.Note` に対して解決されます。
 
-## What `getCollection()` already gives you
+## `getCollection()` がすでに与えてくれるもの
 
-You don't construct `MDXContent` yourself. The collection layer wraps every entry's compiled module in a `Content` component and attaches it to the entry. That means:
+`MDXContent` を自分で組み立てることはありません。コレクション層が各エントリのコンパイル済みモジュールを `Content` コンポーネントでラップし、エントリに付与します。つまり次のようになります。
 
 ```tsx
 import { getCollection } from "zfb/content";
 
-const posts = await getCollection("blog");
+const posts = getCollection("blog");
 const post = posts[0];
 
 // `post.Content` is a renderable component:
 <post.Content />;
 ```
 
-You get `post.data` (the parsed frontmatter), `post.slug`, and `post.Content` (the renderable body). Same shape for `.md` and `.mdx` — CommonMark is a strict MDX subset, so the same pipeline handles both. Plain markdown entries simply have no JSX nodes to override, but the `components` prop still applies to the HTML elements they emit.
+`post.data`（パース済みのフロントマター）、`post.slug`、そして `post.Content`（レンダリング可能な本文）が得られます。`.md` と `.mdx` で形は同じです。CommonMark は MDX の厳密なサブセットなので、同じパイプラインが両方を扱います。プレーンな Markdown エントリにはオーバーライドすべき JSX ノードがそもそもありませんが、それでも `components` prop はそれらが出力する HTML 要素に適用されます。
 
-The bridge that connects `post.Content` to the actual compiled JSX module lives at `globalThis.__zfb.content.get(specifier)`, installed by the Rust-side renderer before the page module evaluates. When the bridge isn't present (unit tests, dev sandboxes), `Content` falls back to a clearly marked `<pre data-zfb-content-fallback>` block so the absence is obvious.
+`post.Content` を実際のコンパイル済み JSX モジュールに繋ぐブリッジは `globalThis.__zfb.content.get(specifier)` にあり、ページモジュールが評価される前に Rust 側のレンダラーがインストールします。ブリッジが存在しない場合（ユニットテストや開発用サンドボックスなど）、`Content` は明示的にマークされた `<pre data-zfb-content-fallback>` ブロックにフォールバックし、欠落がひと目で分かるようになっています。
 
-## Spreading `defaultComponents`
+## `defaultComponents` をスプレッドする
 
-zfb ships a `defaultComponents` map from its root export — a set of element-level overrides (the **htmlOverrides** convention) that wrap the bare HTML tags MDX emits with sensible component implementations. The recipe is to spread it first, then layer your own overrides on top:
+zfb はルートエクスポートから `defaultComponents` マップを提供しています。これは MDX が出力する素の HTML タグを、適切なコンポーネント実装でラップする要素レベルのオーバーライド群（**htmlOverrides** 規約）です。使い方の定石は、まずこれをスプレッドし、その上に自前のオーバーライドを重ねることです。
 
 ```tsx
 import { defaultComponents } from "zfb";
@@ -57,9 +57,9 @@ import Note from "../../components/note";
 <post.Content components={{ ...defaultComponents, ...mine, Note }} />;
 ```
 
-Spread order matters: keys to the right win. Putting `defaultComponents` first means your individual overrides take precedence on collisions, while everything you don't override still picks up the default behavior.
+スプレッドの順序が重要です。右側のキーが勝ちます。`defaultComponents` を最初に置くことで、衝突時には個々のオーバーライドが優先され、オーバーライドしていないものはすべてデフォルトの挙動を引き継ぎます。
 
-The current `defaultComponents` set covers:
+現在の `defaultComponents` セットがカバーするのは次のとおりです。
 
 | Key          | Component           | Wraps                                       |
 | ------------ | ------------------- | ------------------------------------------- |
@@ -75,11 +75,138 @@ The current `defaultComponents` set covers:
 | `table`      | `ContentTable`      | `<table>`                                   |
 | `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
 
-Each is also exported individually (`import { ContentLink } from "zfb"`) for cases where you want a single override without dragging in the whole map.
+それぞれ個別にもエクスポートされており（`import { ContentLink } from "zfb"`）、マップ全体を引き込まずに単一のオーバーライドだけを使いたい場合に利用できます。
 
-## Authoring `.mdx` with custom components
+`h1` は意図的に含まれていません。ページタイトルは zudo-doc の規約に従ってフロントマターから `<h1>` をレンダリングします。`h1` をオーバーライドに加えると、タイトルが気付かないうちに二重レンダリングされてしまいます。
 
-The basic-blog example demonstrates the end-to-end shape. The MDX post uses a custom `<Note>` admonition:
+## グローバルな `mdx-components.tsx` 規約
+
+すべての `<entry.Content />` 呼び出しに対して、呼び出しごとのスプレッドなしで適用したいプロジェクト全体の要素オーバーライドには、プロジェクトルート（`zfb.config.ts` の隣）に `mdx-components.tsx` ファイルを置き、フラットな `{ tag: Component }` マップを**デフォルトエクスポート**します。
+
+```tsx
+// mdx-components.tsx (project root)
+import MyH2 from "./components/my-h2";
+
+export default {
+  h2: MyH2,
+};
+```
+
+ビルドパイプラインはこのファイルを検出してシャドウバンドルにコピーし、ページルーターが走る前にそのデフォルトエクスポートを `globalThis.__zfb.mdxComponents` にインストールします。その時点以降、すべての `<entry.Content />` 呼び出しが自動的にこれを拾います。呼び出し側でのスプレッドは不要です。
+
+### 優先順位
+
+コンポーネントがマージされるとき、後のエントリが勝ちます。マージの順序は次のとおりです。
+
+1. `defaultComponents`（最も優先度が低い。組み込みの 11 個のパススルー）
+2. `mdx-components.tsx` のデフォルトエクスポート（プロジェクト全体のオーバーライド）
+3. `<entry.Content />` の `components` prop（最も優先度が高い。呼び出しごとのオーバーライド）
+
+したがって、呼び出しごとの `components={{ h2: MyCallSiteH2 }}` はプロジェクトルートのファイルに勝ち、そのファイルは組み込みのデフォルトに勝ちます。内部的には `mergeMdxComponents`（`"zfb"` からエクスポート）がこの三方向のスプレッドを実行します。
+
+```ts
+{ ...defaultComponents, ...globalSlot, ...perCall }
+```
+
+### 実行可能な例 — `<h2>` を `<span>` でラップする
+
+よくあるパターンは、見出しをスタイル付きのコンテナでラップすることです。
+
+```tsx
+// mdx-components.tsx (project root)
+type Props = { id?: string; children?: unknown };
+
+function MyH2({ id, children }: Props) {
+  return (
+    <h2 id={id}>
+      <span>{children}</span>
+    </h2>
+  );
+}
+
+export default { h2: MyH2 };
+```
+
+これで、すべてのコンテンツエントリのすべての `##` 見出しが、ページごとの配線なしにプロジェクト全体で `<h2 id="…"><span>…</span></h2>` としてレンダリングされます。
+
+## 標準的にマップ可能な要素の集合
+
+次の HTML タグは MDX エミッターによって `_components.<tag>` 経由でルーティングされ、`components` マップでオーバーライド可能になります。このリストにないタグは、そもそも Markdown から出力されないか、生の HTML リテラルとして出力されます（後者は `components` マップではオーバーライドできません）。
+
+**コア CommonMark:**
+
+`a` `blockquote` `br` `code` `em` `h1` `h2` `h3` `h4` `h5` `h6` `hr` `img` `li` `ol` `p` `pre` `strong` `ul`
+
+**GFM 拡張**（`zfb.config.ts` で GFM 構文が有効なときに利用可能）:
+
+`del` `input` `section` `sup` `table` `tbody` `td` `th` `thead` `tr`
+
+`defaultComponents` マップはこのうち 11 個（h2–h4、p、a、strong、blockquote、ul、ol、table、code）をあらかじめ配線します。残りは素の HTML 文字列のままですが、キーを `components` マップに含めればどれでもオーバーライドできます。
+
+## Props の契約
+
+各オーバーライドコンポーネントが受け取るのは、その要素に対して Markdown パイプラインが実際に生成する属性だけです。任意の HTML 属性を `{...props}` で網羅的にスプレッドして渡すような仕組みはありません。渡されるのは下表に挙げたフィールドだけです。
+
+| Element(s)    | Props received                                        |
+| ------------- | ----------------------------------------------------- |
+| `a`           | `href`、`title`（任意）、`children`                  |
+| `img`         | `src`、`alt`、`title`（任意） — void、children なし  |
+| `h2`–`h6`    | `id`（見出しリンクプラグインが有効で、その見出しに slug が付与されている場合に存在）、`children` |
+| `h1`          | `children` のみ — `h1` には slug は付与されない      |
+| `pre`         | `children`（`<code>` の子をラップする）              |
+| `code`        | `className="language-*"`（フェンス付きブロックのみ。インラインコードは `children` のみ受け取る） |
+| `ol`          | `start`（1 以外のときのみ）、`children`              |
+| その他すべて  | `children` のみ                                       |
+
+オーバーライドに `{...rest}` を加えて HTML 要素にスプレッドしても、未知の属性は届きません。エミッターは Markdown ソースから任意の属性を転送しないからです。
+
+## 小文字と PascalCase の非対称性
+
+`components` マップにおける小文字の HTML タグと PascalCase のコンポーネント名のあいだには、意図的な挙動の違いがあります。
+
+- **小文字のタグ**（`h2`、`p`、`a` など）は、出力される `_components` マップの中で素の HTML 文字列をデフォルトとします。小文字のキーを省略した場合、生の要素がレンダリングされます。エラーにはなりません。
+- **PascalCase の名前**（`Note`、`Callout` など）は、呼び出し側の `components` prop からルックアップされ、見つからなければ即座に throw します。
+
+  ```js
+  // Inside compiled MDX output:
+  const Note = _components.Note ?? components.Note;
+  if (!Note) throw new Error("MDX requires `Note` to be passed via the `components` prop");
+  ```
+
+  `.mdx` ファイルで参照されている PascalCase コンポーネントが、レンダリング時に `components` マップに存在しない場合、ビルド時ではなく実行時に throw します。これは意図的なものです。コンパイル済みモジュールはポータブルなまま保たれ、必要なコンポーネントをすべて渡す責任は呼び出し側にあります。
+
+## Islands による制約
+
+`components` マップは、SSR 時に解決されるプレーンな JavaScript オブジェクトです。値が関数参照であるため、JSON としてハイドレーション境界を越えられません。これは次のことを意味します。
+
+- マップ内のコンポーネントは**サーバーサイド専用**です。サーバー上でレンダリングされ、その HTML が静的なマークアップとしてブラウザに届けられます。
+- マップ内のコンポーネントがクライアントサイドのインタラクティブ性（状態、イベントハンドラ、ブラウザ API）を必要とする場合は、そのインタラクティブな部分を `<Island>` コンポーネントでラップし、インタラクティブなコンポーネントを直接マップに入れないでください。
+
+```tsx
+// Correct: interactive content goes through Island
+import { Island } from "zfb";
+import MyCounter from "./my-counter";
+
+function WrappedCounter() {
+  return (
+    <Island>
+      <MyCounter />
+    </Island>
+  );
+}
+
+export default { div: WrappedCounter };
+```
+
+`components` マップは SSR を通ります。`<Island>` はブラウザへ抜けるための脱出口です。
+
+## 保留中の未解決項目 — `wrapper`
+
+MDX は `components` マップ内の特別な `wrapper` キーをサポートしています。これはレンダリング結果全体をラップするコンポーネントです。zfb のエミッターは `wrapper` を認識しません。本文は直接 `<_Fragment>` でラップされ、`wrapper` キーに対するルックアップは行われません。`wrapper` のサポートは追跡中の未解決項目であり、現在のリリースでは実装されていません。
+
+## カスタムコンポーネントで `.mdx` を書く
+
+同梱の `basic-blog` テンプレートが、エンドツーエンドの形を実演しています（全ソースは [zfb-example-blog スタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) を参照）。この MDX 投稿はカスタムの `<Note>` admonition を使っています。
 
 ```mdx
 ---
@@ -100,7 +227,7 @@ Welcome to the **basic-blog** example.
 </Note>
 ```
 
-The per-post route resolves `<Note>` against the `components` map by passing it in alongside `defaultComponents`:
+投稿ごとのルートは、`<Note>` を `defaultComponents` と一緒に渡すことで `components` マップに対して解決します。
 
 ```tsx
 // pages/blog/[slug].tsx
@@ -117,7 +244,7 @@ export default function BlogPostPage({ post }: Props) {
 }
 ```
 
-The `Note` component itself is an ordinary Preact (or React) component that receives `title` and `children`:
+`Note` コンポーネント自体は、`title` と `children` を受け取るごく普通の Preact（または React）コンポーネントです。
 
 ```tsx
 // components/note.tsx
@@ -138,14 +265,16 @@ export default function Note({ title, children }: Props) {
 }
 ```
 
-The full source lives in the [zfb-example-blog standalone repo](https://github.com/Takazudo/zfb-example-blog) — see `content/blog/hello-zfb.mdx`, `pages/blog/[slug].tsx`, and `components/note.tsx`. A live build is available at [zfb-example-blog.pages.dev](https://zfb-example-blog.pages.dev/).
+全ソースは [zfb-example-blog スタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) にあります。`content/blog/hello-zfb.mdx`、`pages/blog/[slug].tsx`、`components/note.tsx` を参照してください。ライブビルドは [zfb-example-blog.pages.dev](https://zfb-example-blog.pages.dev/) で確認できます。
 
-## Reference
+## リファレンス
 
-- The `defaultComponents` set is zfb's port of the htmlOverrides convention pioneered by [zudo-doc](https://github.com/zudolab/zudo-doc), where the same map shape solves the same problem for that documentation framework.
-- The upstream pattern from Astro is documented at [Astro: Assigning custom components to HTML elements](https://docs.astro.build/en/guides/integrations-guide/mdx/#assigning-custom-components-to-html-elements). The contract is intentionally identical: a flat record of element-name → component, passed through the `components` prop.
+- `defaultComponents` セットは、[zudo-doc](https://github.com/zudolab/zudo-doc) が確立した htmlOverrides 規約を zfb に移植したものです。zudo-doc では、同じマップの形が同じ問題をそのドキュメントフレームワーク向けに解決しています。
+- Astro の上流パターンは [Astro: Assigning custom components to HTML elements](https://docs.astro.build/en/guides/integrations-guide/mdx/#assigning-custom-components-to-html-elements) に記載されています。契約は意図的に同一です。要素名 → コンポーネントのフラットなレコードを `components` prop で渡すというものです。
 
-## See also
+## あわせて読む
 
-- [Content Collections](/concepts/content-collections) — how entries are discovered and exposed via `getCollection()`.
-- [Build Pipeline](/concepts/build-pipeline) — where MDX-to-JSX compilation sits in the end-to-end flow.
+- [Content Collections](/concepts/content-collections) — エントリがどのように発見され、`getCollection()` を通じて公開されるか。
+- [Build Pipeline](/concepts/build-pipeline) — MDX から JSX へのコンパイルがエンドツーエンドのフローのどこに位置するか。
+- [Custom Directives](/concepts/custom-directives) — 自前の JSX コンポーネントにマッピングされる新しい MDX ディレクティブ構文（例: `:::callout`）を追加する。
+- [Islands](/concepts/islands) — コンテンツエントリ内でインタラクティブなコンポーネントを動かす方法。
