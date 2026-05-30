@@ -74,7 +74,7 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, needs_html5_doctype,
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
-pub use orchestrator::{BuildOrchestrator, OrchestratorConfig};
+pub use orchestrator::{BuildOrchestrator, DiscoveryHook, OrchestratorConfig};
 pub use plugin_registries::{
     AliasEntry, AliasMap, InjectedRoute, InjectedRouteList, SetupCommand, SetupRegistries,
     SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,

@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use zfb_build::{
-    AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, OrchestratorConfig,
-    PageSelection, RebuildPlan, RelDistPath, RenderedPage,
+    AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook,
+    OrchestratorConfig, PageSelection, RebuildPlan, RelDistPath, RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
-use zfb_watcher::Watcher;
+use zfb_watcher::{ChangeKind, Watcher};
 
 fn pid(p: PathBuf) -> PageId {
     PageId::new(p)
@@ -409,6 +409,339 @@ impl AssetPipeline for TestPipeline {
         *self.applied.lock().unwrap() += 1;
         self.inner.apply(plan, ctx)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #659 — live watch-ADD discovery of a newly-created content file.
+//
+// Mechanism under test (resolved against the CURRENT tree): a content
+// file like `content/blog/foo.mdx` is NOT a `pages/`-scanned route. It is
+// reached through a dynamic `pages/blog/[slug].tsx` page whose `paths()`
+// export enumerates the `blog` content collection (see
+// `crates/zfb/templates/basic-blog/pages/blog/[slug].tsx`). So "adding a
+// content file" must make the dynamic `[slug]` SOURCE page re-render with
+// one more concrete URL — it never adds a new `pages/` source.
+//
+// The defect (#659): while `zfb dev` runs, the orchestrator's `run()`
+// folds only the changed *path* into a plan and discards the
+// `ChangeKind`. A brand-new content file has no reverse edge in the dep
+// graph yet, so the path-only fold dirties no page and the new route
+// 404s until restart. Editing an EXISTING content file works because its
+// `[slug]` consumer edge already lives in the graph.
+//
+// The fix (#659): `tick_with_kinds` carries `ChangeKind` and, on a
+// `Created` change, runs a discovery hook that (in `zfb dev`) rebundles
+// the content snapshot, reloads the embedded V8 host in place, re-expands
+// `paths()`, rebuilds the source→route table, and returns the dynamic
+// source `PageId`s that became renderable. The orchestrator folds those
+// ids into the plan so the new page renders through the same render→write
+// path an edit traverses.
+//
+// This is an orchestrator-level proxy: the real snapshot/rebundle/reload
+// lives in `zfb`'s dev command and needs a live V8 host, so it is not
+// unit-testable here. The fake hook stands in for that side effect (and
+// mirrors the graph upsert the real hook performs). Sub-issue #649-B's
+// real-watcher e2e is the stronger net for the actual GET path.
+
+/// Build a dev fixture whose only page is the dynamic `[slug]` consumer
+/// of a `blog` content collection. Mirrors the basic-blog template shape.
+fn make_dynamic_blog_fixture(project: &std::path::Path) {
+    std::fs::create_dir_all(project.join("pages/blog")).unwrap();
+    std::fs::create_dir_all(project.join("content/blog")).unwrap();
+    std::fs::write(
+        project.join("pages/blog/[slug].tsx"),
+        "export async function paths(){return []}\nexport default function P(){}\n",
+    )
+    .unwrap();
+    // One pre-existing post so the project boots with a non-empty graph.
+    std::fs::write(
+        project.join("content/blog/hello.mdx"),
+        "---\ntitle: Hello\n---\nhi\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+}
+
+/// Graph seeded the way `boot_dev_renderer` seeds it: the `[slug]` source
+/// page node plus its edge to the one pre-existing post. A post added
+/// AFTER boot has no edge here — the #659 cold spot.
+fn seed_blog_graph(project: &std::path::Path) -> Arc<Mutex<DependencyGraph>> {
+    let slug_page = project.join("pages/blog/[slug].tsx");
+    let hello_md = project.join("content/blog/hello.mdx");
+    let mut g = DependencyGraph::new();
+    g.upsert(PageDeps::new(
+        pid(slug_page),
+        vec![(hello_md, DepKind::Content)],
+    ));
+    Arc::new(Mutex::new(g))
+}
+
+/// The dev session's frozen-at-boot route table, modelled faithfully:
+/// source page → the concrete output paths its `paths()` expanded to.
+/// `render_one` fans out over exactly this Vec, so the discriminator for
+/// #659 is whether the table gains `/blog/foo` BEFORE the fan-out runs —
+/// not whether the `[slug]` page is "rendered" (the All-fallback renders
+/// it either way). Keyed by source `PathBuf`, value is dist-relative
+/// output paths.
+type RouteTable = Arc<Mutex<std::collections::HashMap<PathBuf, Vec<String>>>>;
+
+/// Route table seeded the way `boot_dev_renderer` freezes
+/// `routes_by_source` at boot: the dynamic `[slug]` source maps to the
+/// ONE concrete URL its `paths()` resolved from the single pre-existing
+/// post. A post added after boot is absent here — the #659 cold spot.
+fn seed_route_table(project: &std::path::Path) -> RouteTable {
+    let mut t = std::collections::HashMap::new();
+    t.insert(
+        project.join("pages/blog/[slug].tsx"),
+        vec!["blog/hello.html".to_string()],
+    );
+    Arc::new(Mutex::new(t))
+}
+
+/// A `BuildContext` whose renderer FANS OUT over the shared route table —
+/// one `RenderedPage` (and one dist file) per output path the requested
+/// source page maps to. This mirrors `DevRenderSession::render_one`'s real
+/// fan-out, so a frozen table writes only the URLs known at boot and a
+/// rebuilt table writes the new URL too. Records which source pages it was
+/// asked to render.
+fn fanout_ctx(
+    project: &std::path::Path,
+    routes: RouteTable,
+    render_calls: Arc<Mutex<Vec<Vec<PageId>>>>,
+) -> BuildContext {
+    BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(move |pages: &[PageId]| {
+            render_calls.lock().unwrap().push(pages.to_vec());
+            let table = routes.lock().unwrap();
+            let mut out = Vec::new();
+            for p in pages {
+                // Fan out over the source page's frozen/rebuilt route Vec.
+                // Unknown source (no table entry) yields nothing — exactly
+                // `render_one`'s "empty Vec for an unknown source" contract.
+                for output in table.get(p.path()).into_iter().flatten() {
+                    out.push(RenderedPage {
+                        // Each concrete URL gets a distinct synthetic PageId
+                        // keyed on its output path, mirroring `render_one_with`.
+                        page: PageId::new(PathBuf::from(output)),
+                        output_path: RelDistPath::new(output.clone())
+                            .expect("test output is a relative html path"),
+                        html: format!("<h1>{output}</h1>"),
+                        content_type: None,
+                    });
+                }
+            }
+            Ok(out)
+        }),
+        run_css: None,
+        run_islands: None,
+        reload_renderer: None,
+    }
+}
+
+/// A discovery hook faithful to `zfb dev`'s real `discover_created`: for a
+/// created file under `content/blog/`, REBUILD THE ROUTE TABLE so the
+/// dynamic `[slug]` source now also maps to the new `/blog/foo` URL (this
+/// is the load-bearing side effect — the real hook rebundles the content
+/// snapshot, reloads the V8 host, and re-expands `paths()` to produce this
+/// same table mutation), upsert the graph, and return the `[slug]` source
+/// `PageId`. Records the created-path batches so a test can assert it is
+/// NOT called on an edit tick.
+fn fake_blog_discovery_hook(
+    project: &std::path::Path,
+    routes: RouteTable,
+    graph: Arc<Mutex<DependencyGraph>>,
+    invocations: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+) -> DiscoveryHook {
+    let slug_page = project.join("pages/blog/[slug].tsx");
+    let content_blog = project.join("content/blog");
+    Arc::new(move |created: &[PathBuf]| {
+        invocations.lock().unwrap().push(created.to_vec());
+        let mut out = Vec::new();
+        for c in created {
+            if c.starts_with(&content_blog) {
+                let page = pid(slug_page.clone());
+                let slug = c.file_stem().and_then(|s| s.to_str()).unwrap_or("post");
+                // Rebuild the route table: the dynamic source now also
+                // resolves the new concrete URL (mirrors the real
+                // `routes_by_source` rebuild after a rebundle + paths()
+                // re-expansion).
+                if let Ok(mut t) = routes.lock() {
+                    t.entry(slug_page.clone())
+                        .or_default()
+                        .push(format!("blog/{slug}.html"));
+                }
+                // Mirror the real hook's graph upsert.
+                if let Ok(mut g) = graph.lock() {
+                    g.upsert(PageDeps::new(
+                        page.clone(),
+                        vec![(c.clone(), DepKind::Content)],
+                    ));
+                }
+                out.push(page);
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// BUG CHARACTERISATION: a content file CREATED after boot, fed through
+/// the legacy path-only `tick` (no discovery), re-renders the `[slug]`
+/// page (via the All-fallback) BUT the frozen route table never gained
+/// `/blog/foo`, so `blog/foo.html` is never written — the new route 404s
+/// until restart. This pins the precise discovery defect: the missing
+/// output file, not a missing render.
+#[test]
+fn created_content_file_without_discovery_does_not_emit_new_url() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    make_dynamic_blog_fixture(project);
+
+    let routes = seed_route_table(project);
+    let graph = seed_blog_graph(project);
+    let render_calls: Arc<Mutex<Vec<Vec<PageId>>>> = Arc::new(Mutex::new(Vec::new()));
+    let ctx = fanout_ctx(project, routes, render_calls);
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+
+    // A brand-new post appears on disk after boot.
+    let new_post = project.join("content/blog/foo.mdx");
+    std::fs::write(&new_post, "---\ntitle: Foo\n---\nfoo\n").unwrap();
+
+    // Legacy path-only tick (the pre-#659 `run()` behaviour).
+    let _ = orch.tick(vec![new_post], &ctx).expect("tick ok");
+
+    assert!(
+        !project.join("dist/blog/foo.html").exists(),
+        "pre-fix: the new /blog/foo URL must NOT be emitted (frozen route table) — \
+         this is the 404-until-restart bug",
+    );
+    // The pre-existing URL is still emitted (the [slug] page did re-render).
+    assert!(
+        project.join("dist/blog/hello.html").exists(),
+        "the pre-existing /blog/hello URL is still served",
+    );
+}
+
+/// THE FIX (red→green): the same created post, fed through
+/// `tick_with_kinds` as a `ChangeKind::Created` change with the discovery
+/// hook wired, rebuilds the route table and emits `dist/blog/foo.html` —
+/// closing the watch-ADD 404. Falsifiability: with the discovery branch
+/// removed from `tick_with_kinds` (or the hook not invoked), the table
+/// stays frozen and `blog/foo.html` is never written, failing the central
+/// assertion.
+#[test]
+fn created_content_file_with_discovery_emits_new_url() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    make_dynamic_blog_fixture(project);
+
+    let routes = seed_route_table(project);
+    let graph = seed_blog_graph(project);
+    let render_calls: Arc<Mutex<Vec<Vec<PageId>>>> = Arc::new(Mutex::new(Vec::new()));
+    let ctx = fanout_ctx(project, routes.clone(), render_calls);
+
+    let hook_invocations: Arc<Mutex<Vec<Vec<PathBuf>>>> = Arc::new(Mutex::new(Vec::new()));
+    let discover =
+        fake_blog_discovery_hook(project, routes, graph.clone(), hook_invocations.clone());
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+
+    let new_post = project.join("content/blog/foo.mdx");
+    std::fs::write(&new_post, "---\ntitle: Foo\n---\nfoo\n").unwrap();
+
+    orch.tick_with_kinds(
+        vec![(new_post.clone(), ChangeKind::Created)],
+        &ctx,
+        Some(&discover),
+    )
+    .expect("tick_with_kinds ok")
+    .expect("a Created content file must produce a non-noop tick");
+
+    // The central acceptance check: the new URL is now emitted to dist.
+    assert!(
+        project.join("dist/blog/foo.html").exists(),
+        "the discovery hook must rebuild the route table so /blog/foo is written",
+    );
+    // The pre-existing URL survives the rebuild.
+    assert!(
+        project.join("dist/blog/hello.html").exists(),
+        "the pre-existing /blog/hello URL must still be emitted",
+    );
+
+    // The discovery hook saw exactly the created path, once.
+    let invs = hook_invocations.lock().unwrap();
+    assert_eq!(invs.len(), 1, "discovery hook called once for the Created tick");
+    assert_eq!(invs[0], vec![new_post]);
+}
+
+/// EDIT PATH NOT REGRESSED: editing an EXISTING content file is a
+/// `ChangeKind::Modified` change. Its consumer page still hot-reloads
+/// (the pre-existing URL re-renders), the discovery hook is NEVER invoked
+/// (add-only stays add-only), and no new URL is invented.
+#[test]
+fn modified_content_file_does_not_invoke_discovery_and_still_hot_reloads() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    make_dynamic_blog_fixture(project);
+
+    let routes = seed_route_table(project);
+    let graph = seed_blog_graph(project);
+    let render_calls: Arc<Mutex<Vec<Vec<PageId>>>> = Arc::new(Mutex::new(Vec::new()));
+    let ctx = fanout_ctx(project, routes.clone(), render_calls.clone());
+
+    let hook_invocations: Arc<Mutex<Vec<Vec<PathBuf>>>> = Arc::new(Mutex::new(Vec::new()));
+    let discover =
+        fake_blog_discovery_hook(project, routes, graph.clone(), hook_invocations.clone());
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+
+    // Edit the EXISTING post (it already has a graph edge to [slug].tsx).
+    let existing = project.join("content/blog/hello.mdx");
+    std::fs::write(&existing, "---\ntitle: Hello\n---\nedited\n").unwrap();
+
+    orch.tick_with_kinds(
+        vec![(existing.clone(), ChangeKind::Modified)],
+        &ctx,
+        Some(&discover),
+    )
+    .expect("tick_with_kinds ok")
+    .expect("editing an existing post must still produce a non-noop tick");
+
+    // Hot-reload still works: the consumer [slug] page re-rendered its URL.
+    let calls = render_calls.lock().unwrap();
+    assert!(
+        calls[0].contains(&pid(project.join("pages/blog/[slug].tsx"))),
+        "the edit must re-render the dynamic [slug] consumer; got {:?}",
+        calls[0],
+    );
+    assert!(
+        project.join("dist/blog/hello.html").exists(),
+        "editing an existing post must still emit its URL (hot reload)",
+    );
+
+    // The discovery hook was NOT consulted — the edit path is untouched.
+    assert!(
+        hook_invocations.lock().unwrap().is_empty(),
+        "a Modified change must never invoke the watch-ADD discovery hook",
+    );
+    // No phantom URL was invented for the edit.
+    assert!(
+        !project.join("dist/blog/edited.html").exists(),
+        "editing a post must not invent a new URL",
+    );
 }
 
 #[allow(dead_code)]
