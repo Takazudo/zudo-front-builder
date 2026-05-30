@@ -3410,50 +3410,158 @@ mod tests {
 
     // --- Sub #417 V8 evaluator wiring tests ----------------------------------
 
-    /// V8 path end-to-end: spawn_blocking wrapping test.
+    /// `spawn_blocking` in the V8 eval path keeps the tokio event loop free.
     ///
-    /// Runs `load_from_dir` through the real esbuild + V8 evaluator path
-    /// (no test-override short-circuit). A sibling `tokio::time::sleep` of
-    /// equal wall-clock duration must complete within tolerance — proving that
-    /// the `spawn_blocking` wrapper is in place and the tokio event loop stays
-    /// unblocked during V8 boot. If a future refactor drops `spawn_blocking`
-    /// the sibling sleep would be starved, failing the time-comparison assertion.
+    /// ## What is tested
+    ///
+    /// `config.rs` wraps `ThreadedConfigEvaluator::eval_bundle` inside
+    /// `tokio::task::spawn_blocking` so the synchronous `rx.recv()` call
+    /// (blocking the calling thread until the JS eval finishes) does not pin
+    /// the single-threaded tokio event loop. This test goes through the full
+    /// production `load_from_dir` path and detects a dropped `spawn_blocking`
+    /// by measuring the maximum event-loop starvation gap.
+    ///
+    /// ## Detection mechanism
+    ///
+    /// A heartbeat probe runs concurrently with `load_from_dir` via
+    /// `tokio::join!`. The probe loops, sleeping 2 ms on each iteration and
+    /// recording the wall-clock gap since the previous wakeup. The worst gap
+    /// observed over the entire load captures whether the event loop was ever
+    /// frozen for a long time.
+    ///
+    /// - **With `spawn_blocking`:** eval_bundle's `rx.recv()` runs on the
+    ///   blocking thread pool; the event loop stays free; the probe wakes on
+    ///   schedule; `max_gap` ≈ probe interval + jitter (small, a few ms).
+    /// - **Without `spawn_blocking`:** `rx.recv()` freezes the current-thread
+    ///   event loop for the full JS eval duration; the probe cannot be polled
+    ///   during that window; `max_gap` ≈ JS eval duration (large, ~150 ms).
+    ///
+    /// ## Why `current_thread`
+    ///
+    /// A `multi_thread` runtime has spare workers that can advance the probe
+    /// even when one worker is blocked. `current_thread` forces a single event
+    /// loop, making the starvation effect visible.
+    ///
+    /// ## Why the config has a CPU-heavy warm-up expression
+    ///
+    /// deno_core ships a **V8 snapshot** — V8 boot is pre-baked into the
+    /// binary. Natural eval on warm V8 takes only ~20 ms, too short and too
+    /// timing-sensitive to discriminate WITH vs WITHOUT spawn_blocking. A
+    /// deliberate CPU-busy loop embedded in the config's default export forces
+    /// the eval to take ~150–200 ms deterministically on every attempt (V8
+    /// cannot DCE it because the result is part of the exported object). This
+    /// wide, stable signal makes the threshold reliable and removes the flake
+    /// root cause that affected the original test.
+    ///
+    /// ## Retry rationale
+    ///
+    /// Under heavy OS scheduler load the probe gap can be elevated even with
+    /// `spawn_blocking` in place (transient false failure). A bounded retry
+    /// loop (up to `MAX_ATTEMPTS`) passes as soon as ANY attempt's `max_gap`
+    /// is below the threshold, and only panics if ALL attempts exceed it. This
+    /// tolerates transient spikes while still detecting a removed
+    /// `spawn_blocking`: every attempt would have a large gap (the full JS
+    /// eval duration ~150–200 ms), so no retry would ever pass the threshold.
+    ///
+    /// ## Threshold
+    ///
+    /// The threshold (75 ms) sits cleanly between the WITH case (typically
+    /// < 15 ms) and the WITHOUT case (~150 ms). The original 10× sleep
+    /// tolerance was too wide — this test needs a gap-based measurement to
+    /// discriminate the two cases.
     #[cfg(feature = "embed_v8")]
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn v8_eval_spawn_blocking_does_not_starve_event_loop() {
-        let tmp = TempDir::new().unwrap();
-        tokio::fs::write(
-            tmp.path().join("zfb.config.ts"),
-            "export default { port: 7777 };\n",
-        )
-        .await
-        .unwrap();
+        use std::cell::Cell;
+        use std::rc::Rc;
 
-        // Record wall-clock time of a plain tokio sleep so we have a
-        // baseline for what "the event loop is free" looks like.
-        let sleep_start = std::time::Instant::now();
-        let sleep_dur = std::time::Duration::from_millis(50);
+        const MAX_ATTEMPTS: u32 = 5;
+        // Threshold between WITH (~few ms) and WITHOUT (~150+ ms).
+        // 75 ms provides a wide, stable margin between the two cases.
+        let gap_threshold = std::time::Duration::from_millis(75);
 
-        // Run the V8 eval and the sleep concurrently.
-        let (load_result, ()) = tokio::join!(
-            load_from_dir(tmp.path()),
-            tokio::time::sleep(sleep_dur),
-        );
-        let sleep_elapsed = sleep_start.elapsed();
+        // CPU-heavy config: the IIFE runs a busy loop whose result is part of
+        // the exported object, preventing V8 dead-code elimination.
+        // This forces the eval to take ~150-200 ms regardless of V8 warm/cold
+        // state — necessary because deno_core's snapshot makes natural eval
+        // only ~20 ms, which is too short to discriminate spawn_blocking
+        // presence from absence. The `_warmup` field is ignored by assertions.
+        // iteration count: 2e8 ≈ 150-200 ms on modern hardware (calibrated).
+        const HEAVY_CONFIG: &str = "\
+            export default { port: 7777, \
+                _warmup: (() => { let s = 0; for (let i = 0; i < 2e8; i++) s += i; return s; })() \
+            };";
 
-        // The load must succeed.
-        let cfg = load_result.expect("V8 eval should load a simple config");
-        assert_eq!(cfg.port, Some(7777));
+        let mut last_max_gap = std::time::Duration::ZERO;
 
-        // The sleep must have completed within 10× its requested duration.
-        // If spawn_blocking is missing, the V8-boot thread would pin the
-        // single tokio worker and the sleep would be delayed by the full
-        // V8 startup time (typically 200–600 ms), which is > 500 ms.
-        let tolerance = sleep_dur * 10;
-        assert!(
-            sleep_elapsed < sleep_dur + tolerance,
-            "tokio::time::sleep({sleep_dur:?}) took {sleep_elapsed:?} — \
-             event loop may have been starved (spawn_blocking missing?)"
+        for attempt in 1..=MAX_ATTEMPTS {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(tmp.path().join("zfb.config.ts"), HEAVY_CONFIG)
+                .await
+                .unwrap();
+
+            let done = Rc::new(Cell::new(false));
+            let probe_done = done.clone();
+
+            // Heartbeat probe: runs while load_from_dir is active.
+            // Records the maximum gap between successive wakeups, which is a
+            // proxy for how long the event loop was unavailable.
+            //
+            // The loop checks `probe_done` AFTER measuring, not before, so
+            // it always records the gap that ends the final blocking window.
+            let probe = async move {
+                let probe_interval = std::time::Duration::from_millis(2);
+                let mut max_gap = std::time::Duration::ZERO;
+                let mut last = std::time::Instant::now();
+                loop {
+                    tokio::time::sleep(probe_interval).await;
+                    let now = std::time::Instant::now();
+                    let gap = now.duration_since(last);
+                    if gap > max_gap {
+                        max_gap = gap;
+                    }
+                    last = now;
+                    if probe_done.get() {
+                        break;
+                    }
+                }
+                max_gap
+            };
+
+            let load = async {
+                let result = load_from_dir(tmp.path()).await;
+                done.set(true);
+                result
+            };
+
+            let (load_result, max_gap) = tokio::join!(load, probe);
+
+            // The load must succeed on every attempt.
+            let cfg = load_result.expect("V8 eval should load a simple config");
+            assert_eq!(cfg.port, Some(7777));
+
+            last_max_gap = max_gap;
+
+            if max_gap < gap_threshold {
+                // Event loop stayed free — spawn_blocking is in place.
+                return;
+            }
+
+            eprintln!(
+                "attempt {attempt}/{MAX_ATTEMPTS}: max_gap={max_gap:?} \
+                 (threshold {gap_threshold:?}) — retrying"
+            );
+        }
+
+        // Every attempt had a large event-loop gap. With spawn_blocking
+        // present the gap is tiny (probe jitter only). This large gap means
+        // the event loop was frozen — almost certainly because spawn_blocking
+        // was removed and eval_bundle's rx.recv() ran inline.
+        panic!(
+            "max event-loop gap was {last_max_gap:?} on all {MAX_ATTEMPTS} attempts \
+             (threshold {gap_threshold:?}) — the tokio current-thread event loop \
+             was frozen; spawn_blocking may have been removed from the V8 eval \
+             path in config.rs"
         );
     }
 
