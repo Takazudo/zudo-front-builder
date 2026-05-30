@@ -1576,7 +1576,7 @@ fn boot_dev_renderer(
         for entry in static_expansion
             .resolved
             .into_iter()
-            .chain(runtime_expansion.resolved.into_iter())
+            .chain(runtime_expansion.resolved)
         {
             if let Some(source) = template_to_source.get(&entry.route_key) {
                 routes_by_source

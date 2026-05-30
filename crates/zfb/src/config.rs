@@ -1451,7 +1451,7 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
                 resolved.len()
             );
         }
-        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved.into_iter()) {
+        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
             entry.resolved_module = Some(resolved_specifier);
         }
         return Ok(config);

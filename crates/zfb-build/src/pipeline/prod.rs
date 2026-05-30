@@ -272,7 +272,7 @@ impl AssetPipeline for ProductionAssetPipeline {
         //    are applied before any shorter prefixes — defence in
         //    depth even with the boundary check, since two registered
         //    stable URLs could still nest.
-        rewrites.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        rewrites.sort_by_key(|r| std::cmp::Reverse(r.0.len()));
         for r in rendered {
             let dest = validate_output_path(&ctx.dist_root, r.output_path.as_path())
                 .with_context(|| format!("while building page {:?}", r.page))?;
