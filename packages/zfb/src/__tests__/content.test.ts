@@ -660,6 +660,30 @@ describe("defaultComponents (htmlOverrides convention)", () => {
     const node = ContentParagraph({ children });
     expect(node.props.children).toBe(children);
   });
+
+  it("set-level output-neutrality: every entry is a pure passthrough (no injected props)", () => {
+    // Regression guard — if any defaultComponents entry starts injecting a
+    // class, data-*, or wrapper element this loop goes red immediately.
+    const sentinel = { type: "span", props: {}, key: null };
+    for (const [key, Component] of Object.entries(defaultComponents)) {
+      const node = (
+        Component as (props: Record<string, unknown>) => {
+          type: string;
+          props: Record<string, unknown>;
+          key: unknown;
+        }
+      )({ children: sentinel, id: "x" });
+      // 1. The intrinsic tag is unchanged.
+      expect(node.type, `${key}: type`).toBe(key);
+      // 2. Exactly the props we passed — nothing injected.
+      expect(Object.keys(node.props).sort(), `${key}: prop keys`).toEqual(
+        ["children", "id"].sort(),
+      );
+      // 3. Both values pass through verbatim.
+      expect(node.props["children"], `${key}: children`).toBe(sentinel);
+      expect(node.props["id"], `${key}: id`).toBe("x");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
