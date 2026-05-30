@@ -98,6 +98,8 @@ pub fn error(msg: impl AsRef<str>) {
 /// banner logic because preview cannot bind to unspecified hosts today; the
 /// helper below (`ready_with_interfaces`) is structured so a future preview
 /// `--host` flag can adopt it with no change to this function).
+// Kept for `zfb preview` and future `--host` adoption; currently only called from tests.
+#[allow(dead_code)]
 pub fn ready(url: &str) {
     println!("{}", fmt_ready(url));
 }
@@ -197,10 +199,13 @@ fn collect_network_urls(scheme: &str, port: u16) -> Vec<String> {
 ///
 /// Wraps [`indicatif::ProgressBar`] with a project-standard template and
 /// emits a green summary line on completion.
+// Intended for `zfb build` progress reporting; not yet wired up in the build command.
+#[allow(dead_code)]
 pub struct BuildProgress {
     bar: ProgressBar,
 }
 
+#[allow(dead_code)]
 impl BuildProgress {
     /// Create a new progress bar for `total` units of work.
     ///
@@ -235,6 +240,8 @@ impl BuildProgress {
 
 /// Render the build summary line. Extracted so it can be unit-tested without
 /// touching `stdout`.
+// Private helper for BuildProgress::finish_and_summary; only reached via tests until build uses it.
+#[allow(dead_code)]
 fn fmt_summary(count: u64, elapsed: Duration) -> String {
     let mark = "✓".if_supports_color(Stream::Stdout, |t| t.green().to_string());
     format!("{} {} pages built in {:.2}s", mark, count, elapsed.as_secs_f64())

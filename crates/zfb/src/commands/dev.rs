@@ -276,8 +276,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     virtual_sources.insert(specifier.clone(), source);
                 }
                 Err(e) => {
-                    return Err(e)
-                        .map_err(zfb_build::annotate_with_plugin_error)
+                    return Err(zfb_build::annotate_with_plugin_error(e))
                         .with_context(|| {
                             format!(
                                 "plugin lifecycle: failed to load virtual module \
@@ -356,7 +355,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // from DependencyGraph to prevent silent empty-graph construction
     // elsewhere.
     let graph = Arc::new(Mutex::new(
-        initial_graph.unwrap_or_else(DependencyGraph::new),
+        initial_graph.unwrap_or_default(),
     ));
 
     // Seed the graph with all page source paths from the router scan so
@@ -573,8 +572,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             } else {
                 output::warn(
-                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)"
-                        .to_string(),
+                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)",
                 );
             }
         }
@@ -665,6 +663,54 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // boot-time bundle).
         reload_renderer: None,
     };
+
+    // 3b. Eager initial render (zfb#642 / #644).
+    //
+    // `BuildOrchestrator::run` is purely watcher-driven — it renders a
+    // page only after a file-change event. Nothing else populates the
+    // dev page cache: the in-memory `PageCache` starts empty and the dev
+    // server's only HTML source is the on-disk `read_from_dist` fallback
+    // pointed at `dev_html_root` (issue #534). So without an eager render
+    // here, a fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and
+    // 404s EVERY route until the user happens to edit a file. (Before
+    // #534 the fallback read `dist/`, which a prior `pnpm build` had
+    // populated, masking the gap.)
+    //
+    // Run the initial full render NOW — synchronously, before the watcher
+    // loop is spawned and before `output::ready` announces the server —
+    // so `dev-pages/` is populated before the server can serve a single
+    // request. Mirrors the eager CSS / islands boot bundles above. Going
+    // through the orchestrator/pipeline (not the raw render callback) also
+    // primes `DevAssetPipeline.last_bytes` so the first real edit dedups
+    // correctly. A render error here is fatal: the user would otherwise
+    // stare at a wall of 404s with no clue why.
+    match orchestrator.initial_build(&ctx) {
+        Ok(Some(outcome)) => {
+            let expected_routes = dev_session.as_ref().map(|s| s.route_count()).unwrap_or(0);
+            // Surface the previously-silent zero-page failure (zfb#642):
+            // the renderer knows about routes, yet produced no HTML. Every
+            // route would 404. Make it visible on stderr instead.
+            if expected_routes > 0 && outcome.pages_rendered == 0 {
+                output::error(format!(
+                    "dev initial render produced 0 pages for {expected_routes} known route(s) — \
+                     every route will 404. This usually means the renderer failed silently; \
+                     check the bundler / runtime output above."
+                ));
+            }
+        }
+        Ok(None) => {
+            // No pages in the graph at all (renderer disabled or a
+            // project with zero SSG routes). The dev server still boots so
+            // the user can poke at it / fix the project; SSR-only routes
+            // still work via the request-time path.
+        }
+        Err(err) => {
+            output::error(format!(
+                "dev initial render failed — every route will 404 until the next \
+                 successful rebuild: {err:#}"
+            ));
+        }
+    }
 
     // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
@@ -1059,6 +1105,14 @@ impl DevRenderSession {
             .collect()
     }
 
+    /// Number of SSG source routes the renderer knows about. Used by the
+    /// eager initial-build step to detect the "0 pages rendered for N
+    /// routes" silent-failure case (zfb#642 / #644): if this is non-zero
+    /// but the initial render produced nothing, every route would 404.
+    fn route_count(&self) -> usize {
+        self.inner.routes_by_source.len()
+    }
+
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
     /// multiple times — subsequent calls are a no-op.
     fn shutdown_explicit(&self) {
@@ -1374,7 +1428,7 @@ fn boot_dev_renderer(
     // every watcher tick and the dist fallback would shadow the SSR
     // handler.
     let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
-        crate::output::warn(msg.to_string())
+        crate::output::warn(msg)
     });
 
     // Build the source-path → entries map once. Router source paths are
@@ -1522,7 +1576,7 @@ fn boot_dev_renderer(
         for entry in static_expansion
             .resolved
             .into_iter()
-            .chain(runtime_expansion.resolved.into_iter())
+            .chain(runtime_expansion.resolved)
         {
             if let Some(source) = template_to_source.get(&entry.route_key) {
                 routes_by_source
@@ -1554,7 +1608,7 @@ fn boot_dev_renderer(
 /// Per-route HTML output directory for the dev pipeline (issue #534).
 ///
 /// Dev's renderer writes one file per route on each tick (initial scan
-/// + every watcher rebuild). Until #534, these writes landed in the
+/// and every watcher rebuild). Until #534, these writes landed in the
 /// project's `outDir` (`dist/`), silently overwriting the production
 /// HTML produced by a prior `pnpm build` — stripping the prod-only
 /// `<link rel="stylesheet">` / islands `<script type="module">` head

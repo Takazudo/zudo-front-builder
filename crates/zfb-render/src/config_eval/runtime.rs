@@ -84,7 +84,7 @@ async fn evaluate_in_runtime(
         .ok_or_else(|| ConfigEvalError::Evaluation("v8 string alloc failed".into()))?;
     let default_val = local_ns
         .get(scope, key.into())
-        .ok_or_else(|| ConfigEvalError::NotAPlainObject)?;
+        .ok_or(ConfigEvalError::NotAPlainObject)?;
 
     // The default export must be a plain object (not a function, array,
     // primitive, etc.). Functions are `is_object()` in V8, so check both.

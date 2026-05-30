@@ -39,6 +39,8 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+        with:
+          components: clippy
 
       # Cache compiled Rust artifacts across runs. The cache key encodes the
       # OS, Rust toolchain, and a hash of every Cargo.toml/Cargo.lock in the
@@ -65,6 +67,14 @@ jobs:
       # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
       # integration tests run below.
       - run: cargo build --workspace --all-targets
+
+      # Lint gate (issue #646): runs after the warmed incremental compile so
+      # no extra compile cost. Placed before cargo test so a lint failure
+      # short-circuits the expensive test run. Note: -D warnings on the stable
+      # toolchain can surface new lints on a future toolchain bump — accepted
+      # cost; a future maintainer seeing a red gate with no code change should
+      # check if a toolchain pin bump introduced new lints.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Guard (issue #638): the esbuild-gated integration tests skip via an early
       # `return` (recorded by cargo as a PASS) when no esbuild binary is found, so

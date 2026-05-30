@@ -84,10 +84,11 @@ const DEFAULT_BIND: SocketAddr = SocketAddr::new(
 /// for follow-up sub-tasks that wire the gating; this enum exists now
 /// so the builder API can lock in the public shape and embedders can
 /// pass `ServerMode::Embed` without an API break later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServerMode {
     /// Dev mode (default). Live-reload script is injected into every
     /// HTML response and `/__zfb/reload` is mounted.
+    #[default]
     Dev,
     /// Preview mode. Production-shaped output without live-reload but
     /// with the dev-server route table (used by `zfb preview`'s future
@@ -99,11 +100,6 @@ pub enum ServerMode {
     Embed,
 }
 
-impl Default for ServerMode {
-    fn default() -> Self {
-        Self::Dev
-    }
-}
 
 /// A built, ready-to-serve embedded server. Construct via
 /// [`Server::builder`]; consume via [`Server::serve`] (async) or

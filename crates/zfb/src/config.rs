@@ -1415,8 +1415,8 @@ async fn load_ts_via_inprocess_v8(
         "config": raw_value,
         "plugins": resolved_plugins,
     });
-    Ok(serde_json::to_string(&envelope)
-        .context("config loader: failed to serialise V8 eval envelope")?)
+    serde_json::to_string(&envelope)
+        .context("config loader: failed to serialise V8 eval envelope")
 }
 
 /// Internal envelope shape produced by the TS config evaluator.
@@ -1451,7 +1451,7 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
                 resolved.len()
             );
         }
-        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved.into_iter()) {
+        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
             entry.resolved_module = Some(resolved_specifier);
         }
         return Ok(config);

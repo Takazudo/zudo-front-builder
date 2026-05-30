@@ -272,7 +272,7 @@ fn esbuild_platform_meta(platform: Platform) -> EsbuildPlatformMeta {
 fn esbuild_tarball_url(npm_pkg: &str, version: &str) -> String {
     // npm_pkg is "@esbuild/linux-x64"; the basename after the "/" is the
     // scoped package name used in the tarball URL segment.
-    let basename = npm_pkg.split('/').last().unwrap_or(npm_pkg);
+    let basename = npm_pkg.split('/').next_back().unwrap_or(npm_pkg);
     format!("https://registry.npmjs.org/{npm_pkg}/-/{basename}-{version}.tgz")
 }
 
@@ -743,7 +743,7 @@ fn copy_ts_src(src: &Path, dst: &Path) {
             // Only embed .ts source files.
             if name_str.ends_with(".ts") {
                 let dst_file = dst.join(&name);
-                std::fs::copy(&entry.path(), &dst_file).unwrap_or_else(|e| {
+                std::fs::copy(entry.path(), &dst_file).unwrap_or_else(|e| {
                     panic!("failed to copy {}: {e}", entry.path().display());
                 });
             }

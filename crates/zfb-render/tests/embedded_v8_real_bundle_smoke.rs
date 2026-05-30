@@ -106,8 +106,11 @@ async fn real_bundle_dispatches_representative_request_set() {
         // ReadableStream substitute lives in `Response.arrayBuffer()`,
         // so any `ReadableStream`-on-construction case in the bundle
         // would surface here.
+        // A non-empty len confirms the body materialised (usize is always ≤ MAX;
+        // this assertion guards against a zero-length body which would indicate
+        // a ReadableStream polyfill gap).
         assert!(
-            resp.body.len() <= usize::MAX,
+            !resp.body.is_empty(),
             "body materialisation failed for {url}"
         );
     }

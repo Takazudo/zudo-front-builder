@@ -293,13 +293,9 @@ fn validate_link(
     let parsed = parse_link(href);
     match parsed {
         ParsedLink::External => {
-            // Skip external URLs when `allowExternal` is true (default).
-            if allow_external {
-                return;
-            }
-            // When allowExternal is false, we still skip actual validation of
-            // external URLs in this implementation — network checks are out of
-            // scope. Emit nothing.
+            // Skip external URLs — `allow_external` is accepted for API
+            // completeness but network validation is out of scope for now.
+            let _ = allow_external;
         }
         ParsedLink::BareFragment(fragment) => {
             // Check fragment against the current file's heading entries.

@@ -309,6 +309,38 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         Ok(Some(outcome))
     }
 
+    /// Eager initial render of **every** page in the graph, run once at
+    /// dev-server boot before the watcher loop and before the server
+    /// starts accepting requests.
+    ///
+    /// `run()` is purely watcher-driven: it only renders a page after a
+    /// file-change event. Without this call the dev pipeline never
+    /// populates `.zfb-build/dev-pages/` until the user edits a file, so
+    /// a fresh `zfb dev` 404s every route until the first edit (zfb#642 /
+    /// #644). `zfb build` was unaffected because it never goes through
+    /// the orchestrator at all.
+    ///
+    /// Pages-only by design: the dev command already bundles CSS and
+    /// islands eagerly at boot (the #494 / #377 wiring) before
+    /// constructing the orchestrator, so re-running those sub-pipelines
+    /// here would be redundant work. We force `PageSelection::All` (not a
+    /// change-derived plan) so the result does not depend on the graph's
+    /// reverse-edge state — the seeded page nodes are enough.
+    ///
+    /// Returns `Ok(None)` only when the graph has zero pages (nothing to
+    /// render); otherwise `Ok(Some(outcome))` whose `pages_rendered`
+    /// count the caller checks to detect a silent zero-page render.
+    pub fn initial_build(&self, ctx: &BuildContext) -> Result<Option<BuildOutcome>> {
+        let mut plan = RebuildPlan::empty();
+        plan.mark_pages(PageSelection::All);
+        self.resolve_all(&mut plan);
+        if plan.pages.is_empty() {
+            return Ok(None);
+        }
+        let outcome = self.pipeline.apply(&plan, ctx)?;
+        Ok(Some(outcome))
+    }
+
     /// Long-running dev loop: spawn a watcher, drain change events, and
     /// invoke the pipeline once per debounced burst.
     ///
@@ -534,5 +566,141 @@ mod tests {
         let orch = make_orch(CountingPipeline::default());
         let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/Makefile")]);
         assert!(plan.pages.is_all());
+    }
+
+    /// Regression for zfb#642 / #644 — `zfb dev` 404'd every route on a
+    /// fresh boot because nothing rendered pages into the dev cache until
+    /// the user edited a file: `run()` is watcher-driven and there was no
+    /// eager initial render. `initial_build` closes that gap.
+    ///
+    /// This drives the REAL [`DevAssetPipeline`] (not a stub) so the test
+    /// exercises the actual render → atomic-write path the dev server
+    /// reads back from disk. A stub `render_pages` returns one
+    /// `RenderedPage` per requested page id (no V8 needed). The assertion
+    /// is the capability the pre-fix code lacked: with ZERO file-change
+    /// events, `initial_build` resolves `PageSelection::All` against the
+    /// seeded graph, renders every page, and writes its HTML to
+    /// `dist_root`.
+    ///
+    /// Falsifiability: the pre-fix orchestrator had no `initial_build`;
+    /// the only render entry point was `tick`/`run`, both gated on a file
+    /// change. A no-op initial build (or one that resolved to zero pages)
+    /// makes `pages_rendered == 0` and leaves the dist dir empty, failing
+    /// every assertion below.
+    #[test]
+    fn initial_build_renders_all_seeded_pages_with_no_file_events() {
+        use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
+        use crate::pipeline::dev::DevAssetPipeline;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tempfile::tempdir;
+
+        // Seed the graph exactly as `dev.rs` does: one zero-dep page node
+        // per route the router scan discovered, with NO reverse edges yet
+        // (the cold-start state).
+        let mut g = DependencyGraph::new();
+        let seeded = [
+            "pages/index.tsx",
+            "pages/about.md",
+            "pages/posts/[slug].tsx",
+        ];
+        for p in seeded {
+            g.upsert(PageDeps::new(pid(p), vec![]));
+        }
+        let graph = Arc::new(Mutex::new(g));
+
+        let dist = tempdir().expect("tempdir");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]),
+            graph,
+            DevAssetPipeline::new(),
+        );
+
+        // Stub renderer: emit one RenderedPage per requested page id,
+        // writing each to a deterministic `<id>.html`. Records how many
+        // pages it was asked to render so we can prove the initial build
+        // drove a non-empty render (and didn't just no-op).
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls_cb = render_calls.clone();
+        let ctx = BuildContext {
+            dist_root: dist.path().to_path_buf(),
+            render_pages: Arc::new(move |pages: &[PageId]| {
+                render_calls_cb.fetch_add(pages.len(), Ordering::SeqCst);
+                Ok(pages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, page)| RenderedPage {
+                        page: page.clone(),
+                        output_path: RelDistPath::new(format!("p{i}.html")).unwrap(),
+                        html: format!("<html>{}</html>", page.path().display()),
+                        content_type: None,
+                    })
+                    .collect())
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        };
+
+        // The whole point: no file-change events are passed. Pre-fix this
+        // capability did not exist; the dev cache stayed empty until an
+        // edit. `initial_build` renders everything up front.
+        let outcome = orch
+            .initial_build(&ctx)
+            .expect("initial_build must succeed")
+            .expect("a graph with pages must render at least one page");
+
+        assert_eq!(
+            outcome.pages_rendered,
+            seeded.len(),
+            "initial build must render every seeded page; got {}",
+            outcome.pages_rendered,
+        );
+        assert_eq!(
+            render_calls.load(Ordering::SeqCst),
+            seeded.len(),
+            "the render callback must be asked for every seeded page",
+        );
+
+        // The pipeline must have written the HTML to disk — this is what
+        // the dev server's `read_from_dist` fallback serves. An empty
+        // dist dir is the exact pre-fix 404 symptom.
+        let written: Vec<_> = std::fs::read_dir(dist.path())
+            .expect("dist dir readable")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "html").unwrap_or(false))
+            .collect();
+        assert_eq!(
+            written.len(),
+            seeded.len(),
+            "every rendered page must be written to dist for the dev server to serve",
+        );
+    }
+
+    /// `initial_build` on an empty graph (no pages) is a clean no-op,
+    /// not an error — the dev server still boots (e.g. an SSR-only
+    /// project) so the user can poke at it.
+    #[test]
+    fn initial_build_on_empty_graph_is_noop() {
+        use crate::pipeline::BuildContext;
+        use tempfile::tempdir;
+
+        let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+        let dist = tempdir().expect("tempdir");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]),
+            graph,
+            CountingPipeline::default(),
+        );
+        let ctx = BuildContext {
+            dist_root: dist.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        };
+        assert!(
+            orch.initial_build(&ctx).expect("must not error").is_none(),
+            "empty graph must yield Ok(None)",
+        );
     }
 }

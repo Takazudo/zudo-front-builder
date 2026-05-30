@@ -93,6 +93,10 @@ impl ThreadedV8Host {
     /// Boots the V8 isolate on a dedicated thread and loads the bundle.
     /// Returns an error if the V8 runtime fails to initialise or if the
     /// bundle fails to load.
+    // Convenience wrapper without hooks; callers currently use new_with_hooks directly.
+    // Returns Box<dyn EmbeddedV8Host> (not Self) so callers hold an opaque trait object.
+    #[allow(dead_code)]
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(bundle_path: &Path) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
         Self::new_with_hooks(bundle_path, PluginRegistryHooks::default())
     }
@@ -326,9 +330,10 @@ impl ThreadedV8Host {
 /// Build an [`EmbeddedV8HostFactory`] that constructs a [`ThreadedV8Host`].
 ///
 /// Returns the factory as a closure suitable for use in
-/// [`zfb_build::renderer::Backend::EmbeddedV8`]. This is the canonical
-/// production factory — callers in `build.rs` and `dev.rs` use it to wire
-/// the embedded V8 path.
+/// [`zfb_build::renderer::Backend::EmbeddedV8`]. Callers that need
+/// plugin-registry hooks should use [`make_v8_host_factory_with_hooks`] instead.
+// Hooks-free variant; callers currently use make_v8_host_factory_with_hooks.
+#[allow(dead_code)]
 pub fn make_v8_host_factory() -> zfb_build::renderer::EmbeddedV8HostFactory {
     std::sync::Arc::new(|bundle_path: &Path| ThreadedV8Host::new(bundle_path))
 }

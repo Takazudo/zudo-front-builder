@@ -130,7 +130,7 @@ impl ManifestDigest {
                     hasher.update(b"cfg:");
                     hasher.update(rel.as_bytes());
                     hasher.update(b":");
-                    hasher.update(&(bytes.len() as u64).to_le_bytes());
+                    hasher.update((bytes.len() as u64).to_le_bytes());
                     hasher.update(b":");
                     hasher.update(&bytes);
                     hasher.update(b"\n");
@@ -216,9 +216,9 @@ impl ManifestDigest {
             hasher.update(b"f:");
             hasher.update(rel.as_bytes());
             hasher.update(b":");
-            hasher.update(&meta.mtime.to_le_bytes());
+            hasher.update(meta.mtime.to_le_bytes());
             hasher.update(b":");
-            hasher.update(&meta.len.to_le_bytes());
+            hasher.update(meta.len.to_le_bytes());
             hasher.update(b"\n");
         }
 
