@@ -228,9 +228,16 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     let second_out = bundle(second_input).expect("second bundle should succeed");
     let second_body =
         fs::read_to_string(&second_out.bundle_path).expect("read second bundle");
+    // Compare with the inherently-random shadow tempdir collapsed out (see
+    // `normalize_shadow_paths`): esbuild embeds the bundler's per-run
+    // `zfb-bundler-<rand>` shadow path in module-boundary comments, the only
+    // thing that legitimately differs between two independent runs (#631).
     assert_eq!(
-        body, second_body,
-        "bundler output should be byte-identical across runs (deterministic Pipeline::with_defaults emit)"
+        normalize_shadow_paths(&body),
+        normalize_shadow_paths(&second_body),
+        "bundler output should be byte-identical across runs (deterministic \
+         Pipeline::with_defaults emit), ignoring the random zfb-bundler-<rand> \
+         shadow tempdir esbuild embeds in module-boundary comments"
     );
 }
 
@@ -382,4 +389,132 @@ fn snippet(s: &str) -> String {
         return s.to_string();
     }
     format!("{}…[{} bytes truncated]", &s[..1200], s.len() - 1200)
+}
+
+/// Collapse the bundler's per-run random shadow tempdir out of a bundle body
+/// so a determinism check can compare the *emitted code* rather than the
+/// inherently-random temp dir name.
+///
+/// The bundler materialises its shadow tree in a fresh tempdir named
+/// `zfb-bundler-<rand>` (`tempfile::Builder::prefix("zfb-bundler-")` in
+/// `bundler.rs`). esbuild prints each module's source path as a
+/// module-boundary comment, e.g.
+/// `// ../../../../tmp/<base>/zfb-bundler-<rand>/pages/index.mdx`. Two
+/// independent `bundle()` runs over the same project therefore differ **only**
+/// in that `<rand>` segment — the only divergence observed in #631 (the same
+/// class of environment-sensitive flakiness as #621). Under parallel CPU load
+/// esbuild resolves the comment's relative base up through the full temp path
+/// (including `<rand>`), which broke the byte-equality assert in
+/// `bundler_threads_default_plugins_through_mdx_compile` even though the actual
+/// code is identical.
+///
+/// For every embedded path, this strips the whole prefix up to **and
+/// including** `zfb-bundler-<rand>/`, leaving the stable in-shadow remainder
+/// (`pages/index.mdx`). Collapsing the entire prefix — not just the `<rand>`
+/// token — also folds the short in-shadow form (`// entry.mjs`, which esbuild
+/// emits when the relative base stays inside the shadow) onto the same shape,
+/// so the two runs match regardless of which form esbuild picks under load.
+/// Distinct in-shadow paths (`pages/index` vs `content/posts/intro`) are
+/// preserved, so this cannot mask a genuine emit divergence.
+///
+/// The `MARKER` + alphanumeric-suffix shape is coupled to esbuild's path-comment
+/// format and `tempfile`'s `[A-Za-z0-9]` random suffix. If either changes, this
+/// silently no-ops (no panic, no false green) — the determinism check just
+/// degrades back to the original intermittent flakiness rather than masking a
+/// real regression, which the always-run unit test below cannot catch since it
+/// pins today's format.
+fn normalize_shadow_paths(s: &str) -> String {
+    const MARKER: &str = "zfb-bundler-";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(rel) = rest.find(MARKER) {
+        // Walk left from the marker to the start of the path token esbuild
+        // printed (the run of non-whitespace, non-quote chars), so the comment
+        // lead-in (`// `) and any surrounding syntax are preserved. ASCII
+        // whitespace only: esbuild paths are ASCII, and matching multibyte
+        // whitespace here could split a char boundary (`i + 1`) and panic.
+        let token_start = rest[..rel]
+            .rfind(|c: char| c.is_ascii_whitespace() || c == '"' || c == '\'')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        out.push_str(&rest[..token_start]);
+        // Drop the random suffix after the marker plus one trailing '/', so the
+        // path collapses to its in-shadow remainder.
+        let after_marker = rel + MARKER.len();
+        let rand_len = rest[after_marker..]
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(rest[after_marker..].len());
+        let mut cut = after_marker + rand_len;
+        if rest[cut..].starts_with('/') {
+            cut += 1;
+        }
+        rest = &rest[cut..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Deterministic guard for `normalize_shadow_paths` itself. Unlike the esbuild
+/// determinism test above (which needs the esbuild binary and only diverges
+/// under load), this runs everywhere and pins the exact behaviour the de-flake
+/// relies on: that two bodies differing only in the random shadow segment —
+/// the empirically-confirmed divergence in #631 — normalize to equal, while
+/// genuinely different in-shadow paths stay distinct.
+#[test]
+fn normalize_shadow_paths_collapses_random_tempdir() {
+    // Two runs, same code, different random shadow dir — the real #631 shape.
+    let body_a =
+        "// ../../../../tmp/claude-501/zfb-bundler-otl6Ig/entry.mjs\nexport const x = 1;\n";
+    let body_b =
+        "// ../../../../tmp/claude-501/zfb-bundler-U8zj2y/entry.mjs\nexport const x = 1;\n";
+    assert_eq!(
+        normalize_shadow_paths(body_a),
+        normalize_shadow_paths(body_b),
+        "bodies differing only in the random zfb-bundler-<rand> segment must normalize to equal"
+    );
+
+    // The full-path form and the short in-shadow form must collapse together,
+    // so a load-induced switch between the two forms can't reintroduce flake.
+    let full = "// ../../../../tmp/claude-501/zfb-bundler-otl6Ig/entry.mjs\n";
+    let short = "// entry.mjs\n";
+    assert_eq!(
+        normalize_shadow_paths(full),
+        normalize_shadow_paths(short),
+        "the full embedded path must collapse to the same shape as the short in-shadow path"
+    );
+    assert_eq!(
+        normalize_shadow_paths(short),
+        short,
+        "short form is already in-shadow; left untouched"
+    );
+
+    // Distinct in-shadow paths must remain distinct — the normalizer strips the
+    // random dir, never the meaningful remainder.
+    let pages = "// ../../tmp/zfb-bundler-AAAAAA/pages/index.mdx\n";
+    let content = "// ../../tmp/zfb-bundler-AAAAAA/content/posts/intro.mdx\n";
+    assert_ne!(
+        normalize_shadow_paths(pages),
+        normalize_shadow_paths(content),
+        "different in-shadow source paths must not be collapsed into each other"
+    );
+    assert_eq!(normalize_shadow_paths(pages), "// pages/index.mdx\n");
+
+    // Multiple occurrences on different lines are all rewritten; non-path text
+    // is preserved verbatim.
+    let multi =
+        "// ../x/zfb-bundler-AAAAAA/entry.mjs\nkeep me\n// ../x/zfb-bundler-AAAAAA/pages/a.mdx\n";
+    assert_eq!(
+        normalize_shadow_paths(multi),
+        "// entry.mjs\nkeep me\n// pages/a.mdx\n"
+    );
+
+    // A body with no shadow marker is returned unchanged.
+    let plain = "export const y = 2;\n// a normal comment\n";
+    assert_eq!(normalize_shadow_paths(plain), plain);
+
+    // Multibyte content (incl. ideographic space U+3000) before the marker must
+    // not panic: the left-walk matches ASCII whitespace only, so it lands on the
+    // `// ` space — a valid char boundary — instead of splitting a UTF-8 char.
+    let multibyte = "// 日本語\u{3000}../x/zfb-bundler-AAAAAA/entry.mjs\n";
+    assert_eq!(normalize_shadow_paths(multibyte), "// entry.mjs\n");
 }
