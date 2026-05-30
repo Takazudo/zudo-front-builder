@@ -452,6 +452,20 @@ pub struct Config {
     /// the JSON / TS form `output` 1:1.
     #[serde(default)]
     pub output: OutputMode,
+
+    /// Maximum seconds a single plugin lifecycle hook (preBuild,
+    /// postBuild, setup, etc.) may run before the build fails with a
+    /// diagnostic error and the plugin host is force-killed.
+    ///
+    /// Absent / `None` falls through to the `ZFB_PLUGIN_HOOK_TIMEOUT`
+    /// env var, then the 120s built-in default. Set this when your
+    /// plugins do long but bounded work (e.g. large sitemap generation)
+    /// and you want a tighter or more explicit budget. Seconds.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `pluginHookTimeoutSecs` 1:1.
+    #[serde(default)]
+    pub plugin_hook_timeout_secs: Option<u64>,
 }
 
 impl Default for Config {
@@ -477,6 +491,7 @@ impl Default for Config {
             emit_routes_manifest: None,
             extra_watch_paths: Vec::new(),
             output: OutputMode::default(),
+            plugin_hook_timeout_secs: None,
         }
     }
 }

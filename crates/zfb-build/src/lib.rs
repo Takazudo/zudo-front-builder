@@ -80,9 +80,9 @@ pub use plugin_registries::{
     SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,
 };
 pub use plugin_runner::{
-    annotate_with_plugin_error, extract_plugin_error, BuildHookContext, DevRegisterContext,
-    DevRegistration, DevRequest, DevResponse, PluginError, PluginHost, PluginSpec,
-    PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
+    annotate_with_plugin_error, extract_plugin_error, resolve_hook_timeout, BuildHookContext,
+    DevRegisterContext, DevRegistration, DevRequest, DevResponse, PluginError, PluginHost,
+    PluginSpec, PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest, SetupHookContext,
 };
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
