@@ -5541,6 +5541,7 @@ dependencies = [
  "hex",
  "include_dir",
  "indicatif",
+ "libc",
  "local-ip-address",
  "owo-colors",
  "oxc_resolver",

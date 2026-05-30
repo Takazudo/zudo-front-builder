@@ -124,3 +124,9 @@ tar = "0.4"
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 zfb-test-utils = { path = "../zfb-test-utils" }
+# Process-group kill for build_terminates e2e (#654).
+# libc is already a transitive dep (via wait-timeout); adding it here
+# avoids the `setsid` wrapper binary and keeps the test self-contained.
+# Unix-only; the test is #[cfg(unix)]-gated.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
