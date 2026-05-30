@@ -12,6 +12,12 @@ No Node.js required. zfb ships as a self-contained binary — esbuild and Tailwi
 curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
 ```
 
+> **Pre-1.0 note:** there are no stable releases yet — only prereleases (`v0.1.0-next.N`). Until `v0.1.0` ships, the default curl command above will fail to resolve a release; install a prerelease explicitly:
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
+> ```
+
 Installs `zfb` to `$HOME/.local/bin/zfb`. Set `ZFB_INSTALL=/your/path` to change the prefix. Set `ZFB_VERSION=v0.X.Y` to pin a specific release.
 
 **macOS (Homebrew):**
