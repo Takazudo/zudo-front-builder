@@ -117,6 +117,8 @@ use zfb_content::plugins::util::source_map::{
 };
 use zfb_render::adapters::{make_adapter, Framework};
 
+use crate::adapter::run_capturing;
+
 /// `import.meta.env.{PROD,DEV}` substitution mode.
 ///
 /// `Production` substitutes `PROD=true`, `DEV=false`. `Development` is
@@ -3259,8 +3261,7 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     cmd.arg(OsString::from(entry));
 
-    let output = cmd
-        .output()
+    let output = run_capturing(&mut cmd)
         .with_context(|| format!("failed to spawn {}", bin.display()))?;
     // Drop `resolver_inputs` now — the subprocess has finished and
     // esbuild no longer needs the virtual-module `.mjs` temp files.

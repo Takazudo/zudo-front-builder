@@ -30,11 +30,14 @@
 //! for that route. We surface this as an immediate error rather than
 //! silently dropping the SSR routes — see [`ensure_no_ssr_without_adapter`].
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use wait_timeout::ChildExt;
 
 /// Adapter selection from `zfb.config.json`.
 ///
@@ -248,7 +251,7 @@ impl AdapterRunner for DefaultAdapterRunner {
         cmd.arg("--outdir");
         cmd.arg(&input.outdir);
 
-        let output = cmd.output().with_context(|| {
+        let output = run_capturing(&mut cmd).with_context(|| {
             format!(
                 "spawning `pnpm exec {bin_name} bundle ...` for adapter {package}"
             )
@@ -269,6 +272,75 @@ impl AdapterRunner for DefaultAdapterRunner {
 
         Ok(AdapterBundleOutput { stdout, stderr })
     }
+}
+
+/// Run `cmd`, capturing stdout and stderr without reading inherited-pipe
+/// write-ends to EOF.
+///
+/// `Command::output()` blocks until every write-end of the child's
+/// stdout/stderr pipes is closed — meaning any grandchild that inherits
+/// those fds (e.g. a detached node process spawned by pnpm) holds the
+/// build forever at low CPU. This helper avoids the problem by routing
+/// stdout/stderr through temp files and using `child.wait()` (reaps the
+/// direct child the instant it exits) rather than reading pipes to EOF.
+///
+/// A generous timeout guards against the direct child wedging entirely.
+/// On overrun the child is killed and an error is returned.
+pub(crate) fn run_capturing(cmd: &mut Command) -> Result<Output> {
+    // 5-minute deadline — generous backstop for slow pnpm/esbuild runs;
+    // this is a wedge guard, not a performance bound.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    let mut stdout_file = tempfile::tempfile().context("creating stdout temp file")?;
+    let mut stderr_file = tempfile::tempfile().context("creating stderr temp file")?;
+
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::from(
+        stdout_file.try_clone().context("cloning stdout temp file")?,
+    ));
+    cmd.stderr(Stdio::from(
+        stderr_file.try_clone().context("cloning stderr temp file")?,
+    ));
+
+    let mut child = cmd.spawn().context("spawning subprocess")?;
+
+    let status = match child
+        .wait_timeout(TIMEOUT)
+        .context("waiting for subprocess")?
+    {
+        Some(s) => s,
+        None => {
+            // Direct child did not exit within the deadline. Kill it and
+            // surface a clear diagnostic rather than hanging indefinitely.
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "subprocess did not exit within {}s — killed",
+                TIMEOUT.as_secs()
+            );
+        }
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    stdout_file
+        .seek(SeekFrom::Start(0))
+        .context("seeking stdout temp file")?;
+    stdout_file
+        .read_to_end(&mut stdout)
+        .context("reading stdout temp file")?;
+    stderr_file
+        .seek(SeekFrom::Start(0))
+        .context("seeking stderr temp file")?;
+    stderr_file
+        .read_to_end(&mut stderr)
+        .context("reading stderr temp file")?;
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Drive the dispatch through a custom [`AdapterRunner`]. Production
@@ -606,5 +678,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("does not exist"));
+    }
+
+    /// Verify that run_capturing returns promptly even when the direct
+    /// child has exited but a backgrounded grandchild still holds the
+    /// inherited pipe write-end open.
+    ///
+    /// The grandchild (`sleep 30 &`) inherits the write-end of the stdout
+    /// temp file's clone passed to the child shell. With the old
+    /// `cmd.output()` approach this would block for 30 s; with
+    /// run_capturing it must return the moment `sh` exits (0 s + noise).
+    ///
+    /// The test wraps the call in its own 5-second watchdog so a
+    /// regression produces a RED test rather than a hung CI job.
+    #[cfg(unix)]
+    #[test]
+    fn run_capturing_returns_promptly_when_grandchild_holds_pipe_open() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let (tx, rx) = mpsc::channel::<Result<std::process::Output>>();
+
+        thread::spawn(move || {
+            // `sleep 30 &` backgrounds a grandchild that keeps the inherited
+            // file descriptor open after sh exits. run_capturing must NOT
+            // wait for the grandchild — it waits only on the direct child.
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("sleep 30 & exit 0");
+            let _ = tx.send(run_capturing(&mut cmd));
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run_capturing did not return within 5 s — pipe-EOF hang regression");
+
+        let output = result.expect("run_capturing returned an error");
+        assert!(output.status.success(), "sh exited non-zero: {}", output.status);
     }
 }
