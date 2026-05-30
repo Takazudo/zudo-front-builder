@@ -70,8 +70,10 @@ jobs:
       # `return` (recorded by cargo as a PASS) when no esbuild binary is found, so
       # a green `cargo test` alone cannot prove they actually executed. Fail loudly
       # here if build.rs did not stage the binary, making "green but silently
-      # skipped" impossible. `--version` confirms it is the pinned 0.25.12 rather
-      # than some transitive esbuild that happens to be on PATH.
+      # skipped" impossible. (The binary's version + SHA-256 are already verified
+      # upstream by crates/zfb/build.rs before staging; the `--version` run here is
+      # just a smoke test that the staged binary actually executes on this runner's
+      # architecture — a corrupt or wrong-arch binary fails the step.)
       - name: Assert esbuild was provisioned for the test suite
         run: |
           SLOT="crates/zfb/binaries/esbuild/esbuild"
