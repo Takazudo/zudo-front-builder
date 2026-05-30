@@ -401,7 +401,7 @@ fn snippet(s: &str) -> String {
 /// module-boundary comment, e.g.
 /// `// ../../../../tmp/<base>/zfb-bundler-<rand>/pages/index.mdx`. Two
 /// independent `bundle()` runs over the same project therefore differ **only**
-/// in that `<rand>` segment — empirically the *only* divergence (#631, the same
+/// in that `<rand>` segment — the only divergence observed in #631 (the same
 /// class of environment-sensitive flakiness as #621). Under parallel CPU load
 /// esbuild resolves the comment's relative base up through the full temp path
 /// (including `<rand>`), which broke the byte-equality assert in
@@ -416,6 +416,13 @@ fn snippet(s: &str) -> String {
 /// so the two runs match regardless of which form esbuild picks under load.
 /// Distinct in-shadow paths (`pages/index` vs `content/posts/intro`) are
 /// preserved, so this cannot mask a genuine emit divergence.
+///
+/// The `MARKER` + alphanumeric-suffix shape is coupled to esbuild's path-comment
+/// format and `tempfile`'s `[A-Za-z0-9]` random suffix. If either changes, this
+/// silently no-ops (no panic, no false green) — the determinism check just
+/// degrades back to the original intermittent flakiness rather than masking a
+/// real regression, which the always-run unit test below cannot catch since it
+/// pins today's format.
 fn normalize_shadow_paths(s: &str) -> String {
     const MARKER: &str = "zfb-bundler-";
     let mut out = String::with_capacity(s.len());
@@ -423,9 +430,11 @@ fn normalize_shadow_paths(s: &str) -> String {
     while let Some(rel) = rest.find(MARKER) {
         // Walk left from the marker to the start of the path token esbuild
         // printed (the run of non-whitespace, non-quote chars), so the comment
-        // lead-in (`// `) and any surrounding syntax are preserved.
+        // lead-in (`// `) and any surrounding syntax are preserved. ASCII
+        // whitespace only: esbuild paths are ASCII, and matching multibyte
+        // whitespace here could split a char boundary (`i + 1`) and panic.
         let token_start = rest[..rel]
-            .rfind(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .rfind(|c: char| c.is_ascii_whitespace() || c == '"' || c == '\'')
             .map(|i| i + 1)
             .unwrap_or(0);
         out.push_str(&rest[..token_start]);
@@ -434,7 +443,7 @@ fn normalize_shadow_paths(s: &str) -> String {
         let after_marker = rel + MARKER.len();
         let rand_len = rest[after_marker..]
             .find(|c: char| !c.is_ascii_alphanumeric())
-            .unwrap_or(rest.len() - after_marker);
+            .unwrap_or(rest[after_marker..].len());
         let mut cut = after_marker + rand_len;
         if rest[cut..].starts_with('/') {
             cut += 1;
@@ -502,4 +511,10 @@ fn normalize_shadow_paths_collapses_random_tempdir() {
     // A body with no shadow marker is returned unchanged.
     let plain = "export const y = 2;\n// a normal comment\n";
     assert_eq!(normalize_shadow_paths(plain), plain);
+
+    // Multibyte content (incl. ideographic space U+3000) before the marker must
+    // not panic: the left-walk matches ASCII whitespace only, so it lands on the
+    // `// ` space — a valid char boundary — instead of splitting a UTF-8 char.
+    let multibyte = "// 日本語\u{3000}../x/zfb-bundler-AAAAAA/entry.mjs\n";
+    assert_eq!(normalize_shadow_paths(multibyte), "// entry.mjs\n");
 }
