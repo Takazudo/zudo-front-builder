@@ -26,6 +26,11 @@ FROM debian:bookworm-slim
 
 ARG ZFB_SMOKE_MODE=local
 
+# Kept in sync with ../node-free/Dockerfile. See there for the full rationale:
+# ZFB_VERSION pins the release tag install.sh resolves in released mode (default
+# GET /releases/latest 404s while only pre-releases exist). Empty in local mode.
+ARG ZFB_VERSION=
+
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -43,8 +48,9 @@ COPY zfb-bin /root/.local/bin/zfb
 
 RUN if [ "$ZFB_SMOKE_MODE" = "released" ]; then \
         # released mode: fetch and install from the public GitHub Releases URL.
-        # This validates the exact curl-pipe path that end users run.
-        curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh; \
+        # This validates the exact curl-pipe path that end users run. ZFB_VERSION
+        # pins the tag so install.sh downloads that exact release's assets.
+        curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION="$ZFB_VERSION" sh; \
     fi
 
 RUN chmod +x /root/.local/bin/zfb

@@ -283,9 +283,17 @@ jobs:
             > tests/smoke/node-free/zfb-bin
 
       - name: Build smoke image (released mode)
+        # head_branch is the tag that triggered the release (e.g. v0.1.0-next.18).
+        # Passed via env (not inline ${{ }}) to avoid shell injection, matching the
+        # repo's security posture. install.sh pins to this tag so the smoke installs
+        # the exact just-released assets — the default /releases/latest path 404s
+        # while the project ships only pre-releases.
+        env:
+          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           docker build \
             --build-arg ZFB_SMOKE_MODE=released \
+            --build-arg "ZFB_VERSION=${RELEASE_TAG}" \
             -t zfb-smoke:released \
             tests/smoke/node-free/
 

@@ -27,6 +27,13 @@ FROM debian:bookworm-slim
 
 ARG ZFB_SMOKE_MODE=local
 
+# ZFB_VERSION pins the release tag install.sh resolves in released mode. CI passes
+# the just-released tag (workflow_run.head_branch) so the smoke installs that exact
+# release's assets. Required because every release so far is a pre-release, and
+# install.sh's default path (GET /releases/latest) excludes pre-releases → 404.
+# Empty in local mode, where the released branch below is skipped.
+ARG ZFB_VERSION=
+
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -44,8 +51,9 @@ COPY zfb-bin /root/.local/bin/zfb
 
 RUN if [ "$ZFB_SMOKE_MODE" = "released" ]; then \
         # released mode: fetch and install from the public GitHub Releases URL.
-        # This validates the exact curl-pipe path that end users run.
-        curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh; \
+        # This validates the exact curl-pipe path that end users run. ZFB_VERSION
+        # pins the tag so install.sh downloads that exact release's assets.
+        curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION="$ZFB_VERSION" sh; \
     fi
 
 RUN chmod +x /root/.local/bin/zfb
