@@ -1311,6 +1311,38 @@ async fn load_from_ts_file(
     parse_loader_envelope(&json, ts_path)
 }
 
+/// Spawn `cmd` and wait for output, bounded by `timeout`.
+///
+/// `Command::output()` reads stdout/stderr pipes to EOF, so any grandchild
+/// that inherits the pipe write-end (e.g. a detached node process) holds the
+/// call forever at low CPU — the same unbounded-output() hang class fixed for
+/// the post-dist vectors in #648 / #651. This helper bounds the wait and kills
+/// the child (via `.kill_on_drop(true)`) when the deadline is exceeded.
+///
+/// The inner `io::Result<Output>` is returned unwrapped so callers can
+/// inspect `io::ErrorKind` (e.g. `NotFound`) on their own code-path; only the
+/// timeout itself becomes the outer `Err`.
+async fn output_bounded(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+    name: &str,
+) -> Result<std::io::Result<std::process::Output>> {
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(res) => Ok(res),
+        Err(_) => bail!(
+            "config loader: {} did not exit within {}s — killed",
+            name,
+            timeout.as_secs()
+        ),
+    }
+}
+
+/// Generous backstop timeout for config-loader subprocesses. Mirrors the 300 s
+/// used by `run_capturing` in `zfb-build` (see #648/#651) — a wedge guard, not
+/// a performance bound.
+const CONFIG_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Bundle `ts_path` with esbuild (`--platform=neutral`) and evaluate it
 /// in-process using the embedded V8 isolate. Returns the same
 /// `{ config, plugins: [...resolved-specifiers...] }` envelope JSON that
@@ -1360,12 +1392,15 @@ async fn load_ts_via_inprocess_v8(
     cmd.arg(&outfile_arg);
     cmd.arg(ts_path);
 
-    let esbuild_out = cmd.output().await.with_context(|| {
-        format!(
-            "config loader: failed to spawn esbuild at {}",
-            esbuild.display()
-        )
-    })?;
+    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
+    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (neutral)")
+        .await?
+        .with_context(|| {
+            format!(
+                "config loader: failed to spawn esbuild at {}",
+                esbuild.display()
+            )
+        })?;
     if !esbuild_out.status.success() {
         let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
         bail!(
@@ -1621,12 +1656,15 @@ async fn load_ts_via_subprocess(
     cmd.arg(&outfile_arg);
     cmd.arg(ts_path);
 
-    let esbuild_out = cmd.output().await.with_context(|| {
-        format!(
-            "config loader: failed to spawn esbuild at {}",
-            esbuild.display()
-        )
-    })?;
+    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
+    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (node)")
+        .await?
+        .with_context(|| {
+            format!(
+                "config loader: failed to spawn esbuild at {}",
+                esbuild.display()
+            )
+        })?;
     if !esbuild_out.status.success() {
         let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
         bail!(
@@ -1652,7 +1690,8 @@ async fn load_ts_via_subprocess(
     // resolution and for bare-specifier `node_modules` lookup.
     node_cmd.arg(dir);
 
-    let node_out = match node_cmd.output().await {
+    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
+    let node_out = match output_bounded(&mut node_cmd, CONFIG_SUBPROCESS_TIMEOUT, "node").await? {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
@@ -3830,6 +3869,46 @@ mod tests {
         assert!(
             msg.contains("bogus") || msg.contains("unknown field"),
             "error must name the unknown field; got: {msg}"
+        );
+    }
+
+    // --- output_bounded tests ---------------------------------------------------
+
+    /// Verify that `output_bounded` returns a named timeout error promptly when
+    /// the spawned child keeps stdout open (via a backgrounded grandchild), which
+    /// would hang `Command::output()` indefinitely.
+    ///
+    /// Mirrors the intent of `run_capturing_returns_promptly_when_grandchild_holds_pipe_open`
+    /// in `crates/zfb-build/src/adapter.rs` (#648 / #651), adapted to the async path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_bounded_returns_timeout_error_when_grandchild_holds_pipe_open() {
+        let mut cmd = tokio::process::Command::new("sh");
+        // `sleep 30 &` backgrounds a grandchild that inherits the pipe
+        // write-end; without the timeout this would block for 30 s.
+        cmd.arg("-c").arg("sleep 30 & exit 0");
+
+        // Short timeout so the test itself is fast.
+        let timeout = std::time::Duration::from_secs(2);
+
+        // Outer watchdog: if output_bounded itself hangs (regression), the
+        // test times out in 10 s and fails RED rather than hanging CI.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            output_bounded(&mut cmd, timeout, "test-stub"),
+        )
+        .await
+        .expect("output_bounded did not return within 10 s — pipe-EOF hang regression");
+
+        let err = result.expect_err("output_bounded should have returned a timeout error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("did not exit within"),
+            "error must name the timeout; got: {msg}"
+        );
+        assert!(
+            msg.contains("test-stub"),
+            "error must name the subprocess; got: {msg}"
         );
     }
 }
