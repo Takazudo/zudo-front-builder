@@ -831,6 +831,26 @@ pub(crate) fn build_esbuild_args(
         "--jsx-import-source={}",
         config.jsx_import_source
     )));
+    // Mirror the main SSR bundler (crates/zfb-build/src/bundler.rs:3024-3026).
+    // next.18 dist modules carry an explicit, framework-neutral
+    // `import { jsx } from "react/jsx-runtime"` (e.g.
+    // `@takazudo/zfb-runtime/client-router`, which the shared islands bundle
+    // side-effect-imports when `client_router` is set — see
+    // `render_shared_bundle_entry_source`). In a Preact project `react` is not
+    // installed, so esbuild cannot resolve `react/jsx-runtime` and the islands
+    // build aborts (issue #633). Rewrite it (and the dev-runtime sibling) to the
+    // Preact runtime — the same trick the SSR bundler and the wider Preact
+    // ecosystem use. React projects resolve `react/jsx-runtime` natively, so the
+    // alias is Preact-only (same gating as bundler.rs:3025), leaving the React
+    // argv byte-identical. `--alias`'s prefix-with-slash semantics are safe here
+    // because `react/jsx-runtime` has no deeper subpath to corrupt.
+    if matches!(
+        FrameworkKind::from_jsx_import_source(&config.jsx_import_source),
+        FrameworkKind::Preact
+    ) {
+        args.push(OsString::from("--alias:react/jsx-runtime=preact/jsx-runtime"));
+        args.push(OsString::from("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"));
+    }
     if config.minify {
         args.push(OsString::from("--minify"));
     }
@@ -2105,6 +2125,49 @@ mod tests {
         assert!(
             !args.iter().any(|a| a == "--jsx-import-source=preact"),
             "stale --jsx-import-source=preact present: {args:?}"
+        );
+    }
+
+    /// Regression for issue #633.
+    ///
+    /// next.18 dist modules carry an explicit framework-neutral
+    /// `import { jsx } from "react/jsx-runtime"` (e.g.
+    /// `@takazudo/zfb-runtime/client-router`, pulled into the islands shared
+    /// bundle when `clientRouter: true`). In a Preact project `react` is not
+    /// installed, so the islands esbuild must rewrite `react/jsx-runtime` (and
+    /// the dev-runtime sibling) to the Preact runtime — mirroring the main SSR
+    /// bundler (`crates/zfb-build/src/bundler.rs:3024-3026`). For the Preact
+    /// default both aliases MUST be present.
+    #[test]
+    fn build_esbuild_args_aliases_react_jsx_runtime_for_preact() {
+        let cfg = BundleConfig::default();
+        assert_eq!(cfg.jsx_import_source, "preact", "default must be Preact");
+        let args = args_as_strings(&cfg);
+        assert!(
+            args.iter().any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
+            "missing --alias:react/jsx-runtime=preact/jsx-runtime in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
+            "missing --alias:react/jsx-dev-runtime=preact/jsx-dev-runtime in args: {args:?}"
+        );
+    }
+
+    /// Companion to the #633 regression: React projects resolve
+    /// `react/jsx-runtime` natively, so the alias is Preact-only and the React
+    /// argv MUST NOT carry either `react/jsx-runtime` alias (same gating as
+    /// `bundler.rs:3025` — keeps the React bundle byte-stable).
+    #[test]
+    fn build_esbuild_args_omits_react_jsx_runtime_alias_for_react() {
+        let cfg = BundleConfig::default().with_jsx_import_source("react");
+        let args = args_as_strings(&cfg);
+        assert!(
+            !args.iter().any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
+            "react path must not alias react/jsx-runtime: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
+            "react path must not alias react/jsx-dev-runtime: {args:?}"
         );
     }
 
