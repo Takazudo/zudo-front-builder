@@ -45,12 +45,39 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tracing::{debug, info, warn};
-use zfb_graph::DependencyGraph;
-use zfb_watcher::{Change, Watcher};
+use zfb_graph::{DependencyGraph, PageId};
+use zfb_watcher::{Change, ChangeKind, Watcher};
 
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{classify_change, GranularityPolicy, PathClass};
+
+/// Live watch-ADD discovery hook (issue #659).
+///
+/// Invoked from [`BuildOrchestrator::tick_with_kinds`] /
+/// [`BuildOrchestrator::run`] with the subset of a tick's changed paths
+/// whose [`ChangeKind`] is [`ChangeKind::Created`]. The implementation
+/// (in the `zfb dev` command layer) is responsible for the side-effecting
+/// "the running renderer cannot see a file created after boot" fix:
+/// recompute the content snapshot, re-bundle the SSR worker, reload the
+/// embedded V8 host **in place**, re-enumerate `paths()`, and rebuild the
+/// dev session's source→route table. It returns the source [`PageId`]s
+/// that newly became renderable so the orchestrator can fold them into
+/// the tick's [`RebuildPlan`] and render them through the same
+/// page-render path an edit tick uses.
+///
+/// Why a separate hook rather than [`BuildContext::reload_renderer`]:
+/// `reload_renderer` fires on **every** page tick (including edits) and
+/// only reloads the host — it neither rebundles a new content snapshot
+/// nor rediscovers routes, so it cannot make a brand-new file appear.
+/// The Created path is distinct and additive: it leaves the edit path
+/// (which never calls this hook) behaviourally identical.
+///
+/// Returning an empty `Vec` (no created path mapped to a discoverable
+/// page) folds into the tick as a no-op for discovery — the rest of the
+/// tick's changes are still planned normally.
+pub type DiscoveryHook =
+    std::sync::Arc<dyn Fn(&[PathBuf]) -> Result<Vec<PageId>> + Send + Sync + 'static>;
 
 /// Construction-time configuration for [`BuildOrchestrator`].
 #[derive(Debug, Clone)]
@@ -309,6 +336,72 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         Ok(Some(outcome))
     }
 
+    /// Kind-aware tick (issue #659 — live watch-ADD discovery).
+    ///
+    /// Additive sibling of [`tick`]: same plan-fold + resolve + apply
+    /// pipeline, but it also threads the per-change [`ChangeKind`] so a
+    /// file **created** after dev-server boot can be discovered and
+    /// rendered without a restart. The path classification / dirty-page
+    /// fold is unchanged — it reuses [`plan_for_changes`] verbatim, so
+    /// the EDIT path ([`ChangeKind::Modified`]) behaves exactly as
+    /// [`tick`] does (the discovery hook is never consulted for it).
+    ///
+    /// When `discover` is `Some`, the [`ChangeKind::Created`] subset of
+    /// `changes` is handed to the hook; any source [`PageId`]s it returns
+    /// are merged into the plan's page set so the new page renders through
+    /// the same render→write boundary an edit traverses. The hook is
+    /// responsible for the side effects (rebundle / reload-in-place /
+    /// graph upsert / route-table rebuild) — see [`DiscoveryHook`].
+    ///
+    /// `tick`'s public signature is intentionally left untouched (it has
+    /// many existing call sites); this is the new, explicit entry point
+    /// the dev `run` loop uses.
+    pub fn tick_with_kinds(
+        &self,
+        changes: Vec<(PathBuf, ChangeKind)>,
+        ctx: &BuildContext,
+        discover: Option<&DiscoveryHook>,
+    ) -> Result<Option<BuildOutcome>> {
+        // Discovery runs first so a newly-created page is upserted into
+        // the graph (by the hook) before `plan_for_changes` folds the
+        // change set — and so the discovered page ids survive even when
+        // the path-only fold would have produced an empty/no-op plan
+        // (a brand-new content file has no reverse edge yet, exactly the
+        // #659 symptom).
+        let discovered: Vec<PageId> = match discover {
+            Some(hook) => {
+                let created: Vec<PathBuf> = changes
+                    .iter()
+                    .filter(|(_, kind)| *kind == ChangeKind::Created)
+                    .map(|(p, _)| p.clone())
+                    .collect();
+                if created.is_empty() {
+                    Vec::new()
+                } else {
+                    hook(&created)?
+                }
+            }
+            None => Vec::new(),
+        };
+
+        let mut plan = self.plan_for_changes(changes.into_iter().map(|(p, _)| p));
+
+        if !discovered.is_empty() {
+            let set: std::collections::BTreeSet<PageId> = discovered.into_iter().collect();
+            plan.mark_pages(PageSelection::Specific(set));
+        }
+
+        if plan.is_noop() {
+            return Ok(None);
+        }
+        self.resolve_all(&mut plan);
+        if plan.pages.is_empty() && !plan.rerun_css && !plan.rerun_islands {
+            return Ok(None);
+        }
+        let outcome = self.pipeline.apply(&plan, ctx)?;
+        Ok(Some(outcome))
+    }
+
     /// Eager initial render of **every** page in the graph, run once at
     /// dev-server boot before the watcher loop and before the server
     /// starts accepting requests.
@@ -346,7 +439,19 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     ///
     /// `on_outcome` is called after every non-noop tick — typically the
     /// dev preview server uses this to push a websocket reload signal.
-    pub async fn run<F>(self, ctx: BuildContext, mut on_outcome: F) -> Result<()>
+    ///
+    /// `discover` is the live watch-ADD discovery hook (issue #659).
+    /// `None` keeps the legacy behaviour (a file created after boot 404s
+    /// until restart); the `zfb dev` command passes `Some(..)` so a
+    /// brand-new content file is rebundled + rediscovered in place. The
+    /// hook only ever sees [`ChangeKind::Created`] paths, so the edit
+    /// path is unaffected.
+    pub async fn run<F>(
+        self,
+        ctx: BuildContext,
+        discover: Option<DiscoveryHook>,
+        mut on_outcome: F,
+    ) -> Result<()>
     where
         F: FnMut(&BuildOutcome) + Send + 'static,
     {
@@ -375,8 +480,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 batch.push(c);
             }
 
-            let paths: Vec<PathBuf> = batch.iter().map(|c| c.path.clone()).collect();
-            match self.tick(paths, &ctx) {
+            let changes: Vec<(PathBuf, ChangeKind)> =
+                batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
+            match self.tick_with_kinds(changes, &ctx, discover.as_ref()) {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
                     debug!("rebuild tick was a no-op");

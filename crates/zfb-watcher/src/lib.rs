@@ -343,12 +343,42 @@ async fn debouncer_task(
                         let kind = classify(&evt.kind);
                         let now = Instant::now();
                         for path in evt.paths {
-                            // For a given burst we keep the *latest* kind.
-                            // A Created followed by Modified collapses to
-                            // Modified, which is fine: the consumer will
-                            // re-read the file either way. A trailing
-                            // Removed wins, which is correct (file is gone).
-                            pending.insert(path, Pending { kind, last_seen: now });
+                            // Merge the incoming kind with any already-pending
+                            // kind for this path, preserving the highest-priority
+                            // kind across the burst window.
+                            //
+                            // Priority (highest → lowest): Removed > Created > Modified.
+                            //
+                            // Rationale:
+                            //   - `Removed` always wins: the file is gone — any
+                            //     preceding Create/Modify is moot.
+                            //   - `Created` wins over `Modified`: on macOS FSEvents
+                            //     (and some Linux inotify setups), `fs::write` to a
+                            //     brand-new path fires both a Create event and then
+                            //     one or more Modify events within the debounce
+                            //     window. The old "keep latest" rule collapsed the
+                            //     burst to `Modified`, silently dropping the `Created`
+                            //     signal that the watch-ADD discovery hook relies on
+                            //     (`tick_with_kinds` only calls the hook for
+                            //     `ChangeKind::Created`). Preserving `Created` when
+                            //     it was ever seen during the burst closes that hole.
+                            //   - `Modified` is a no-op upgrade when `Created` is
+                            //     already pending: the consumer re-reads the file
+                            //     either way, so demoting `Created` to `Modified`
+                            //     would only hurt (breaks discovery), never help.
+                            let merged_kind = match pending.get(&path).map(|p| p.kind) {
+                                Some(ChangeKind::Removed) => ChangeKind::Removed, // Removed is sticky
+                                Some(ChangeKind::Created) => {
+                                    // Created already seen; only Removed can upgrade it.
+                                    if kind == ChangeKind::Removed {
+                                        ChangeKind::Removed
+                                    } else {
+                                        ChangeKind::Created
+                                    }
+                                }
+                                _ => kind, // Modified or nothing: take the incoming kind
+                            };
+                            pending.insert(path, Pending { kind: merged_kind, last_seen: now });
                         }
                     }
                     Err(e) => {
@@ -412,5 +442,86 @@ mod tests {
         use notify::event::EventKind;
         assert_eq!(classify(&EventKind::Any), ChangeKind::Modified);
         assert_eq!(classify(&EventKind::Other), ChangeKind::Modified);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Burst-coalescing merge tests (the "sticky Created" fix — issue #660).
+    //
+    // On macOS FSEvents (and some Linux inotify setups), `fs::write` to a
+    // brand-new path fires both a `Create` event and then one or more
+    // `Modify` events within the debounce window. The "keep latest kind" rule
+    // that existed before this fix collapsed such a burst to `Modified`,
+    // silently dropping the `Created` signal that the watch-ADD discovery hook
+    // relies on. The merged-kind logic below guarantees `Created` is preserved
+    // when it was ever seen for a path during the burst window.
+    // ---------------------------------------------------------------------------
+
+    /// Simulate the merge logic inline so we can property-test it without
+    /// reaching into the private debouncer internals.
+    fn merge(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind {
+        match existing {
+            Some(ChangeKind::Removed) => ChangeKind::Removed,
+            Some(ChangeKind::Created) => {
+                if incoming == ChangeKind::Removed {
+                    ChangeKind::Removed
+                } else {
+                    ChangeKind::Created
+                }
+            }
+            _ => incoming,
+        }
+    }
+
+    #[test]
+    fn created_then_modified_stays_created() {
+        // The primary fix: a new file write on macOS fires Create→Modify.
+        // Downstream discovery hook requires Created.
+        assert_eq!(
+            merge(Some(ChangeKind::Created), ChangeKind::Modified),
+            ChangeKind::Created,
+            "Created must survive a subsequent Modified in the same burst",
+        );
+    }
+
+    #[test]
+    fn created_then_removed_becomes_removed() {
+        // Created then immediately Removed: file is gone; Removed wins.
+        assert_eq!(
+            merge(Some(ChangeKind::Created), ChangeKind::Removed),
+            ChangeKind::Removed,
+        );
+    }
+
+    #[test]
+    fn modified_then_removed_becomes_removed() {
+        assert_eq!(
+            merge(Some(ChangeKind::Modified), ChangeKind::Removed),
+            ChangeKind::Removed,
+        );
+    }
+
+    #[test]
+    fn removed_is_sticky_against_anything() {
+        // Once Removed is the pending kind, nothing demotes it.
+        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Created), ChangeKind::Removed);
+        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Modified), ChangeKind::Removed);
+        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Removed), ChangeKind::Removed);
+    }
+
+    #[test]
+    fn no_prior_takes_incoming_kind() {
+        assert_eq!(merge(None, ChangeKind::Created), ChangeKind::Created);
+        assert_eq!(merge(None, ChangeKind::Modified), ChangeKind::Modified);
+        assert_eq!(merge(None, ChangeKind::Removed), ChangeKind::Removed);
+    }
+
+    #[test]
+    fn modified_then_created_upgrades_to_created() {
+        // Unusual but possible: Modify event arrives before Create (OS ordering).
+        // The incoming Created must win over the prior Modified.
+        assert_eq!(
+            merge(Some(ChangeKind::Modified), ChangeKind::Created),
+            ChangeKind::Created,
+        );
     }
 }

@@ -74,7 +74,8 @@ use anyhow::{Context, Result};
 use tokio::sync::broadcast;
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::renderer::{
-    render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
+    reload, render_one, shutdown, start, Backend, RendererStartInput, RendererState,
+    RouteUniverseEntry,
 };
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, IslandsBundleInfo,
@@ -721,8 +722,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     };
 
     // 5. Spawn the orchestrator's watcher loop.
+    //
+    // Issue #659 — `discover_hook` makes a content file CREATED after
+    // boot discoverable without a `zfb dev` restart: it rebundles the
+    // content snapshot, reloads the embedded V8 host in place, re-expands
+    // `paths()`, and rebuilds the dev session's source→route table. Built
+    // from `dev_session` (the V8-backed renderer); `None` when the
+    // renderer is disabled, which keeps the legacy add-needs-restart
+    // behaviour.
+    let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
+        .as_ref()
+        .map(|session| make_discovery_hook(session.clone(), Arc::clone(&graph_for_save)));
     let orch_handle = tokio::spawn(async move {
-        if let Err(err) = orchestrator.run(ctx, on_outcome).await {
+        if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
             output::error(format!("build orchestrator stopped: {err:#}"));
         }
     });
@@ -931,13 +943,21 @@ struct DevRenderSession {
     inner: Arc<DevRenderInner>,
 }
 
-struct DevRenderInner {
+/// The dev session's source→route + SSR route tables.
+///
+/// Issue #659 — wrapped in a single [`RwLock`] inside [`DevRenderInner`]
+/// so a content file CREATED after boot can rebuild them in place (the
+/// running render callback / SSR adapter read the SAME tables via the
+/// shared `Arc<DevRenderInner>`). The EDIT path never mutates these — it
+/// re-renders against the frozen boot tables exactly as before.
+struct DevRouteTables {
     /// Mapped from the page module's project-relative source path
     /// (which is what the dependency graph keys on) to the renderer
-    /// entries. Built once at boot from the router scan.
+    /// entries. Seeded at boot from the router scan; rebuilt on a
+    /// watch-ADD (#659).
     ///
     /// Issue #367: only pages with `prerender != false` are kept
-    /// here. Pages that opted out of SSG go into [`ssr_routes`]
+    /// here. Pages that opted out of SSG go into `ssr_routes`
     /// instead and reach the V8 host at request time.
     ///
     /// Issue #502/#507: the value is a `Vec` because one dynamic SSG
@@ -953,6 +973,25 @@ struct DevRenderInner {
     /// server reads this list (via [`DevRenderSession::ssr_patterns`])
     /// and builds an [`zfb_server::SsrRouteSet`] from it.
     ssr_routes: Vec<RouteUniverseEntry>,
+}
+
+/// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
+/// worker with a fresh content snapshot and reload the V8 host in place.
+///
+/// Only compiled in on the V8 path — the discovery hook that consumes
+/// these is `embed_v8`-gated like `boot_dev_renderer`.
+#[cfg(feature = "embed_v8")]
+struct DevRebuildInputs {
+    cfg: config::Config,
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+    plugin_alias_entries: Vec<(String, String)>,
+    plugin_virtual_modules: Vec<(String, String)>,
+}
+
+struct DevRenderInner {
+    /// Source→route + SSR route tables (issue #659 — interior-mutable so
+    /// a watch-ADD rebuilds them in place; see [`DevRouteTables`]).
+    routes: std::sync::RwLock<DevRouteTables>,
     /// Mutex-wrapped renderer state. The orchestrator's callback runs
     /// on the watcher's thread; render_one is sync and short, so a
     /// global lock is fine here.
@@ -967,6 +1006,11 @@ struct DevRenderInner {
     /// Project root. Passed to `render_one` so it can locate the source
     /// file for static-HTML routes (#409).
     project_root: PathBuf,
+    /// Boot-time bundle inputs for the watch-ADD re-bundle + host reload
+    /// (issue #659). `None` would mean "no discovery" but boot always
+    /// populates it on the V8 path.
+    #[cfg(feature = "embed_v8")]
+    rebuild_inputs: DevRebuildInputs,
 }
 
 impl DevRenderSession {
@@ -982,7 +1026,18 @@ impl DevRenderSession {
     /// when the source path is unknown to the renderer (dynamic route
     /// deferred to SSR, or a page never seen by the router scan).
     fn render_one(&self, page: &PageId, dist_dir: &Path) -> Result<Vec<RenderedPage>> {
-        let entries = match self.inner.routes_by_source.get(page.path()) {
+        // Read the (possibly watch-ADD-rebuilt, #659) route table. Clone
+        // the entries out so the lock is released before the V8 render —
+        // the reload path takes the write lock, and `render_one` may run
+        // on the same tick that just rebuilt the table.
+        let entries = match self
+            .inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .routes_by_source
+            .get(page.path())
+        {
             Some(es) => es.clone(),
             None => return Ok(Vec::new()),
         };
@@ -1088,6 +1143,9 @@ impl DevRenderSession {
     /// follow-up.
     fn ssr_patterns(&self) -> Vec<String> {
         self.inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
             .ssr_routes
             .iter()
             .map(|e| colon_template_to_bracket(&e.route_key))
@@ -1099,6 +1157,9 @@ impl DevRenderSession {
     /// non-empty page set to resolve against.
     fn page_ids(&self) -> Vec<PageId> {
         self.inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
             .routes_by_source
             .keys()
             .map(|p| PageId::new(p.clone()))
@@ -1110,7 +1171,12 @@ impl DevRenderSession {
     /// routes" silent-failure case (zfb#642 / #644): if this is non-zero
     /// but the initial render produced nothing, every route would 404.
     fn route_count(&self) -> usize {
-        self.inner.routes_by_source.len()
+        self.inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .routes_by_source
+            .len()
     }
 
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
@@ -1123,6 +1189,123 @@ impl DevRenderSession {
         if let Some(state) = lock.take() {
             let _ = shutdown(state);
         }
+    }
+
+    /// Discover content files CREATED after dev-server boot (issue #659).
+    ///
+    /// This is the load-bearing fix. A content file like
+    /// `content/blog/foo.mdx` is reached through a dynamic
+    /// `pages/blog/[slug].tsx` page whose `paths()` walks the `blog`
+    /// collection. The collection snapshot is baked into the SSR bundle at
+    /// boot, and `routes_by_source` is frozen at boot — so a file created
+    /// afterwards is invisible to the running V8 host and never appears in
+    /// the route table, 404ing until restart.
+    ///
+    /// On a `Created` tick we therefore:
+    /// 1. re-bundle the SSR worker (recomputes the content snapshot from
+    ///    disk, so `getCollection` will see the new file),
+    /// 2. reload the embedded V8 host **in place** — `take()` the
+    ///    `Option<RendererState>` out of the SAME `Arc<Mutex<…>>` the
+    ///    render callback and SSR adapter hold, `reload()` it against the
+    ///    new bundle, and put it back, so the running server sees the new
+    ///    host (NOT a fresh `DevRenderSession` it never reads),
+    /// 3. re-scan the router + re-expand `paths()` through the reloaded
+    ///    host to rebuild `routes_by_source` (now the new `/blog/foo` URL
+    ///    is present),
+    /// 4. swap the rebuilt tables in under the route `RwLock`.
+    ///
+    /// Returns the source [`PageId`]s whose route set changed (the dynamic
+    /// `[slug]` page), so the orchestrator renders them and writes the new
+    /// URL to `dist/`. EDIT ticks never call this (the discovery hook only
+    /// sees `Created` paths), so the edit path is untouched.
+    ///
+    /// `embed_v8`-gated like `boot_dev_renderer` — the reload + `paths()`
+    /// runtime eval need the embedded V8 host.
+    #[cfg(feature = "embed_v8")]
+    fn discover_created(&self, created: &[PathBuf]) -> Result<Vec<PageId>> {
+        if created.is_empty() {
+            return Ok(Vec::new());
+        }
+        let project_root = &self.inner.project_root;
+        let inputs = &self.inner.rebuild_inputs;
+
+        // Re-scan the router. `Router::scan` is unchanged by adding a
+        // CONTENT file (the dynamic `[slug].tsx` source is the same), but
+        // re-running it is cheap and keeps boot and rebuild symmetrical —
+        // and it correctly picks up a brand-new `.tsx`/`.md` page placed
+        // directly under `pages/` too.
+        let pages_dir = project_root.join("pages");
+        let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
+        let plan = build_route_universe(router.routes());
+
+        // 1. Re-bundle with a fresh content snapshot (reads content/ from
+        //    disk, so the created file is now in the snapshot).
+        let bundler_out = assemble_and_bundle_dev(
+            project_root,
+            &inputs.cfg,
+            inputs.plugin_alias_entries.clone(),
+            inputs.plugin_virtual_modules.clone(),
+        )
+        .context("watch-add re-bundle failed")?;
+
+        // 2. Reload the embedded V8 host IN PLACE so the running server's
+        //    render callback + SSR adapter (which share this exact Arc)
+        //    see the rebuilt bundle. Take/reload/put on the existing mutex
+        //    — do NOT construct a fresh session.
+        {
+            let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+                tracing::warn!(site = "discover_created", "renderer mutex poisoned, recovered");
+                p.into_inner()
+            });
+            let previous = lock
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("renderer not started for watch-add reload"))?;
+            let reloaded = reload(
+                previous,
+                RendererStartInput {
+                    bundle_path: bundler_out.bundle_path.clone(),
+                    sourcemap_path: bundler_out.sourcemap_path.clone(),
+                    backend: Backend::EmbeddedV8 {
+                        host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                            inputs.v8_plugin_hooks.clone(),
+                        ),
+                    },
+                    request_timeout: None,
+                },
+            )
+            .map_err(anyhow::Error::from)
+            .context("watch-add renderer reload failed")?;
+            *lock = Some(reloaded);
+        }
+
+        // 3. Rebuild the route tables through the reloaded host (re-expands
+        //    `paths()`, so the dynamic source now resolves the new URL).
+        let (new_routes_by_source, new_ssr_routes) =
+            build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
+                .context("watch-add route-table rebuild failed")?;
+
+        // 4. Diff against the frozen table to find which source pages
+        //    gained/changed entries, then swap the new tables in.
+        let changed: Vec<PageId> = {
+            let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+            new_routes_by_source
+                .iter()
+                .filter(|(src, entries)| {
+                    old.routes_by_source
+                        .get(*src)
+                        .map(|prev| prev.len() != entries.len())
+                        .unwrap_or(true)
+                })
+                .map(|(src, _)| PageId::new(src.clone()))
+                .collect()
+        };
+        {
+            let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
+            tables.routes_by_source = new_routes_by_source;
+            tables.ssr_routes = new_ssr_routes;
+        }
+
+        Ok(changed)
     }
 }
 
@@ -1140,53 +1323,25 @@ impl Drop for DevRenderInner {
     }
 }
 
-/// Bring up the renderer and the route map for the dev session.
+/// Assemble the dev-mode bundler input and run the bundler, returning the
+/// fresh [`BundlerOutput`] (issue #659 — extracted from `boot_dev_renderer`
+/// so the watch-ADD re-bundle reuses the EXACT same configuration the boot
+/// bundle used; any drift here would make a newly-added page render
+/// differently in dev than it did at boot). The embedded node_modules /
+/// esbuild tempdir handles live only for the synchronous `bundle()` call
+/// (which writes `bundle_path` to disk), so scoping them to this function
+/// is correct.
 ///
-/// On any error, returns it unchanged so the caller decides whether to
-/// fall back to a noop renderer or hard-fail. Today the dev command
-/// chooses to fall back so the user still gets a reachable HTTP server
-/// while they fix the underlying issue.
-// `boot_dev_renderer` constructs the long-lived dev RendererState
-// backed by the in-process V8 host. Compiled in only when the
-// `embed_v8` feature is on (issue #371, sub-task 4.1a).
+/// `recompute snapshot` is implicit: `build_content_snapshot_json` re-reads
+/// the content collections from disk on every call, so a re-bundle here
+/// picks up a content file created after boot.
 #[cfg(feature = "embed_v8")]
-fn boot_dev_renderer(
+fn assemble_and_bundle_dev(
     project_root: &Path,
     cfg: &config::Config,
-    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
-    // Plugin-registered import aliases from `setup_registries.aliases`.
-    // Threaded into `BundlerInput::plugin_alias_entries` so the dev-mode
-    // esbuild invocation can resolve plugin aliases from pages / layouts /
-    // shared modules (#268).
     plugin_alias_entries: Vec<(String, String)>,
-    // Plugin-registered virtual-module `(specifier, source)` pairs.
-    // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
     plugin_virtual_modules: Vec<(String, String)>,
-) -> Result<DevRenderSession> {
-    check_runtime_installed(project_root)?;
-
-    let pages_dir = project_root.join("pages");
-    if !pages_dir.is_dir() {
-        return Err(anyhow::anyhow!(
-            "no pages/ directory under {}",
-            project_root.display()
-        ));
-    }
-    let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
-
-    let plan = build_route_universe(router.routes());
-    // Guardrail 2 (#507): an all-dynamic SSG project (only `paths()`-based
-    // routes, no static `/`) has an empty `static_routes` but a non-empty
-    // `deferred_dynamic`. Bailing on `static_routes.is_empty()` alone would
-    // skip renderer boot before the dynamic-route expansion below ever runs,
-    // so such a project would never serve any page. Only skip the boot when
-    // the project has neither static nor dynamic routes at all.
-    if plan.static_routes.is_empty() && plan.deferred_dynamic.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no routes to render — dev mode skips renderer boot"
-        ));
-    }
-
+) -> Result<BundlerOutput> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
     // build does. The published `zfb/content` `getCollection(...)` reads
@@ -1398,35 +1553,27 @@ fn boot_dev_renderer(
         _embedded_esbuild_handle = None;
     }
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
+    Ok(bundler_out)
+}
 
-    let state = start(RendererStartInput {
-        bundle_path: bundler_out.bundle_path.clone(),
-        sourcemap_path: bundler_out.sourcemap_path.clone(),
-        backend: Backend::EmbeddedV8 {
-            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                v8_plugin_hooks,
-            ),
-        },
-        request_timeout: None,
-    })
-    .map_err(anyhow::Error::from)
-    .context("renderer start failed")?;
+/// `(routes_by_source, ssr_routes)` — the pair [`build_dev_route_tables`]
+/// produces and [`DevRouteTables`] stores.
+#[cfg(feature = "embed_v8")]
+type BuiltRouteTables = (HashMap<PathBuf, Vec<RouteUniverseEntry>>, Vec<RouteUniverseEntry>);
 
-    // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
-    // front so the SSG `paths()` runtime-evaluation phase below can borrow
-    // the live embedded V8 host out of the same handle the SSG render
-    // callback and the SSR adapter use later (#502/#507). One host, shared
-    // across boot-time paths() eval, build-time SSG render, and request-time
-    // SSR.
-    let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
-
-    // Issue #367 — extract `export const prerender = …` per page so
-    // we can keep SSG-eligible pages in `routes_by_source` (the SSG
-    // render callback's lookup table) while routing `prerender =
-    // false` pages into the request-time SSR set instead. Without this
-    // split the SSG callback would stamp a stale snapshot to disk on
-    // every watcher tick and the dist fallback would shadow the SSR
-    // handler.
+/// Build the dev session's source→route + SSR route tables from the router
+/// scan + the live V8 host (issue #659 — extracted from `boot_dev_renderer`
+/// so boot and the watch-ADD rebuild produce byte-identical tables). The
+/// `renderer` mutex must already hold a started/reloaded [`RendererState`]
+/// because the dynamic-route `paths()` runtime phase borrows the live
+/// embedded V8 host out of it.
+#[cfg(feature = "embed_v8")]
+fn build_dev_route_tables(
+    router: &zfb_router::Router,
+    plan: &crate::render_pipeline::RouteUniversePlan,
+    project_root: &Path,
+    renderer: &Arc<Mutex<Option<RendererState>>>,
+) -> Result<BuiltRouteTables> {
     let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
         crate::output::warn(msg)
     });
@@ -1595,12 +1742,121 @@ fn boot_dev_renderer(
         }
     }
 
+    Ok((routes_by_source, ssr_routes))
+}
+
+/// Bring up the renderer and the route map for the dev session.
+///
+/// On any error, returns it unchanged so the caller decides whether to
+/// fall back to a noop renderer or hard-fail. Today the dev command
+/// chooses to fall back so the user still gets a reachable HTTP server
+/// while they fix the underlying issue.
+// `boot_dev_renderer` constructs the long-lived dev RendererState
+// backed by the in-process V8 host. Compiled in only when the
+// `embed_v8` feature is on (issue #371, sub-task 4.1a).
+#[cfg(feature = "embed_v8")]
+fn boot_dev_renderer(
+    project_root: &Path,
+    cfg: &config::Config,
+    v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+    // Plugin-registered import aliases from `setup_registries.aliases`.
+    // Threaded into `BundlerInput::plugin_alias_entries` so the dev-mode
+    // esbuild invocation can resolve plugin aliases from pages / layouts /
+    // shared modules (#268).
+    plugin_alias_entries: Vec<(String, String)>,
+    // Plugin-registered virtual-module `(specifier, source)` pairs.
+    // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
+    plugin_virtual_modules: Vec<(String, String)>,
+) -> Result<DevRenderSession> {
+    check_runtime_installed(project_root)?;
+
+    let pages_dir = project_root.join("pages");
+    if !pages_dir.is_dir() {
+        return Err(anyhow::anyhow!(
+            "no pages/ directory under {}",
+            project_root.display()
+        ));
+    }
+    let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
+
+    let plan = build_route_universe(router.routes());
+    // Guardrail 2 (#507): an all-dynamic SSG project (only `paths()`-based
+    // routes, no static `/`) has an empty `static_routes` but a non-empty
+    // `deferred_dynamic`. Bailing on `static_routes.is_empty()` alone would
+    // skip renderer boot before the dynamic-route expansion below ever runs,
+    // so such a project would never serve any page. Only skip the boot when
+    // the project has neither static nor dynamic routes at all.
+    if plan.static_routes.is_empty() && plan.deferred_dynamic.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no routes to render — dev mode skips renderer boot"
+        ));
+    }
+
+    // Assemble + run the dev bundle (#659: extracted into
+    // `assemble_and_bundle_dev` so the watch-ADD rebuild reuses the exact
+    // same bundler configuration). Recomputes the content snapshot from
+    // disk, so a re-bundle on a created file sees the new content.
+    // Stash the bundle inputs BEFORE they are moved into the bundle /
+    // host-start calls below, so a watch-ADD (#659) can re-bundle with the
+    // identical configuration and reload the host in place. The clones are
+    // cheap relative to a bundle (a few small Vecs + the config).
+    let rebuild_inputs = DevRebuildInputs {
+        cfg: cfg.clone(),
+        v8_plugin_hooks: v8_plugin_hooks.clone(),
+        plugin_alias_entries: plugin_alias_entries.clone(),
+        plugin_virtual_modules: plugin_virtual_modules.clone(),
+    };
+
+    let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+        project_root,
+        cfg,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+    )?;
+
+    let state = start(RendererStartInput {
+        bundle_path: bundler_out.bundle_path.clone(),
+        sourcemap_path: bundler_out.sourcemap_path.clone(),
+        backend: Backend::EmbeddedV8 {
+            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                v8_plugin_hooks,
+            ),
+        },
+        request_timeout: None,
+    })
+    .map_err(anyhow::Error::from)
+    .context("renderer start failed")?;
+
+    // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
+    // front so the SSG `paths()` runtime-evaluation phase below can borrow
+    // the live embedded V8 host out of the same handle the SSG render
+    // callback and the SSR adapter use later (#502/#507). One host, shared
+    // across boot-time paths() eval, build-time SSG render, and request-time
+    // SSR.
+    let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
+
+    // Issue #367 — extract `export const prerender = …` per page so
+    // we can keep SSG-eligible pages in `routes_by_source` (the SSG
+    // render callback's lookup table) while routing `prerender =
+    // false` pages into the request-time SSR set instead. Without this
+    // split the SSG callback would stamp a stale snapshot to disk on
+    // every watcher tick and the dist fallback would shadow the SSR
+    // handler.
+    // Build the route tables from the router scan + the live host (#659:
+    // extracted into `build_dev_route_tables` so the watch-ADD rebuild
+    // reproduces the boot tables exactly).
+    let (routes_by_source, ssr_routes) =
+        build_dev_route_tables(&router, &plan, project_root, &renderer)?;
+
     Ok(DevRenderSession {
         inner: Arc::new(DevRenderInner {
-            routes_by_source,
-            ssr_routes,
+            routes: std::sync::RwLock::new(DevRouteTables {
+                routes_by_source,
+                ssr_routes,
+            }),
             renderer,
             project_root: project_root.to_path_buf(),
+            rebuild_inputs,
         }),
     })
 }
@@ -1652,6 +1908,66 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
             }
         }
         Ok(out)
+    })
+}
+
+/// Build the live watch-ADD discovery hook handed to
+/// [`zfb_build::BuildOrchestrator::run`] (issue #659).
+///
+/// The orchestrator invokes it with the `Created` subset of a tick's
+/// changed paths. We restrict the expensive re-bundle to files created
+/// under `content/` or `pages/` (the roots that feed the SSR bundle and
+/// the route table); a file created elsewhere — `styles/`, `public/` —
+/// can never add a content-collection route, so we skip discovery for it
+/// and let the normal tick handle it.
+///
+/// On a relevant create we delegate to
+/// [`DevRenderSession::discover_created`] (re-bundle → reload host in
+/// place → rebuild route tables) and then upsert the new file into the
+/// dependency graph as a content dep of each rediscovered source page, so
+/// a LATER edit of that same file hot-reloads its consumer exactly like a
+/// pre-existing post does.
+///
+/// `embed_v8`-gated: discovery needs the embedded V8 host.
+#[cfg(feature = "embed_v8")]
+fn make_discovery_hook(
+    session: DevRenderSession,
+    graph: Arc<Mutex<DependencyGraph>>,
+) -> zfb_build::DiscoveryHook {
+    let content_root = session.inner.project_root.join("content");
+    let pages_root = session.inner.project_root.join("pages");
+    Arc::new(move |created: &[PathBuf]| {
+        // Only created files under content/ or pages/ can introduce a new
+        // content-collection route; skip the re-bundle otherwise.
+        let relevant: Vec<PathBuf> = created
+            .iter()
+            .filter(|p| p.starts_with(&content_root) || p.starts_with(&pages_root))
+            .cloned()
+            .collect();
+        if relevant.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let changed = session.discover_created(&relevant)?;
+
+        // Upsert each newly-created content file as a content dep of the
+        // rediscovered source pages, so subsequent EDITs of the new file
+        // map to their consumer page in the graph (matching how a
+        // pre-existing post behaves). `upsert` merges deps, so this does
+        // not clobber the page's other edges.
+        if !changed.is_empty() {
+            if let Ok(mut g) = graph.lock() {
+                for page in &changed {
+                    let deps: Vec<(PathBuf, zfb_graph::DepKind)> = relevant
+                        .iter()
+                        .map(|c| (c.clone(), zfb_graph::DepKind::Content))
+                        .collect();
+                    g.upsert(PageDeps::new(page.clone(), deps));
+                }
+            }
+        }
+
+        Ok(changed)
     })
 }
 
@@ -1740,6 +2056,47 @@ mod tests {
     // `resolve_host` / `resolve_addr` live in `crate::commands::resolve` (shared
     // with `preview`); their precedence and binding tests live there too.
 
+    /// Build a stub [`DevRenderInner`] for the route-plumbing seam tests
+    /// (no live V8 host). The discovery (#659) `rebuild_inputs` are filled
+    /// with defaults — these tests never call `discover_created`.
+    #[cfg(feature = "embed_v8")]
+    fn stub_dev_inner(
+        routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
+        ssr_routes: Vec<RouteUniverseEntry>,
+    ) -> DevRenderInner {
+        DevRenderInner {
+            routes: std::sync::RwLock::new(DevRouteTables {
+                routes_by_source,
+                ssr_routes,
+            }),
+            renderer: Arc::new(Mutex::new(None)),
+            project_root: PathBuf::new(),
+            rebuild_inputs: DevRebuildInputs {
+                cfg: config::Config::default(),
+                v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+                plugin_alias_entries: Vec::new(),
+                plugin_virtual_modules: Vec::new(),
+            },
+        }
+    }
+
+    /// V8-off counterpart of [`stub_dev_inner`] — no `rebuild_inputs`
+    /// field exists when `embed_v8` is disabled.
+    #[cfg(not(feature = "embed_v8"))]
+    fn stub_dev_inner(
+        routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
+        ssr_routes: Vec<RouteUniverseEntry>,
+    ) -> DevRenderInner {
+        DevRenderInner {
+            routes: std::sync::RwLock::new(DevRouteTables {
+                routes_by_source,
+                ssr_routes,
+            }),
+            renderer: Arc::new(Mutex::new(None)),
+            project_root: PathBuf::new(),
+        }
+    }
+
     #[test]
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
@@ -1796,12 +2153,7 @@ mod tests {
     #[test]
     fn render_callback_drops_unknown_pages_silently() {
         let session = DevRenderSession {
-            inner: Arc::new(DevRenderInner {
-                routes_by_source: HashMap::new(),
-                ssr_routes: Vec::new(),
-                renderer: Arc::new(Mutex::new(None)),
-                project_root: PathBuf::new(),
-            }),
+            inner: Arc::new(stub_dev_inner(HashMap::new(), Vec::new())),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
         // A source path not present in routes_by_source is still dropped.
@@ -1907,12 +2259,7 @@ mod tests {
             }],
         );
         let session = DevRenderSession {
-            inner: Arc::new(DevRenderInner {
-                routes_by_source: routes,
-                ssr_routes: Vec::new(),
-                renderer: Arc::new(Mutex::new(None)),
-                project_root: PathBuf::new(),
-            }),
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
@@ -1945,9 +2292,9 @@ mod tests {
     #[test]
     fn ssr_patterns_emit_bracket_grammar_for_dynamic_routes() {
         let session = DevRenderSession {
-            inner: Arc::new(DevRenderInner {
-                routes_by_source: HashMap::new(),
-                ssr_routes: vec![
+            inner: Arc::new(stub_dev_inner(
+                HashMap::new(),
+                vec![
                     RouteUniverseEntry {
                         url_path: "/blog/:slug".into(),
                         output_path: PathBuf::new(),
@@ -1963,9 +2310,7 @@ mod tests {
                         source_path: None,
                     },
                 ],
-                renderer: Arc::new(Mutex::new(None)),
-                project_root: PathBuf::new(),
-            }),
+            )),
         };
         let patterns = session.ssr_patterns();
         assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
