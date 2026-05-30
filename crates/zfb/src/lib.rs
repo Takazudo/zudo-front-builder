@@ -3,6 +3,7 @@
 //! This crate exposes the CLI parser, command dispatchers, configuration
 //! loader, and structured output helpers used by the `zfb` binary.
 
+pub mod bounded_join;
 pub mod cli;
 pub mod commands;
 pub mod config;

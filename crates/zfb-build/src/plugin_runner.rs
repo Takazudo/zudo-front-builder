@@ -295,6 +295,10 @@ struct HostInner {
     child: Mutex<Option<Child>>,
     /// Dropping the [`_tempdir`] removes the staged plugin-host script.
     _tempdir: tempfile::TempDir,
+    /// Maximum time any single plugin hook reply is awaited before the
+    /// host is force-killed and the build fails with a diagnostic error.
+    /// Env: ZFB_PLUGIN_HOOK_TIMEOUT (seconds). Default: 120s.
+    hook_timeout: std::time::Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +340,36 @@ struct LogPayload {
     message: String,
 }
 
+/// Default hook timeout in seconds — generous because postBuild may do
+/// real work (sitemap generation, asset upload, etc.).
+/// Override via ZFB_PLUGIN_HOOK_TIMEOUT env var or config `pluginHookTimeoutSecs`.
+const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 120;
+
+/// Resolve the hook timeout: config field > env var > 120s default.
+///
+/// Precedence (highest to lowest):
+/// 1. Explicit `config_secs` value (from `Config.pluginHookTimeoutSecs`)
+/// 2. `ZFB_PLUGIN_HOOK_TIMEOUT` env var (seconds)
+/// 3. 120s built-in default
+pub fn resolve_hook_timeout(config_secs: Option<u64>) -> std::time::Duration {
+    // A zero (or unparseable env) value is ignored and falls through to the
+    // next source: `0` would make every hook time out instantly, which is
+    // never an intended configuration.
+    if let Some(s) = config_secs {
+        if s > 0 {
+            return std::time::Duration::from_secs(s);
+        }
+    }
+    if let Ok(val) = std::env::var("ZFB_PLUGIN_HOOK_TIMEOUT") {
+        if let Ok(s) = val.trim().parse::<u64>() {
+            if s > 0 {
+                return std::time::Duration::from_secs(s);
+            }
+        }
+    }
+    std::time::Duration::from_secs(DEFAULT_HOOK_TIMEOUT_SECS)
+}
+
 impl PluginHost {
     /// Spawn the plugin-host subprocess and load every plugin module
     /// via dynamic `import()`. Returns a handle that can dispatch
@@ -346,10 +380,24 @@ impl PluginHost {
     /// entries with `resolved_module = None` are skipped (they cannot
     /// be loaded; the JSON config path produces `None` and we treat
     /// that as a no-plugin build).
+    ///
+    /// `hook_timeout` is the maximum time any single hook reply is awaited.
+    /// Pass `None` to auto-resolve from `ZFB_PLUGIN_HOOK_TIMEOUT` / 120s default.
     pub async fn spawn(
         plugins: Vec<PluginSpec>,
         node_binary: Option<OsString>,
     ) -> Result<Self> {
+        Self::spawn_with_timeout(plugins, node_binary, None).await
+    }
+
+    /// Like [`spawn`] but with an explicit hook timeout (used by the build
+    /// orchestrator to thread `Config.pluginHookTimeoutSecs`).
+    pub async fn spawn_with_timeout(
+        plugins: Vec<PluginSpec>,
+        node_binary: Option<OsString>,
+        hook_timeout_secs: Option<u64>,
+    ) -> Result<Self> {
+        let hook_timeout = resolve_hook_timeout(hook_timeout_secs);
         let tmp = tempfile::Builder::new()
             .prefix("zfb-plugin-host-")
             .tempdir()
@@ -392,6 +440,7 @@ impl PluginHost {
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
             _tempdir: tmp,
+            hook_timeout,
         });
 
         // Reader task — drains stdout, dispatches replies to the
@@ -646,13 +695,25 @@ impl PluginHost {
         Ok(resp)
     }
 
+    /// Force-kill the child process. Used when a hook timeout fires.
+    async fn force_kill_child(&self) {
+        let mut guard = self.inner.child.lock().await;
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill().await;
+        }
+    }
+
     /// Send a `shutdown` command and wait for the child to exit.
     /// Best-effort: if the child has already died, this returns Ok.
     pub async fn shutdown(self) -> Result<()> {
-        // Send the shutdown — ignore any error (the child may have
-        // already exited). The reply is the loaded "bye" object.
+        // Send the shutdown with the 2s shutdown budget, not the hook timeout.
+        let shutdown_budget = std::time::Duration::from_secs(2);
         let _ = self
-            .request_typed::<serde_json::Value>("shutdown", serde_json::json!({}))
+            .request_typed_with_timeout::<serde_json::Value>(
+                "shutdown",
+                serde_json::json!({}),
+                shutdown_budget,
+            )
             .await;
         let mut guard = self.inner.child.lock().await;
         if let Some(mut child) = guard.take() {
@@ -674,6 +735,16 @@ impl PluginHost {
         &self,
         kind: &str,
         body: serde_json::Value,
+    ) -> Result<T> {
+        let timeout = self.inner.hook_timeout;
+        self.request_typed_with_timeout(kind, body, timeout).await
+    }
+
+    async fn request_typed_with_timeout<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        body: serde_json::Value,
+        timeout: std::time::Duration,
     ) -> Result<T> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
@@ -715,9 +786,31 @@ impl PluginHost {
             return Err(e);
         }
 
-        let reply = rx
-            .await
-            .map_err(|_| anyhow!("plugin host: reply channel dropped"))?;
+        let reply = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(_)) => {
+                return Err(anyhow!("plugin host: reply channel dropped"));
+            }
+            Err(_elapsed) => {
+                // Hook did not complete within the deadline. Evict the pending
+                // entry (the channel is gone), force-kill the child so no
+                // future hooks can hang, then return a diagnostic error.
+                {
+                    let mut pend = self.inner.pending.lock().await;
+                    pend.remove(&id);
+                }
+                self.force_kill_child().await;
+                let secs = timeout.as_secs();
+                return Err(anyhow!(
+                    "`{}` hook did not complete within {}s — \
+                     check for an unresolved promise / open handle / setInterval \
+                     in a plugin's `{}` implementation",
+                    kind,
+                    secs,
+                    kind,
+                ));
+            }
+        };
         if !reply.ok {
             let payload = reply.error.unwrap_or(HostErrorPayload {
                 plugin: "(host)".into(),
@@ -1658,5 +1751,138 @@ mod tests {
         let ssr = routes.iter().find(|r| r["url"] == "/api/search").unwrap();
         assert_eq!(ssr["prerender"], serde_json::json!(false),
             "SSR route must have prerender=false, got: {}", ssr);
+    }
+
+    // --- Timeout tests (no node required) -----------------------------------
+
+    /// Build a minimal PluginHost whose child is a `sleep`-style process
+    /// that never writes to stdout, so every hook reply awaits forever.
+    /// We don't need the reader task to be running — the oneshot rx will
+    /// never resolve because no reply ever arrives on stdout.
+    #[cfg(unix)]
+    async fn stub_host_with_timeout(timeout: std::time::Duration) -> Option<PluginHost> {
+        // `sleep 300` never writes anything to stdout, so rx.await blocks forever
+        // unless bounded — exactly the condition under test.
+        let mut child = match tokio::process::Command::new("sleep")
+            .arg("300")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return None, // `sleep` not available (extremely rare)
+        };
+        let stdin = child.stdin.take().expect("stdin");
+        // We need a valid tempdir even though the host script is never run.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let inner = Arc::new(HostInner {
+            pending: Mutex::new(HashMap::new()),
+            stdin: Mutex::new(stdin),
+            next_id: AtomicU64::new(1),
+            child: Mutex::new(Some(child)),
+            _tempdir: tmp,
+            hook_timeout: timeout,
+        });
+        Some(PluginHost { inner })
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn post_build_hook_times_out_and_returns_error() {
+        // Short deadline so the test stays fast; watchdog is 3× to ensure
+        // a regression is RED (hung), not a false-pass from the watchdog.
+        let short = std::time::Duration::from_millis(150);
+        let host = match stub_host_with_timeout(short).await {
+            Some(h) => h,
+            None => {
+                eprintln!("skipping: `sleep` not available");
+                return;
+            }
+        };
+        let ctx = BuildHookContext {
+            project_root: std::path::PathBuf::from("/tmp"),
+            out_dir: std::path::PathBuf::from("/tmp/dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        // Outer watchdog: if the inner timeout fires correctly the call
+        // returns within ~150ms; allow 5s so CI is never flaky.
+        let watchdog = std::time::Duration::from_secs(5);
+        let result = tokio::time::timeout(watchdog, host.run_post_build(&ctx)).await;
+        match result {
+            Err(_watchdog_fired) => {
+                panic!("run_post_build did NOT time out — the timeout fix is missing");
+            }
+            Ok(inner_result) => {
+                let err = inner_result.expect_err("run_post_build must return Err on timeout");
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("postBuild"),
+                    "error message must name the hook; got: {msg}"
+                );
+                assert!(
+                    msg.contains("did not complete within"),
+                    "error message must state the timeout; got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pre_build_hook_times_out_and_returns_error() {
+        let short = std::time::Duration::from_millis(150);
+        let host = match stub_host_with_timeout(short).await {
+            Some(h) => h,
+            None => {
+                eprintln!("skipping: `sleep` not available");
+                return;
+            }
+        };
+        let ctx = BuildHookContext {
+            project_root: std::path::PathBuf::from("/tmp"),
+            out_dir: std::path::PathBuf::from("/tmp/dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        let watchdog = std::time::Duration::from_secs(5);
+        let result = tokio::time::timeout(watchdog, host.run_pre_build(&ctx)).await;
+        match result {
+            Err(_watchdog_fired) => {
+                panic!("run_pre_build did NOT time out — the timeout fix is missing");
+            }
+            Ok(inner_result) => {
+                let err = inner_result.expect_err("run_pre_build must return Err on timeout");
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("preBuild"),
+                    "error message must name the hook; got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_hook_timeout_uses_default_when_nothing_set() {
+        // Can't safely mutate env in a multi-threaded test process, but
+        // we can test the no-override path with an explicit None.
+        let d = resolve_hook_timeout(None);
+        // Env may or may not be set in the test runner; only verify the
+        // default path when the var is absent.
+        if std::env::var("ZFB_PLUGIN_HOOK_TIMEOUT").is_err() {
+            assert_eq!(
+                d,
+                std::time::Duration::from_secs(DEFAULT_HOOK_TIMEOUT_SECS),
+                "default must be 120s"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_hook_timeout_config_field_wins_over_default() {
+        let d = resolve_hook_timeout(Some(42));
+        assert_eq!(d, std::time::Duration::from_secs(42));
     }
 }

@@ -95,6 +95,9 @@ fs2 = "0.4"
 # same byte stream.
 sha2 = "0.10"
 hex = "0.4"
+# Bounded wait for child processes so a wedged pnpm or esbuild subprocess
+# cannot hang the build indefinitely. Zero transitive deps; cross-platform.
+wait-timeout = "0.2"
 # Issue #228 / #229: shared HTML link rewriter that the production
 # build pass and the dev server both call so dev-mode and prod-mode
 # render the same `<a href>` / `<form action>` URLs under a `base`

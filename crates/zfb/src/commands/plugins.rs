@@ -49,9 +49,10 @@ pub async fn maybe_spawn_host(config: &Config) -> Result<Option<PluginHost>> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let host = PluginHost::spawn(specs, None)
-        .await
-        .context("plugin lifecycle: failed to spawn the plugin host")?;
+    let host =
+        PluginHost::spawn_with_timeout(specs, None, config.plugin_hook_timeout_secs)
+            .await
+            .context("plugin lifecycle: failed to spawn the plugin host")?;
     Ok(Some(host))
 }
 

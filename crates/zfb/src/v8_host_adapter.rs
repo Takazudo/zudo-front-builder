@@ -73,16 +73,19 @@ unsafe impl Send for ThreadedV8Host {}
 
 impl Drop for ThreadedV8Host {
     /// Close the request channel first (so the V8 thread's receive loop
-    /// exits), then join the thread to guarantee a clean shutdown with no
-    /// leaks.
+    /// exits), then join the thread with a deadline to bound teardown time.
     fn drop(&mut self) {
         // Drop the sender; the V8 thread's `for req in rx` loop will see
         // the channel closed and exit its async block.
         drop(self.tx.take());
         if let Some(handle) = self.thread.take() {
-            // Best-effort join: if the thread panicked, the panic has already
-            // been propagated to the caller via the reply channel; swallow it.
-            let _ = handle.join();
+            // Bounded join: if isolate teardown inside deno_core wedges, we
+            // detach rather than hang the process.  A generous deadline is
+            // fine — the goal is bounding the worst case, not a tight cutoff.
+            let _ = crate::bounded_join::join_with_deadline(
+                handle,
+                std::time::Duration::from_secs(10),
+            );
         }
     }
 }
