@@ -2,7 +2,7 @@
 //!
 //! Since v0.1.0-next.18 the islands esbuild bundler omitted the
 //! `react/jsx-runtime` → `preact/jsx-runtime` alias that the main SSR bundler
-//! applies (`crates/zfb-build/src/bundler.rs:3024-3026`). next.18 dist modules
+//! applies (`crates/zfb-build/src/bundler.rs`, `Framework::Preact` arm). next.18 dist modules
 //! mint VNodes via a framework-neutral `import { jsx } from "react/jsx-runtime"`;
 //! when `clientRouter: true` the islands shared bundle side-effect-imports
 //! `@takazudo/zfb-runtime/client-router` (`esbuild.rs::render_shared_bundle_entry_source`),
@@ -147,5 +147,14 @@ fn preact_client_router_islands_bundle_resolves_react_jsx_runtime() {
     assert!(
         !body.is_empty(),
         "bundle output should be non-empty (client-router side-effect import + island)"
+    );
+    // Prove the alias actually rewrote the target (not just that the build
+    // succeeded): the stub's `react/jsx-runtime` import surfaces in the output
+    // as the externalized `preact/jsx-runtime`. NB: a naive
+    // `!body.contains("react/jsx-runtime")` would be a false guard —
+    // `preact/jsx-runtime` contains it as a substring.
+    assert!(
+        body.contains("preact/jsx-runtime"),
+        "alias must rewrite react/jsx-runtime → preact/jsx-runtime in the bundle output"
     );
 }

@@ -831,9 +831,10 @@ pub(crate) fn build_esbuild_args(
         "--jsx-import-source={}",
         config.jsx_import_source
     )));
-    // Mirror the main SSR bundler (crates/zfb-build/src/bundler.rs:3024-3026).
-    // next.18 dist modules carry an explicit, framework-neutral
-    // `import { jsx } from "react/jsx-runtime"` (e.g.
+    // Mirror the main SSR bundler's Preact `--alias` block in
+    // `crates/zfb-build/src/bundler.rs` (the `Framework::Preact` arm of the
+    // SSR esbuild command builder). next.18 dist modules carry an explicit,
+    // framework-neutral `import { jsx } from "react/jsx-runtime"` (e.g.
     // `@takazudo/zfb-runtime/client-router`, which the shared islands bundle
     // side-effect-imports when `client_router` is set — see
     // `render_shared_bundle_entry_source`). In a Preact project `react` is not
@@ -841,7 +842,7 @@ pub(crate) fn build_esbuild_args(
     // build aborts (issue #633). Rewrite it (and the dev-runtime sibling) to the
     // Preact runtime — the same trick the SSR bundler and the wider Preact
     // ecosystem use. React projects resolve `react/jsx-runtime` natively, so the
-    // alias is Preact-only (same gating as bundler.rs:3025), leaving the React
+    // alias is Preact-only (same gate as the SSR bundler), leaving the React
     // argv byte-identical. `--alias`'s prefix-with-slash semantics are safe here
     // because `react/jsx-runtime` has no deeper subpath to corrupt.
     if matches!(
@@ -2136,8 +2137,8 @@ mod tests {
     /// bundle when `clientRouter: true`). In a Preact project `react` is not
     /// installed, so the islands esbuild must rewrite `react/jsx-runtime` (and
     /// the dev-runtime sibling) to the Preact runtime — mirroring the main SSR
-    /// bundler (`crates/zfb-build/src/bundler.rs:3024-3026`). For the Preact
-    /// default both aliases MUST be present.
+    /// bundler (`crates/zfb-build/src/bundler.rs`, `Framework::Preact` arm). For
+    /// the Preact default both aliases MUST be present.
     #[test]
     fn build_esbuild_args_aliases_react_jsx_runtime_for_preact() {
         let cfg = BundleConfig::default();
@@ -2155,8 +2156,8 @@ mod tests {
 
     /// Companion to the #633 regression: React projects resolve
     /// `react/jsx-runtime` natively, so the alias is Preact-only and the React
-    /// argv MUST NOT carry either `react/jsx-runtime` alias (same gating as
-    /// `bundler.rs:3025` — keeps the React bundle byte-stable).
+    /// argv MUST NOT carry either `react/jsx-runtime` alias (same Preact-only
+    /// gate as the SSR bundler — keeps the React bundle byte-stable).
     #[test]
     fn build_esbuild_args_omits_react_jsx_runtime_alias_for_react() {
         let cfg = BundleConfig::default().with_jsx_import_source("react");
