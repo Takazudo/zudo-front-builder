@@ -352,12 +352,19 @@ const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 120;
 /// 2. `ZFB_PLUGIN_HOOK_TIMEOUT` env var (seconds)
 /// 3. 120s built-in default
 pub fn resolve_hook_timeout(config_secs: Option<u64>) -> std::time::Duration {
+    // A zero (or unparseable env) value is ignored and falls through to the
+    // next source: `0` would make every hook time out instantly, which is
+    // never an intended configuration.
     if let Some(s) = config_secs {
-        return std::time::Duration::from_secs(s);
+        if s > 0 {
+            return std::time::Duration::from_secs(s);
+        }
     }
     if let Ok(val) = std::env::var("ZFB_PLUGIN_HOOK_TIMEOUT") {
         if let Ok(s) = val.trim().parse::<u64>() {
-            return std::time::Duration::from_secs(s);
+            if s > 0 {
+                return std::time::Duration::from_secs(s);
+            }
         }
     }
     std::time::Duration::from_secs(DEFAULT_HOOK_TIMEOUT_SECS)

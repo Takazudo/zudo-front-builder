@@ -248,12 +248,23 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
     // inherits the child PID.  setpgid(0, 0) moves the child into a new
     // process group (PGID == child PID).  Any grandchild the adapter spawns
     // inherits that PGID, so kill(-pgid, SIGKILL) reaps the whole tree.
+    //
+    // stdout/stderr are redirected to temp files rather than pipes: this
+    // watchdog only drains output *after* the child exits, so a piped child
+    // that wrote more than the ~64KB OS pipe buffer would block on write and
+    // masquerade as a hang — on the very test meant to certify termination.
+    // Files have no backpressure; we read them back for the failure message.
+    let stdout_path = root.join(".zfb-build-stdout.log");
+    let stderr_path = root.join(".zfb-build-stderr.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log file");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log file");
+
     let mut cmd = Command::new(zfb_binary!());
     cmd.arg("build")
         .current_dir(&root)
         .env("ZFB_ESBUILD_BIN", &esbuild)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
 
     // Safety: setpgid(0, 0) is async-signal-safe (POSIX).
     unsafe {
@@ -267,6 +278,9 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
 
     let mut child = cmd.spawn().expect("spawn `zfb build`");
     let pgid = child.id() as libc::pid_t; // PGID == child PID after setpgid(0,0)
+
+    // Read a captured output file back (best-effort) for assertion messages.
+    let read_log = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
 
     // --- watchdog loop ---
 
@@ -284,35 +298,14 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
                     }
                     let _ = child.wait();
 
-                    let stdout = child
-                        .stdout
-                        .take()
-                        .map(|mut r| {
-                            let mut s = String::new();
-                            use std::io::Read;
-                            let _ = r.read_to_string(&mut s);
-                            s
-                        })
-                        .unwrap_or_default();
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .map(|mut r| {
-                            let mut s = String::new();
-                            use std::io::Read;
-                            let _ = r.read_to_string(&mut s);
-                            s
-                        })
-                        .unwrap_or_default();
-
                     panic!(
                         "`zfb build` did not exit within {}s — this indicates a hang. \
                          Process group {} was killed.\n\
                          --- stdout ---\n{}\n--- stderr ---\n{}",
                         BUILD_TIMEOUT.as_secs(),
                         pgid,
-                        stdout,
-                        stderr,
+                        read_log(&stdout_path),
+                        read_log(&stderr_path),
                     );
                 }
                 std::thread::sleep(Duration::from_millis(250));
@@ -330,31 +323,12 @@ fn zfb_build_terminates_with_adapter_and_ssr_route() {
         libc::kill(-pgid, libc::SIGKILL);
     }
 
-    // Collect stdout/stderr for the assertion message.
-    let stdout = child
-        .stdout
-        .take()
-        .map(|mut r| {
-            let mut s = String::new();
-            use std::io::Read;
-            let _ = r.read_to_string(&mut s);
-            s
-        })
-        .unwrap_or_default();
-    let stderr = child
-        .stderr
-        .take()
-        .map(|mut r| {
-            let mut s = String::new();
-            use std::io::Read;
-            let _ = r.read_to_string(&mut s);
-            s
-        })
-        .unwrap_or_default();
-
     assert!(
         exit_status.success(),
         "`zfb build` exited non-zero — adapter+SSR-route fixture should build cleanly.\n\
-         status: {exit_status:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+         status: {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        exit_status,
+        read_log(&stdout_path),
+        read_log(&stderr_path),
     );
 }
