@@ -1279,14 +1279,16 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     write_entry_module(
         shadow,
         entry_routes_for_write,
-        adapter.render_to_string_module(),
-        entry_snapshot_for_write,
-        entry_content_imports_for_write,
-        input.site.as_deref(),
-        input.prefetch_disabled,
-        // Emitted independently of `content_imports` / `worker_only_routes`:
-        // a project may define overrides with zero content entries (#616).
-        mdx_components_import_spec.as_deref(),
+        &EntryModuleInputs {
+            render_to_string_module: adapter.render_to_string_module(),
+            content_snapshot_json: entry_snapshot_for_write,
+            content_imports: entry_content_imports_for_write,
+            site: input.site.as_deref(),
+            prefetch_disabled: input.prefetch_disabled,
+            // Emitted independently of `content_imports` / `worker_only_routes`:
+            // a project may define overrides with zero content entries (#616).
+            mdx_components_import_spec: mdx_components_import_spec.as_deref(),
+        },
     )
     .context("bundler: failed writing entry.mjs")?;
 
@@ -2507,6 +2509,21 @@ fn write_synthetic_tsconfig(
     Ok(())
 }
 
+// Emission inputs for write_entry_module. Grouping these into a struct lets
+// future `globalThis.__zfb.*` slots add a field here instead of widening the
+// function signature.
+struct EntryModuleInputs<'a> {
+    render_to_string_module: &'a str,
+    content_snapshot_json: Option<&'a str>,
+    content_imports: &'a [ContentImport],
+    site: Option<&'a str>,
+    prefetch_disabled: bool,
+    /// Shadow-relative specifier of the materialised `mdx-components.tsx`
+    /// (sub-issue #616). When `Some`, emit a default `import` of the file
+    /// plus the `globalThis.__zfb.mdxComponents` installer. `None` => omit.
+    mdx_components_import_spec: Option<&'a str>,
+}
+
 /// Generate the `entry.mjs` module that re-exports `routes`,
 /// `hydrateIsland`, and a Workers-style `default { fetch }` wrapper
 /// driven by `createPageRouter` from `@takazudo/zfb-runtime`. This is
@@ -2548,20 +2565,17 @@ fn write_synthetic_tsconfig(
 /// runtime `bridge?.get(...)` calls fall through to the
 /// `<pre data-zfb-content-fallback>` shape, matching the behaviour of
 /// builds with no content collections.
-#[allow(clippy::too_many_arguments)]
 fn write_entry_module(
     shadow: &Path,
     routes: &[RouteEntry],
-    render_to_string_module: &str,
-    content_snapshot_json: Option<&str>,
-    content_imports: &[ContentImport],
-    site: Option<&str>,
-    prefetch_disabled: bool,
-    // Shadow-relative specifier of the materialised `mdx-components.tsx`
-    // (sub-issue #616). When `Some`, emit a default `import` of the file
-    // plus the `globalThis.__zfb.mdxComponents` installer. `None` => omit.
-    mdx_components_import_spec: Option<&str>,
+    inputs: &EntryModuleInputs<'_>,
 ) -> Result<()> {
+    let render_to_string_module = inputs.render_to_string_module;
+    let content_snapshot_json = inputs.content_snapshot_json;
+    let content_imports = inputs.content_imports;
+    let site = inputs.site;
+    let prefetch_disabled = inputs.prefetch_disabled;
+    let mdx_components_import_spec = inputs.mdx_components_import_spec;
     use std::fmt::Write as _;
 
     // Static-HTML routes are emitted verbatim by the renderer and must
@@ -3510,12 +3524,14 @@ mod tests {
         write_entry_module(
             shadow,
             &routes,
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3593,12 +3609,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &imports,
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &imports,
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3667,12 +3685,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3700,12 +3720,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            Some("https://example.com"),
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: Some("https://example.com"),
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3745,12 +3767,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3773,12 +3797,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            true,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: true,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3818,12 +3844,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3871,12 +3899,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            Some("./mdx-components.tsx"),
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: Some("./mdx-components.tsx"),
+            },
         )
         .unwrap();
 
@@ -3923,12 +3953,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[], // zero content imports
-            None,
-            false,
-            Some("./mdx-components.tsx"),
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[], // zero content imports
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: Some("./mdx-components.tsx"),
+            },
         )
         .unwrap();
 
@@ -3955,12 +3987,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
 
@@ -3994,12 +4028,14 @@ mod tests {
         write_entry_module(
             shadow,
             &[],
-            "preact-render-to-string",
-            None,
-            &[],
-            None,
-            false,
-            Some("./mdx-components.tsx"),
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: Some("./mdx-components.tsx"),
+            },
         )
         .unwrap();
 
@@ -4222,12 +4258,14 @@ mod tests {
         write_entry_module(
             &shadow_root,
             &[],
-            "preact-render-to-string",
-            None,
-            &imports,
-            None,
-            false,
-            None,
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &imports,
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
         )
         .unwrap();
         let entry = fs::read_to_string(shadow_root.join(SHADOW_ENTRY_FILENAME)).unwrap();
@@ -4359,7 +4397,19 @@ mod tests {
         // is the documented zero-routes behaviour.
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", None, &[], None, false, None).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "react-dom/server",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
+        )
+        .unwrap();
 
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         assert!(body.contains("\"react-dom/server\""));
@@ -4374,7 +4424,19 @@ mod tests {
     fn entry_module_snapshot_literal(snapshot: Option<&str>) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let shadow = tmp.path();
-        write_entry_module(shadow, &[], "react-dom/server", snapshot, &[], None, false, None).unwrap();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "react-dom/server",
+                content_snapshot_json: snapshot,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+            },
+        )
+        .unwrap();
         let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
         // Pull just the assignment line so the assertion is precise.
         let prefix = "const __zfb_content_snapshot = ";
