@@ -666,6 +666,54 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         reload_renderer: None,
     };
 
+    // 3b. Eager initial render (zfb#642 / #644).
+    //
+    // `BuildOrchestrator::run` is purely watcher-driven — it renders a
+    // page only after a file-change event. Nothing else populates the
+    // dev page cache: the in-memory `PageCache` starts empty and the dev
+    // server's only HTML source is the on-disk `read_from_dist` fallback
+    // pointed at `dev_html_root` (issue #534). So without an eager render
+    // here, a fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and
+    // 404s EVERY route until the user happens to edit a file. (Before
+    // #534 the fallback read `dist/`, which a prior `pnpm build` had
+    // populated, masking the gap.)
+    //
+    // Run the initial full render NOW — synchronously, before the watcher
+    // loop is spawned and before `output::ready` announces the server —
+    // so `dev-pages/` is populated before the server can serve a single
+    // request. Mirrors the eager CSS / islands boot bundles above. Going
+    // through the orchestrator/pipeline (not the raw render callback) also
+    // primes `DevAssetPipeline.last_bytes` so the first real edit dedups
+    // correctly. A render error here is fatal: the user would otherwise
+    // stare at a wall of 404s with no clue why.
+    match orchestrator.initial_build(&ctx) {
+        Ok(Some(outcome)) => {
+            let expected_routes = dev_session.as_ref().map(|s| s.route_count()).unwrap_or(0);
+            // Surface the previously-silent zero-page failure (zfb#642):
+            // the renderer knows about routes, yet produced no HTML. Every
+            // route would 404. Make it visible on stderr instead.
+            if expected_routes > 0 && outcome.pages_rendered == 0 {
+                output::error(format!(
+                    "dev initial render produced 0 pages for {expected_routes} known route(s) — \
+                     every route will 404. This usually means the renderer failed silently; \
+                     check the bundler / runtime output above."
+                ));
+            }
+        }
+        Ok(None) => {
+            // No pages in the graph at all (renderer disabled or a
+            // project with zero SSG routes). The dev server still boots so
+            // the user can poke at it / fix the project; SSR-only routes
+            // still work via the request-time path.
+        }
+        Err(err) => {
+            output::error(format!(
+                "dev initial render failed — every route will 404 until the next \
+                 successful rebuild: {err:#}"
+            ));
+        }
+    }
+
     // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
     let on_outcome = move |outcome: &BuildOutcome| {
@@ -1057,6 +1105,14 @@ impl DevRenderSession {
             .keys()
             .map(|p| PageId::new(p.clone()))
             .collect()
+    }
+
+    /// Number of SSG source routes the renderer knows about. Used by the
+    /// eager initial-build step to detect the "0 pages rendered for N
+    /// routes" silent-failure case (zfb#642 / #644): if this is non-zero
+    /// but the initial render produced nothing, every route would 404.
+    fn route_count(&self) -> usize {
+        self.inner.routes_by_source.len()
     }
 
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
