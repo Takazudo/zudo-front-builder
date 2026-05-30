@@ -352,7 +352,6 @@ For islands specifically (Astro's branch around line 124–132 detects `astro-is
 | toc | no | n/a | (b) discarded; remount fresh |
 | doc-history | no | n/a | (b) |
 | find-bar | yes (search state survives navs) | no | (a) |
-| image-enlarge | no | n/a | (b) |
 | design-token-tweak panel | yes | no | (a) |
 
 W3D applies this table by writing or updating `data-zfb-transition-persist="<id>"` attributes on the relevant island markers in zudo-doc's layout components. Stable ID convention: kebab-case island-component name (`sidebar-tree`, `theme-toggle`, etc.).
