@@ -36,8 +36,24 @@
 //! ## Timing strategy
 //!
 //! The test uses a generous 200ms debounce and polls the HTTP endpoint with a
-//! 5s overall deadline. Poll-with-timeout (not a fixed sleep) is how the
+//! 30s overall deadline (generous for loaded CI), and a shared lock serializes
+//! the two tests so they never contend. Poll-with-timeout (not a fixed sleep) is how the
 //! zfb-watcher smoke suite handles the same flake class.
+//!
+//! ### Watcher-live handshake (ADD test)
+//!
+//! macOS FSEvents has a *per-stream startup latency*: a file CREATED in the
+//! first window after the watch stream is registered can be dropped entirely
+//! — the raw `notify` channel receives no event at all (confirmed by
+//! instrumentation: a 200ms warmup yielded zero raw events for the new file;
+//! a longer wait yielded the expected Create+Modify burst). A fixed warmup
+//! sleep is fragile under `cargo test --workspace` load. So before writing
+//! the real `foo.mdx`, the ADD test repeatedly creates fresh-named throwaway
+//! files under `content/blog/` and polls the discovery hook until one is
+//! observed — proving the stream is live (past its dead window). The dead
+//! window is per-stream, not per-path, so once any create is delivered the
+//! subsequent `foo.mdx` create is reliably delivered too. See the inline
+//! handshake comment for why fresh names (not a re-write) are required.
 //!
 //! ## Path canonicalization
 //!
@@ -58,7 +74,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use tokio::net::TcpListener;
@@ -70,6 +86,14 @@ use zfb_build::{
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
+
+/// Serialize the two real-watcher tests. Each stands up a live notify watcher
+/// plus an in-process dev server; cargo runs tests in a file concurrently by
+/// default, and under full-suite load (`cargo test --workspace`) that
+/// contention pushed the HTTP poll past its deadline (both passed when run
+/// alone or with --test-threads=1). A shared async lock forces them to run
+/// one at a time regardless of cargo's thread count.
+static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -232,6 +256,8 @@ async fn bind_ephemeral() -> (TcpListener, SocketAddr) {
 /// without the V8 rebundle step (not reachable from crate tests).
 #[tokio::test(flavor = "multi_thread")]
 async fn real_watcher_add_content_file_serves_new_route_as_200() {
+    let _serial = SERIAL.lock().await;
+
     let tmp = tempfile::tempdir().expect("tempdir");
     // Canonicalize so notify's FSEvents paths and our prefix checks agree.
     // On macOS /tmp is a symlink to /private/tmp; without canonicalization
@@ -299,9 +325,65 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         orch.run(ctx, Some(discover), |_outcome| {}).await
     });
 
-    // Give the watcher a beat to register the OS-level watch. Consistent
-    // with the existing real-watcher test's timing approach.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // ----------------------------------------------------------------
+    // 2b. Watcher-live handshake (deterministic warmup).
+    //
+    // macOS FSEvents has a per-stream startup latency: a brand-new file
+    // CREATED in the first window after the watch stream is registered can
+    // be DROPPED entirely — no Create, no Modify event reaches the watcher
+    // (confirmed by instrumentation: with a 200ms sleep, the raw notify
+    // channel received zero events for the new file; with a longer wait it
+    // received Create+Modify as expected). A fixed sleep is fragile under
+    // load (`cargo test --workspace`), so instead we prove the stream is
+    // live before writing the real file.
+    //
+    // We repeatedly create FRESH-NAMED warmup files under `content/blog/`
+    // (same operation class as the real ADD — a brand-new file create) and
+    // poll the discovery hook's invocation log until one is observed. A
+    // single warmup write would have the identical startup-window
+    // vulnerability (its own create could be dropped), and re-writing the
+    // same path only fires Modify (never re-triggers discovery), so the
+    // loop uses a new name each iteration. Once ANY warmup create is
+    // observed, the FSEvents stream is past its dead window and stays live
+    // (startup latency is per-stream, not per-path), so the subsequent
+    // `foo.mdx` create lands in the live window.
+    //
+    // Separate deadline + panic message so a genuinely dead watcher fails
+    // fast and is diagnosable as a watcher problem, not a discovery
+    // regression. Warmup files create `/blog/__warmup_*` routes, never
+    // `/blog/foo`, so the baseline 404 assertion below still holds.
+    {
+        let warmup_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut warmup_idx = 0u32;
+        let mut watcher_live = false;
+        while std::time::Instant::now() < warmup_deadline {
+            let warmup = project.join(format!("content/blog/__warmup_{warmup_idx}.mdx"));
+            std::fs::write(&warmup, "---\ntitle: warmup\n---\nwarmup\n")
+                .expect("write warmup content file");
+            warmup_idx += 1;
+
+            // Give this warmup's event a beat to propagate through
+            // FSEvents → debounce (200ms) → hook.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+
+            let saw_warmup = hook_invocations.lock().unwrap().iter().flatten().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("__warmup_"))
+                    .unwrap_or(false)
+            });
+            if saw_warmup {
+                watcher_live = true;
+                break;
+            }
+        }
+        assert!(
+            watcher_live,
+            "watcher never became live: no warmup create reached the discovery hook within 10s \
+             (the FSEvents stream never started delivering events — a watcher-layer problem, \
+             not a discovery regression)",
+        );
+    }
 
     // ----------------------------------------------------------------
     // 3. Confirm /blog/foo 404s BEFORE the file is created (baseline).
@@ -330,10 +412,10 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
 
     // ----------------------------------------------------------------
     // 5. Poll the new route until it returns 200.
-    //    Overall deadline: 5s — far longer than the 200ms debounce + tick
+    //    Overall deadline: 30s — far longer than the 200ms debounce + tick
     //    lag, short enough to fail fast on a genuine regression.
     // ----------------------------------------------------------------
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut got_200 = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -360,7 +442,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
 
     assert!(
         got_200,
-        "GET /blog/foo must return 200 within 5s after writing the new content file \
+        "GET /blog/foo must return 200 within 30s after writing the new content file \
          (real watcher → Created kind → discovery hook → render → 200)",
     );
 
@@ -413,6 +495,8 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
 /// the endpoint must return 200 after the edit.
 #[tokio::test(flavor = "multi_thread")]
 async fn real_watcher_edit_existing_file_still_hot_reloads() {
+    let _serial = SERIAL.lock().await;
+
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path().canonicalize().expect("canonicalize project");
 
@@ -508,9 +592,9 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     // 4. Poll until the route returns 200. The exact body doesn't change
     //    (our stub renderer uses the output path as body, not the source
     //    content), but the endpoint must not regress to 404 or 500.
-    //    Overall deadline: 5s.
+    //    Overall deadline: 30s.
     // ----------------------------------------------------------------
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut got_200_after_edit = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -532,7 +616,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
 
     assert!(
         got_200_after_edit,
-        "GET /blog/hello must return 200 within 5s after editing hello.mdx (hot-reload regression guard)",
+        "GET /blog/hello must return 200 within 30s after editing hello.mdx (hot-reload regression guard)",
     );
 
     // ----------------------------------------------------------------
