@@ -890,8 +890,8 @@ mod tests {
         let cfg_a = CollectionConfig::new("a", tmp.path.join("a"));
         let cfg_b = CollectionConfig::new("b", tmp.path.join("b"));
 
-        let solo_a = build_snapshot(&[cfg_a.clone()]).expect("solo a");
-        let solo_b = build_snapshot(&[cfg_b.clone()]).expect("solo b");
+        let solo_a = build_snapshot(std::slice::from_ref(&cfg_a)).expect("solo a");
+        let solo_b = build_snapshot(std::slice::from_ref(&cfg_b)).expect("solo b");
         let combined = build_snapshot(&[cfg_a, cfg_b]).expect("combined");
 
         let combined_a = combined.collections.get("a").expect("combined a");

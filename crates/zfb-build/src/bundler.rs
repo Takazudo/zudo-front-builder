@@ -4125,12 +4125,11 @@ mod tests {
         assert_eq!(imports.len(), 2, "expected 2 MDX imports, got {imports:?}");
         let rels: Vec<&str> = imports.iter().map(|i| i.shadow_rel_path.as_str()).collect();
         assert!(
-            rels.iter().any(|r| *r == "content/docs/intro.mdx"),
+            rels.contains(&"content/docs/intro.mdx"),
             "missing top-level intro entry; got: {rels:?}"
         );
         assert!(
-            rels.iter()
-                .any(|r| *r == "content/docs/getting-started/installation.mdx"),
+            rels.contains(&"content/docs/getting-started/installation.mdx"),
             "missing nested installation entry; got: {rels:?}"
         );
 

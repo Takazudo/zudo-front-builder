@@ -278,7 +278,7 @@ fn validate_optional_attr_missing_no_default_absent_from_map() {
     assert!(warnings.is_empty());
     let map = result.expect("optional missing attr should not error");
     assert!(
-        map.get("subtitle").is_none(),
+        !map.contains_key("subtitle"),
         "absent optional not in map"
     );
 }

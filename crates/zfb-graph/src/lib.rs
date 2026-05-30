@@ -231,6 +231,12 @@ pub struct DependencyGraph {
     assets_css_reverse: HashMap<PathBuf, HashSet<PageId>>,
 }
 
+impl Default for DependencyGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DependencyGraph {
     /// Build an empty graph. The default global set is empty; the caller
     /// should register their `zfb.config.ts` (and any other always-invalidates

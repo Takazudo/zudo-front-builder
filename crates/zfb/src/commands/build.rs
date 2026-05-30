@@ -79,7 +79,7 @@ use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
     embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    is_ssr_route, DeferredDynamicRoute, DynamicResolvedEntry, ResolvedRouteParams,
+    is_ssr_route, DeferredDynamicRoute, DynamicResolvedEntry,
     RouteUniversePlan, WorkerDispatch,
 };
 
@@ -151,8 +151,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
                     virtual_sources.insert(specifier.clone(), source);
                 }
                 Err(e) => {
-                    return Err(e)
-                        .map_err(zfb_build::annotate_with_plugin_error)
+                    return Err(zfb_build::annotate_with_plugin_error(e))
                         .with_context(|| {
                             format!(
                                 "plugin lifecycle: failed to load virtual module \
@@ -1354,7 +1353,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `<Content>`. Gated on the file existing so a project without it gets
     // byte-for-byte identical output. The bundler copies it into the shadow
     // root and emits the `globalThis.__zfb.mdxComponents` installer.
-    bundler_input.mdx_components_file = discover_mdx_components_file(&project_root);
+    bundler_input.mdx_components_file = discover_mdx_components_file(project_root);
     // Inject project-side resolution context so esbuild can find
     // user dependencies + path aliases. Without these the shadow
     // tempdir has no `node_modules` to walk into and no tsconfig
@@ -1666,7 +1665,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // file's stable URLs to the hashed equivalents in place. This is
     // a no-op (no asset writes, HTML round-tripped) when both
     // emitter slots returned `None`.
-    if !prod_asset_inputs.css.is_none() || !prod_asset_inputs.islands.is_none() {
+    if prod_asset_inputs.css.is_some() || prod_asset_inputs.islands.is_some() {
         let prod_pages = build_prod_rendered_files(
             outdir,
             &route_universe_for_rewrite,
@@ -3160,8 +3159,7 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3197,8 +3195,7 @@ mod tests {
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.adapter = Some("   ".into());
+        let cfg = Config { adapter: Some("   ".into()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -3434,8 +3431,7 @@ mod tests {
                 islands: None,
             },
         );
-        let mut cfg = Config::default();
-        cfg.base = Some("/pj/zudo-doc/".to_string());
+        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3530,8 +3526,7 @@ mod tests {
                 }),
             },
         );
-        let mut cfg = Config::default();
-        cfg.base = Some("/pj/zudo-doc/".to_string());
+        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3756,8 +3751,7 @@ mod tests {
             "export default function() { return null }\n",
         )
         .unwrap();
-        let mut cfg = Config::default();
-        cfg.tailwind = Some(crate::config::TailwindConfig { enabled: false });
+        let cfg = Config { tailwind: Some(crate::config::TailwindConfig { enabled: false }), ..Config::default() };
         let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
             .expect("should not error");
         assert!(
@@ -4019,8 +4013,7 @@ mod tests {
 
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.base = Some("/pj/test/".to_string());
+        let cfg = Config { base: Some("/pj/test/".to_string()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
 
         run_build(BuildArgsResolved {
@@ -4408,9 +4401,7 @@ mod tests {
             static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
-        cfg.output = OutputMode::Static;
+        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), output: OutputMode::Static, ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -4481,8 +4472,7 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -4586,8 +4576,7 @@ mod tests {
         // catch-all route. We use FakeRunner which records its inputs;
         // the SSR route must NOT appear in the deferred slice.
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let mut cfg = Config::default();
-        cfg.adapter = Some("@takazudo/zfb-adapter-cloudflare".into());
+        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,

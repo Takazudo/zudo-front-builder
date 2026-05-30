@@ -76,9 +76,8 @@ fn frontmatter_yaml_error_frames_offending_line() {
     // Snippet must include the offending bracketed value.
     assert!(out.contains("title: [unterminated"), "snippet missing: {out}");
     // Exactly one caret on its own line.
-    assert_eq!(
+    assert!(
         out.matches("\n  | ").filter(|_| true).count() >= 1,
-        true,
         "expected gutter rows"
     );
     assert!(out.matches("^").count() >= 1, "expected caret: {out}");
