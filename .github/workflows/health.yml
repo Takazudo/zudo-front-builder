@@ -24,8 +24,10 @@ jobs:
   health:
     runs-on: ubuntu-latest
     # V8 first compile costs 15-30 min; subsequent runs hit the Swatinem cache
-    # and typically complete well within this budget.
-    timeout-minutes: 45
+    # and typically complete well within this budget. Headroom bumped 45 -> 60
+    # when this job started *running* the test suite (issue #638), not just
+    # compiling it — test execution had never been timed in CI before.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -57,7 +59,35 @@ jobs:
 
       - run: pnpm format:check
 
+      # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
+      # build.rs to download + SHA-verify + stage the pinned esbuild 0.25.12 into
+      # crates/zfb/binaries/esbuild/esbuild — the slot that
+      # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
+      # integration tests run below.
       - run: cargo build --workspace --all-targets
+
+      # Guard (issue #638): the esbuild-gated integration tests skip via an early
+      # `return` (recorded by cargo as a PASS) when no esbuild binary is found, so
+      # a green `cargo test` alone cannot prove they actually executed. Fail loudly
+      # here if build.rs did not stage the binary, making "green but silently
+      # skipped" impossible. (The binary's version + SHA-256 are already verified
+      # upstream by crates/zfb/build.rs before staging; the `--version` run here is
+      # just a smoke test that the staged binary actually executes on this runner's
+      # architecture — a corrupt or wrong-arch binary fails the step.)
+      - name: Assert esbuild was provisioned for the test suite
+        run: |
+          SLOT="crates/zfb/binaries/esbuild/esbuild"
+          if [ ! -x "$SLOT" ]; then
+            echo "::error::esbuild not staged at $SLOT — the esbuild-gated tests would silently skip (issue #638). Failing the job instead."
+            exit 1
+          fi
+          "$SLOT" --version
+
+      # Run the workspace test suite. CI previously only *compiled* the test code
+      # (the cargo build --all-targets step above) but never executed it, so unit
+      # and integration regression guards — including the #633 react/jsx-runtime ->
+      # preact/jsx-runtime islands alias guards — were local-only (issue #638).
+      - run: cargo test --workspace
 
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
