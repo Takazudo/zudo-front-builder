@@ -31,22 +31,49 @@ async fn touching_file_emits_change() {
     let target = content_dir.join("hello.md");
     fs::write(&target, b"# hi\n").expect("write file");
 
-    // 1s is generous: 50ms debounce + worst-case ~25ms tick lag + plenty
-    // of slack for noisy CI.
-    let change = timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("change arrived in time")
-        .expect("channel still open");
+    // Canonicalize the target once so we can compare against it below.
+    // Canonicalizing upfront also ensures the file exists before we try
+    // to call canonicalize on reported paths (macOS FSEvents can report
+    // the parent directory path in addition to the file path).
+    let target_canon = std::fs::canonicalize(&target)
+        .expect("canonicalize target");
 
-    // The reported path should be exactly the file we wrote (notify
-    // reports absolute paths since we watched an absolute path).
-    assert_eq!(change.path, target, "unexpected change path");
+    // Drain events until we find one whose canonical path matches the
+    // file we wrote. We loop because macOS FSEvents may fire a change for
+    // the parent directory (e.g. `content/`) in addition to — or instead
+    // of — the file itself, and we don't want to fail on those extra
+    // events. Overall deadline is 1s: 50ms debounce + worst-case ~25ms
+    // tick lag + plenty of slack for noisy CI.
+    let file_change = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("timed out waiting for target-file change event");
+
+            let change = timeout(remaining, rx.recv())
+                .await
+                .expect("change arrived in time")
+                .expect("channel still open");
+
+            // Canonicalize both sides so that symlinked temp roots (e.g.
+            // macOS /tmp -> /private/tmp) do not cause a spurious mismatch.
+            // The `canonicalize` call can fail if the path no longer exists
+            // (e.g. a transient directory event); treat that as "not our
+            // file" and keep draining.
+            if let Ok(canon) = std::fs::canonicalize(&change.path) {
+                if canon == target_canon {
+                    break change;
+                }
+            }
+        }
+    };
 
     // Kind should be Created or Modified — either is acceptable; some
     // platforms collapse the create+write into a single Modify.
     assert!(
-        matches!(change.kind, ChangeKind::Created | ChangeKind::Modified),
+        matches!(file_change.kind, ChangeKind::Created | ChangeKind::Modified),
         "unexpected kind: {:?}",
-        change.kind
+        file_change.kind
     );
 }
