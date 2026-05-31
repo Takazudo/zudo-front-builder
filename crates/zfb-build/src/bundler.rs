@@ -3285,9 +3285,16 @@ fn rebase_tsconfig_paths_to_shadow(
             if !already_shadowed {
                 if let Ok(rel) = prefix_path.strip_prefix(project_root) {
                     // Under project_root → dual-target, shadow-first.
-                    // `shadow.join("")` (empty rel, the whole-root `@/*`
-                    // case) yields `shadow` itself, which is correct.
-                    let shadow_prefix = shadow.join(rel);
+                    // `rel` is empty for the whole-root `@/* -> /root/*`
+                    // (baseUrl ".") case — the most common alias shape.
+                    // `shadow.join("")` would yield `<shadow>/` and produce a
+                    // malformed `<shadow>//*` target; use `shadow` directly so
+                    // the shadow-first entry is a clean `<shadow>/*`.
+                    let shadow_prefix = if rel.as_os_str().is_empty() {
+                        shadow.to_path_buf()
+                    } else {
+                        shadow.join(rel)
+                    };
                     let mut shadow_target = shadow_prefix.to_string_lossy().into_owned();
                     shadow_target.push_str(suffix);
                     push_unique(&mut new_targets, shadow_target);
@@ -4192,6 +4199,52 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    #[test]
+    fn rebase_tsconfig_paths_dual_target_under_root_passthrough_external() {
+        let root = Path::new("/proj");
+        let shadow = Path::new("/tmp/shadowX");
+        let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // whole-root `@/* -> /proj/*` (baseUrl "." — the most common alias shape;
+        // empty `rel` must NOT produce a `<shadow>//*` double-slash target).
+        paths.insert("@/*".to_string(), vec!["/proj/*".to_string()]);
+        // subdir alias
+        paths.insert("@lib/*".to_string(), vec!["/proj/src/lib/*".to_string()]);
+        // single-file bare-specifier remap (no `/*` suffix)
+        paths.insert("msw".to_string(), vec!["/proj/src/mocks/msw.ts".to_string()]);
+        // external target (not under project_root) — must pass through unchanged
+        paths.insert("@ext/*".to_string(), vec!["/other/pkg/*".to_string()]);
+
+        let out = rebase_tsconfig_paths_to_shadow(&paths, root, shadow);
+
+        // whole-root: clean `<shadow>/*` shadow-first, NOT `<shadow>//*`
+        assert_eq!(
+            out["@/*"],
+            vec!["/tmp/shadowX/*".to_string(), "/proj/*".to_string()]
+        );
+        assert!(
+            !out["@/*"][0].contains("//"),
+            "bare-root rebase must not double-slash: {:?}",
+            out["@/*"]
+        );
+        // subdir + single-file: shadow-first dual-target
+        assert_eq!(
+            out["@lib/*"],
+            vec![
+                "/tmp/shadowX/src/lib/*".to_string(),
+                "/proj/src/lib/*".to_string()
+            ]
+        );
+        assert_eq!(
+            out["msw"],
+            vec![
+                "/tmp/shadowX/src/mocks/msw.ts".to_string(),
+                "/proj/src/mocks/msw.ts".to_string()
+            ]
+        );
+        // external: single target, unchanged (keeps bundler_exact_match_resolution semantics)
+        assert_eq!(out["@ext/*"], vec!["/other/pkg/*".to_string()]);
+    }
 
     #[test]
     fn render_css_module_js_emits_sorted_default_export() {
