@@ -1,0 +1,32 @@
+---
+title: v0.1.0-next.22
+sidebar_position: 1022
+---
+
+# v0.1.0-next.22
+
+Released: 2026-05-31
+
+Bundler, config-eval, and markdown parity fixes for Astro/Vite → zfb migrations (the zzmod styleguide-v2 migration surfaced all of these), plus a follow-up fix so the new transforms compose with tsconfig path aliases in a single build.
+
+## Features
+
+- feat(bundler): implement Vite `import.meta.glob` eager transform — `import.meta.glob('…', { eager: true })` with a string-literal pattern is expanded Rust-side during shadow materialisation; unsupported forms (non-eager / dynamic pattern / `import()` mode) error with a clear message (#665) (9fe4dfa)
+- feat(bundler): add `bundle.exclude` glob knob — skip materialise + glob-expansion for matched files so a single un-bundlable file under `components/**` cannot fail the whole build (#664) (08168ba)
+- feat(markdown): add `hardBreaks` option (remark-breaks parity) — converts every soft line break to `<br>`; default `false` (#662) (401c5b6)
+
+## Bug Fixes
+
+- fix(config-eval): install web polyfills (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`) into the config-eval V8 isolate so every `zfb.config.ts` loads — previously failed with `ReferenceError: URL is not defined` (#663) (0258c48)
+- fix(bundler): follow tsconfig `extends` chains and resolve non-`.` `baseUrl` when reading `compilerOptions.paths` (#666) (9970155)
+- fix(bundler): make in-shadow transforms (`import.meta.glob`, CSS-modules) compose with tsconfig paths + a real `node_modules` in a single build — via copy-not-symlink source materialisation (when `--preserve-symlinks` is omitted) plus a dual-target alias rebase (shadow-first, real-fallback). The `--preserve-symlinks` gate is unchanged, so workspace path-alias resolution is preserved (#675) (7e34145)
+- fix(bundler): emit a clean shadow target for the whole-root `@/* → ./*` alias (no double-slash) (#675) (4706ea7)
+
+## Other Changes
+
+- test(migration): end-to-end confirm that all five fixes compose in one build (#673) (8ba6ead)
+- test(migration): make the `bundle.exclude` leg load-bearing in the combined confirm test (#675) (8e93a58)
+
+## Notes
+
+The composition fix (#675) covers relative imports and `@/`-style aliases that resolve into mirrored source dirs (including the common whole-root `@/* → ./*`). One documented residual: alias targets that are **out-of-root** (`../shared/*`), **gitignored**, or **top-level files** still resolve (via the real-fallback) but their in-shadow transforms are not applied — unchanged from prior behaviour, never a build failure.
