@@ -272,3 +272,139 @@ fn snippet(s: &str) -> String {
     }
     format!("{}…[{} bytes truncated]", &s[..800], s.len() - 800)
 }
+
+/// Vite `import.meta.glob('…', { eager: true })` is expanded Rust-side
+/// inside the shadow tree BEFORE esbuild runs (#665 / #670). esbuild leaves
+/// the macro untransformed, so if expansion didn't happen the literal
+/// `import.meta.glob(` would survive into the bundle and blow up at SSR.
+///
+/// This mirrors the `import.meta.env.PROD` substitution test: build a fixture
+/// that globs a sibling directory, bundle it, and assert (a) the literal macro
+/// text is ABSENT from the emitted bundle and (b) the expanded relative keys
+/// are present. Gated on `locate_esbuild()`; self-skips when no binary.
+#[test]
+fn import_meta_glob_eager_is_expanded_before_esbuild() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[import_meta_glob_eager_is_expanded_before_esbuild] no esbuild binary; \
+             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    for d in ["pages", "components/widgets"] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+
+    // Globbed siblings live under components/widgets/ (NOT pages/) so
+    // derive_route does not turn them into surprise routes.
+    fs::write(
+        root.join("components/widgets/alpha.tsx"),
+        "export const alpha = 'A';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("components/widgets/beta.tsx"),
+        "export const beta = 'B';\n",
+    )
+    .unwrap();
+
+    // A registry module under components/ that uses the eager glob macro.
+    // It is reached from the page via the relative import below.
+    fs::write(
+        root.join("components/registry.tsx"),
+        r#"
+            const widgets = import.meta.glob('./widgets/*.tsx', { eager: true });
+            export const widgetKeys = Object.keys(widgets).sort().join(",");
+        "#,
+    )
+    .unwrap();
+
+    // Page imports the registry so the whole graph is reachable from the
+    // single esbuild entrypoint.
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"
+            import { widgetKeys } from "../components/registry";
+            export default function Home() {
+              return widgetKeys;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let input = BundlerInput {
+        project_root: root.clone(),
+        pages_dir: PathBuf::from("pages"),
+        content_dir: PathBuf::from("content"),
+        components_dir: PathBuf::from("components"),
+        layouts_dir: PathBuf::from("layouts"),
+        framework: Framework::Preact,
+        define_vars: HashMap::new(),
+        tsconfig_paths: BTreeMap::new(),
+        external: vec![
+            "preact".into(),
+            "preact-render-to-string".into(),
+            "@takazudo/zfb-runtime".into(),
+        ],
+        outdir: root.join("dist"),
+        mode: BundleMode::Production,
+        minify: false,
+        esbuild_binary: Some(esbuild.clone()),
+        mock_subprocess_output: None,
+        content_snapshot_json: None,
+        node_modules_dir: None,
+        node_modules_preserve_symlinks: false,
+        content_collections: Vec::new(),
+        strip_md_ext: false,
+        code_highlight_theme: None,
+        code_highlight_themes_dir: None,
+        resolve_markdown_links: None,
+        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
+        site: None,
+        prefetch_disabled: false,
+        toc: None,
+        external_links: None,
+        cjk_friendly: true,
+        markdown_features: None,
+        plugin_alias_entries: Vec::new(),
+        plugin_virtual_modules: Vec::new(),
+        worker_only_routes: None,
+        bundle_basename: None,
+        css_module_class_maps: std::collections::HashMap::new(),
+        mdx_components_file: None,
+    };
+
+    let out = bundle(input).expect("import.meta.glob end-to-end bundle should succeed");
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+
+    // 1. The Vite-only macro must NOT survive into the emitted bundle.
+    assert!(
+        !body.contains("import.meta.glob("),
+        "import.meta.glob( should have been expanded Rust-side, but it survives:\n--- bundle ---\n{}",
+        snippet(&body)
+    );
+
+    // 2. The expanded relative keys are present (esbuild keeps the string
+    //    literals from the generated object literal).
+    assert!(
+        body.contains("./widgets/alpha.tsx") && body.contains("./widgets/beta.tsx"),
+        "expanded glob keys should be present in the bundle:\n--- bundle ---\n{}",
+        snippet(&body)
+    );
+
+    // 3. Sanity: the bundle re-parses cleanly through esbuild.
+    let parse = Command::new(&esbuild)
+        .arg(&out.bundle_path)
+        .arg("--bundle=false")
+        .arg("--log-level=warning")
+        .output()
+        .expect("re-parse via esbuild");
+    assert!(
+        parse.status.success(),
+        "expanded bundle is not parseable by esbuild: stderr={}",
+        String::from_utf8_lossy(&parse.stderr)
+    );
+}
