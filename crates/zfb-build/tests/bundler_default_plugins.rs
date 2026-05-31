@@ -381,6 +381,7 @@ fn make_input(
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     }
 }
 

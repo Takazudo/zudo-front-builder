@@ -1507,6 +1507,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
     bundler_input.hard_breaks =
         crate::config::resolve_hard_breaks(config.markdown.as_ref());
+    // #664 / #672 — thread `bundle.exclude` so the bundler keeps the listed
+    // project-relative globs out of the esbuild graph (both the shadow-tree
+    // copy and the #665 import.meta.glob expansion). Empty → skip nothing.
+    bundler_input.bundle_exclude =
+        crate::config::resolve_bundle_exclude(config.bundle.as_ref());
     // #586 — thread `markdown.features` into the bundler so opt-in feature
     // plugins (mermaid, …) fire per the configured toggles.
     // `None` keeps the legacy always-on chain, byte-identical to today.

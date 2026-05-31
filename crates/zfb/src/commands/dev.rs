@@ -1522,6 +1522,11 @@ fn assemble_and_bundle_dev(
         crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
     bundler_input.hard_breaks =
         crate::config::resolve_hard_breaks(cfg.markdown.as_ref());
+    // #664 / #672 — thread `bundle.exclude` so `zfb dev` keeps the same
+    // project-relative globs out of the esbuild graph as the production build.
+    // Empty → skip nothing. Mirrors `commands/build.rs`.
+    bundler_input.bundle_exclude =
+        crate::config::resolve_bundle_exclude(cfg.bundle.as_ref());
     // #586 — thread `markdown.features` so dev rendering honours the opt-in
     // feature plugins, matching the production build. Mirrors
     // `commands/build.rs`. `None` keeps the legacy always-on chain.

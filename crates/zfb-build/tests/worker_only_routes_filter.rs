@@ -126,6 +126,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         bundle_basename: None,
         css_module_class_maps: HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     };
 
     let out = bundle(input).expect("bundle should succeed");

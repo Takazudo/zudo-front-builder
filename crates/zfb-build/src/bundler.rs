@@ -647,6 +647,33 @@ pub struct BundlerInput {
     /// re-runs every build and `zfb dev` / preview pick up edits with no
     /// special-casing. Default: `None`.
     pub mdx_components_file: Option<PathBuf>,
+
+    /// Project-relative gitignore-style globs for source files the bundler
+    /// must keep OUT of the esbuild graph.
+    ///
+    /// Mirrors `zfb::config::resolve_bundle_exclude(config.bundle)`. Each
+    /// pattern is matched against a candidate file's path relative to
+    /// [`Self::project_root`], in POSIX form (e.g.
+    /// `components/Foo.stories.tsx`, `components/**/*.stories.tsx`). A matched
+    /// file is applied at TWO consistent points so they cannot diverge:
+    ///
+    /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
+    ///    tree (the file is never present for esbuild to resolve).
+    /// 2. The #665 `import.meta.glob` eager-expansion seam
+    ///    ([`expand_import_meta_glob`]) DROPS it from any glob expansion, so
+    ///    an excluded file is never emitted as a static import (which would
+    ///    otherwise make esbuild error on the generated import).
+    ///
+    /// Why this is needed: a `--platform=neutral` worker bundle rejects
+    /// CJS-only packages resolved only via `main`/`module` or a
+    /// `require`-only `exports` condition (e.g. `msw` → `path-to-regexp@6`).
+    /// Once #665's eager glob over `components/**/*.stories.tsx` lands, the
+    /// build newly pulls such a package in; excluding the offending file
+    /// keeps it green.
+    ///
+    /// Empty (the default) → no files are skipped; the build output is
+    /// byte-for-byte identical to a build without this knob.
+    pub bundle_exclude: Vec<String>,
 }
 
 impl BundlerInput {
@@ -707,6 +734,7 @@ impl BundlerInput {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         }
     }
 }
@@ -899,6 +927,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // After the walk completes, handled according to `on_broken_links`.
     let mut all_broken_links: Vec<(String, String)> = Vec::new(); // (file_path, url)
 
+    // Compile `bundle.exclude` once and share it across every
+    // `materialise_shadow` call (pages / content / components / layouts /
+    // extra top-level dirs). Empty patterns → a matcher that never matches,
+    // so an unset `bundle.exclude` is byte-identical to a build without the
+    // knob. An invalid glob is a hard, clearly-named build error.
+    let bundle_exclude = BundleExcludeMatcher::new(&input.bundle_exclude)?;
+
     // 2. Materialise the shadow tree.
     let work = tempfile::Builder::new()
         .prefix("zfb-bundler-")
@@ -933,6 +968,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.cjk_friendly,
             input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
             &mut broken,
         )
         .with_context(|| {
@@ -1020,6 +1056,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.cjk_friendly,
             input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
             &mut broken,
         )
         .with_context(|| {
@@ -1052,6 +1089,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.cjk_friendly,
             input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
             &mut broken,
         )
         .with_context(|| {
@@ -1083,6 +1121,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.cjk_friendly,
             input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
             &mut broken,
         )
         .with_context(|| {
@@ -1148,6 +1187,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.cjk_friendly,
                 input.hard_breaks,
                 input.markdown_features.as_ref(),
+                &bundle_exclude,
                 &mut broken,
             )
             .with_context(|| {
@@ -1565,6 +1605,7 @@ fn materialise_shadow(
     cjk_friendly: bool,
     hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    bundle_exclude: &BundleExcludeMatcher,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1584,6 +1625,17 @@ fn materialise_shadow(
     // `src/routes/`) still produces routes correctly because the
     // bundler always materialises the shadow root under `pages/`.
     let is_pages_dir = dest.file_name().map(|s| s == "pages").unwrap_or(false);
+
+    // Single `bundle.exclude` predicate used at BOTH application points in
+    // this function — the per-file copy/symlink skip below, and the #665
+    // `import.meta.glob` expansion seam (`materialise_source_file` →
+    // `expand_import_meta_glob`). One closure means the two can never diverge.
+    //
+    // It takes an ABSOLUTE path (the shape `expand_import_meta_glob` hands its
+    // `is_excluded` predicate, per the #665 contract) and relativises it
+    // against `project_root` internally. When `bundle.exclude` is empty the
+    // matcher never matches, so this is always-false → skip nothing.
+    let is_excluded = |abs: &Path| bundle_exclude.is_excluded(abs, project_root);
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
     // walk loop so the six default plugins (admonitions, CJK-friendly
@@ -1677,6 +1729,18 @@ fn materialise_shadow(
             continue;
         }
         if !entry.file_type().is_file() {
+            continue;
+        }
+
+        // `bundle.exclude` skip (#664 / #672). A matched file is never
+        // materialised into the shadow tree — so esbuild can never resolve
+        // it — AND, because we `continue` before the route-recording block
+        // below, an excluded page yields no route (correct: an excluded
+        // source must not exist anywhere in the build). The predicate takes
+        // the file's absolute path (`from`); empty `bundle.exclude` makes it
+        // always-false, so this skip never fires and behaviour is identical
+        // to a build without the knob.
+        if is_excluded(from) {
             continue;
         }
 
@@ -1804,10 +1868,12 @@ fn materialise_shadow(
                 .with_context(|| format!("write md page shell to {}", to.display()))?;
         } else {
             // Non-MDX source: copy/symlink, expanding eager
-            // `import.meta.glob(...)` in JS/TS files first. Wave 1 passes a
-            // no-op exclude; #672 (Wave 2) supplies the real `bundle.exclude`
-            // predicate at this call site.
-            materialise_source_file(from, &to, &|_| false)?;
+            // `import.meta.glob(...)` in JS/TS files first. The SAME
+            // `bundle.exclude` predicate used by the per-file skip above is
+            // threaded into the glob expansion (#665's `is_excluded` seam) so
+            // an excluded file is never emitted as a static import — which
+            // would otherwise make esbuild error on the generated import.
+            materialise_source_file(from, &to, &is_excluded)?;
         }
 
         // Routes only collected from the pages root.
@@ -2938,6 +3004,68 @@ fn path_to_posix_string(p: &Path) -> String {
         .join("/")
 }
 
+/// Compiled matcher for `BundlerInput::bundle_exclude`.
+///
+/// Patterns are project-relative gitignore-style globs (e.g.
+/// `components/*.stories.tsx`, `components/**/*.stories.tsx`). The match key
+/// is a candidate file's path RELATIVE TO `project_root`, in POSIX form, so a
+/// pattern written in `zfb.config.ts` lines up with how the user thinks about
+/// the tree regardless of host OS path separators.
+///
+/// `literal_separator(true)` gives gitignore/Vite `*`-vs-`**` semantics: `*`
+/// stops at `/`, `**` recurses — the same option `glob_match_relative` uses
+/// for `import.meta.glob`, so the two surfaces agree on what a pattern means.
+///
+/// An empty pattern list compiles to a matcher that never matches, so an
+/// unset / empty `bundle.exclude` is byte-identical to a build without the
+/// knob (skip nothing) by construction — not by relying on an empty set to
+/// "happen to" match nothing.
+#[derive(Debug)]
+struct BundleExcludeMatcher {
+    set: globset::GlobSet,
+}
+
+impl BundleExcludeMatcher {
+    /// Compile the patterns. Invalid globs surface as an `anyhow::Error` (the
+    /// config came from the user; a typo should be a clear build error, not a
+    /// silent no-op).
+    fn new(patterns: &[String]) -> Result<Self> {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pat in patterns {
+            let glob = globset::GlobBuilder::new(pat)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| anyhow!("zfb bundler: invalid bundle.exclude pattern {pat:?}: {e}"))?;
+            builder.add(glob);
+        }
+        let set = builder
+            .build()
+            .map_err(|e| anyhow!("zfb bundler: failed to compile bundle.exclude globset: {e}"))?;
+        Ok(Self { set })
+    }
+
+    /// `true` when `abs` (an absolute path on disk) is under `project_root`
+    /// and its project-relative POSIX path matches any compiled pattern.
+    ///
+    /// A path outside `project_root` (e.g. a workspace package symlinked from
+    /// elsewhere) cannot be expressed as a project-relative pattern, so it is
+    /// never excluded — matching the user's mental model that
+    /// `bundle.exclude` patterns are anchored at the project root.
+    fn is_excluded(&self, abs: &Path, project_root: &Path) -> bool {
+        if self.set.is_empty() {
+            return false;
+        }
+        let Ok(rel) = abs.strip_prefix(project_root) else {
+            return false;
+        };
+        let rel_posix = path_to_posix_string(rel);
+        if rel_posix.is_empty() {
+            return false;
+        }
+        self.set.is_match(&rel_posix)
+    }
+}
+
 /// Derive a URL route from a path **relative to** `pages_dir`.
 ///
 /// Returns `None` for non-page files (e.g. an accidental `.txt` inside
@@ -3962,6 +4090,7 @@ mod tests {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         }
     }
 
@@ -5229,6 +5358,7 @@ mod tests {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -5441,6 +5571,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5656,6 +5787,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
@@ -5864,6 +5996,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5942,6 +6075,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5983,6 +6117,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -6040,6 +6175,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -6122,6 +6258,7 @@ mod tests {
                 true,
                 false,
                 None,
+                &no_bundle_exclude(),
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6206,6 +6343,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -6248,6 +6386,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -6505,6 +6644,7 @@ mod tests {
             true,
             false,
             None,
+            &no_bundle_exclude(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -6632,6 +6772,7 @@ mod tests {
                 true,
                 false,
                 None,
+                &no_bundle_exclude(),
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6658,6 +6799,12 @@ mod tests {
     /// No-op exclude predicate matching the Wave-1 call-site shape.
     fn no_exclude(_: &Path) -> bool {
         false
+    }
+
+    /// Empty `bundle.exclude` matcher — never matches, so `materialise_shadow`
+    /// test calls behave exactly as they did before the knob existed.
+    fn no_bundle_exclude() -> BundleExcludeMatcher {
+        BundleExcludeMatcher::new(&[]).expect("empty bundle.exclude compiles")
     }
 
     /// Create a tempdir, write `(rel, body)` files (creating parent dirs),
@@ -6708,6 +6855,128 @@ mod tests {
         assert!(
             out.contains(r#""./widgets/a.tsx": __glob_0"#),
             "object key → namespace mapping:\n{out}"
+        );
+    }
+
+    // ── bundle.exclude matcher tests (#664 / #672) ───────────────────────
+
+    #[test]
+    fn bundle_exclude_empty_matcher_never_matches() {
+        // Zero-regression contract: an empty pattern list yields a matcher
+        // that never matches, so the per-file skip never fires and the build
+        // is byte-identical to one without the knob.
+        let m = BundleExcludeMatcher::new(&[]).unwrap();
+        let root = Path::new("/proj");
+        assert!(!m.is_excluded(Path::new("/proj/components/Foo.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/pages/index.tsx"), root));
+    }
+
+    #[test]
+    fn bundle_exclude_matches_project_relative_glob() {
+        let root = Path::new("/proj");
+        // `*` stops at `/` (literal_separator), so `components/*.stories.tsx`
+        // matches a top-level story but NOT a nested one.
+        let m = BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        assert!(m.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/components/Button.tsx"), root));
+        // A path outside the project root cannot be project-relative → never
+        // excluded.
+        assert!(!m.is_excluded(Path::new("/elsewhere/components/X.stories.tsx"), root));
+
+        // `**` recurses across `/`.
+        let deep = BundleExcludeMatcher::new(&["components/**/*.stories.tsx".to_string()]).unwrap();
+        assert!(deep.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
+        assert!(deep.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+    }
+
+    #[test]
+    fn bundle_exclude_invalid_pattern_is_an_error() {
+        // An unclosed character class is an invalid glob — surface a clear
+        // build error rather than silently ignoring the user's config.
+        let err = BundleExcludeMatcher::new(&["components/[unclosed".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid bundle.exclude pattern"),
+            "error should name the bad pattern: {err}"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_bundle_exclude_skips_matched_file() {
+        // Integration of the per-file skip inside materialise_shadow: an
+        // excluded source file must NOT appear in the shadow tree, while a
+        // sibling that does not match is materialised normally.
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("components");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Keep.tsx"), "export const keep = 1;").unwrap();
+        fs::write(src.join("Drop.stories.tsx"), "export const drop = 1;").unwrap();
+
+        let dest = root.path().join("shadow").join("components");
+        let matcher =
+            BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            root.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            &matcher,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(dest.join("Keep.tsx").exists(), "non-matching file kept");
+        assert!(
+            !dest.join("Drop.stories.tsx").exists(),
+            "excluded *.stories.tsx must not be materialised into the shadow"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_empty_exclude_keeps_all_files() {
+        // Zero-regression: with an empty bundle.exclude, every file is
+        // materialised exactly as before the knob existed.
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("components");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Keep.tsx"), "export const keep = 1;").unwrap();
+        fs::write(src.join("Story.stories.tsx"), "export const s = 1;").unwrap();
+
+        let dest = root.path().join("shadow").join("components");
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            root.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            &no_bundle_exclude(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(dest.join("Keep.tsx").exists(), "Keep present with empty exclude");
+        assert!(
+            dest.join("Story.stories.tsx").exists(),
+            "with empty bundle.exclude nothing is skipped (byte-identical to today)"
         );
     }
 
