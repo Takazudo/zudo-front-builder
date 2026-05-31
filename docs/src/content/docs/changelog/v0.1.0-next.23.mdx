@@ -1,0 +1,19 @@
+---
+title: v0.1.0-next.23
+sidebar_position: 1023
+---
+
+# v0.1.0-next.23
+
+Released: 2026-06-01
+
+Adds opt-in `bundle.mainFields` / `bundle.external` knobs for the page/SSR (`--platform=neutral`) bundler, so a project can resolve (or externalize) a CJS-`main`-only dependency without excluding the importing file.
+
+## Features
+
+- feat(bundler): add `bundle.mainFields` / `bundle.external` knobs for the page/SSR pass — under `--platform=neutral` esbuild's main-fields list is empty, so a dep resolved only via `package.json` `main`/`module` (no `exports` map, e.g. `msw` → `path-to-regexp@6`) fails to resolve. `bundle.mainFields` sets esbuild `--main-fields` for every framework (previously a React-only `main,module` shim); `bundle.external` appends `--external` specifiers. Both are opt-in and threaded through `zfb build` and `zfb dev`; unset → byte-identical to before (#676) (5c434e1)
+
+## Other Changes
+
+- test(bundler): cover `bundle.mainFields` / `bundle.external` resolution with fail-without / pass-with negative-control integration tests (#676) (6a3ffa5)
+- fix(bundler): correct `main_fields` field placement in existing `BundlerInput` test literals (#676) (01a6a84)
