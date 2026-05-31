@@ -43,10 +43,24 @@ pub async fn evaluate_config_bundle(
         ModuleSpecifier::parse(MAIN_SPECIFIER).expect("MAIN_SPECIFIER is a valid URL; qed");
     let loader = Rc::new(ConfigModuleLoader::new(MAIN_SPECIFIER, js_source));
 
-    let runtime = JsRuntime::new(RuntimeOptions {
+    let mut runtime = JsRuntime::new(RuntimeOptions {
         module_loader: Some(loader),
         ..Default::default()
     });
+
+    // Install web-platform polyfills (URL, URLSearchParams, TextEncoder,
+    // TextDecoder, etc.) before loading any module. esbuild-emitted config
+    // bundles call `new URL(...)` to resolve specifiers, so the global must
+    // exist before the module graph is evaluated. Mirrors the exact bootstrap
+    // that `EmbeddedV8RenderHost::bootstrap_host_shim` runs on the render
+    // host. Only WEB_POLYFILLS_SRC is installed — the host-globals shim and
+    // browser_event modules are render-host concerns, not needed here.
+    runtime
+        .execute_script(
+            "zfb:config_eval_polyfills",
+            crate::embedded_v8::extensions::WEB_POLYFILLS_SRC,
+        )
+        .map_err(|e| ConfigEvalError::Evaluation(format!("config-eval polyfill init failed: {e}")))?;
 
     evaluate_in_runtime(runtime, main_spec).await
 }
