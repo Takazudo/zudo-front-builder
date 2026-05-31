@@ -660,10 +660,11 @@ fn full_fixture_bundle_contains_gfm_table_components() {
 ///   breaks into `"br"` JSX calls.
 /// - **#666** (tsconfig extends/baseUrl): a `@lib/*` alias resolves through
 ///   esbuild's synthetic tsconfig (`zzmod-alias-resolved` marker present).
-/// - **#664** (bundle.exclude): a CJS-only `bad.stories.tsx` is excluded;
-///   the build succeeds and the excluded file/dep are absent.
+/// - **#664** (bundle.exclude): a CJS-only `bad.story.tsx` that the @lib glob
+///   barrel WOULD import is excluded; the build succeeds (it would fail on the
+///   CJS dep otherwise) and the excluded file/dep are absent.
 /// - **#665** (import.meta.glob eager expansion): the literal
-///   `import.meta.glob(` is absent; `good.stories.tsx` key present — and the
+///   `import.meta.glob(` is absent; `good.story.tsx` key present — and the
 ///   barrel lives in the ALIASED dir, so it is reached through the dual-target.
 /// - **#677** (transforms compose): a `.module.css` reached via the `@lib/*`
 ///   alias resolves to its shadow-rewritten scoped-class shim.
@@ -733,12 +734,7 @@ fn zzmod_all_five_migration_fixes_compose() {
          export const zzmodGalleryKeys = Object.keys(stories).sort().join(\",\");\n",
     )
     .unwrap();
-    fs::write(
-        root.join("src/lib/good.stories.tsx"),
-        "export const GoodStory = () => \"ok\";\n",
-    )
-    .unwrap();
-    // The glob pattern is `./*.story.tsx`; name the good entry to match.
+    // The glob pattern is `./*.story.tsx`; the good entry matches and is kept.
     fs::write(
         root.join("src/lib/good.story.tsx"),
         "export const Good = () => \"good\";\n",
@@ -774,11 +770,16 @@ fn zzmod_all_five_migration_fixes_compose() {
     )
     .unwrap();
 
-    // #664: bad story (CJS-only dep) present in components/, excluded from
-    // both shadow materialisation and (had it been globbed) glob expansion.
+    // #664 (load-bearing): a CJS-only bad story that lives in the ALIASED
+    // dir with a glob-MATCHING name (`bad.story.tsx`), so the eager
+    // `import.meta.glob('./*.story.tsx')` barrel WOULD statically import it.
+    // Under --platform=neutral (Preact path, no --main-fields) the CJS-only
+    // dep is unresolvable, so WITHOUT `bundle.exclude` the build fails — that
+    // is what makes the exclude assertion non-vacuous. With exclude, the file
+    // is dropped from BOTH shadow materialisation AND the glob expansion.
     write_cjs_only_pkg_for_confirm(&root, "badcjs-zzmod");
     fs::write(
-        root.join("components/bad.stories.tsx"),
+        root.join("src/lib/bad.story.tsx"),
         r#"
             import { handler } from "badcjs-zzmod";
             export const BadStory = () => handler();
@@ -809,7 +810,7 @@ fn zzmod_all_five_migration_fixes_compose() {
     input.node_modules_dir = Some(root.join("node_modules"));
     input.tsconfig_paths = paths; // #666 — non-empty → branch 4 (copy_mode + rebase)
     input.hard_breaks = true; // #662
-    input.bundle_exclude = vec!["components/bad.stories.tsx".to_string()]; // #664
+    input.bundle_exclude = vec!["src/lib/bad.story.tsx".to_string()]; // #664
     let mut class_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
     names.insert("badge".into(), "zzmod_badge_scoped".into());
@@ -865,10 +866,12 @@ fn zzmod_all_five_migration_fixes_compose() {
         &body[..body.len().min(2000)]
     );
 
-    // #664: excluded bad story + its CJS dep absent.
+    // #664: excluded bad story + its CJS dep absent. (Load-bearing: the bad
+    // story is glob-matched by the @lib barrel, so without exclude the build
+    // would have failed on the CJS dep before reaching these assertions.)
     assert!(
-        !body.contains("bad.stories.tsx"),
-        "#664: bad.stories.tsx must be absent from the bundle.\n\
+        !body.contains("bad.story.tsx"),
+        "#664: bad.story.tsx must be absent from the bundle.\n\
          Bundle excerpt: {}",
         &body[..body.len().min(1500)]
     );
