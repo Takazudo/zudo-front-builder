@@ -244,13 +244,14 @@ impl ModuleLoader {
             strip_md_ext,
             gfm_constructs,
             cjk_friendly,
+            false,
             None,
         )
     }
 
     /// Most-explicit constructor: strip-md-ext + GFM + CJK-friendly toggle +
-    /// `markdown.features`. The content pipeline is built via the single
-    /// feature-aware entry point
+    /// `hard_breaks` + `markdown.features`. The content pipeline is built via
+    /// the single feature-aware entry point
     /// [`Pipeline::with_defaults_and_full_config`] so dev rendering and the
     /// bundler agree on every knob — including which opt-in feature plugins
     /// fire. `features = None` is an empty feature set: the three former-Core
@@ -267,6 +268,7 @@ impl ModuleLoader {
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
         cjk_friendly: bool,
+        hard_breaks: bool,
         features: Option<&zfb_content::MarkdownFeaturesConfig>,
     ) -> Self {
         // No themes_dir in the dev loader → infallible.
@@ -275,6 +277,7 @@ impl ModuleLoader {
             gfm_constructs,
             None,
             cjk_friendly,
+            hard_breaks,
             features,
         )
         .expect("dev loader passes no themes_dir — cannot fail");

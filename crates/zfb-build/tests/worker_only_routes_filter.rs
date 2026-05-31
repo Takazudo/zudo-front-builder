@@ -118,6 +118,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        hard_breaks: false,
         markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),

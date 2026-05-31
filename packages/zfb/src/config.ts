@@ -469,6 +469,20 @@ export type MarkdownConfig = {
   cjkFriendly?: boolean;
 
   /**
+   * Convert every soft line break (a single `\n` inside a paragraph) into
+   * `<br>` (remark-breaks parity).
+   *
+   * - **absent / `false` (default):** soft line breaks follow standard
+   *   CommonMark behaviour — collapsed into a single space.
+   * - **`true`:** every `\n` inside a paragraph becomes `<br>`. Use this
+   *   when your content relies on newline→`<br>` fidelity (e.g. product
+   *   descriptions, lyrics, or other newline-sensitive prose).
+   *
+   * Mirrors `MarkdownConfig::hard_breaks` in crates/zfb/src/config.rs.
+   */
+  hardBreaks?: boolean;
+
+  /**
    * Per-feature markdown pipeline toggles.
    *
    * Each field is a [`FeatureToggle`] (`true` / `false` / options object)

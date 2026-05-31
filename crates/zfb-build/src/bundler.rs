@@ -496,6 +496,20 @@ pub struct BundlerInput {
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
 
+    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
+    /// Mirrors `zfb::config::resolve_hard_breaks(config.markdown)`.
+    /// Default: `false` (plugin off). Set to `true` only when the user
+    /// wrote `markdown: { hardBreaks: true }` in `zfb.config.ts`.
+    ///
+    /// Must match the `SnapshotPipelineConfig::hard_breaks` value used
+    /// by the snapshot walker — otherwise the `content_hash` baked into
+    /// every compiled MDX module diverges and every
+    /// `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`HardBreaksPlugin`]: zfb_content::plugins::HardBreaksPlugin
+    pub hard_breaks: bool,
+
     /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
     /// pipeline is built via the feature-aware
     /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
@@ -685,6 +699,7 @@ impl BundlerInput {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -916,6 +931,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
             &mut broken,
         )
@@ -963,6 +979,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.hard_breaks,
                 input.markdown_features.as_ref(),
                 col.include.as_deref(),
                 col.exclude.as_deref(),
@@ -1001,6 +1018,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
             &mut broken,
         )
@@ -1032,6 +1050,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
             &mut broken,
         )
@@ -1062,6 +1081,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
             &mut broken,
         )
@@ -1126,6 +1146,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.hard_breaks,
                 input.markdown_features.as_ref(),
                 &mut broken,
             )
@@ -1542,6 +1563,7 @@ fn materialise_shadow(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
@@ -1594,6 +1616,7 @@ fn materialise_shadow(
         gfm_constructs,
         code_highlight_themes_dir,
         cjk_friendly,
+        hard_breaks,
         markdown_features,
     )
     .with_context(|| {
@@ -2081,6 +2104,7 @@ fn materialise_collection(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     include: Option<&[String]>,
     exclude: Option<&[String]>,
@@ -2137,6 +2161,7 @@ fn materialise_collection(
         gfm_constructs,
         code_highlight_themes_dir,
         cjk_friendly,
+        hard_breaks,
         markdown_features,
     )
     .with_context(|| {
@@ -3929,6 +3954,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -4583,6 +4609,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
@@ -4676,6 +4703,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
@@ -4848,6 +4876,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
@@ -5192,6 +5221,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -5409,6 +5439,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -5623,6 +5654,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -5830,6 +5862,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -5907,6 +5940,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -5947,6 +5981,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -6003,6 +6038,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -6084,6 +6120,7 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
                 &mut Vec::new(),
             )
@@ -6116,6 +6153,7 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
                 None,
                 None,
@@ -6166,6 +6204,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -6207,6 +6246,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -6463,6 +6503,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             &mut Vec::new(),
         )
@@ -6523,6 +6564,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
@@ -6588,6 +6630,7 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
                 &mut Vec::new(),
             )

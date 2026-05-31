@@ -10,6 +10,7 @@
 pub mod admonitions;
 pub mod cjk_friendly;
 pub mod code_title;
+pub mod hard_breaks;
 pub mod directives;
 pub mod external_links;
 pub mod heading_links;
@@ -22,6 +23,7 @@ pub mod util;
 
 pub use admonitions::{AdmonitionsPlugin, default_admonition_directives};
 pub use cjk_friendly::CjkFriendlyPlugin;
+pub use hard_breaks::HardBreaksPlugin;
 pub use code_title::CodeTitlePlugin;
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,

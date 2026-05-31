@@ -109,15 +109,17 @@ impl<H: RenderHost> Renderer<H> {
             strip_md_ext,
             gfm_constructs,
             cjk_friendly,
+            false,
             None,
         )
     }
 
     /// Most-explicit constructor: forwards `strip_md_ext`, GFM constructs,
-    /// CJK-friendly toggle, and `markdown.features` to the loader so dev
-    /// rendering agrees with the bundler on every knob — including which
-    /// opt-in feature plugins fire. `features = None` is an empty feature set:
-    /// the three former-Core framework features are off (the opt-in default).
+    /// CJK-friendly toggle, `hard_breaks`, and `markdown.features` to the
+    /// loader so dev rendering agrees with the bundler on every knob —
+    /// including which opt-in feature plugins fire. `features = None` is an
+    /// empty feature set: the three former-Core framework features are off
+    /// (the opt-in default).
     ///
     /// Note: the `zfb dev` CLI renders through the V8 `RendererState` in
     /// `zfb-build`, threading features via `BundlerInput` — not through this
@@ -128,6 +130,7 @@ impl<H: RenderHost> Renderer<H> {
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
         cjk_friendly: bool,
+        hard_breaks: bool,
         features: Option<&zfb_content::MarkdownFeaturesConfig>,
     ) -> Self {
         Self {
@@ -136,6 +139,7 @@ impl<H: RenderHost> Renderer<H> {
                 strip_md_ext,
                 gfm_constructs,
                 cjk_friendly,
+                hard_breaks,
                 features,
             ),
             host,

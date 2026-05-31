@@ -834,6 +834,18 @@ pub struct MarkdownConfig {
     #[serde(default)]
     pub cjk_friendly: Option<bool>,
 
+    /// Convert every soft line break (a single `\n` inside a paragraph)
+    /// into `<br>` (remark-breaks parity).
+    ///
+    /// - `None` (absent, default) — soft line breaks are collapsed into a
+    ///   single space, following standard CommonMark behaviour.
+    /// - `Some(true)` — opt-in; every `\n` inside a paragraph becomes `<br>`.
+    /// - `Some(false)` — explicit opt-out; identical to absent.
+    ///
+    /// Mirrors `hardBreaks` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub hard_breaks: Option<bool>,
+
     /// Per-feature markdown pipeline toggles. Each field is a
     /// [`FeatureToggle`] (`true` / `false` / per-feature options object)
     /// or a feature-specific config struct (for features that require
@@ -1030,6 +1042,22 @@ pub fn resolve_cjk_friendly(markdown: Option<&MarkdownConfig>) -> bool {
     match markdown {
         Some(m) => m.cjk_friendly.unwrap_or(true),
         None => true,
+    }
+}
+
+/// Convenience helper: resolve the final `hard_breaks` bool from an optional
+/// `MarkdownConfig`. Returns `false` (plugin off) when the field is absent or
+/// `Some(false)`; `true` only when `hard_breaks: Some(true)`.
+///
+/// Default is `false` — the opposite of `resolve_cjk_friendly` (which
+/// defaults to `true`). Do NOT copy `unwrap_or(true)` from that function
+/// here; a true on one side + false on the other diverges the
+/// `content_hash` and causes silent `<pre data-zfb-content-fallback>`.
+#[must_use]
+pub fn resolve_hard_breaks(markdown: Option<&MarkdownConfig>) -> bool {
+    match markdown {
+        Some(m) => m.hard_breaks.unwrap_or(false),
+        None => false,
     }
 }
 
@@ -3163,6 +3191,7 @@ mod tests {
                 toc: None,
                 external_links: None,
                 cjk_friendly: None,
+                hard_breaks: None,
                 features: None,
             })
         );
@@ -3359,6 +3388,62 @@ mod tests {
         let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
             .expect("empty object deserialises");
         assert_eq!(cfg.cjk_friendly, None);
+    }
+
+    // --- resolve_hard_breaks tests ---
+
+    // Absent `markdown` block → hard breaks off (default false).
+    #[test]
+    fn hard_breaks_absent_markdown_yields_false() {
+        assert!(!resolve_hard_breaks(None));
+    }
+
+    // Empty `MarkdownConfig` → no hard_breaks field → default false.
+    #[test]
+    fn hard_breaks_empty_markdown_yields_false() {
+        let cfg = MarkdownConfig::default();
+        assert!(!resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // `hardBreaks: true` — explicit opt-in.
+    #[test]
+    fn hard_breaks_explicit_true() {
+        let cfg = MarkdownConfig {
+            hard_breaks: Some(true),
+            ..MarkdownConfig::default()
+        };
+        assert!(resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // `hardBreaks: false` — explicit opt-out (same as absent).
+    #[test]
+    fn hard_breaks_explicit_false() {
+        let cfg = MarkdownConfig {
+            hard_breaks: Some(false),
+            ..MarkdownConfig::default()
+        };
+        assert!(!resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // Serde: `hardBreaks` camelCase round-trips from JSON.
+    #[test]
+    fn hard_breaks_deserialises_from_camel_case() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "hardBreaks": true
+        }))
+        .expect("hardBreaks:true deserialises");
+        assert_eq!(cfg.hard_breaks, Some(true));
+
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "hardBreaks": false
+        }))
+        .expect("hardBreaks:false deserialises");
+        assert_eq!(cfg.hard_breaks, Some(false));
+
+        // Absent field → None (default-off at resolve time).
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty object deserialises");
+        assert_eq!(cfg.hard_breaks, None);
     }
 
     // --- OutputMode tests (sub-task 4.1b / issue #373) ---------------------

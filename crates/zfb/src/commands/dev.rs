@@ -1520,6 +1520,8 @@ fn assemble_and_bundle_dev(
         .map(|el| (el.into_content_config(), cfg.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
+    bundler_input.hard_breaks =
+        crate::config::resolve_hard_breaks(cfg.markdown.as_ref());
     // #586 — thread `markdown.features` so dev rendering honours the opt-in
     // feature plugins, matching the production build. Mirrors
     // `commands/build.rs`. `None` keeps the legacy always-on chain.
