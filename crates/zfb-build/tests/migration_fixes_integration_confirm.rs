@@ -48,6 +48,63 @@ use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBroke
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
+// ---------------------------------------------------------------------------
+// Helpers shared by zzmod_all_five_migration_fixes_compose only.
+// ---------------------------------------------------------------------------
+
+/// Mirror the behaviour of `zfb/src/commands/build.rs::read_tsconfig_paths`:
+/// resolve each `compilerOptions.paths` target to an absolute path against
+/// the project root (preserving a trailing `/*`). Duplicated here (same
+/// shape as in `bundler_workspace_pkg_alias.rs`) because `read_tsconfig_paths`
+/// is `pub(crate)` in `zfb` and `zfb-build` cannot depend on `zfb` (cycle).
+///
+/// NOTE: #666's actual `read_tsconfig_paths` (extends + baseUrl) is
+/// unit-tested in `crates/zfb/src/commands/build.rs`.  Here we verify
+/// composition at the bundler level: paths fed into `BundlerInput::tsconfig_paths`
+/// ARE wired through to esbuild — a regression in that wiring fails THIS test.
+fn tsconfig_paths_absolute(
+    project_root: &std::path::Path,
+    paths: &[(&str, &str)],
+) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    for (key, target) in paths {
+        let (prefix, suffix) = match target.rsplit_once("/*") {
+            Some((p, "")) => (p, "/*"),
+            _ => (*target, ""),
+        };
+        let abs = project_root.join(prefix);
+        let mut s = abs.to_string_lossy().into_owned();
+        s.push_str(suffix);
+        out.insert(key.to_string(), vec![s]);
+    }
+    out
+}
+
+/// Write the hand-rolled CJS-only package into `<root>/node_modules/<name>`.
+///
+/// Same shape as `bundler_exclude_glob.rs::write_cjs_only_package` — a
+/// `package.json` with `main`+`module` and NO `exports` map (the
+/// `path-to-regexp@6` / msw CJS-rejection shape). Under `--platform=neutral`
+/// esbuild cannot resolve it, reproducing the motivating failure without a
+/// real npm install.
+fn write_cjs_only_pkg_for_confirm(root: &std::path::Path, name: &str) {
+    let pkg = root.join("node_modules").join(name);
+    fs::create_dir_all(pkg.join("dist")).unwrap();
+    fs::write(
+        pkg.join("package.json"),
+        format!(
+            r#"{{ "name": "{name}", "version": "6.3.0", "main": "dist/index.js" }}"#
+        ),
+    )
+    .unwrap();
+    // CJS body — top-level module.exports, no ESM fallback.
+    fs::write(
+        pkg.join("dist/index.js"),
+        "function handler() { return \"handler\"; }\nmodule.exports = { handler: handler };\n",
+    )
+    .unwrap();
+}
+
 // ===========================================================================
 // Content-pipeline assertions (always run — no esbuild)
 // ===========================================================================
@@ -566,4 +623,346 @@ fn full_fixture_bundle_contains_gfm_table_components() {
             &body[..body.len().min(1200)]
         );
     }
+}
+
+// ===========================================================================
+// Wave 3 / Sub #673 — all five zzmod-migration fixes compose.
+//
+// One test that exercises #662 + #663 + #664 + #665 + #666 together to prove
+// no fix silently breaks another.  Each assertion names the fix it covers so
+// a regression fails with a clear signal.
+//
+// Structure:
+//   A.  #663 config-eval URL polyfill — synchronous, no esbuild needed.
+//   B.  esbuild-gated build 1: #662 (hardBreaks) + #664 (bundle.exclude) +
+//       #666 (tsconfig paths via extends/baseUrl) + #664+#665 composition
+//       (build succeeds despite bad.stories.tsx importing CJS-only dep).
+//   C.  esbuild-gated build 2: #665 (import.meta.glob literal absent, keys
+//       present) + #664 (bad story excluded from glob expansion).
+//
+// NOTE on the two-build structure: esbuild's `--preserve-symlinks` flag is
+// added by the bundler when `tsconfig_paths` is EMPTY (branch 3 in
+// `crates/zfb-build/src/bundler.rs:3868`).  When `tsconfig_paths` is
+// non-empty (needed for #666), the flag is intentionally OMITTED to avoid
+// the workspace-package alias regression (#443/#450).  Without
+// `--preserve-symlinks`, esbuild canonicalises symlinks in the shadow tree
+// and reads the original source files, bypassing the Rust-side
+// `import.meta.glob` expansion written to the shadow.  The #665 glob
+// assertion therefore runs in a second build where `tsconfig_paths` is
+// empty, matching the semantics of the production config-with-globs path
+// (no tsconfig paths) and the sibling `bundler_exclude_glob.rs` tests.
+// ===========================================================================
+
+/// End-to-end composition test for all five zzmod migration fixes (#673).
+///
+/// ## Fix coverage
+///
+/// - **#663** (config-eval URL polyfill): `new URL(...)` in an eval'd config
+///   bundle succeeds (part A — no esbuild required).
+/// - **#662** (markdown.hardBreaks): `hard_breaks: true` turns soft line
+///   breaks into `"br"` JSX calls in the compiled bundle (part B build 1).
+/// - **#666** (tsconfig extends/baseUrl): a path alias fed via
+///   `BundlerInput::tsconfig_paths` (the shape `read_tsconfig_paths` returns
+///   after following an `extends` chain with non-"." baseUrl) resolves
+///   through esbuild's synthetic tsconfig; alias target content in bundle
+///   (part B build 1).  The production resolver is unit-tested in
+///   `crates/zfb/src/commands/build.rs`; here we assert bundler wiring.
+/// - **#664** (bundle.exclude): `bad.stories.tsx` with a CJS-only dep is
+///   excluded; both builds succeed and the excluded file is absent (B1+B2).
+/// - **#665** (import.meta.glob eager expansion): the literal
+///   `import.meta.glob(` is absent from the bundle; expanded keys present
+///   (part B build 2, which uses empty `tsconfig_paths` to enable
+///   `--preserve-symlinks` so esbuild reads the shadow's expanded file).
+#[test]
+fn zzmod_all_five_migration_fixes_compose() {
+    // -----------------------------------------------------------------------
+    // Part A — #663 config-eval URL polyfill (no esbuild binary required).
+    // -----------------------------------------------------------------------
+    // `new URL(...)` must be available in the V8 config-eval isolate.
+    // Gated on the `embed_v8` feature (which is the default for this crate).
+    #[cfg(feature = "embed_v8")]
+    {
+        use zfb_render::ThreadedConfigEvaluator;
+
+        // The config bundle exercises URL (patch from #663), plus the fields
+        // that would appear in a real `zfb.config.ts` that exercises all fixes.
+        let config_js = r#"
+            const base = new URL("https://example.com/docs/");
+            const pathname = base.pathname;
+            export default {
+                markdown: { hardBreaks: true },
+                bundle: { exclude: ["components/**/*.stories.tsx"] },
+                _urlPathnameCheck: pathname,
+            };
+        "#;
+
+        let val = ThreadedConfigEvaluator::eval_bundle(config_js)
+            .expect(
+                "#663 regression: new URL(...) must be available in the config-eval isolate — \
+                 the WEB_POLYFILLS bootstrap in ThreadedConfigEvaluator must install URL before \
+                 the user's config bundle runs"
+            );
+
+        // The URL-derived value must round-trip correctly.
+        assert_eq!(
+            val["_urlPathnameCheck"], "/docs/",
+            "#663: new URL().pathname must return the correct value in the config-eval isolate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Part B — esbuild-gated bundle assertions.
+    // -----------------------------------------------------------------------
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[migration_confirm_all_five] no esbuild binary; \
+             set ZFB_ESBUILD_BIN or install esbuild in node_modules. Skipping part B."
+        );
+        return;
+    };
+
+    // -----------------------------------------------------------------------
+    // Part B build 1 — #662 (hardBreaks) + #664 (bundle.exclude) + #666
+    // (tsconfig_paths).
+    //
+    // The bad.stories.tsx is EXCLUDED — the build succeeds even though the
+    // story imports a CJS-only package that would fail under --platform=neutral.
+    // -----------------------------------------------------------------------
+    let tmp1 = tempfile::tempdir().expect("tempdir b1");
+    let root1 = tmp1.path().to_path_buf();
+
+    for d in ["pages", "components", "layouts", "content", "src/lib"] {
+        fs::create_dir_all(root1.join(d)).unwrap();
+    }
+
+    // #666: alias target reachable via `@lib/*` → `src/lib/*`.
+    // The alias map is built by `tsconfig_paths_absolute` (simulating
+    // `read_tsconfig_paths` after following an `extends` chain with non-"."
+    // baseUrl — that resolver logic is unit-tested in crates/zfb).
+    fs::write(
+        root1.join("src/lib/zfb_zzmod_marker.ts"),
+        "export const ZZMOD_ALIAS_MARKER = \"zzmod-alias-resolved\";\n",
+    )
+    .unwrap();
+
+    // #662: MDX page with soft break → hard break (requires hard_breaks: true).
+    fs::write(
+        root1.join("pages/doc.mdx"),
+        "---\ntitle: HardBreaks Test\n---\n\
+         \n\
+         First line\n\
+         Second line on next\n",
+    )
+    .unwrap();
+
+    // Page that uses the #666 alias.
+    fs::write(
+        root1.join("pages/index.tsx"),
+        r#"
+            import { ZZMOD_ALIAS_MARKER } from "@lib/zfb_zzmod_marker";
+            export default function Home() { return ZZMOD_ALIAS_MARKER; }
+        "#,
+    )
+    .unwrap();
+
+    // #664: bad story (CJS-only dep) — present in components/ so the exclude
+    // mechanism is exercised; excluded from both shadow and glob expansion.
+    write_cjs_only_pkg_for_confirm(&root1, "badcjs-zzmod");
+    fs::write(
+        root1.join("components/bad.stories.tsx"),
+        r#"
+            import { handler } from "badcjs-zzmod";
+            export const BadStory = () => handler();
+        "#,
+    )
+    .unwrap();
+
+    // Minimal layout.
+    fs::write(
+        root1.join("layouts/default.tsx"),
+        "export default function Layout({ children }) { return children; }\n",
+    )
+    .unwrap();
+
+    let paths1 = tsconfig_paths_absolute(&root1, &[("@lib/*", "src/lib/*")]);
+    let mut input1 = BundlerInput::for_project(
+        root1.clone(),
+        Framework::Preact,
+        BundleMode::Production,
+        root1.join("dist"),
+        None,
+    );
+    input1.external = vec![
+        "preact".into(),
+        "preact-render-to-string".into(),
+        "@takazudo/zfb-runtime".into(),
+    ];
+    input1.esbuild_binary = Some(esbuild.clone());
+    input1.node_modules_dir = Some(root1.join("node_modules"));
+    input1.tsconfig_paths = paths1;  // #666
+    input1.hard_breaks = true;        // #662
+    input1.bundle_exclude = vec!["components/bad.stories.tsx".to_string()]; // #664
+
+    let out1 = bundle(input1).expect(
+        "build 1 must succeed — #662 hard_breaks / #664 bundle.exclude / #666 tsconfig_paths"
+    );
+    assert!(out1.bundle_path.exists(), "build 1: bundle.mjs must exist");
+    let body1 = fs::read_to_string(&out1.bundle_path).expect("read bundle 1");
+
+    // #666 assertion: path alias resolved through bundler's synthetic tsconfig.
+    assert!(
+        body1.contains("zzmod-alias-resolved"),
+        "#666 regression: @lib/zfb_zzmod_marker alias must resolve through the \
+         bundler's synthetic tsconfig (BundlerInput::tsconfig_paths wiring).\n\
+         Bundle excerpt: {}",
+        &body1[..body1.len().min(1200)]
+    );
+
+    // #662 assertion: soft break → \"br\" JSX tag.
+    // `"br"` (quoted string) is the canonical token per
+    // `crates/zfb-content/tests/hard_breaks.rs::hard_breaks_on_jsx_emit_path_produces_br`.
+    assert!(
+        body1.contains("\"br\""),
+        "#662 regression: markdown.hardBreaks must convert soft line breaks to \
+         \"br\" JSX calls. `hard_breaks: true` must activate HardBreaksPlugin.\n\
+         Bundle excerpt: {}",
+        &body1[..body1.len().min(1200)]
+    );
+
+    // #664 assertion (build 1): excluded bad story absent from bundle.
+    assert!(
+        !body1.contains("bad.stories.tsx"),
+        "#664 regression (build 1): bad.stories.tsx must be absent from the bundle.\n\
+         Bundle excerpt: {}",
+        &body1[..body1.len().min(1200)]
+    );
+    assert!(
+        !body1.contains("badcjs-zzmod"),
+        "#664 regression (build 1): the excluded story's CJS-only import must not \
+         appear in the bundle.\n\
+         Bundle excerpt: {}",
+        &body1[..body1.len().min(1200)]
+    );
+
+    // -----------------------------------------------------------------------
+    // Part B build 2 — #665 (import.meta.glob expansion) + #664 (glob exclude).
+    //
+    // `tsconfig_paths` is intentionally EMPTY here so the bundler adds
+    // `--preserve-symlinks` (branch 3, bundler.rs:3868), keeping esbuild
+    // anchored at the shadow tree and reading the Rust-expanded glob file
+    // rather than the original through a symlink.  This mirrors the semantics
+    // of the sibling `bundler_exclude_glob.rs` tests.
+    // -----------------------------------------------------------------------
+    let tmp2 = tempfile::tempdir().expect("tempdir b2");
+    let root2 = tmp2.path().to_path_buf();
+
+    for d in ["pages", "components", "layouts", "content"] {
+        fs::create_dir_all(root2.join(d)).unwrap();
+    }
+
+    // Bare page so the bundle has an entrypoint.
+    fs::write(
+        root2.join("pages/index.tsx"),
+        r#"
+            import { galleryKeys } from "../components/_gallery";
+            export default function Home() { return galleryKeys; }
+        "#,
+    )
+    .unwrap();
+
+    // #665 glob barrel — anchored at importer's own directory (`./`), matching
+    // the glob expansion contract (parent-directory patterns rejected).
+    fs::write(
+        root2.join("components/_gallery.tsx"),
+        r#"
+            const stories = import.meta.glob('./*.stories.tsx', { eager: true });
+            export const galleryKeys = Object.keys(stories).sort().join(",");
+        "#,
+    )
+    .unwrap();
+
+    // #665 + #664 good story (non-excluded; must appear in expanded glob).
+    fs::write(
+        root2.join("components/good.stories.tsx"),
+        "export const GoodStory = () => \"ok\";\n",
+    )
+    .unwrap();
+
+    // #664 + #665 bad story (CJS-only dep; excluded from BOTH shadow and glob).
+    // Without `bundle.exclude` the eager glob would statically import this and
+    // esbuild (--platform=neutral, empty main-fields) would reject the CJS dep.
+    write_cjs_only_pkg_for_confirm(&root2, "badcjs-zzmod2");
+    fs::write(
+        root2.join("components/bad.stories.tsx"),
+        r#"
+            import { handler } from "badcjs-zzmod2";
+            export const BadStory = () => handler();
+        "#,
+    )
+    .unwrap();
+
+    fs::write(
+        root2.join("layouts/default.tsx"),
+        "export default function Layout({ children }) { return children; }\n",
+    )
+    .unwrap();
+
+    let mut input2 = BundlerInput::for_project(
+        root2.clone(),
+        Framework::Preact,
+        BundleMode::Production,
+        root2.join("dist"),
+        None,
+    );
+    input2.external = vec![
+        "preact".into(),
+        "preact-render-to-string".into(),
+        "@takazudo/zfb-runtime".into(),
+    ];
+    input2.esbuild_binary = Some(esbuild);
+    input2.node_modules_dir = Some(root2.join("node_modules"));
+    // tsconfig_paths intentionally EMPTY (default) so the bundler adds
+    // --preserve-symlinks, enabling esbuild to read the shadow's expanded file.
+    input2.bundle_exclude = vec!["components/bad.stories.tsx".to_string()]; // #664
+
+    let out2 = bundle(input2).expect(
+        "build 2 must succeed — #665 import.meta.glob expansion + #664 bundle.exclude \
+         (without exclude the CJS-only bad story would fail under --platform=neutral)"
+    );
+    assert!(out2.bundle_path.exists(), "build 2: bundle.mjs must exist");
+    let body2 = fs::read_to_string(&out2.bundle_path).expect("read bundle 2");
+
+    // #665 assertion: import.meta.glob( must be ABSENT (expanded Rust-side).
+    assert!(
+        !body2.contains("import.meta.glob("),
+        "#665 regression: import.meta.glob( must be expanded Rust-side before \
+         esbuild runs — the literal macro must NOT survive into the bundle.\n\
+         Bundle excerpt: {}",
+        &body2[..body2.len().min(2000)]
+    );
+
+    // #665 assertion: expanded good story key present.
+    assert!(
+        body2.contains("good.stories.tsx"),
+        "#665 regression: the good story's expanded glob key must appear in the \
+         bundle (glob expansion must include it, not erase it).\n\
+         Bundle excerpt: {}",
+        &body2[..body2.len().min(1200)]
+    );
+
+    // #664 assertion (build 2): excluded bad story absent from glob + bundle.
+    assert!(
+        !body2.contains("bad.stories.tsx"),
+        "#664 regression (build 2): bad.stories.tsx must be absent — bundle.exclude \
+         must drop it from both shadow materialisation and import.meta.glob expansion.\n\
+         Bundle excerpt: {}",
+        &body2[..body2.len().min(1200)]
+    );
+    assert!(
+        !body2.contains("badcjs-zzmod2"),
+        "#664 regression (build 2): the excluded story's CJS-only import must not \
+         appear in the bundle.\n\
+         Bundle excerpt: {}",
+        &body2[..body2.len().min(1200)]
+    );
 }
