@@ -138,6 +138,7 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
     paths.insert("@/components/*".into(), vec!["./components/*".into()]);
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
@@ -338,6 +339,7 @@ fn import_meta_glob_eager_is_expanded_before_esbuild() {
     .unwrap();
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),

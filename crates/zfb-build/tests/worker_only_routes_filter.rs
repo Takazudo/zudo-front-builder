@@ -84,6 +84,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
     worker_only.insert("/api/admin/:adminPath{.+}".into());
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),

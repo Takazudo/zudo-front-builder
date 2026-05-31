@@ -103,6 +103,32 @@ export type BundleConfig = {
    * Mirrors `Config::bundle` in crates/zfb/src/config.rs.
    */
   exclude?: string[];
+
+  /**
+   * Explicit esbuild `main-fields` list for the `--platform=neutral` page/SSR
+   * pass. Under `neutral` esbuild's main-fields list is EMPTY by default, so a
+   * dep resolved purely via `package.json` `main`/`module` (no `exports` map)
+   * is rejected ("The "main" field here was ignored. Main fields must be
+   * configured explicitly when using the neutral platform."). Set e.g.
+   * `["main", "module"]` to let such CJS-main-only deps resolve (#676 —
+   * `msw` → `path-to-regexp@6`). Applies to every framework; unset/empty →
+   * byte-identical to a build without the knob (the React-only `main,module`
+   * shim still applies).
+   *
+   * Mirrors `BundleConfig::main_fields` in `crates/zfb/src/config.rs`.
+   */
+  mainFields?: string[];
+
+  /**
+   * Bare specifiers to mark external in the `--platform=neutral` page/SSR
+   * pass, so esbuild leaves them unbundled instead of resolving them (the
+   * other #676 escape hatch — externalize a CJS-only dep rather than
+   * resolving it). Appended to the framework-provided externals. Unset/empty
+   * → no extra externals.
+   *
+   * Mirrors `BundleConfig::external` in `crates/zfb/src/config.rs`.
+   */
+  external?: string[];
 };
 
 /**

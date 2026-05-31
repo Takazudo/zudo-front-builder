@@ -314,6 +314,19 @@ pub struct BundlerInput {
     /// runtime SSR adapter (T2) provides at embedded V8 host load time. An
     /// empty vec means "bundle everything from node_modules".
     pub external: Vec<String>,
+    /// Explicit esbuild `--main-fields` list for the `--platform=neutral`
+    /// page/SSR pass. Under `neutral` esbuild's main-fields list is EMPTY by
+    /// default, so a dep resolved purely via `package.json` `main`/`module`
+    /// (no `exports` map) fails with `The "main" field here was ignored. Main
+    /// fields must be configured explicitly when using the "neutral"
+    /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
+    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`).
+    ///
+    /// Empty (the default) -> no `--main-fields` is emitted EXCEPT the existing
+    /// React-only `main,module` shim, so a non-React bundle stays
+    /// byte-identical to a build without this knob. When non-empty it applies
+    /// to every framework and takes precedence over the React shim.
+    pub main_fields: Vec<String>,
     /// Where the final `bundle.mjs` (and its `.map`) is written.
     pub outdir: PathBuf,
     /// Production / development mode (drives `import.meta.env.{PROD,DEV}`).
@@ -718,6 +731,7 @@ impl BundlerInput {
             define_vars: Default::default(),
             tsconfig_paths: Default::default(),
             external: Vec::new(),
+            main_fields: Vec::new(),
             outdir,
             mode,
             minify: false,
@@ -3912,28 +3926,31 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
         cmd.arg("--conditions=worker");
     }
 
-    // React-only: set `--main-fields=main,module` so esbuild can resolve
-    // main-only CJS packages that have NO `exports` map. Under
-    // `--platform=neutral` esbuild's main-fields list is EMPTY by default,
-    // so a package resolved purely via `package.json` `main`/`module`
-    // (rather than an `exports` map) fails with
-    // `Could not resolve "<pkg>" … The "main" field here was ignored.
-    // Main fields must be configured explicitly when using the "neutral"
-    // platform.` This bites the React UI-library chain — e.g.
-    // `@headlessui/react` → `@floating-ui/react` → `tabbable`, where
-    // `tabbable` ships `main`/`module` and no `exports` — which the T6
-    // configurator depends on. `--conditions=worker` cannot help here
-    // because it only steers `exports`-map resolution.
+    // Main-fields for the `--platform=neutral` page/SSR pass. Under `neutral`
+    // esbuild's main-fields list is EMPTY by default, so a package resolved
+    // purely via `package.json` `main`/`module` (no `exports` map) fails with
+    // `Could not resolve "<pkg>" ... The "main" field here was ignored. Main
+    // fields must be configured explicitly when using the "neutral" platform.`
     //
-    // Safe to scope to React (and would be safe unconditionally):
-    // `--main-fields` only affects packages WITHOUT an `exports` map.
-    // `exports` always takes precedence, so react/react-dom/preact and any
-    // exports-based dep are untouched. The flag can only turn a currently
-    // *failing* main-only resolution into a success, never alter a working
-    // one. It is React-gated to mirror `--conditions=worker` and keep the
-    // Preact bundle's arg set byte-identical (zero regression). `main,module`
-    // matches esbuild's own node-platform default ordering.
-    if matches!(input.framework, Framework::React) {
+    // Resolution order:
+    // 1. An explicit `bundle.mainFields` (input.main_fields) wins for EVERY
+    //    framework -- the #676 host knob (e.g. a Preact project hitting
+    //    `msw` -> `path-to-regexp@6` sets `["main", "module"]`).
+    // 2. Otherwise React keeps its historical `main,module` default (the
+    //    `@headlessui/react` -> `@floating-ui/react` -> `tabbable` chain the T6
+    //    configurator depends on; `tabbable` ships `main`/`module`, no
+    //    `exports`). `--conditions=worker` cannot help -- it only steers
+    //    `exports`-map resolution.
+    // 3. Otherwise (non-React, no knob) NO `--main-fields` is emitted, keeping
+    //    the Preact bundle's arg set byte-identical (zero regression).
+    //
+    // Safe in all cases: `--main-fields` only affects packages WITHOUT an
+    // `exports` map (`exports` always takes precedence), so it can only turn a
+    // currently *failing* main-only resolution into a success, never alter a
+    // working one. `main,module` matches esbuild's node-platform default order.
+    if !input.main_fields.is_empty() {
+        cmd.arg(format!("--main-fields={}", input.main_fields.join(",")));
+    } else if matches!(input.framework, Framework::React) {
         cmd.arg("--main-fields=main,module");
     }
 
@@ -4340,6 +4357,7 @@ mod tests {
             define_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
             external: vec![],
+            main_fields: Vec::new(),
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,
@@ -5614,6 +5632,7 @@ mod tests {
             define_vars: defs,
             tsconfig_paths: BTreeMap::new(),
             external: vec!["preact".into()],
+            main_fields: Vec::new(),
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,

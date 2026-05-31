@@ -1512,6 +1512,16 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // copy and the #665 import.meta.glob expansion). Empty → skip nothing.
     bundler_input.bundle_exclude =
         crate::config::resolve_bundle_exclude(config.bundle.as_ref());
+    // #676 -- thread `bundle.mainFields` / `bundle.external` so hosts can make
+    // the `--platform=neutral` page/SSR pass resolve (or externalize)
+    // CJS-main-only deps (e.g. `msw` -> `path-to-regexp@6`). main_fields
+    // applies to every framework when set; external is APPENDED so any
+    // framework-required externals are preserved. Empty -> byte-identical.
+    bundler_input.main_fields =
+        crate::config::resolve_bundle_main_fields(config.bundle.as_ref());
+    bundler_input
+        .external
+        .extend(crate::config::resolve_bundle_external(config.bundle.as_ref()));
     // #586 — thread `markdown.features` into the bundler so opt-in feature
     // plugins (mermaid, …) fire per the configured toggles.
     // `None` keeps the legacy always-on chain, byte-identical to today.

@@ -661,6 +661,30 @@ pub struct BundleConfig {
     /// (collections / i18n locale filtering).
     #[serde(default)]
     pub exclude: Option<Vec<String>>,
+
+    /// Explicit esbuild `main-fields` list for the `--platform=neutral`
+    /// page/SSR pass. Under `neutral` esbuild's main-fields list is EMPTY by
+    /// default, so a dep resolved purely via `package.json` `main`/`module`
+    /// (no `exports` map) fails with `The "main" field here was ignored. Main
+    /// fields must be configured explicitly when using the "neutral"
+    /// platform.` Setting e.g. `["main", "module"]` lets such CJS-main-only
+    /// deps resolve (#676 -- `msw` -> `path-to-regexp@6`). Applies to every
+    /// framework; absent/empty -> byte-identical to a build without the knob
+    /// (the React-only `main,module` shim still applies).
+    ///
+    /// Mirrors `BundleConfig.mainFields` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub main_fields: Option<Vec<String>>,
+
+    /// Bare specifiers to mark `--external` in the `--platform=neutral`
+    /// page/SSR pass, so esbuild leaves them unbundled instead of resolving
+    /// them (the other #676 escape hatch -- externalize a CJS-only dep rather
+    /// than resolving it). Appended to the framework-provided externals.
+    /// Absent/empty -> no extra externals.
+    ///
+    /// Mirrors `BundleConfig.external` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub external: Option<Vec<String>>,
 }
 
 /// Syntect-based code-highlight options.
@@ -1115,6 +1139,30 @@ pub fn resolve_hard_breaks(markdown: Option<&MarkdownConfig>) -> bool {
 pub fn resolve_bundle_exclude(bundle: Option<&BundleConfig>) -> Vec<String> {
     match bundle {
         Some(b) => b.exclude.clone().unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// Resolve `bundle.mainFields` into the esbuild `--main-fields` list for the
+/// page/SSR pass. Empty when `bundle` is absent or `bundle.mainFields` is
+/// `None`, so callers can thread the result straight into
+/// `BundlerInput::main_fields` and an empty vec means "emit no
+/// `--main-fields`" (byte-identical to a build without the knob; #676).
+#[must_use]
+pub fn resolve_bundle_main_fields(bundle: Option<&BundleConfig>) -> Vec<String> {
+    match bundle {
+        Some(b) => b.main_fields.clone().unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// Resolve `bundle.external` into the extra `--external` specifiers appended
+/// to the page/SSR pass's externals. Empty when `bundle` is absent or
+/// `bundle.external` is `None` (#676).
+#[must_use]
+pub fn resolve_bundle_external(bundle: Option<&BundleConfig>) -> Vec<String> {
+    match bundle {
+        Some(b) => b.external.clone().unwrap_or_default(),
         None => Vec::new(),
     }
 }
@@ -3537,6 +3585,37 @@ mod tests {
         let cfg: Config = serde_json::from_value(serde_json::json!({ "bundle": {} }))
             .expect("bundle:{} deserialises");
         assert!(resolve_bundle_exclude(cfg.bundle.as_ref()).is_empty());
+    }
+
+    // --- bundle.mainFields / bundle.external tests (#676) ------------------
+
+    #[test]
+    fn bundle_main_fields_and_external_deserialise_from_camel_case() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "bundle": { "mainFields": ["main", "module"], "external": ["path-to-regexp"] }
+        }))
+        .expect("bundle.mainFields / bundle.external deserialise");
+        assert_eq!(
+            resolve_bundle_main_fields(cfg.bundle.as_ref()),
+            vec!["main".to_string(), "module".to_string()]
+        );
+        assert_eq!(
+            resolve_bundle_external(cfg.bundle.as_ref()),
+            vec!["path-to-regexp".to_string()]
+        );
+    }
+
+    #[test]
+    fn bundle_absent_resolves_to_empty_main_fields_and_external() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({}))
+            .expect("empty config deserialises");
+        assert!(resolve_bundle_main_fields(cfg.bundle.as_ref()).is_empty());
+        assert!(resolve_bundle_external(cfg.bundle.as_ref()).is_empty());
+
+        let cfg: Config = serde_json::from_value(serde_json::json!({ "bundle": {} }))
+            .expect("bundle:{} deserialises");
+        assert!(resolve_bundle_main_fields(cfg.bundle.as_ref()).is_empty());
+        assert!(resolve_bundle_external(cfg.bundle.as_ref()).is_empty());
     }
 
     // --- OutputMode tests (sub-task 4.1b / issue #373) ---------------------
