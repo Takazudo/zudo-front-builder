@@ -32,7 +32,6 @@ fn make_input(
     esbuild: PathBuf,
     class_maps: HashMap<PathBuf, HashMap<String, String>>,
 ) -> BundlerInput {
-    main_fields: Vec::new(),
     BundlerInput {
         main_fields: Vec::new(),
         project_root: root.to_path_buf(),

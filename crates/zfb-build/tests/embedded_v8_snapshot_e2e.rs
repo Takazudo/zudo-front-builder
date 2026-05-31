@@ -64,7 +64,6 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
 /// the test doesn't need a real esbuild binary. The mock output satisfies
 /// the bundler's post-processing expectations (routes export + hydrateIsland).
 fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> BundlerInput {
-    main_fields: Vec::new(),
     let root = tmp.path().to_path_buf();
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::create_dir_all(root.join("content")).unwrap();

@@ -72,7 +72,6 @@ fn make_input(
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
 ) -> BundlerInput {
-    main_fields: Vec::new(),
     BundlerInput {
         main_fields: Vec::new(),
         project_root: root.to_path_buf(),

@@ -66,7 +66,6 @@ fn branch4_input(
     tsconfig_paths: BTreeMap<String, Vec<String>>,
     class_maps: HashMap<PathBuf, HashMap<String, String>>,
 ) -> BundlerInput {
-    main_fields: Vec::new(),
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
         Framework::Preact,
