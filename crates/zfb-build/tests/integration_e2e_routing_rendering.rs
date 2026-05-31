@@ -312,6 +312,7 @@ fn build_bundle(
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        hard_breaks: false,
         markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
@@ -319,6 +320,7 @@ fn build_bundle(
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

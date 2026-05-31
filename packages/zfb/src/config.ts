@@ -73,6 +73,39 @@ export type PrefetchConfig = {
 };
 
 /**
+ * Bundler options. Mirrors `BundleConfig` in `crates/zfb/src/config.rs`.
+ */
+export type BundleConfig = {
+  /**
+   * Project-relative glob patterns (gitignore-style) for source files
+   * the bundler must NOT pull into the esbuild graph.
+   *
+   * Why this exists: an eager `import.meta.glob('components/**\/*.stories.tsx',
+   * { eager: true })` expands to a static import of every matched file. If a
+   * matched file imports a CJS-only package whose `package.json` resolves only
+   * via `main`/`module` or a `require`-only `exports` condition (e.g.
+   * `msw` → `path-to-regexp@6`), esbuild — invoked with `--platform=neutral`
+   * for the worker bundle — rejects it with "Could not resolve … Main fields
+   * must be configured explicitly when using the neutral platform." Listing the
+   * offending file here keeps the migration build green.
+   *
+   * Each pattern is matched against the file's path RELATIVE TO THE PROJECT
+   * ROOT, in POSIX form (e.g. `components/Foo.stories.tsx` or
+   * `components/**\/*.stories.tsx`). A matched file is:
+   *
+   * - never copied/symlinked into the bundler's shadow tree, and
+   * - dropped from any eager `import.meta.glob(...)` expansion that would
+   *   otherwise statically import it.
+   *
+   * Unset / empty → behaviour is byte-identical to a build without this knob:
+   * no files are skipped.
+   *
+   * Mirrors `Config::bundle` in crates/zfb/src/config.rs.
+   */
+  exclude?: string[];
+};
+
+/**
  * One plugin entry in `zfb.config.ts`.
  *
  * `name` MUST be a module reference that Node's resolver can locate from
@@ -119,6 +152,14 @@ export type ZfbConfig = {
    * `crates/zfb/src/config.rs`.
    */
   prefetch?: PrefetchConfig;
+  /**
+   * Bundler options. `bundle.exclude` lists project-relative globs of
+   * source files to keep out of the esbuild graph (e.g.
+   * `["components/*.stories.tsx"]`) — see {@link BundleConfig.exclude} for
+   * why this is needed. Unset → byte-identical to a build without the knob.
+   * Mirrors `Config::bundle` in `crates/zfb/src/config.rs`.
+   */
+  bundle?: BundleConfig;
   /** User-supplied plugins. */
   plugins?: PluginConfig[];
   /**
@@ -467,6 +508,20 @@ export type MarkdownConfig = {
    * Mirrors `MarkdownConfig::cjk_friendly` in crates/zfb/src/config.rs.
    */
   cjkFriendly?: boolean;
+
+  /**
+   * Convert every soft line break (a single `\n` inside a paragraph) into
+   * `<br>` (remark-breaks parity).
+   *
+   * - **absent / `false` (default):** soft line breaks follow standard
+   *   CommonMark behaviour — collapsed into a single space.
+   * - **`true`:** every `\n` inside a paragraph becomes `<br>`. Use this
+   *   when your content relies on newline→`<br>` fidelity (e.g. product
+   *   descriptions, lyrics, or other newline-sensitive prose).
+   *
+   * Mirrors `MarkdownConfig::hard_breaks` in crates/zfb/src/config.rs.
+   */
+  hardBreaks?: boolean;
 
   /**
    * Per-feature markdown pipeline toggles.

@@ -1505,6 +1505,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .map(|el| (el.into_content_config(), config.site.clone()));
     bundler_input.cjk_friendly =
         crate::config::resolve_cjk_friendly(config.markdown.as_ref());
+    bundler_input.hard_breaks =
+        crate::config::resolve_hard_breaks(config.markdown.as_ref());
+    // #664 / #672 — thread `bundle.exclude` so the bundler keeps the listed
+    // project-relative globs out of the esbuild graph (both the shadow-tree
+    // copy and the #665 import.meta.glob expansion). Empty → skip nothing.
+    bundler_input.bundle_exclude =
+        crate::config::resolve_bundle_exclude(config.bundle.as_ref());
     // #586 — thread `markdown.features` into the bundler so opt-in feature
     // plugins (mermaid, …) fire per the configured toggles.
     // `None` keeps the legacy always-on chain, byte-identical to today.
@@ -2086,78 +2093,242 @@ pub(crate) fn discover_mdx_components_file(project_root: &Path) -> Option<std::p
 }
 
 /// Read `<project_root>/tsconfig.json` and return its
-/// `compilerOptions.paths` map verbatim, suitable for forwarding into
+/// `compilerOptions.paths` map, suitable for forwarding into
 /// [`BundlerInput::tsconfig_paths`]. Used so user-facing alias maps
 /// like `"@/*": ["src/*"]` resolve at bundle time without each project
 /// having to repeat them in `zfb.config.ts`.
 ///
 /// Resilient by design: missing file, malformed JSON, or absent
-/// `paths` field all return an empty map. tsconfig `extends` is NOT
-/// followed today — only direct `compilerOptions.paths` are read.
-/// Projects with their alias map living in a base tsconfig need to
-/// either inline the relevant paths into the project tsconfig or open
-/// a follow-up to extend this loader.
+/// `paths` field all return an empty map.
+///
+/// ## extends chain
+///
+/// `extends` chains are followed up to depth 8 to defend against cycles.
+/// Only relative paths (`./`, `../`, or `/`) are resolved; bare npm-package
+/// extends specifiers (e.g. `"@tsconfig/node18"`) are silently skipped.
+/// Leaf-wins semantics: the first `compilerOptions.paths` table encountered
+/// walking from the leaf toward the root is used exclusively.
+///
+/// ## baseUrl resolution
+///
+/// `compilerOptions.baseUrl` is resolved relative to the tsconfig file
+/// that declared it. The resolved baseUrl (or the directory of the tsconfig
+/// that declared `paths` when no `baseUrl` is set anywhere in the chain)
+/// is used as the anchor for absolutising path targets. Absolute targets
+/// are returned unchanged.
+///
+/// ## Invariant
+///
+/// All returned target strings are **absolute paths** so the bundler's
+/// synthetic tsconfig writer (which uses a shadow tempdir as `baseUrl`)
+/// can forward them directly to esbuild.
 pub(crate) fn read_tsconfig_paths(
     project_root: &Path,
 ) -> std::collections::BTreeMap<String, Vec<String>> {
-    let tsconfig_path = project_root.join("tsconfig.json");
-    let raw = match std::fs::read_to_string(&tsconfig_path) {
-        Ok(s) => s,
-        Err(_) => return Default::default(),
-    };
-    // Strip JSON-with-comments artefacts (tsconfig.json conventionally
-    // allows `//` comments and trailing commas — esbuild's tsconfig
-    // parser does, and so does TypeScript itself). serde_json does not,
-    // so a hand-rolled minimal stripper keeps simple tsconfigs working
-    // without pulling in a JSONC parser.
-    let cleaned = strip_jsonc(&raw);
-    let value: serde_json::Value = match serde_json::from_str(&cleaned) {
-        Ok(v) => v,
-        Err(_) => return Default::default(),
-    };
-    let paths = value
-        .get("compilerOptions")
-        .and_then(|co| co.get("paths"))
-        .and_then(|p| p.as_object());
-    let Some(paths) = paths else {
+    let tsconfig_file = project_root.join("tsconfig.json");
+
+    /// State threaded through the extends walk.
+    struct WalkState {
+        /// Resolved `compilerOptions.baseUrl` from the leafiest config that
+        /// declared one.
+        base_dir: Option<PathBuf>,
+        /// The leafiest `compilerOptions.paths` table encountered.
+        paths: Option<std::collections::BTreeMap<String, Vec<String>>>,
+        /// Directory of the tsconfig that declared `paths`. When no
+        /// `baseUrl` is set anywhere in the chain, TypeScript anchors
+        /// `paths` resolution to *this* directory, not the extends root.
+        paths_anchor: Option<PathBuf>,
+    }
+
+    /// Walk one tsconfig file, then follow its `extends` chain.
+    /// Returns `(resolved_base_dir, paths_table)` when a usable `paths`
+    /// entry is found; `None` otherwise.
+    ///
+    /// The extends chain is limited to depth 8 to guard against cycles
+    /// — a realistic project tree is never deeper than 3–4 levels.
+    fn walk(
+        tsconfig_file: &Path,
+        depth: usize,
+        mut state: WalkState,
+    ) -> Option<(PathBuf, std::collections::BTreeMap<String, Vec<String>>)> {
+        if depth > 8 {
+            return None;
+        }
+        let dir = tsconfig_file.parent()?;
+        let raw = std::fs::read_to_string(tsconfig_file).ok()?;
+        // Strip JSON-with-comments artefacts (tsconfig.json conventionally
+        // allows `//` comments and trailing commas — esbuild's tsconfig
+        // parser does, and so does TypeScript itself). serde_json does not,
+        // so the hand-rolled stripper keeps annotated tsconfigs working
+        // without pulling in a full JSONC parser.
+        let cleaned = strip_jsonc(&raw);
+        let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
+
+        let compiler_options = value.get("compilerOptions");
+
+        let local_base_dir = compiler_options
+            .and_then(|c| c.get("baseUrl"))
+            .and_then(|b| b.as_str())
+            .map(|raw_url| {
+                // Strip a leading `./` so `dir.join("./src")` does not embed
+                // a `.` component in the resulting path string.
+                let clean = raw_url.strip_prefix("./").unwrap_or(raw_url);
+                dir.join(clean)
+            });
+
+        let local_paths = compiler_options
+            .and_then(|c| c.get("paths"))
+            .and_then(|p| p.as_object())
+            .map(|map| {
+                let mut table = std::collections::BTreeMap::new();
+                for (k, v) in map {
+                    if let Some(arr) = v.as_array() {
+                        let targets: Vec<String> = arr
+                            .iter()
+                            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                            .collect();
+                        if !targets.is_empty() {
+                            table.insert(k.clone(), targets);
+                        }
+                    }
+                }
+                table
+            });
+
+        // Leaf-wins merge: only adopt local fields when the caller hasn't
+        // already supplied a closer (leafier) override.
+        if state.base_dir.is_none() {
+            state.base_dir = local_base_dir;
+        }
+        if state.paths.is_none() {
+            if let Some(local) = local_paths {
+                state.paths_anchor = Some(dir.to_path_buf());
+                state.paths = Some(local);
+            }
+        }
+
+        // If we have both pieces, no need to walk further.
+        if let (Some(b), Some(p)) = (&state.base_dir, &state.paths) {
+            return Some((b.clone(), p.clone()));
+        }
+
+        // Follow `extends` if present.
+        if let Some(extends) = value.get("extends").and_then(|e| e.as_str()) {
+            if let Some(parent_file) = resolve_extends_file(dir, extends) {
+                let recurse_state = WalkState {
+                    base_dir: state.base_dir.clone(),
+                    paths: state.paths.clone(),
+                    paths_anchor: state.paths_anchor.clone(),
+                };
+                if let Some(found) = walk(&parent_file, depth + 1, recurse_state) {
+                    return Some(found);
+                }
+            }
+        }
+
+        // No extends (or extends couldn't resolve): return paths if we have
+        // them, anchored at the declaring config's directory (not any parent).
+        let paths = state.paths?;
+        let base_dir = state
+            .base_dir
+            .or(state.paths_anchor)
+            .unwrap_or_else(|| dir.to_path_buf());
+        Some((base_dir, paths))
+    }
+
+    let Some((base_dir, paths)) = walk(
+        &tsconfig_file,
+        0,
+        WalkState {
+            base_dir: None,
+            paths: None,
+            paths_anchor: None,
+        },
+    ) else {
         return Default::default();
     };
+
+    // Absolutise every target against the resolved base_dir.
+    // The synthetic tsconfig the bundler writes uses the shadow tempdir as
+    // `baseUrl`; the shadow only mirrors pages/content/components/layouts —
+    // anything the user aliases (e.g. `@/* → src/*`) lives outside that tree.
+    // Absolute targets bypass `baseUrl` entirely so esbuild resolves them
+    // straight against the real project.
     let mut out = std::collections::BTreeMap::new();
-    for (key, val) in paths {
-        if let Some(arr) = val.as_array() {
-            // Resolve each target to an absolute path against the
-            // project root. The synthetic tsconfig that the bundler
-            // writes uses the *shadow tempdir* as `baseUrl`, and the
-            // shadow only mirrors `pages/`, `content/`, `components/`,
-            // `layouts/` — anything the user aliases at (e.g.
-            // `@/* → src/*`) lives outside the shadow tree. Absolute
-            // paths bypass `baseUrl` entirely so esbuild resolves
-            // them straight against the real project.
-            let entries: Vec<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| resolve_tsconfig_path_target(project_root, s))
-                .collect();
-            if !entries.is_empty() {
-                out.insert(key.clone(), entries);
-            }
+    for (key, targets) in paths {
+        let entries: Vec<String> = targets
+            .iter()
+            .map(|s| resolve_tsconfig_path_target(&base_dir, s))
+            .collect();
+        if !entries.is_empty() {
+            out.insert(key, entries);
         }
     }
     out
 }
 
+/// Resolve a tsconfig `extends` value to the absolute path of the extended
+/// config file, suitable for passing directly to `read_to_string`.
+///
+/// Supported shapes:
+/// - Relative path starting with `./`, `../`, or `/`: resolved against
+///   `extending_dir`. If the target is a directory, `tsconfig.json` is
+///   appended. If it is a file with any name, it is used directly.
+/// - Bare npm-package specifier (no leading `./`, `../`, `/`): returns `None`
+///   (out of scope; node_modules resolution is not implemented).
+fn resolve_extends_file(extending_dir: &Path, extends: &str) -> Option<PathBuf> {
+    let is_relative =
+        extends.starts_with("./") || extends.starts_with("../") || extends.starts_with('/');
+    if !is_relative {
+        return None;
+    }
+    let raw = extending_dir.join(extends);
+    if raw.is_dir() {
+        let candidate = raw.join("tsconfig.json");
+        return candidate.is_file().then_some(candidate);
+    }
+    if raw.is_file() {
+        return Some(raw);
+    }
+    // The extends value may omit the `.json` extension.
+    let with_ext = raw.with_extension("json");
+    if with_ext.is_file() {
+        return Some(with_ext);
+    }
+    None
+}
+
 /// Resolve one tsconfig `paths` target string to an absolute path
-/// against the project root, preserving any trailing `/*` glob
-/// suffix that esbuild reads as a wildcard.
-fn resolve_tsconfig_path_target(project_root: &Path, target: &str) -> String {
-    // tsconfig paths can carry a trailing `/*` (e.g. `"src/*"`); split
-    // it off so the prefix can be path-joined and the wildcard
+/// against `base_dir` (the resolved `compilerOptions.baseUrl`, or the
+/// directory of the tsconfig that declared `paths` when no `baseUrl` is
+/// set). Preserves any trailing `/*` glob suffix that esbuild reads as a
+/// wildcard. Already-absolute targets are returned unchanged.
+fn resolve_tsconfig_path_target(base_dir: &Path, target: &str) -> String {
+    // Already-absolute targets bypass baseUrl in TypeScript and esbuild;
+    // preserve them verbatim. Path::join would replace the whole path if
+    // the argument is absolute, but be explicit to keep the logic readable.
+    if Path::new(target).is_absolute() {
+        return target.to_string();
+    }
+    // tsconfig paths can carry a trailing `/*` (e.g. `"src/*"` or `./*`);
+    // split it off so the prefix can be path-joined and the wildcard
     // re-appended verbatim.
     let (prefix, suffix) = match target.rsplit_once("/*") {
         Some((p, "")) => (p, "/*"),
         _ => (target, ""),
     };
-    let abs = project_root.join(prefix);
+    // Strip a leading `./` (or bare `.`) so that `base_dir.join(".")` does
+    // not produce a trailing `.` component (e.g. `/root/src/.`) in the
+    // output string. Both `"."` and `"./"` mean "the base directory itself".
+    let clean_prefix = prefix
+        .strip_prefix("./")
+        .unwrap_or(prefix)
+        .trim_end_matches('/');
+    let abs = if clean_prefix.is_empty() || clean_prefix == "." {
+        base_dir.to_path_buf()
+    } else {
+        base_dir.join(clean_prefix)
+    };
     let mut out = abs.to_string_lossy().into_owned();
     out.push_str(suffix);
     out
@@ -2311,6 +2482,7 @@ pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) 
             .and_then(|m| m.external_links.clone())
             .map(|el| (el.into_content_config(), config.site.clone())),
         cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
+        hard_breaks: crate::config::resolve_hard_breaks(config.markdown.as_ref()),
         // #586 — MUST match `BundlerInput::markdown_features` so the snapshot's
         // JSX `content_hash` stays byte-identical to the bundler's bridge key.
         features: config.markdown.as_ref().and_then(|m| m.features.clone()),
@@ -4661,6 +4833,177 @@ mod tests {
             result.is_none(),
             "build_content_snapshot_json must return None when collections is empty \
              (no-collections cost guard must be preserved after gate removal)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // read_tsconfig_paths — unit tests (#669)
+    // ---------------------------------------------------------------------------
+
+    /// Multiple direct path keys all survive: regression guard that
+    /// `read_tsconfig_paths` returns every key present in the paths object,
+    /// not just the first or a hard-coded subset.
+    #[test]
+    fn read_tsconfig_paths_multi_key_direct() {
+        use std::fs;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"],
+                  "@data/*": ["data/*"],
+                  "~/*": ["lib/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths(root);
+        assert!(result.contains_key("@/*"), "missing @/*; got {result:?}");
+        assert!(
+            result.contains_key("@data/*"),
+            "missing @data/*; got {result:?}"
+        );
+        assert!(result.contains_key("~/*"), "missing ~/*; got {result:?}");
+        assert_eq!(result.len(), 3, "unexpected extra keys: {result:?}");
+
+        // Targets should be absolute, anchored at the project root.
+        let at_star = &result["@/*"];
+        let expected_target = format!("{}/src/*", root.display());
+        assert_eq!(
+            at_star,
+            &vec![expected_target.clone()],
+            "@/* target must be absolute"
+        );
+    }
+
+    /// `extends` chain is followed: the leaf tsconfig has no `paths` of its
+    /// own, but extends a `tsconfig.base.json` (same directory) that does.
+    /// Inherited entries must appear in the returned map.
+    #[test]
+    fn read_tsconfig_paths_extends_chain_merges_parent_paths() {
+        use std::fs;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Base config declares the alias map.
+        fs::write(
+            root.join("tsconfig.base.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"],
+                  "@ui/*": ["ui/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        // Leaf config has no `paths` of its own — only an extends reference.
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              "extends": "./tsconfig.base.json"
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths(root);
+        assert!(
+            result.contains_key("@/*"),
+            "inherited @/* must be present; got {result:?}"
+        );
+        assert!(
+            result.contains_key("@ui/*"),
+            "inherited @ui/* must be present; got {result:?}"
+        );
+        assert_eq!(result.len(), 2, "unexpected extra keys: {result:?}");
+
+        // Targets must be absolute, anchored at the root (where tsconfig.base.json
+        // lives — that's the config that declared paths, so it's the anchor).
+        let at_star = &result["@/*"];
+        let expected = format!("{}/src/*", root.display());
+        assert_eq!(at_star, &vec![expected], "@/* target must be absolute");
+    }
+
+    /// `compilerOptions.baseUrl` shifts the substitution anchor.
+    /// `"baseUrl": "./src", "paths": { "@/*": ["./*"] }` must produce
+    /// `<root>/src/*`, NOT `<root>/*`.
+    #[test]
+    fn read_tsconfig_paths_base_url_non_default_absolutises_correctly() {
+        use std::fs;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "./src",
+                "paths": {
+                  "@/*": ["./*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths(root);
+        assert!(result.contains_key("@/*"), "missing @/*; got {result:?}");
+
+        let targets = &result["@/*"];
+        let expected = format!("{}/src/*", root.display());
+        assert_eq!(
+            targets,
+            &vec![expected.clone()],
+            "target must be anchored at baseUrl (./src), not project root; \
+             expected {expected:?}, got {targets:?}"
+        );
+    }
+
+    /// When no `tsconfig.json` is present the function must return an empty
+    /// map without panicking (resilience contract).
+    #[test]
+    fn read_tsconfig_paths_missing_file_returns_empty() {
+        let dir = tempdir().unwrap();
+        let result = read_tsconfig_paths(dir.path());
+        assert!(result.is_empty(), "expected empty map; got {result:?}");
+    }
+
+    /// JSONC (comment + trailing comma) preprocessing must survive so that
+    /// annotated tsconfigs still parse correctly.
+    #[test]
+    fn read_tsconfig_paths_jsonc_preprocessing_survives() {
+        use std::fs;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              // project aliases
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"], // inline comment
+                  "~/*": ["lib/*"],  /* block comment */
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths(root);
+        assert!(
+            result.contains_key("@/*"),
+            "JSONC-annotated tsconfig must parse; got {result:?}"
+        );
+        assert!(
+            result.contains_key("~/*"),
+            "second key must survive; got {result:?}"
         );
     }
 }

@@ -145,6 +145,7 @@ fn mdx_admonition_directive_runs_through_pipeline() {
         false,
         zfb_content::ResolvedGfmConstructs::default(),
         true,
+        false,
         Some(&features),
     );
 

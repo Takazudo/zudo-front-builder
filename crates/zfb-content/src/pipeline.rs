@@ -26,7 +26,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
     AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
-    ExternalLinksConfig, ExternalLinksPlugin, HeadingLinksPlugin,
+    ExternalLinksConfig, ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin,
     MermaidPlugin, ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin,
     SyntectPlugin, TocConfig, TocPlugin,
 };
@@ -638,6 +638,7 @@ impl Pipeline {
             ResolvedGfmConstructs::CONSERVATIVE,
             None,
             true,
+            false,
             Some(features),
         )
         .expect("with_defaults_and_features passes no themes_dir — cannot fail")
@@ -665,16 +666,17 @@ impl Pipeline {
     /// through this one constructor so the snapshot ↔ bundler `content_hash`
     /// stays byte-identical (see `crates/zfb-content/src/content_bridge.rs`).
     ///
-    /// `theme`, `resolved`, `themes_dir`, and `cjk_friendly` carry the same
-    /// meaning as on
-    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`]. Returns
-    /// `Err` only when `themes_dir` is `Some` and a `.tmTheme` file fails to
-    /// load.
+    /// `theme`, `resolved`, `themes_dir`, `cjk_friendly`, and `hard_breaks`
+    /// carry the same meaning as on
+    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`] (and
+    /// `zfb::config::resolve_hard_breaks`). Returns `Err` only when
+    /// `themes_dir` is `Some` and a `.tmTheme` file fails to load.
     pub fn with_defaults_and_full_config(
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
         themes_dir: Option<&Path>,
         cjk_friendly: bool,
+        hard_breaks: bool,
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
@@ -711,6 +713,12 @@ impl Pipeline {
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
         if cjk_friendly {
             p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+        }
+        // HardBreaksPlugin runs AFTER CjkFriendlyPlugin so CJK emphasis
+        // re-tokenisation sees intact Text nodes first (emphasis markers are
+        // resolved before soft line breaks are split). Default is false.
+        if hard_breaks {
+            p.add_mdast_visitor(Box::new(HardBreaksPlugin::new()));
         }
         // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));

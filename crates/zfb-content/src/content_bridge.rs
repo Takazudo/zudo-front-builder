@@ -241,6 +241,18 @@ pub struct SnapshotPipelineConfig {
     /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
 
+    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
+    /// MUST match the bundler's value (output of
+    /// `zfb::config::resolve_hard_breaks(config.markdown.as_ref())`).
+    ///
+    /// `Default` is `false` (plugin off) — the pre-feature default is no
+    /// hard-break conversion. A `true` on one side + `false` on the other
+    /// diverges the JSX `content_hash` and causes silent fallback to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`HardBreaksPlugin`]: super::plugins::HardBreaksPlugin
+    pub hard_breaks: bool,
+
     /// `markdown.features` from `zfb.config.ts`. MUST match the bundler's
     /// `BundlerInput::markdown_features` exactly — the feature-aware pipeline
     /// changes which visitors fire, so any divergence shifts the JSX
@@ -263,6 +275,7 @@ impl Default for SnapshotPipelineConfig {
             resolve_source_map: None,
             gfm_constructs: super::pipeline::ResolvedGfmConstructs::default(),
             cjk_friendly: true,
+            hard_breaks: false,
             toc: None,
             external_links: None,
             features: None,
@@ -283,6 +296,7 @@ impl SnapshotPipelineConfig {
             self.gfm_constructs,
             self.code_highlight_themes_dir.as_deref(),
             self.cjk_friendly,
+            self.hard_breaks,
             self.features.as_ref(),
         )
         .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?;

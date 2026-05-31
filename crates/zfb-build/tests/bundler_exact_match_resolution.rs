@@ -105,6 +105,7 @@ fn make_input(
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        hard_breaks: false,
         markdown_features: None,
         plugin_alias_entries,
         plugin_virtual_modules,
@@ -112,6 +113,7 @@ fn make_input(
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     }
 }
 

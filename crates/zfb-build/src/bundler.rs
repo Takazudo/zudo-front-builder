@@ -289,15 +289,25 @@ pub struct BundlerInput {
     /// in the bundle. See [`server_secrets_are_not_bundled`] in tests.
     pub define_vars: HashMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
-    /// bundler writes this verbatim into a synthetic `tsconfig.json`
+    /// bundler writes a rebased copy into a synthetic `tsconfig.json`
     /// inside the shadow tree; esbuild then resolves user imports
     /// (`@/components/foo`) through it via `--tsconfig=`.
     ///
     /// Caller is responsible for resolving the project's `extends`
     /// chain (e.g. `tsconfig.base.json`) before passing the merged map
-    /// here. Path targets MUST be expressed relative to the
-    /// **project root** (the bundler rebases them onto the shadow tree
-    /// internally).
+    /// here. Path targets are expected to be **absolute paths under the
+    /// project root** (the shape `read_tsconfig_paths` produces by
+    /// absolutising each target against the project root, preserving a
+    /// trailing `/*`).
+    ///
+    /// Before writing the synthetic tsconfig the bundler rebases each
+    /// under-`project_root` target to a **shadow-first dual-target**
+    /// `["<shadow>/<rel>[/*]", "<original real-abs target>"]` (see
+    /// [`rebase_tsconfig_paths_to_shadow`]). This is what makes an aliased
+    /// import reach the in-shadow `import.meta.glob` / `.module.css`
+    /// transform (the shadow copy is tried first; the real target is the
+    /// graceful fallback). Targets NOT under `project_root` (plugin /
+    /// virtual / out-of-tree) are written unchanged.
     pub tsconfig_paths: BTreeMap<String, Vec<String>>,
     /// Bare specifiers to leave unresolved in the bundle. Use for
     /// `preact`, `react`, `react-dom/server`, etc. — packages the
@@ -496,6 +506,20 @@ pub struct BundlerInput {
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
     pub cjk_friendly: bool,
 
+    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
+    /// Mirrors `zfb::config::resolve_hard_breaks(config.markdown)`.
+    /// Default: `false` (plugin off). Set to `true` only when the user
+    /// wrote `markdown: { hardBreaks: true }` in `zfb.config.ts`.
+    ///
+    /// Must match the `SnapshotPipelineConfig::hard_breaks` value used
+    /// by the snapshot walker — otherwise the `content_hash` baked into
+    /// every compiled MDX module diverges and every
+    /// `<Content />` lookup falls back to
+    /// `<pre data-zfb-content-fallback>`.
+    ///
+    /// [`HardBreaksPlugin`]: zfb_content::plugins::HardBreaksPlugin
+    pub hard_breaks: bool,
+
     /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
     /// pipeline is built via the feature-aware
     /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
@@ -633,6 +657,33 @@ pub struct BundlerInput {
     /// re-runs every build and `zfb dev` / preview pick up edits with no
     /// special-casing. Default: `None`.
     pub mdx_components_file: Option<PathBuf>,
+
+    /// Project-relative gitignore-style globs for source files the bundler
+    /// must keep OUT of the esbuild graph.
+    ///
+    /// Mirrors `zfb::config::resolve_bundle_exclude(config.bundle)`. Each
+    /// pattern is matched against a candidate file's path relative to
+    /// [`Self::project_root`], in POSIX form (e.g.
+    /// `components/Foo.stories.tsx`, `components/**/*.stories.tsx`). A matched
+    /// file is applied at TWO consistent points so they cannot diverge:
+    ///
+    /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
+    ///    tree (the file is never present for esbuild to resolve).
+    /// 2. The #665 `import.meta.glob` eager-expansion seam
+    ///    ([`expand_import_meta_glob`]) DROPS it from any glob expansion, so
+    ///    an excluded file is never emitted as a static import (which would
+    ///    otherwise make esbuild error on the generated import).
+    ///
+    /// Why this is needed: a `--platform=neutral` worker bundle rejects
+    /// CJS-only packages resolved only via `main`/`module` or a
+    /// `require`-only `exports` condition (e.g. `msw` → `path-to-regexp@6`).
+    /// Once #665's eager glob over `components/**/*.stories.tsx` lands, the
+    /// build newly pulls such a package in; excluding the offending file
+    /// keeps it green.
+    ///
+    /// Empty (the default) → no files are skipped; the build output is
+    /// byte-for-byte identical to a build without this knob.
+    pub bundle_exclude: Vec<String>,
 }
 
 impl BundlerInput {
@@ -685,6 +736,7 @@ impl BundlerInput {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -692,6 +744,7 @@ impl BundlerInput {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         }
     }
 }
@@ -850,6 +903,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 
     let adapter = make_adapter(input.framework);
 
+    // `copy_mode` — when esbuild will run WITHOUT `--preserve-symlinks`
+    // (branch 4: project node_modules + non-empty tsconfig paths), every
+    // symlinked source file in the shadow tree is canonicalised by esbuild
+    // back to the real project tree, so the in-shadow `import.meta.glob`
+    // expansion and `.module.css` rewrite become invisible. In that mode
+    // we materialise source files as REAL COPIES (not symlinks) so the
+    // transformed shadow file is the one esbuild reads. Derived from the
+    // SAME predicate that gates the `--preserve-symlinks` flag in
+    // `run_esbuild`, so the two decisions cannot drift. `node_modules` is
+    // always symlinked regardless (see the 2b block) — copy_mode only
+    // affects source files.
+    let copy_mode = !esbuild_will_preserve_symlinks(&input);
+
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
     // The map is built once here (before the shadow walk) from every
@@ -884,6 +950,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // After the walk completes, handled according to `on_broken_links`.
     let mut all_broken_links: Vec<(String, String)> = Vec::new(); // (file_path, url)
 
+    // Compile `bundle.exclude` once and share it across every
+    // `materialise_shadow` call (pages / content / components / layouts /
+    // extra top-level dirs). Empty patterns → a matcher that never matches,
+    // so an unset `bundle.exclude` is byte-identical to a build without the
+    // knob. An invalid glob is a hard, clearly-named build error.
+    let bundle_exclude = BundleExcludeMatcher::new(&input.bundle_exclude)?;
+
     // 2. Materialise the shadow tree.
     let work = tempfile::Builder::new()
         .prefix("zfb-bundler-")
@@ -916,7 +989,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -963,10 +1039,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.hard_breaks,
                 input.markdown_features.as_ref(),
                 col.include.as_deref(),
                 col.exclude.as_deref(),
                 col.id_strip_suffix.as_deref(),
+                copy_mode,
                 &mut broken,
             )
             .with_context(|| {
@@ -1001,7 +1079,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1032,7 +1113,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1062,7 +1146,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.toc.clone(),
             input.external_links.as_ref(),
             input.cjk_friendly,
+            input.hard_breaks,
             input.markdown_features.as_ref(),
+            &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1126,7 +1213,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.toc.clone(),
                 input.external_links.as_ref(),
                 input.cjk_friendly,
+                input.hard_breaks,
                 input.markdown_features.as_ref(),
+                &bundle_exclude,
+                copy_mode,
                 &mut broken,
             )
             .with_context(|| {
@@ -1236,8 +1326,18 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         )
     })?;
 
-    // 4. Synthetic tsconfig.json honouring the user's `paths`.
-    write_synthetic_tsconfig(shadow, &input.tsconfig_paths, adapter.jsx_import_source())
+    // 4. Synthetic tsconfig.json honouring the user's `paths`. Rebase
+    //    under-project_root alias targets to a shadow-first dual-target so
+    //    an aliased import reaches the in-shadow transform (see
+    //    `rebase_tsconfig_paths_to_shadow`). This first write is overwritten
+    //    by the plugin-merged write inside `run_esbuild` for real builds; it
+    //    matters for the mock-subprocess path and as a behaviour-preserving
+    //    baseline. esbuild reads the array in order, first existing file
+    //    wins, a miss is NOT an error — that fallthrough is what makes the
+    //    real-root fallback safe.
+    let rebased_paths =
+        rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
+    write_synthetic_tsconfig(shadow, &rebased_paths, adapter.jsx_import_source())
         .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
@@ -1518,6 +1618,43 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Recursively copy every regular file under `src` into `dest` as REAL
+/// files, following symlinks. Used by the `copy_mode` materialise passes
+/// to mirror a symlinked *subdir* (which `WalkDir` with
+/// `follow_links(false)` yields as a non-recursed symlink entry). A plain
+/// re-symlink would canonicalise back out under
+/// `esbuild --(no-)preserve-symlinks`, so the subtree must be copied.
+///
+/// Uses `follow_links(true)` so the subtree's own contents (including any
+/// nested symlinks) are dereferenced and written as real files. Infra dirs
+/// are pruned with the same predicate the top-level walks use.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in WalkDir::new(src)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| !is_pruned_infra_dir(e))
+    {
+        let entry = entry?;
+        let from = entry.path();
+        let rel = match from.strip_prefix(src) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let to = dest.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&to)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let _ = fs::remove_file(&to);
+            fs::copy(from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1542,7 +1679,10 @@ fn materialise_shadow(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    bundle_exclude: &BundleExcludeMatcher,
+    copy_mode: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1562,6 +1702,17 @@ fn materialise_shadow(
     // `src/routes/`) still produces routes correctly because the
     // bundler always materialises the shadow root under `pages/`.
     let is_pages_dir = dest.file_name().map(|s| s == "pages").unwrap_or(false);
+
+    // Single `bundle.exclude` predicate used at BOTH application points in
+    // this function — the per-file copy/symlink skip below, and the #665
+    // `import.meta.glob` expansion seam (`materialise_source_file` →
+    // `expand_import_meta_glob`). One closure means the two can never diverge.
+    //
+    // It takes an ABSOLUTE path (the shape `expand_import_meta_glob` hands its
+    // `is_excluded` predicate, per the #665 contract) and relativises it
+    // against `project_root` internally. When `bundle.exclude` is empty the
+    // matcher never matches, so this is always-false → skip nothing.
+    let is_excluded = |abs: &Path| bundle_exclude.is_excluded(abs, project_root);
 
     // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
     // walk loop so the six default plugins (admonitions, CJK-friendly
@@ -1594,6 +1745,7 @@ fn materialise_shadow(
         gfm_constructs,
         code_highlight_themes_dir,
         cjk_friendly,
+        hard_breaks,
         markdown_features,
     )
     .with_context(|| {
@@ -1654,6 +1806,38 @@ fn materialise_shadow(
             continue;
         }
         if !entry.file_type().is_file() {
+            // A symlinked *subdir* under the source root. `WalkDir`'s
+            // `follow_links(false)` yields it as a non-recursed symlink
+            // entry (neither `is_dir()` nor `is_file()`). In the default
+            // symlink path that is fine — esbuild canonicalises the parent
+            // copy/symlink back to the real tree and finds the subtree
+            // there. But under `copy_mode` the parent root is materialised
+            // as real copies and esbuild stays anchored at the shadow, so a
+            // symlinked subdir would silently stay unmirrored (esbuild would
+            // canonicalise it back out, defeating the in-shadow transforms).
+            // Explicitly copy the symlinked subtree as real files in that
+            // mode. Low-frequency, but a hole otherwise.
+            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+                copy_dir_recursive(from, &to).with_context(|| {
+                    format!(
+                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        from.display(),
+                        to.display()
+                    )
+                })?;
+            }
+            continue;
+        }
+
+        // `bundle.exclude` skip (#664 / #672). A matched file is never
+        // materialised into the shadow tree — so esbuild can never resolve
+        // it — AND, because we `continue` before the route-recording block
+        // below, an excluded page yields no route (correct: an excluded
+        // source must not exist anywhere in the build). The predicate takes
+        // the file's absolute path (`from`); empty `bundle.exclude` makes it
+        // always-false, so this skip never fires and behaviour is identical
+        // to a build without the knob.
+        if is_excluded(from) {
             continue;
         }
 
@@ -1780,9 +1964,13 @@ fn materialise_shadow(
             fs::write(&to, shell.as_bytes())
                 .with_context(|| format!("write md page shell to {}", to.display()))?;
         } else {
-            symlink_or_copy(from, &to).with_context(|| {
-                format!("symlink_or_copy {} -> {}", from.display(), to.display())
-            })?;
+            // Non-MDX source: copy/symlink, expanding eager
+            // `import.meta.glob(...)` in JS/TS files first. The SAME
+            // `bundle.exclude` predicate used by the per-file skip above is
+            // threaded into the glob expansion (#665's `is_excluded` seam) so
+            // an excluded file is never emitted as a static import — which
+            // would otherwise make esbuild error on the generated import.
+            materialise_source_file(from, &to, &is_excluded, copy_mode)?;
         }
 
         // Routes only collected from the pages root.
@@ -2079,10 +2267,12 @@ fn materialise_collection(
     toc: Option<zfb_content::TocConfig>,
     external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
     cjk_friendly: bool,
+    hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     include: Option<&[String]>,
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
+    copy_mode: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -2135,6 +2325,7 @@ fn materialise_collection(
         gfm_constructs,
         code_highlight_themes_dir,
         cjk_friendly,
+        hard_breaks,
         markdown_features,
     )
     .with_context(|| {
@@ -2186,6 +2377,18 @@ fn materialise_collection(
             continue;
         }
         if !entry.file_type().is_file() {
+            // Symlinked subdir under copy_mode — copy the real subtree so it
+            // stays mirrored in the shadow (see the matching block in
+            // `materialise_shadow`).
+            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+                copy_dir_recursive(from, &to).with_context(|| {
+                    format!(
+                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        from.display(),
+                        to.display()
+                    )
+                })?;
+            }
             continue;
         }
 
@@ -2315,9 +2518,9 @@ fn materialise_collection(
                 shadow_rel_path,
             });
         } else {
-            symlink_or_copy(from, &to).with_context(|| {
-                format!("symlink_or_copy {} -> {}", from.display(), to.display())
-            })?;
+            // Non-MDX source in a content collection: same eager
+            // `import.meta.glob(...)` expansion as the page/component pass.
+            materialise_source_file(from, &to, &|_| false, copy_mode)?;
         }
     }
     Ok(())
@@ -2429,6 +2632,495 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// Vite `import.meta.glob` eager transform (#665 / sub-issue #670)
+// ---------------------------------------------------------------------------
+//
+// `import.meta.glob(...)` is a Vite-only build-time macro: Vite statically
+// expands it at transform time into a set of `import * as ...` declarations
+// plus an object literal mapping each matched relative path to its namespace.
+// esbuild knows nothing about it and leaves it verbatim; at SSR render time
+// the runtime evaluates `import.meta.glob` as `undefined` and throws, so the
+// module's named exports surface as `undefined`. The esbuild CLI cannot load
+// JS plugins (see the module docs at the top of this file), so this expansion
+// MUST run Rust-side, mirroring how MDX is pre-compiled inside
+// `materialise_shadow` before esbuild ever sees the shadow tree.
+//
+// Scope of THIS step (Wave 1):
+//   * Only the eager form `import.meta.glob('<literal>', { eager: true })`.
+//   * Pattern must be a string literal anchored at the source file's dir.
+//   * Anything else (lazy/default, non-literal pattern, `import()` mode, …)
+//     is an explicit `Err` — silently mis-expanding user code is the failure
+//     mode this whole task exists to avoid.
+
+/// Detected `import.meta.glob(...)` call in a source file: the byte range
+/// (0-based, into the original source string) the call occupies, plus the
+/// validated arguments (or the reason the form is unsupported).
+struct GlobCall {
+    /// 0-based byte offset of the start of the call expression.
+    lo: usize,
+    /// 0-based byte offset just past the end of the call expression.
+    hi: usize,
+    /// `Ok(pattern)` for a supported eager+string-literal form;
+    /// `Err(reason)` names the unsupported shape.
+    parsed: std::result::Result<String, String>,
+}
+
+/// SWC `Visit` collector that records every `import.meta.glob(...)` call
+/// expression's span and validates its arguments. We collect spans rather
+/// than mutate the AST so the rest of the user's source is spliced through
+/// byte-for-byte (no codegen → no comment loss, no reformatting).
+struct GlobCallCollector {
+    /// Byte offset to subtract from every span so it indexes the source
+    /// string. SWC's `BytePos` is global to the `SourceMap`; the first
+    /// file does NOT start at 0 (it starts at `SourceFile::start_pos`,
+    /// typically `BytePos(1)`). Indexing the string with a raw `BytePos`
+    /// is off-by-one corruption — this base correction is the fix.
+    base: u32,
+    calls: Vec<GlobCall>,
+}
+
+impl swc_core::ecma::visit::Visit for GlobCallCollector {
+    fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
+        use swc_core::common::Spanned;
+        use swc_core::ecma::visit::VisitWith;
+        if let Some(parsed) = parse_import_meta_glob_call(node) {
+            let lo = (node.span().lo().0 - self.base) as usize;
+            let hi = (node.span().hi().0 - self.base) as usize;
+            self.calls.push(GlobCall { lo, hi, parsed });
+        }
+        // Recurse so nested calls (e.g. inside an arrow body) are still seen.
+        node.visit_children_with(self);
+    }
+}
+
+/// If `call`'s callee is exactly `import.meta.glob`, return `Some` with the
+/// validated pattern (`Ok`) or an unsupported-form reason (`Err`). Returns
+/// `None` when the callee is some other call entirely — those are left
+/// untouched.
+fn parse_import_meta_glob_call(
+    call: &swc_core::ecma::ast::CallExpr,
+) -> Option<std::result::Result<String, String>> {
+    use swc_core::ecma::ast::{Callee, Expr, Lit, MemberProp, MetaPropKind};
+
+    // Callee must be a plain expression that is a member access `<obj>.glob`.
+    let Callee::Expr(callee_expr) = &call.callee else {
+        return None;
+    };
+    let Expr::Member(member) = &**callee_expr else {
+        return None;
+    };
+    // `.glob` (not `.foo`, not a computed `["glob"]`).
+    if !matches!(&member.prop, MemberProp::Ident(i) if i.sym == "glob") {
+        return None;
+    }
+    // `<obj>` must be the `import.meta` meta-property.
+    match &*member.obj {
+        Expr::MetaProp(mp) if mp.kind == MetaPropKind::ImportMeta => {}
+        _ => return None,
+    }
+
+    // It IS `import.meta.glob(...)` — from here on every divergence is a
+    // hard `Err` (the form is reachable user code; we must not mis-expand).
+    let unsupported = |reason: &str| {
+        Some(Err(format!(
+            "zfb bundler: unsupported `import.meta.glob` form: {reason}. \
+             Only `import.meta.glob('<string-literal>', {{ eager: true }})` is \
+             supported. For lazy / dynamic / `import()`-mode globs, expand the \
+             set with a codegen helper or replace it with explicit static \
+             imports."
+        )))
+    };
+
+    if !call.args.is_empty() && call.args[0].spread.is_some() {
+        return unsupported("spread argument");
+    }
+
+    // First arg: a string-literal pattern.
+    let pattern = match call.args.first() {
+        Some(arg) => match &*arg.expr {
+            Expr::Lit(Lit::Str(s)) => wtf8_atom_to_string(&s.value),
+            _ => return unsupported("pattern is not a string literal"),
+        },
+        None => return unsupported("missing glob pattern argument"),
+    };
+
+    // Second arg MUST be `{ eager: true }`. Vite's DEFAULT (no options) is
+    // LAZY, so a missing options object is also unsupported here.
+    let Some(opts_arg) = call.args.get(1) else {
+        return unsupported("missing `{ eager: true }` options object (the \
+                            default lazy form is not supported)");
+    };
+    if opts_arg.spread.is_some() {
+        return unsupported("spread in options argument");
+    }
+    let Expr::Object(obj) = &*opts_arg.expr else {
+        return unsupported("options argument is not an object literal");
+    };
+
+    let mut eager_is_true = false;
+    for prop in &obj.props {
+        use swc_core::ecma::ast::{Prop, PropName, PropOrSpread};
+        let PropOrSpread::Prop(p) = prop else {
+            return unsupported("spread in options object");
+        };
+        let Prop::KeyValue(kv) = &**p else {
+            return unsupported("non key-value property in options object");
+        };
+        let key = match &kv.key {
+            PropName::Ident(i) => i.sym.as_str().to_owned(),
+            PropName::Str(s) => wtf8_atom_to_string(&s.value),
+            _ => return unsupported("computed key in options object"),
+        };
+        match key.as_str() {
+            "eager" => match &*kv.value {
+                Expr::Lit(Lit::Bool(b)) => {
+                    if !b.value {
+                        return unsupported("`eager: false` (lazy mode)");
+                    }
+                    eager_is_true = true;
+                }
+                _ => return unsupported("`eager` is not a boolean literal"),
+            },
+            // `import: 'default'` selects a named export; `as`/`query` are
+            // Vite asset-pipeline knobs. None are modelled in this first step.
+            "import" => return unsupported("`import` option (named-export selection)"),
+            "query" => return unsupported("`query` option"),
+            "as" => return unsupported("`as` option (asset-mode glob)"),
+            other => return unsupported(&format!("unrecognised option `{other}`")),
+        }
+    }
+
+    if !eager_is_true {
+        return unsupported("options object does not set `eager: true`");
+    }
+
+    Some(Ok(pattern))
+}
+
+/// Convert SWC's `Wtf8Atom` string value to a Rust `String`, preferring the
+/// already-decoded UTF-8 view and falling back to lossy decoding for the
+/// (practically impossible for a glob pattern) lone-surrogate case. Mirrors
+/// `zfb_content::tsx_frontmatter`'s helper of the same shape.
+fn wtf8_atom_to_string(atom: &swc_core::atoms::Wtf8Atom) -> String {
+    match atom.as_str() {
+        Some(a) => a.to_owned(),
+        None => atom.to_string_lossy().into_owned(),
+    }
+}
+
+/// Materialise a non-MDX source file into the shadow tree, expanding any
+/// eager `import.meta.glob(...)` macro in `.ts/.tsx/.js/.jsx` files first.
+///
+/// Zero-regression contract: a file that does NOT contain the literal
+/// `import.meta.glob` substring (the overwhelming common case) takes the
+/// exact `symlink_or_copy` path as before — no parse, byte-identical output.
+/// Only when the substring is present do we read the source, run the
+/// statement-level transform, and write a REAL file (not a symlink) so its
+/// rewritten body lands in the shadow tree. `file_dir` for the glob anchor is
+/// the source file's own directory (`from.parent()`), so matched relative
+/// paths line up with what esbuild later resolves through the shadow.
+///
+/// `is_excluded` is threaded straight through to [`expand_import_meta_glob`]
+/// (Wave 1 passes a no-op `&|_| false`; Wave 2 / #672 supplies the real
+/// `bundle.exclude` predicate).
+///
+/// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
+/// instead of a symlink. When esbuild runs without `--preserve-symlinks`
+/// (branch 4 — see [`esbuild_will_preserve_symlinks`]) a symlinked source
+/// file is canonicalised back to the real tree, so any sibling in-shadow
+/// transform (`.module.css` rewrite, expanded glob barrel) it reaches via a
+/// relative import would be read from the *original* untransformed file. A
+/// real copy keeps the importer physically inside the shadow. The
+/// `import.meta.glob` real-write path below is unaffected (it already writes
+/// a real file).
+fn materialise_source_file(
+    from: &Path,
+    to: &Path,
+    is_excluded: &dyn Fn(&Path) -> bool,
+    copy_mode: bool,
+) -> Result<()> {
+    let is_js_like = matches!(
+        from.extension().and_then(|s| s.to_str()),
+        Some("ts") | Some("tsx") | Some("js") | Some("jsx")
+    );
+    if is_js_like {
+        // Cheap pre-read of the file is only worthwhile when it might contain
+        // the macro. `fs::read_to_string` fails on non-UTF-8; in that case
+        // (binary masquerading as .js, etc.) fall back to copy.
+        if let Ok(source) = fs::read_to_string(from) {
+            if source.contains("import.meta.glob") {
+                let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
+                let expanded = expand_import_meta_glob(&source, file_dir, is_excluded)
+                    .with_context(|| {
+                        format!("expand import.meta.glob in {}", from.display())
+                    })?;
+                // Remove any pre-existing entry (e.g. a stale symlink from a
+                // prior persistent-shadow pass) before writing the real file.
+                let _ = fs::remove_file(to);
+                fs::write(to, expanded.as_bytes())
+                    .with_context(|| format!("write expanded source to {}", to.display()))?;
+                return Ok(());
+            }
+        }
+    }
+    if copy_mode {
+        // Force a real copy so esbuild (running WITHOUT --preserve-symlinks)
+        // reads this file — and any in-shadow transform it relatively imports
+        // — from the shadow tree, not the canonicalised original.
+        let _ = fs::remove_file(to);
+        fs::copy(from, to)
+            .map(|_| ())
+            .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))
+    } else {
+        symlink_or_copy(from, to)
+            .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))
+    }
+}
+
+/// Expand Vite's eager `import.meta.glob(...)` macro in `source`.
+///
+/// Parses `source` as a TSX module (so JSX / TS syntax is accepted), collects
+/// every `import.meta.glob(...)` **call expression** via the SWC AST, and
+/// replaces each with an inline object literal `{ './rel': __glob_N, … }`,
+/// hoisting the matching `import * as __glob_N from '<rel>'` declarations to
+/// the top of the file. Because we splice the original byte ranges, every
+/// other byte of the user's source — comments, formatting, even occurrences
+/// of the literal text `import.meta.glob(` inside a string or comment — is
+/// preserved verbatim and NOT rewritten (those never parse as a call so the
+/// AST never sees them).
+///
+/// `file_dir` is the directory of the **original source file** (NOT the shadow
+/// copy); globs resolve against it so the matched relative paths line up with
+/// the files esbuild later resolves through the shadow tree.
+///
+/// `is_excluded` is consulted for every candidate match (absolute path); a
+/// `true` verdict drops that file from the expansion. In this Wave-1 task the
+/// call sites pass a no-op `&|_| false`; the Wave-2 `bundle.exclude` task
+/// (#672) supplies the real predicate. **Path contract:** `is_excluded`
+/// receives the *absolute* path of the matched file — the most general shape,
+/// from which a glob/relative predicate can derive whatever it needs.
+///
+/// # Errors
+///
+/// * The source fails to parse as a TSX module.
+/// * Any `import.meta.glob` occurrence uses an unsupported form
+///   (non-eager / default-lazy, non-literal pattern, `import()` mode,
+///   `as`/`query`/`import` options, …). The message names the form.
+///
+/// No matching files is NOT an error: it expands to `{}` (Vite parity).
+fn expand_import_meta_glob(
+    source: &str,
+    file_dir: &Path,
+    is_excluded: &dyn Fn(&Path) -> bool,
+) -> Result<String> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+    use swc_core::ecma::visit::VisitWith;
+
+    // Fast path: if the literal substring never appears, there is nothing to
+    // do. Callers already gate on this, but keep the function self-contained
+    // and cheap when invoked directly (e.g. in unit tests).
+    if !source.contains("import.meta.glob") {
+        return Ok(source.to_string());
+    }
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(
+        FileName::Anon.into(),
+        source.to_string(),
+    );
+    // Base offset for converting global `BytePos` → 0-based string index.
+    let base = fm.start_pos.0;
+
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        swc_core::ecma::ast::EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let module = parser.parse_module().map_err(|e| {
+        anyhow!("zfb bundler: failed to parse module for import.meta.glob expansion: {e:?}")
+    })?;
+
+    let mut collector = GlobCallCollector {
+        base,
+        calls: Vec::new(),
+    };
+    module.visit_with(&mut collector);
+
+    if collector.calls.is_empty() {
+        // The substring was present but only inside strings/comments — no
+        // real call. Return the source unchanged.
+        return Ok(source.to_string());
+    }
+
+    // Calls are collected in source order (visit is pre-order, left-to-right
+    // for arguments). Assign `__glob_N` indices in that order for stable
+    // output, then splice in DESCENDING `lo` order so earlier offsets don't
+    // shift as we mutate.
+    let mut import_decls: Vec<String> = Vec::new();
+    // (lo, hi, replacement_object_literal) per call, source order.
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    let mut glob_counter: usize = 0;
+
+    for call in &collector.calls {
+        let pattern = match &call.parsed {
+            Ok(p) => p.clone(),
+            Err(reason) => bail!("{reason}"),
+        };
+
+        let matches = glob_match_relative(file_dir, &pattern, is_excluded)?;
+
+        // Build the object literal `{ './rel': __glob_N, … }`. Each unique
+        // relative path gets one `import * as __glob_N` declaration; keys are
+        // already sorted + deduped by `glob_match_relative`.
+        let mut entries: Vec<String> = Vec::with_capacity(matches.len());
+        for rel in &matches {
+            let ident = format!("__glob_{glob_counter}");
+            glob_counter += 1;
+            // serde_json string-quotes the specifier/key so any exotic char
+            // in a filename is escaped correctly rather than hand-quoted.
+            let spec = serde_json::to_string(rel).unwrap_or_else(|_| format!("{rel:?}"));
+            import_decls.push(format!("import * as {ident} from {spec};"));
+            entries.push(format!("  {spec}: {ident}"));
+        }
+        let object_literal = if entries.is_empty() {
+            "{}".to_string()
+        } else {
+            format!("{{\n{}\n}}", entries.join(",\n"))
+        };
+        replacements.push((call.lo, call.hi, object_literal));
+    }
+
+    // Splice the call expressions, descending by `lo` so byte offsets stay
+    // valid throughout. Each range is validated against the ORIGINAL source
+    // before mutating `out`: the bytes must be in range, lie on char
+    // boundaries, and start with `import`. A failure here would mean the
+    // SourceMap `BytePos` base correction is wrong — we return an error
+    // rather than panic or (worse) splice at the wrong offset and silently
+    // corrupt the user's code.
+    let mut out = source.to_string();
+    for (lo, hi, replacement) in replacements.iter().rev() {
+        let valid = source
+            .get(*lo..*hi)
+            .is_some_and(|s| s.starts_with("import"));
+        if !valid {
+            bail!(
+                "zfb bundler: internal error — import.meta.glob splice range \
+                 [{lo}..{hi}] is invalid or does not start at `import` \
+                 (BytePos base correction bug). Source length {}.",
+                source.len()
+            );
+        }
+        out.replace_range(*lo..*hi, replacement);
+    }
+
+    // Hoist the generated `import * as __glob_N` declarations to the top of
+    // the module. ESM `import` declarations must be top-level; prepending
+    // keeps them valid regardless of where the macro appeared. A leading
+    // shebang (`#!…`) MUST stay on line 1, so insert the imports AFTER it
+    // rather than before — prepending before a shebang would break a Node
+    // script. (Rare for a bundled module, but cheap to get right.)
+    if import_decls.is_empty() {
+        return Ok(out);
+    }
+    let decls = import_decls.join("\n");
+    if out.starts_with("#!") {
+        let nl = out.find('\n').map(|i| i + 1).unwrap_or(out.len());
+        let (shebang, rest) = out.split_at(nl);
+        Ok(format!("{shebang}{decls}\n{rest}"))
+    } else {
+        Ok(format!("{decls}\n{out}"))
+    }
+}
+
+/// Walk `file_dir` and return the POSIX `./`-prefixed relative paths of every
+/// file matching `pattern` (Vite/gitignore glob semantics), sorted + deduped.
+///
+/// `pattern` is matched against the `./`-prefixed POSIX relative path so it
+/// behaves exactly like Vite's anchoring (`'./*.tsx'` matches `./a.tsx` but
+/// not `./sub/a.tsx`; `'./**/*.tsx'` matches both). `is_excluded` drops a
+/// match by its absolute path.
+fn glob_match_relative(
+    file_dir: &Path,
+    pattern: &str,
+    is_excluded: &dyn Fn(&Path) -> bool,
+) -> Result<Vec<String>> {
+    // `../`-rooted patterns would shift the walk root above `file_dir`; not
+    // modelled in this first step. Reject explicitly rather than silently
+    // mis-resolve against the wrong directory.
+    if pattern.starts_with("../") || pattern.contains("/../") {
+        bail!(
+            "zfb bundler: unsupported `import.meta.glob` pattern {pattern:?}: \
+             parent-directory (`../`) patterns are not supported in this step. \
+             Move the globbed files under the importer's directory, or expand \
+             the set with explicit static imports."
+        );
+    }
+
+    // `literal_separator(true)` makes `*` stop at `/` and `**` recurse —
+    // gitignore/Vite semantics. Without it, `./*.tsx` would wrongly match a
+    // nested `./a/b.tsx`.
+    let glob = globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| {
+            anyhow!("zfb bundler: invalid import.meta.glob pattern {pattern:?}: {e}")
+        })?
+        .compile_matcher();
+
+    let mut out: Vec<String> = Vec::new();
+    for entry in WalkDir::new(file_dir)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| !is_pruned_infra_dir(e))
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            // A transient walk error (e.g. a vanished file) should not abort
+            // the build; skip it. Genuine config errors surface elsewhere.
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let abs = entry.path();
+        let rel = match abs.strip_prefix(file_dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let rel_posix = path_to_posix_string(rel);
+        if rel_posix.is_empty() {
+            continue;
+        }
+        // Match against the `./`-prefixed form so the pattern's own `./`
+        // anchor lines up; the matched string is also the object key.
+        let keyed = format!("./{rel_posix}");
+        if !glob.is_match(&keyed) {
+            continue;
+        }
+        if is_excluded(abs) {
+            continue;
+        }
+        out.push(keyed);
+    }
+
+    // Deterministic, byte-stable: sort then dedupe.
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// Convert a relative `Path` to a forward-slash-separated string. We
 /// emit Posix separators unconditionally so the resulting `import`
 /// statements are valid on every platform — esbuild on Windows would
@@ -2441,6 +3133,68 @@ fn path_to_posix_string(p: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Compiled matcher for `BundlerInput::bundle_exclude`.
+///
+/// Patterns are project-relative gitignore-style globs (e.g.
+/// `components/*.stories.tsx`, `components/**/*.stories.tsx`). The match key
+/// is a candidate file's path RELATIVE TO `project_root`, in POSIX form, so a
+/// pattern written in `zfb.config.ts` lines up with how the user thinks about
+/// the tree regardless of host OS path separators.
+///
+/// `literal_separator(true)` gives gitignore/Vite `*`-vs-`**` semantics: `*`
+/// stops at `/`, `**` recurses — the same option `glob_match_relative` uses
+/// for `import.meta.glob`, so the two surfaces agree on what a pattern means.
+///
+/// An empty pattern list compiles to a matcher that never matches, so an
+/// unset / empty `bundle.exclude` is byte-identical to a build without the
+/// knob (skip nothing) by construction — not by relying on an empty set to
+/// "happen to" match nothing.
+#[derive(Debug)]
+struct BundleExcludeMatcher {
+    set: globset::GlobSet,
+}
+
+impl BundleExcludeMatcher {
+    /// Compile the patterns. Invalid globs surface as an `anyhow::Error` (the
+    /// config came from the user; a typo should be a clear build error, not a
+    /// silent no-op).
+    fn new(patterns: &[String]) -> Result<Self> {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pat in patterns {
+            let glob = globset::GlobBuilder::new(pat)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| anyhow!("zfb bundler: invalid bundle.exclude pattern {pat:?}: {e}"))?;
+            builder.add(glob);
+        }
+        let set = builder
+            .build()
+            .map_err(|e| anyhow!("zfb bundler: failed to compile bundle.exclude globset: {e}"))?;
+        Ok(Self { set })
+    }
+
+    /// `true` when `abs` (an absolute path on disk) is under `project_root`
+    /// and its project-relative POSIX path matches any compiled pattern.
+    ///
+    /// A path outside `project_root` (e.g. a workspace package symlinked from
+    /// elsewhere) cannot be expressed as a project-relative pattern, so it is
+    /// never excluded — matching the user's mental model that
+    /// `bundle.exclude` patterns are anchored at the project root.
+    fn is_excluded(&self, abs: &Path, project_root: &Path) -> bool {
+        if self.set.is_empty() {
+            return false;
+        }
+        let Ok(rel) = abs.strip_prefix(project_root) else {
+            return false;
+        };
+        let rel_posix = path_to_posix_string(rel);
+        if rel_posix.is_empty() {
+            return false;
+        }
+        self.set.is_match(&rel_posix)
+    }
 }
 
 /// Derive a URL route from a path **relative to** `pages_dir`.
@@ -2476,6 +3230,92 @@ fn derive_route(rel: &Path) -> Option<String> {
         return Some("/".to_string());
     }
     Some(format!("/{}", parts.join("/")))
+}
+
+/// Rebase the user's `compilerOptions.paths` targets so an alias whose
+/// target lives under the project root resolves to the **shadow** copy
+/// first (where the in-shadow `import.meta.glob` / `.module.css`
+/// transforms live), with the original real-root target as a fallback.
+///
+/// Input targets are ALREADY ABSOLUTE (real-root) — `read_tsconfig_paths`
+/// in `crates/zfb/src/commands/build.rs` (and the test helpers that mirror
+/// it) absolutise each target against the project root. So we do NOT treat
+/// the prefix as relative here; we strip `project_root` off it and re-root
+/// the remainder under `shadow`.
+///
+/// For each target string:
+/// - Split a trailing `/*` glob suffix the SAME way
+///   [`resolve_tsconfig_path_target`] does (`rsplit_once("/*")`), so the
+///   wildcard is preserved verbatim and only the prefix is re-rooted.
+/// - **Prefix under `project_root`** → emit a two-element array
+///   `["<shadow>/<rel>[/*]", "<original real-abs target>"]`. esbuild tries
+///   the array in order, taking the first existing file; a miss on the
+///   shadow entry (e.g. the file was gitignored out of the shadow, or the
+///   target is a top-level file the extra-dirs pass doesn't mirror) falls
+///   through to the real path — graceful degradation, never a build break.
+/// - **Prefix NOT under `project_root`** (plugin/virtual/external targets,
+///   which already point at `<shadow>/.zfb-virtual-*` temp files or an
+///   out-of-tree path) → pass through UNCHANGED so the merge step's
+///   user-wins-on-collision semantics and the exact-match contract
+///   (`bundler_exact_match_resolution`) are preserved.
+///
+/// Idempotent: a target already rooted under `shadow` (a re-entrant call,
+/// or a plugin temp file) is left as-is and never gets a second shadow
+/// prefix appended. The emitted array is de-duplicated, and on a
+/// case-insensitive FS where the shadow and real targets would collapse to
+/// the same path we drop the redundant duplicate.
+fn rebase_tsconfig_paths_to_shadow(
+    paths: &BTreeMap<String, Vec<String>>,
+    project_root: &Path,
+    shadow: &Path,
+) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, targets) in paths {
+        let mut new_targets: Vec<String> = Vec::with_capacity(targets.len() + 1);
+        for target in targets {
+            // Split the `/*` glob suffix exactly like resolve_tsconfig_path_target.
+            let (prefix, suffix) = match target.rsplit_once("/*") {
+                Some((p, "")) => (p, "/*"),
+                _ => (target.as_str(), ""),
+            };
+            let prefix_path = Path::new(prefix);
+            // Already under the shadow tree (re-entrant call, or a plugin
+            // temp file materialised inside `shadow`) — leave untouched.
+            let already_shadowed = prefix_path.starts_with(shadow);
+            if !already_shadowed {
+                if let Ok(rel) = prefix_path.strip_prefix(project_root) {
+                    // Under project_root → dual-target, shadow-first.
+                    // `rel` is empty for the whole-root `@/* -> /root/*`
+                    // (baseUrl ".") case — the most common alias shape.
+                    // `shadow.join("")` would yield `<shadow>/` and produce a
+                    // malformed `<shadow>//*` target; use `shadow` directly so
+                    // the shadow-first entry is a clean `<shadow>/*`.
+                    let shadow_prefix = if rel.as_os_str().is_empty() {
+                        shadow.to_path_buf()
+                    } else {
+                        shadow.join(rel)
+                    };
+                    let mut shadow_target = shadow_prefix.to_string_lossy().into_owned();
+                    shadow_target.push_str(suffix);
+                    push_unique(&mut new_targets, shadow_target);
+                }
+            }
+            // Always keep the original (real-abs / plugin / shadow) target
+            // as the fallback (or the sole target when not under root).
+            push_unique(&mut new_targets, target.clone());
+        }
+        out.insert(key.clone(), new_targets);
+    }
+    out
+}
+
+/// Push `value` onto `vec` only if not already present — keeps the
+/// dual-target arrays de-duplicated (and guards the case where the shadow
+/// and real targets collapse to the same string on a case-insensitive FS).
+fn push_unique(vec: &mut Vec<String>, value: String) {
+    if !vec.iter().any(|v| v == &value) {
+        vec.push(value);
+    }
 }
 
 /// Write a synthetic `tsconfig.json` esbuild can read for path-alias
@@ -2987,6 +3827,29 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
     out
 }
 
+/// Returns `true` when [`run_esbuild`] will invoke esbuild with
+/// `--preserve-symlinks`. Encodes the three activation paths described
+/// in `run_esbuild`'s big comment block as a single shared predicate so
+/// the flag decision and the `copy_mode` derivation in [`bundle`] cannot
+/// drift apart.
+///
+/// `true` ⇒ esbuild stays anchored at the shadow tree (symlinked source
+/// files are resolved at their shadow path, so in-shadow transforms are
+/// already visible — no copy needed).
+///
+/// `false` ⇒ **branch 4**: `node_modules_dir.is_some()` +
+/// `!node_modules_preserve_symlinks` + non-empty `tsconfig_paths`.
+/// esbuild canonicalises symlinked source files back to the real tree
+/// (deliberately, to keep #443/#450 workspace path-alias resolution
+/// working). In that one config, [`bundle`] sets `copy_mode = true` so
+/// the in-shadow source copies are real files and the
+/// `import.meta.glob` / CSS-module transforms become visible.
+fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
+    (input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks)
+        || input.node_modules_dir.is_none()
+        || input.tsconfig_paths.is_empty()
+}
+
 /// Resolve and run the esbuild subprocess.
 fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
@@ -3112,13 +3975,29 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     )
     .context("bundler: failed materializing plugin resolver inputs")?;
 
-    // Rewrite the synthetic tsconfig with the merged path map. Step 4
-    // above already wrote a tsconfig honouring `input.tsconfig_paths`
-    // alone; merge plugin entries on top (user-wins on key collision —
-    // see `merge_into_tsconfig_paths` doc) and rewrite. The mock-
-    // subprocess path skips this whole function, so the no-plugin /
-    // unit-test path is byte-identical to the previous behaviour.
-    let mut merged_paths = input.tsconfig_paths.clone();
+    // Rewrite the synthetic tsconfig with the merged path map — THIS is the
+    // tsconfig esbuild actually reads (step 4's earlier write is overwritten
+    // here for every real build).
+    //
+    // ORDER MATTERS: rebase the user's `tsconfig_paths` to shadow-first
+    // dual-targets FIRST, then merge the plugin/virtual entries on top.
+    // `merge_into_tsconfig_paths` is `or_insert_with` (user-wins on key
+    // collision), and plugin/virtual targets point at `<shadow>/.zfb-virtual-*`
+    // temp files OUTSIDE `project_root`, so they never pass through the rebase
+    // and stay single exact-match targets — preserving the exact-match
+    // contract and the user-wins-on-collision merge semantics
+    // (`bundler_exact_match_resolution`).
+    //
+    // BEHAVIOURAL DEPENDENCY (not recoverable from the code): esbuild treats a
+    // `compilerOptions.paths` value that is an ARRAY as a try-in-order list —
+    // it resolves each candidate, takes the FIRST one that maps to an existing
+    // file, and a candidate that maps to no file is silently skipped (NOT an
+    // error). The shadow-first dual-target relies on exactly this fallthrough:
+    // the shadow copy (carrying the in-shadow transform) is tried first, and
+    // the real-root target is the graceful fallback when the shadow has no
+    // such file. (TypeScript/esbuild tsconfig paths-array semantics.)
+    let mut merged_paths =
+        rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
     zfb_plugin_resolver::merge_into_tsconfig_paths(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
@@ -3226,36 +4105,13 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     //    `bundler_workspace_pkg_alias` regression test exercises the
     //    `paths`-present branch and continues to pass because this
     //    `is_empty()` clause does NOT fire when paths exist.
-    if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
-        cmd.arg("--preserve-symlinks");
-    } else if input.node_modules_dir.is_none() {
-        // No node_modules_dir: all package imports are either marked
-        // external or absent. Add --preserve-symlinks so esbuild stays
-        // anchored at the shadow path when processing symlinked source
-        // files. Without it, esbuild canonicalises a symlinked .tsx
-        // importer to its real path, then resolves relative imports
-        // (e.g. `./hero.module.css`) from the real directory — finding
-        // the original raw CSS rather than the rewritten JS shim in the
-        // shadow. Safe here because no node_modules traversal from the
-        // shadow root is needed (no packages to resolve).
-        // Also covers the `embedded_node_modules()` extraction-failure
-        // fallback path in `build.rs` — that build is already headed
-        // for failure, so --preserve-symlinks does not make it worse.
-        cmd.arg("--preserve-symlinks");
-    } else if input.tsconfig_paths.is_empty() {
-        // Project has its own node_modules but no tsconfig path aliases.
-        // The #443/#450 regression that the previous gate protected
-        // against is workspace-package importers (files INSIDE
-        // node_modules) failing to resolve via the project's tsconfig
-        // `paths`. With no `paths` map in the user's tsconfig, that
-        // failure mode cannot occur (esbuild has no aliases to apply
-        // anyway). So it is safe to add --preserve-symlinks here, which
-        // is needed to fix the same .tsx-canonicalisation issue
-        // described above for corp's shape (`pnpm install`'d
-        // node_modules + relative imports of `*.module.css`). The
-        // `bundler_workspace_pkg_alias` regression test exercises the
-        // OTHER branch — it has `paths`, so this clause does NOT fire
-        // and the test's protection remains intact.
+    //
+    // The three activation paths are encoded in
+    // `esbuild_will_preserve_symlinks`; `bundle()` calls the SAME
+    // predicate to derive `copy_mode` (the in-shadow source files must
+    // be real copies precisely when esbuild will NOT preserve symlinks,
+    // i.e. branch 4) so the two can never drift.
+    if esbuild_will_preserve_symlinks(input) {
         cmd.arg("--preserve-symlinks");
     }
 
@@ -3343,6 +4199,52 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    #[test]
+    fn rebase_tsconfig_paths_dual_target_under_root_passthrough_external() {
+        let root = Path::new("/proj");
+        let shadow = Path::new("/tmp/shadowX");
+        let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // whole-root `@/* -> /proj/*` (baseUrl "." — the most common alias shape;
+        // empty `rel` must NOT produce a `<shadow>//*` double-slash target).
+        paths.insert("@/*".to_string(), vec!["/proj/*".to_string()]);
+        // subdir alias
+        paths.insert("@lib/*".to_string(), vec!["/proj/src/lib/*".to_string()]);
+        // single-file bare-specifier remap (no `/*` suffix)
+        paths.insert("msw".to_string(), vec!["/proj/src/mocks/msw.ts".to_string()]);
+        // external target (not under project_root) — must pass through unchanged
+        paths.insert("@ext/*".to_string(), vec!["/other/pkg/*".to_string()]);
+
+        let out = rebase_tsconfig_paths_to_shadow(&paths, root, shadow);
+
+        // whole-root: clean `<shadow>/*` shadow-first, NOT `<shadow>//*`
+        assert_eq!(
+            out["@/*"],
+            vec!["/tmp/shadowX/*".to_string(), "/proj/*".to_string()]
+        );
+        assert!(
+            !out["@/*"][0].contains("//"),
+            "bare-root rebase must not double-slash: {:?}",
+            out["@/*"]
+        );
+        // subdir + single-file: shadow-first dual-target
+        assert_eq!(
+            out["@lib/*"],
+            vec![
+                "/tmp/shadowX/src/lib/*".to_string(),
+                "/proj/src/lib/*".to_string()
+            ]
+        );
+        assert_eq!(
+            out["msw"],
+            vec![
+                "/tmp/shadowX/src/mocks/msw.ts".to_string(),
+                "/proj/src/mocks/msw.ts".to_string()
+            ]
+        );
+        // external: single target, unchanged (keeps bundler_exact_match_resolution semantics)
+        assert_eq!(out["@ext/*"], vec!["/other/pkg/*".to_string()]);
+    }
 
     #[test]
     fn render_css_module_js_emits_sorted_default_export() {
@@ -3459,6 +4361,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -3466,6 +4369,7 @@ mod tests {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         }
     }
 
@@ -4113,10 +5017,12 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4206,10 +5112,12 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4378,10 +5286,12 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4722,6 +5632,7 @@ mod tests {
             toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
@@ -4729,6 +5640,7 @@ mod tests {
             bundle_basename: None,
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
+            bundle_exclude: Vec::new(),
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
@@ -4939,7 +5851,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5153,7 +6068,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
@@ -5360,7 +6278,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5437,7 +6358,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5477,7 +6401,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5533,7 +6460,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5614,7 +6544,10 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
+                &no_bundle_exclude(),
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -5646,10 +6579,12 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
                 None,
                 None,
                 None,
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -5696,7 +6631,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5737,7 +6675,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5993,7 +6934,10 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
+            &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6053,10 +6997,12 @@ mod tests {
             None,
             None,
             true,
+            false,
             None,
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6118,7 +7064,10 @@ mod tests {
                 None,
                 None,
                 true,
+                false,
                 None,
+                &no_bundle_exclude(),
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6136,5 +7085,433 @@ mod tests {
             contents, "export default () => null;\n",
             "source file contents must be unchanged after shadow TempDir teardown"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // import.meta.glob eager transform (#665 / #670)
+    // -----------------------------------------------------------------
+
+    /// No-op exclude predicate matching the Wave-1 call-site shape.
+    fn no_exclude(_: &Path) -> bool {
+        false
+    }
+
+    /// Empty `bundle.exclude` matcher — never matches, so `materialise_shadow`
+    /// test calls behave exactly as they did before the knob existed.
+    fn no_bundle_exclude() -> BundleExcludeMatcher {
+        BundleExcludeMatcher::new(&[]).expect("empty bundle.exclude compiles")
+    }
+
+    /// Create a tempdir, write `(rel, body)` files (creating parent dirs),
+    /// and return the dir. Each rel is a POSIX-ish path relative to the dir.
+    fn fixture_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for (rel, body) in files {
+            let p = tmp.path().join(rel);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, body).unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn import_meta_glob_zero_matches_expands_to_empty_object() {
+        // Directory has the importer only — nothing matches `./widgets/*.tsx`.
+        let dir = fixture_dir(&[]);
+        let src = r#"
+            const mods = import.meta.glob('./widgets/*.tsx', { eager: true });
+            export default mods;
+        "#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert!(
+            !out.contains("import.meta.glob("),
+            "macro must be removed even with zero matches:\n{out}"
+        );
+        assert!(out.contains("{}"), "zero matches must expand to `{{}}`:\n{out}");
+        // No `import * as` declarations when there are no matches.
+        assert!(
+            !out.contains("import * as __glob_"),
+            "no namespace imports should be generated for zero matches:\n{out}"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_one_match_expands_with_namespace_import() {
+        let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
+        let src = r#"const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert!(!out.contains("import.meta.glob("), "macro removed:\n{out}");
+        assert!(
+            out.contains(r#"import * as __glob_0 from "./widgets/a.tsx";"#),
+            "namespace import for the match:\n{out}"
+        );
+        assert!(
+            out.contains(r#""./widgets/a.tsx": __glob_0"#),
+            "object key → namespace mapping:\n{out}"
+        );
+    }
+
+    // ── bundle.exclude matcher tests (#664 / #672) ───────────────────────
+
+    #[test]
+    fn bundle_exclude_empty_matcher_never_matches() {
+        // Zero-regression contract: an empty pattern list yields a matcher
+        // that never matches, so the per-file skip never fires and the build
+        // is byte-identical to one without the knob.
+        let m = BundleExcludeMatcher::new(&[]).unwrap();
+        let root = Path::new("/proj");
+        assert!(!m.is_excluded(Path::new("/proj/components/Foo.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/pages/index.tsx"), root));
+    }
+
+    #[test]
+    fn bundle_exclude_matches_project_relative_glob() {
+        let root = Path::new("/proj");
+        // `*` stops at `/` (literal_separator), so `components/*.stories.tsx`
+        // matches a top-level story but NOT a nested one.
+        let m = BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        assert!(m.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+        assert!(!m.is_excluded(Path::new("/proj/components/Button.tsx"), root));
+        // A path outside the project root cannot be project-relative → never
+        // excluded.
+        assert!(!m.is_excluded(Path::new("/elsewhere/components/X.stories.tsx"), root));
+
+        // `**` recurses across `/`.
+        let deep = BundleExcludeMatcher::new(&["components/**/*.stories.tsx".to_string()]).unwrap();
+        assert!(deep.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
+        assert!(deep.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+    }
+
+    #[test]
+    fn bundle_exclude_invalid_pattern_is_an_error() {
+        // An unclosed character class is an invalid glob — surface a clear
+        // build error rather than silently ignoring the user's config.
+        let err = BundleExcludeMatcher::new(&["components/[unclosed".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid bundle.exclude pattern"),
+            "error should name the bad pattern: {err}"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_bundle_exclude_skips_matched_file() {
+        // Integration of the per-file skip inside materialise_shadow: an
+        // excluded source file must NOT appear in the shadow tree, while a
+        // sibling that does not match is materialised normally.
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("components");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Keep.tsx"), "export const keep = 1;").unwrap();
+        fs::write(src.join("Drop.stories.tsx"), "export const drop = 1;").unwrap();
+
+        let dest = root.path().join("shadow").join("components");
+        let matcher =
+            BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            root.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            &matcher,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(dest.join("Keep.tsx").exists(), "non-matching file kept");
+        assert!(
+            !dest.join("Drop.stories.tsx").exists(),
+            "excluded *.stories.tsx must not be materialised into the shadow"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_empty_exclude_keeps_all_files() {
+        // Zero-regression: with an empty bundle.exclude, every file is
+        // materialised exactly as before the knob existed.
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("components");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Keep.tsx"), "export const keep = 1;").unwrap();
+        fs::write(src.join("Story.stories.tsx"), "export const s = 1;").unwrap();
+
+        let dest = root.path().join("shadow").join("components");
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            root.path(),
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            &no_bundle_exclude(),
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(dest.join("Keep.tsx").exists(), "Keep present with empty exclude");
+        assert!(
+            dest.join("Story.stories.tsx").exists(),
+            "with empty bundle.exclude nothing is skipped (byte-identical to today)"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_many_matches_sorted_and_deduped() {
+        let dir = fixture_dir(&[
+            ("widgets/c.tsx", "export const c = 1;"),
+            ("widgets/a.tsx", "export const a = 1;"),
+            ("widgets/b.tsx", "export const b = 1;"),
+            // Non-matching extension — must be ignored.
+            ("widgets/readme.md", "# nope"),
+        ]);
+        let src = r#"export const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+
+        let a = out.find("./widgets/a.tsx").expect("a present");
+        let b = out.find("./widgets/b.tsx").expect("b present");
+        let c = out.find("./widgets/c.tsx").expect("c present");
+        assert!(a < b && b < c, "keys must be sorted a<b<c:\n{out}");
+        assert!(!out.contains("readme.md"), ".md must not match *.tsx:\n{out}");
+        // Three distinct namespace identifiers, dense from 0.
+        assert!(out.contains("__glob_0"));
+        assert!(out.contains("__glob_1"));
+        assert!(out.contains("__glob_2"));
+    }
+
+    #[test]
+    fn import_meta_glob_nested_path_keyed_relative_to_file_dir() {
+        // `components/a/b.tsx` globbed from `components/` → key `./a/b.tsx`.
+        let dir = fixture_dir(&[
+            ("a/b.tsx", "export const b = 1;"),
+            ("top.tsx", "export const t = 1;"),
+        ]);
+        let src = r#"export const m = import.meta.glob('./**/*.tsx', { eager: true });"#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert!(
+            out.contains(r#""./a/b.tsx""#),
+            "nested match keyed as ./a/b.tsx:\n{out}"
+        );
+        assert!(
+            out.contains(r#""./top.tsx""#),
+            "top-level match also present for ./**/*.tsx:\n{out}"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_single_star_does_not_cross_slash() {
+        // `./*.tsx` must NOT match the nested `a/b.tsx` (literal_separator).
+        let dir = fixture_dir(&[
+            ("a/b.tsx", "export const b = 1;"),
+            ("top.tsx", "export const t = 1;"),
+        ]);
+        let src = r#"export const m = import.meta.glob('./*.tsx', { eager: true });"#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert!(out.contains(r#""./top.tsx""#), "top-level match:\n{out}");
+        assert!(
+            !out.contains("./a/b.tsx"),
+            "single `*` must not cross `/`:\n{out}"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_unsupported_lazy_default_is_err() {
+        // No options object → Vite default is LAZY → unsupported.
+        let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
+        let src = r#"const m = import.meta.glob('./widgets/*.tsx');"#;
+        let err = expand_import_meta_glob(src, dir.path(), &no_exclude)
+            .expect_err("default lazy form must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("import.meta.glob"), "names the macro: {msg}");
+    }
+
+    #[test]
+    fn import_meta_glob_unsupported_eager_false_is_err() {
+        let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
+        let src = r#"const m = import.meta.glob('./widgets/*.tsx', { eager: false });"#;
+        let err = expand_import_meta_glob(src, dir.path(), &no_exclude)
+            .expect_err("eager:false must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("eager"), "message names eager/lazy: {msg}");
+    }
+
+    #[test]
+    fn import_meta_glob_unsupported_nonliteral_pattern_is_err() {
+        let dir = fixture_dir(&[]);
+        let src = r#"
+            const p = './widgets/*.tsx';
+            const m = import.meta.glob(p, { eager: true });
+        "#;
+        let err = expand_import_meta_glob(src, dir.path(), &no_exclude)
+            .expect_err("non-literal pattern must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("string literal"), "names the form: {msg}");
+    }
+
+    #[test]
+    fn import_meta_glob_string_and_comment_occurrences_not_rewritten() {
+        // Adversarial: the literal text `import.meta.glob(` appears inside a
+        // string literal, a line comment, and a block comment. NONE of those
+        // are real call expressions, so the AST never sees them and they must
+        // survive verbatim. A real call elsewhere IS rewritten.
+        let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
+        let src = r#"
+            // a comment mentioning import.meta.glob('./x.tsx', { eager: true })
+            const doc = "literal import.meta.glob('./y.tsx', { eager: true }) text";
+            /* block: import.meta.glob('./z.tsx', { eager: true }) */
+            const real = import.meta.glob('./widgets/*.tsx', { eager: true });
+        "#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+
+        // The three decoy occurrences survive verbatim.
+        assert!(
+            out.contains("// a comment mentioning import.meta.glob('./x.tsx', { eager: true })"),
+            "line-comment occurrence must NOT be rewritten:\n{out}"
+        );
+        assert!(
+            out.contains(r#""literal import.meta.glob('./y.tsx', { eager: true }) text""#),
+            "string-literal occurrence must NOT be rewritten:\n{out}"
+        );
+        assert!(
+            out.contains("/* block: import.meta.glob('./z.tsx', { eager: true }) */"),
+            "block-comment occurrence must NOT be rewritten:\n{out}"
+        );
+        // The single REAL call was expanded.
+        assert!(
+            out.contains(r#"import * as __glob_0 from "./widgets/a.tsx";"#),
+            "the real call must be expanded:\n{out}"
+        );
+        // The decoys are NOT among the expanded files (only the real glob ran).
+        assert!(!out.contains("./x.tsx\": __glob"), "decoy x not expanded:\n{out}");
+        assert!(!out.contains("./y.tsx\": __glob"), "decoy y not expanded:\n{out}");
+        assert!(!out.contains("./z.tsx\": __glob"), "decoy z not expanded:\n{out}");
+    }
+
+    #[test]
+    fn import_meta_glob_is_excluded_predicate_drops_match() {
+        // Wiring proof: a closure that excludes `b.tsx` by absolute path must
+        // remove it from the expansion while keeping `a.tsx`. This is the seam
+        // #672 (`bundle.exclude`) plugs into.
+        let dir = fixture_dir(&[
+            ("widgets/a.tsx", "export const a = 1;"),
+            ("widgets/b.tsx", "export const b = 1;"),
+        ]);
+        let src = r#"export const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
+        let exclude = |p: &Path| {
+            p.file_name().and_then(|s| s.to_str()) == Some("b.tsx")
+        };
+        let out = expand_import_meta_glob(src, dir.path(), &exclude).unwrap();
+        assert!(out.contains("./widgets/a.tsx"), "a kept:\n{out}");
+        assert!(
+            !out.contains("./widgets/b.tsx"),
+            "b must be excluded by the predicate:\n{out}"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_no_substring_returns_source_unchanged() {
+        // Zero-regression: a file without the macro is returned byte-identical.
+        let dir = fixture_dir(&[]);
+        let src = "export default function X() { return 1; }\n// glob? no.\n";
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert_eq!(out, src, "unrelated source must be unchanged");
+    }
+
+    #[test]
+    fn import_meta_glob_two_calls_in_one_file_splice_and_global_counter() {
+        // Hardens the riskiest path: TWO distinct glob calls in one source.
+        // Exercises the descending-order multi-range splice and the global
+        // `__glob_N` counter that runs across both calls.
+        let dir = fixture_dir(&[
+            ("x/one.tsx", "export const one = 1;"),
+            ("y/two.tsx", "export const two = 2;"),
+            ("y/three.tsx", "export const three = 3;"),
+        ]);
+        let src = r#"
+            export const a = import.meta.glob('./x/*.tsx', { eager: true });
+            export const b = import.meta.glob('./y/*.tsx', { eager: true });
+        "#;
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+
+        assert!(!out.contains("import.meta.glob("), "both calls removed:\n{out}");
+        // First call → __glob_0 (./x/one.tsx).
+        assert!(
+            out.contains(r#"import * as __glob_0 from "./x/one.tsx";"#),
+            "first call's match is __glob_0:\n{out}"
+        );
+        // Second call's matches continue the global counter: __glob_1, __glob_2
+        // (sorted: ./y/three.tsx before ./y/two.tsx).
+        assert!(
+            out.contains(r#"import * as __glob_1 from "./y/three.tsx";"#),
+            "second call's first match is __glob_1:\n{out}"
+        );
+        assert!(
+            out.contains(r#"import * as __glob_2 from "./y/two.tsx";"#),
+            "second call's second match is __glob_2:\n{out}"
+        );
+        // Both object literals keep their own keys (splice didn't cross-wire).
+        assert!(out.contains(r#""./x/one.tsx": __glob_0"#), "obj a key:\n{out}");
+        assert!(out.contains(r#""./y/three.tsx": __glob_1"#), "obj b key 1:\n{out}");
+        assert!(out.contains(r#""./y/two.tsx": __glob_2"#), "obj b key 2:\n{out}");
+        // x file must NOT appear in the y object and vice-versa: the `a`
+        // assignment's object must contain only the x key.
+        let a_obj_start = out.find("export const a =").expect("a decl");
+        let b_obj_start = out.find("export const b =").expect("b decl");
+        let a_slice = &out[a_obj_start..b_obj_start];
+        assert!(
+            a_slice.contains("./x/one.tsx") && !a_slice.contains("./y/"),
+            "object `a` must hold only the x match:\n{a_slice}"
+        );
+    }
+
+    #[test]
+    fn import_meta_glob_preserves_leading_shebang() {
+        // A leading `#!` must stay on line 1; generated imports go AFTER it.
+        let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
+        let src = "#!/usr/bin/env node\nconst m = import.meta.glob('./widgets/*.tsx', { eager: true });\n";
+        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        assert!(
+            out.starts_with("#!/usr/bin/env node\n"),
+            "shebang must remain on line 1:\n{out}"
+        );
+        assert!(
+            out.contains(r#"import * as __glob_0 from "./widgets/a.tsx";"#),
+            "imports still generated after shebang:\n{out}"
+        );
+        // The import line must come AFTER the shebang, not before it.
+        let shebang_at = out.find("#!").unwrap();
+        let import_at = out.find("import * as __glob_0").unwrap();
+        assert!(shebang_at < import_at, "imports after shebang:\n{out}");
+    }
+
+    #[test]
+    fn import_meta_glob_parent_dir_pattern_is_err() {
+        let dir = fixture_dir(&[]);
+        let src = r#"const m = import.meta.glob('../widgets/*.tsx', { eager: true });"#;
+        let err = expand_import_meta_glob(src, dir.path(), &no_exclude)
+            .expect_err("../ pattern must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("parent-directory") || msg.contains(".."), "names the limit: {msg}");
     }
 }

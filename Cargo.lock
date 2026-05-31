@@ -5587,6 +5587,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sourcemap",
+ "swc_core",
  "tempfile",
  "thiserror",
  "tokio",

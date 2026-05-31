@@ -245,6 +245,19 @@ pub struct Config {
     #[serde(default)]
     pub prefetch: Option<PrefetchConfig>,
 
+    /// Bundler options. `bundle.exclude` lists project-relative globs of
+    /// source files the bundler must keep out of the esbuild graph (see
+    /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
+    /// (byte-identical to a build without this knob).
+    ///
+    /// Mirrors `BundleConfig` in `packages/zfb/src/config.ts`.
+    ///
+    /// NOTE: This is unrelated to the `exclude` field on [`CollectionDef`]
+    /// (collections / i18n locale filtering) — the two are namespaced
+    /// separately so they never collide.
+    #[serde(default)]
+    pub bundle: Option<BundleConfig>,
+
     /// User-supplied plugins.
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
@@ -479,6 +492,7 @@ impl Default for Config {
             collections: Vec::new(),
             tailwind: None,
             prefetch: None,
+            bundle: None,
             plugins: Vec::new(),
             adapter: None,
             strip_md_ext: false,
@@ -616,6 +630,37 @@ pub struct PrefetchConfig {
     /// Disable prefetch entirely. Default: `None` (equivalent to `false`).
     #[serde(default)]
     pub disabled: Option<bool>,
+}
+
+/// Bundler options (`zfb.config.ts` field `bundle`).
+///
+/// Mirrors `BundleConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleConfig {
+    /// Project-relative glob patterns (gitignore-style) for source files
+    /// the bundler must NOT pull into the esbuild graph.
+    ///
+    /// Each pattern is matched against the file's path relative to the
+    /// project root, in POSIX form (e.g. `components/Foo.stories.tsx` or
+    /// `components/**/*.stories.tsx`). A matched file is never
+    /// copied/symlinked into the shadow tree AND is dropped from any eager
+    /// `import.meta.glob(...)` expansion that would otherwise statically
+    /// import it.
+    ///
+    /// Why this exists: a `--platform=neutral` worker bundle rejects
+    /// CJS-only packages that resolve only via `main`/`module` or a
+    /// `require`-only `exports` condition (e.g. `msw` → `path-to-regexp@6`).
+    /// An eager glob over `components/**/*.stories.tsx` newly pulls such a
+    /// package in; excluding the offending file keeps the build green.
+    ///
+    /// Absent / empty → no files are skipped (byte-identical to a build
+    /// without this knob).
+    ///
+    /// NOTE: This is unrelated to the `exclude` field on [`CollectionDef`]
+    /// (collections / i18n locale filtering).
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
 }
 
 /// Syntect-based code-highlight options.
@@ -834,6 +879,18 @@ pub struct MarkdownConfig {
     #[serde(default)]
     pub cjk_friendly: Option<bool>,
 
+    /// Convert every soft line break (a single `\n` inside a paragraph)
+    /// into `<br>` (remark-breaks parity).
+    ///
+    /// - `None` (absent, default) — soft line breaks are collapsed into a
+    ///   single space, following standard CommonMark behaviour.
+    /// - `Some(true)` — opt-in; every `\n` inside a paragraph becomes `<br>`.
+    /// - `Some(false)` — explicit opt-out; identical to absent.
+    ///
+    /// Mirrors `hardBreaks` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub hard_breaks: Option<bool>,
+
     /// Per-feature markdown pipeline toggles. Each field is a
     /// [`FeatureToggle`] (`true` / `false` / per-feature options object)
     /// or a feature-specific config struct (for features that require
@@ -1030,6 +1087,35 @@ pub fn resolve_cjk_friendly(markdown: Option<&MarkdownConfig>) -> bool {
     match markdown {
         Some(m) => m.cjk_friendly.unwrap_or(true),
         None => true,
+    }
+}
+
+/// Convenience helper: resolve the final `hard_breaks` bool from an optional
+/// `MarkdownConfig`. Returns `false` (plugin off) when the field is absent or
+/// `Some(false)`; `true` only when `hard_breaks: Some(true)`.
+///
+/// Default is `false` — the opposite of `resolve_cjk_friendly` (which
+/// defaults to `true`). Do NOT copy `unwrap_or(true)` from that function
+/// here; a true on one side + false on the other diverges the
+/// `content_hash` and causes silent `<pre data-zfb-content-fallback>`.
+#[must_use]
+pub fn resolve_hard_breaks(markdown: Option<&MarkdownConfig>) -> bool {
+    match markdown {
+        Some(m) => m.hard_breaks.unwrap_or(false),
+        None => false,
+    }
+}
+
+/// Convenience helper: resolve the final `bundle.exclude` glob list from an
+/// optional [`BundleConfig`]. Returns an empty vec when `bundle` is absent or
+/// `bundle.exclude` is `None`, so callers can thread the result straight into
+/// `BundlerInput::bundle_exclude` and an empty vec means "skip nothing"
+/// (byte-identical to a build without the knob).
+#[must_use]
+pub fn resolve_bundle_exclude(bundle: Option<&BundleConfig>) -> Vec<String> {
+    match bundle {
+        Some(b) => b.exclude.clone().unwrap_or_default(),
+        None => Vec::new(),
     }
 }
 
@@ -3163,6 +3249,7 @@ mod tests {
                 toc: None,
                 external_links: None,
                 cjk_friendly: None,
+                hard_breaks: None,
                 features: None,
             })
         );
@@ -3359,6 +3446,97 @@ mod tests {
         let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
             .expect("empty object deserialises");
         assert_eq!(cfg.cjk_friendly, None);
+    }
+
+    // --- resolve_hard_breaks tests ---
+
+    // Absent `markdown` block → hard breaks off (default false).
+    #[test]
+    fn hard_breaks_absent_markdown_yields_false() {
+        assert!(!resolve_hard_breaks(None));
+    }
+
+    // Empty `MarkdownConfig` → no hard_breaks field → default false.
+    #[test]
+    fn hard_breaks_empty_markdown_yields_false() {
+        let cfg = MarkdownConfig::default();
+        assert!(!resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // `hardBreaks: true` — explicit opt-in.
+    #[test]
+    fn hard_breaks_explicit_true() {
+        let cfg = MarkdownConfig {
+            hard_breaks: Some(true),
+            ..MarkdownConfig::default()
+        };
+        assert!(resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // `hardBreaks: false` — explicit opt-out (same as absent).
+    #[test]
+    fn hard_breaks_explicit_false() {
+        let cfg = MarkdownConfig {
+            hard_breaks: Some(false),
+            ..MarkdownConfig::default()
+        };
+        assert!(!resolve_hard_breaks(Some(&cfg)));
+    }
+
+    // Serde: `hardBreaks` camelCase round-trips from JSON.
+    #[test]
+    fn hard_breaks_deserialises_from_camel_case() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "hardBreaks": true
+        }))
+        .expect("hardBreaks:true deserialises");
+        assert_eq!(cfg.hard_breaks, Some(true));
+
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "hardBreaks": false
+        }))
+        .expect("hardBreaks:false deserialises");
+        assert_eq!(cfg.hard_breaks, Some(false));
+
+        // Absent field → None (default-off at resolve time).
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("empty object deserialises");
+        assert_eq!(cfg.hard_breaks, None);
+    }
+
+    // --- bundle.exclude tests (#664 / #672) --------------------------------
+
+    #[test]
+    fn bundle_exclude_deserialises_from_camel_case() {
+        // The wire shape `zfb.config.ts` hands us: `{ "bundle": { "exclude": [...] } }`.
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "bundle": { "exclude": ["components/*.stories.tsx"] }
+        }))
+        .expect("bundle.exclude deserialises");
+        assert_eq!(
+            cfg.bundle.as_ref().and_then(|b| b.exclude.clone()),
+            Some(vec!["components/*.stories.tsx".to_string()])
+        );
+        // Resolver returns the list verbatim.
+        assert_eq!(
+            resolve_bundle_exclude(cfg.bundle.as_ref()),
+            vec!["components/*.stories.tsx".to_string()]
+        );
+    }
+
+    #[test]
+    fn bundle_absent_resolves_to_empty_exclude() {
+        // Absent `bundle` key → None → resolver yields empty (skip nothing,
+        // byte-identical to a build without the knob).
+        let cfg: Config = serde_json::from_value(serde_json::json!({}))
+            .expect("empty config deserialises");
+        assert!(cfg.bundle.is_none());
+        assert!(resolve_bundle_exclude(cfg.bundle.as_ref()).is_empty());
+
+        // `bundle: {}` with no `exclude` also resolves empty.
+        let cfg: Config = serde_json::from_value(serde_json::json!({ "bundle": {} }))
+            .expect("bundle:{} deserialises");
+        assert!(resolve_bundle_exclude(cfg.bundle.as_ref()).is_empty());
     }
 
     // --- OutputMode tests (sub-task 4.1b / issue #373) ---------------------

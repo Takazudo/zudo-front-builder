@@ -135,6 +135,7 @@ fn make_input_with_resolve(
         toc: None,
         external_links: None,
         cjk_friendly: true,
+        hard_breaks: false,
         markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
@@ -142,6 +143,7 @@ fn make_input_with_resolve(
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     }
 }
 
@@ -187,6 +189,7 @@ fn make_input_without_resolve(
         toc: None,
             external_links: None,
             cjk_friendly: true,
+            hard_breaks: false,
             markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
@@ -194,6 +197,7 @@ fn make_input_without_resolve(
         bundle_basename: None,
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
+        bundle_exclude: Vec::new(),
     }
 }
 
