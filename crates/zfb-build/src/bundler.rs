@@ -289,15 +289,25 @@ pub struct BundlerInput {
     /// in the bundle. See [`server_secrets_are_not_bundled`] in tests.
     pub define_vars: HashMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
-    /// bundler writes this verbatim into a synthetic `tsconfig.json`
+    /// bundler writes a rebased copy into a synthetic `tsconfig.json`
     /// inside the shadow tree; esbuild then resolves user imports
     /// (`@/components/foo`) through it via `--tsconfig=`.
     ///
     /// Caller is responsible for resolving the project's `extends`
     /// chain (e.g. `tsconfig.base.json`) before passing the merged map
-    /// here. Path targets MUST be expressed relative to the
-    /// **project root** (the bundler rebases them onto the shadow tree
-    /// internally).
+    /// here. Path targets are expected to be **absolute paths under the
+    /// project root** (the shape `read_tsconfig_paths` produces by
+    /// absolutising each target against the project root, preserving a
+    /// trailing `/*`).
+    ///
+    /// Before writing the synthetic tsconfig the bundler rebases each
+    /// under-`project_root` target to a **shadow-first dual-target**
+    /// `["<shadow>/<rel>[/*]", "<original real-abs target>"]` (see
+    /// [`rebase_tsconfig_paths_to_shadow`]). This is what makes an aliased
+    /// import reach the in-shadow `import.meta.glob` / `.module.css`
+    /// transform (the shadow copy is tried first; the real target is the
+    /// graceful fallback). Targets NOT under `project_root` (plugin /
+    /// virtual / out-of-tree) are written unchanged.
     pub tsconfig_paths: BTreeMap<String, Vec<String>>,
     /// Bare specifiers to leave unresolved in the bundle. Use for
     /// `preact`, `react`, `react-dom/server`, etc. — packages the
@@ -893,6 +903,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
 
     let adapter = make_adapter(input.framework);
 
+    // `copy_mode` — when esbuild will run WITHOUT `--preserve-symlinks`
+    // (branch 4: project node_modules + non-empty tsconfig paths), every
+    // symlinked source file in the shadow tree is canonicalised by esbuild
+    // back to the real project tree, so the in-shadow `import.meta.glob`
+    // expansion and `.module.css` rewrite become invisible. In that mode
+    // we materialise source files as REAL COPIES (not symlinks) so the
+    // transformed shadow file is the one esbuild reads. Derived from the
+    // SAME predicate that gates the `--preserve-symlinks` flag in
+    // `run_esbuild`, so the two decisions cannot drift. `node_modules` is
+    // always symlinked regardless (see the 2b block) — copy_mode only
+    // affects source files.
+    let copy_mode = !esbuild_will_preserve_symlinks(&input);
+
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
     // The map is built once here (before the shadow walk) from every
@@ -969,6 +992,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.hard_breaks,
             input.markdown_features.as_ref(),
             &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1020,6 +1044,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 col.include.as_deref(),
                 col.exclude.as_deref(),
                 col.id_strip_suffix.as_deref(),
+                copy_mode,
                 &mut broken,
             )
             .with_context(|| {
@@ -1057,6 +1082,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.hard_breaks,
             input.markdown_features.as_ref(),
             &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1090,6 +1116,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.hard_breaks,
             input.markdown_features.as_ref(),
             &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1122,6 +1149,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             input.hard_breaks,
             input.markdown_features.as_ref(),
             &bundle_exclude,
+            copy_mode,
             &mut broken,
         )
         .with_context(|| {
@@ -1188,6 +1216,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 input.hard_breaks,
                 input.markdown_features.as_ref(),
                 &bundle_exclude,
+                copy_mode,
                 &mut broken,
             )
             .with_context(|| {
@@ -1297,8 +1326,18 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         )
     })?;
 
-    // 4. Synthetic tsconfig.json honouring the user's `paths`.
-    write_synthetic_tsconfig(shadow, &input.tsconfig_paths, adapter.jsx_import_source())
+    // 4. Synthetic tsconfig.json honouring the user's `paths`. Rebase
+    //    under-project_root alias targets to a shadow-first dual-target so
+    //    an aliased import reaches the in-shadow transform (see
+    //    `rebase_tsconfig_paths_to_shadow`). This first write is overwritten
+    //    by the plugin-merged write inside `run_esbuild` for real builds; it
+    //    matters for the mock-subprocess path and as a behaviour-preserving
+    //    baseline. esbuild reads the array in order, first existing file
+    //    wins, a miss is NOT an error — that fallthrough is what makes the
+    //    real-root fallback safe.
+    let rebased_paths =
+        rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
+    write_synthetic_tsconfig(shadow, &rebased_paths, adapter.jsx_import_source())
         .context("bundler: failed writing synthetic tsconfig.json")?;
 
     // 5. Synthetic entry.mjs.
@@ -1579,6 +1618,43 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Recursively copy every regular file under `src` into `dest` as REAL
+/// files, following symlinks. Used by the `copy_mode` materialise passes
+/// to mirror a symlinked *subdir* (which `WalkDir` with
+/// `follow_links(false)` yields as a non-recursed symlink entry). A plain
+/// re-symlink would canonicalise back out under
+/// `esbuild --(no-)preserve-symlinks`, so the subtree must be copied.
+///
+/// Uses `follow_links(true)` so the subtree's own contents (including any
+/// nested symlinks) are dereferenced and written as real files. Infra dirs
+/// are pruned with the same predicate the top-level walks use.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in WalkDir::new(src)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| !is_pruned_infra_dir(e))
+    {
+        let entry = entry?;
+        let from = entry.path();
+        let rel = match from.strip_prefix(src) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let to = dest.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&to)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let _ = fs::remove_file(&to);
+            fs::copy(from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1606,6 +1682,7 @@ fn materialise_shadow(
     hard_breaks: bool,
     markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
     bundle_exclude: &BundleExcludeMatcher,
+    copy_mode: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1729,6 +1806,26 @@ fn materialise_shadow(
             continue;
         }
         if !entry.file_type().is_file() {
+            // A symlinked *subdir* under the source root. `WalkDir`'s
+            // `follow_links(false)` yields it as a non-recursed symlink
+            // entry (neither `is_dir()` nor `is_file()`). In the default
+            // symlink path that is fine — esbuild canonicalises the parent
+            // copy/symlink back to the real tree and finds the subtree
+            // there. But under `copy_mode` the parent root is materialised
+            // as real copies and esbuild stays anchored at the shadow, so a
+            // symlinked subdir would silently stay unmirrored (esbuild would
+            // canonicalise it back out, defeating the in-shadow transforms).
+            // Explicitly copy the symlinked subtree as real files in that
+            // mode. Low-frequency, but a hole otherwise.
+            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+                copy_dir_recursive(from, &to).with_context(|| {
+                    format!(
+                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        from.display(),
+                        to.display()
+                    )
+                })?;
+            }
             continue;
         }
 
@@ -1873,7 +1970,7 @@ fn materialise_shadow(
             // threaded into the glob expansion (#665's `is_excluded` seam) so
             // an excluded file is never emitted as a static import — which
             // would otherwise make esbuild error on the generated import.
-            materialise_source_file(from, &to, &is_excluded)?;
+            materialise_source_file(from, &to, &is_excluded, copy_mode)?;
         }
 
         // Routes only collected from the pages root.
@@ -2175,6 +2272,7 @@ fn materialise_collection(
     include: Option<&[String]>,
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
+    copy_mode: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -2279,6 +2377,18 @@ fn materialise_collection(
             continue;
         }
         if !entry.file_type().is_file() {
+            // Symlinked subdir under copy_mode — copy the real subtree so it
+            // stays mirrored in the shadow (see the matching block in
+            // `materialise_shadow`).
+            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+                copy_dir_recursive(from, &to).with_context(|| {
+                    format!(
+                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        from.display(),
+                        to.display()
+                    )
+                })?;
+            }
             continue;
         }
 
@@ -2410,7 +2520,7 @@ fn materialise_collection(
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
-            materialise_source_file(from, &to, &|_| false)?;
+            materialise_source_file(from, &to, &|_| false, copy_mode)?;
         }
     }
     Ok(())
@@ -2714,10 +2824,21 @@ fn wtf8_atom_to_string(atom: &swc_core::atoms::Wtf8Atom) -> String {
 /// `is_excluded` is threaded straight through to [`expand_import_meta_glob`]
 /// (Wave 1 passes a no-op `&|_| false`; Wave 2 / #672 supplies the real
 /// `bundle.exclude` predicate).
+///
+/// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
+/// instead of a symlink. When esbuild runs without `--preserve-symlinks`
+/// (branch 4 — see [`esbuild_will_preserve_symlinks`]) a symlinked source
+/// file is canonicalised back to the real tree, so any sibling in-shadow
+/// transform (`.module.css` rewrite, expanded glob barrel) it reaches via a
+/// relative import would be read from the *original* untransformed file. A
+/// real copy keeps the importer physically inside the shadow. The
+/// `import.meta.glob` real-write path below is unaffected (it already writes
+/// a real file).
 fn materialise_source_file(
     from: &Path,
     to: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
+    copy_mode: bool,
 ) -> Result<()> {
     let is_js_like = matches!(
         from.extension().and_then(|s| s.to_str()),
@@ -2743,8 +2864,18 @@ fn materialise_source_file(
             }
         }
     }
-    symlink_or_copy(from, to)
-        .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))
+    if copy_mode {
+        // Force a real copy so esbuild (running WITHOUT --preserve-symlinks)
+        // reads this file — and any in-shadow transform it relatively imports
+        // — from the shadow tree, not the canonicalised original.
+        let _ = fs::remove_file(to);
+        fs::copy(from, to)
+            .map(|_| ())
+            .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))
+    } else {
+        symlink_or_copy(from, to)
+            .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))
+    }
 }
 
 /// Expand Vite's eager `import.meta.glob(...)` macro in `source`.
@@ -3099,6 +3230,85 @@ fn derive_route(rel: &Path) -> Option<String> {
         return Some("/".to_string());
     }
     Some(format!("/{}", parts.join("/")))
+}
+
+/// Rebase the user's `compilerOptions.paths` targets so an alias whose
+/// target lives under the project root resolves to the **shadow** copy
+/// first (where the in-shadow `import.meta.glob` / `.module.css`
+/// transforms live), with the original real-root target as a fallback.
+///
+/// Input targets are ALREADY ABSOLUTE (real-root) — `read_tsconfig_paths`
+/// in `crates/zfb/src/commands/build.rs` (and the test helpers that mirror
+/// it) absolutise each target against the project root. So we do NOT treat
+/// the prefix as relative here; we strip `project_root` off it and re-root
+/// the remainder under `shadow`.
+///
+/// For each target string:
+/// - Split a trailing `/*` glob suffix the SAME way
+///   [`resolve_tsconfig_path_target`] does (`rsplit_once("/*")`), so the
+///   wildcard is preserved verbatim and only the prefix is re-rooted.
+/// - **Prefix under `project_root`** → emit a two-element array
+///   `["<shadow>/<rel>[/*]", "<original real-abs target>"]`. esbuild tries
+///   the array in order, taking the first existing file; a miss on the
+///   shadow entry (e.g. the file was gitignored out of the shadow, or the
+///   target is a top-level file the extra-dirs pass doesn't mirror) falls
+///   through to the real path — graceful degradation, never a build break.
+/// - **Prefix NOT under `project_root`** (plugin/virtual/external targets,
+///   which already point at `<shadow>/.zfb-virtual-*` temp files or an
+///   out-of-tree path) → pass through UNCHANGED so the merge step's
+///   user-wins-on-collision semantics and the exact-match contract
+///   (`bundler_exact_match_resolution`) are preserved.
+///
+/// Idempotent: a target already rooted under `shadow` (a re-entrant call,
+/// or a plugin temp file) is left as-is and never gets a second shadow
+/// prefix appended. The emitted array is de-duplicated, and on a
+/// case-insensitive FS where the shadow and real targets would collapse to
+/// the same path we drop the redundant duplicate.
+fn rebase_tsconfig_paths_to_shadow(
+    paths: &BTreeMap<String, Vec<String>>,
+    project_root: &Path,
+    shadow: &Path,
+) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, targets) in paths {
+        let mut new_targets: Vec<String> = Vec::with_capacity(targets.len() + 1);
+        for target in targets {
+            // Split the `/*` glob suffix exactly like resolve_tsconfig_path_target.
+            let (prefix, suffix) = match target.rsplit_once("/*") {
+                Some((p, "")) => (p, "/*"),
+                _ => (target.as_str(), ""),
+            };
+            let prefix_path = Path::new(prefix);
+            // Already under the shadow tree (re-entrant call, or a plugin
+            // temp file materialised inside `shadow`) — leave untouched.
+            let already_shadowed = prefix_path.starts_with(shadow);
+            if !already_shadowed {
+                if let Ok(rel) = prefix_path.strip_prefix(project_root) {
+                    // Under project_root → dual-target, shadow-first.
+                    // `shadow.join("")` (empty rel, the whole-root `@/*`
+                    // case) yields `shadow` itself, which is correct.
+                    let shadow_prefix = shadow.join(rel);
+                    let mut shadow_target = shadow_prefix.to_string_lossy().into_owned();
+                    shadow_target.push_str(suffix);
+                    push_unique(&mut new_targets, shadow_target);
+                }
+            }
+            // Always keep the original (real-abs / plugin / shadow) target
+            // as the fallback (or the sole target when not under root).
+            push_unique(&mut new_targets, target.clone());
+        }
+        out.insert(key.clone(), new_targets);
+    }
+    out
+}
+
+/// Push `value` onto `vec` only if not already present — keeps the
+/// dual-target arrays de-duplicated (and guards the case where the shadow
+/// and real targets collapse to the same string on a case-insensitive FS).
+fn push_unique(vec: &mut Vec<String>, value: String) {
+    if !vec.iter().any(|v| v == &value) {
+        vec.push(value);
+    }
 }
 
 /// Write a synthetic `tsconfig.json` esbuild can read for path-alias
@@ -3610,6 +3820,29 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
     out
 }
 
+/// Returns `true` when [`run_esbuild`] will invoke esbuild with
+/// `--preserve-symlinks`. Encodes the three activation paths described
+/// in `run_esbuild`'s big comment block as a single shared predicate so
+/// the flag decision and the `copy_mode` derivation in [`bundle`] cannot
+/// drift apart.
+///
+/// `true` ⇒ esbuild stays anchored at the shadow tree (symlinked source
+/// files are resolved at their shadow path, so in-shadow transforms are
+/// already visible — no copy needed).
+///
+/// `false` ⇒ **branch 4**: `node_modules_dir.is_some()` +
+/// `!node_modules_preserve_symlinks` + non-empty `tsconfig_paths`.
+/// esbuild canonicalises symlinked source files back to the real tree
+/// (deliberately, to keep #443/#450 workspace path-alias resolution
+/// working). In that one config, [`bundle`] sets `copy_mode = true` so
+/// the in-shadow source copies are real files and the
+/// `import.meta.glob` / CSS-module transforms become visible.
+fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
+    (input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks)
+        || input.node_modules_dir.is_none()
+        || input.tsconfig_paths.is_empty()
+}
+
 /// Resolve and run the esbuild subprocess.
 fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
@@ -3735,13 +3968,29 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     )
     .context("bundler: failed materializing plugin resolver inputs")?;
 
-    // Rewrite the synthetic tsconfig with the merged path map. Step 4
-    // above already wrote a tsconfig honouring `input.tsconfig_paths`
-    // alone; merge plugin entries on top (user-wins on key collision —
-    // see `merge_into_tsconfig_paths` doc) and rewrite. The mock-
-    // subprocess path skips this whole function, so the no-plugin /
-    // unit-test path is byte-identical to the previous behaviour.
-    let mut merged_paths = input.tsconfig_paths.clone();
+    // Rewrite the synthetic tsconfig with the merged path map — THIS is the
+    // tsconfig esbuild actually reads (step 4's earlier write is overwritten
+    // here for every real build).
+    //
+    // ORDER MATTERS: rebase the user's `tsconfig_paths` to shadow-first
+    // dual-targets FIRST, then merge the plugin/virtual entries on top.
+    // `merge_into_tsconfig_paths` is `or_insert_with` (user-wins on key
+    // collision), and plugin/virtual targets point at `<shadow>/.zfb-virtual-*`
+    // temp files OUTSIDE `project_root`, so they never pass through the rebase
+    // and stay single exact-match targets — preserving the exact-match
+    // contract and the user-wins-on-collision merge semantics
+    // (`bundler_exact_match_resolution`).
+    //
+    // BEHAVIOURAL DEPENDENCY (not recoverable from the code): esbuild treats a
+    // `compilerOptions.paths` value that is an ARRAY as a try-in-order list —
+    // it resolves each candidate, takes the FIRST one that maps to an existing
+    // file, and a candidate that maps to no file is silently skipped (NOT an
+    // error). The shadow-first dual-target relies on exactly this fallthrough:
+    // the shadow copy (carrying the in-shadow transform) is tried first, and
+    // the real-root target is the graceful fallback when the shadow has no
+    // such file. (TypeScript/esbuild tsconfig paths-array semantics.)
+    let mut merged_paths =
+        rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
     zfb_plugin_resolver::merge_into_tsconfig_paths(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
@@ -3849,36 +4098,13 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     //    `bundler_workspace_pkg_alias` regression test exercises the
     //    `paths`-present branch and continues to pass because this
     //    `is_empty()` clause does NOT fire when paths exist.
-    if input.node_modules_dir.is_some() && input.node_modules_preserve_symlinks {
-        cmd.arg("--preserve-symlinks");
-    } else if input.node_modules_dir.is_none() {
-        // No node_modules_dir: all package imports are either marked
-        // external or absent. Add --preserve-symlinks so esbuild stays
-        // anchored at the shadow path when processing symlinked source
-        // files. Without it, esbuild canonicalises a symlinked .tsx
-        // importer to its real path, then resolves relative imports
-        // (e.g. `./hero.module.css`) from the real directory — finding
-        // the original raw CSS rather than the rewritten JS shim in the
-        // shadow. Safe here because no node_modules traversal from the
-        // shadow root is needed (no packages to resolve).
-        // Also covers the `embedded_node_modules()` extraction-failure
-        // fallback path in `build.rs` — that build is already headed
-        // for failure, so --preserve-symlinks does not make it worse.
-        cmd.arg("--preserve-symlinks");
-    } else if input.tsconfig_paths.is_empty() {
-        // Project has its own node_modules but no tsconfig path aliases.
-        // The #443/#450 regression that the previous gate protected
-        // against is workspace-package importers (files INSIDE
-        // node_modules) failing to resolve via the project's tsconfig
-        // `paths`. With no `paths` map in the user's tsconfig, that
-        // failure mode cannot occur (esbuild has no aliases to apply
-        // anyway). So it is safe to add --preserve-symlinks here, which
-        // is needed to fix the same .tsx-canonicalisation issue
-        // described above for corp's shape (`pnpm install`'d
-        // node_modules + relative imports of `*.module.css`). The
-        // `bundler_workspace_pkg_alias` regression test exercises the
-        // OTHER branch — it has `paths`, so this clause does NOT fire
-        // and the test's protection remains intact.
+    //
+    // The three activation paths are encoded in
+    // `esbuild_will_preserve_symlinks`; `bundle()` calls the SAME
+    // predicate to derive `copy_mode` (the in-shadow source files must
+    // be real copies precisely when esbuild will NOT preserve symlinks,
+    // i.e. branch 4) so the two can never drift.
+    if esbuild_will_preserve_symlinks(input) {
         cmd.arg("--preserve-symlinks");
     }
 
@@ -4743,6 +4969,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -4837,6 +5064,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5010,6 +5238,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5572,6 +5801,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5788,6 +6018,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
@@ -5997,6 +6228,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6076,6 +6308,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6118,6 +6351,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6176,6 +6410,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6259,6 +6494,7 @@ mod tests {
                 false,
                 None,
                 &no_bundle_exclude(),
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6295,6 +6531,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6344,6 +6581,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6387,6 +6625,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6645,6 +6884,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6709,6 +6949,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6773,6 +7014,7 @@ mod tests {
                 false,
                 None,
                 &no_bundle_exclude(),
+                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6931,6 +7173,7 @@ mod tests {
             false,
             None,
             &matcher,
+            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6969,6 +7212,7 @@ mod tests {
             false,
             None,
             &no_bundle_exclude(),
+            false,
             &mut Vec::new(),
         )
         .unwrap();
