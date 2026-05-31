@@ -284,6 +284,7 @@ fn build_bundle(
     let node_modules = make_test_node_modules();
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: fixture_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),

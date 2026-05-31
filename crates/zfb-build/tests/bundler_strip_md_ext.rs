@@ -76,6 +76,7 @@ fn make_input(
     outdir_name: &str,
     strip_md_ext: bool,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),

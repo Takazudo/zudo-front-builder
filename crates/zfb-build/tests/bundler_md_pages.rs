@@ -20,6 +20,7 @@ use zfb_test_utils::locate_esbuild;
 
 /// Build a minimal `BundlerInput` for an isolated test project.
 fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),

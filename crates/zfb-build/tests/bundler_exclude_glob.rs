@@ -88,6 +88,7 @@ fn make_input(
     esbuild: std::path::PathBuf,
     bundle_exclude: Vec<String>,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
         Framework::Preact,

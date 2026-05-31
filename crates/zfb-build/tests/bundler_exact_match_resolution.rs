@@ -72,6 +72,7 @@ fn make_input(
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),

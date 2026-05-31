@@ -1527,6 +1527,14 @@ fn assemble_and_bundle_dev(
     // Empty → skip nothing. Mirrors `commands/build.rs`.
     bundler_input.bundle_exclude =
         crate::config::resolve_bundle_exclude(cfg.bundle.as_ref());
+    // #676 -- mirror commands/build.rs: thread `bundle.mainFields` /
+    // `bundle.external` so dev's page/SSR bundle resolves (or externalizes)
+    // CJS-main-only deps identically to the production build.
+    bundler_input.main_fields =
+        crate::config::resolve_bundle_main_fields(cfg.bundle.as_ref());
+    bundler_input
+        .external
+        .extend(crate::config::resolve_bundle_external(cfg.bundle.as_ref()));
     // #586 — thread `markdown.features` so dev rendering honours the opt-in
     // feature plugins, matching the production build. Mirrors
     // `commands/build.rs`. `None` keeps the legacy always-on chain.

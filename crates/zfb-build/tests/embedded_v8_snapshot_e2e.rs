@@ -64,6 +64,7 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
 /// the test doesn't need a real esbuild binary. The mock output satisfies
 /// the bundler's post-processing expectations (routes export + hydrateIsland).
 fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> BundlerInput {
+    main_fields: Vec::new(),
     let root = tmp.path().to_path_buf();
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::create_dir_all(root.join("content")).unwrap();
@@ -645,6 +646,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
     let dist_tmp = tempfile::tempdir().expect("dist tempdir");
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: project_root.clone(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
@@ -833,6 +835,7 @@ async fn embedded_v8_md_page_renders_to_html() {
     let dist_tmp = tempfile::tempdir().expect("dist tempdir");
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
@@ -1292,6 +1295,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
     let dist_tmp = tempfile::tempdir().expect("dist tempdir");
 
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
