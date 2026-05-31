@@ -101,6 +101,7 @@ fn make_input(
     main_fields: Vec<String>,
     extra_external: Vec<String>,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     let mut input = BundlerInput::for_project(
         root.to_path_buf(),
         Framework::Preact,
