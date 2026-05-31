@@ -73,6 +73,24 @@ globset = { workspace = true }
 # embedded `plugin-host.mjs` into a tempdir at spawn time.
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "process", "io-util", "fs"] }
 tracing = "0.1"
+# SWC umbrella crate — used by `expand_import_meta_glob` to parse
+# `.ts/.tsx/.js/.jsx` shadow files and collect the byte-spans of
+# `import.meta.glob(...)` call expressions (a Vite-only macro esbuild
+# leaves untransformed). A statement-level AST walk is what lets the
+# transform ignore occurrences inside strings/comments — a naive regex
+# would rewrite those and silently corrupt user code. The umbrella
+# version is pinned in the workspace `Cargo.toml`; this crate only opts
+# into the minimum feature set (parser + AST + visit, NO codegen — we
+# splice the original source rather than re-print it). The feature set
+# matches `zfb-content`'s so the SWC graph unifies (a parallel
+# `swc_ecma_*` graph at a different version line would not interop).
+swc_core = { workspace = true, features = [
+    "common",
+    "ecma_ast",
+    "ecma_parser",
+    "ecma_parser_typescript",
+    "ecma_visit",
+] }
 # Build-time render orchestrator (T6). `blocking` keeps the renderer
 # loop synchronous to match the bundler's call style; `rustls-tls`
 # avoids depending on a system OpenSSL for what is in practice a
