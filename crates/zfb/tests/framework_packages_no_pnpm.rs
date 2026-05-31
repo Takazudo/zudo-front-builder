@@ -123,6 +123,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     // external — every framework import must resolve from the extraction)
     // and `node_modules_dir = Some(nm_path)` pointing at the extraction.
     let input = BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),

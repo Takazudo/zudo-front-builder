@@ -92,7 +92,9 @@ fn make_input_with_resolve(
     outdir_name: &str,
     on_broken_links: OnBrokenLinks,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
@@ -152,7 +154,9 @@ fn make_input_without_resolve(
     esbuild: &std::path::Path,
     outdir_name: &str,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),

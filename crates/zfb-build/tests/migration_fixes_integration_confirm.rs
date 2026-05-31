@@ -409,7 +409,9 @@ fn make_full_fixture_input(
     root: &std::path::Path,
     esbuild: &std::path::Path,
 ) -> BundlerInput {
+    main_fields: Vec::new(),
     BundlerInput {
+        main_fields: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         content_dir: PathBuf::from("content"),
