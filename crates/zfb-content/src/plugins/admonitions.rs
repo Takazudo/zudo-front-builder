@@ -7,7 +7,7 @@
 //! registry. This file exports:
 //!
 //! - [`AdmonitionsPlugin`] — backwards-compatible visitor that wires up
-//!   the six built-in admonitions, equivalent to constructing
+//!   the seven built-in admonitions, equivalent to constructing
 //!   [`DirectiveRegistry::with_defaults`] and using it as the visitor.
 //!   New code should prefer the registry directly so it can register
 //!   additional directives such as `:::card`, `:::badge`, etc.
@@ -28,7 +28,7 @@ use crate::pipeline::MdastVisitor;
 
 use super::directives::{DirectiveDef, DirectiveRegistry};
 
-/// The six built-in admonition directives.
+/// The seven built-in admonition directives.
 ///
 /// Delegates to [`zfb_md_extras::admonitions_preset::default_admonition_directives`]
 /// which owns the canonical definition since Wave 3 (#570). Kept here for
@@ -39,7 +39,7 @@ pub fn default_admonition_directives() -> Vec<DirectiveDef> {
 }
 
 /// Visitor that converts `:::kind … :::` paragraph runs into
-/// `<Kind>…</Kind>` MDX flow elements for the six built-in admonitions.
+/// `<Kind>…</Kind>` MDX flow elements for the seven built-in admonitions.
 ///
 /// Backwards-compatible facade over
 /// [`DirectiveRegistry::with_defaults`]. New code should prefer using
@@ -78,7 +78,7 @@ pub struct AdmonitionsPlugin {
 }
 
 impl AdmonitionsPlugin {
-    /// New plugin preloaded with the six built-in admonitions.
+    /// New plugin preloaded with the seven built-in admonitions.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn all_kinds_accept_label_as_title() {
-        // Verify all six built-in admonitions promote [label] → title="…".
+        // Verify all seven built-in admonitions promote [label] → title="…".
         for (key, tag) in [
             ("note", "Note"),
             ("tip", "Tip"),
@@ -257,6 +257,7 @@ mod tests {
             ("danger", "Danger"),
             ("info", "Info"),
             ("details", "Details"),
+            ("caution", "Caution"),
         ] {
             let root = run_root(vec![
                 text_para(&format!(":::{key}[My Label]")),

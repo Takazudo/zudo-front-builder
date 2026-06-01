@@ -35,8 +35,8 @@ pub mod test_harness;
 
 // ── Wave 3 feature modules (moved from zfb-content in #570) ────────────────
 
-/// Admonitions preset — the six built-in directive definitions (`note`,
-/// `tip`, `warning`, `danger`, `info`, `details`).
+/// Admonitions preset — the seven built-in directive definitions (`note`,
+/// `tip`, `warning`, `danger`, `info`, `details`, `caution`).
 /// Wire via `features.admonitionsPreset = true` in `zfb.config.ts`.
 pub mod admonitions_preset;
 

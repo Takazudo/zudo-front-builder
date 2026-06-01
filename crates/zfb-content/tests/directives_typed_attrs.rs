@@ -581,7 +581,7 @@ fn existing_directives_without_schema_compile_and_expand_unchanged() {
 
 #[test]
 fn default_admonitions_no_schema_still_work() {
-    // Guard: the six built-in admonitions (no schema) must still expand
+    // Guard: the seven built-in admonitions (no schema) must still expand
     // without diagnostics after the typed-attrs change.
     let mut reg = DirectiveRegistry::with_defaults();
     let out = run_registry(
