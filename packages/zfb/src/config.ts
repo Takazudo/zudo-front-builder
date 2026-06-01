@@ -714,8 +714,14 @@ export type MarkdownFeaturesConfig = {
   /** Transclusion of other MDX files (`![[path]]` syntax). */
   transclude?: TranscludeConfig;
 
-  /** Framework admonitions preset (maps `:::note` etc. to components). */
-  admonitionsPreset?: FeatureToggle;
+  /**
+   * Framework admonitions preset (maps `:::note` etc. to components). Accepts
+   * a `boolean` shorthand (`true` = enable with the standard seven directives,
+   * `false` = disable) or a full {@link AdmonitionsPresetOptions} object to
+   * register custom `:::name` → component mappings and optionally suppress the
+   * standard set via `extendDefaults: false`.
+   */
+  admonitionsPreset?: AdmonitionsPresetFeature;
 
   /** Mermaid diagram rendering. */
   mermaid?: FeatureToggle;
@@ -736,6 +742,50 @@ export type MarkdownFeaturesConfig = {
  * Mirrors `HeadingMarkerTocFeature` in crates/zfb-md-ast/src/features_config.rs.
  */
 export type HeadingMarkerTocFeature = boolean | TocConfig;
+
+/**
+ * Spec for one user-defined admonition directive: either a bare component
+ * name string or a full options object.
+ *
+ * Mirrors `AdmonitionDirectiveSpec` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type AdmonitionDirectiveSpec =
+  | string
+  | {
+      /** JSX component identifier (e.g. `"Spoiler"`, `"Kbd"`). */
+      component: string;
+      /** Container/leaf/text shape. Defaults to `"container"` when absent. */
+      kind?: "container" | "leaf" | "text";
+      /** Whether the bracketed `[label]` becomes a `title` attribute. Defaults to `true`. */
+      titleFromLabel?: boolean;
+    };
+
+/**
+ * Options object for the `admonitionsPreset` feature.
+ *
+ * Mirrors `AdmonitionsPresetOptions` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type AdmonitionsPresetOptions = {
+  /**
+   * Additional `:::name` → component mappings to register. Registered after
+   * the standard set (when `extendDefaults` is `true`) so user entries win
+   * on name collision.
+   */
+  extraDirectives?: Record<string, AdmonitionDirectiveSpec>;
+  /**
+   * Seed the standard seven directives before `extraDirectives`.
+   * Defaults to `true` when absent.
+   */
+  extendDefaults?: boolean;
+};
+
+/**
+ * `admonitionsPreset` feature value: either a `boolean` shorthand or a
+ * full {@link AdmonitionsPresetOptions} object.
+ *
+ * Mirrors `AdmonitionsPresetFeature` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type AdmonitionsPresetFeature = boolean | AdmonitionsPresetOptions;
 
 /**
  * Options for the external-link rewriter (port of `rehype-external-links`).
