@@ -942,9 +942,11 @@ pub struct MarkdownConfig {
 // like `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}` and
 // `zfb::config::TocConfig` continue to resolve.
 pub use zfb_md_ast::{
-    CodeEnrichmentConfig, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
-    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
-    TocConfig, TocExportConfig, TranscludeConfig,
+    admonitions_preset_enabled, into_directive_def, AdmonitionDirectiveFullSpec,
+    AdmonitionDirectiveKind, AdmonitionDirectiveSpec, AdmonitionsPresetFeature,
+    AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions, FeatureToggle,
+    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 /// Options for the `rehype-external-links` port.
@@ -4127,6 +4129,219 @@ mod tests {
             msg.contains("bogus") || msg.contains("unknown field"),
             "error must name the unknown field; got: {msg}"
         );
+    }
+
+    // --- admonitionsPreset round-trip tests ------------------------------------
+
+    // `admonitionsPreset: true` → `AdmonitionsPresetFeature::Bool(true)`.
+    #[test]
+    fn admonitions_preset_bool_true() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "admonitionsPreset": true }
+        }))
+        .expect("admonitionsPreset: true deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.admonitions_preset,
+            Some(AdmonitionsPresetFeature::Bool(true))
+        );
+    }
+
+    // `admonitionsPreset: false` → `AdmonitionsPresetFeature::Bool(false)`.
+    #[test]
+    fn admonitions_preset_bool_false() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "admonitionsPreset": false }
+        }))
+        .expect("admonitionsPreset: false deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.admonitions_preset,
+            Some(AdmonitionsPresetFeature::Bool(false))
+        );
+    }
+
+    // `admonitionsPreset: {}` → `Options(AdmonitionsPresetOptions::default())`.
+    #[test]
+    fn admonitions_preset_empty_object() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "admonitionsPreset": {} }
+        }))
+        .expect("admonitionsPreset: {} deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.admonitions_preset,
+            Some(AdmonitionsPresetFeature::Options(
+                AdmonitionsPresetOptions::default()
+            ))
+        );
+    }
+
+    // `admonitionsPreset: { extraDirectives: {} }` → Options with empty extras.
+    #[test]
+    fn admonitions_preset_object_empty_extra_directives() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "admonitionsPreset": { "extraDirectives": {} } }
+        }))
+        .expect("admonitionsPreset: { extraDirectives: {} } deserialises");
+        let features = cfg.features.expect("features present");
+        let opts = match features.admonitions_preset.expect("admonitions_preset present") {
+            AdmonitionsPresetFeature::Options(o) => o,
+            AdmonitionsPresetFeature::Bool(_) => panic!("expected Options variant"),
+        };
+        assert_eq!(
+            opts.extra_directives.as_ref().map(|m| m.len()),
+            Some(0)
+        );
+    }
+
+    // Short-form extra directive: `{ extraDirectives: { caution: "Caution" } }`.
+    #[test]
+    fn admonitions_preset_extra_directive_short_form() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {
+                "admonitionsPreset": {
+                    "extraDirectives": { "caution": "Caution" }
+                }
+            }
+        }))
+        .expect("short-form extra directive deserialises");
+        let features = cfg.features.expect("features present");
+        let opts = match features.admonitions_preset.expect("admonitions_preset present") {
+            AdmonitionsPresetFeature::Options(o) => o,
+            AdmonitionsPresetFeature::Bool(_) => panic!("expected Options variant"),
+        };
+        let extra = opts.extra_directives.expect("extra_directives present");
+        let spec = extra.get("caution").expect("caution entry present");
+        assert_eq!(
+            spec,
+            &AdmonitionDirectiveSpec::Short("Caution".to_string())
+        );
+    }
+
+    // Full-form extra directive: `{ extraDirectives: { kbd: { component: "Kbd", kind: "text", titleFromLabel: false } } }`.
+    #[test]
+    fn admonitions_preset_extra_directive_full_form() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {
+                "admonitionsPreset": {
+                    "extraDirectives": {
+                        "kbd": {
+                            "component": "Kbd",
+                            "kind": "text",
+                            "titleFromLabel": false
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("full-form extra directive deserialises");
+        let features = cfg.features.expect("features present");
+        let opts = match features.admonitions_preset.expect("admonitions_preset present") {
+            AdmonitionsPresetFeature::Options(o) => o,
+            AdmonitionsPresetFeature::Bool(_) => panic!("expected Options variant"),
+        };
+        let extra = opts.extra_directives.expect("extra_directives present");
+        let spec = extra.get("kbd").expect("kbd entry present");
+        assert_eq!(
+            spec,
+            &AdmonitionDirectiveSpec::Full(AdmonitionDirectiveFullSpec {
+                component: "Kbd".to_string(),
+                kind: Some(AdmonitionDirectiveKind::Text),
+                title_from_label: Some(false),
+            })
+        );
+    }
+
+    // `deny_unknown_fields` on `AdmonitionsPresetOptions` must reject typo'd
+    // field names like `extraDirectivez`.
+    #[test]
+    fn admonitions_preset_unknown_field_rejected() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "admonitionsPreset": { "extraDirectivez": {} } }
+        }))
+        .expect_err("typo'd field in admonitionsPreset options must be rejected");
+        let msg = err.to_string();
+        // With untagged enum serde reports "did not match any variant" for the
+        // outer AdmonitionsPresetFeature; the field-name detail is swallowed.
+        assert!(
+            msg.contains("extraDirectivez")
+                || msg.contains("unknown field")
+                || msg.contains("variant")
+                || msg.contains("AdmonitionsPreset"),
+            "error must indicate a rejection of the typo'd field; got: {msg}"
+        );
+    }
+
+    // Untagged ordering: an object must parse as Options(...), not Bool(_).
+    #[test]
+    fn admonitions_preset_untagged_object_is_options_variant() {
+        let feature: AdmonitionsPresetFeature =
+            serde_json::from_value(serde_json::json!({})).expect("empty object deserialises");
+        assert!(
+            matches!(feature, AdmonitionsPresetFeature::Options(_)),
+            "empty object must parse as Options variant"
+        );
+    }
+
+    // Untagged ordering: a bare bool must parse as Bool(_).
+    #[test]
+    fn admonitions_preset_untagged_bool_is_bool_variant() {
+        let feature: AdmonitionsPresetFeature =
+            serde_json::from_value(serde_json::json!(true)).expect("bool deserialises");
+        assert!(
+            matches!(feature, AdmonitionsPresetFeature::Bool(true)),
+            "bool must parse as Bool variant"
+        );
+    }
+
+    // `into_directive_def` conversion — Short form.
+    #[test]
+    fn into_directive_def_short_form() {
+        use zfb_md_ast::{into_directive_def, AdmonitionDirectiveSpec, DirectiveKind};
+        let spec = AdmonitionDirectiveSpec::Short("Spoiler".to_string());
+        let def = into_directive_def("spoiler", &spec);
+        assert_eq!(def.name, "spoiler");
+        assert_eq!(def.component_name, "Spoiler");
+        assert_eq!(def.kind, DirectiveKind::Container);
+        assert!(def.title_from_label);
+        assert!(def.attrs.is_empty());
+    }
+
+    // `into_directive_def` conversion — Full form with explicit kind + titleFromLabel.
+    #[test]
+    fn into_directive_def_full_form() {
+        use zfb_md_ast::{
+            into_directive_def, AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind,
+            AdmonitionDirectiveSpec, DirectiveKind,
+        };
+        let spec = AdmonitionDirectiveSpec::Full(AdmonitionDirectiveFullSpec {
+            component: "Kbd".to_string(),
+            kind: Some(AdmonitionDirectiveKind::Text),
+            title_from_label: Some(false),
+        });
+        let def = into_directive_def("kbd", &spec);
+        assert_eq!(def.name, "kbd");
+        assert_eq!(def.component_name, "Kbd");
+        assert_eq!(def.kind, DirectiveKind::Text);
+        assert!(!def.title_from_label);
+        assert!(def.attrs.is_empty());
+    }
+
+    // `into_directive_def` conversion — Full form with defaults (no kind, no titleFromLabel).
+    #[test]
+    fn into_directive_def_full_form_defaults() {
+        use zfb_md_ast::{
+            into_directive_def, AdmonitionDirectiveFullSpec, AdmonitionDirectiveSpec, DirectiveKind,
+        };
+        let spec = AdmonitionDirectiveSpec::Full(AdmonitionDirectiveFullSpec {
+            component: "MyBlock".to_string(),
+            kind: None,
+            title_from_label: None,
+        });
+        let def = into_directive_def("my-block", &spec);
+        assert_eq!(def.kind, DirectiveKind::Container);
+        assert!(def.title_from_label); // default true
     }
 
     // --- output_bounded tests ---------------------------------------------------

@@ -19,9 +19,12 @@
 // in the natural location (this is the "features" crate, after all) without
 // reaching past it for the type.
 pub use zfb_md_ast::{
-    feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig, FeatureOptions,
+    admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled,
+    AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
+    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
     LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
+    into_directive_def,
 };
 
 /// Test harness module — `run_fixture` and helpers for fixture-based

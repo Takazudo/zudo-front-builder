@@ -29,9 +29,12 @@ pub use directives::{
     ValidatedAttrValue,
 };
 pub use features_config::{
-    feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig, FeatureOptions,
+    admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled,
+    AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
+    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
     LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
+    into_directive_def,
 };
 pub use hast_text::extract_text;
 

@@ -10,7 +10,11 @@
 //! Mirrored 1:1 by `MarkdownFeaturesConfig` and `FeatureToggle` in
 //! `packages/zfb/src/config.ts` for the TypeScript loader.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::directives::{DirectiveDef, DirectiveKind};
 
 /// Per-feature toggle: `bool` shorthand or a feature-options object.
 ///
@@ -289,6 +293,158 @@ pub fn heading_marker_toc_enabled(toggle: &Option<HeadingMarkerTocFeature>) -> b
     toggle.as_ref().is_some_and(HeadingMarkerTocFeature::is_enabled)
 }
 
+/// Directive kind for user-defined admonition directives.
+///
+/// Maps to [`crate::directives::DirectiveKind`]. A separate serde DTO is
+/// needed because `DirectiveKind` carries no serde derives.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AdmonitionDirectiveKind {
+    /// Block-level container directive (default).
+    Container,
+    /// Self-closing leaf directive.
+    Leaf,
+    /// Inline text directive.
+    Text,
+}
+
+impl From<AdmonitionDirectiveKind> for DirectiveKind {
+    fn from(k: AdmonitionDirectiveKind) -> Self {
+        match k {
+            AdmonitionDirectiveKind::Container => DirectiveKind::Container,
+            AdmonitionDirectiveKind::Leaf => DirectiveKind::Leaf,
+            AdmonitionDirectiveKind::Text => DirectiveKind::Text,
+        }
+    }
+}
+
+/// Full object form for a user-defined admonition directive.
+///
+/// `deny_unknown_fields` is critical: without it a typo'd field inside the
+/// untagged `AdmonitionDirectiveSpec` enum would silently fall back to
+/// `Short(String)` instead of surfacing the error.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdmonitionDirectiveFullSpec {
+    /// JSX component identifier (e.g. `"Spoiler"`, `"Kbd"`).
+    pub component: String,
+    /// Container/leaf/text shape. Defaults to `Container` when absent.
+    #[serde(default)]
+    pub kind: Option<AdmonitionDirectiveKind>,
+    /// Whether the bracketed `[label]` is promoted to a `title="…"` attribute.
+    /// Defaults to `true` when absent.
+    #[serde(default)]
+    pub title_from_label: Option<bool>,
+}
+
+/// Spec for one user-defined admonition directive: either a bare component
+/// name string or a full options object.
+///
+/// `serde(untagged)` with `Full` listed first ensures serde tries the object
+/// form before the string — same ordering discipline as [`FeatureToggle`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AdmonitionDirectiveSpec {
+    /// Full options object — kind, title_from_label, component.
+    Full(AdmonitionDirectiveFullSpec),
+    /// Bare component name shorthand (`"Spoiler"`, `"Kbd"`, etc.).
+    Short(String),
+}
+
+/// Options object for the `admonitionsPreset` feature.
+///
+/// `deny_unknown_fields` ensures a typo like `extraDirectivez` is rejected
+/// rather than silently activating the feature with default options.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdmonitionsPresetOptions {
+    /// Additional `:::name` → component mappings to register. Registered
+    /// after the standard set (when `extend_defaults` is true) so last-wins
+    /// gives user override on collision.
+    #[serde(default)]
+    pub extra_directives: Option<HashMap<String, AdmonitionDirectiveSpec>>,
+    /// Seed the standard seven directives before `extra_directives`.
+    /// Defaults to `true` when absent.
+    #[serde(default)]
+    pub extend_defaults: Option<bool>,
+}
+
+/// `admonitionsPreset` feature value: either a `bool` shorthand or a full
+/// [`AdmonitionsPresetOptions`] object.
+///
+/// `serde(untagged)` with `Options` listed first ensures serde tries the
+/// object form before the bool — same pattern as [`HeadingMarkerTocFeature`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AdmonitionsPresetFeature {
+    /// Full options object.
+    Options(AdmonitionsPresetOptions),
+    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
+    Bool(bool),
+}
+
+impl AdmonitionsPresetFeature {
+    /// True when the feature should be wired into the pipeline. `Bool(false)`
+    /// is treated as disabled even though it deserialises to `Some(...)`.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            AdmonitionsPresetFeature::Bool(b) => *b,
+            AdmonitionsPresetFeature::Options(_) => true,
+        }
+    }
+
+    /// Resolve to a concrete [`AdmonitionsPresetOptions`]. `Bool(true)` and
+    /// `Bool(false)` both fall back to defaults; the caller must gate on
+    /// [`Self::is_enabled`] first.
+    #[must_use]
+    pub fn options(&self) -> AdmonitionsPresetOptions {
+        match self {
+            AdmonitionsPresetFeature::Options(opts) => opts.clone(),
+            AdmonitionsPresetFeature::Bool(_) => AdmonitionsPresetOptions::default(),
+        }
+    }
+}
+
+/// Same as [`feature_enabled`] but for the admonitions-preset feature, which
+/// accepts the rich `AdmonitionsPresetOptions` shape via
+/// [`AdmonitionsPresetFeature`].
+#[must_use]
+pub fn admonitions_preset_enabled(toggle: &Option<AdmonitionsPresetFeature>) -> bool {
+    toggle.as_ref().is_some_and(AdmonitionsPresetFeature::is_enabled)
+}
+
+/// Convert a user-supplied [`AdmonitionDirectiveSpec`] into a
+/// [`DirectiveDef`] ready for registration.
+///
+/// - `Short(name)` → Container, `title_from_label = true`.
+/// - `Full { ... }` → kind defaults to Container, `title_from_label`
+///   defaults to `true`. `attrs` is empty in this phase (attrs-via-config
+///   is deferred).
+#[must_use]
+pub fn into_directive_def(name: &str, spec: &AdmonitionDirectiveSpec) -> DirectiveDef {
+    match spec {
+        AdmonitionDirectiveSpec::Short(component) => DirectiveDef {
+            name: name.to_string(),
+            kind: DirectiveKind::Container,
+            component_name: component.clone(),
+            title_from_label: true,
+            attrs: Vec::new(),
+        },
+        AdmonitionDirectiveSpec::Full(full) => DirectiveDef {
+            name: name.to_string(),
+            kind: full
+                .kind
+                .clone()
+                .map(DirectiveKind::from)
+                .unwrap_or(DirectiveKind::Container),
+            component_name: full.component.clone(),
+            title_from_label: full.title_from_label.unwrap_or(true),
+            attrs: Vec::new(),
+        },
+    }
+}
+
 /// Per-feature markdown pipeline configuration.
 ///
 /// Each field corresponds to one pluggable markdown feature. All fields are
@@ -347,8 +503,10 @@ pub struct MarkdownFeaturesConfig {
     pub transclude: Option<TranscludeConfig>,
 
     /// Framework admonitions preset (maps `:::note` etc. to components).
+    /// Accepts `true`/`false` or a full [`AdmonitionsPresetOptions`] object —
+    /// see [`AdmonitionsPresetFeature`].
     #[serde(default)]
-    pub admonitions_preset: Option<FeatureToggle>,
+    pub admonitions_preset: Option<AdmonitionsPresetFeature>,
 
     /// Mermaid diagram rendering.
     #[serde(default)]
