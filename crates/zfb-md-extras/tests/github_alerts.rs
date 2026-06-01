@@ -12,7 +12,7 @@
 
 use zfb_content::pipeline::Pipeline;
 use zfb_content::serializer::serialize;
-use zfb_md_ast::FeatureToggle;
+use zfb_md_ast::{AdmonitionsPresetFeature, FeatureToggle};
 use zfb_md_extras::{test_harness::run_fixture, MarkdownFeaturesConfig};
 
 /// Build a pipeline with `githubAlerts` set to the given toggle.
@@ -114,7 +114,7 @@ fn disabled_leaves_blockquote_unchanged() {
 fn both_features_on_alert_renders_correctly() {
     let features = MarkdownFeaturesConfig {
         github_alerts: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         ..Default::default()
     };
     let mut p = Pipeline::with_defaults_and_features(&features);
@@ -135,7 +135,7 @@ fn both_features_on_alert_renders_correctly() {
 #[test]
 fn parity_with_admonitions_single_paragraph() {
     let adm_features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         ..Default::default()
     };
     let alert_features = MarkdownFeaturesConfig {
@@ -163,7 +163,7 @@ fn parity_with_admonitions_single_paragraph() {
 #[test]
 fn parity_with_admonitions_multiple_paragraphs() {
     let adm_features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         ..Default::default()
     };
     let alert_features = MarkdownFeaturesConfig {

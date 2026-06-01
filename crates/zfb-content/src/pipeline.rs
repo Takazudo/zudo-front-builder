@@ -958,7 +958,7 @@ pub fn register_features(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
-    use zfb_md_ast::{feature_enabled, heading_marker_toc_enabled};
+    use zfb_md_ast::{admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
     // transclude MUST run FIRST in the mdast phase — before code_tabs,
@@ -1007,12 +1007,22 @@ pub fn register_features(
         p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
     }
 
-    if feature_enabled(&features.admonitions_preset) {
+    if admonitions_preset_enabled(&features.admonitions_preset) {
         use crate::plugins::directives::DirectiveRegistry;
+        use zfb_md_ast::into_directive_def;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;
+        let opts = features.admonitions_preset.as_ref().unwrap().options();
+        let extend = opts.extend_defaults.unwrap_or(true);
         let mut registry = DirectiveRegistry::new();
-        for def in default_admonition_directives() {
-            registry.register(def);
+        if extend {
+            for def in default_admonition_directives() {
+                registry.register(def);
+            }
+        }
+        if let Some(extra) = &opts.extra_directives {
+            for (name, spec) in extra {
+                registry.register(into_directive_def(name, spec));
+            }
         }
         p.add_mdast_visitor(registry.into_visitor());
     }

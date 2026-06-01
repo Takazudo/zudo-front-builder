@@ -137,7 +137,7 @@ fn malformed_mdx_yields_compile_error_with_specifier_and_message() {
 #[test]
 fn mdx_admonition_directive_runs_through_pipeline() {
     let features = zfb_content::MarkdownFeaturesConfig {
-        admonitions_preset: Some(zfb_content::FeatureToggle::Bool(true)),
+        admonitions_preset: Some(zfb_content::AdmonitionsPresetFeature::Bool(true)),
         ..Default::default()
     };
     let mut loader = ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features(

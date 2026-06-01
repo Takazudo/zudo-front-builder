@@ -97,7 +97,7 @@ impl DirectiveRegistry {
         self.defs.insert(def.name.clone(), def);
     }
 
-    /// Registry preloaded with the six built-in admonitions.
+    /// Registry preloaded with the seven built-in admonitions.
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut r = Self::new();

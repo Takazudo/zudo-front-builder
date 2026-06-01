@@ -19,9 +19,12 @@
 // in the natural location (this is the "features" crate, after all) without
 // reaching past it for the type.
 pub use zfb_md_ast::{
-    feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig, FeatureOptions,
+    admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled,
+    AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
+    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
     LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
+    into_directive_def,
 };
 
 /// Test harness module — `run_fixture` and helpers for fixture-based
@@ -35,8 +38,8 @@ pub mod test_harness;
 
 // ── Wave 3 feature modules (moved from zfb-content in #570) ────────────────
 
-/// Admonitions preset — the six built-in directive definitions (`note`,
-/// `tip`, `warning`, `danger`, `info`, `details`).
+/// Admonitions preset — the seven built-in directive definitions (`note`,
+/// `tip`, `warning`, `danger`, `info`, `details`, `caution`).
 /// Wire via `features.admonitionsPreset = true` in `zfb.config.ts`.
 pub mod admonitions_preset;
 
