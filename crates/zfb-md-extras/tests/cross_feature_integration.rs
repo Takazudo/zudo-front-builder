@@ -29,9 +29,9 @@ use std::path::PathBuf;
 use zfb_content::pipeline::Pipeline;
 use zfb_content::serializer::serialize;
 use zfb_md_ast::{
-    BuildContext, CodeEnrichmentConfig, FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature,
-    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig,
-    TranscludeConfig,
+    AdmonitionsPresetFeature, BuildContext, CodeEnrichmentConfig, FeatureToggle,
+    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
     diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
     heading_registry::HeadingRegistry,
 };
@@ -213,7 +213,7 @@ fn image_dimensions_injects_width_and_height() {
 #[test]
 fn admonitions_preset_and_github_alerts_coexist() {
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         github_alerts: Some(FeatureToggle::Bool(true)),
         ..Default::default()
     };
@@ -390,7 +390,7 @@ fn transclude_cycle_produces_generic_not_broken_link() {
 fn ruby_outside_admonition_works_with_admonitions_enabled() {
     let features = MarkdownFeaturesConfig {
         ruby: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
@@ -479,7 +479,7 @@ fn all_features_on_does_not_crash() {
 
     let features = MarkdownFeaturesConfig {
         mermaid: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(FeatureToggle::Bool(true)),
+        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
         heading_marker_toc: Some(HeadingMarkerTocFeature::Config(TocConfig {
             heading: "TOC".to_string(),
             max_depth: 2,
