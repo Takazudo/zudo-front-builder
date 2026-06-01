@@ -22,11 +22,11 @@ a JSX component, and the pipeline rewrites matching paragraphs into
 
 The shapes follow the
 [CommonMark Directives proposal](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444):
-container, leaf, and text. zfb's six built-in admonitions
+container, leaf, and text. zfb's seven built-in admonitions
 (`:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`,
-`:::details`) are themselves registered through the same registry
-via `Pipeline::with_defaults()` — the registry is the only mechanism,
-and the defaults aren't privileged.
+`:::details`, `:::caution`) are themselves registered through the same
+registry via `Pipeline::with_defaults()` — the registry is the only
+mechanism, and the defaults aren't privileged.
 
 ## The three directive shapes
 
@@ -127,7 +127,7 @@ ordinary MDX-component plumbing.
 <Note>
 
 `Pipeline::with_defaults()` is your starting point — it pre-registers
-the six built-in admonitions and wires the standard plugin set
+the seven built-in admonitions and wires the standard plugin set
 (syntect highlighting, heading links, etc.). You can also start from
 `DirectiveRegistry::new()` if you want a clean slate, but the
 defaults are designed to be additive, not opinionated.
@@ -291,7 +291,7 @@ identically.
   The engine validates against the `AttrSchema` you declare (type + enum
   values). TypeScript typing on the JSX component side is still your
   responsibility.
-- **Provide a default directive set beyond the six admonitions.** No
+- **Provide a default directive set beyond the seven admonitions.** No
   built-in `:::callout`, `:::card`, `::youtube`, etc. — every framework
   picks its own.
 - **Auto-import the JSX components.** You're responsible for making

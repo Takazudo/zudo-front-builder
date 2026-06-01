@@ -14,9 +14,9 @@ It is always active. You interact with it in two ways:
 - **Consuming the registry** — register your own directive names from a
   project-side config without writing Rust. See
   [Custom Directives](/concepts/custom-directives).
-- **Using the built-in preset** — enable the six bundled admonition
-  directive types (`note`, `tip`, `warning`, `danger`, `info`, `details`)
-  via the opt-in `admonitionsPreset` feature described below.
+- **Using the built-in preset** — enable the seven bundled admonition
+  directive types (`note`, `tip`, `warning`, `danger`, `info`, `details`,
+  `caution`) via the opt-in `admonitionsPreset` feature described below.
 
 ## Directive shapes
 
@@ -30,7 +30,7 @@ The registry handles three directive shapes:
 
 ## Admonitions preset
 
-The six built-in admonition types are opt-in — they are not registered by
+The seven built-in admonition types are opt-in — they are not registered by
 default. Enable them in `zfb.config.ts`:
 
 ```ts title="zfb.config.ts"
@@ -74,6 +74,6 @@ that does not require writing Rust.
 - [Custom Directives](/concepts/custom-directives) — register new
   `:::name` / `::name` / `:name` directive names.
 - [Admonitions preset](/markdown-features/admonitions-preset) — opt-in
-  preset of six built-in admonition types.
+  preset of seven built-in admonition types.
 - [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
   — engine-side extension surface.
