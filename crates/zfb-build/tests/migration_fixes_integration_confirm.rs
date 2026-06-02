@@ -113,23 +113,39 @@ fn write_cjs_only_pkg_for_confirm(root: &std::path::Path, name: &str) {
 // 1. title_from_label default — :::note[Hello] must produce title="Hello"
 // ---------------------------------------------------------------------------
 
+/// Test fixture: a `features.directives` map registering `note → Note`.
+/// Core seeds zero directive names, so the mapping is supplied explicitly.
+fn note_directive_features() -> zfb_content::MarkdownFeaturesConfig {
+    let mut directives = HashMap::new();
+    directives.insert(
+        "note".to_string(),
+        zfb_content::DirectiveSpec::Short("Note".to_string()),
+    );
+    zfb_content::MarkdownFeaturesConfig {
+        directives: Some(directives),
+        ..Default::default()
+    }
+}
+
 #[test]
-fn admonition_directive_label_becomes_title_attribute() {
+fn directive_label_becomes_title_attribute() {
     use zfb_content::mdx_to_jsx_module_with_pipeline;
     use zfb_content::pipeline::Pipeline;
     use zfb_content::MdxJsxOptions;
 
     // The MDX source: a :::note[Hello] directive with proper blank lines.
-    // The pipeline must run AdmonitionsPlugin (mdast phase) to transform
+    // The pipeline must run the directives step (mdast phase) to transform
     // the directive node; `mdx_to_jsx_module` alone (no pipeline) skips
-    // mdast visitors and would leave the directive as raw text.
+    // mdast visitors and would leave the directive as raw text. The
+    // `note → Note` mapping is supplied via `features.directives`.
+    let features = note_directive_features();
     let src = ":::note[Hello]\n\nBody text.\n\n:::\n";
-    let mut pipeline = Pipeline::with_defaults();
+    let mut pipeline = Pipeline::with_defaults_and_features(&features);
     let jsx = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut pipeline)
         .expect("mdx_to_jsx_module_with_pipeline must succeed for a valid directive");
 
     // The compiled JSX must contain `title="Hello"` (the label promoted to
-    // a title attribute by AdmonitionsPlugin / DirectiveRegistry).
+    // a title attribute by the directives step / DirectiveRegistry).
     assert!(
         jsx.contains("title=\"Hello\"") || jsx.contains("title: \"Hello\""),
         ":::note[Hello] must promote the label to a title attribute in compiled JSX.\
@@ -180,7 +196,10 @@ fn un_blank_lined_directive_does_not_produce_note_element() {
     // JSX element is emitted.
     let bad_src = ":::note\nbody text without blank lines\n:::\n";
 
-    let mut pipeline = Pipeline::with_defaults();
+    // `note → Note` is registered, so a well-formed `:::note` WOULD transform;
+    // this test proves the merged (no-blank-lines) form does NOT.
+    let features = note_directive_features();
+    let mut pipeline = Pipeline::with_defaults_and_features(&features);
     let jsx = mdx_to_jsx_module_with_pipeline(bad_src, MdxJsxOptions::default(), &mut pipeline)
         .expect("pipeline must not hard-error on bad-blank-line source");
 
@@ -458,7 +477,24 @@ fn make_full_fixture_input(
         external_links: None,
         cjk_friendly: true,
         hard_breaks: false,
-        markdown_features: None,
+        // Register the `note`/`tip` directive names the fixture exercises.
+        // Core seeds zero directive vocabulary, so the `:::note[World]` /
+        // `:::tip` blocks only transform when supplied via `features.directives`.
+        markdown_features: Some({
+            let mut directives = HashMap::new();
+            directives.insert(
+                "note".to_string(),
+                zfb_content::DirectiveSpec::Short("Note".to_string()),
+            );
+            directives.insert(
+                "tip".to_string(),
+                zfb_content::DirectiveSpec::Short("Tip".to_string()),
+            );
+            zfb_content::MarkdownFeaturesConfig {
+                directives: Some(directives),
+                ..Default::default()
+            }
+        }),
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

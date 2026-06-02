@@ -36,6 +36,32 @@ fn build_full_pipeline() -> Pipeline {
     p
 }
 
+/// Test fixture: a `features.directives` map registering the admonition
+/// vocabulary the `03-admonitions.mdx` fixture exercises. Core no longer
+/// ships a built-in preset, so the mapping is supplied explicitly here —
+/// exactly how a docs recipe would wire it via `zfb.config.ts`.
+fn admonition_directives_features() -> zfb_md_extras::MarkdownFeaturesConfig {
+    let mut directives = std::collections::HashMap::new();
+    for (name, component) in [
+        ("note", "Note"),
+        ("tip", "Tip"),
+        ("warning", "Warning"),
+        ("danger", "Danger"),
+        ("info", "Info"),
+        ("details", "Details"),
+        ("caution", "Caution"),
+    ] {
+        directives.insert(
+            name.to_string(),
+            zfb_md_extras::DirectiveSpec::Short(component.to_string()),
+        );
+    }
+    zfb_md_extras::MarkdownFeaturesConfig {
+        directives: Some(directives),
+        ..Default::default()
+    }
+}
+
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -160,40 +186,47 @@ fn fixture_02_frontmatter_strips_frontmatter() {
 
 #[test]
 fn fixture_03_admonitions_render_as_jsx() {
-    check_fixture("03-admonitions.mdx", "03-admonitions.html");
-    let snapshot = std::fs::read_to_string(snapshots_dir().join("03-admonitions.html"))
-        .expect("snapshot present after first run");
+    // The admonition vocabulary is supplied via `features.directives` (core
+    // ships zero default names), then the fixture is rendered through the
+    // feature-aware pipeline.
+    let actual = render_fixture_with(
+        "03-admonitions.mdx",
+        Pipeline::with_defaults_and_features(&admonition_directives_features()),
+    );
     for tag in ["<Note", "<Tip", "<Warning", "<Details"] {
         assert!(
-            snapshot.contains(tag),
-            "expected admonition tag {tag} in snapshot:\n{snapshot}",
-        );
-    }
-    assert!(
-        snapshot.contains("title=\"Click me\""),
-        "expected details title in snapshot:\n{snapshot}",
-    );
-}
-
-/// Sub 4b (#47) acceptance criterion: a fixture MDX with `:::note`
-/// compiles to `<Note>…</Note>` via the default path (no manual
-/// plugin wiring at the call site).
-#[test]
-fn fixture_03_admonitions_compile_via_default_pipeline() {
-    let actual = render_fixture_with("03-admonitions.mdx", Pipeline::with_defaults());
-    assert!(
-        actual.contains("<Note") && actual.contains("</Note>"),
-        "expected <Note>…</Note> via Pipeline::with_defaults(), got:\n{actual}",
-    );
-    for tag in ["<Tip", "<Warning", "<Details"] {
-        assert!(
             actual.contains(tag),
-            "expected admonition {tag} via default pipeline:\n{actual}",
+            "expected admonition tag {tag} in output:\n{actual}",
         );
     }
     assert!(
         actual.contains("title=\"Click me\""),
-        "expected directive-promoted details title via default pipeline:\n{actual}",
+        "expected details title in output:\n{actual}",
+    );
+}
+
+/// Acceptance criterion: a fixture MDX with `:::note` compiles to
+/// `<Note>…</Note>` when the directive vocabulary is registered via
+/// `features.directives` (no manual plugin wiring at the call site).
+#[test]
+fn fixture_03_admonitions_compile_via_directives_feature() {
+    let actual = render_fixture_with(
+        "03-admonitions.mdx",
+        Pipeline::with_defaults_and_features(&admonition_directives_features()),
+    );
+    assert!(
+        actual.contains("<Note") && actual.contains("</Note>"),
+        "expected <Note>…</Note> via features.directives, got:\n{actual}",
+    );
+    for tag in ["<Tip", "<Warning", "<Details"] {
+        assert!(
+            actual.contains(tag),
+            "expected admonition {tag} via directives feature:\n{actual}",
+        );
+    }
+    assert!(
+        actual.contains("title=\"Click me\""),
+        "expected directive-promoted details title via directives feature:\n{actual}",
     );
 }
 
@@ -609,7 +642,7 @@ use zfb_md_extras::MarkdownFeaturesConfig;
 
 /// `Pipeline::with_defaults_and_features` with an empty features set produces
 /// output that is **different** from `Pipeline::with_defaults()` — the opt-in
-/// plugins (`AdmonitionsPlugin`, `MermaidPlugin`, `TocPlugin`, etc.) are NOT
+/// plugins (the directives step, `MermaidPlugin`, `TocPlugin`, etc.) are NOT
 /// wired when no feature flag is set.
 ///
 /// This test verifies the conditionality using `mermaid` as the probe: a

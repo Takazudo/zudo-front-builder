@@ -30,8 +30,7 @@ pub use plugins::toc::TocConfig;
 // threading `markdown.features` into the feature-aware pipeline constructor,
 // without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
 pub use zfb_md_extras::{
-    admonitions_preset_enabled, AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind,
-    AdmonitionDirectiveSpec, AdmonitionsPresetFeature, AdmonitionsPresetOptions, FeatureToggle,
+    directives_enabled, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureToggle,
     MarkdownFeaturesConfig, into_directive_def,
 };
 

@@ -327,11 +327,27 @@ fn block_math_survives_hast_detour() {
 }
 
 #[test]
-fn admonitions_directive_survives_with_hast_phase() {
-    // mdast phase: AdmonitionsPlugin folds `:::note … :::` into a
-    // <Note> element. hast phase: the JsxRaw payload survives
-    // verbatim and registers `Note` for the preamble.
-    let out = emit_with_defaults(":::note\n\nbody text\n\n:::\n");
+fn directive_survives_with_hast_phase() {
+    // mdast phase: the directives step (configured here with `note → Note`)
+    // folds `:::note … :::` into a <Note> element. hast phase: the JsxRaw
+    // payload survives verbatim and registers `Note` for the preamble.
+    // Core seeds no directive names, so the mapping is supplied explicitly.
+    use std::collections::HashMap;
+    use zfb_md_extras::{DirectiveSpec, MarkdownFeaturesConfig};
+
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    let features = MarkdownFeaturesConfig {
+        directives: Some(directives),
+        ..Default::default()
+    };
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let out = mdx_to_jsx_module_with_pipeline(
+        ":::note\n\nbody text\n\n:::\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
     assert!(
         out.contains("<Note") && out.contains("</Note>"),
         "directive transform should yield <Note>:\n{out}",

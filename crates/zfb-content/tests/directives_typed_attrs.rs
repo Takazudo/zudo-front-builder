@@ -580,10 +580,15 @@ fn existing_directives_without_schema_compile_and_expand_unchanged() {
 }
 
 #[test]
-fn default_admonitions_no_schema_still_work() {
-    // Guard: the seven built-in admonitions (no schema) must still expand
-    // without diagnostics after the typed-attrs change.
-    let mut reg = DirectiveRegistry::with_defaults();
+fn directive_without_attr_schema_still_works() {
+    // Guard: a container directive with no attr schema must still expand
+    // without diagnostics after the typed-attrs change. Core seeds zero
+    // directive names, so `note → Note` is registered explicitly here (with
+    // `title_from_label = true`, matching how a docs recipe would wire it).
+    let mut reg = DirectiveRegistry::new();
+    let mut note = DirectiveDef::container("note", "Note");
+    note.title_from_label = true;
+    reg.register(note);
     let out = run_registry(
         &mut reg,
         vec![
@@ -598,7 +603,7 @@ fn default_admonitions_no_schema_still_work() {
     assert_eq!(attr_value(j, "title").as_deref(), Some("Custom Title"));
     assert!(
         reg.take_diagnostics().is_empty(),
-        "no diagnostics for well-formed admonition"
+        "no diagnostics for well-formed directive"
     );
 }
 

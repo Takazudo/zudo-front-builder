@@ -25,10 +25,9 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 
 use crate::plugins::{
-    AdmonitionsPlugin, BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin,
-    ExternalLinksConfig, ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin,
-    MermaidPlugin, ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin,
-    SyntectPlugin, TocConfig, TocPlugin,
+    BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
+    ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin, MermaidPlugin, ResolveLinksPlugin,
+    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin, TocConfig, TocPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -188,7 +187,7 @@ pub struct Pipeline {
     /// orchestrator can call `set_resolve_links_source_dir` per-file
     /// and `take_broken_links` to drain diagnostics. Applied in
     /// `apply_mdast_visitors` AFTER all generic mdast visitors (i.e.
-    /// after `AdmonitionsPlugin`) so link rewriting sees finalized
+    /// after the directives step) so link rewriting sees finalized
     /// mdast link nodes.
     resolve_links: Option<ResolveLinksPlugin>,
 }
@@ -313,7 +312,7 @@ impl Pipeline {
     /// Wire a [`ResolveLinksPlugin`] into the pipeline's mdast phase.
     ///
     /// The plugin is applied before the generic mdast visitors so it
-    /// runs on the raw mdast before `AdmonitionsPlugin` transforms
+    /// runs on the raw mdast before the directives step transforms
     /// directives. The `source_dir` slot is empty until the caller
     /// calls [`Pipeline::set_resolve_links_source_dir`] per file.
     ///
@@ -386,14 +385,14 @@ impl Pipeline {
     /// New pipeline preloaded with the project's default plugin chain.
     ///
     /// This is the entry point most orchestrator call sites want: it
-    /// bundles the directive registry (via [`AdmonitionsPlugin`]) plus
-    /// the five custom hast plugins so a `:::note` block compiles to
-    /// `<Note>…</Note>`, headings get permalink anchors, titled code
-    /// blocks get a `<div class="code-block-container">` wrapper plus
-    /// syntect highlighting, mermaid blocks become
+    /// bundles the five custom hast plugins so headings get permalink
+    /// anchors, titled code blocks get a `<div class="code-block-container">`
+    /// wrapper plus syntect highlighting, mermaid blocks become
     /// `<div class="mermaid">` containers, and block-level paragraph
     /// images get wrapped in an enlargeable `<figure>` — all without
-    /// manual plugin wiring at the call site.
+    /// manual plugin wiring at the call site. Core seeds NO directive
+    /// vocabulary; `:::name` → `<Component>` mapping is opt-in via
+    /// `features.directives` on [`Pipeline::with_defaults_and_full_config`].
     ///
     /// Callers that need a different mix should construct a pipeline
     /// via [`Pipeline::with_mdx`] (or [`Pipeline::new`]) and append
@@ -411,13 +410,12 @@ impl Pipeline {
     ///    around CJK characters that base CommonMark flanking rules
     ///    rejected. Runs before any visitor that depends on emphasis
     ///    being already tokenised.
-    /// 2. [`AdmonitionsPlugin`] — directive-style transforms run on
-    ///    mdast because [`DirectiveRegistry`] folds runs of paragraphs
-    ///    delimited by `:::name` … `:::` into a single
-    ///    [`MdxJsxFlowElement`]. That collapsing has to happen before
-    ///    the mdast→hast conversion, or each `:::` line would already
-    ///    be its own `<p>` element and the collapse would have to walk
-    ///    arbitrary HTML structure to recover the run.
+    ///    (No directive registry is wired by `with_defaults`: core seeds
+    ///    zero directive names. When a `features.directives` map is supplied
+    ///    via `with_defaults_and_full_config`, a [`DirectiveRegistry`] runs
+    ///    here and folds runs of paragraphs delimited by `:::name` … `:::`
+    ///    into a single [`MdxJsxFlowElement`] before the mdast→hast
+    ///    conversion.)
     ///
     /// **hast phase** (run after mdast→hast conversion, in this order):
     ///
@@ -571,7 +569,9 @@ impl Pipeline {
         if cjk_friendly {
             p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         }
-        p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+        // No directive registry here: core seeds zero directive names. Callers
+        // that want `:::name` → `<Component>` go through
+        // `with_defaults_and_full_config` with a `features.directives` map.
         // hast phase — ordering rationale lives in the doc comment above.
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
@@ -607,8 +607,9 @@ impl Pipeline {
     /// 1. `CjkFriendlyPlugin` — must run before any visitor that depends on
     ///    emphasis/strong being correctly tokenised around CJK characters.
     /// 2. *(extras mdast visitors — added by Wave 4-6 per-feature rules)*
-    /// 3. `AdmonitionsPlugin` — directive transforms must fold `:::name` runs
-    ///    before mdast→hast conversion.
+    /// 3. `DirectiveRegistry` — directive transforms must fold `:::name` runs
+    ///    before mdast→hast conversion. Activated by the generic `directives`
+    ///    map (zero default names).
     ///
     /// **hast phase** (in order):
     /// 4. `HeadingLinksPlugin` — MUST be first in hast so subsequent plugins
@@ -653,14 +654,14 @@ impl Pipeline {
     /// `zfb-md-extras` feature visitors whose `features.*` flags are enabled
     /// ([`register_features`] / [`register_post_syntect_features`]).
     ///
-    /// `features = None` is treated as an **empty** feature set: the three
-    /// former-Core framework features (`mermaid`, `admonitions_preset`,
+    /// `features = None` is treated as an **empty** feature set: the
+    /// former-Core framework features (`mermaid`, `directives`,
     /// `heading_marker_toc`) are **off**. This is the
     /// post-epic opt-in default documented in the v0.1.0-next.12 changelog
     /// (#583): a default `zfb.config.ts` build omits them, and users opt in via
     /// `markdown.features.*`. The legacy [`Pipeline::with_defaults`] /
-    /// `with_defaults_and_theme*` constructors retain the pre-epic always-on
-    /// chain for backwards-compatible direct callers (tests, embedders).
+    /// `with_defaults_and_theme*` constructors retain the pre-epic Core hast
+    /// chain (no directive vocabulary) for direct callers (tests, embedders).
     ///
     /// All three production pipelines MUST thread the SAME `features` value
     /// through this one constructor so the snapshot ↔ bundler `content_hash`
@@ -680,11 +681,11 @@ impl Pipeline {
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
-        // default, #583 / #586): the three former-Core framework features
-        // (mermaid, admonitions_preset, heading_marker_toc) are
+        // default, #583 / #586): the former-Core framework features
+        // (mermaid, directives, heading_marker_toc) are
         // OFF. The legacy `with_defaults*` constructors / `build_defaults`
-        // retain the pre-epic always-on chain for backwards-compatible direct
-        // callers, but the bundler/snapshot/dev pipelines route through here.
+        // retain the pre-epic Core hast chain (no directive vocabulary) for
+        // direct callers, but the bundler/snapshot/dev pipelines route here.
         let empty;
         let features = match features {
             Some(f) => f,
@@ -696,12 +697,12 @@ impl Pipeline {
 
         // Feature-aware chain. Mirrors `build_defaults` for the framework
         // plugins that are ALWAYS on (cjk, heading-links, code-title, syntect)
-        // but routes the opt-in plugins (mermaid, admonitions_preset, …)
+        // but routes the opt-in plugins (mermaid, directives, …)
         // through `register_features`.
         //
         // Visitor ordering contract (see doc comment on
         // `with_defaults_and_features`):
-        //   mdast: CjkFriendlyPlugin → [features mdast] → [admonitions_preset]
+        //   mdast: CjkFriendlyPlugin → [features mdast] → [directives]
         //   hast:  HeadingLinksPlugin → CodeTitlePlugin → [features hast] →
         //          SyntectPlugin → [features post-syntect]
         let mut highlighter = Highlighter::new();
@@ -765,14 +766,14 @@ impl Pipeline {
     ///
     /// The optional `resolve_links` plugin (wired via
     /// [`Pipeline::add_resolve_links`]) is applied AFTER the generic
-    /// mdast visitors (i.e. after `AdmonitionsPlugin`) so the source
+    /// mdast visitors (i.e. after the directives step) so the source
     /// map lookup sees the final mdast link nodes.
     pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
         for v in &mut self.mdast_visitors {
             v.visit(node);
         }
-        // Apply ResolveLinksPlugin last in the mdast phase (after
-        // AdmonitionsPlugin) when wired. See field doc.
+        // Apply ResolveLinksPlugin last in the mdast phase (after the
+        // directives step) when wired. See field doc.
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(node);
         }
@@ -928,7 +929,7 @@ impl Pipeline {
 /// # Ordering contract
 ///
 /// When Wave 4-6 add visitors, they MUST be inserted at the correct phase:
-/// - mdast visitors: after `CjkFriendlyPlugin` and BEFORE `AdmonitionsPlugin`.
+/// - mdast visitors: after `CjkFriendlyPlugin` and BEFORE the directives step.
 /// - hast visitors: AFTER `SyntectPlugin` for visitors that depend on
 ///   syntect's per-line structure; BEFORE `SyntectPlugin` for anything that
 ///   rewrites `<pre>`/`<code>` shapes.
@@ -947,7 +948,7 @@ pub fn register_features(
     //
     // Ordering contract (MUST match the doc comment on with_defaults_and_features):
     //   mdast phase:
-    //     - admonitions_preset — MUST run BEFORE the syntect / hast phase.
+    //     - directives — MUST run BEFORE the syntect / hast phase.
     //       Inserted here (after CjkFriendlyPlugin that was added in the caller).
     //   hast phase (all run BEFORE SyntectPlugin which is appended by the caller
     //   after register_features returns):
@@ -958,11 +959,11 @@ pub fn register_features(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
-    use zfb_md_ast::{admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled};
+    use zfb_md_ast::{directives_enabled, feature_enabled, heading_marker_toc_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
     // transclude MUST run FIRST in the mdast phase — before code_tabs,
-    // admonitions_preset, and all other mdast visitors — so that included
+    // directives, and all other mdast visitors — so that included
     // content is spliced into the tree and then processed by subsequent
     // visitors normally. The TranscludePlugin implements
     // `MdastVisitor::visit_with_context` and requires a BuildContext
@@ -974,7 +975,7 @@ pub fn register_features(
         ));
     }
 
-    // code_tabs MUST run BEFORE admonitions_preset and github_alerts so that
+    // code_tabs MUST run BEFORE the directives step and github_alerts so that
     // `:::code-group` opener paragraphs are consumed before the directive
     // registry or alert scanner inspects them. The CodeTabsPlugin looks for
     // the literal `:::code-group` opener and the closing `:::` separator so
@@ -985,9 +986,9 @@ pub fn register_features(
         ));
     }
 
-    // github_alerts MUST run BEFORE admonitions_preset so both features can
+    // github_alerts MUST run BEFORE the directives step so both features can
     // coexist: alert blockquotes are rewritten to MdxJsxFlowElement first,
-    // then the admonitions pass handles `:::directive` syntax separately.
+    // then the directives pass handles `:::directive` syntax separately.
     if feature_enabled(&features.github_alerts) {
         p.add_mdast_visitor(Box::new(
             zfb_md_extras::github_alerts::GithubAlertsPlugin::new(),
@@ -1001,26 +1002,23 @@ pub fn register_features(
     }
 
     // ruby runs in the mdast phase so it can scan raw text before mdast→hast.
-    // Order-independent relative to github_alerts and admonitions_preset
+    // Order-independent relative to github_alerts and the directives step
     // (those operate on blockquote/directive shapes; ruby operates on Text).
     if feature_enabled(&features.ruby) {
         p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
     }
 
-    if admonitions_preset_enabled(&features.admonitions_preset) {
+    // Build a DirectiveRegistry from the `directives` map only. Core seeds NO
+    // default directive names — the `:::name` → `<Component>` vocabulary
+    // (note/tip/… and everything else) is supplied entirely by the user's
+    // config / docs recipes.
+    if directives_enabled(&features.directives) {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_ast::into_directive_def;
-        use zfb_md_extras::admonitions_preset::default_admonition_directives;
-        let opts = features.admonitions_preset.as_ref().unwrap().options();
-        let extend = opts.extend_defaults.unwrap_or(true);
+
         let mut registry = DirectiveRegistry::new();
-        if extend {
-            for def in default_admonition_directives() {
-                registry.register(def);
-            }
-        }
-        if let Some(extra) = &opts.extra_directives {
-            for (name, spec) in extra {
+        if let Some(dir_map) = &features.directives {
+            for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));
             }
         }
@@ -1847,10 +1845,12 @@ mod tests {
         }
     }
 
-    // 13. with_defaults wires the directive registry — `:::note`
-    // becomes `<Note>…</Note>` without manual plugin wiring.
+    // 13. with_defaults seeds ZERO directive vocabulary — `:::note` is left
+    // untransformed because core ships no built-in directive names. Directive
+    // mapping is opt-in via `features.directives` on
+    // `with_defaults_and_full_config`.
     #[test]
-    fn with_defaults_wires_directive_registry() {
+    fn with_defaults_seeds_no_directive_vocabulary() {
         let mut p = Pipeline::with_defaults();
         let h = p
             .run(":::note\n\nbody\n\n:::\n")
@@ -1858,9 +1858,8 @@ mod tests {
         let mut raws = Vec::new();
         collect_raw(&h, &mut raws);
         assert!(
-            raws.iter()
-                .any(|r| r.contains("<Note") && r.contains("</Note>")),
-            "expected a <Note>…</Note> Raw block, got raws={raws:?}",
+            !raws.iter().any(|r| r.contains("<Note")),
+            "with_defaults must NOT synthesize <Note> (zero core vocabulary); got raws={raws:?}",
         );
     }
 

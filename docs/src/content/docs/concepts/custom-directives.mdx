@@ -22,11 +22,13 @@ a JSX component, and the pipeline rewrites matching paragraphs into
 
 The shapes follow the
 [CommonMark Directives proposal](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444):
-container, leaf, and text. zfb's seven built-in admonitions
-(`:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`,
-`:::details`, `:::caution`) are themselves registered through the same
-registry via `Pipeline::with_defaults()` — the registry is the only
-mechanism, and the defaults aren't privileged.
+container, leaf, and text. The registry is the only mechanism — no directive
+names are privileged or pre-registered. Userland registers everything, including
+admonition-style directives (see the [Admonitions recipe](/recipes/admonitions)).
+
+If you only need to register directives from config without writing Rust, use
+the opt-in [`directives`](/markdown-features/directives) feature in
+`zfb.config.ts` instead of the Rust API below.
 
 ## The three directive shapes
 
@@ -126,11 +128,11 @@ ordinary MDX-component plumbing.
 
 <Note>
 
-`Pipeline::with_defaults()` is your starting point — it pre-registers
-the seven built-in admonitions and wires the standard plugin set
-(syntect highlighting, heading links, etc.). You can also start from
-`DirectiveRegistry::new()` if you want a clean slate, but the
-defaults are designed to be additive, not opinionated.
+`Pipeline::with_defaults()` is your starting point — it wires the standard
+plugin set (syntect highlighting, heading links, etc.) with an empty
+`DirectiveRegistry`. You can also start from `DirectiveRegistry::new()`
+explicitly if you want a clean-slate registry. No directive names are
+pre-registered in either case.
 
 </Note>
 
@@ -291,9 +293,10 @@ identically.
   The engine validates against the `AttrSchema` you declare (type + enum
   values). TypeScript typing on the JSX component side is still your
   responsibility.
-- **Provide a default directive set beyond the seven admonitions.** No
-  built-in `:::callout`, `:::card`, `::youtube`, etc. — every framework
-  picks its own.
+- **Provide any default directive set.** No built-in `:::callout`, `:::card`,
+  `:::note`, `::youtube`, etc. — every framework picks its own vocabulary via
+  the [`directives`](/markdown-features/directives) config feature or the Rust
+  API.
 - **Auto-import the JSX components.** You're responsible for making
   the components in scope at the page module (a global components
   map, an MDX layout, an explicit import). See
@@ -302,6 +305,8 @@ identically.
 
 ## See also
 
+- [`directives` feature](/markdown-features/directives) — register directive names from `zfb.config.ts` without writing Rust.
+- [Recipe: Admonitions](/recipes/admonitions) — a worked example using the `directives` feature to register `:::note`, `:::tip`, etc.
 - [MDX Components](/concepts/mdx-components) — how compiled MDX
   modules look up element-level overrides.
 - [Engine vs Framework](/concepts/engine-vs-framework) — why the

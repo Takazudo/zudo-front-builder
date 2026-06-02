@@ -1,0 +1,191 @@
+---
+title: "Recipe: Admonitions"
+description: Register note, tip, info, warning, danger, caution, and details directives using the generic directives feature, then supply minimal component stubs and CSS hooks.
+sidebar_position: 3
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+How to register an admonition vocabulary (`note`, `tip`, `info`, `warning`, `danger`, `caution`) and a collapsible `details` directive using the generic [`directives`](/markdown-features/directives) opt-in feature. Includes minimal component stubs and CSS patterns. [zudo-doc](https://github.com/zudolab/zudo-doc) is the fully-worked reference implementation.
+
+</Info>
+
+## Background
+
+zfb is the **engine** — it provides the [Directives registry](/markdown-features/directives-registry) as a Core primitive and the [`directives`](/markdown-features/directives) opt-in feature to populate it from config. The engine ships **zero** named directives by default. The admonition vocabulary (`:::note`, `:::tip`, etc.) is a userland policy decision — this recipe shows one way to implement it.
+
+`:::details` (a collapsible section) is structurally similar to admonitions but semantically different, so it is registered separately and given its own component.
+
+## 1. Register the directives
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      directives: {
+        // Admonition group — all containers with titleFromLabel on (the default)
+        note:    "Note",
+        tip:     "Tip",
+        info:    "Info",
+        warning: "Warning",
+        danger:  "Danger",
+        caution: "Caution",
+
+        // Collapsible section — separate from the admonitions
+        details: {
+          component: "Details",
+          kind: "container",
+          titleFromLabel: true,
+        },
+      },
+    },
+  },
+});
+```
+
+After this, content authors can write:
+
+```md
+:::note[Optional title]
+
+Note body text.
+
+:::
+
+:::tip
+
+Tip body text (no title).
+
+:::
+
+:::details[Click to expand]
+
+Hidden content that the reader reveals on demand.
+
+:::
+```
+
+The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Click to expand">`, etc. You are responsible for making these identifiers available in scope — see [MDX Components](/concepts/mdx-components).
+
+## 2. Component stubs
+
+These are minimal stubs to get started. Extend them with your design system's tokens, icons, and ARIA roles.
+
+```tsx title="components/admonitions.tsx"
+type AdmonitionProps = {
+  title?: string;
+  children: React.ReactNode;
+};
+
+function admonition(kind: string) {
+  return function Admonition({ title, children }: AdmonitionProps) {
+    return (
+      <div class={`admonition admonition-${kind}`} data-kind={kind}>
+        {title && <p class="admonition-title">{title}</p>}
+        <div class="admonition-body">{children}</div>
+      </div>
+    );
+  };
+}
+
+export const Note    = admonition("note");
+export const Tip     = admonition("tip");
+export const Info    = admonition("info");
+export const Warning = admonition("warning");
+export const Danger  = admonition("danger");
+export const Caution = admonition("caution");
+```
+
+```tsx title="components/details.tsx"
+type DetailsProps = {
+  title?: string;
+  children: React.ReactNode;
+};
+
+export function Details({ title, children }: DetailsProps) {
+  return (
+    <details class="directive-details">
+      {title && <summary>{title}</summary>}
+      <div class="directive-details-body">{children}</div>
+    </details>
+  );
+}
+```
+
+## 3. Register with MDX
+
+Add the components to your [MDX components map](/concepts/mdx-components) so they are in scope at every page render.
+
+```tsx title="mdx-components.tsx"
+import { defaultComponents } from "zfb";
+import { Note, Tip, Info, Warning, Danger, Caution } from "./components/admonitions";
+import { Details } from "./components/details";
+
+export default {
+  ...defaultComponents,
+  Note,
+  Tip,
+  Info,
+  Warning,
+  Danger,
+  Caution,
+  Details,
+};
+```
+
+## 4. CSS hook pattern
+
+The `data-kind` attribute on each admonition wrapper gives you a single CSS hook for all variants without a separate class per kind.
+
+```css
+.admonition {
+  border-left: 4px solid var(--admonition-color, #888);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  background: color-mix(in srgb, var(--admonition-color, #888) 8%, transparent);
+}
+
+.admonition-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.admonition[data-kind="note"]    { --admonition-color: #4a90d9; }
+.admonition[data-kind="tip"]     { --admonition-color: #27ae60; }
+.admonition[data-kind="info"]    { --admonition-color: #5b8dee; }
+.admonition[data-kind="warning"] { --admonition-color: #e67e22; }
+.admonition[data-kind="danger"]  { --admonition-color: #e74c3c; }
+.admonition[data-kind="caution"] { --admonition-color: #f39c12; }
+
+/* Details (collapsible) — separate from admonitions */
+.directive-details {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+}
+
+.directive-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+
+.directive-details-body {
+  padding-top: 0.5rem;
+}
+```
+
+## Reference implementation
+
+[zudo-doc](https://github.com/zudolab/zudo-doc) ships a fully-worked admonition system — typed ARIA roles, icon SVGs, dark-mode tokens, and the `Details` component with keyboard and animation support. Browse its source for a production-ready baseline.
+
+## See also
+
+- [`directives` feature reference](/markdown-features/directives) — the Opt-in feature this recipe uses.
+- [Directives registry](/markdown-features/directives-registry) — the Core primitive underneath.
+- [MDX Components](/concepts/mdx-components) — how to put the components in scope globally.
+- [Custom Directives](/concepts/custom-directives) — register directives via the Rust API for framework authors.

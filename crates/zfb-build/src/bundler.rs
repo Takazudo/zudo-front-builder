@@ -536,10 +536,10 @@ pub struct BundlerInput {
     /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
     /// pipeline is built via the feature-aware
     /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
-    /// (mermaid, admonitions, …) fire per the configured
+    /// (mermaid, directives, …) fire per the configured
     /// toggles. When `None` (the default), it is treated as an empty feature
-    /// set: the three former-Core framework features (mermaid,
-    /// admonitions-preset, heading-marker TOC) are OFF — the post-epic opt-in
+    /// set: the former-Core framework features (mermaid,
+    /// directives, heading-marker TOC) are OFF — the post-epic opt-in
     /// default (#583 / #586), NOT the pre-features always-on behaviour.
     ///
     /// Must match the `SnapshotPipelineConfig::features` value used by the
@@ -1728,13 +1728,13 @@ fn materialise_shadow(
     // matcher never matches, so this is always-false → skip nothing.
     let is_excluded = |abs: &Path| bundle_exclude.is_excluded(abs, project_root);
 
-    // Hoist a single `Pipeline::with_defaults_and_theme()` outside the
-    // walk loop so the six default plugins (admonitions, CJK-friendly
-    // emphasis, heading-links, code-title, mermaid,
-    // syntect) all fire on every MDX file the walker visits. The dev
-    // loader at `crates/zfb-render/src/loader.rs` reuses one pipeline
-    // for the same reason — constructing a `Highlighter` and six boxed
-    // visitors per file would be wasteful. Borrow is linear (`&mut`), so
+    // Hoist a single feature-aware pipeline outside the
+    // walk loop so the always-on Core plugins (CJK-friendly
+    // emphasis, heading-links, code-title, syntect) plus the opt-in
+    // feature visitors (mermaid, directives, …) all fire on every MDX file
+    // the walker visits. The dev loader at `crates/zfb-render/src/loader.rs`
+    // reuses one pipeline for the same reason — constructing a `Highlighter`
+    // and the boxed visitors per file would be wasteful. Borrow is linear (`&mut`), so
     // a single hoisted pipeline serves every MDX file sequentially.
     // See zfb#127 / #128.
     //
@@ -1746,13 +1746,13 @@ fn materialise_shadow(
     // same flag so dev preview matches built dist.
     //
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
-    // also wired into the mdast phase after `AdmonitionsPlugin` so
+    // also wired into the mdast phase after the directives step so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
     // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the three former-Core framework features are off
+    // empty feature set: the former-Core framework features are off
     // (the post-epic opt-in default).
     let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
         code_highlight_theme,
@@ -2327,7 +2327,7 @@ fn materialise_collection(
     // honour the same setting.
     //
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
-    // also wired after `AdmonitionsPlugin` in the mdast phase. The
+    // also wired after the directives step in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
     // Single feature-aware entry point — MUST match the snapshot walker's
     // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX

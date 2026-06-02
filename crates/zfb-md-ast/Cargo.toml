@@ -10,3 +10,6 @@ description = "zfb-md-ast: shared MdastVisitor / HastVisitor traits and HastNode
 [dependencies]
 markdown = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

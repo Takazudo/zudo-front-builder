@@ -10,10 +10,23 @@
 //! on). A separate inline test below also verifies that setting
 //! `githubAlerts: false` leaves a known alert prefix as a blockquote.
 
+use std::collections::HashMap;
+
 use zfb_content::pipeline::Pipeline;
 use zfb_content::serializer::serialize;
-use zfb_md_ast::{AdmonitionsPresetFeature, FeatureToggle};
-use zfb_md_extras::{test_harness::run_fixture, MarkdownFeaturesConfig};
+use zfb_md_ast::FeatureToggle;
+use zfb_md_extras::{test_harness::run_fixture, DirectiveSpec, MarkdownFeaturesConfig};
+
+/// Test fixture: a `features.directives` map registering the admonition names
+/// these parity tests exercise. Core ships zero default directive names, so
+/// the mapping is declared explicitly (as a docs recipe would).
+fn admonition_directives() -> Option<HashMap<String, DirectiveSpec>> {
+    let mut m = HashMap::new();
+    for (name, component) in [("note", "Note"), ("warning", "Warning")] {
+        m.insert(name.to_string(), DirectiveSpec::Short(component.to_string()));
+    }
+    Some(m)
+}
 
 /// Build a pipeline with `githubAlerts` set to the given toggle.
 fn pipeline_with_alerts(enabled: bool) -> Pipeline {
@@ -107,14 +120,14 @@ fn disabled_leaves_blockquote_unchanged() {
 
 // ── Both features on: consistent output ──────────────────────────────────────
 
-/// When both `admonitionsPreset` and `githubAlerts` are enabled, a GitHub-
+/// When both the `directives` step and `githubAlerts` are enabled, a GitHub-
 /// style alert must still render correctly (github_alerts runs first and
-/// converts the blockquote before admonitionsPreset sees it).
+/// converts the blockquote before the directives step sees it).
 #[test]
 fn both_features_on_alert_renders_correctly() {
     let features = MarkdownFeaturesConfig {
         github_alerts: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+        directives: admonition_directives(),
         ..Default::default()
     };
     let mut p = Pipeline::with_defaults_and_features(&features);
@@ -128,14 +141,14 @@ fn both_features_on_alert_renders_correctly() {
     );
 }
 
-/// Acceptance criterion: `admonitionsPreset` and `githubAlerts` produce the
+/// Acceptance criterion: the `directives` step and `githubAlerts` produce the
 /// same HTML output for equivalent single-paragraph content.
 ///
 /// `:::note\n\nbody\n\n:::` and `> [!NOTE]\n> body` must both emit `<Note>body</Note>`.
 #[test]
-fn parity_with_admonitions_single_paragraph() {
-    let adm_features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+fn parity_with_directives_single_paragraph() {
+    let directive_features = MarkdownFeaturesConfig {
+        directives: admonition_directives(),
         ..Default::default()
     };
     let alert_features = MarkdownFeaturesConfig {
@@ -143,8 +156,8 @@ fn parity_with_admonitions_single_paragraph() {
         ..Default::default()
     };
 
-    let adm_html = {
-        let mut p = Pipeline::with_defaults_and_features(&adm_features);
+    let directive_html = {
+        let mut p = Pipeline::with_defaults_and_features(&directive_features);
         serialize(&p.run(":::note\n\nnote body\n\n:::").expect("pipeline failed"))
     };
     let alert_html = {
@@ -153,17 +166,17 @@ fn parity_with_admonitions_single_paragraph() {
     };
 
     assert_eq!(
-        adm_html, alert_html,
-        "admonitions and github_alerts must produce identical HTML for single-paragraph note\n  adm:   {adm_html}\n  alert: {alert_html}"
+        directive_html, alert_html,
+        "directives step and github_alerts must produce identical HTML for single-paragraph note\n  directive: {directive_html}\n  alert:     {alert_html}"
     );
 }
 
-/// Acceptance criterion: `admonitionsPreset` and `githubAlerts` produce the
+/// Acceptance criterion: the `directives` step and `githubAlerts` produce the
 /// same HTML output for equivalent multi-paragraph content.
 #[test]
-fn parity_with_admonitions_multiple_paragraphs() {
-    let adm_features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+fn parity_with_directives_multiple_paragraphs() {
+    let directive_features = MarkdownFeaturesConfig {
+        directives: admonition_directives(),
         ..Default::default()
     };
     let alert_features = MarkdownFeaturesConfig {
@@ -171,8 +184,8 @@ fn parity_with_admonitions_multiple_paragraphs() {
         ..Default::default()
     };
 
-    let adm_html = {
-        let mut p = Pipeline::with_defaults_and_features(&adm_features);
+    let directive_html = {
+        let mut p = Pipeline::with_defaults_and_features(&directive_features);
         serialize(
             &p.run(":::note\n\nFirst paragraph.\n\nSecond paragraph.\n\n:::")
                 .expect("pipeline failed"),
@@ -187,7 +200,7 @@ fn parity_with_admonitions_multiple_paragraphs() {
     };
 
     assert_eq!(
-        adm_html, alert_html,
-        "admonitions and github_alerts must produce identical HTML for multi-paragraph note\n  adm:   {adm_html}\n  alert: {alert_html}"
+        directive_html, alert_html,
+        "directives step and github_alerts must produce identical HTML for multi-paragraph note\n  directive: {directive_html}\n  alert:     {alert_html}"
     );
 }
