@@ -1367,4 +1367,68 @@ mod tests {
         // Source paragraph preserved.
         assert_eq!(out.len(), 1);
     }
+
+    // ---- directives-only (generic directives feature, no preset) tests ----
+
+    // A registry built with only a user-supplied name registers ONLY that
+    // name — none of the seven built-in preset names appear.
+    #[test]
+    fn directives_only_no_defaults_registered() {
+        let mut r = DirectiveRegistry::new();
+        r.register(DirectiveDef::container("spoiler", "Spoiler"));
+
+        // `:::spoiler` is resolved.
+        let out = run_with_registry(
+            &mut r,
+            vec![
+                text_para(":::spoiler"),
+                text_para("hidden"),
+                text_para(":::"),
+            ],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(flow(&out[0]).name.as_deref(), Some("Spoiler"));
+
+        // `:::note` is NOT registered — left untransformed.
+        let out2 = run_with_registry(
+            &mut r,
+            vec![
+                text_para(":::note"),
+                text_para("body"),
+                text_para(":::"),
+            ],
+        );
+        // Should still be 3 paragraphs (no transformation).
+        assert_eq!(out2.len(), 3, ":::note must stay as-is when not registered");
+    }
+
+    // When both admonitionsPreset defaults and a user `directives` map are
+    // combined, entries in `directives` that collide with the preset override
+    // the preset value (last-wins, directives registered after preset).
+    #[test]
+    fn directives_map_overrides_preset_on_collision() {
+        use zfb_md_extras::admonitions_preset::default_admonition_directives;
+        let mut r = DirectiveRegistry::new();
+        // Seed preset (all seven built-ins, including `caution` → `Caution`).
+        for def in default_admonition_directives() {
+            r.register(def);
+        }
+        // Override `caution` with a user-supplied component name.
+        r.register(DirectiveDef::container("caution", "MyCaution"));
+
+        let out = run_with_registry(
+            &mut r,
+            vec![
+                text_para(":::caution"),
+                text_para("be careful"),
+                text_para(":::"),
+            ],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            flow(&out[0]).name.as_deref(),
+            Some("MyCaution"),
+            "directives entry must override preset entry for the same name"
+        );
+    }
 }
