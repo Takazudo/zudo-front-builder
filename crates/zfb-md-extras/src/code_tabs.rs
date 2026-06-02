@@ -104,9 +104,9 @@ pub fn code_group_directive_def() -> DirectiveDef {
 /// `MdxJsxFlowElement(CodeGroup)` with a `tabs={[...]}` Expression
 /// attribute and `<pre data-lang="...">` children.
 ///
-/// Must run in the mdast phase **before** `AdmonitionsPlugin` and
-/// `DirectiveRegistry` so the opener paragraph is consumed before any
-/// registry sees `code-group` as an unknown directive.
+/// Must run in the mdast phase **before** the `DirectiveRegistry` step so
+/// the opener paragraph is consumed before the registry sees `code-group`
+/// as an unknown directive.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CodeTabsPlugin;
 

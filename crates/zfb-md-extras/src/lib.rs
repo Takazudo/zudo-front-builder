@@ -18,13 +18,14 @@
 // zfb-md-ast. Re-export them here so callers of zfb-md-extras can find them
 // in the natural location (this is the "features" crate, after all) without
 // reaching past it for the type.
+#[allow(deprecated)]
 pub use zfb_md_ast::{
-    admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled,
+    admonitions_preset_enabled, directives_enabled, feature_enabled, heading_marker_toc_enabled,
     AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
-    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions,
-    FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
-    into_directive_def,
+    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, DirectiveSpec,
+    FeatureOptions, FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature,
+    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig,
+    TranscludeConfig, into_directive_def,
 };
 
 /// Test harness module — `run_fixture` and helpers for fixture-based

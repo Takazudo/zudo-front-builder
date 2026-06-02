@@ -941,10 +941,11 @@ pub struct MarkdownConfig {
 // no conversion bridges. Re-exported here so existing import paths
 // like `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}` and
 // `zfb::config::TocConfig` continue to resolve.
+#[allow(deprecated)]
 pub use zfb_md_ast::{
-    admonitions_preset_enabled, into_directive_def, AdmonitionDirectiveFullSpec,
+    admonitions_preset_enabled, directives_enabled, into_directive_def, AdmonitionDirectiveFullSpec,
     AdmonitionDirectiveKind, AdmonitionDirectiveSpec, AdmonitionsPresetFeature,
-    AdmonitionsPresetOptions, CodeEnrichmentConfig, FeatureOptions, FeatureToggle,
+    AdmonitionsPresetOptions, CodeEnrichmentConfig, DirectiveSpec, FeatureOptions, FeatureToggle,
     GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
     MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
 };
@@ -4292,6 +4293,63 @@ mod tests {
         assert!(
             matches!(feature, AdmonitionsPresetFeature::Bool(true)),
             "bool must parse as Bool variant"
+        );
+    }
+
+    // --- directives round-trip tests -------------------------------------------
+
+    // `directives: { spoiler: "Spoiler" }` — short-form entry.
+    #[test]
+    #[allow(deprecated)]
+    fn directives_short_form_round_trip() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "directives": { "spoiler": "Spoiler" } }
+        }))
+        .expect("directives short-form deserialises");
+        let features = cfg.features.expect("features present");
+        let map = features.directives.expect("directives present");
+        assert_eq!(
+            map.get("spoiler"),
+            Some(&AdmonitionDirectiveSpec::Short("Spoiler".to_string()))
+        );
+        assert!(features.admonitions_preset.is_none(), "admonitionsPreset absent");
+    }
+
+    // `directives` + `admonitionsPreset` both set — coexistence.
+    #[test]
+    #[allow(deprecated)]
+    fn directives_and_admonitions_preset_both_set() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": {
+                "admonitionsPreset": true,
+                "directives": { "spoiler": "Spoiler" }
+            }
+        }))
+        .expect("both set deserialises");
+        let features = cfg.features.expect("features present");
+        assert!(
+            features.admonitions_preset.is_some(),
+            "admonitionsPreset present"
+        );
+        let map = features.directives.expect("directives present");
+        assert_eq!(
+            map.get("spoiler"),
+            Some(&AdmonitionDirectiveSpec::Short("Spoiler".to_string()))
+        );
+    }
+
+    // `deny_unknown_fields` on `MarkdownFeaturesConfig` must reject a typo'd
+    // feature key regardless of the new `directives` field.
+    #[test]
+    fn features_deny_unknown_fields_still_rejects_typo() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "directivez": { "spoiler": "Spoiler" } }
+        }))
+        .expect_err("typo'd feature key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("directivez") || msg.contains("unknown field") || msg.contains("denied"),
+            "error must name the unknown field; got: {msg}"
         );
     }
 

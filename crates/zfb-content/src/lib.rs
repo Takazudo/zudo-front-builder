@@ -29,6 +29,7 @@ pub use plugins::toc::TocConfig;
 // depend on `zfb-content` (e.g. `zfb-build`, `zfb-render`) can name them when
 // threading `markdown.features` into the feature-aware pipeline constructor,
 // without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
+#[allow(deprecated)]
 pub use zfb_md_extras::{
     admonitions_preset_enabled, AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind,
     AdmonitionDirectiveSpec, AdmonitionsPresetFeature, AdmonitionsPresetOptions, FeatureToggle,

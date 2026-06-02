@@ -40,8 +40,8 @@
 //! # Output shape
 //!
 //! The rewritten node is `MdxJsxFlowElement` — the same type that
-//! `AdmonitionsPlugin` produces — so both features produce identical HTML
-//! regardless of whether `admonitionsPreset` is also enabled.
+//! the directives step produces — so both features produce identical HTML
+//! regardless of whether `admonitionsPreset` or `directives` is also enabled.
 //!
 //! ```html
 //! <Note>body text</Note>
@@ -193,7 +193,7 @@ fn try_rewrite_blockquote(node: &mut MdastNode) -> bool {
 /// Handles alerts at any nesting level (top-level, inside lists, inside nested
 /// blockquotes). Implements [`MdastVisitor`] — the caller is responsible for
 /// plugging this into the pipeline's mdast phase **before**
-/// `AdmonitionsPlugin` (if that feature is also enabled).
+/// the `DirectiveRegistry` step (if `admonitionsPreset` or `directives` is also enabled).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GithubAlertsPlugin;
 

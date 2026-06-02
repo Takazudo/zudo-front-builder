@@ -386,7 +386,7 @@ impl Pipeline {
     /// New pipeline preloaded with the project's default plugin chain.
     ///
     /// This is the entry point most orchestrator call sites want: it
-    /// bundles the directive registry (via [`AdmonitionsPlugin`]) plus
+    /// bundles the directive registry (via [`DirectiveRegistry`]) plus
     /// the five custom hast plugins so a `:::note` block compiles to
     /// `<Note>…</Note>`, headings get permalink anchors, titled code
     /// blocks get a `<div class="code-block-container">` wrapper plus
@@ -607,8 +607,9 @@ impl Pipeline {
     /// 1. `CjkFriendlyPlugin` — must run before any visitor that depends on
     ///    emphasis/strong being correctly tokenised around CJK characters.
     /// 2. *(extras mdast visitors — added by Wave 4-6 per-feature rules)*
-    /// 3. `AdmonitionsPlugin` — directive transforms must fold `:::name` runs
-    ///    before mdast→hast conversion.
+    /// 3. `DirectiveRegistry` — directive transforms must fold `:::name` runs
+    ///    before mdast→hast conversion. Activated by `admonitionsPreset` and/or
+    ///    the generic `directives` map.
     ///
     /// **hast phase** (in order):
     /// 4. `HeadingLinksPlugin` — MUST be first in hast so subsequent plugins
@@ -958,7 +959,10 @@ pub fn register_features(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
-    use zfb_md_ast::{admonitions_preset_enabled, feature_enabled, heading_marker_toc_enabled};
+    use zfb_md_ast::{
+        admonitions_preset_enabled, directives_enabled, feature_enabled,
+        heading_marker_toc_enabled,
+    };
 
     // ── mdast phase ────────────────────────────────────────────────────────
     // transclude MUST run FIRST in the mdast phase — before code_tabs,
@@ -1007,23 +1011,43 @@ pub fn register_features(
         p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
     }
 
-    if admonitions_preset_enabled(&features.admonitions_preset) {
+    // Build a single DirectiveRegistry when either `admonitionsPreset` or
+    // `directives` (or both) is enabled. If both are set, `directives` entries
+    // are registered AFTER the preset entries so they win on name collision.
+    #[allow(deprecated)]
+    if admonitions_preset_enabled(&features.admonitions_preset)
+        || directives_enabled(&features.directives)
+    {
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_ast::into_directive_def;
         use zfb_md_extras::admonitions_preset::default_admonition_directives;
-        let opts = features.admonitions_preset.as_ref().unwrap().options();
-        let extend = opts.extend_defaults.unwrap_or(true);
+
         let mut registry = DirectiveRegistry::new();
-        if extend {
-            for def in default_admonition_directives() {
-                registry.register(def);
+
+        // Step 1: seed from admonitionsPreset (if enabled), exactly as before.
+        if admonitions_preset_enabled(&features.admonitions_preset) {
+            let opts = features.admonitions_preset.as_ref().unwrap().options();
+            let extend = opts.extend_defaults.unwrap_or(true);
+            if extend {
+                for def in default_admonition_directives() {
+                    registry.register(def);
+                }
+            }
+            if let Some(extra) = &opts.extra_directives {
+                for (name, spec) in extra {
+                    registry.register(into_directive_def(name, spec));
+                }
             }
         }
-        if let Some(extra) = &opts.extra_directives {
-            for (name, spec) in extra {
+
+        // Step 2: register `directives` map entries AFTER the preset so that
+        // colliding names in `directives` win over the preset values.
+        if let Some(dir_map) = &features.directives {
+            for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));
             }
         }
+
         p.add_mdast_visitor(registry.into_visitor());
     }
 
