@@ -715,11 +715,24 @@ export type MarkdownFeaturesConfig = {
   transclude?: TranscludeConfig;
 
   /**
+   * Generic `:::name` → component map. You supply the components; no defaults
+   * are registered. Keys are directive names (e.g. `"foo"`), values are
+   * {@link DirectiveSpec} (bare component name string or options object).
+   *
+   * Mirrors `directives` in `MarkdownFeaturesConfig` in crates/zfb/src/config.rs.
+   */
+  directives?: Record<string, DirectiveSpec>;
+
+  /**
    * Framework admonitions preset (maps `:::note` etc. to components). Accepts
    * a `boolean` shorthand (`true` = enable with the standard seven directives,
    * `false` = disable) or a full {@link AdmonitionsPresetOptions} object to
    * register custom `:::name` → component mappings and optionally suppress the
    * standard set via `extendDefaults: false`.
+   *
+   * @deprecated Use `directives` instead. This alias stays recognized and fully
+   * functional for back-compat — the seven standard admonition names still
+   * register unchanged.
    */
   admonitionsPreset?: AdmonitionsPresetFeature;
 
@@ -759,6 +772,13 @@ export type AdmonitionDirectiveSpec =
       /** Whether the bracketed `[label]` becomes a `title` attribute. Defaults to `true`. */
       titleFromLabel?: boolean;
     };
+
+/**
+ * Spec for one user-defined directive: either a bare component name string
+ * or a full options object. Alias of {@link AdmonitionDirectiveSpec} — the
+ * same shape is reused for the generic `directives` map.
+ */
+export type DirectiveSpec = AdmonitionDirectiveSpec;
 
 /**
  * Options object for the `admonitionsPreset` feature.
