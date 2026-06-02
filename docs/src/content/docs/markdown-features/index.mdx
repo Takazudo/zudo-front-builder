@@ -42,7 +42,10 @@ export default defineConfig({
   markdown: {
     features: {
       mermaid: true,
-      admonitionsPreset: true,
+      directives: {
+        note: "Note",
+        tip: "Tip",
+      },
     },
   },
 });
@@ -68,7 +71,7 @@ These always-on plugins ship as part of `zfb-content`'s default pipeline.
 
 Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
 
-- [Admonitions preset](/markdown-features/admonitions-preset) — the seven built-in admonition directive types (`note`, `tip`, `warning`, `danger`, `info`, `details`, `caution`) plus project-specific directives.
+- [Directives](/markdown-features/directives) — register `:::name` / `::name` / `:name` directive syntax that maps to your own JSX components (zero defaults — you supply the vocabulary).
 - [Mermaid diagrams](/markdown-features/mermaid) — renders Mermaid flowcharts from fenced code blocks.
 - [Heading-marker TOC](/markdown-features/heading-marker-toc) — auto-inserts a table of contents after a designated heading.
 - [GitHub alerts](/markdown-features/github-alerts) — renders `> [!NOTE]` / `> [!WARNING]` blockquotes as styled components.
@@ -93,3 +96,4 @@ Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
 - [Recipe: Enlargeable Images](/recipes/enlargeable-images) — userland
   replacement for the removed `imageEnlarge` built-in, using the `img`
   component override.
+- [Recipe: Admonitions](/recipes/admonitions) — register `:::note`, `:::tip`, etc. via `directives` with component stubs and CSS hooks.
