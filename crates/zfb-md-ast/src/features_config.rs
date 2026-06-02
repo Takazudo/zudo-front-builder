@@ -529,4 +529,22 @@ mod tests {
             serde_json::from_value(json).expect("empty directives deserialises");
         assert!(directives_enabled(&cfg.directives));
     }
+
+    // `admonitionsPreset` is a removed key. `deny_unknown_fields` on
+    // `MarkdownFeaturesConfig` must reject it so stale configs fail fast
+    // rather than silently ignoring the removed field.
+    #[test]
+    fn admonitions_preset_key_is_rejected() {
+        let json = serde_json::json!({ "admonitionsPreset": true });
+        let result: Result<MarkdownFeaturesConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "admonitionsPreset must be rejected by deny_unknown_fields; got: {result:?}"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("admonitionsPreset") || err_msg.contains("unknown field"),
+            "error must mention the unknown field; got: {err_msg}"
+        );
+    }
 }

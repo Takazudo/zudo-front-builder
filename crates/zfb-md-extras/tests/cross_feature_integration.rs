@@ -757,6 +757,46 @@ fn directives_text_kind() {
     );
 }
 
+// ── Case 12b: Leaf kind ──────────────────────────────────────────────────────
+
+/// A `directives` entry with `kind: "leaf"` registers a self-closing leaf
+/// directive.  `::hr[label]` must emit `<Hr />` (the leaf shape has no body).
+#[test]
+fn directives_leaf_kind() {
+    let mut directives = HashMap::new();
+    directives.insert(
+        "hr".to_string(),
+        DirectiveSpec::Full(DirectiveFullSpec {
+            component: "Hr".to_string(),
+            kind: Some(DirectiveSpecKind::Leaf),
+            title_from_label: Some(false),
+        }),
+    );
+
+    let features = MarkdownFeaturesConfig {
+        directives: Some(directives),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::with_defaults_and_features(&features);
+
+    // Leaf directive — ::hr (no body, no label needed).
+    let input = "::hr\n";
+    let hast = pipeline.run(input).expect("pipeline must not fail");
+    let html = serialize(&hast);
+
+    // The Hr JSX element must appear in the output.
+    assert!(
+        html.contains("Hr"),
+        "leaf-kind directive must emit Hr component: {html}"
+    );
+    // A leaf directive produces a self-closing element; no open/close pair needed.
+    // The raw ::hr syntax must not leak through.
+    assert!(
+        !html.contains("::hr"),
+        "raw ::hr syntax must not appear in output: {html}"
+    );
+}
+
 // ── Case 13: directives feature end-to-end + unknown-directive diagnostic ─────
 
 /// With a `directives` map registering the seven common admonition names:
