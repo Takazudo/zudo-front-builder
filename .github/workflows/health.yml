@@ -31,6 +31,30 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # Free runner disk BEFORE the rust-cache restore + V8 first-compile (issue
+      # #687). rusty_v8 / deno_core produces a multi-GB target/; combined with the
+      # restored Swatinem cache it can exhaust the ~14 GB ubuntu-latest disk
+      # ("No space left on device", seen on 8a46936 during the #686 merge — infra
+      # flake, not a code regression). Reclaim ~15-20 GB by removing preinstalled
+      # toolchains this job never uses (Android SDK, .NET, Haskell, CodeQL) plus
+      # the Docker image cache. Done with plain `sudo rm -rf` rather than a
+      # third-party action to preserve this workflow's SHA-pinned-`uses` /
+      # least-privilege posture (see the pin-update header). Scoped to `health`
+      # only — the build-no-v8 job has no V8 to compile and stays light. Pure
+      # infra hardening: no build/test/lint behavior changes.
+      - name: Free disk space for V8 build (issue #687)
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          echo "Disk after cleanup:"
+          df -h /
+
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
