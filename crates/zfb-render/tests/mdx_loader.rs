@@ -113,31 +113,36 @@ fn malformed_mdx_yields_compile_error_with_specifier_and_message() {
 
 // ---------------------------------------------------------------------------
 // Regression: zfb#116 — the loader must thread the default content
-// pipeline through the MDX→JSX emitter so directive-style admonitions
+// pipeline through the MDX→JSX emitter so directive-style blocks
 // (`:::note`) and other mdast-phase plugins fire on MDX content.
 // ---------------------------------------------------------------------------
 
-/// A `:::note … :::` block must be transformed by the admonitions plugin into
+/// A `:::note … :::` block must be transformed by the directives step into
 /// a `<Note>` MDX JSX element before JSX emission. The emitter then declares
 /// `const Note = …` in the compiled module's preamble, so the `Note`
 /// identifier survives into the SWC-lowered JS.
 ///
-/// Since #586 `admonitionsPreset` is an OPT-IN feature (no longer always-on),
-/// so the loader is constructed via
-/// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] with the
-/// feature enabled. This still pins the regression from zfb#116: the loader
-/// must thread the content pipeline through the MDX→JSX emitter so the
-/// admonition plugin fires. (With features off — `ModuleLoader::new` — the
-/// directive is intentionally left untransformed; see `bundler_default_plugins`
-/// in `zfb-build` for the off-by-default contract.)
+/// Directives are an OPT-IN feature with ZERO default names, so the loader is
+/// constructed via
+/// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features`] with a
+/// `directives` map registering `note → Note`. This still pins the regression
+/// from zfb#116: the loader must thread the content pipeline through the
+/// MDX→JSX emitter so the directives step fires. (With features off —
+/// `ModuleLoader::new` — the directive is intentionally left untransformed; see
+/// `bundler_default_plugins` in `zfb-build` for the off-by-default contract.)
 ///
 /// The blank lines around `body` mirror the directive registry's expected
 /// shape — each `:::` opener / closer needs its own paragraph block at the
 /// mdast level.
 #[test]
-fn mdx_admonition_directive_runs_through_pipeline() {
+fn mdx_directive_runs_through_pipeline() {
+    let mut directives = std::collections::HashMap::new();
+    directives.insert(
+        "note".to_string(),
+        zfb_content::DirectiveSpec::Short("Note".to_string()),
+    );
     let features = zfb_content::MarkdownFeaturesConfig {
-        admonitions_preset: Some(zfb_content::AdmonitionsPresetFeature::Bool(true)),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut loader = ModuleLoader::with_strip_md_ext_and_gfm_and_cjk_and_features(
@@ -152,25 +157,25 @@ fn mdx_admonition_directive_runs_through_pipeline() {
     let src = ":::note\n\nbody text\n\n:::\n";
     let compiled = loader
         .load_source("post.mdx", src)
-        .expect("MDX with admonition should compile");
+        .expect("MDX with directive should compile");
 
     let js = &compiled.code;
     // The literal directive markers must NOT survive — if they do,
-    // the admonitions plugin never ran.
+    // the directives step never ran.
     assert!(
         !js.contains(":::note"),
         "literal `:::note` leaked into compiled output (pipeline not threaded?), got:\n{js}",
     );
-    // The admonitions plugin emits a `<Note>` JSX element. The emitter
+    // The directives step emits a `<Note>` JSX element. The emitter
     // then synthesises a `const Note = _components.Note ?? components.Note`
     // preamble entry, so the literal `_components.Note` substring only
-    // appears in the lowered JS when the AdmonitionsPlugin actually ran
+    // appears in the lowered JS when the directives step actually ran
     // — pinning the assertion to that specific shape (rather than the bare
     // word `Note`, which could appear in unrelated comments or fixture
     // strings) keeps the test robust against future refactors.
     assert!(
         js.contains("_components.Note"),
-        "expected `_components.Note` preamble entry from admonitions plugin, got:\n{js}",
+        "expected `_components.Note` preamble entry from directives step, got:\n{js}",
     );
 }
 

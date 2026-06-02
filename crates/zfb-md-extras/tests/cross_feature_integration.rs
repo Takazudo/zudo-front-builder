@@ -12,31 +12,31 @@
 //!    outputs.
 //! 3. `image_dimensions` — injects `width`/`height` on local `<img>` elements;
 //!    the plugin reads the image file and wires via `run_with_context`.
-//! 4. `admonitions_preset` + `github_alerts` — both alert systems fire
+//! 4. `directives` + `github_alerts` — both alert systems fire
 //!    independently in the same document.
 //! 5. `code_enrichment` + `code_tabs` — code-tabs creates tab markup; code
 //!    enrichment annotates each inner code block's lines.
 //! 6. `transclude` + `link_validation` (cycle case) — a transclusion cycle
 //!    produces a transclusion diagnostic (`Generic` with "cycle" message),
 //!    NOT a `BrokenLink` diagnostic.
-//! 7. `ruby` + admonitions — `{base|ruby}` syntax inside an admonition block
+//! 7. `ruby` + directives — `{base|ruby}` syntax inside a directive block
 //!    survives wrapping by other plugins.
-//! 8. All 14 features on simultaneously — build must not crash; output must
+//! 8. All 15 features on simultaneously — build must not crash; output must
 //!    contain plausible HTML markers.
 //!
-//! # Configurable admonitions confirm gate (per spec #684)
+//! # Generic directives confirm gate
 //!
-//! 9.  Custom container — `extraDirectives: { spoiler: "Spoiler" }` + `:::spoiler[Hidden]`
+//! 9.  Custom container — `directives: { spoiler: "Spoiler" }` + `:::spoiler[Hidden]`
 //!     emits `<Spoiler title="Hidden">…</Spoiler>`.
-//! 10. Override (last-wins) — `extraDirectives: { caution: "MyCaution" }` →
-//!     `:::caution` emits `<MyCaution>` (user spec wins on collision).
-//! 11. `extendDefaults: false` — only `extraDirectives` set is active; the
-//!     standard six are dropped, unknown directives produce diagnostics.
+//! 10. User component — `directives: { caution: "MyCaution" }` →
+//!     `:::caution` emits `<MyCaution>` (core seeds no built-in Caution).
+//! 11. Zero defaults — only names present in the `directives` map are active;
+//!     unregistered directives survive as raw text.
 //! 12. Leaf/text via kind — `{ component: "Kbd", kind: "text", titleFromLabel: false }`
 //!     → inline `:kbd[Ctrl+S]` emits `<Kbd>`.
-//! 13. Back-compat — `admonitionsPreset: true` rewrites the original six
-//!     byte-for-byte identically AND `:::caution` → `<Caution>`;
-//!     an unknown directive `:::nope` still yields an unknown-directive diagnostic.
+//! 13. Directives feature end-to-end — a `directives` map maps the seven common
+//!     admonition names to their components AND an unknown directive `:::nope`
+//!     still yields an unknown-directive diagnostic.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -45,8 +45,7 @@ use zfb_content::pipeline::Pipeline;
 use zfb_content::plugins::DirectiveRegistry;
 use zfb_content::serializer::serialize;
 use zfb_md_ast::{
-    AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
-    AdmonitionsPresetFeature, AdmonitionsPresetOptions, BuildContext, CodeEnrichmentConfig,
+    BuildContext, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
     LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
     diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
@@ -219,24 +218,27 @@ fn image_dimensions_injects_width_and_height() {
     );
 }
 
-// ── Case 4: admonitions_preset + github_alerts ───────────────────────────────
+// ── Case 4: directives + github_alerts ───────────────────────────────────────
 
 /// Both alert systems fire independently when enabled together.
 ///
 /// - `github_alerts`: `> [!NOTE]` → `<Note>…</Note>` JSX component.
-/// - `admonitions_preset`: `:::note` directive → `<Note>…</Note>` JSX component.
+/// - `directives`: `:::note` directive → `<Note>…</Note>` JSX component
+///   (the `note → Note` mapping is supplied via `features.directives`).
 ///
 /// Neither feature should interfere with the other's output.
 #[test]
-fn admonitions_preset_and_github_alerts_coexist() {
+fn directives_and_github_alerts_coexist() {
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+        directives: Some(directives),
         github_alerts: Some(FeatureToggle::Bool(true)),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
 
-    // Combine a GitHub-style alert with an admonition directive.
+    // Combine a GitHub-style alert with a `:::note` directive.
     let input = "> [!NOTE]\n> GitHub-style note.\n\n:::note\nDirective-style note.\n:::\n";
     let hast = pipeline.run(input).expect("pipeline must not fail");
     let html = serialize(&hast);
@@ -248,7 +250,7 @@ fn admonitions_preset_and_github_alerts_coexist() {
     );
     assert!(
         html.contains("Directive-style note"),
-        "admonitions_preset output must contain directive text: {html}"
+        "directives output must contain directive text: {html}"
     );
     // No raw blockquote or unprocessed directive text should leak through.
     assert!(
@@ -394,20 +396,22 @@ fn transclude_cycle_produces_generic_not_broken_link() {
     );
 }
 
-// ── Case 7: ruby + admonitions ───────────────────────────────────────────────
+// ── Case 7: ruby + directives ────────────────────────────────────────────────
 
-/// Ruby annotations work correctly in top-level paragraphs even when
-/// `admonitions_preset` is also enabled.
+/// Ruby annotations work correctly in top-level paragraphs even when the
+/// `directives` step is also enabled.
 ///
 /// Note: ruby annotations inside `:::directive` bodies do not produce `<ruby>`
 /// tags because the directive processor wraps the MDX component children in a
 /// different mdast shape that is not reachable by the hast serializer's inline
 /// ruby path. Ruby works correctly outside directives.
 #[test]
-fn ruby_outside_admonition_works_with_admonitions_enabled() {
+fn ruby_outside_directive_works_with_directives_enabled() {
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
     let features = MarkdownFeaturesConfig {
         ruby: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
@@ -494,9 +498,11 @@ fn all_features_on_does_not_crash() {
     );
     std::fs::write(&input_path, input).expect("write input.md");
 
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
     let features = MarkdownFeaturesConfig {
         mermaid: Some(FeatureToggle::Bool(true)),
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+        directives: Some(directives),
         heading_marker_toc: Some(HeadingMarkerTocFeature::Config(TocConfig {
             heading: "TOC".to_string(),
             max_depth: 2,
@@ -582,26 +588,25 @@ fn all_features_on_does_not_crash() {
     );
 }
 
-// ── Case 9: custom container via extraDirectives ─────────────────────────────
+// ── Case 9: custom container via directives ──────────────────────────────────
 
-/// `extraDirectives: { spoiler: "Spoiler" }` registers a new container
+/// `directives: { spoiler: "Spoiler" }` registers a new container
 /// directive.  `:::spoiler[Hidden]` must emit `<Spoiler title="Hidden">…</Spoiler>`
 /// (Container kind; bracket label promoted to `title`).
 #[test]
-fn admonitions_extra_directive_custom_container() {
-    let mut extra = HashMap::new();
-    extra.insert(
+fn directives_custom_container() {
+    let mut directives = HashMap::new();
+    directives.insert(
         "spoiler".to_string(),
-        AdmonitionDirectiveSpec::Short("Spoiler".to_string()),
+        DirectiveSpec::Full(DirectiveFullSpec {
+            component: "Spoiler".to_string(),
+            kind: None, // defaults to Container
+            title_from_label: Some(true),
+        }),
     );
 
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Options(
-            AdmonitionsPresetOptions {
-                extra_directives: Some(extra),
-                extend_defaults: None, // defaults to true
-            },
-        )),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
@@ -613,7 +618,7 @@ fn admonitions_extra_directive_custom_container() {
     // The custom container must produce the Spoiler JSX component.
     assert!(
         html.contains("Spoiler"),
-        "extraDirectives must register Spoiler component: {html}"
+        "directives must register Spoiler component: {html}"
     );
     // The bracket label must be promoted to the title attribute.
     assert!(
@@ -627,26 +632,21 @@ fn admonitions_extra_directive_custom_container() {
     );
 }
 
-// ── Case 10: override (last-wins) via extraDirectives ────────────────────────
+// ── Case 10: last-wins on duplicate name ─────────────────────────────────────
 
-/// When `extraDirectives` includes a key that already exists in the default
-/// preset (e.g. `caution`), the extra definition wins.  `:::caution` must
-/// emit `<MyCaution>` instead of `<Caution>` (user spec overwrites preset).
+/// Registering the same directive name with a different component is last-wins.
+/// Because a `directives` map is a `HashMap`, the value present in the map is the
+/// one that takes effect — `:::caution` emits whatever component the user mapped.
 #[test]
-fn admonitions_extra_directive_overrides_preset() {
-    let mut extra = HashMap::new();
-    extra.insert(
+fn directives_map_name_resolves_to_user_component() {
+    let mut directives = HashMap::new();
+    directives.insert(
         "caution".to_string(),
-        AdmonitionDirectiveSpec::Short("MyCaution".to_string()),
+        DirectiveSpec::Short("MyCaution".to_string()),
     );
 
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Options(
-            AdmonitionsPresetOptions {
-                extra_directives: Some(extra),
-                extend_defaults: None, // defaults to true; preset registers "caution → Caution" first
-            },
-        )),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
@@ -655,59 +655,53 @@ fn admonitions_extra_directive_overrides_preset() {
     let hast = pipeline.run(input).expect("pipeline must not fail");
     let html = serialize(&hast);
 
-    // extraDirectives-provided component must win (last-wins over preset).
+    // The user-supplied component must be emitted.
     assert!(
         html.contains("MyCaution"),
-        "extraDirectives must override preset for caution; expected MyCaution: {html}"
+        "directives must map caution → MyCaution: {html}"
     );
-    // The OLD preset component must NOT appear — it has been replaced.
+    // No other Caution-like component is seeded by core.
     assert!(
         !html.contains("<Caution"),
-        "preset Caution component must be replaced by MyCaution: {html}"
+        "core must not seed a built-in <Caution>: {html}"
     );
 }
 
-// ── Case 11: extendDefaults:false drops the standard set ─────────────────────
+// ── Case 11: only registered names are active (zero defaults) ─────────────────
 
-/// With `extendDefaults: false` only the user-supplied `extraDirectives` are
-/// active.  The standard six (`note`, etc.) are NOT rewritten; `:::spoiler`
-/// IS rewritten.
+/// Core seeds zero directive names. Only the names present in the `directives`
+/// map are rewritten; everything else survives as raw paragraph text.
 #[test]
-fn admonitions_extend_defaults_false_drops_standard_set() {
-    let mut extra = HashMap::new();
-    extra.insert(
+fn directives_only_registered_names_active() {
+    let mut directives = HashMap::new();
+    directives.insert(
         "spoiler".to_string(),
-        AdmonitionDirectiveSpec::Short("Spoiler".to_string()),
+        DirectiveSpec::Short("Spoiler".to_string()),
     );
 
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Options(
-            AdmonitionsPresetOptions {
-                extra_directives: Some(extra),
-                extend_defaults: Some(false), // standard set dropped
-            },
-        )),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
 
-    // Both a standard directive and the custom one.
+    // An unregistered `:::note` and the registered `:::spoiler`.
     let input = ":::note\n\nStandard.\n\n:::\n\n:::spoiler\n\nCustom.\n\n:::\n";
     let hast = pipeline.run(input).expect("pipeline must not fail");
     let html = serialize(&hast);
 
-    // :::note must NOT be rewritten (standard set dropped).
+    // :::note must NOT be rewritten (not registered — core seeds nothing).
     assert!(
         !html.contains("<Note"),
-        ":::note must NOT be rewritten when extendDefaults=false: {html}"
+        ":::note must NOT be rewritten when it is not registered: {html}"
     );
     // Raw :::note paragraph text must be present (not consumed by the registry).
     assert!(
         html.contains(":::note"),
-        ":::note text must remain as raw paragraph when extendDefaults=false: {html}"
+        ":::note text must remain as raw paragraph when not registered: {html}"
     );
 
-    // :::spoiler MUST be rewritten via extraDirectives.
+    // :::spoiler MUST be rewritten via the directives map.
     assert!(
         html.contains("Spoiler"),
         ":::spoiler must be rewritten when it is the only registered directive: {html}"
@@ -720,28 +714,23 @@ fn admonitions_extend_defaults_false_drops_standard_set() {
 
 // ── Case 12: Leaf/text via kind ──────────────────────────────────────────────
 
-/// An `extraDirectives` entry with `kind: "text"` and
-/// `titleFromLabel: false` registers an inline text directive.
+/// A `directives` entry with `kind: "text"` and `titleFromLabel: false`
+/// registers an inline text directive.
 /// `:kbd[Ctrl+S]` must emit `<Kbd>Ctrl+S</Kbd>`.
 #[test]
-fn admonitions_extra_directive_text_kind() {
-    let mut extra = HashMap::new();
-    extra.insert(
+fn directives_text_kind() {
+    let mut directives = HashMap::new();
+    directives.insert(
         "kbd".to_string(),
-        AdmonitionDirectiveSpec::Full(AdmonitionDirectiveFullSpec {
+        DirectiveSpec::Full(DirectiveFullSpec {
             component: "Kbd".to_string(),
-            kind: Some(AdmonitionDirectiveKind::Text),
+            kind: Some(DirectiveSpecKind::Text),
             title_from_label: Some(false),
         }),
     );
 
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Options(
-            AdmonitionsPresetOptions {
-                extra_directives: Some(extra),
-                extend_defaults: None,
-            },
-        )),
+        directives: Some(directives),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
@@ -768,77 +757,60 @@ fn admonitions_extra_directive_text_kind() {
     );
 }
 
-// ── Case 13: Back-compat — admonitionsPreset: true ───────────────────────────
+// ── Case 13: directives feature end-to-end + unknown-directive diagnostic ─────
 
-/// With `admonitionsPreset: true`:
-/// - The original six (`note`/`tip`/`warning`/`danger`/`info`/`details`)
-///   must be rewritten byte-for-byte identically to the pre-Phase-2 output.
-/// - `:::caution` must resolve to `<Caution>` (the #682 fix is preserved).
-/// - An unknown directive `:::nope` must still yield an unknown-directive
+/// With a `directives` map registering the seven common admonition names:
+/// - Each `:::name` resolves to its mapped `<Component>`.
+/// - An unknown directive `:::nope` still yields an unknown-directive
 ///   diagnostic from `DirectiveRegistry` (the engine property we kept).
-///
-/// To assert the "six unchanged" direction we run the same document through
-/// both `Pipeline::with_defaults` (the old path) and
-/// `Pipeline::with_defaults_and_features` (the new path) and compare
-/// byte-for-byte.  The `:::caution` assertion is separate.
 #[test]
-fn admonitions_true_back_compat_six_unchanged_caution_works_unknown_diagnostic() {
-    // ── Part A: the original six are byte-for-byte identical ──────────────
-    let six_input = concat!(
+fn directives_feature_emits_components_and_unknown_diagnostic() {
+    // ── Part A: the seven registered names emit their components ──────────
+    let mut directives = HashMap::new();
+    for (name, component) in [
+        ("note", "Note"),
+        ("tip", "Tip"),
+        ("warning", "Warning"),
+        ("danger", "Danger"),
+        ("info", "Info"),
+        ("details", "Details"),
+        ("caution", "Caution"),
+    ] {
+        directives.insert(name.to_string(), DirectiveSpec::Short(component.to_string()));
+    }
+
+    let input = concat!(
         ":::note\n\nNote body.\n\n:::\n\n",
         ":::tip\n\nTip body.\n\n:::\n\n",
         ":::warning\n\nWarning body.\n\n:::\n\n",
         ":::danger\n\nDanger body.\n\n:::\n\n",
         ":::info\n\nInfo body.\n\n:::\n\n",
-        ":::details\n\nDetails body.\n\n:::\n",
+        ":::details\n\nDetails body.\n\n:::\n\n",
+        ":::caution\n\nCaution body.\n\n:::\n",
     );
-
-    let mut old_pipeline = Pipeline::with_defaults();
-    let old_hast = old_pipeline.run(six_input).expect("old pipeline must not fail");
-    let old_html = serialize(&old_hast);
 
     let features = MarkdownFeaturesConfig {
-        admonitions_preset: Some(AdmonitionsPresetFeature::Bool(true)),
+        directives: Some(directives),
         ..Default::default()
     };
-    let mut new_pipeline = Pipeline::with_defaults_and_features(&features);
-    let new_hast = new_pipeline.run(six_input).expect("new pipeline must not fail");
-    let new_html = serialize(&new_hast);
+    let mut pipeline = Pipeline::with_defaults_and_features(&features);
+    let hast = pipeline.run(input).expect("pipeline must not fail");
+    let html = serialize(&hast);
 
-    assert_eq!(
-        old_html, new_html,
-        "admonitionsPreset=true must be byte-for-byte identical to with_defaults for the \
-         original six directives.\n--- old ---\n{old_html}\n--- new ---\n{new_html}"
-    );
-
-    // Sanity: the six components are actually present in the output.
-    for component in ["Note", "Tip", "Warning", "Danger", "Info", "Details"] {
+    for component in ["Note", "Tip", "Warning", "Danger", "Info", "Details", "Caution"] {
         assert!(
-            new_html.contains(component),
-            "admonitionsPreset=true must emit <{component}>: {new_html}"
+            html.contains(component),
+            "directives map must emit <{component}>: {html}"
         );
     }
 
-    // ── Part B: :::caution resolves to <Caution> ──────────────────────────
-    let caution_input = ":::caution\n\nCaution content.\n\n:::\n";
-    let hast = new_pipeline.run(caution_input).expect("pipeline must not fail for caution");
-    let caution_html = serialize(&hast);
-
-    assert!(
-        caution_html.contains("Caution"),
-        ":::caution must resolve to <Caution> with admonitionsPreset=true: {caution_html}"
-    );
-    assert!(
-        caution_html.contains("Caution content"),
-        "caution body must be preserved: {caution_html}"
-    );
-
-    // ── Part C: unknown directive :::nope yields a DirectiveDiagnostic ────
+    // ── Part B: unknown directive :::nope yields a DirectiveDiagnostic ────
     //
     // The `DirectiveRegistry` is boxed inside the pipeline and diagnostics are
     // not surfaced via `Pipeline::run`. We verify this at the registry level
     // directly, which is the canonical API for diagnostic inspection.
-    let mut registry = DirectiveRegistry::with_defaults();
+    let mut registry = DirectiveRegistry::new();
+    registry.register(zfb_content::plugins::DirectiveDef::container("note", "Note"));
     // Use markdown-rs to parse the nope directive, then run the registry visit.
     let nope_input = ":::nope\n\nUnknown body.\n\n:::\n";
     let parse_opts = markdown::ParseOptions::mdx();

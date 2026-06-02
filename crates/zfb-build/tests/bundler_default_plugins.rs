@@ -4,9 +4,9 @@
 //! Pins the contract that
 //! [`zfb_build::bundler::bundle`] threads a fully-wired content pipeline
 //! through `compile_mdx_to_jsx_module_cached` at every MDX pre-compile call
-//! site. Without this wiring, none of the six default plugins
-//! (admonitions, CJK-friendly emphasis, heading-links, code-title,
-//! mermaid, syntect) fire on built `dist/` output —
+//! site. Without this wiring, none of the default plugins
+//! (CJK-friendly emphasis, heading-links, code-title, mermaid, syntect, and
+//! the opt-in directives step) fire on built `dist/` output —
 //! which is exactly the bug zfb#126 surfaced.
 //!
 //! ## `markdown.features` branch (#586)
@@ -38,9 +38,9 @@
 //! Since #586 wired `markdown.features` and the three framework features
 //! became opt-in, the no-features default INVERTS two of the three markers:
 //!
-//! - **Admonition** (`:::note … :::`): `admonitionsPreset` is OFF by default,
-//!   so the directive is NOT transformed — the `:::note` markers survive
-//!   verbatim and NO `<Note>` JSX component is emitted.
+//! - **Directive** (`:::note … :::`): `directives` is OFF by default and core
+//!   seeds ZERO directive names, so the directive is NOT transformed — the
+//!   `:::note` markers survive verbatim and NO `<Note>` JSX component is emitted.
 //! - **Mermaid** (` ```mermaid `): `mermaid` is OFF by default, so the bundle
 //!   must NOT contain `data-mermaid`.
 //! - **Syntect** (a non-mermaid fenced code block): syntect is a CORE plugin
@@ -96,7 +96,7 @@ fn write_fixture_project(root: &std::path::Path) {
     // A page MDX that exercises the three marker plugin paths in one
     // file:
     //
-    // 1. `:::note\n\nbody\n\n:::`          → admonition (mdast plugin)
+    // 1. `:::note\n\nbody\n\n:::`          → directive (mdast plugin)
     //                                         (blank lines are required
     //                                          per the directive parser
     //                                          — see
@@ -119,7 +119,7 @@ fn write_fixture_project(root: &std::path::Path) {
          \n\
          :::note\n\
          \n\
-         admonition body\n\
+         directive body\n\
          \n\
          :::\n\
          \n\
@@ -177,19 +177,20 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     // (`Some(..)`) path is covered by
     // `bundler_threads_markdown_features_through_mdx_compile` below.
 
-    // ---- Admonition (admonitionsPreset) — OFF by default -------------
+    // ---- Directive (features.directives) — OFF by default ------------
     //
-    // Without the admonitions directive registry the `:::note` container is
-    // not transformed: markdown-rs emits the lines as plain paragraphs, so the
-    // marker survives verbatim and NO `<Note>` JSX component is emitted.
+    // Core seeds ZERO directive names, so without a `features.directives` map
+    // the `:::note` container is not transformed: markdown-rs emits the lines
+    // as plain paragraphs, the marker survives verbatim, and NO `<Note>` JSX
+    // component is emitted.
     assert!(
         body.contains(":::note"),
-        "without `features.admonitionsPreset` the :::note directive is left untransformed and survives verbatim.\n--- bundle excerpt ---\n{}",
+        "without `features.directives` the :::note directive is left untransformed and survives verbatim.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
     assert!(
         !body.contains("_components.Note"),
-        "no <Note> JSX component should be emitted when `features.admonitionsPreset` is off.\n--- bundle excerpt ---\n{}",
+        "no <Note> JSX component should be emitted when `features.directives` is off.\n--- bundle excerpt ---\n{}",
         snippet(&body)
     );
 
