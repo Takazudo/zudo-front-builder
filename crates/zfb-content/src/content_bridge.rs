@@ -260,8 +260,8 @@ pub struct SnapshotPipelineConfig {
     /// `<pre data-zfb-content-fallback>`.
     ///
     /// `Default` is `None` — no feature surface configured — which is treated
-    /// as an empty feature set: the three former-Core framework features
-    /// (mermaid, admonitions-preset, heading-marker TOC) are
+    /// as an empty feature set: the former-Core framework features
+    /// (mermaid, directives, heading-marker TOC) are
     /// OFF (the post-epic opt-in default, #583 / #586).
     pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
 }
@@ -825,21 +825,21 @@ mod tests {
         // missed at render time → silent fallback render.
         //
         // We reproduce that hazard with the cheapest signal we have:
-        // a `:::note` admonition. `AdmonitionsPlugin` rewrites the
-        // mdast subtree into an `<MdxJsxFlowElement name="Note">`, so
-        // the post-pipeline JSX (and therefore its `content_hash`)
-        // differs from the pre-pipeline JSX. Asserting that the
-        // snapshot's hash component matches the hash an independent
+        // an `## Intro` heading. `HeadingLinksPlugin` (always on in
+        // `with_defaults`) rewrites the heading to add a slug `id` and a
+        // permalink anchor, so the post-pipeline JSX (and therefore its
+        // `content_hash`) differs from the pre-pipeline JSX. Asserting that
+        // the snapshot's hash component matches the hash an independent
         // `compile_mdx_to_jsx_module_cached(... Some(&mut Pipeline::with_defaults()))`
         // call produces is the explicit "snapshot hash matches bridge
         // hash" guarantee.
         use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, parse_mdx_specifier};
 
         let tmp = TmpDir::new("snapshot-pipeline-hash");
-        // The `:::note` directive is the canonical pipeline-transformable
-        // signal — without the default pipeline it survives as raw text;
-        // with it, it becomes an `<MdxJsxFlowElement name="Note">`.
-        let mdx = "---\ntitle: \"Admon\"\n---\n\n:::note\nhi\n:::\n";
+        // A heading is a canonical pipeline-transformable signal — without
+        // the default pipeline it survives as a bare `<h2>`; with it, the
+        // `HeadingLinksPlugin` injects a slug `id` and anchor.
+        let mdx = "---\ntitle: \"Heading\"\n---\n\n## Intro\n\nhi\n";
         let path = tmp.write("docs/admon.mdx", mdx);
 
         let snap = build_snapshot(&[CollectionConfig::new("docs", tmp.path.join("docs"))])
@@ -855,7 +855,7 @@ mod tests {
 
         // Independently compile the same body through the same default
         // pipeline the bundler uses, then compare hash components.
-        let body = "\n:::note\nhi\n:::\n"; // post-frontmatter body, mirrors `walk_collection`'s split.
+        let body = "\n## Intro\n\nhi\n"; // post-frontmatter body, mirrors `walk_collection`'s split.
         let mut pipeline = Pipeline::with_defaults();
         let compiled = compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
             .expect("independent compile must succeed");

@@ -28,14 +28,11 @@ pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
     ValidatedAttrValue,
 };
-#[allow(deprecated)]
 pub use features_config::{
-    admonitions_preset_enabled, directives_enabled, feature_enabled, heading_marker_toc_enabled,
-    AdmonitionDirectiveFullSpec, AdmonitionDirectiveKind, AdmonitionDirectiveSpec,
-    AdmonitionsPresetFeature, AdmonitionsPresetOptions, CodeEnrichmentConfig, DirectiveSpec,
-    FeatureOptions, FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature,
-    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig,
-    TranscludeConfig, into_directive_def,
+    directives_enabled, feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig,
+    DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle,
+    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig, into_directive_def,
 };
 pub use hast_text::extract_text;
 

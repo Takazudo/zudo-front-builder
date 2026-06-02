@@ -7,7 +7,6 @@
 //! [`MdastVisitor`]: crate::pipeline::MdastVisitor
 //! [`HastVisitor`]: crate::pipeline::HastVisitor
 
-pub mod admonitions;
 pub mod cjk_friendly;
 pub mod code_title;
 pub mod hard_breaks;
@@ -21,7 +20,6 @@ pub mod syntect_plugin;
 pub mod toc;
 pub mod util;
 
-pub use admonitions::{AdmonitionsPlugin, default_admonition_directives};
 pub use cjk_friendly::CjkFriendlyPlugin;
 pub use hard_breaks::HardBreaksPlugin;
 pub use code_title::CodeTitlePlugin;

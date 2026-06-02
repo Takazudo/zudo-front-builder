@@ -1,9 +1,9 @@
 //! Generic MDX directive registry.
 //!
-//! Replaces the hardcoded admonition match (`note`/`tip`/…) in
-//! [`super::admonitions`] with a runtime-extensible mapping from
-//! directive name (e.g. `card`, `badge`, `note`) to a JSX component
-//! name (e.g. `Card`, `Badge`, `Note`).
+//! A runtime-extensible mapping from directive name (e.g. `card`, `badge`,
+//! `note`) to a JSX component name (e.g. `Card`, `Badge`, `Note`). Core seeds
+//! ZERO directive names — the entire `:::name` → `<Component>` vocabulary is
+//! supplied by the user's `features.directives` config / docs recipes.
 //!
 //! ## Directive shapes
 //!
@@ -40,11 +40,11 @@
 //! pipeline runner) is responsible for draining and printing them.
 //! Use [`DirectiveRegistry::take_diagnostics`] after a pipeline run.
 //!
-//! ## Built-in defaults
+//! ## No built-in defaults
 //!
-//! [`DirectiveRegistry::with_defaults`] preregisters the six existing
-//! admonitions (`note`, `tip`, `info`, `warning`, `danger`, `details`)
-//! as containers so existing zfb users see no behavioural change.
+//! [`DirectiveRegistry::new`] starts empty. Callers register exactly the
+//! directives they want via [`DirectiveRegistry::register`]; there is no
+//! preset of `note`/`tip`/… in core.
 
 use std::collections::HashMap;
 
@@ -95,16 +95,6 @@ impl DirectiveRegistry {
             self.has_text_dirs = true;
         }
         self.defs.insert(def.name.clone(), def);
-    }
-
-    /// Registry preloaded with the seven built-in admonitions.
-    #[must_use]
-    pub fn with_defaults() -> Self {
-        let mut r = Self::new();
-        for d in super::admonitions::default_admonition_directives() {
-            r.register(d);
-        }
-        r
     }
 
     /// Read-only view of accumulated diagnostics.
@@ -849,6 +839,29 @@ mod tests {
         })
     }
 
+    /// Test fixture: a registry pre-loaded with the seven admonition
+    /// container names (with `title_from_label = true`, matching how a docs
+    /// recipe would register them via `features.directives`). Core no longer
+    /// ships a built-in preset, so the vocabulary is declared explicitly here
+    /// for tests that exercise `:::note` / `:::details` style directives.
+    fn registry_with_admonitions() -> DirectiveRegistry {
+        let mut r = DirectiveRegistry::new();
+        for (name, component) in [
+            ("note", "Note"),
+            ("tip", "Tip"),
+            ("warning", "Warning"),
+            ("danger", "Danger"),
+            ("info", "Info"),
+            ("details", "Details"),
+            ("caution", "Caution"),
+        ] {
+            let mut def = DirectiveDef::container(name, component);
+            def.title_from_label = true;
+            r.register(def);
+        }
+        r
+    }
+
     fn run_with_registry(reg: &mut DirectiveRegistry, children: Vec<MdastNode>) -> Vec<MdastNode> {
         let mut root = MdastNode::Root(Root {
             children,
@@ -1124,7 +1137,7 @@ mod tests {
 
     #[test]
     fn admonition_defaults_match_legacy_output() {
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         for (key, tag) in [
             ("note", "Note"),
             ("tip", "Tip"),
@@ -1151,7 +1164,7 @@ mod tests {
 
     #[test]
     fn admonition_details_with_legacy_title_attr() {
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         let out = run_with_registry(
             &mut r,
             vec![
@@ -1167,7 +1180,7 @@ mod tests {
 
     #[test]
     fn missing_close_left_alone() {
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         let out = run_with_registry(
             &mut r,
             vec![text_para(":::note"), text_para("body")],
@@ -1179,7 +1192,7 @@ mod tests {
 
     #[test]
     fn nested_admonition_inside_blockquote() {
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         // Build a blockquote that contains the admonition paragraphs.
         let bq = MdastNode::Blockquote(markdown::mdast::Blockquote {
             children: vec![
@@ -1202,7 +1215,7 @@ mod tests {
     fn directive_in_heading_is_left_alone() {
         // Ensure `transform_inline_in` doesn't crash on heading nodes
         // and only fires for registered text directives.
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         let h = MdastNode::Heading(Heading {
             depth: 2,
             children: vec![MdastNode::Text(Text {
@@ -1272,7 +1285,7 @@ mod tests {
     #[test]
     fn note_with_custom_label_produces_title_attr() {
         // Sub #135: :::note[Custom Title] should emit title="Custom Title".
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         let out = run_with_registry(
             &mut r,
             vec![
@@ -1299,7 +1312,7 @@ mod tests {
         // markdown parser collapses them into a single paragraph.  The
         // registry should emit a diagnostic suggesting the author add
         // blank lines.
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         // Simulate the merged paragraph: first Text child has the full
         // un-blank-lined content as a single multi-line value.
         let merged_para = MdastNode::Paragraph(Paragraph {
@@ -1333,7 +1346,7 @@ mod tests {
         // A MdastNode::Code (fenced code block) whose content contains
         // `:::` should not trigger the diagnostic — only Paragraph nodes
         // are inspected.
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         let code_block = MdastNode::Code(Code {
             value: ":::note\nsome code\n:::".to_string(),
             lang: Some("markdown".to_string()),
@@ -1355,7 +1368,7 @@ mod tests {
         // A paragraph with a directive opener but NO newline (i.e., the
         // close is a separate paragraph) should not trigger the blank-
         // line diagnostic even when we can't find the close.
-        let mut r = DirectiveRegistry::with_defaults();
+        let mut r = registry_with_admonitions();
         // Just the opener with no close sibling.
         let out = run_with_registry(&mut r, vec![text_para(":::note")]);
         // No diagnostic (the missing-close path, not the merged path).
@@ -1368,10 +1381,10 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
-    // ---- directives-only (generic directives feature, no preset) tests ----
+    // ---- directives-only (generic directives feature, zero defaults) tests ----
 
     // A registry built with only a user-supplied name registers ONLY that
-    // name — none of the seven built-in preset names appear.
+    // name — core seeds no `note`/`tip`/… vocabulary.
     #[test]
     fn directives_only_no_defaults_registered() {
         let mut r = DirectiveRegistry::new();
@@ -1389,7 +1402,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(flow(&out[0]).name.as_deref(), Some("Spoiler"));
 
-        // `:::note` is NOT registered — left untransformed.
+        // `:::note` is NOT registered — left untransformed (zero defaults).
         let out2 = run_with_registry(
             &mut r,
             vec![
@@ -1402,18 +1415,14 @@ mod tests {
         assert_eq!(out2.len(), 3, ":::note must stay as-is when not registered");
     }
 
-    // When both admonitionsPreset defaults and a user `directives` map are
-    // combined, entries in `directives` that collide with the preset override
-    // the preset value (last-wins, directives registered after preset).
+    // Registering the same name twice is last-wins: the later component name
+    // overrides the earlier one. This is the semantic the `features.directives`
+    // map relies on when a user redefines a name.
     #[test]
-    fn directives_map_overrides_preset_on_collision() {
-        use zfb_md_extras::admonitions_preset::default_admonition_directives;
+    fn register_same_name_is_last_wins() {
         let mut r = DirectiveRegistry::new();
-        // Seed preset (all seven built-ins, including `caution` → `Caution`).
-        for def in default_admonition_directives() {
-            r.register(def);
-        }
-        // Override `caution` with a user-supplied component name.
+        r.register(DirectiveDef::container("caution", "Caution"));
+        // Redefine `caution` with a different component name.
         r.register(DirectiveDef::container("caution", "MyCaution"));
 
         let out = run_with_registry(
@@ -1428,7 +1437,7 @@ mod tests {
         assert_eq!(
             flow(&out[0]).name.as_deref(),
             Some("MyCaution"),
-            "directives entry must override preset entry for the same name"
+            "later registration must override the earlier one for the same name"
         );
     }
 }
