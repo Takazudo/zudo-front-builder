@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
 use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
 use crate::pipeline::{Pipeline, PipelineError};
-use crate::schema::json_schema_to_ts;
+use crate::schema::{json_schema_to_ts, ts_safe_key};
 
 /// Source kind for an [`Entry`]. Discriminator on the union of file
 /// shapes a collection may contain — used by downstream consumers (e.g.
@@ -605,7 +605,7 @@ pub fn emit_types_dts_with_schemas(
         let data_ts = data_type_for(info.schema, 4);
         buf.push_str(&format!(
             "    {name}: {{ slug: string; data: {data_ts} }};\n",
-            name = info.name,
+            name = ts_safe_key(info.name),
         ));
     }
     buf.push_str("  }\n");
@@ -622,7 +622,7 @@ pub fn emit_types_dts_with_schemas(
         let data_ts = data_type_for(info.schema, 4);
         buf.push_str(&format!(
             "    {name}: {{ slug: string; data: {data_ts}; body: string }};\n",
-            name = info.name,
+            name = ts_safe_key(info.name),
         ));
     }
     buf.push_str("  }\n");

@@ -586,22 +586,23 @@ pub(crate) fn parse_unbraced_attrs(s: &str) -> Vec<(String, String)> {
         if i < bytes.len() && bytes[i] == b'"' {
             // Quoted value.
             i += 1;
-            let val_start = i;
             let mut val = String::new();
+            // Char-aware copy: slice `s` at byte index `i` so multibyte UTF-8
+            // (CJK, accented Latin, emoji) stays intact. `bytes[i] as char`
+            // would map each byte 0x80-0xFF to a lone code point and corrupt
+            // non-ASCII attribute values.
             while i < bytes.len() && bytes[i] != b'"' {
                 if bytes[i] == b'\\' && i + 1 < bytes.len() {
                     // Support \" and \\ inside quoted attribute values.
-                    val.push(bytes[i + 1] as char);
-                    i += 2;
+                    let c = s[i + 1..].chars().next().unwrap();
+                    val.push(c);
+                    i += 1 + c.len_utf8();
                     continue;
                 }
-                val.push(bytes[i] as char);
-                i += 1;
+                let c = s[i..].chars().next().unwrap();
+                val.push(c);
+                i += c.len_utf8();
             }
-            // Fast-path when no escape was seen: take the slice instead
-            // of the per-char copy. (Both are correct; the copy version
-            // already did the right thing.)
-            let _ = val_start; // silence unused if compiler warns.
             if i < bytes.len() {
                 i += 1; // consume closing quote
             }
@@ -1239,6 +1240,23 @@ mod tests {
                 ("a".to_string(), "1".to_string()),
                 ("b".to_string(), "two words".to_string()),
                 ("c".to_string(), "3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_unbraced_attrs_preserves_non_ascii_quoted_values() {
+        // Regression: quoted values were copied byte-by-byte via `as char`,
+        // corrupting multibyte UTF-8. CJK, accented Latin, and emoji must
+        // round-trip intact, and \" / \\ escapes must still work.
+        let attrs = parse_unbraced_attrs("t=\"日本語\" u=\"café\" e=\"🎉\" q=\"a\\\"b\"");
+        assert_eq!(
+            attrs,
+            vec![
+                ("t".to_string(), "日本語".to_string()),
+                ("u".to_string(), "café".to_string()),
+                ("e".to_string(), "🎉".to_string()),
+                ("q".to_string(), "a\"b".to_string()),
             ]
         );
     }

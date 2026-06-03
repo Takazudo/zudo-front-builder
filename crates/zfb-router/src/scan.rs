@@ -275,10 +275,13 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
 }
 
 /// Strip the source-language extension from a filename component.
-/// Recognised source extensions: `.tsx`, `.ts`, `.md`, `.html`.
+/// Recognised source extensions: `.tsx`, `.ts`, `.mdx`, `.md`, `.html`.
 /// Returns the input unchanged when the component does not end with
 /// one of those extensions.
 fn strip_source_extension(component: &str) -> &str {
+    if let Some(stem) = component.strip_suffix(".mdx") {
+        return stem;
+    }
     if let Some(stem) = component.strip_suffix(".tsx") {
         return stem;
     }
@@ -675,6 +678,34 @@ mod tests {
     #[test]
     fn md_nested_path() {
         let r = route_from("blog/post.md");
+        assert_eq!(r.template(), "/blog/post");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+    }
+
+    // ---- .mdx page sources (zfb#404) ---------------------------------------
+
+    #[test]
+    fn mdx_static_about() {
+        // Regression: `.mdx` was not stripped, leaving `/about.mdx`.
+        let r = route_from("about.mdx");
+        assert_eq!(r.template(), "/about");
+        assert_eq!(r.kind, RouteKind::Static);
+        assert_eq!(r.output_extension, None);
+        assert_eq!(r.output_filename(None), PathBuf::from("about/index.html"));
+    }
+
+    #[test]
+    fn mdx_index_root() {
+        let r = route_from("index.mdx");
+        assert_eq!(r.template(), "/");
+        assert!(r.segments.is_empty());
+        assert_eq!(r.output_extension, None);
+    }
+
+    #[test]
+    fn mdx_nested_path() {
+        let r = route_from("blog/post.mdx");
         assert_eq!(r.template(), "/blog/post");
         assert_eq!(r.kind, RouteKind::Static);
         assert_eq!(r.output_extension, None);

@@ -9,7 +9,9 @@ const require = createRequire(import.meta.url);
 // Handles prerelease suffixes: 0.1.0-next.6 < 0.1.0-next.8 < 0.1.0
 function compareSemver(a, b) {
   const splitRelease = (v) => {
-    const [main, pre] = v.split(/-(.+)/, 2);
+    // Drop SemVer build metadata (`+...`) before splitting — it is ignored
+    // for precedence and would otherwise yield NaN numeric parts.
+    const [main, pre] = v.split("+")[0].split(/-(.+)/, 2);
     return { parts: main.split(".").map(Number), pre: pre ?? null };
   };
   const ra = splitRelease(a);
@@ -23,8 +25,27 @@ function compareSemver(a, b) {
   if (ra.pre !== null && rb.pre === null) return -1;
   if (ra.pre === null && rb.pre !== null) return 1;
   if (ra.pre !== null && rb.pre !== null) {
-    if (ra.pre < rb.pre) return -1;
-    if (ra.pre > rb.pre) return 1;
+    // Compare dot-separated prerelease identifiers per semver: numeric
+    // identifiers compare numerically (so next.9 < next.10), numeric ranks
+    // below alphanumeric, and a shorter prefix ranks lower. Plain string
+    // `<`/`>` would order next.10 before next.9 lexicographically.
+    const sa = ra.pre.split(".");
+    const sb = rb.pre.split(".");
+    for (let i = 0; i < Math.max(sa.length, sb.length); i++) {
+      if (sa[i] === undefined) return -1;
+      if (sb[i] === undefined) return 1;
+      const na = /^\d+$/.test(sa[i]);
+      const nb = /^\d+$/.test(sb[i]);
+      if (na && nb) {
+        const da = Number(sa[i]);
+        const db = Number(sb[i]);
+        if (da !== db) return da < db ? -1 : 1;
+      } else if (na !== nb) {
+        return na ? -1 : 1;
+      } else if (sa[i] !== sb[i]) {
+        return sa[i] < sb[i] ? -1 : 1;
+      }
+    }
   }
   return 0;
 }

@@ -23,7 +23,7 @@
 //!    passes in (e.g. `zfb.config.json`, `zfb.config.ts`). Those files
 //!    are tiny and definitive; a single byte change must invalidate.
 //! 2. A canonical listing of every file under each watched root, fed
-//!    in as `(relative_path, mtime_secs, len_bytes)`. We deliberately
+//!    in as `(relative_path, mtime_nanos, len_bytes)`. We deliberately
 //!    use mtime+len rather than full content hashes — file metadata
 //!    is cheap to read and matches the heuristic Make/Ninja-style
 //!    incremental tools have used reliably for decades. The trade-off
@@ -83,9 +83,10 @@ impl ManifestDigest {
 
     /// Hex-encoded digest, lowercase. For debug logs only.
     pub fn as_hex(&self) -> String {
+        use std::fmt::Write as _;
         let mut s = String::with_capacity(64);
         for b in &self.0 {
-            s.push_str(&format!("{:02x}", b));
+            let _ = write!(s, "{:02x}", b);
         }
         s
     }
@@ -241,7 +242,11 @@ impl FileMeta {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            // Nanosecond granularity: two length-preserving edits within the
+            // same wall-clock second must still change the digest, or the
+            // "never false-reuse" invariant breaks. Nanos-since-epoch fits in
+            // i64 until ~year 2262.
+            .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
         Self {
             mtime,

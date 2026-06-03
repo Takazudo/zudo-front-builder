@@ -89,13 +89,20 @@ fn parse_alert_prefix(text: &str) -> Option<(&'static str, &str)> {
     // Nothing else is allowed on the prefix line (e.g. `[!NOTE] title` is NOT
     // supported — the GFM alert spec has no inline title syntax).
     let after_bracket = &inner[close + 1..]; // everything after `]`
-    // `after_bracket` must be either empty or start with `\n`
-    if !after_bracket.is_empty() && !after_bracket.starts_with('\n') {
+    // Tolerate a CRLF line ending (Windows-authored markdown): the `markdown`
+    // crate preserves a literal `\r` in the text value, so `after_bracket` may
+    // begin with `\r\n` rather than `\n`.
+    let after = after_bracket.strip_prefix('\r').unwrap_or(after_bracket);
+    // `after` must be either empty or start with `\n`
+    if !after.is_empty() && !after.starts_with('\n') {
         return None;
     }
     let component = component_for_type(&type_str.to_ascii_uppercase())?;
-    // Skip the leading `\n` so callers receive the body text only.
-    let body = after_bracket.strip_prefix('\n').unwrap_or(after_bracket);
+    // Skip the leading `\r\n`/`\n` so callers receive the body text only.
+    let body = after_bracket
+        .strip_prefix("\r\n")
+        .or_else(|| after_bracket.strip_prefix('\n'))
+        .unwrap_or(after_bracket);
     Some((component, body))
 }
 
@@ -265,6 +272,16 @@ mod tests {
     #[test]
     fn parse_note_with_body() {
         let (comp, body) = parse_alert_prefix("[!NOTE]\nhello world").unwrap();
+        assert_eq!(comp, "Note");
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn parse_note_with_crlf_body() {
+        // Regression: Windows-authored markdown keeps a literal `\r`, so the
+        // prefix line ends `[!NOTE]\r\n`. The alert must still be recognized
+        // and the body must not carry a leading `\r`.
+        let (comp, body) = parse_alert_prefix("[!NOTE]\r\nhello world").unwrap();
         assert_eq!(comp, "Note");
         assert_eq!(body, "hello world");
     }

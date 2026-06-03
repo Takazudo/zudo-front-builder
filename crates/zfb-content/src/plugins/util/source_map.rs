@@ -107,6 +107,16 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        // Skip dot-named files/dirs (.DS_Store, editor swap files, .git /
+        // .obsidian shadow dirs) so this walker agrees with the collection
+        // walker's candidate set (see collection::collect_collection_files).
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_md_files(&path, out)?;

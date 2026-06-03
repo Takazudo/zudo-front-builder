@@ -102,7 +102,10 @@ fn parse_segments(text: &str) -> Vec<Segment> {
         // A slug char at position i, preceded by a non-word-char (or SOT),
         // followed eventually by `/slug#digits`. We only proceed when we can
         // scan a full `owner/repo#NNN` from here.
-        if is_slug_char(c) && !c.is_ascii_digit() {
+        // GitHub owner/org names may start with a digit (e.g. `0xProject`,
+        // `4Catalyzer`). The `/repo` and `#NNN` gates below still prevent a
+        // bare number from matching.
+        if is_slug_char(c) {
             // Check left boundary: must be start-of-text or a non-word char.
             let left_ok = i == 0 || !is_word_char(chars[i - 1]);
             if left_ok {

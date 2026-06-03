@@ -75,8 +75,9 @@ pub struct Change {
 /// Holds the underlying `notify` watcher (dropping stops the OS watch)
 /// and the JoinHandle for the debouncer task. Dropping the handle sends
 /// a graceful shutdown signal to the debouncer so any pending events
-/// flush to the receiver before the task exits, then aborts the task as
-/// a fallback if it does not finish promptly.
+/// flush to the receiver before the task exits. Drop detaches the
+/// JoinHandle without aborting; the task exits on its own once it
+/// sees the shutdown signal or the closed bridge channel.
 ///
 /// Construct via [`Watcher::start`], which returns this handle plus the
 /// receiver end of the `Change` channel.
@@ -85,8 +86,8 @@ pub struct Watcher {
     _notify: RecommendedWatcher,
     // Some(_) until Drop fires the shutdown signal.
     shutdown: Option<oneshot::Sender<()>>,
-    // Aborted on drop as a fallback so the debouncer task does not
-    // outlive the handle indefinitely.
+    // Detached on drop (JoinHandle dropped without abort); the task
+    // exits itself after seeing the shutdown signal / closed bridge.
     debouncer: Option<JoinHandle<()>>,
 }
 
@@ -324,8 +325,9 @@ async fn debouncer_task(
         tokio::select! {
             biased;
 
-            // Shutdown signal from Drop: flush whatever we have and exit
-            // before the JoinHandle::abort() in Drop forcibly cancels us.
+            // Shutdown signal from Drop (or the async shutdown() method):
+            // flush whatever we have and exit. Drop only signals — it no
+            // longer aborts the task — so this is the graceful-exit path.
             _ = &mut shutdown => {
                 flush_all(&mut pending, &out_tx).await;
                 break;
