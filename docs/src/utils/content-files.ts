@@ -55,6 +55,7 @@ export function collectMdFiles(dir: string): Array<{ filePath: string; slug: str
         walk(fullPath, baseDir);
       } else if (/\.mdx?$/.test(entry.name) && !entry.name.startsWith("_")) {
         const rel = relative(baseDir, fullPath)
+          .replace(/\\/g, "/")
           .replace(/\.mdx?$/, "")
           .replace(/\/index$/, "");
         results.push({ filePath: fullPath, slug: rel });

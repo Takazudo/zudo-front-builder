@@ -164,10 +164,11 @@ pub fn scan_css_module_imports_in_memory(
 /// machine over the byte stream is faster than a regex engine for our
 /// pattern, doesn't pull in a new dependency, and is trivial to audit.
 ///
-/// Limitation: string literals inside line / block comments are still
-/// matched. That's acceptable — a `.module.css` in a comment is
-/// vanishingly rare, and the worst case is the pipeline processing one
-/// extra CSS file, which it tolerates.
+/// Line (`//`) and block (`/* … */`) comments are skipped before specifier
+/// extraction, so a commented-out `import "….module.css"` is ignored (see
+/// the `skips_comments` test). String scanning takes precedence over comment
+/// scanning, so a `/*` appearing inside a string literal is treated as part
+/// of the string, not a comment start.
 fn extract_module_css_specifiers(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut out: Vec<String> = Vec::new();

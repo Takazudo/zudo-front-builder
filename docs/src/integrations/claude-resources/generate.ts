@@ -102,7 +102,7 @@ function findClaudeMdFiles(dir: string, excludeDirs: string[]): string[] {
   for (const item of fs.readdirSync(dir)) {
     if (item === "node_modules") continue;
     const itemPath = path.join(dir, item);
-    if (excludeDirs.some((d) => itemPath.startsWith(d))) continue;
+    if (excludeDirs.some((d) => itemPath === d || itemPath.startsWith(d + path.sep))) continue;
 
     let stat: fs.Stats;
     try {

@@ -151,7 +151,7 @@ fn escape_ts_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn ts_safe_key(key: &str) -> String {
+pub(crate) fn ts_safe_key(key: &str) -> String {
     // Identifier-safe keys can be emitted bare; everything else gets
     // wrapped in quotes. The JS / TS rule for unquoted property names is
     // a (small) superset of /^[A-Za-z_$][A-Za-z0-9_$]*$/ — we use the

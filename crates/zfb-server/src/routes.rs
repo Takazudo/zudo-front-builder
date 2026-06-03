@@ -1261,7 +1261,16 @@ async fn dispatch_ssr(
     // our no-store default — instead the SSR header wins.
     for (k, v) in resp.headers.iter() {
         let lower = k.to_ascii_lowercase();
-        if lower == "content-type" {
+        // `page_response_bytes` rewrites the HTML body (livereload script,
+        // doctype, head asset injection, base-prefix link rewrite), so any
+        // Content-Length / Transfer-Encoding the handler returned is now
+        // stale, and Connection is hop-by-hop. Drop them and let hyper
+        // recompute framing from the rewritten body. (content-type is set
+        // by `page_response_bytes`.)
+        if matches!(
+            lower.as_str(),
+            "content-type" | "content-length" | "transfer-encoding" | "connection"
+        ) {
             continue;
         }
         if let Ok(name) = header::HeaderName::try_from(k.as_str()) {
