@@ -9,7 +9,9 @@ const require = createRequire(import.meta.url);
 // Handles prerelease suffixes: 0.1.0-next.6 < 0.1.0-next.8 < 0.1.0
 function compareSemver(a, b) {
   const splitRelease = (v) => {
-    const [main, pre] = v.split(/-(.+)/, 2);
+    // Drop SemVer build metadata (`+...`) before splitting — it is ignored
+    // for precedence and would otherwise yield NaN numeric parts.
+    const [main, pre] = v.split("+")[0].split(/-(.+)/, 2);
     return { parts: main.split(".").map(Number), pre: pre ?? null };
   };
   const ra = splitRelease(a);

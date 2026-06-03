@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use markdown::mdast::Node as MdastNode;
 
 use crate::pipeline::MdastVisitor;
+use crate::plugins::util::url::is_external;
 
 /// Options for [`ResolveLinksPlugin`].
 #[derive(Debug, Clone, Default)]
@@ -98,6 +99,12 @@ impl ResolveLinksPlugin {
     /// and `Err(())` when the URL is an `.md`/`.mdx` href that failed
     /// to resolve (caller should record a [`BrokenLinkDiagnostic`]).
     fn resolve(&self, url: &str) -> Result<Option<String>, ()> {
+        // External (scheme-bearing / protocol-relative) hrefs are never local
+        // targets — leave them untouched and don't flag a `.md` one as broken.
+        // Mirrors the front-guard in StripMdExtensionPlugin.
+        if is_external(url) {
+            return Ok(None);
+        }
         // Split off optional ?query and #fragment so we only resolve
         // the path part and stitch them back on.
         let (path_part, suffix) = split_suffix(url);

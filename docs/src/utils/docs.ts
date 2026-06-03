@@ -98,8 +98,10 @@ export function buildNavTree(
     const parts = slug.split("/");
 
     if (parts.length <= 1) {
-      // Category index: Astro 5 stripped /index → single segment like "guides"
-      const segment = doc.id;
+      // Category index: Astro 5 stripped /index → single segment like "guides".
+      // Key on the resolved route slug (not doc.id) so a custom frontmatter
+      // slug stays consistent with the multi-segment branch and route lookups.
+      const segment = slug;
       if (!root.children.has(segment)) {
         root.children.set(segment, {
           segment,

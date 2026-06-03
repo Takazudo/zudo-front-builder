@@ -516,11 +516,10 @@ fn object_to_json(
                 Prop::KeyValue(kv) => {
                     let key = prop_name_to_string(&kv.key, export, ctx)?;
                     let value = expr_to_json(&kv.value, export, ctx)?;
-                    // Preserve the *first* occurrence on duplicate
-                    // keys — JS itself silently overwrites, but for
-                    // diagnostics it's better to be deterministic and
-                    // use insertion order. `serde_json::Map` already
-                    // does that; just .insert() last-write-wins.
+                    // On duplicate keys, last declaration wins, matching
+                    // JS object-literal evaluation order. `serde_json::Map`
+                    // preserves insertion order, so the final value is
+                    // deterministic.
                     map.insert(key, value);
                 }
                 Prop::Shorthand(ident) => {

@@ -1159,6 +1159,17 @@ async fn dispatch_plugin(
             };
             let mut builder = Response::builder().status(status);
             for (k, v) in resp.headers {
+                // The body is reconstructed Rust-side (base64 decode /
+                // into_bytes), so any Content-Length / Transfer-Encoding the
+                // plugin returned is stale; Connection is hop-by-hop. Drop
+                // them and let hyper recompute framing (matches dispatch_ssr).
+                let lower = k.to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "content-length" | "transfer-encoding" | "connection"
+                ) {
+                    continue;
+                }
                 if let Ok(value) = HeaderValue::try_from(v) {
                     builder = builder.header(k, value);
                 }
