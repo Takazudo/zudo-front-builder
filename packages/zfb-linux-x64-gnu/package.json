@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-linux-x64-gnu",
-  "version": "0.1.0-next.25",
+  "version": "0.1.0-next.26",
   "description": "Platform-specific zfb binary (linux-x64-gnu)",
   "license": "MIT",
   "os": [
