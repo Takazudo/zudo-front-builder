@@ -1042,9 +1042,13 @@ fn strip_static_html_frontmatter(input: &str) -> &str {
                 return body;
             }
             // `---` followed by non-newline is not a closing marker;
-            // advance past it and keep searching.
-            if rest.len() > 1 {
-                search = &rest[1..];
+            // advance past it and keep searching. Step by a whole UTF-8
+            // char (not one byte): the byte after `---` may begin a
+            // multibyte sequence (e.g. `---é`), and `&rest[1..]` would
+            // slice mid-character and panic.
+            let step = rest.chars().next().map_or(1, |c| c.len_utf8());
+            if rest.len() > step {
+                search = &rest[step..];
             } else {
                 break;
             }
@@ -1922,6 +1926,22 @@ mod tests {
         // BOM + frontmatter: body starts after `---\n`.
         let input = "\u{feff}---\ntitle: Hi\n---\n<html/>";
         assert_eq!(strip_static_html_frontmatter(input), "<html/>");
+    }
+
+    #[test]
+    fn strip_frontmatter_non_ascii_after_dashes_does_not_panic() {
+        // Regression: a `---é` line (three dashes immediately followed by a
+        // multibyte char) used to slice mid-UTF-8 and panic. It is not a
+        // valid closing marker, so the full input is returned unchanged.
+        let input = "---\n\n---é more";
+        assert_eq!(strip_static_html_frontmatter(input), input);
+    }
+
+    #[test]
+    fn strip_frontmatter_skips_non_ascii_dashes_then_finds_real_close() {
+        // A `---é` line is skipped; the later real `---` line closes the block.
+        let input = "---\n---é\n---\nBODY";
+        assert_eq!(strip_static_html_frontmatter(input), "BODY");
     }
 
     // ---- static HTML bypass in render_all (Sub 409) -----------------------
