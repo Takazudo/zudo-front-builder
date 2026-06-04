@@ -104,23 +104,17 @@ pub fn normalize_html(html: &str) -> String {
     // <script> and <style> — are treated as body content and not hoisted
     // to <head>. parse_document would move <script>/<style> into <head>.
     let context_name = QualName::new(None, ns!(html), LocalName::from("body"));
-    let dom = parse_fragment(
-        RcDom::default(),
-        ParseOpts::default(),
-        context_name,
-        vec![],
-    )
-    .one(html.to_string());
+    let dom = parse_fragment(RcDom::default(), ParseOpts::default(), context_name, vec![])
+        .one(html.to_string());
 
     // Walk the DOM: sort attributes, normalize boolean attr values, and
     // collapse inter-element whitespace.
-    sort_attrs_and_collapse_whitespace(&dom.document);
+    sort_attrs_and_collapse_whitespace(&dom.document, false);
 
     // html5ever's fragment parse result has the structure:
     //   Document → html → body → [the actual fragment nodes]
     // We extract the body element and serialize its children directly.
-    let body = find_body(&dom.document)
-        .unwrap_or_else(|| dom.document.clone());
+    let body = find_body(&dom.document).unwrap_or_else(|| dom.document.clone());
 
     let mut output = Vec::new();
     let handle: SerializableHandle = body.clone().into();
@@ -163,8 +157,13 @@ fn find_body(node: &markup5ever_rcdom::Handle) -> Option<markup5ever_rcdom::Hand
 /// (pure-whitespace text nodes become a single newline).
 ///
 /// Raw-text contexts (`<pre>`, `<code>`, `<textarea>`, `<script>`, `<style>`)
-/// are preserved verbatim — their text-node children are not touched.
-fn sort_attrs_and_collapse_whitespace(node: &markup5ever_rcdom::Handle) {
+/// are preserved verbatim — their text-node descendants (including nested
+/// elements like `<pre><span>  </span></pre>`) are never touched.
+///
+/// `inside_raw` is `true` when any ancestor is already a raw-text element;
+/// the effective raw flag is the union of the ancestor state and the current
+/// node's own tag, propagated into every recursive call.
+fn sort_attrs_and_collapse_whitespace(node: &markup5ever_rcdom::Handle, inside_raw: bool) {
     // Determine if this node is a raw-text context (no whitespace collapse
     // inside it).
     let is_raw = match &node.data {
@@ -176,6 +175,9 @@ fn sort_attrs_and_collapse_whitespace(node: &markup5ever_rcdom::Handle) {
         }
         _ => false,
     };
+    // Combine ancestor state with current node: once inside a raw-text
+    // context, all descendants keep their whitespace untouched.
+    let effective_raw = inside_raw || is_raw;
 
     // Sort attributes on this element node and normalize boolean attr values.
     if let NodeData::Element { attrs, .. } = &node.data {
@@ -196,7 +198,7 @@ fn sort_attrs_and_collapse_whitespace(node: &markup5ever_rcdom::Handle) {
     // Process children.
     let children = node.children.borrow();
     for child in children.iter() {
-        if !is_raw {
+        if !effective_raw {
             // Collapse pure-whitespace text nodes to a single newline.
             if let NodeData::Text { contents } = &child.data {
                 let text = contents.borrow();
@@ -207,10 +209,9 @@ fn sort_attrs_and_collapse_whitespace(node: &markup5ever_rcdom::Handle) {
                 }
             }
         }
-        sort_attrs_and_collapse_whitespace(child);
+        sort_attrs_and_collapse_whitespace(child, effective_raw);
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -245,7 +246,10 @@ mod tests {
         let out = normalize_html(input);
         let href_pos = out.find("href=").unwrap();
         let rel_pos = out.find("rel=").unwrap();
-        assert!(href_pos < rel_pos, "normalize_html must sort attrs; got: {out}");
+        assert!(
+            href_pos < rel_pos,
+            "normalize_html must sort attrs; got: {out}"
+        );
     }
 
     // ── Entity encoding ───────────────────────────────────────────────────
@@ -326,7 +330,10 @@ mod tests {
         assert_eq!(a, b, "br vs br/ must normalize equal");
         assert_eq!(a, c, "br vs br-space-/ must normalize equal");
         // Output must not contain "/>" — HTML5 serializer never emits that.
-        assert!(!a.contains("/>"), "void elements must not have />; got: {a}");
+        assert!(
+            !a.contains("/>"),
+            "void elements must not have />; got: {a}"
+        );
     }
 
     #[test]
@@ -436,6 +443,21 @@ mod tests {
         assert!(
             !out.contains("   "),
             "pure-whitespace outside raw context must collapse; got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_raw_context_nested_element_whitespace_preserved() {
+        // Regression: whitespace inside an element CHILD of a raw-text context
+        // (e.g. <span> inside <pre>, common in syntax-highlighted blocks) must
+        // NOT be collapsed — the `inside_raw` flag threads the raw-text context
+        // through recursion so that nested elements are also protected.
+        let input = "<pre><span>  </span></pre>";
+        let out = normalize_html(input);
+        // The two spaces inside <span> must survive verbatim.
+        assert!(
+            out.contains("<span>  </span>"),
+            "whitespace inside nested element within raw context must be preserved; got: {out}"
         );
     }
 
