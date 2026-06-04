@@ -147,7 +147,10 @@ pub fn render_framed(diag: &Diagnostic) -> String {
     out.push_str(&format!("{label_error}: {}\n", diag.message));
 
     let arrow = "-->".if_supports_color(Stream::Stderr, |t| t.cyan().to_string());
-    out.push_str(&format!(" {arrow} {}:{}:{}\n", diag.file, diag.line, diag.col));
+    out.push_str(&format!(
+        " {arrow} {}:{}:{}\n",
+        diag.file, diag.line, diag.col
+    ));
 
     if let Some(src) = &diag.source {
         let lines: Vec<&str> = src.split('\n').collect();
@@ -184,8 +187,7 @@ pub fn render_framed(diag: &Diagnostic) -> String {
                 // Caret line. Render a single `^` under `col` (1-based).
                 let caret_offset = diag.col.saturating_sub(1);
                 let pad = " ".repeat(caret_offset);
-                let caret =
-                    "^".if_supports_color(Stream::Stderr, |t| t.red().bold().to_string());
+                let caret = "^".if_supports_color(Stream::Stderr, |t| t.red().bold().to_string());
                 out.push_str(&format!(
                     "{:>w$} {bar} {pad}{caret}\n",
                     "",
@@ -260,14 +262,16 @@ where
                 Some(root) if raw.is_relative() => {
                     let bundle_dir = bundle_path.parent().unwrap_or(Path::new(""));
                     let candidate = bundle_dir.join(&raw);
-                    candidate.canonicalize().unwrap_or(candidate)
+                    candidate
+                        .canonicalize()
+                        .unwrap_or(candidate)
                         .strip_prefix(root)
                         .map(|p| p.to_path_buf())
                         .unwrap_or_else(|_| raw.clone())
                 }
                 _ => raw.clone(),
             };
-            let display_path = project_relative(&abs, None);
+            let display_path = project_relative(&abs, project_root);
             let mut diag = Diagnostic::new(display_path, decoded.line(), decoded.col(), message);
             if let Some(content) = decoded.source_content() {
                 diag.source = Some(content);
@@ -429,6 +433,63 @@ mod tests {
         // strip_prefix fails; falls back to absolute
         let result = project_relative(file, Some(root));
         assert!(result.contains("project"), "got: {result}");
+    }
+
+    /// A minimal [`DecodedPosition`] stub for tests.
+    struct FakeDecoded {
+        file: &'static str,
+        line: usize,
+        col: usize,
+        source_content: Option<String>,
+    }
+    impl DecodedPosition for FakeDecoded {
+        fn file(&self) -> &str {
+            self.file
+        }
+        fn line(&self) -> usize {
+            self.line
+        }
+        fn col(&self) -> usize {
+            self.col
+        }
+        fn source_content(&self) -> Option<String> {
+            self.source_content.clone()
+        }
+    }
+
+    #[test]
+    fn absolute_sourcemap_path_is_stripped_against_project_root() {
+        // esbuild can emit absolute paths in `sources`; previously the call
+        // site passed `None` so project_root was ignored and the full
+        // on-disk path leaked into the diagnostic.  After the fix,
+        // project_root is forwarded and the path is made project-relative.
+        let project_root = Path::new("/home/alice/proj");
+        let bundle_path = Path::new("/home/alice/proj/.zfb/bundle.js");
+
+        let diag = from_js_runtime_error_with_decoder(
+            bundle_path,
+            "// bundle",
+            1,
+            1,
+            "oops",
+            Some("ignored"),
+            Some(project_root),
+            |_map, _line, _col| {
+                Some(FakeDecoded {
+                    file: "/home/alice/proj/src/pages/index.tsx",
+                    line: 3,
+                    col: 5,
+                    source_content: Some("// src".into()),
+                })
+            },
+        );
+
+        // Must be project-relative, not the full on-disk absolute path.
+        assert_eq!(
+            diag.file, "src/pages/index.tsx",
+            "expected project-relative path, got: {}",
+            diag.file
+        );
     }
 
     #[test]
