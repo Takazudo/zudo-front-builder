@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::renderer::{
@@ -84,8 +85,8 @@ use zfb_build::{
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
-    outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts, SsrDispatcher, SsrRouteRecord,
-    SsrRouteSet,
+    outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
+    SsrRouteRecord, SsrRouteSet,
 };
 
 use crate::cli::DevArgs;
@@ -867,17 +868,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         css_bundle_url: Some(Arc::clone(&css_bundle_url_handle)),
     };
 
+    // 7. Bind the TCP listener first so the port-in-use error surfaces
+    //    before the ready banner is printed. If bind fails here we exit
+    //    with an error and no banner — which is the correct ordering.
+    let listener = TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind dev server to {addr}"))?;
+
     output::ready_with_interfaces("http", &host, port);
 
-    // 7. Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
-    //    signal so axum drains in-flight connections before exiting. The
-    //    renderer guard tears down on drop here — the explicit `shutdown`
-    //    call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
+    // Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
+    // signal so axum drains in-flight connections before exiting. The
+    // renderer guard tears down on drop here — the explicit `shutdown`
+    // call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
     let result = tokio::select! {
-        res = serve(opts, ctrl_c) => {
+        res = serve_with_listener(opts, listener, ctrl_c) => {
             orch_handle.abort();
             res
         }

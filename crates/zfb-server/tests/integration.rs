@@ -484,3 +484,64 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
     // it would have appeared by now.
     let _ = timeout(Duration::from_millis(500), watch).await;
 }
+
+// ---------------------------------------------------------------------------
+// Occupied-port bind ordering
+// ---------------------------------------------------------------------------
+
+/// `serve` must return an error (port in use) when the requested address
+/// is already occupied. This exercises the bind-first contract: the
+/// function binds before the caller prints any ready banner, so a
+/// failed bind never causes a stale "ready" announcement.
+#[tokio::test]
+async fn serve_returns_error_when_port_is_occupied() {
+    use zfb_server::serve;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let dist_root = root.join("dist");
+    std::fs::create_dir_all(dist_root.join("assets")).unwrap();
+    let public_root = root.join("public");
+    std::fs::create_dir_all(&public_root).unwrap();
+
+    // Grab an ephemeral port by binding it ourselves, then keep the
+    // listener alive so the port stays occupied.
+    let occupier = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind occupier");
+    let occupied_addr = occupier.local_addr().expect("local_addr");
+
+    let (tx, _rx) = broadcast::channel::<ReloadEvent>(64);
+    let opts = ServeOpts {
+        project_root: root.clone(),
+        dist_root: dist_root.clone(),
+        html_root: dist_root,
+        public_root,
+        addr: occupied_addr,
+        pages: PageCache::new(),
+        broadcast: tx,
+        plugins: None,
+        injected_routes: None,
+        ssr_routes: None,
+        base: None,
+        trailing_slash: false,
+        mode: zfb_server::ServerMode::Dev,
+        islands_bundle_url: None,
+        css_bundle_url: None,
+    };
+
+    let result = serve(opts, std::future::ready(())).await;
+    assert!(
+        result.is_err(),
+        "serve on an occupied port must return an error"
+    );
+    let msg = format!("{:#}", result.unwrap_err());
+    assert!(
+        msg.contains("failed to bind"),
+        "error message must mention bind failure, got: {msg}"
+    );
+
+    // Keep the occupier alive until after the assertion so the OS does
+    // not reclaim the port before `serve` attempts its bind.
+    drop(occupier);
+}
