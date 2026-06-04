@@ -16,7 +16,7 @@ export function stripMarkdown(md: string): string {
       .replace(/^#{1,6}\s+/gm, "")
       // Remove emphasis/bold markers
       .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
-      .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
+      .replace(/(?<![A-Za-z0-9])_{1,3}([^_]+)_{1,3}(?![A-Za-z0-9])/g, "$1")
       // Remove images (must run before link removal)
       .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
       // Remove links but keep text
