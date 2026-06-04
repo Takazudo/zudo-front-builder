@@ -44,6 +44,7 @@
     "dist",
     "bin",
     "src/worker-wrapper.mjs",
+    "src/emit-worker.mjs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -68,7 +69,7 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
-    "build": "tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs",
+    "build": "tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs && cp src/emit-worker.mjs dist/emit-worker.mjs",
     "prepublishOnly": "pnpm build && pnpm test",
     "test": "vitest run",
     "test:watch": "vitest",
