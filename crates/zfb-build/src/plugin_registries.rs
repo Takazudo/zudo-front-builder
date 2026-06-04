@@ -415,6 +415,9 @@ impl<'a> PluginSetupAccumulator<'a> {
                                 second_plugin: output.plugin.clone(),
                             });
                         }
+                        // Same plugin re-registering the same pattern is a no-op
+                        // (keep-first, mirrors the Alias path above).
+                        continue;
                     }
                     let resolved = resolve_against_root(self.project_root, &entrypoint);
                     self.route_origin
@@ -430,9 +433,7 @@ impl<'a> PluginSetupAccumulator<'a> {
         Ok(())
     }
 
-    pub(crate) fn finish(
-        self,
-    ) -> (AliasMap, VirtualModuleRegistry, InjectedRouteList) {
+    pub(crate) fn finish(self) -> (AliasMap, VirtualModuleRegistry, InjectedRouteList) {
         (self.aliases, self.virtual_modules, self.injected_routes)
     }
 }
@@ -505,7 +506,8 @@ mod tests {
     fn alias_resolves_relative_to_project_root() {
         let root = PathBuf::from("/proj");
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
-        acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx")).unwrap();
+        acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx"))
+            .unwrap();
         let (aliases, _, _) = acc.finish();
         let entry = aliases.get("@/foo").unwrap();
         assert_eq!(entry.target, PathBuf::from("/proj/src/foo.tsx"));
@@ -516,7 +518,8 @@ mod tests {
     fn alias_is_exact_match_only() {
         let root = PathBuf::from("/proj");
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
-        acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx")).unwrap();
+        acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx"))
+            .unwrap();
         let (aliases, _, _) = acc.finish();
         // Exact match works.
         assert!(aliases.contains("@/foo"));
@@ -557,6 +560,20 @@ mod tests {
         // not an error — feels right for a plugin that re-runs its
         // own setup on a config reload.
         acc.ingest(raw_alias("a", "@/x", "./src/a.tsx")).unwrap();
+    }
+
+    #[test]
+    fn same_plugin_same_route_is_idempotent() {
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Dev);
+        acc.ingest(raw_route("a", "/dev/x", "./scripts/x.ts"))
+            .unwrap();
+        // Re-registering the same pattern from the same plugin is a
+        // no-op (keep-first) — mirrors same_plugin_same_alias_is_idempotent.
+        acc.ingest(raw_route("a", "/dev/x", "./scripts/x.ts"))
+            .unwrap();
+        let (_, _, routes) = acc.finish();
+        assert_eq!(routes.len(), 1);
     }
 
     #[test]
@@ -642,8 +659,7 @@ mod tests {
         acc.ingest(raw_route("b", "/r2", "./b.ts")).unwrap();
         acc.ingest(raw_route("c", "/r3", "./c.ts")).unwrap();
         let (_, _, routes) = acc.finish();
-        let patterns: Vec<&str> =
-            routes.iter().map(|r| r.pattern.as_str()).collect();
+        let patterns: Vec<&str> = routes.iter().map(|r| r.pattern.as_str()).collect();
         assert_eq!(patterns, vec!["/r1", "/r2", "/r3"]);
     }
 }
