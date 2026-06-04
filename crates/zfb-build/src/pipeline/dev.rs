@@ -110,9 +110,20 @@ impl AssetPipeline for DevAssetPipeline {
             // see `RebuildPlan::renderer_fresh`). Errors abort the
             // tick — the watcher stays alive and the previous renderer
             // state is preserved by the orchestrator.
+            //
+            // The reloader also returns the globally-vanished absolute
+            // output paths (routes that existed before this tick's
+            // route-table rebuild but are absent from every source's new
+            // entry set). These are fed into the prune loop below.
+            //
+            // When the renderer was already refreshed this tick (e.g. by
+            // the discovery hook), reload_renderer is skipped — but the
+            // plan may still carry vanished paths from that same discovery
+            // refresh via RebuildPlan::prune_paths (issue #804 P2).
+            let mut route_vanished: Vec<PathBuf> = plan.prune_paths.clone();
             if !plan.renderer_fresh {
                 if let Some(reload) = &ctx.reload_renderer {
-                    reload()?;
+                    route_vanished.extend(reload()?);
                 }
             }
 
@@ -225,7 +236,14 @@ impl AssetPipeline for DevAssetPipeline {
             // Skip any path that appears in live_dests — another page in
             // this same tick now owns it, so deleting it would remove
             // that sibling's freshly-written artifact (the #727 bug).
-            for prev in prune_candidates {
+            //
+            // Also prune any globally-vanished route output paths returned
+            // by reload_renderer (routes that disappeared from the route
+            // table after this tick's rebuild — e.g. a content file was
+            // deleted or a dynamic route's paths() output shrank). Apply
+            // the same live_dests guard: if route A lost /x while route B
+            // simultaneously gained /x, /x must NOT be deleted.
+            for prev in prune_candidates.into_iter().chain(route_vanished) {
                 if live_dests.contains(&prev) {
                     continue; // another page now owns this path — skip
                 }
@@ -240,7 +258,53 @@ impl AssetPipeline for DevAssetPipeline {
                         p.into_inner()
                     })
                     .remove(&prev);
+                // Also evict the stale path from the last_output_path
+                // cache so the pipeline doesn't attempt to prune it again
+                // on the next tick.
+                {
+                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path (route-prune)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
+                    last_out.retain(|_, v| v != &prev);
+                }
                 outcome.pages_pruned.push(prev);
+            }
+        }
+
+        // 1b. Prune paths from the plan (issue #804 P2): paths explicitly
+        // supplied by the orchestrator from a discovery refresh that already
+        // set renderer_fresh (so reload_renderer was skipped and these paths
+        // could not be returned through the normal vanished-routes channel).
+        // Only runs when pages was empty — if pages ran, prune_paths were
+        // already included in route_vanished and processed in the loop above.
+        if pages.is_empty() && !plan.prune_paths.is_empty() {
+            for prev in &plan.prune_paths {
+                let _ = std::fs::remove_file(prev);
+                self.last_bytes
+                    .lock()
+                    .unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_bytes (plan-prune)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    })
+                    .remove(prev);
+                {
+                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path (plan-prune)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
+                    last_out.retain(|_, v| v != prev);
+                }
+                outcome.pages_pruned.push(prev.clone());
             }
         }
 
@@ -321,6 +385,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
 
@@ -354,6 +419,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
 
@@ -388,6 +454,7 @@ mod tests {
             rerun_css: true,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
 
@@ -422,6 +489,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx_a).unwrap();
@@ -485,6 +553,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx).unwrap();
@@ -539,6 +608,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx1).unwrap();
@@ -623,6 +693,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
@@ -654,6 +725,7 @@ mod tests {
             rerun_css: true,
             rerun_islands: true,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         let outcome = pipeline.apply(&plan, &ctx).unwrap();

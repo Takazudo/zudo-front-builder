@@ -238,6 +238,23 @@ impl PageCache {
         *self.inner.write().await = new_map;
     }
 
+    /// Remove all entries whose key is in `keys`.
+    ///
+    /// Intended for invalidating stale routes when the dev pipeline prunes
+    /// a globally-vanished output path (issue #804). Each `key` should
+    /// match the leading-slash URL the entry was inserted under (e.g.
+    /// `/blog/foo`). Unknown keys are silently ignored.
+    pub async fn remove<I, K>(&self, keys: I)
+    where
+        I: IntoIterator<Item = K>,
+        K: AsRef<str>,
+    {
+        let mut map = self.inner.write().await;
+        for key in keys {
+            map.remove(key.as_ref());
+        }
+    }
+
     /// Look up `key` and return the entry if present.
     pub async fn get(&self, key: &str) -> Option<CachedPage> {
         self.inner.read().await.get(key).cloned()

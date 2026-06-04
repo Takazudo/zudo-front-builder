@@ -715,8 +715,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // re-bundle), so each tick bundles at most once.
     let reload_renderer: Option<RendererReloader> = dev_session.as_ref().map(|session| {
         let session = session.clone();
+        let html_root = dev_html_root.clone();
         Arc::new(move || {
-            let changed = session
+            let (changed, vanished_rel) = session
                 .refresh_bundle_and_routes()
                 .context("edit-tick bundle refresh failed")?;
             if !changed.is_empty() {
@@ -725,7 +726,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     "edit-tick refresh changed route sets"
                 );
             }
-            Ok(())
+            // Convert relative vanished output paths to absolute dist paths
+            // so DevAssetPipeline can delete them directly.
+            let vanished_abs: Vec<std::path::PathBuf> = vanished_rel
+                .into_iter()
+                .map(|rel| html_root.join(rel))
+                .collect();
+            if !vanished_abs.is_empty() {
+                tracing::debug!(
+                    count = vanished_abs.len(),
+                    "edit-tick refresh found globally-vanished routes"
+                );
+            }
+            Ok(vanished_abs)
         }) as RendererReloader
     });
 
@@ -815,7 +828,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // behaviour.
     let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
         .as_ref()
-        .map(|session| make_discovery_hook(session.clone(), Arc::clone(&graph_for_save)));
+        .map(|session| {
+            make_discovery_hook(session.clone(), Arc::clone(&graph_for_save), dev_html_root.clone())
+        });
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
             output::error(format!("build orchestrator stopped: {err:#}"));
@@ -1295,10 +1310,18 @@ impl DevRenderSession {
     /// Thin gate over [`Self::refresh_bundle_and_routes`] — see there for
     /// what the refresh does. Kept as a named entry point so the
     /// discovery hook's intent stays explicit at the call site.
+    ///
+    /// Returns the changed source [`PageId`]s and the relative output paths
+    /// that vanished from the global live route set. The caller is
+    /// responsible for joining the relative paths with the appropriate dist
+    /// root before propagating them (issue #804 P2).
     #[cfg(feature = "embed_v8")]
-    fn discover_created(&self, created: &[PathBuf]) -> Result<Vec<PageId>> {
+    fn discover_created(
+        &self,
+        created: &[PathBuf],
+    ) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
         if created.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         self.refresh_bundle_and_routes()
     }
@@ -1341,13 +1364,18 @@ impl DevRenderSession {
     ///    change a dynamic route's `paths()` output surface without a
     ///    restart.
     ///
-    /// Returns the source [`PageId`]s whose route set changed (empty for
-    /// a plain content edit).
+    /// Returns `(changed_sources, vanished_output_paths)` where:
+    /// - `changed_sources`: source [`PageId`]s whose route set changed
+    ///   (empty for a plain content edit).
+    /// - `vanished_output_paths`: relative output paths (under dist) that
+    ///   existed in the old live route set but are absent from the new one,
+    ///   globally across all sources. Used by the caller to prune stale
+    ///   HTML files and invalidate PageCache entries (issue #804).
     ///
     /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "embed_v8")]
-    fn refresh_bundle_and_routes(&self) -> Result<Vec<PageId>> {
+    fn refresh_bundle_and_routes(&self) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -1416,11 +1444,16 @@ impl DevRenderSession {
             build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
                 .context("dev refresh: route-table rebuild failed")?;
 
-        // 4. Diff against the frozen table to find which source pages
-        //    gained/changed entries, then swap the new tables in.
-        let changed: Vec<PageId> = {
+        // 4. Diff against the frozen table to find:
+        //    (a) which source pages gained/changed entries, and
+        //    (b) which output paths vanished globally (were live before
+        //        but are absent from every source in the new table).
+        //    The global diff is critical: if route A loses /x while route B
+        //    simultaneously gains /x, /x must NOT be considered vanished.
+        let (changed, vanished_output_paths) = {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
-            new_routes_by_source
+
+            let changed: Vec<PageId> = new_routes_by_source
                 .iter()
                 .filter(|(src, entries)| {
                     old.routes_by_source
@@ -1429,7 +1462,26 @@ impl DevRenderSession {
                         .unwrap_or(true)
                 })
                 .map(|(src, _)| PageId::new(src.clone()))
-                .collect()
+                .collect();
+
+            // Collect the globally-live output_path sets for old and new.
+            // Use HashSet for O(1) membership checks.
+            let old_live: std::collections::HashSet<std::path::PathBuf> = old
+                .routes_by_source
+                .values()
+                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
+                .collect();
+            let new_live: std::collections::HashSet<std::path::PathBuf> = new_routes_by_source
+                .values()
+                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
+                .collect();
+
+            let vanished: Vec<std::path::PathBuf> = old_live
+                .difference(&new_live)
+                .cloned()
+                .collect();
+
+            (changed, vanished)
         };
         {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
@@ -1437,7 +1489,7 @@ impl DevRenderSession {
             tables.ssr_routes = new_ssr_routes;
         }
 
-        Ok(changed)
+        Ok((changed, vanished_output_paths))
     }
 }
 
@@ -2079,12 +2131,16 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 /// The returned [`DiscoveryOutcome`] reports `renderer_reloaded: true`
 /// whenever the refresh ran, so the pipeline's per-tick
 /// `reload_renderer` is skipped and the tick bundles exactly once.
+/// Any routes that vanished during the rebuild are propagated in
+/// `vanished_output_paths` so the pipeline can prune their HTML files
+/// (issue #804 P2).
 ///
 /// `embed_v8`-gated: discovery needs the embedded V8 host.
 #[cfg(feature = "embed_v8")]
 fn make_discovery_hook(
     session: DevRenderSession,
     graph: Arc<Mutex<DependencyGraph>>,
+    html_root: PathBuf,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -2109,7 +2165,7 @@ fn make_discovery_hook(
             return Ok(DiscoveryOutcome::default());
         }
 
-        let changed = session.discover_created(&relevant)?;
+        let (changed, vanished_rel) = session.discover_created(&relevant)?;
 
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
@@ -2128,9 +2184,17 @@ fn make_discovery_hook(
             }
         }
 
+        // Map relative vanished output paths to absolute dist paths so the
+        // orchestrator can forward them to the pipeline's prune loop.
+        let vanished_abs: Vec<PathBuf> = vanished_rel
+            .into_iter()
+            .map(|rel| html_root.join(rel))
+            .collect();
+
         Ok(DiscoveryOutcome {
             pages: changed,
             renderer_reloaded: true,
+            vanished_output_paths: vanished_abs,
         })
     })
 }

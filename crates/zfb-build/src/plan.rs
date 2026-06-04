@@ -36,6 +36,16 @@ pub struct RebuildPlan {
     /// never bundles twice.
     pub renderer_fresh: bool,
 
+    /// Absolute dist-root paths that the pipeline must delete from disk
+    /// and evict from any in-memory caches (issue #804).
+    ///
+    /// Populated by the orchestrator from [`crate::DiscoveryOutcome::vanished_output_paths`]
+    /// when a discovery refresh already handled the bundle reload (so
+    /// `reload_renderer` is skipped) but the route table still lost some
+    /// output paths. The pipeline processes these in addition to any
+    /// vanished paths returned by `reload_renderer` itself.
+    pub prune_paths: Vec<PathBuf>,
+
     /// The raw paths that triggered this plan, kept around purely for
     /// diagnostics. Not consumed by the pipeline.
     pub triggers: Vec<PathBuf>,
@@ -100,6 +110,7 @@ impl RebuildPlan {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: Vec::new(),
             triggers: Vec::new(),
         }
     }
@@ -111,8 +122,15 @@ impl RebuildPlan {
             rerun_css: true,
             rerun_islands: true,
             renderer_fresh: false,
+            prune_paths: Vec::new(),
             triggers: Vec::new(),
         }
+    }
+
+    /// Add absolute dist paths to prune during this tick's pipeline run.
+    /// These paths come from route-table diffs in the discovery hook.
+    pub fn add_prune_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.prune_paths.extend(paths);
     }
 
     /// Mark the renderer bundle as already refreshed for this tick (see
@@ -142,9 +160,12 @@ impl RebuildPlan {
     }
 
     /// True iff the plan would do nothing — no pages, no CSS, no
-    /// islands. The orchestrator skips empty plans.
+    /// islands, and no paths to prune. The orchestrator skips empty plans.
     pub fn is_noop(&self) -> bool {
-        !self.rerun_css && !self.rerun_islands && self.pages.is_empty()
+        !self.rerun_css
+            && !self.rerun_islands
+            && self.pages.is_empty()
+            && self.prune_paths.is_empty()
     }
 }
 
