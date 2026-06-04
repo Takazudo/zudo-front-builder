@@ -349,8 +349,14 @@ mod tests {
         let collected: Vec<(&str, &Path)> = m.iter().collect();
         assert_eq!(collected[0].0, "Counter");
         assert_eq!(collected[1].0, "Tabs");
-        assert_eq!(m.get("Counter").unwrap(), Path::new("/proj/components/counter.tsx"));
-        assert_eq!(m.get("Tabs").unwrap(), Path::new("/proj/components/tabs.tsx"));
+        assert_eq!(
+            m.get("Counter").unwrap(),
+            Path::new("/proj/components/counter.tsx")
+        );
+        assert_eq!(
+            m.get("Tabs").unwrap(),
+            Path::new("/proj/components/tabs.tsx")
+        );
     }
 
     #[test]
@@ -360,8 +366,14 @@ mod tests {
             island("Tabs", "/proj/components/nested/tabs.tsx"),
         ];
         let m = Manifest::from_islands(&set).relative_to(Path::new("/proj"));
-        assert_eq!(m.get("Counter").unwrap(), Path::new("components/counter.tsx"));
-        assert_eq!(m.get("Tabs").unwrap(), Path::new("components/nested/tabs.tsx"));
+        assert_eq!(
+            m.get("Counter").unwrap(),
+            Path::new("components/counter.tsx")
+        );
+        assert_eq!(
+            m.get("Tabs").unwrap(),
+            Path::new("components/nested/tabs.tsx")
+        );
     }
 
     #[test]
@@ -369,7 +381,10 @@ mod tests {
         let set = vec![island("Counter", "/proj/components/counter.tsx")];
         let m = Manifest::from_islands(&set).relative_to(Path::new("/elsewhere"));
         // Different root prefix → original path is kept.
-        assert_eq!(m.get("Counter").unwrap(), Path::new("/proj/components/counter.tsx"));
+        assert_eq!(
+            m.get("Counter").unwrap(),
+            Path::new("/proj/components/counter.tsx")
+        );
     }
 
     #[test]

@@ -57,7 +57,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use lol_html::html_content::{ContentType, Element};
-use lol_html::{ElementContentHandlers, RewriteStrSettings, Selector, doc_comments};
+use lol_html::{doc_comments, ElementContentHandlers, RewriteStrSettings, Selector};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
@@ -321,18 +321,16 @@ fn rewrite_single_island(
         let close_seen_c = Rc::clone(&close_seen);
 
         let settings: RewriteStrSettings<'_, '_> = RewriteStrSettings {
-            document_content_handlers: vec![
-                doc_comments!(move |c| {
-                    let text = c.text().to_string();
-                    if text == open_text {
-                        open_seen_c.set(true);
-                    }
-                    if text == close_text {
-                        close_seen_c.set(true);
-                    }
-                    Ok(())
-                }),
-            ],
+            document_content_handlers: vec![doc_comments!(move |c| {
+                let text = c.text().to_string();
+                if text == open_text {
+                    open_seen_c.set(true);
+                }
+                if text == close_text {
+                    close_seen_c.set(true);
+                }
+                Ok(())
+            })],
             ..RewriteStrSettings::new()
         };
 
@@ -361,12 +359,12 @@ fn rewrite_single_island(
     let close_str = format!("<!--/zfb-island:{}-->", d.marker_key);
 
     let html = &tree.html;
-    let open_idx = html.find(&open_str).ok_or_else(|| {
-        IslandRewriteError::OpenMarkerMissing {
+    let open_idx = html
+        .find(&open_str)
+        .ok_or_else(|| IslandRewriteError::OpenMarkerMissing {
             component: d.component_name.clone(),
             key: d.marker_key.clone(),
-        }
-    })?;
+        })?;
     let after_open = open_idx + open_str.len();
     let close_rel = html[after_open..].find(&close_str).ok_or_else(|| {
         IslandRewriteError::CloseMarkerMissing {
@@ -568,8 +566,8 @@ pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) {
 fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
     // Serialise props. `serde_json::to_string` on a `Value` is infallible
     // for any valid `Value` (all variants produce valid JSON).
-    let props_json = serde_json::to_string(&d.props)
-        .expect("serde_json::Value always serialises to valid JSON");
+    let props_json =
+        serde_json::to_string(&d.props).expect("serde_json::Value always serialises to valid JSON");
 
     let mut s = String::with_capacity(inner.len() + props_json.len() + 96);
     s.push_str("<div data-zfb-island=\"");
@@ -725,10 +723,9 @@ mod tests {
         let d = IslandDescriptor::new("Foo", json!({}), "k")
             .with_when(WhenHint::Media("(min-width: 600px)".into()));
         rewrite_islands(&mut tree, &[d]).unwrap();
-        assert!(
-            tree.serialize()
-                .contains(r#"data-when="media((min-width: 600px))""#)
-        );
+        assert!(tree
+            .serialize()
+            .contains(r#"data-when="media((min-width: 600px))""#));
     }
 
     #[test]
@@ -786,11 +783,7 @@ mod tests {
         let inner = wrap_with_markers("k", "<i>x</i>");
         let mut tree = page_with(&inner);
         // The JSON value has a string field containing HTML-special characters.
-        let d = IslandDescriptor::new(
-            "My&Comp",
-            json!({"text": "<a & \"b\">"}),
-            "k",
-        );
+        let d = IslandDescriptor::new("My&Comp", json!({"text": "<a & \"b\">"}), "k");
         rewrite_islands(&mut tree, &[d]).unwrap();
         let out = tree.serialize();
         assert!(out.contains(r#"data-zfb-island="My&amp;Comp""#));
@@ -873,7 +866,9 @@ mod tests {
 
     #[test]
     fn no_descriptors_is_a_no_op() {
-        let html_str = "<html><body><h1>Page</h1><span>plain</span><footer>fin</footer></body></html>".to_string();
+        let html_str =
+            "<html><body><h1>Page</h1><span>plain</span><footer>fin</footer></body></html>"
+                .to_string();
         let mut tree = HtmlTree::parse(html_str.clone());
         rewrite_islands(&mut tree, &[]).unwrap();
         assert_eq!(tree.serialize(), html_str);

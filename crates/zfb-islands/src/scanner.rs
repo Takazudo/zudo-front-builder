@@ -1316,9 +1316,8 @@ pub fn scan_islands_with_meta<R: Resolver>(
         // Gathered for every reachable module, not just `"use client"`
         // files — the import typically lives in an SSR-only layout that
         // carries no directive.
-        let cr_facts = collect_client_router_facts(&module, |spec| {
-            resolver.resolve(&importer_dir, spec)
-        });
+        let cr_facts =
+            collect_client_router_facts(&module, |spec| resolver.resolve(&importer_dir, spec));
 
         if has_use_client_directive(&module) {
             for record in exported_island_records(&module) {
@@ -1610,8 +1609,7 @@ fn resolve_client_router_usage(facts: &HashMap<PathBuf, ClientRouterFacts>) -> b
             if proxies.contains(path) {
                 continue;
             }
-            if f
-                .star_reexport_targets
+            if f.star_reexport_targets
                 .iter()
                 .any(|target| proxies.contains(target))
             {
@@ -1739,14 +1737,29 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
         };
         match decl {
             ModuleDecl::Import(import_decl) => {
+                // `import type { … }` is erased at compile time — the module
+                // is never loaded at runtime, so it must not become a DFS edge.
+                if import_decl.type_only {
+                    continue;
+                }
                 out.push(atom_to_string(&import_decl.src.value));
             }
             ModuleDecl::ExportNamed(named) => {
+                // `export type { … } from "…"` is compile-time-erased — not a
+                // runtime pull, so it must not become a DFS edge.
+                if named.type_only {
+                    continue;
+                }
                 if let Some(src) = &named.src {
                     out.push(atom_to_string(&src.value));
                 }
             }
             ModuleDecl::ExportAll(all) => {
+                // `export type * from "…"` is compile-time-erased — not a
+                // runtime pull, so it must not become a DFS edge.
+                if all.type_only {
+                    continue;
+                }
                 out.push(atom_to_string(&all.src.value));
             }
             _ => {}
@@ -5233,5 +5246,131 @@ mod tests {
             "marker_name must default to the export name when no \
              renderSsrSkipPlaceholder call is present"
         );
+    }
+
+    // --- type-only import/export edges must not reach "use client" islands ---
+    // Regression tests for collect_import_specifiers: declaration-level
+    // type_only guards prevent phantom islands when the only path to a
+    // "use client" module is a compile-time-erased edge.
+
+    #[test]
+    fn island_not_emitted_when_reachable_only_via_import_type() {
+        // `import type { Counter } from "…"` is compile-time-erased.
+        // The "use client" module is reachable ONLY through this edge;
+        // it must NOT appear as an island.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import type { Counter } from "../components/counter";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "a 'use client' module reachable only via `import type` must not \
+             be emitted as an island; got {islands:?}"
+        );
+    }
+
+    #[test]
+    fn island_not_emitted_when_reachable_only_via_export_type_named() {
+        // `export type { Counter } from "…"` is compile-time-erased.
+        // A barrel re-exports the island with a type-only named re-export;
+        // the "use client" module must NOT appear as an island.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/index";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/index.tsx"),
+                r#"export type { Counter } from "./counter";
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "a 'use client' module reachable only via `export type {{ }}` must \
+             not be emitted as an island; got {islands:?}"
+        );
+    }
+
+    #[test]
+    fn island_not_emitted_when_reachable_only_via_export_type_star() {
+        // `export type * from "…"` is compile-time-erased.
+        // A barrel re-exports the island with a type-only star re-export;
+        // the "use client" module must NOT appear as an island.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/index";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/index.tsx"),
+                r#"export type * from "./counter";
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "a 'use client' module reachable only via `export type *` must \
+             not be emitted as an island; got {islands:?}"
+        );
+    }
+
+    #[test]
+    fn island_still_emitted_when_also_reachable_via_runtime_import() {
+        // Control: the same "use client" module is imported both with
+        // `import type` AND via a plain runtime import from another barrel.
+        // The runtime path must still emit the island.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import type { Counter } from "../components/counter";
+                import { Counter as CounterImpl } from "../components/counter";
+                export default function Home() { return <CounterImpl/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "a module with both a type-only and a runtime import must still \
+             emit the island; got {islands:?}"
+        );
+        assert_eq!(islands[0].component_name, "Counter");
     }
 }
