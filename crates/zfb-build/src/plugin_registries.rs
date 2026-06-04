@@ -242,9 +242,9 @@ pub enum SetupRegistryError {
 
     #[error(
         "injected route `{pattern}` registered by plugin `{first_plugin}` -> `{first_entrypoint}` \
-         conflicts with plugin `{second_plugin}` -> `{second_entrypoint}` — same URL pattern, \
-         different entrypoint (a different plugin claiming the pattern, or the same plugin \
-         re-registering it with a different entrypoint)"
+         conflicts with plugin `{second_plugin}` -> `{second_entrypoint}` — same URL pattern \
+         (a different plugin claiming the pattern, or the same plugin re-registering it with a \
+         different entrypoint)"
     )]
     InjectRouteConflict {
         pattern: String,
