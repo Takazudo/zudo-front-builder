@@ -2050,7 +2050,14 @@ fn materialise_shadow(
             }
         }
         // Negate static_count so higher static count → lower (earlier) key.
-        (-static_count, dynamic_count, catchall_count)
+        // Add catchall_count into the dynamic bucket so catchall segments sort
+        // after plain dynamic at equal static depth (e.g. /docs/[...slug] after
+        // /docs/[id]), preserving the invariant documented at line 2022.
+        (
+            -static_count,
+            dynamic_count + catchall_count,
+            catchall_count,
+        )
     }
     routes.sort_by(|a, b| {
         let ka = route_sort_key(&a.route);
@@ -5906,6 +5913,63 @@ mod tests {
         assert!(
             idx("/docs/[...slug]") < idx("/[lang]/[slug]"),
             "/docs/[...slug] should be before /[lang]/[slug]"
+        );
+    }
+
+    #[test]
+    fn route_sort_catchall_after_plain_dynamic_at_equal_static_depth() {
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+
+        // Verify that a plain dynamic segment sorts before a catchall at the
+        // same static depth — i.e. /docs/[id] before /docs/[...slug].
+        // This is the invariant documented in route_sort_key ("Catchall (rest)
+        // segments always sort after plain dynamic ones").
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let pages = root.join("pages");
+        for d in ["pages", "pages/docs"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let stub = "export default function P() { return null; }\n";
+        for f in ["pages/docs/[id].tsx", "pages/docs/[...slug].tsx"] {
+            fs::write(root.join(f), stub).unwrap();
+        }
+        let mut routes = Vec::new();
+        let shadow_pages_dest = root.join("shadow").join("pages");
+        materialise_shadow(
+            &pages,
+            &shadow_pages_dest,
+            &mut routes,
+            &root,
+            false,
+            None,
+            None,
+            None,
+            zfb_content::ResolvedGfmConstructs::default(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            &no_bundle_exclude(),
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let order: BTreeMap<&str, usize> = routes
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.route.as_str(), i))
+            .collect();
+
+        let idx = |r: &str| *order.get(r).unwrap_or_else(|| panic!("missing route {r}"));
+
+        // Plain dynamic must come before catchall at equal static depth.
+        assert!(
+            idx("/docs/[id]") < idx("/docs/[...slug]"),
+            "/docs/[id] should be registered before /docs/[...slug]"
         );
     }
 
