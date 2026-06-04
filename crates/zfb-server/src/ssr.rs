@@ -48,11 +48,24 @@
 //! has finished.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
 use crate::injected_routes::pattern_matches;
+
+/// Shared live handle to the active [`SsrRouteSet`] (issue #807).
+///
+/// `None` (outer) means "no SSR routes configured for this server."
+/// When `Some`, the inner `RwLock` holds the current `SsrRouteSet` and
+/// is updated after each dev-tick renderer reload so newly-added or
+/// removed `prerender = false` routes are reflected immediately without a
+/// dev-server restart.
+///
+/// Mirrors [`crate::IslandsBundleUrl`] / [`crate::CssBundleUrl`]: one
+/// writer (the per-tick reload callback) vs many short-lived readers
+/// (every inbound HTTP request that may match an SSR route).
+pub type SsrRoutesHandle = Arc<RwLock<Option<SsrRouteSet>>>;
 
 /// One SSR-eligible route, identified by URL pattern.
 ///

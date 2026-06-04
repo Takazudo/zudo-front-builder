@@ -1421,3 +1421,194 @@ fn modified_entry_under_custom_collection_root_skips_islands() {
         "content edit still refreshes the renderer bundle"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SSR-only project reload (issue #807).
+//
+// Gap: for a project where every page is `prerender = false` (zero SSG
+// pages), `plan.pages` is always empty after `resolve_all`. The old
+// DevAssetPipeline gate `!pages.is_empty()` never fired, so the V8 host
+// was never refreshed and SSR requests continued to serve stale output
+// until a restart.
+//
+// Fix: the orchestrator now sets `plan.ssr_reload_needed = true` for
+// Content/Page/Module/Data changes, the plan is not a no-op when only
+// that flag is set, and DevAssetPipeline fires the renderer reload even
+// when `pages` is empty.
+// ---------------------------------------------------------------------------
+
+/// An SSR-only project (zero SSG pages): editing a content file must still
+/// reload the renderer. Without the fix the tick was a no-op for SSR-only
+/// projects (empty pages → no reload → stale bundle forever).
+#[test]
+fn ssr_only_project_edit_tick_reloads_renderer() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    // Set up a fixture with one page source and one content file.
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::create_dir_all(project.join("content")).unwrap();
+    std::fs::write(project.join("pages/post.tsx"), "// page\n").unwrap();
+    std::fs::write(project.join("content/post.md"), "# hello\n").unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    // Graph has the page node but with NO dep edges yet — cold-start, same
+    // as an SSR-only project that seeded page nodes without resolving deps.
+    let mut g = DependencyGraph::new();
+    g.upsert(PageDeps::new(
+        pid(project.join("pages/post.tsx")),
+        vec![(project.join("content/post.md"), DepKind::Content)],
+    ));
+    // Crucially: mark the page as "all pages in graph" but when resolve_all
+    // runs, it will find the page. We simulate an SSR-only project by having
+    // render_pages return an empty Vec — SSR pages never appear in the
+    // render output (the dispatcher handles them at request time).
+    let graph = Arc::new(Mutex::new(g));
+
+    let reload_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let reload_events_cb = reload_events.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        // SSR-only: render_pages returns nothing (no SSG pages).
+        render_pages: Arc::new(|_pages| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        reload_renderer: Some(Arc::new(move || {
+            reload_events_cb.lock().unwrap().push("reload");
+            Ok(vec![])
+        })),
+    };
+
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("content/post.md"), ChangeKind::Modified)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("SSR-only edit tick must be non-noop (issue #807)");
+
+    // The reload must have fired even though no SSG pages were rendered.
+    assert_eq!(
+        *reload_events.lock().unwrap(),
+        vec!["reload"],
+        "SSR-only edit tick must trigger reload_renderer even when no SSG pages exist"
+    );
+    assert_eq!(
+        outcome.pages_rendered, 0,
+        "SSR-only project: render_pages returns nothing (no SSG pages)"
+    );
+}
+
+/// CSS-only change on an SSR-only project: the renderer must NOT be
+/// reloaded for a `Style` change (CSS doesn't affect the V8 bundle).
+#[test]
+fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("styles")).unwrap();
+    std::fs::write(project.join("styles/main.css"), ".x{}").unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    // Empty graph — SSR-only, no SSG page nodes.
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+
+    let reload_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let reload_events_cb = reload_events.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("styles")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let css_runs = Arc::new(AtomicUsize::new(0));
+    let css_runs_cb = css_runs.clone();
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_| Ok(vec![])),
+        run_css: Some(Arc::new(move || {
+            css_runs_cb.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        })),
+        run_islands: None,
+        reload_renderer: Some(Arc::new(move || {
+            reload_events_cb.lock().unwrap().push("reload");
+            Ok(vec![])
+        })),
+    };
+
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("styles/main.css"), ChangeKind::Modified)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("CSS change must be non-noop");
+
+    assert!(outcome.css_rerun, "CSS must rerun");
+    assert!(
+        reload_events.lock().unwrap().is_empty(),
+        "CSS-only change must NOT reload the renderer; got {:?}",
+        reload_events.lock().unwrap()
+    );
+    assert_eq!(css_runs.load(Ordering::SeqCst), 1, "CSS callback must run once");
+}
+
+/// Global change on an SSR-only project: `full_rebuild` sets `ssr_reload_needed`,
+/// so the renderer must reload even with zero SSG pages.
+#[test]
+fn ssr_only_project_global_change_reloads_renderer() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    // Mark zfb.config.ts as global.
+    let mut g = DependencyGraph::new();
+    g.mark_global(project.join("zfb.config.ts"));
+    let graph = Arc::new(Mutex::new(g));
+
+    let reload_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let reload_events_cb = reload_events.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        reload_renderer: Some(Arc::new(move || {
+            reload_events_cb.lock().unwrap().push("reload");
+            Ok(vec![])
+        })),
+    };
+
+    // Global change → full_rebuild plan which includes ssr_reload_needed.
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("zfb.config.ts"), ChangeKind::Modified)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("global change must be non-noop");
+
+    assert_eq!(
+        *reload_events.lock().unwrap(),
+        vec!["reload"],
+        "global change must trigger reload_renderer on SSR-only project"
+    );
+    let _ = outcome;
+}

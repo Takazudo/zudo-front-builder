@@ -202,6 +202,7 @@ pub fn apply_prod_asset_pipeline(
         // One-shot production build: the render session is constructed
         // against the bundle that was just built — nothing to reload.
         renderer_fresh: true,
+        ssr_reload_needed: false,
         prune_paths: vec![],
         triggers: vec![],
     };

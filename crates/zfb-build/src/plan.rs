@@ -36,6 +36,13 @@ pub struct RebuildPlan {
     /// never bundles twice.
     pub renderer_fresh: bool,
 
+    /// True when the tick was caused by a Content, Page, Module, or Data
+    /// change — i.e. something that could affect SSR output. Used to
+    /// trigger `reload_renderer` on SSR-only projects where `pages` is
+    /// always empty (no SSG pages exist) but the V8 host still needs a
+    /// fresh bundle after each edit (issue #807).
+    pub ssr_reload_needed: bool,
+
     /// Absolute dist-root paths that the pipeline must delete from disk
     /// and evict from any in-memory caches (issue #804).
     ///
@@ -110,6 +117,7 @@ impl RebuildPlan {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            ssr_reload_needed: false,
             prune_paths: Vec::new(),
             triggers: Vec::new(),
         }
@@ -122,6 +130,7 @@ impl RebuildPlan {
             rerun_css: true,
             rerun_islands: true,
             renderer_fresh: false,
+            ssr_reload_needed: true,
             prune_paths: Vec::new(),
             triggers: Vec::new(),
         }
@@ -137,6 +146,14 @@ impl RebuildPlan {
     /// [`RebuildPlan::renderer_fresh`]).
     pub fn mark_renderer_fresh(&mut self) {
         self.renderer_fresh = true;
+    }
+
+    /// Mark this tick as SSR-relevant — caused by a Content, Page, Module,
+    /// or Data change that may affect SSR output (issue #807). The pipeline
+    /// uses this to trigger `reload_renderer` on SSR-only projects where
+    /// `pages` is always empty.
+    pub fn mark_ssr_reload_needed(&mut self) {
+        self.ssr_reload_needed = true;
     }
 
     /// Add `path` to the diagnostics trigger list.
@@ -160,10 +177,12 @@ impl RebuildPlan {
     }
 
     /// True iff the plan would do nothing — no pages, no CSS, no
-    /// islands, and no paths to prune. The orchestrator skips empty plans.
+    /// islands, no paths to prune, and no SSR-only host reload needed.
+    /// The orchestrator skips empty plans.
     pub fn is_noop(&self) -> bool {
         !self.rerun_css
             && !self.rerun_islands
+            && !self.ssr_reload_needed
             && self.pages.is_empty()
             && self.prune_paths.is_empty()
     }

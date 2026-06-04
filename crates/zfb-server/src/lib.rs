@@ -114,6 +114,7 @@ pub use routes::{
 };
 pub use ssr::{
     SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
+    SsrRoutesHandle,
 };
 
 /// Options for [`serve`].
@@ -182,7 +183,12 @@ pub struct ServeOpts {
     /// HTML at request time, matching the Cloudflare adapter's
     /// production semantics. See [`crate::ssr`] for the wire shape
     /// and precedence contract.
-    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
+    ///
+    /// The handle is an `Arc<RwLock<Option<SsrRouteSet>>>` (issue #807) so
+    /// the per-tick renderer reload can swap in a fresh route set — adding
+    /// or removing `prerender = false` routes mid-session becomes visible
+    /// to the request dispatcher without a dev-server restart.
+    pub ssr_routes: Option<crate::ssr::SsrRoutesHandle>,
 
     /// User-supplied `base` config value from `zfb.config.ts` (issue
     /// #229). Passed through verbatim — the dev server normalises it

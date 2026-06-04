@@ -288,6 +288,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         dirty
                     };
                     plan.mark_pages(effective);
+                    // Content/Page/Module/Data changes may affect SSR output —
+                    // flag the plan so the pipeline reloads the V8 host even
+                    // on SSR-only projects where pages is always empty (issue #807).
+                    plan.mark_ssr_reload_needed();
 
                     // Modules under an islands root re-bundle islands.
                     if matches!(class, PathClass::Module)
@@ -327,6 +331,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // `schema.graphql` under an extra watch root
                     // actually re-render. Deep-review fix (PR #376).
                     plan.mark_pages(PageSelection::All);
+                    plan.mark_ssr_reload_needed();
                 }
             }
         }
@@ -365,8 +370,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         self.resolve_all(&mut plan);
         // After resolution an `All` plan can become an empty plan (the
         // graph has zero pages). Treat that as a no-op rather than
-        // erroring out of the pipeline.
-        if plan.pages.is_empty() && !plan.rerun_css && !plan.rerun_islands {
+        // erroring out of the pipeline UNLESS an SSR-only reload is needed
+        // (SSR-only projects have zero SSG pages but still require a
+        // renderer refresh on every relevant tick — issue #807).
+        if plan.pages.is_empty()
+            && !plan.rerun_css
+            && !plan.rerun_islands
+            && !plan.ssr_reload_needed
+        {
             return Ok(None);
         }
         let outcome = self.pipeline.apply(&plan, ctx)?;
@@ -499,7 +510,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             return Ok(None);
         }
         self.resolve_all(&mut plan);
-        if plan.pages.is_empty() && !plan.rerun_css && !plan.rerun_islands && plan.prune_paths.is_empty() {
+        if plan.pages.is_empty()
+            && !plan.rerun_css
+            && !plan.rerun_islands
+            && !plan.ssr_reload_needed
+            && plan.prune_paths.is_empty()
+        {
             return Ok(None);
         }
         let outcome = self.pipeline.apply(&plan, ctx)?;

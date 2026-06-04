@@ -374,12 +374,15 @@ pub struct AppState {
     /// to surface the matched entrypoint (full evaluation through
     /// the page renderer lands in a follow-up).
     pub injected_routes: Option<crate::injected_routes::InjectedRouteSet>,
-    /// Request-time SSR routes (issue #367 / Gap 1). `None` when the
-    /// project has no `prerender = false` pages. When `Some`, the page
-    /// handler dispatches matched URLs through this set BEFORE
+    /// Request-time SSR routes (issue #367 / Gap 1, live update issue #807).
+    /// `None` when the project has no `prerender = false` pages. When `Some`,
+    /// the page handler dispatches matched URLs through this set BEFORE
     /// consulting the page cache — see the precedence contract on
     /// [`crate::ssr`] for the full ordering.
-    pub ssr_routes: Option<crate::ssr::SsrRouteSet>,
+    ///
+    /// Wrapped in `Arc<RwLock<Option<SsrRouteSet>>>` so the per-tick
+    /// renderer reload can swap in a fresh route set mid-session.
+    pub ssr_routes: Option<crate::ssr::SsrRoutesHandle>,
     /// Embed-API handler set populated by
     /// [`crate::ServerBuilder::with_ssr_handler`] (#372). `None` in the
     /// `zfb dev` / `zfb preview` paths; `Some` when a Rust host
@@ -824,30 +827,41 @@ async fn serve_page(
     // falling through to a stale dist snapshot. Like the plugin layer
     // we accept every HTTP method here — the page's `fetch` handler
     // decides whether to allow `POST`/`PUT`/etc. (mirroring Cloudflare).
-    if let Some(set) = state.ssr_routes.as_ref() {
-        let path_only = format!("/{trimmed}");
-        if set.find_match(&path_only).is_some() {
-            // Strip the dev server's mount prefix from the URL before
-            // dispatching so the SSR handler sees the same shape
-            // Cloudflare delivers in production. Without this fix a
-            // request to `/<base>/dynamic?x=1` would reach the V8 host
-            // as `/<base>/dynamic?x=1`, diverging from prod where the
-            // adapter serves the route at `/dynamic?x=1`.
-            let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
-                .unwrap_or_else(|| path_only.clone());
-            return dispatch_ssr(
-                set,
-                &full,
-                &method,
-                &headers,
-                &body,
-                lr_prefix,
-                state.trailing_slash,
-                state.mode,
-                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
-                current_css_bundle_url(&state.css_bundle_url).as_deref(),
-            )
-            .await;
+    //
+    // Issue #807: `ssr_routes` is now a live handle (`Arc<RwLock<...>>`).
+    // Read a snapshot of the current route set under a short-lived read
+    // lock — the lock is released before any I/O so the writer (per-tick
+    // reload) is never blocked by in-flight requests.
+    if let Some(handle) = state.ssr_routes.as_ref() {
+        let set_snapshot: Option<crate::ssr::SsrRouteSet> = handle
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(set) = set_snapshot {
+            let path_only = format!("/{trimmed}");
+            if set.find_match(&path_only).is_some() {
+                // Strip the dev server's mount prefix from the URL before
+                // dispatching so the SSR handler sees the same shape
+                // Cloudflare delivers in production. Without this fix a
+                // request to `/<base>/dynamic?x=1` would reach the V8 host
+                // as `/<base>/dynamic?x=1`, diverging from prod where the
+                // adapter serves the route at `/dynamic?x=1`.
+                let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                    .unwrap_or_else(|| path_only.clone());
+                return dispatch_ssr(
+                    &set,
+                    &full,
+                    &method,
+                    &headers,
+                    &body,
+                    lr_prefix,
+                    state.trailing_slash,
+                    state.mode,
+                    current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                    current_css_bundle_url(&state.css_bundle_url).as_deref(),
+                )
+                .await;
+            }
         }
     }
 

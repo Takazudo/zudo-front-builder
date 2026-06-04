@@ -86,7 +86,7 @@ use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
     outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
-    SsrRouteRecord, SsrRouteSet,
+    SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 
 use crate::cli::DevArgs;
@@ -704,6 +704,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }))
     };
 
+    // Issue #807 — build the live SSR routes handle here, before the
+    // reload_renderer closure, so the closure can hold a clone of the
+    // Arc and update it on each tick. The dispatcher is built once and
+    // shared across all refreshes (the Arc<Mutex<Option<RendererState>>>
+    // it wraps is the same one the refresh swaps the new host into).
+    let ssr_route_set = build_ssr_route_set(dev_session.as_ref());
+
     // Per-tick bundle refresh for EDIT ticks. Without this the renderer
     // stays bound to the boot-time bundle: the content snapshot and page
     // modules are baked in at bundle time, so an in-place save
@@ -716,6 +723,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let reload_renderer: Option<RendererReloader> = dev_session.as_ref().map(|session| {
         let session = session.clone();
         let html_root = dev_html_root.clone();
+        // Clone the handle so the closure can write a fresh SsrRouteSet
+        // into it after each bundle refresh (issue #807). `None` when
+        // the renderer is disabled (no SSR in this project).
+        let ssr_handle_for_reload = ssr_route_set.clone();
         Arc::new(move || {
             let (changed, vanished_rel) = session
                 .refresh_bundle_and_routes()
@@ -725,6 +736,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     count = changed.len(),
                     "edit-tick refresh changed route sets"
                 );
+            }
+            // Issue #807 — update the live SSR route set so newly-added or
+            // removed `prerender = false` routes are visible to the request
+            // dispatcher on the next request, without a dev-server restart.
+            if let Some(handle) = &ssr_handle_for_reload {
+                let fresh_dispatcher = {
+                    let renderer_handle = session.renderer_handle();
+                    Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
+                        renderer_handle,
+                    )) as Arc<dyn SsrDispatcher>
+                };
+                let new_set = make_ssr_route_set(&session, fresh_dispatcher);
+                if let Ok(mut lock) = handle.write() {
+                    *lock = new_set;
+                }
             }
             // Convert relative vanished output paths to absolute dist paths
             // so DevAssetPipeline can delete them directly.
@@ -844,11 +870,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // pipeline stamps onto asset URLs. Without this the dev HTML emits
     // `<link href="/<base>/assets/styles.css">` while the dev server
     // only knew about unprefixed `/assets/...` — every request 404s.
-    // Issue #367 — build the SSR route set from the dev session's
-    // `prerender = false` pages, backed by the embedded V8 host the
-    // SSG pipeline already owns. None when no session (renderer
-    // disabled) or when the project has zero SSR pages.
-    let ssr_route_set = build_ssr_route_set(dev_session.as_ref());
+    // Issue #367 / #807 — `ssr_route_set` was built before the
+    // reload_renderer closure above so the closure holds a clone of the
+    // Arc and can update it on each tick (making added/removed
+    // `prerender = false` routes visible without a restart).
 
     let opts = ServeOpts {
         project_root,
@@ -2199,39 +2224,55 @@ fn make_discovery_hook(
     })
 }
 
-/// Build the [`SsrRouteSet`] for the dev server from the dev session
-/// (issue #367 / Gap 1).
+/// Build the initial live [`SsrRoutesHandle`] for the dev server from the
+/// dev session (issue #367 / Gap 1, live-update issue #807).
 ///
 /// Returns `None` when the dev session is absent (renderer disabled —
-/// the SSR layer would have no V8 host to dispatch through) or when
-/// every page in the project is SSG (no `prerender = false` routes).
-/// Otherwise constructs an [`crate::ssr_adapter::EmbeddedV8SsrAdapter`]
-/// over the same renderer mutex the SSG callback uses, so the V8 host
-/// is shared across build-time and request-time dispatches.
+/// the SSR layer would have no V8 host to dispatch through). When every
+/// page is SSG (no `prerender = false` routes at boot), the handle still
+/// wraps `None` so the request dispatcher does nothing but a later refresh
+/// can populate it if the user adds a `prerender = false` route mid-session.
 ///
-/// Live-reload of SSR page sources: `BuildContext::reload_renderer` is
-/// wired in dev, so any tick that re-renders SSG pages also swaps in a
-/// freshly-bundled host — the SSR adapter shares that host, so SSR
-/// routes serve the new code from the next request. The remaining gap
-/// is an SSR-ONLY project (or an edit whose tick dirties no SSG page):
-/// no SSG dirty set means no reload, and this `SsrRouteSet` itself is
-/// static after boot, so added/removed `prerender = false` routes still
-/// need a dev-server restart. Follow-up for a future sub-task.
+/// The handle is an `Arc<RwLock<Option<SsrRouteSet>>>`. The per-tick
+/// renderer reload callback holds a clone of this `Arc` and writes a fresh
+/// `SsrRouteSet` into it after each bundle refresh — adding or removing
+/// `prerender = false` routes mid-session is reflected on the next request
+/// without a dev-server restart (issue #807).
+///
+/// The dispatcher is constructed once from the session's renderer handle
+/// and reused across refreshes (the `Arc<Mutex<Option<RendererState>>>`
+/// it wraps is the same one the refresh swaps the new host into, so
+/// request-time SSR automatically sees the new bundle).
 ///
 /// Compiled in only when the `embed_v8` feature is on (issue #371,
 /// sub-task 4.1a) — the SSR adapter requires the V8 host.
 #[cfg(feature = "embed_v8")]
-fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRouteSet> {
+fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRoutesHandle> {
     let session = session?;
-    let patterns = session.ssr_patterns();
-    if patterns.is_empty() {
-        return None;
-    }
     let renderer_handle = session.renderer_handle();
     let dispatcher: Arc<dyn SsrDispatcher> =
         Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
             renderer_handle,
         ));
+    let initial_set = make_ssr_route_set(session, Arc::clone(&dispatcher));
+    Some(Arc::new(std::sync::RwLock::new(initial_set)))
+}
+
+/// Build an [`SsrRouteSet`] from the dev session's current SSR patterns.
+///
+/// Returns `None` when the session has zero `prerender = false` routes,
+/// which the request dispatcher treats identically to "no SSR configured."
+/// Called at boot (inside [`build_ssr_route_set`]) and after each tick's
+/// renderer reload to refresh the live handle (issue #807).
+#[cfg(feature = "embed_v8")]
+fn make_ssr_route_set(
+    session: &DevRenderSession,
+    dispatcher: Arc<dyn SsrDispatcher>,
+) -> Option<SsrRouteSet> {
+    let patterns = session.ssr_patterns();
+    if patterns.is_empty() {
+        return None;
+    }
     let records = patterns
         .into_iter()
         .map(|pattern| SsrRouteRecord { pattern })
