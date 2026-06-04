@@ -110,9 +110,15 @@ impl AssetPipeline for DevAssetPipeline {
             // see `RebuildPlan::renderer_fresh`). Errors abort the
             // tick — the watcher stays alive and the previous renderer
             // state is preserved by the orchestrator.
+            //
+            // The reloader also returns the globally-vanished absolute
+            // output paths (routes that existed before this tick's
+            // route-table rebuild but are absent from every source's new
+            // entry set). These are fed into the prune loop below.
+            let mut route_vanished: Vec<PathBuf> = Vec::new();
             if !plan.renderer_fresh {
                 if let Some(reload) = &ctx.reload_renderer {
-                    reload()?;
+                    route_vanished = reload()?;
                 }
             }
 
@@ -225,7 +231,14 @@ impl AssetPipeline for DevAssetPipeline {
             // Skip any path that appears in live_dests — another page in
             // this same tick now owns it, so deleting it would remove
             // that sibling's freshly-written artifact (the #727 bug).
-            for prev in prune_candidates {
+            //
+            // Also prune any globally-vanished route output paths returned
+            // by reload_renderer (routes that disappeared from the route
+            // table after this tick's rebuild — e.g. a content file was
+            // deleted or a dynamic route's paths() output shrank). Apply
+            // the same live_dests guard: if route A lost /x while route B
+            // simultaneously gained /x, /x must NOT be deleted.
+            for prev in prune_candidates.into_iter().chain(route_vanished) {
                 if live_dests.contains(&prev) {
                     continue; // another page now owns this path — skip
                 }
@@ -240,6 +253,19 @@ impl AssetPipeline for DevAssetPipeline {
                         p.into_inner()
                     })
                     .remove(&prev);
+                // Also evict the stale path from the last_output_path
+                // cache so the pipeline doesn't attempt to prune it again
+                // on the next tick.
+                {
+                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_output_path (route-prune)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    });
+                    last_out.retain(|_, v| v != &prev);
+                }
                 outcome.pages_pruned.push(prev);
             }
         }

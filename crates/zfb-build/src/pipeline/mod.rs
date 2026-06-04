@@ -308,7 +308,13 @@ pub type IslandsRunner =
 /// The hook is invoked once per tick when [`crate::RebuildPlan::pages`]
 /// is non-empty; the pipeline does not call it for CSS-only or
 /// islands-only ticks (those don't move the SSR bundle).
-pub type RendererReloader = Arc<dyn Fn() -> Result<()> + Send + Sync + 'static>;
+///
+/// Returns the set of **absolute** dist paths whose output routes vanished
+/// globally after this tick's route-table rebuild — i.e. paths that existed
+/// before the refresh but are absent from every source's new entry set.
+/// The dev pipeline prunes those files from disk and evicts them from the
+/// in-memory page cache. An empty `Vec` means no routes were lost this tick.
+pub type RendererReloader = Arc<dyn Fn() -> Result<Vec<std::path::PathBuf>> + Send + Sync + 'static>;
 
 /// Per-build-tick context handed to [`AssetPipeline::apply`].
 ///
