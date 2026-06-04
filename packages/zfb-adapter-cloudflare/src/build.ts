@@ -11,6 +11,9 @@
 // @ts-expect-error worker-wrapper.mjs has no declaration file; the export
 // shape is narrowed explicitly below.
 import { WORKER_WRAPPER_SOURCE as _wrapper } from "./worker-wrapper.mjs";
+// @ts-expect-error emit-worker.mjs has no declaration file; the export
+// shape is narrowed via EmitWorkerInput/EmitWorkerOutput below.
+import { emitWorker as _emitWorker } from "./emit-worker.mjs";
 
 /**
  * The wrapper source written to `_worker.js`. Imported from the single
@@ -67,18 +70,9 @@ export interface EmitWorkerOutput {
  * runtime — it is just `node:fs` glue.
  */
 export async function emitWorker(input: EmitWorkerInput): Promise<EmitWorkerOutput> {
-  const { mkdir, copyFile, writeFile } = await import("node:fs/promises");
-  const { resolve, join } = await import("node:path");
-
-  const outdir = resolve(input.outdir);
-  const inputBundle = resolve(input.inputBundlePath);
-
-  await mkdir(outdir, { recursive: true });
-  const innerBundlePath = join(outdir, "_zfb_inner.mjs");
-  await copyFile(inputBundle, innerBundlePath);
-
-  const workerPath = join(outdir, "_worker.js");
-  await writeFile(workerPath, WORKER_WRAPPER_SOURCE, "utf8");
-
-  return { workerPath, innerBundlePath };
+  return _emitWorker({
+    inputBundlePath: input.inputBundlePath,
+    outdir: input.outdir,
+    workerWrapperSource: WORKER_WRAPPER_SOURCE,
+  }) as Promise<EmitWorkerOutput>;
 }
