@@ -46,7 +46,9 @@
 //! Ported in Wave 5 (#578). Separate from `heading_marker_toc.rs` (#570)
 //! so users can enable data-export without the in-body heading-marker insertion.
 
-use zfb_md_ast::{HastNode, HastVisitor, TocExportConfig, extract_text};
+use zfb_md_ast::{HastNode, HastVisitor, TocExportConfig};
+
+use crate::toc_common::{heading_level, heading_text_without_hash_link};
 
 /// Hast visitor that injects `export const toc = [...]` at the top of the
 /// document root.
@@ -136,45 +138,6 @@ fn flat_entry(node: &HastNode, max_depth: u8) -> Option<FlatEntry> {
         return None;
     }
     Some(FlatEntry { depth, id, text })
-}
-
-/// Strip the hash-link anchor appended by `HeadingLinksPlugin` and return
-/// the heading's plain-text content. Mirrors the same helper in
-/// `heading_marker_toc.rs`.
-fn heading_text_without_hash_link(node: &HastNode) -> String {
-    let HastNode::Element { children, .. } = node else {
-        return extract_text(node);
-    };
-    let filtered: Vec<&HastNode> = children
-        .iter()
-        .filter(|c| !is_hash_link(c))
-        .collect();
-    let mut out = String::new();
-    for c in filtered {
-        out.push_str(&extract_text(c));
-    }
-    out
-}
-
-fn is_hash_link(node: &HastNode) -> bool {
-    let HastNode::Element { tag, attrs, children, .. } = node else {
-        return false;
-    };
-    tag == "a"
-        && children.is_empty()
-        && attrs.iter().any(|(k, v)| k == "class" && v == "hash-link")
-}
-
-fn heading_level(tag: &str) -> Option<u8> {
-    match tag {
-        "h1" => Some(1),
-        "h2" => Some(2),
-        "h3" => Some(3),
-        "h4" => Some(4),
-        "h5" => Some(5),
-        "h6" => Some(6),
-        _ => None,
-    }
 }
 
 /// Build a nested `TocEntry` tree from a flat list, grouping children of
@@ -395,7 +358,10 @@ mod tests {
         );
         let export = extract_export(&tree);
         // Double-quote must be escaped; angle brackets are safe in JSON strings.
-        assert!(export.contains(r#"\"hello\""#), "quotes must be escaped: {export}");
+        assert!(
+            export.contains(r#"\"hello\""#),
+            "quotes must be escaped: {export}"
+        );
     }
 
     #[test]
@@ -407,7 +373,10 @@ mod tests {
             TocExportConfig::default(),
         );
         let export = extract_export(&tree);
-        assert!(export.contains("\"text\":\"Clean\""), "text must be clean: {export}");
+        assert!(
+            export.contains("\"text\":\"Clean\""),
+            "text must be clean: {export}"
+        );
     }
 
     #[test]

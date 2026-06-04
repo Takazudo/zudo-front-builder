@@ -29,7 +29,9 @@
 //! Wire via `features.headingMarkerToc = { heading: "TOC", maxDepth: 2 }`
 //! in `zfb.config.ts`.
 
-use zfb_md_ast::{HastNode, HastVisitor, TocConfig, extract_text};
+use zfb_md_ast::{HastNode, HastVisitor, TocConfig};
+
+use crate::toc_common::{heading_level, heading_text_without_hash_link};
 
 /// Hast visitor that inserts a `<ul>/<li>` table of contents after the
 /// TOC anchor heading.
@@ -96,7 +98,7 @@ fn find_anchor(children: &[HastNode], cfg: &TocConfig) -> Option<usize> {
         if !is_heading_tag(tag) {
             continue;
         }
-        let text = heading_text_without_anchor(node);
+        let text = heading_text_without_hash_link(node);
         if text.trim().to_lowercase() == target {
             return Some(i);
         }
@@ -126,51 +128,15 @@ fn heading_entry(node: &HastNode, max_level: u8) -> Option<TocEntry> {
     if id.is_empty() {
         return None;
     }
-    let text = heading_text_without_anchor(node);
+    let text = heading_text_without_hash_link(node);
     if text.is_empty() {
         return None;
     }
     Some(TocEntry { level, text, id })
 }
 
-fn heading_text_without_anchor(node: &HastNode) -> String {
-    let HastNode::Element { children, .. } = node else {
-        return extract_text(node);
-    };
-    let filtered: Vec<&HastNode> = children
-        .iter()
-        .filter(|c| !is_hash_link(c))
-        .collect();
-    let mut out = String::new();
-    for c in filtered {
-        out.push_str(&extract_text(c));
-    }
-    out
-}
-
-fn is_hash_link(node: &HastNode) -> bool {
-    let HastNode::Element { tag, attrs, children, .. } = node else {
-        return false;
-    };
-    tag == "a"
-        && children.is_empty()
-        && attrs.iter().any(|(k, v)| k == "class" && v == "hash-link")
-}
-
 fn is_heading_tag(tag: &str) -> bool {
     matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
-}
-
-fn heading_level(tag: &str) -> Option<u8> {
-    match tag {
-        "h1" => Some(1),
-        "h2" => Some(2),
-        "h3" => Some(3),
-        "h4" => Some(4),
-        "h5" => Some(5),
-        "h6" => Some(6),
-        _ => None,
-    }
 }
 
 fn build_nested_list(entries: &[TocEntry], base_level: u8) -> HastNode {
@@ -272,7 +238,13 @@ mod tests {
     }
 
     fn collect_hrefs_inner(node: &HastNode, out: &mut Vec<String>) {
-        if let HastNode::Element { tag, attrs, children, .. } = node {
+        if let HastNode::Element {
+            tag,
+            attrs,
+            children,
+            ..
+        } = node
+        {
             if tag == "a" {
                 if let Some((_, v)) = attrs.iter().find(|(k, _)| k == "href") {
                     out.push(v.clone());
@@ -303,7 +275,12 @@ mod tests {
         let children = root_children(&tree);
         assert_eq!(children.len(), 4, "TOC list must be inserted");
         let toc_list = &children[1];
-        let HastNode::Element { tag, children: ul_children, .. } = toc_list else {
+        let HastNode::Element {
+            tag,
+            children: ul_children,
+            ..
+        } = toc_list
+        else {
             panic!("expected <ul>");
         };
         assert_eq!(tag, "ul");
@@ -352,15 +329,27 @@ mod tests {
 
         let children = root_children(&tree);
         let toc_list = &children[1];
-        let HastNode::Element { children: ul_children, .. } = toc_list else {
+        let HastNode::Element {
+            children: ul_children,
+            ..
+        } = toc_list
+        else {
             panic!("expected <ul>");
         };
         assert_eq!(ul_children.len(), 2, "two top-level items");
 
-        let HastNode::Element { children: li1_children, .. } = &ul_children[0] else {
+        let HastNode::Element {
+            children: li1_children,
+            ..
+        } = &ul_children[0]
+        else {
             panic!("expected <li>");
         };
-        assert_eq!(li1_children.len(), 2, "alpha <li> must have link + nested ul");
+        assert_eq!(
+            li1_children.len(),
+            2,
+            "alpha <li> must have link + nested ul"
+        );
         let hrefs = collect_hrefs(&li1_children[1]);
         assert_eq!(hrefs, vec!["#sub"]);
     }
