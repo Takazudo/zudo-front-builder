@@ -238,9 +238,7 @@ impl<E: CssEngine> CssPipeline<E> {
         let mut files: Vec<PathBuf> = self.config.css_modules.clone();
         let mut seen: std::collections::HashSet<PathBuf> = files.iter().cloned().collect();
 
-        let per_source = if self.config.auto_discover_modules
-            && !self.config.sources.is_empty()
-        {
+        let per_source = if self.config.auto_discover_modules && !self.config.sources.is_empty() {
             let scan: ModuleImportScan = scan_css_module_imports(&self.config.sources)
                 .context("CSS Modules import scan failed")?;
             for m in &scan.modules {

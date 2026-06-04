@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use zfb_css::{
-    build_synthesised_entry_css, link_href, scan_css_module_imports, CssEngine, CssPipeline,
-    CssPipelineConfig, CssModulesOutput, CssModulesProcessor, NativeRustEngine,
+    build_synthesised_entry_css, link_href, scan_css_module_imports, CssEngine, CssModulesOutput,
+    CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine,
     TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 
@@ -32,8 +32,8 @@ fn native_engine_returns_not_implemented_error() {
 fn subprocess_engine_mock_short_circuits_command() {
     // Use the mock-output escape hatch so this test does not require the
     // tailwindcss binary to be present.
-    let cfg = TailwindSubprocessConfig::default()
-        .with_mock_output(".mock-utility { color: red; }\n");
+    let cfg =
+        TailwindSubprocessConfig::default().with_mock_output(".mock-utility { color: red; }\n");
     let engine = TailwindSubprocessEngine::new(cfg);
     let css = engine
         .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
@@ -105,8 +105,7 @@ fn pipeline_writes_hashed_asset_with_mock_engine() {
     let output_root = tmp.path().to_path_buf();
 
     let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default()
-            .with_mock_output(".u-text-red { color: red; }\n"),
+        TailwindSubprocessConfig::default().with_mock_output(".u-text-red { color: red; }\n"),
     );
     let cfg = CssPipelineConfig {
         sources: vec![PathBuf::from("pages/index.tsx")],
@@ -235,26 +234,20 @@ export function DocShell() {
     )
     .unwrap();
     let fw_module = fw_components.join("shell.module.css");
-    std::fs::write(
-        &fw_module,
-        ".shell { padding: 1rem; }\n",
-    )
-    .unwrap();
+    std::fs::write(&fw_module, ".shell { padding: 1rem; }\n").unwrap();
 
     // ---- Tailwind engine config (mocked subprocess) ----
     // We feed a mock output that simulates the real binary scanning
     // both @source globs and emitting utilities for both pages —
     // including the framework-only `prose-zfb-only` class.
-    let mock_tailwind = ".flex{display:flex}.items-center{align-items:center}.prose-zfb-only{max-width:65ch}\n";
+    let mock_tailwind =
+        ".flex{display:flex}.items-center{align-items:center}.prose-zfb-only{max-width:65ch}\n";
 
     let tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(&user_proj)
         .with_input_css(&user_global_css_file)
         .with_content_globs(vec!["pages/**/*.{tsx,jsx,ts,js}"])
-        .with_framework_package_globs(vec![format!(
-            "{}/**/*.{{tsx,jsx,ts,js}}",
-            fw_pkg.display()
-        )])
+        .with_framework_package_globs(vec![format!("{}/**/*.{{tsx,jsx,ts,js}}", fw_pkg.display())])
         .with_theme_block("@theme inline {\n  --font-display: 'Inter';\n}\n")
         .with_mock_output(mock_tailwind);
     let engine = TailwindSubprocessEngine::new(tw_cfg);
@@ -377,12 +370,14 @@ export function DocShell() {
             json_path.display(),
             class_map_dir.display()
         );
-        assert!(json_path.exists(), "json {} must exist", json_path.display());
+        assert!(
+            json_path.exists(),
+            "json {} must exist",
+            json_path.display()
+        );
         let body = std::fs::read_to_string(json_path).unwrap();
-        let parsed: std::collections::BTreeMap<String, String> =
-            serde_json::from_str(&body).unwrap_or_else(|e| {
-                panic!("invalid JSON for {}: {e}\n{body}", module_path.display())
-            });
+        let parsed: std::collections::BTreeMap<String, String> = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("invalid JSON for {}: {e}\n{body}", module_path.display()));
         // Each map must contain at least one binding.
         assert!(!parsed.is_empty());
     }
@@ -395,8 +390,7 @@ export function DocShell() {
 
 #[test]
 fn synthesised_entry_drops_duplicate_tailwind_import_from_user_css() {
-    let cfg = TailwindSubprocessConfig::default()
-        .with_content_globs(vec!["pages/**/*.tsx"]);
+    let cfg = TailwindSubprocessConfig::default().with_content_globs(vec!["pages/**/*.tsx"]);
     let user = "@import \"tailwindcss\";\n.foo { color: red; }\n";
     let out = build_synthesised_entry_css(&cfg, Some(user));
     let occurrences = out.matches("@import \"tailwindcss\"").count();
@@ -423,8 +417,7 @@ fn synthesised_entry_drops_duplicate_tailwind_import_from_user_css() {
 
 #[test]
 fn synthesised_entry_omits_full_import_when_user_css_has_split_import() {
-    let cfg = TailwindSubprocessConfig::default()
-        .with_content_globs(vec!["pages/**/*.tsx"]);
+    let cfg = TailwindSubprocessConfig::default().with_content_globs(vec!["pages/**/*.tsx"]);
 
     // User CSS uses split imports — the deliberate way to opt out of the
     // full default Tailwind theme.
@@ -491,9 +484,7 @@ fn scanner_finds_module_imports_in_real_tsx_file() {
     let scan = scan_css_module_imports(std::slice::from_ref(&tsx)).expect("scan");
     assert_eq!(scan.modules.len(), 2);
     assert!(
-        scan.modules
-            .iter()
-            .any(|p| p.ends_with("local.module.css")),
+        scan.modules.iter().any(|p| p.ends_with("local.module.css")),
         "scan: {scan:?}"
     );
     assert!(
@@ -518,8 +509,7 @@ fn build_emitter_returns_bytes_and_stable_url_without_writing_asset() {
     let output_root = tmp.path().to_path_buf();
 
     let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default()
-            .with_mock_output(".u-text-red { color: red; }\n"),
+        TailwindSubprocessConfig::default().with_mock_output(".u-text-red { color: red; }\n"),
     );
     let cfg = CssPipelineConfig {
         sources: vec![PathBuf::from("pages/index.tsx")],
@@ -572,9 +562,7 @@ fn build_emitter_bytes_match_build_output_for_same_inputs() {
         ..CssPipelineConfig::default()
     };
     let p1 = CssPipeline::new(
-        TailwindSubprocessEngine::new(
-            TailwindSubprocessConfig::default().with_mock_output(mock),
-        ),
+        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock)),
         cfg1,
     );
     let built = p1.build().expect("build");
@@ -586,9 +574,7 @@ fn build_emitter_bytes_match_build_output_for_same_inputs() {
         ..CssPipelineConfig::default()
     };
     let p2 = CssPipeline::new(
-        TailwindSubprocessEngine::new(
-            TailwindSubprocessConfig::default().with_mock_output(mock),
-        ),
+        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock)),
         cfg2,
     );
     let emitted = p2.build_emitter().expect("build_emitter");
@@ -620,9 +606,8 @@ fn build_emitter_still_writes_class_map_jsons_when_configured() {
         class_map_dir: Some(class_map_dir.clone()),
         ..CssPipelineConfig::default()
     };
-    let engine = TailwindSubprocessEngine::new(
-        TailwindSubprocessConfig::default().with_mock_output(""),
-    );
+    let engine =
+        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(""));
     let pipeline = CssPipeline::new(engine, cfg);
     let _ = pipeline.build_emitter().expect("build_emitter");
 
@@ -631,7 +616,9 @@ fn build_emitter_still_writes_class_map_jsons_when_configured() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert!(
-        entries.iter().any(|n| n.ends_with("button.module.css.classes.json")),
+        entries
+            .iter()
+            .any(|n| n.ends_with("button.module.css.classes.json")),
         "expected button class-map json, got entries: {entries:?}"
     );
 

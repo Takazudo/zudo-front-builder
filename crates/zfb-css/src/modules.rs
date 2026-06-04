@@ -111,11 +111,7 @@ impl CssModulesProcessor {
         self.process_one(path, source)
     }
 
-    fn process_one(
-        &self,
-        path: &Path,
-        source: &str,
-    ) -> Result<(String, HashMap<String, String>)> {
+    fn process_one(&self, path: &Path, source: &str) -> Result<(String, HashMap<String, String>)> {
         let pattern = self
             .config
             .pattern
@@ -139,24 +135,15 @@ impl CssModulesProcessor {
             ..ParserOptions::default()
         };
 
-        let stylesheet = StyleSheet::parse(source, parser_opts).map_err(|e| {
-            anyhow::anyhow!(
-                "lightningcss failed to parse {}: {e}",
-                path.display()
-            )
-        })?;
+        let stylesheet = StyleSheet::parse(source, parser_opts)
+            .map_err(|e| anyhow::anyhow!("lightningcss failed to parse {}: {e}", path.display()))?;
 
         let printed = stylesheet
             .to_css(PrinterOptions {
                 minify: !self.config.dev,
                 ..PrinterOptions::default()
             })
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "lightningcss failed to print {}: {e}",
-                    path.display()
-                )
-            })?;
+            .map_err(|e| anyhow::anyhow!("lightningcss failed to print {}: {e}", path.display()))?;
 
         // Translate the lightningcss `exports` map (Option<CssModuleExports>)
         // into a plain HashMap<String, String> of original→scoped names.

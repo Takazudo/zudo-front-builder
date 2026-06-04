@@ -130,9 +130,7 @@ pub fn scan_css_module_imports(sources: &[PathBuf]) -> Result<ModuleImportScan> 
 }
 
 /// In-memory variant — the caller already has the source text.
-pub fn scan_css_module_imports_in_memory(
-    sources: &[(PathBuf, String)],
-) -> ModuleImportScan {
+pub fn scan_css_module_imports_in_memory(sources: &[(PathBuf, String)]) -> ModuleImportScan {
     let mut all: BTreeSet<PathBuf> = BTreeSet::new();
     let mut per_source: Vec<SourceModuleUsage> = Vec::with_capacity(sources.len());
     for (src, text) in sources {
@@ -261,10 +259,7 @@ fn normalise_path(p: &Path) -> PathBuf {
         match comp {
             Component::CurDir => {}
             Component::ParentDir => {
-                if matches!(
-                    out.last(),
-                    Some(Component::Normal(_))
-                ) {
+                if matches!(out.last(), Some(Component::Normal(_))) {
                     out.pop();
                 } else {
                     // RootDir / Prefix / nothing — leave it as-is so
