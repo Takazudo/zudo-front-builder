@@ -152,7 +152,6 @@ describe("swapBodyElement — persist lift", () => {
     document.body.innerHTML = `
       <div ${PERSIST_ATTR}="island1" data-zfb-island data-props='{"count":1}'>island</div>
     `;
-    const el = document.querySelector(`[${PERSIST_ATTR}="island1"]`) as HTMLElement;
 
     const newDoc = htmlDoc(`<!doctype html><html><head></head><body>
       <div ${PERSIST_ATTR}="island1" data-zfb-island></div>
