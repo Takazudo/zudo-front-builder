@@ -1908,9 +1908,19 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                 });
             }
             ModuleDecl::ExportNamed(named) => {
+                // `export type { … }` is compile-time-erased — skip the
+                // entire declaration (mirrors collect_client_router_facts).
+                if named.type_only {
+                    continue;
+                }
                 for spec in &named.specifiers {
                     match spec {
                         ExportSpecifier::Named(n) => {
+                            // Per-specifier `{ type Foo, Bar }` — Foo is
+                            // erased; skip it (mirrors collect_client_router_facts).
+                            if n.is_type_only {
+                                continue;
+                            }
                             let pick = n.exported.as_ref().unwrap_or(&n.orig);
                             let name = module_export_name(pick);
                             // For named re-exports the local ident is
@@ -5372,5 +5382,75 @@ mod tests {
              emit the island; got {islands:?}"
         );
         assert_eq!(islands[0].component_name, "Counter");
+    }
+
+    #[test]
+    fn island_not_emitted_for_declaration_level_type_only_named_reexport() {
+        // Guard 1: `export type { Foo } from "./types"` sets type_only=true at
+        // the ExportNamed declaration level. The use-client module is reached
+        // via a plain runtime import, so it IS discovered — but the type-only
+        // re-export must NOT add Foo to the island records.
+        // Note: ./types is intentionally not registered; collect_import_specifiers
+        // already skips type-only edges so the resolver is never called for it.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Widget } from "../components/widget";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/widget.tsx"),
+                r#""use client";
+                export type { Foo } from "./types";
+                export function Widget() {}
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.iter().any(|i| i.component_name == "Widget"),
+            "Widget must be emitted as an island; got {islands:?}"
+        );
+        assert!(
+            !islands.iter().any(|i| i.component_name == "Foo"),
+            "Foo is a type-only re-export and must NOT be emitted as an island; got {islands:?}"
+        );
+    }
+
+    #[test]
+    fn island_not_emitted_for_per_specifier_type_only_named_export() {
+        // Guard 2: `export { type Foo, Bar }` — declaration-level type_only is
+        // false, but the Foo specifier has is_type_only=true. The use-client
+        // module is reached via a plain runtime import, so it IS discovered —
+        // but only Bar must appear as an island, not Foo.
+        // Foo is declared (non-exported) and re-exported only via the
+        // per-specifier list, so the only path by which Foo could become an
+        // island is through the ExportNamed specifier — which Guard 2 must stop.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Bar } from "../components/widget";
+                export default function Home() {}
+                "#,
+            )
+            .with_file(
+                root().join("components/widget.tsx"),
+                r#""use client";
+                export function Bar() {}
+                function Foo() {}
+                export { type Foo, Bar };
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.iter().any(|i| i.component_name == "Bar"),
+            "Bar must be emitted as an island; got {islands:?}"
+        );
+        assert!(
+            !islands.iter().any(|i| i.component_name == "Foo"),
+            "Foo is a per-specifier type-only export and must NOT be emitted as an island; got {islands:?}"
+        );
     }
 }
