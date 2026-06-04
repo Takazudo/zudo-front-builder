@@ -73,7 +73,7 @@ use zfb_router::Router;
 use zfb_render::paths::PathsCache;
 
 use crate::cli::BuildArgs;
-use crate::commands::resolve::resolve_outdir;
+use crate::commands::resolve::{resolve_outdir, validate_outdir_safety, wipe_outdir_contents};
 use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
@@ -183,6 +183,13 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         &setup_registries,
         &virtual_sources,
     );
+
+    // #805 — wipe outdir before preBuild so plugin-emitted files (emitted
+    // after this point) always land in a clean directory.
+    validate_outdir_safety(&project_root, &outdir)
+        .context("outdir safety check failed")?;
+    wipe_outdir_contents(&outdir)
+        .with_context(|| format!("failed to wipe outdir {}", outdir.display()))?;
 
     if let Some(host) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
