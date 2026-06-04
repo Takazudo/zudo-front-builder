@@ -106,7 +106,20 @@ pub fn wipe_outdir_contents(outdir: &Path) -> Result<()> {
 
         if meta.file_type().is_symlink() {
             // Remove the link itself; do NOT recurse through it.
-            std::fs::remove_file(&path)
+            // On Unix, `remove_file` (unlink) works for all symlinks regardless
+            // of whether the target is a file or directory.  On Windows,
+            // symlinks-to-directories are junction-like and require
+            // `remove_dir`; `remove_file` would return a permission error.
+            #[cfg(windows)]
+            let rm_result = if path.is_dir() {
+                // is_dir() follows the symlink — true only for dir-symlinks / junctions.
+                std::fs::remove_dir(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            #[cfg(not(windows))]
+            let rm_result = std::fs::remove_file(&path);
+            rm_result
                 .with_context(|| format!("failed to remove symlink {} from outdir", path.display()))?;
         } else if meta.is_dir() {
             std::fs::remove_dir_all(&path)
