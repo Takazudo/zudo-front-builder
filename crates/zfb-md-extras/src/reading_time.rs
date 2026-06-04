@@ -22,6 +22,23 @@
 //! CJK characters contribute one "word" each and are divided by the same
 //! WPM value as Latin tokens.
 //!
+//! # Deviations from remark-reading-time
+//!
+//! 1. **Code/inline-code/HTML/math nodes are skipped.** remark-reading-time
+//!    visits `code` nodes and includes their text in the word count. This
+//!    implementation intentionally skips `Code`, `InlineCode`, `Html`,
+//!    `Math`, and `InlineMath` nodes so that code-heavy documents are not
+//!    over-estimated.
+//!
+//! 2. **A single space is injected at block boundaries.** remark-reading-time
+//!    concatenates raw text values with no separator. This implementation
+//!    appends a single space after the children of `Paragraph`, `Heading`,
+//!    and `TableCell` nodes so that adjacent inline spans that share no
+//!    source whitespace (e.g. `**foo**bar`) are not erroneously merged into
+//!    one word. `ListItem` is intentionally left unchanged because tight-list
+//!    content is already wrapped in `Paragraph` nodes by the markdown crate,
+//!    so the separator is injected transitively.
+//!
 //! # CJK range
 //!
 //! Characters in the following Unicode blocks are counted individually:
@@ -140,7 +157,6 @@ fn extract_mdast_text(node: &MdastNode, out: &mut String) {
     match node {
         MdastNode::Text(t) => {
             out.push_str(&t.value);
-            out.push(' ');
         }
         // Code blocks and inline code are excluded — remark-reading-time
         // skips `code` nodes so code-heavy docs are not over-estimated.
@@ -157,11 +173,13 @@ fn extract_mdast_text(node: &MdastNode, out: &mut String) {
             for child in &p.children {
                 extract_mdast_text(child, out);
             }
+            out.push(' ');
         }
         MdastNode::Heading(h) => {
             for child in &h.children {
                 extract_mdast_text(child, out);
             }
+            out.push(' ');
         }
         MdastNode::Emphasis(e) => {
             for child in &e.children {
@@ -202,6 +220,7 @@ fn extract_mdast_text(node: &MdastNode, out: &mut String) {
             for child in &cell.children {
                 extract_mdast_text(child, out);
             }
+            out.push(' ');
         }
         MdastNode::Table(t) => {
             for child in &t.children {
@@ -501,5 +520,27 @@ mod tests {
             "600 words at 200 WPM must produce 3 minutes: {}",
             esm.value,
         );
+    }
+
+    // ── extract_mdast_text regressions ─────────────────────────────────────
+
+    #[test]
+    fn emphasis_adjacent_word_counts_once() {
+        // **foo**bar — Strong[Text('foo')] immediately followed by Text('bar')
+        // with no source whitespace. Must be counted as one word, not two.
+        let node = parse_mdast("**foo**bar");
+        let mut t = String::new();
+        extract_mdast_text(&node, &mut t);
+        assert_eq!(count_words(&t), 1);
+    }
+
+    #[test]
+    fn block_boundary_separator_injected() {
+        // "# Foo\n\nBar" — heading and paragraph are separate blocks.
+        // The block-boundary space must ensure they count as two distinct words.
+        let node = parse_mdast("# Foo\n\nBar");
+        let mut t = String::new();
+        extract_mdast_text(&node, &mut t);
+        assert_eq!(count_words(&t), 2);
     }
 }
