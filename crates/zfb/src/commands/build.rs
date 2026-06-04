@@ -56,7 +56,7 @@ use zfb_build::adapter::{
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::head_inject::ProdHeadAssets;
 use zfb_build::pipeline::{
-    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload,
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload, CompanionFile,
     ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
@@ -774,6 +774,7 @@ pub(crate) fn build_default_css_payload(
         bytes: emitter_out.bytes,
         relative_path: css_relative_path(),
         stable_url: emitter_out.stable_url,
+        companions: Vec::new(),
     }))
 }
 
@@ -1102,11 +1103,22 @@ pub(crate) fn build_default_islands_payload(
         .with_client_router(scan_meta.uses_client_router);
 
     match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
-        Some(asset) => Ok(Some(AssetEmitterPayload {
-            bytes: asset.bytes,
-            relative_path: asset.relative_path,
-            stable_url: asset.stable_url,
-        })),
+        Some(asset) => {
+            let companions = asset
+                .chunks
+                .into_iter()
+                .map(|c| CompanionFile {
+                    filename: c.filename,
+                    bytes: c.bytes,
+                })
+                .collect();
+            Ok(Some(AssetEmitterPayload {
+                bytes: asset.bytes,
+                relative_path: asset.relative_path,
+                stable_url: asset.stable_url,
+                companions,
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -3423,6 +3435,7 @@ mod tests {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
                     stable_url: "/assets/styles.css".to_string(),
+                    companions: Vec::new(),
                 }),
                 islands: None,
             },
@@ -3503,11 +3516,13 @@ mod tests {
                     bytes: b".x{}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
                     stable_url: "/assets/styles.css".to_string(),
+                    companions: Vec::new(),
                 }),
                 islands: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b"// js".to_vec(),
                     relative_path: PathBuf::from("assets/islands.js"),
                     stable_url: "/assets/islands.js".to_string(),
+                    companions: Vec::new(),
                 }),
             }
         }
@@ -3708,11 +3723,13 @@ mod tests {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
                     stable_url: "/assets/styles.css".to_string(),
+                    companions: Vec::new(),
                 }),
                 islands: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b"globalThis.__zfb_islands??=[];".to_vec(),
                     relative_path: PathBuf::from("assets/islands.js"),
                     stable_url: "/assets/islands.js".to_string(),
+                    companions: Vec::new(),
                 }),
             },
         );
