@@ -664,6 +664,10 @@ export async function navigate(href: string, options?: Options) {
     }
     return;
   }
+  if (!supportsViewTransitions && getFallback() === "none") {
+    location.href = new URL(href, location.href).href;
+    return;
+  }
   await transition("forward", originalLocation, new URL(href, location.href), options ?? {});
 }
 

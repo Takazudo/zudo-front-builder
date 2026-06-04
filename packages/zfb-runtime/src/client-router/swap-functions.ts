@@ -137,7 +137,9 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
     ) {
       el.setAttribute("ssr", "");
       // zfb island wrapper writes SSR props to data-props, not props (different attribute, not just renamed).
-      el.setAttribute("data-props", newTarget.getAttribute("data-props")!);
+      const np = newTarget.getAttribute("data-props");
+      if (np !== null) el.setAttribute("data-props", np);
+      else el.removeAttribute("data-props");
     }
   }
 
