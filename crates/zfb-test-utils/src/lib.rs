@@ -53,9 +53,7 @@ pub fn locate_esbuild() -> Option<PathBuf> {
 
     if let Some(ref workspace) = workspace {
         // Step 2: workspace-local binary slot.
-        let slot = workspace
-            .join("crates/zfb/binaries/esbuild")
-            .join(binary);
+        let slot = workspace.join("crates/zfb/binaries/esbuild").join(binary);
         if slot.is_file() {
             return Some(slot);
         }

@@ -625,7 +625,10 @@ mod tests {
         // esbuild flag and the emitted glue). Round-trip both variants and
         // confirm the default fallback for unknown sources.
         for fw in [FrameworkKind::Preact, FrameworkKind::React] {
-            assert_eq!(FrameworkKind::from_jsx_import_source(fw.jsx_import_source()), fw);
+            assert_eq!(
+                FrameworkKind::from_jsx_import_source(fw.jsx_import_source()),
+                fw
+            );
         }
         assert_eq!(
             FrameworkKind::from_jsx_import_source("react"),

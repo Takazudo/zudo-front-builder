@@ -238,11 +238,7 @@ impl TailwindSubprocessConfig {
     /// `handle` is wrapped in [`Arc`] so the surrounding
     /// `#[derive(Clone)]` keeps working — `tempfile::TempDir` is not
     /// itself `Clone`.
-    pub fn with_embedded_binary(
-        mut self,
-        handle: tempfile::TempDir,
-        path: PathBuf,
-    ) -> Self {
+    pub fn with_embedded_binary(mut self, handle: tempfile::TempDir, path: PathBuf) -> Self {
         if std::env::var_os("ZFB_TAILWIND_BIN").is_some() {
             // Env tier already won — drop the handle on the floor and
             // leave `binary_path` pointing at the env value.
@@ -253,6 +249,98 @@ impl TailwindSubprocessConfig {
         self._embedded_handle = Some(Arc::new(handle));
         self
     }
+}
+
+/// Append a single `@source "<escaped_value>";\n` directive to `out`.
+///
+/// Only `"` and `\` need escaping in a CSS string literal; glob
+/// metacharacters (`*`, `{`, `}`, etc.) are left untouched because
+/// Tailwind v4 interprets them as glob syntax inside the `@source`
+/// value — escaping them would break pattern expansion.
+fn push_escaped_source(out: &mut String, value: &str) {
+    out.push_str("@source \"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out.push_str("\";\n");
+}
+
+/// Strip CSS block comments (`/* … */`) and line comments (`//…`) from
+/// `text` so that import-detection is not fooled by commented-out directives.
+///
+/// The algorithm is a byte state machine matching the one in
+/// `scanner.rs::extract_module_css_specifiers`: string literals (delimited
+/// by `"`, `'`, or `` ` ``) take precedence over comment scanning so that
+/// `/*` inside a string is treated as literal text, not a comment start.
+/// Only the "active" (uncommented) characters are returned.
+///
+/// Caveat: bytes are pushed via `b as char`, so multi-byte UTF-8 sequences
+/// are mangled in the returned text. Harmless here — the result is a
+/// detection-only scratch copy (the original bytes are what get emitted),
+/// and the `@import "tailwindcss"` needle is pure ASCII.
+fn strip_css_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // String literals: copy verbatim so `/*` inside a string isn't
+        // mistaken for a comment open.
+        if b == b'"' || b == b'\'' || b == b'`' {
+            let quote = b;
+            out.push(b as char);
+            i += 1;
+            while i < bytes.len() {
+                let c = bytes[i];
+                out.push(c as char);
+                if c == b'\\' && i + 1 < bytes.len() {
+                    i += 1;
+                    out.push(bytes[i] as char);
+                    i += 1;
+                    continue;
+                }
+                if c == b'\n' || c == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else if b == b'/' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'/' {
+                // Line comment: skip until newline (keep the newline so
+                // line numbers are preserved for any downstream tool).
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            } else if next == b'*' {
+                // Block comment: skip until `*/`.
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    // Preserve newlines so multiline comments don't collapse
+                    // adjacent lines together (prevents false `@import`
+                    // detection across line boundaries).
+                    if bytes[i] == b'\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                i = i.saturating_add(2); // consume `*/`
+            } else {
+                out.push(b as char);
+                i += 1;
+            }
+        } else {
+            out.push(b as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Build the synthesised entry CSS that the engine hands to Tailwind v4.
@@ -284,17 +372,22 @@ pub fn build_synthesised_entry_css(
     let mut out = String::new();
     let mut emitted_import = false;
 
-    // Detect a leading `@import "tailwindcss";` (full bundle) *or* any
-    // split-import sub-path (`@import "tailwindcss/preflight"`, etc.) in
-    // the user CSS so we don't prepend the full bundle on top and leak the
-    // default palette tokens. The split-import pattern is the deliberate
-    // way users opt out of the full default theme.
+    // Strip block/line comments before scanning for the tailwind import so
+    // that a commented-out `@import "tailwindcss";` inside a `/* … */`
+    // block does not suppress the real synthesised import. The stripped text
+    // is used only for detection; the original bytes are written to the
+    // output unchanged.
     let user_has_import = input_css_text
-        .map(|t| t.lines().any(|l| {
-            let t = l.trim();
-            t.starts_with("@import \"tailwindcss\"") || t.starts_with("@import 'tailwindcss'")
-                || t.starts_with("@import \"tailwindcss/") || t.starts_with("@import 'tailwindcss/")
-        }))
+        .map(|t| {
+            let stripped = strip_css_comments(t);
+            stripped.lines().any(|l| {
+                let t = l.trim();
+                t.starts_with("@import \"tailwindcss\"")
+                    || t.starts_with("@import 'tailwindcss'")
+                    || t.starts_with("@import \"tailwindcss/")
+                    || t.starts_with("@import 'tailwindcss/")
+            })
+        })
         .unwrap_or(false);
 
     if !user_has_import {
@@ -304,11 +397,11 @@ pub fn build_synthesised_entry_css(
 
     // User-project content globs first.
     for g in &cfg.content_globs {
-        out.push_str(&format!("@source \"{g}\";\n"));
+        push_escaped_source(&mut out, g);
     }
     // Then framework packages.
     for g in &cfg.framework_package_globs {
-        out.push_str(&format!("@source \"{g}\";\n"));
+        push_escaped_source(&mut out, g);
     }
 
     if emitted_import || !cfg.content_globs.is_empty() || !cfg.framework_package_globs.is_empty() {
@@ -364,10 +457,7 @@ impl Clone for TailwindSubprocessEngine {
         Self {
             config: self.config.clone(),
             last_entry_css: std::sync::Mutex::new(
-                self.last_entry_css
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone()),
+                self.last_entry_css.lock().ok().and_then(|g| g.clone()),
             ),
         }
     }
@@ -407,12 +497,10 @@ impl CssEngine for TailwindSubprocessEngine {
         // failure to read is fatal because the user explicitly asked for
         // it.
         let user_text = match &self.config.input_css {
-            Some(p) => Some(std::fs::read_to_string(p).with_context(|| {
-                format!(
-                    "failed to read user input CSS at {}",
-                    p.display()
-                )
-            })?),
+            Some(p) => Some(
+                std::fs::read_to_string(p)
+                    .with_context(|| format!("failed to read user input CSS at {}", p.display()))?,
+            ),
             None => None,
         };
         let entry_css = build_synthesised_entry_css(&self.config, user_text.as_deref());
@@ -519,18 +607,10 @@ pub fn default_source_directives(project_root: &Path) -> String {
     let mut out = String::new();
     for root in DEFAULT_CONTENT_ROOTS {
         let full = project_root.join(root);
-        // Escape `"` and `\` so a project root containing those bytes
-        // (legal on Linux/macOS) still emits a well-formed
-        // `@source "..."` directive that Tailwind can parse.
-        out.push_str("@source \"");
-        for c in full.display().to_string().chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                _ => out.push(c),
-            }
-        }
-        out.push_str("\";\n");
+        // push_escaped_source escapes `"` and `\` so a project root
+        // containing those bytes (legal on Linux/macOS) still emits a
+        // well-formed `@source "..."` directive that Tailwind can parse.
+        push_escaped_source(&mut out, &full.display().to_string());
     }
     out
 }
@@ -600,12 +680,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let cfg = TailwindSubprocessConfig::default()
-            .with_embedded_binary(dir, bin_path.clone());
+        let cfg = TailwindSubprocessConfig::default().with_embedded_binary(dir, bin_path.clone());
         assert_eq!(
             cfg.binary_path, bin_path,
             "no env override → embedded path should win over the workspace fallback"
@@ -650,5 +728,139 @@ mod tests {
         );
 
         // _guard drops here, restoring the previous ZFB_TAILWIND_BIN value.
+    }
+
+    // -----------------------------------------------------------------------
+    // Sub #706 — escaped @source globs
+    // -----------------------------------------------------------------------
+
+    /// A glob value containing a double-quote must be escaped so the emitted
+    /// `@source "..."` directive is well-formed CSS.
+    #[test]
+    fn push_escaped_source_escapes_double_quote() {
+        let mut out = String::new();
+        push_escaped_source(&mut out, r#"pages/"odd"/**"#);
+        assert_eq!(out, r#"@source "pages/\"odd\"/**";"#.to_string() + "\n");
+    }
+
+    /// A glob value containing a backslash (common on Windows paths) must be
+    /// double-escaped so the CSS parser sees a single `\`.
+    #[test]
+    fn push_escaped_source_escapes_backslash() {
+        let mut out = String::new();
+        push_escaped_source(&mut out, r"C:\project\pages");
+        assert_eq!(out, "@source \"C:\\\\project\\\\pages\";\n");
+    }
+
+    /// Glob metacharacters (`*`, `{`, `}`, `?`) must pass through untouched
+    /// — Tailwind v4 needs them as-is for pattern expansion.
+    #[test]
+    fn push_escaped_source_leaves_glob_chars_untouched() {
+        let mut out = String::new();
+        push_escaped_source(&mut out, "pages/**/*.{tsx,jsx}");
+        assert_eq!(out, "@source \"pages/**/*.{tsx,jsx}\";\n");
+    }
+
+    /// `build_synthesised_entry_css` must escape `"` in content_globs and
+    /// framework_package_globs (the pre-existing `default_source_directives`
+    /// path was already correct; this test covers the newly-fixed paths).
+    #[test]
+    fn synthesised_css_escapes_quotes_in_globs() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_content_globs([r#"pages/"special"/**"#])
+            .with_framework_package_globs([r#"packages/"fw"/**"#]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains(r#"@source "pages/\"special\"/**";"#),
+            "content_globs quote not escaped; got:\n{css}"
+        );
+        assert!(
+            css.contains(r#"@source "packages/\"fw\"/**";"#),
+            "framework_package_globs quote not escaped; got:\n{css}"
+        );
+    }
+
+    /// `default_source_directives` must escape a `"` in the project root.
+    #[test]
+    fn default_source_directives_escapes_quotes_in_root() {
+        let root = std::path::PathBuf::from(r#"/pro"ject"#);
+        let out = default_source_directives(&root);
+        // Every content root entry should have the quote escaped.
+        assert!(
+            out.contains(r#"@source "/pro\"ject/"#),
+            "quote in project root not escaped; got:\n{out}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sub #739 — comment-aware tailwind import detection
+    // -----------------------------------------------------------------------
+
+    /// A `@import "tailwindcss";` that appears only inside a `/* … */` block
+    /// comment must NOT suppress the synthesised prepended import — it is not
+    /// an active directive, so the real `@import "tailwindcss";\n` should
+    /// appear at the top of the output.
+    #[test]
+    fn block_comment_import_does_not_suppress_synthesised_import() {
+        let input_css = r#"
+/*
+ * Old import — kept for reference but commented out.
+ * @import "tailwindcss";
+ */
+
+@layer base {
+  body { margin: 0; }
+}
+"#;
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        assert!(
+            css.starts_with("@import \"tailwindcss\";\n"),
+            "synthesised import must be prepended when the real import is inside a block comment;\
+             \ngot:\n{css}"
+        );
+    }
+
+    /// An active (uncommented) `@import "tailwindcss";` must still suppress
+    /// the synthesised prepended import (regression guard).
+    #[test]
+    fn real_import_suppresses_synthesised_import() {
+        let input_css = "@import \"tailwindcss\";\n\n@layer base { body { margin: 0; } }\n";
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        // The synthesised "@import ..." must NOT appear; the user's own line
+        // is already in the output as part of input_css_text.
+        let import_count = css.matches("@import \"tailwindcss\"").count();
+        assert_eq!(
+            import_count, 1,
+            "only the user's own import should appear (count=1); got:\n{css}"
+        );
+    }
+
+    /// A `@import "tailwindcss";` inside a line comment (`//`) must also not
+    /// suppress the synthesised import.
+    #[test]
+    fn line_comment_import_does_not_suppress_synthesised_import() {
+        let input_css = "// @import \"tailwindcss\";\n@layer base {}\n";
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        assert!(
+            css.starts_with("@import \"tailwindcss\";\n"),
+            "synthesised import must be prepended when the real import is inside a line comment;\
+             \ngot:\n{css}"
+        );
+    }
+
+    /// `strip_css_comments` must not mangle an active import on a line
+    /// adjacent to a multi-line block comment.
+    #[test]
+    fn strip_css_comments_preserves_active_imports_adjacent_to_block_comment() {
+        let text = "/* comment */\n@import \"tailwindcss\";\n";
+        let stripped = strip_css_comments(text);
+        assert!(
+            stripped.contains("@import \"tailwindcss\";"),
+            "active import after block comment must survive stripping; got:\n{stripped}"
+        );
     }
 }

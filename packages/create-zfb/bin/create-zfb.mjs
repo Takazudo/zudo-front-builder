@@ -55,27 +55,35 @@ try {
   const version = ownPkg.version;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
-  const res = await fetch("https://registry.npmjs.org/create-zfb/latest", {
-    signal: controller.signal,
-    headers: {
-      "User-Agent": `create-zfb/${version}`,
-      Accept: "application/json",
-    },
-  });
-  clearTimeout(timer);
-  if (res.ok) {
-    const data = await res.json();
-    const latest = data?.version;
-    if (typeof latest === "string" && typeof version === "string") {
-      if (compareSemver(version, latest) < 0) {
-        process.stderr.write(
-          `[create-zfb] You are running create-zfb@${version} but @latest is ${latest}.\n` +
-            `[create-zfb] pnpm 11's minimumReleaseAge may have downgraded the install.\n` +
-            `[create-zfb] Re-run with: pnpm create zfb@latest --config.minimumReleaseAge=0\n` +
-            `[create-zfb] Or use: npm create zfb@latest\n`,
-        );
+  let res;
+  try {
+    res = await fetch("https://registry.npmjs.org/create-zfb/latest", {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": `create-zfb/${version}`,
+        Accept: "application/json",
+      },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const latest = data?.version;
+      if (typeof latest === "string" && typeof version === "string") {
+        if (compareSemver(version, latest) < 0) {
+          process.stderr.write(
+            `[create-zfb] You are running create-zfb@${version} but @latest is ${latest}.\n` +
+              `[create-zfb] pnpm 11's minimumReleaseAge may have downgraded the install.\n` +
+              `[create-zfb] Re-run with: pnpm create zfb@latest --config.minimumReleaseAge=0\n` +
+              `[create-zfb] Or use: npm create zfb@latest\n`,
+          );
+        }
       }
     }
+  } finally {
+    // Keep the abort signal armed across both the header and body reads.
+    // Only cancel the timer once the body has been fully consumed (or on
+    // any error path), so a proxy that stalls after headers cannot hang
+    // the scaffolder indefinitely.
+    clearTimeout(timer);
   }
 } catch {
   // silently skip on any error: network failure, timeout (AbortError), parse error, etc.

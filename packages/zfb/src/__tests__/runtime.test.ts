@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import {
+  __hasPendingCancelForTests,
   __setIslandImporterForTests,
   mountIslands,
   scheduleHydrate,
@@ -183,6 +184,14 @@ describe("scheduleHydrate", () => {
       const fire = vi.fn();
       scheduleHydrate(target, "visible", fire);
       expect(fire).toHaveBeenCalledTimes(1);
+    });
+
+    it("public scheduleHydrate returns a plain function (not an object)", () => {
+      // Verify the public API contract: scheduleHydrate must keep returning
+      // a bare () => void cancel, regardless of changes to internal shape.
+      vi.stubGlobal("IntersectionObserver", undefined);
+      const cancel = scheduleHydrate(target, "visible", vi.fn());
+      expect(typeof cancel).toBe("function");
     });
   });
 
@@ -544,6 +553,58 @@ describe("scheduleHydrate", () => {
       await Promise.resolve();
 
       expect(mount).not.toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // Stale-pendingCancels bug (#743): when IntersectionObserver is absent,
+    // scheduleVisible fires synchronously and returns noop — but the old code
+    // always called pendingCancels.set(element, noop) when when !== "load",
+    // leaving a permanent stale entry. The fix: only set pendingCancels when
+    // the scheduler did NOT fire synchronously (!fired).
+    // -----------------------------------------------------------------------
+
+    it("URL path: no stale pendingCancels entry when IO-less when=visible fires synchronously", () => {
+      // Remove IntersectionObserver so scheduleVisible fails open (sync fire).
+      vi.stubGlobal("IntersectionObserver", undefined);
+
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="visible"></div>
+      `;
+
+      // Use an importer that resolves synchronously (via a resolved Promise)
+      // so console.error is not triggered. We just care about pendingCancels.
+      restoreImporter = __setIslandImporterForTests(() => Promise.resolve({ mount: vi.fn() }));
+
+      const el = document.querySelector("[data-zfb-island]")!;
+
+      mountIslands({ Counter: "/islands/Counter-abc.js" });
+
+      // The scheduler fired synchronously, so there must be NO stale entry
+      // in pendingCancels for this element. (#743)
+      expect(__hasPendingCancelForTests(el)).toBe(false);
+    });
+
+    it("fireInlineMount path: no stale pendingCancels entry when IO-less when=visible fires synchronously", () => {
+      // Remove IntersectionObserver so scheduleVisible fails open (sync fire).
+      vi.stubGlobal("IntersectionObserver", undefined);
+
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-props='{}' data-when="visible"></div>
+      `;
+
+      const mount = vi.fn();
+      restoreImporter = __setIslandImporterForTests(() => {
+        throw new Error("dynamic import must not be used for inline-module manifest entries");
+      });
+
+      const el = document.querySelector("[data-zfb-island]")!;
+
+      // Inline-module path (shared-bundle): mount is called directly.
+      mountIslands({ Counter: { mount } });
+
+      // The scheduler fired synchronously, so there must be NO stale entry
+      // in pendingCancels for this element. (#743)
+      expect(__hasPendingCancelForTests(el)).toBe(false);
     });
   });
 

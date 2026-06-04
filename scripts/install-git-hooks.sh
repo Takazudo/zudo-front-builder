@@ -18,17 +18,20 @@ set -e
 HOOK_MARKER="# x-wt-teams-push-guard v2"
 
 # Skip silently when not in a git repo (e.g. extracted tarball).
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null) || {
+# --path-format=absolute (git >= 2.31) returns an absolute path directly,
+# avoiding the mis-resolution that occurs when --git-common-dir is combined
+# with --show-toplevel to normalize a worktree-relative path.
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+  # Distinguish "not a git repo" from "git too old for --path-format".
+  # An old git would otherwise silently skip installing the push-guard
+  # behind a misleading "not a git repo" message.
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "install-git-hooks: git >= 2.31 required (--path-format unsupported); push-guard NOT installed" >&2
+    exit 1
+  fi
   echo "install-git-hooks: not a git repo, skipping"
   exit 0
 }
-
-# Normalize to absolute path; git-common-dir is relative when run from a
-# regular checkout in some git versions.
-case "$GIT_COMMON_DIR" in
-  /*) ;;
-  *) GIT_COMMON_DIR="$(git rev-parse --show-toplevel)/$GIT_COMMON_DIR" ;;
-esac
 
 HOOKS_DIR="$GIT_COMMON_DIR/hooks"
 TARGET="$HOOKS_DIR/pre-push"

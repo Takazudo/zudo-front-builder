@@ -14,6 +14,7 @@ interface ClaudeMdItem {
   displayPath: string;
   slug: string;
   relPath: string;
+  content: string;
 }
 
 interface CommandItem {
@@ -142,6 +143,7 @@ async function generateClaudemdDocs(config: ClaudeResourcesConfig): Promise<Clau
   ensureDir(outputDir);
   const items: ClaudeMdItem[] = [];
 
+  // First pass: collect items (retain file content for second pass)
   for (const filePath of files) {
     const content = fs.readFileSync(filePath, "utf8");
     const relPath = path.relative(projectRoot, filePath);
@@ -149,13 +151,23 @@ async function generateClaudemdDocs(config: ClaudeResourcesConfig): Promise<Clau
     const dirPart = path.dirname(relPath);
     const slug = dirPart === "." ? "root" : dirPart.replace(/\//g, "--");
 
-    items.push({ displayPath, slug, relPath });
+    items.push({ displayPath, slug, relPath, content });
+  }
 
-    const pos = items.length + 1;
+  // Sort: root first, then alphabetically
+  items.sort((a, b) => {
+    if (a.slug === "root") return -1;
+    if (b.slug === "root") return 1;
+    return a.displayPath.localeCompare(b.displayPath);
+  });
+
+  // Second pass: write each MDX with sidebar_position reflecting sort order (1-based)
+  for (let i = 0; i < items.length; i++) {
+    const { displayPath, slug, relPath, content } = items[i];
     const mdx = `---
 title: ${displayPath}
 description: CLAUDE.md at ${displayPath}
-sidebar_position: ${pos}
+sidebar_position: ${i + 1}
 sidebar_label: ${relPath}
 generated: true
 ---
@@ -166,13 +178,6 @@ ${escapeForMdx(content.trim())}
 `;
     await writeMdx(path.join(outputDir, `${slug}.mdx`), mdx);
   }
-
-  // Sort: root first, then alphabetically
-  items.sort((a, b) => {
-    if (a.slug === "root") return -1;
-    if (b.slug === "root") return 1;
-    return a.displayPath.localeCompare(b.displayPath);
-  });
 
   writeCategoryMeta(outputDir, "CLAUDE.md", 900, "Project-specific instructions");
   return items;

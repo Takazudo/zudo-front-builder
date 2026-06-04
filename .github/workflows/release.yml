@@ -432,10 +432,11 @@ jobs:
           # Determine prerelease flag from the tag name.
           TAG="${GITHUB_REF#refs/tags/}"
           if [[ "$TAG" =~ -next\. ]] || [[ "$TAG" =~ -beta\. ]] || [[ "$TAG" =~ -rc\. ]]; then
-            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+            IS_PRERELEASE=true
           else
-            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+            IS_PRERELEASE=false
           fi
+          echo "IS_PRERELEASE=$IS_PRERELEASE" >> "$GITHUB_ENV"
           echo "Tag: $TAG | semver: $ZFB_SEMVER | prerelease: $IS_PRERELEASE"
 
       - name: Download all archives

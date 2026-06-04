@@ -1104,12 +1104,14 @@ impl DevRenderSession {
             // *stable source id* whose output_path can flip across ticks (e.g.
             // sitemap.xml → sitemap.rss); output-path keying makes such a flip
             // produce two distinct keys, so the old artifact would orphan in
-            // dist/. Unreachable today because `routes_by_source` is built once
-            // at boot and never rebuilt during a session, so each entry's
-            // output_path is frozen. If live `paths()` re-expansion / router
-            // re-scan on watch ticks is added later (see the scope-guard
-            // follow-up below), restore source-path keying for static routes
-            // (or key dynamic entries on (source_path, output_path)).
+            // dist/. Still unreachable after #659 (which added live table
+            // rebuilding in `discover_created`): that function's diff gate
+            // (lines ~1289-1301) only re-renders sources whose entry COUNT
+            // changed (`prev.len() != entries.len()`), so an output_path flip
+            // on a stable-count source is never re-rendered/pruned and the
+            // orphan path is never triggered. If entry-count-stable output_path
+            // flips must be handled, restore source-path keying for static
+            // routes (or key dynamic entries on (source_path, output_path)).
             out.push(RenderedPage {
                 page: PageId::new(entry.output_path.clone()),
                 output_path,

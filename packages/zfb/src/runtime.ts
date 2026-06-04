@@ -36,6 +36,31 @@ type SchedulerGlobal = typeof globalThis & {
 const g = globalThis as SchedulerGlobal;
 
 /**
+ * Internal variant of `scheduleHydrate` that also reports whether the fire
+ * callback was invoked synchronously. Unexported — call sites in this module
+ * use this to decide whether to register a `pendingCancels` entry.
+ */
+function scheduleHydrateInternal(
+  target: Element,
+  when: When | string | undefined,
+  fire: () => void,
+): { fired: boolean; cancel: () => void } {
+  const resolved = resolveWhen(when);
+
+  if (resolved === "load") {
+    fire();
+    return { fired: true, cancel: noop };
+  }
+
+  if (resolved === "idle") {
+    return { fired: false, cancel: scheduleIdle(fire) };
+  }
+
+  // "visible"
+  return scheduleVisible(target, fire);
+}
+
+/**
  * Schedule a hydration `fire` callback for `target` according to `when`.
  *
  * Returns a `cancel` function that aborts the scheduling if it has not
@@ -49,19 +74,7 @@ export function scheduleHydrate(
   when: When | string | undefined,
   fire: () => void,
 ): () => void {
-  const resolved = resolveWhen(when);
-
-  if (resolved === "load") {
-    fire();
-    return noop;
-  }
-
-  if (resolved === "idle") {
-    return scheduleIdle(fire);
-  }
-
-  // "visible"
-  return scheduleVisible(target, fire);
+  return scheduleHydrateInternal(target, when, fire).cancel;
 }
 
 function noop(): void {
@@ -114,14 +127,17 @@ function scheduleIdle(fire: () => void): () => void {
   };
 }
 
-function scheduleVisible(target: Element, fire: () => void): () => void {
+function scheduleVisible(
+  target: Element,
+  fire: () => void,
+): { fired: boolean; cancel: () => void } {
   const Observer = g.IntersectionObserver;
 
   // No IntersectionObserver (e.g. very old browsers, bare Node) — fail
   // open and hydrate immediately so the island is at least functional.
   if (typeof Observer !== "function") {
     fire();
-    return noop;
+    return { fired: true, cancel: noop };
   }
 
   const gate = oneShot(fire);
@@ -140,10 +156,13 @@ function scheduleVisible(target: Element, fire: () => void): () => void {
 
   observer.observe(target);
 
-  return () => {
-    const alreadyFired = gate.cancel();
-    if (alreadyFired) return;
-    observer.disconnect();
+  return {
+    fired: false,
+    cancel: () => {
+      const alreadyFired = gate.cancel();
+      if (alreadyFired) return;
+      observer.disconnect();
+    },
   };
 }
 
@@ -461,10 +480,14 @@ function scheduleMount(
     return;
   }
 
-  const cancel = scheduleHydrate(element, when, fire);
+  const { fired, cancel } = scheduleHydrateInternal(element, when, fire);
   // Track deferred-hydration cancel handle so cancelPendingIslands() can abort
   // idle / visibility callbacks before a body swap. (W1B §12.5)
-  if (when && when !== "load") {
+  // Only register when the scheduler did NOT fire synchronously — a synchronous
+  // fire means the island is already handling its import and there is no
+  // deferred callback to cancel. Registering noop after a sync fire would leave
+  // a stale pendingCancels entry for an already-handled element. (#743)
+  if (when && when !== "load" && !fired) {
     pendingCancels.set(element, cancel);
   }
 }
@@ -517,10 +540,14 @@ function fireInlineMount(
   }
 
   const when = element.getAttribute("data-when") ?? undefined;
-  const cancel = scheduleHydrate(element, when, fire);
+  const { fired, cancel } = scheduleHydrateInternal(element, when, fire);
   // Track deferred-hydration cancel handle so cancelPendingIslands() can abort
   // idle / visibility callbacks before a body swap. (W1B §12.5)
-  if (when && when !== "load") {
+  // Only register when the scheduler did NOT fire synchronously — a synchronous
+  // fire means the island is already handling its mount and there is no
+  // deferred callback to cancel. Registering noop after a sync fire would leave
+  // a stale pendingCancels entry for an already-handled element. (#743)
+  if (when && when !== "load" && !fired) {
     pendingCancels.set(element, cancel);
   }
 }
@@ -595,4 +622,13 @@ export function __setIslandImporterForTests(
   const prev = importImpl;
   importImpl = impl;
   return prev;
+}
+
+/**
+ * Test-only seam. Returns whether the given element has an entry in the
+ * module-private `pendingCancels` Map. Used to assert that a synchronous
+ * scheduler fire does not leave a stale entry behind. (#743)
+ */
+export function __hasPendingCancelForTests(element: Element): boolean {
+  return pendingCancels.has(element);
 }

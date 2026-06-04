@@ -330,7 +330,16 @@ async fn debouncer_task(
             // longer aborts the task — so this is the graceful-exit path.
             _ = &mut shutdown => {
                 flush_all(&mut pending, &out_tx).await;
-                break;
+                // Do NOT fall through to `let _ = bridge.await;` below: the
+                // bridge thread is parked in the synchronous `raw_rx.recv()`,
+                // which closes only after `_notify` drops — and `_notify`
+                // drops only when `Watcher::shutdown` RETURNS. Awaiting the
+                // bridge here is a circular wait (issue #708). abort() cannot
+                // cancel the parked thread, but it makes the JoinHandle return
+                // immediately; the detached thread then exits once `_notify`
+                // drops at the end of `shutdown()` and closes `raw_tx`.
+                bridge.abort();
+                return;
             }
 
             maybe_evt = bridge_rx.recv() => {
@@ -525,5 +534,24 @@ mod tests {
             merge(Some(ChangeKind::Modified), ChangeKind::Created),
             ChangeKind::Created,
         );
+    }
+
+    /// Regression test for the `Watcher::shutdown()` circular-wait deadlock
+    /// (issue #708 / sub-issue #759). Before the fix, the shutdown-signal
+    /// branch flushed then fell through to `let _ = bridge.await;`, but the
+    /// bridge `spawn_blocking` task is parked in `raw_rx.recv()`, which only
+    /// closes when `_notify` drops — and `_notify` drops only when `shutdown`
+    /// RETURNS. So `shutdown().await` could never complete. The timeout here
+    /// is the guard: it fails (rather than hangs the whole suite) if the
+    /// deadlock ever returns.
+    #[tokio::test]
+    async fn shutdown_returns_within_timeout() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (watcher, _rx) =
+            Watcher::start(tmp.path(), std::iter::once(".")).expect("watcher start");
+
+        tokio::time::timeout(Duration::from_secs(3), watcher.shutdown())
+            .await
+            .expect("Watcher::shutdown() must complete (circular-wait deadlock regression)");
     }
 }

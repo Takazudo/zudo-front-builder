@@ -187,15 +187,17 @@ pub fn embedded_binary(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
         .unwrap_or_else(|| std::ffi::OsString::from(name));
     let dst = dir.path().join(&dst_name);
     std::fs::write(&dst, file.contents()).with_context(|| {
-        format!("failed to write embedded binary `{name}` to {}", dst.display())
+        format!(
+            "failed to write embedded binary `{name}` to {}",
+            dst.display()
+        )
     })?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).with_context(
-            || format!("failed to set executable bit on {}", dst.display()),
-        )?;
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to set executable bit on {}", dst.display()))?;
     }
 
     Ok((dir, dst))
@@ -524,9 +526,8 @@ fn try_expand_one(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| route.source_path.display().to_string());
-    let source = std::fs::read_to_string(&abs).map_err(|e| {
-        TryExpandFailure::Other(format!("could not read {} ({e})", abs.display()))
-    })?;
+    let source = std::fs::read_to_string(&abs)
+        .map_err(|e| TryExpandFailure::Other(format!("could not read {} ({e})", abs.display())))?;
     let extraction = match extract_paths(&source, &file_name) {
         Ok(x) => x,
         Err(PathsExtractError::Parse { file, message }) => {
@@ -550,10 +551,38 @@ fn try_expand_one(
         }
     };
 
+    let segs: Vec<PathsSegment> = route.segments.to_vec();
+    let resolved = resolve_paths(cache, &route.template, &segs, &json).map_err(|e| {
+        TryExpandFailure::Other(format!("{}: {}", abs.display(), format_paths_error(&e)))
+    })?;
+    Ok(expand_resolved_urls(
+        &route.template,
+        &route.segments,
+        route.output_extension.as_deref(),
+        &route.source_path,
+        resolved,
+    ))
+}
+
+/// Shared post-`resolve_paths` tail: build `RouteUniverseEntry` and
+/// `DynamicResolvedEntry` vectors from a resolved-paths list.
+///
+/// Both [`try_expand_one`] (static extraction) and [`resolve_json_paths`]
+/// (runtime JSON) arrive at the same `Vec<ResolvedPath>` and then perform
+/// byte-identical processing. This helper owns that processing so neither
+/// call site can drift from the other.
+///
+/// `output_extension` is the route's override (None → `"html"`).
+fn expand_resolved_urls(
+    template: &str,
+    segments: &[Segment],
+    output_extension: Option<&str>,
+    source_path: &Path,
+    resolved: Vec<zfb_render::paths::ResolvedPath>,
+) -> (Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>) {
     // Pre-compute which param names are catchall so we can split the
     // joined string back into a `Vec<String>` for the manifest (#262).
-    let catchall_names: std::collections::HashSet<&str> = route
-        .segments
+    let catchall_names: std::collections::HashSet<&str> = segments
         .iter()
         .filter_map(|seg| {
             if let Segment::Catchall(name) = seg {
@@ -564,24 +593,15 @@ fn try_expand_one(
         })
         .collect();
 
-    let segs: Vec<PathsSegment> = route.segments.to_vec();
-    let resolved = resolve_paths(cache, &route.template, &segs, &json).map_err(|e| {
-        TryExpandFailure::Other(format!("{}: {}", abs.display(), format_paths_error(&e)))
-    })?;
-    let extension = route
-        .output_extension
-        .as_deref()
-        .unwrap_or("html")
-        .to_string();
+    let extension = output_extension.unwrap_or("html").to_string();
     let mut universe_out = Vec::with_capacity(resolved.len());
     let mut manifest_out = Vec::with_capacity(resolved.len());
     for r in resolved {
-        let output_path =
-            build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
+        let output_path = build_output_path_for_resolved_url(&r.url, output_extension);
         universe_out.push(RouteUniverseEntry {
             url_path: r.url.clone(),
             output_path: output_path.clone(),
-            route_key: route.template.clone(),
+            route_key: template.to_string(),
             static_html: false,
             source_path: None,
         });
@@ -603,13 +623,13 @@ fn try_expand_one(
         manifest_out.push(DynamicResolvedEntry {
             url_path: r.url,
             output_path,
-            source_path: route.source_path.clone(),
+            source_path: source_path.to_path_buf(),
             extension: extension.clone(),
-            route_key: route.template.clone(),
+            route_key: template.to_string(),
             params: ResolvedRouteParams { scalars, arrays },
         });
     }
-    Ok((universe_out, manifest_out))
+    (universe_out, manifest_out)
 }
 
 /// Compute the on-disk output path for a resolved dynamic URL, mirroring
@@ -981,61 +1001,15 @@ fn resolve_json_paths(
     cache: &mut PathsCache,
 ) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), String> {
     let segs: Vec<PathsSegment> = route.segments.to_vec();
-
-    // Which param names are catchall (need array form in the manifest).
-    let catchall_names: std::collections::HashSet<&str> = route
-        .segments
-        .iter()
-        .filter_map(|seg| {
-            if let Segment::Catchall(name) = seg {
-                Some(name.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-
     let resolved = resolve_paths(cache, &route.template, &segs, &json)
         .map_err(|e| format!("{}: {}", route.template, format_paths_error(&e)))?;
-
-    let extension = route
-        .output_extension
-        .as_deref()
-        .unwrap_or("html")
-        .to_string();
-    let mut universe_entries = Vec::with_capacity(resolved.len());
-    let mut manifest_entries = Vec::with_capacity(resolved.len());
-    for r in resolved {
-        let output_path =
-            build_output_path_for_resolved_url(&r.url, route.output_extension.as_deref());
-        universe_entries.push(RouteUniverseEntry {
-            url_path: r.url.clone(),
-            output_path: output_path.clone(),
-            route_key: route.template.clone(),
-            static_html: false,
-            source_path: None,
-        });
-
-        let mut scalars = BTreeMap::new();
-        let mut arrays: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (k, v) in &r.params {
-            if catchall_names.contains(k.as_str()) {
-                let parts: Vec<String> = v.split('/').map(|s| s.to_string()).collect();
-                arrays.insert(k.clone(), parts);
-            } else {
-                scalars.insert(k.clone(), v.clone());
-            }
-        }
-        manifest_entries.push(DynamicResolvedEntry {
-            url_path: r.url,
-            output_path,
-            source_path: route.source_path.clone(),
-            extension: extension.clone(),
-            route_key: route.template.clone(),
-            params: ResolvedRouteParams { scalars, arrays },
-        });
-    }
-    Ok((universe_entries, manifest_entries))
+    Ok(expand_resolved_urls(
+        &route.template,
+        &route.segments,
+        route.output_extension.as_deref(),
+        &route.source_path,
+        resolved,
+    ))
 }
 
 // Keep the old `eval_one_deferred_path` name as a private alias so any
@@ -1497,8 +1471,7 @@ mod tests {
         // Drive the legacy on-disk-only branch so the error path remains
         // exercised even though the production `check_runtime_installed`
         // now short-circuits via the embedded vendor.
-        let err =
-            check_runtime_installed_with_overrides(dir.path(), None, false).unwrap_err();
+        let err = check_runtime_installed_with_overrides(dir.path(), None, false).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("@takazudo/zfb-runtime"), "{msg}");
         assert!(msg.contains("pnpm install"), "{msg}");
