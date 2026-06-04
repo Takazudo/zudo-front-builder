@@ -88,7 +88,7 @@ export default defineConfig({
     rehypePlugins: [
       rehypeCodeTitle,
       rehypeHeadingLinks,
-      rehypeStripMdExtension,
+      [rehypeStripMdExtension, { trailingSlash: settings.trailingSlash }],
       ...(settings.mermaid ? [rehypeMermaid] : []),
     ],
   },

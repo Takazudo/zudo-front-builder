@@ -2,18 +2,24 @@ import type { Root, Element } from "hast";
 import { visit } from "unist-util-visit";
 import { isExternal } from "./url-utils";
 
+export interface RehypeStripMdExtensionOptions {
+  /** Whether to append a trailing slash after stripping the extension. Mirrors the site-wide trailingSlash setting. */
+  trailingSlash: boolean;
+}
+
 /**
- * Rehype plugin that strips .md/.mdx extensions from relative link hrefs
- * and ensures they have a trailing slash for Astro's `trailingSlash: "always"` mode.
+ * Rehype plugin factory that strips .md/.mdx extensions from relative link hrefs.
+ * When `trailingSlash` is true, appends "/" after stripping the extension (and also
+ * adds a trailing slash to already-extensionless relative links that lack one).
+ * When `trailingSlash` is false, strips the extension only — no slash is appended —
+ * so in-content links match the slash-stripped nav/source-map URLs.
  *
  * Markdown authors often write links like `[Other doc](./other-doc.md)`.
- * In Astro's static output, the correct URL is `/docs/other-doc/` (no extension).
- *
- * Astro 5+ may strip .md extensions before rehype runs, so this plugin also
- * handles relative links that have already lost their extension by adding
- * a trailing slash when the last path segment has no file extension.
+ * In Astro's static output, the correct URL is `/docs/other-doc` (no extension, no slash)
+ * when trailingSlash is false, or `/docs/other-doc/` when trailingSlash is true.
  */
-export function rehypeStripMdExtension() {
+export function rehypeStripMdExtension(options: RehypeStripMdExtensionOptions) {
+  const { trailingSlash } = options;
   return (tree: Root) => {
     visit(tree, "element", (node: Element) => {
       if (node.tagName !== "a") return;
@@ -25,12 +31,23 @@ export function rehypeStripMdExtension() {
 
       let newHref = href;
 
-      // Strip .md or .mdx extension (with optional hash fragment)
-      newHref = newHref.replace(/\.mdx?(#.*)?$/, (_match, hash) => (hash ? "/" + hash : "/"));
+      // Strip .md or .mdx extension (with optional hash fragment).
+      // Append trailing slash only when trailingSlash is true.
+      newHref = newHref.replace(/\.mdx?(#.*)?$/, (_match, hash) => {
+        if (hash) {
+          return trailingSlash ? "/" + hash : hash;
+        }
+        return trailingSlash ? "/" : "";
+      });
 
       // For relative links where Astro already stripped .md:
-      // add trailing slash if missing and the last segment has no file extension
-      if (newHref === href && (newHref.startsWith("./") || newHref.startsWith("../"))) {
+      // add trailing slash if missing and the last segment has no file extension.
+      // Only applicable when trailingSlash is true — its sole purpose is appending slashes.
+      if (
+        trailingSlash &&
+        newHref === href &&
+        (newHref.startsWith("./") || newHref.startsWith("../"))
+      ) {
         // Split off query string and hash fragment
         const qIdx = newHref.indexOf("?");
         const hIdx = newHref.indexOf("#");
