@@ -160,6 +160,12 @@ pub fn render_framed(diag: &Diagnostic) -> String {
 
         // 1-based line index. Window is [line-1, line+1] clamped.
         let zero_based = diag.line.saturating_sub(1);
+        // Short-circuit to header-only form when the reported line is past the
+        // end of the source (e.g. stale/synthetic diagnostics). Emitting the
+        // header is still truthful; emitting a snippet would be misleading.
+        if zero_based >= lines.len() {
+            return out;
+        }
         let start = zero_based.saturating_sub(1);
         let end = (zero_based + 1).min(lines.len().saturating_sub(1));
 
@@ -417,6 +423,36 @@ mod tests {
         // Should still render, with the bug on line 1, no preceding line.
         assert!(out.contains("1 | first\n"), "got:\n{out}");
         assert!(out.contains("2 | second\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn render_framed_header_only_when_line_past_end() {
+        // "first\nsecond\nthird\n".split('\n') yields ["first","second","third",""]
+        // — four segments, so lines.len() == 4. line=100 → zero_based=99 ≥ 4
+        // → short-circuits to header-only form.
+        owo_colors::set_override(false);
+        let src = "first\nsecond\nthird\n";
+        let diag = Diagnostic::with_source("a.md", 100, 1, "boom", src);
+        let out = strip_ansi(&render_framed(&diag));
+        assert!(out.starts_with("error: boom\n"), "got:\n{out}");
+        assert!(out.contains(" --> a.md:100:1\n"), "got:\n{out}");
+        // No snippet block emitted — no bar character.
+        assert!(!out.contains('|'), "got:\n{out}");
+    }
+
+    #[test]
+    fn render_framed_header_only_when_line_one_past_end() {
+        // Same 4-segment source. line=5 → zero_based=4 ≥ 4 → short-circuits.
+        // (line=4 → zero_based=3 < 4 and would render the empty trailing
+        // segment; this test deliberately uses line=5 as the boundary case.)
+        owo_colors::set_override(false);
+        let src = "first\nsecond\nthird\n";
+        let diag = Diagnostic::with_source("a.md", 5, 1, "boom", src);
+        let out = strip_ansi(&render_framed(&diag));
+        assert!(out.starts_with("error: boom\n"), "got:\n{out}");
+        assert!(out.contains(" --> a.md:5:1\n"), "got:\n{out}");
+        // No snippet block emitted.
+        assert!(!out.contains('|'), "got:\n{out}");
     }
 
     #[test]
