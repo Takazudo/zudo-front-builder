@@ -88,9 +88,11 @@ pub fn livereload_tag(base_prefix: &str) -> String {
 /// - When no `<body>` element is found (HTML fragments, partials,
 ///   malformed input) the tag is appended to the end of the document,
 ///   matching the previous fallback behaviour.
-///
-/// The function never errors; the worst case is a fragment getting an
-/// extra script tag at the end, which is harmless in dev mode.
+/// - On a `lol_html` rewriting error (e.g. `ParsingAmbiguityError` from
+///   strict-mode parsing of non-conforming markup) a warning is logged,
+///   the tree is left unmodified, and the no-body append fallback still
+///   runs — serving the original bytes with the script tag appended
+///   rather than panicking the handler task.
 pub fn inject_livereload_into_tree_with_prefix(tree: &mut HtmlTree, base_prefix: &str) {
     let tag = livereload_tag(base_prefix);
     let body_found = Rc::new(Cell::new(false));
@@ -113,11 +115,24 @@ pub fn inject_livereload_into_tree_with_prefix(tree: &mut HtmlTree, base_prefix:
         ..RewriteStrSettings::new()
     };
 
-    tree.rewrite(settings)
-        .expect("lol_html rewriting for livereload injection should not fail");
+    let rewrite_ok = if let Err(err) = tree.rewrite(settings) {
+        // Graceful degradation in dev mode: lol_html should not fail on
+        // well-formed HTML, but non-conforming markup (e.g. <select><xmp>…)
+        // can trigger a ParsingAmbiguityError in strict mode. HtmlTree::rewrite
+        // leaves self.html unmodified on Err. Reset body_found so the append
+        // fallback below still runs — mirroring the contract in routes.rs
+        // ~1585: serve the original bytes rather than 500ing the page.
+        tracing::warn!(
+            err = %err,
+            "livereload injection: lol_html rewrite failed; falling back to append"
+        );
+        false
+    } else {
+        true
+    };
 
-    if !body_found.get() {
-        // Fragment / headerless: append the tag.
+    if !rewrite_ok || !body_found.get() {
+        // Fragment / headerless, or rewrite error: append the tag.
         tree.html_mut().push_str(&tag);
     }
 }
@@ -187,9 +202,8 @@ mod tests {
         // Japanese before/after, plus a 4-byte emoji literal.
         let html = "<html><body><h1>こんにちは🎉世界</h1></body></html>";
         let out = inject_livereload(html);
-        let expected = format!(
-            "<html><body><h1>こんにちは🎉世界</h1>{LIVERELOAD_TAG}</body></html>"
-        );
+        let expected =
+            format!("<html><body><h1>こんにちは🎉世界</h1>{LIVERELOAD_TAG}</body></html>");
         assert_eq!(out, expected);
         assert!(out.contains("こんにちは🎉世界"));
     }
@@ -278,5 +292,49 @@ mod tests {
         let with_empty_prefix = inject_livereload_with_prefix(html, "");
         let no_prefix = inject_livereload(html);
         assert_eq!(with_empty_prefix, no_prefix);
+    }
+
+    // ---- graceful degradation (issue #737) --------------------------------
+
+    /// Non-conforming markup that triggers lol_html's `ParsingAmbiguityError`
+    /// in strict mode: `<xmp>` inside `<select>` makes it ambiguous whether
+    /// `<script>` is parsed as raw text or element content.
+    ///
+    /// The function must not panic; it must serve *some* bytes that include
+    /// the original markup and the livereload script tag (via the append
+    /// fallback), rather than 500ing the request.
+    #[test]
+    fn rewrite_error_falls_back_to_append_without_panicking() {
+        // This markup is the canonical ParsingAmbiguityError trigger from
+        // the lol_html documentation: <xmp> inside <select> causes strict
+        // mode to reject the input rather than guess the parse context.
+        let ambiguous_html =
+            r#"<html><body><select><xmp><script>"use strict";</script></select></body></html>"#;
+        let mut tree = HtmlTree::parse(ambiguous_html);
+        // Must not panic regardless of whether lol_html rejects this input.
+        inject_livereload_into_tree_with_prefix(&mut tree, "");
+        let out = tree.serialize();
+        // The output must contain the livereload tag (via the append fallback).
+        assert!(
+            out.contains(LIVERELOAD_TAG),
+            "expected livereload tag in degraded output, got: {out}"
+        );
+        // The original markup must be preserved (no data loss).
+        assert!(
+            out.contains("use strict"),
+            "original content should be present in degraded output, got: {out}"
+        );
+    }
+
+    /// Confirm the no-body-found append fallback (fragment path) is
+    /// unaffected by the rewrite-error change — it still appends the tag.
+    #[test]
+    fn append_fallback_still_runs_on_normal_fragment() {
+        let html = "<p>just a paragraph</p>";
+        let out = inject_livereload(html);
+        assert!(
+            out.ends_with(LIVERELOAD_TAG),
+            "expected append fallback for fragment, got: {out}"
+        );
     }
 }
