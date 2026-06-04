@@ -27,8 +27,16 @@ import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../build.js";
 // a TS module), so we narrow the import shape ourselves and silence
 // TS's "no declaration file" complaint.
 // @ts-expect-error: bin/cli.mjs has no declaration file; we narrow below.
-import { WORKER_WRAPPER_SOURCE as MJS_WRAPPER_RAW } from "../../bin/cli.mjs";
+import {
+  WORKER_WRAPPER_SOURCE as MJS_WRAPPER_RAW,
+  emitWorker as cliEmitWorker,
+} from "../../bin/cli.mjs";
 const MJS_WRAPPER: string = MJS_WRAPPER_RAW as string;
+const CLI_EMIT_WORKER: (input: {
+  inputBundlePath: string;
+  outdir: string;
+}) => Promise<{ workerPath: string; innerBundlePath: string }> =
+  cliEmitWorker as typeof CLI_EMIT_WORKER;
 
 let scratchDirs: string[] = [];
 
@@ -418,5 +426,43 @@ export default {
     const response = await worker.default.fetch(request, env, ctx);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("inner only");
+  });
+
+  it("CLI's emitWorker (bin/cli.mjs) emits the same files as build.ts's emitWorker", async () => {
+    // Exercises the CLI's emitWorker export directly so the shared
+    // emit-worker.mjs refactor cannot drift silently. Both paths must
+    // produce identical _worker.js and _zfb_inner.mjs content.
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle.mjs");
+    await writeFile(
+      inputPath,
+      `export default { fetch: async () => new Response("cli-test", { status: 200 }) };\n`,
+      "utf8",
+    );
+
+    const cliDir = join(dir, "cli-dist");
+    const tsDir = join(dir, "ts-dist");
+
+    const [cliOut, tsOut] = await Promise.all([
+      CLI_EMIT_WORKER({ inputBundlePath: inputPath, outdir: cliDir }),
+      emitWorker({ inputBundlePath: inputPath, outdir: tsDir }),
+    ]);
+
+    const [cliWorker, tsWorker] = await Promise.all([
+      readFile(cliOut.workerPath, "utf8"),
+      readFile(tsOut.workerPath, "utf8"),
+    ]);
+    const [cliInner, tsInner] = await Promise.all([
+      readFile(cliOut.innerBundlePath, "utf8"),
+      readFile(tsOut.innerBundlePath, "utf8"),
+    ]);
+
+    // Both paths must write the same wrapper and the same copied bundle.
+    expect(cliWorker).toBe(tsWorker);
+    expect(cliInner).toBe(tsInner);
+
+    // Returned path shapes are correct.
+    expect(cliOut.workerPath).toBe(join(cliDir, "_worker.js"));
+    expect(cliOut.innerBundlePath).toBe(join(cliDir, "_zfb_inner.mjs"));
   });
 });

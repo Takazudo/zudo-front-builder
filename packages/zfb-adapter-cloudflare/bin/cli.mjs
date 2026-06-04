@@ -15,9 +15,8 @@
 // no TypeScript loader required) so there is a single source of truth.
 // invariant: no runtime npm deps — see SECURITY-DEPS.md
 
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -27,18 +26,14 @@ import { fileURLToPath } from "node:url";
 import { WORKER_WRAPPER_SOURCE } from "../src/worker-wrapper.mjs";
 export { WORKER_WRAPPER_SOURCE };
 
+// ---------------------------------------------------------------------------
+// emitWorker — shared implementation, no runtime npm deps.
+// ---------------------------------------------------------------------------
+
+import { emitWorker as _emitWorker } from "../src/emit-worker.mjs";
+
 export async function emitWorker({ inputBundlePath, outdir }) {
-  const outdirAbs = resolve(outdir);
-  const inputAbs = resolve(inputBundlePath);
-
-  await mkdir(outdirAbs, { recursive: true });
-  const innerBundlePath = join(outdirAbs, "_zfb_inner.mjs");
-  await copyFile(inputAbs, innerBundlePath);
-
-  const workerPath = join(outdirAbs, "_worker.js");
-  await writeFile(workerPath, WORKER_WRAPPER_SOURCE, "utf8");
-
-  return { workerPath, innerBundlePath };
+  return _emitWorker({ inputBundlePath, outdir, workerWrapperSource: WORKER_WRAPPER_SOURCE });
 }
 
 // ---------------------------------------------------------------------------
