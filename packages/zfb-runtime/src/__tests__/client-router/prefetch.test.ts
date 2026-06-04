@@ -371,3 +371,41 @@ describe("link prefetch method", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("fetch failure handling", () => {
+  it("14. fetch failure does not permanently mark href as prefetched (retry is possible)", async () => {
+    init();
+    const url = sameOriginUrl("/retry-page");
+
+    // First call: fetch rejects.
+    fetchMock.mockRejectedValueOnce(new Error("network error"));
+    prefetch(url);
+    // Flush until the rejection settles and inFlight.delete runs.
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Second call: fetch resolves.
+    fetchMock.mockResolvedValueOnce(new Response());
+    prefetch(url);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Both calls should have reached the network.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("15. fetch failure: no unhandled rejection leaks (call site catch suppresses)", async () => {
+    init();
+    const url = sameOriginUrl("/no-leak-page");
+
+    const unhandledSpy = vi.fn();
+    process.on("unhandledRejection", unhandledSpy);
+    try {
+      fetchMock.mockRejectedValueOnce(new Error("network error"));
+      prefetch(url);
+      // Use a macrotask wait so that any unhandled rejection event would have fired.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandledSpy).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandledSpy);
+    }
+  });
+});
