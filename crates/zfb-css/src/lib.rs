@@ -85,13 +85,11 @@ pub mod scanner;
 
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::{
-    build_synthesised_entry_css, CssEngine, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    build_synthesised_entry_css, CssEngine, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use native_engine::NativeRustEngine;
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
 pub use scanner::{
-    scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan,
-    SourceModuleUsage,
+    scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
 };
