@@ -137,6 +137,14 @@ pub fn classify_change(
 /// and wastefully triggers an islands re-bundle (`src` is a default islands
 /// root). The global check still wins (a globally-registered file under a
 /// collection root must stay nuclear).
+///
+/// The content-root override is **gated on content-shaped extensions**
+/// (`md` / `mdx` — the same set [`classify_by_extension`] maps to
+/// [`PathClass::Content`]). A co-located non-entry file under a collection
+/// root — e.g. an islands `Counter.tsx` or a `theme.css` — must NOT be
+/// swept up as `Content`; it falls through to the normal root-segment walk
+/// so it keeps classifying as [`PathClass::Module`] (preserving islands
+/// invalidation) or [`PathClass::Style`] (preserving the CSS rerun).
 pub fn classify_change_with_content_roots(
     path: &Path,
     project_root: &Path,
@@ -147,7 +155,17 @@ pub fn classify_change_with_content_roots(
         return PathClass::Global;
     }
 
-    if !content_roots.is_empty() {
+    let lower_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    // Only redirect content-shaped files (md / mdx) under a configured
+    // collection root to `Content`. Co-located `.tsx` / `.css` / other
+    // files must fall through to the normal root-segment walk so islands
+    // re-bundling and CSS reruns still fire.
+    let is_content_shaped = matches!(lower_ext.as_deref(), Some("md") | Some("mdx"));
+    if is_content_shaped && !content_roots.is_empty() {
         // Match against the project-relative form when the event path is
         // inside the root; fall back to a direct prefix match so an
         // absolute (out-of-tree) collection root still classifies.
@@ -159,11 +177,6 @@ pub fn classify_change_with_content_roots(
             return PathClass::Content;
         }
     }
-
-    let lower_ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase());
 
     // Out-of-root paths (the `extraWatchPaths` channel — issue #368)
     // must NOT walk their absolute components looking for in-tree root
@@ -388,6 +401,43 @@ mod tests {
                 never_global,
             ),
             PathClass::Module
+        );
+    }
+
+    /// A co-located islands `.tsx` INSIDE the collection root must NOT be
+    /// swept up as `Content` by the content-root override — the override is
+    /// gated on content-shaped extensions (md / mdx). Otherwise the islands
+    /// re-bundle the default `src` islands root would trigger gets skipped
+    /// and the client bundle goes stale.
+    #[test]
+    fn content_root_does_not_swallow_colocated_tsx() {
+        let roots = vec![PathBuf::from("src/mdx/notes")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/proj/src/mdx/notes/Counter.tsx"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Module
+        );
+    }
+
+    /// A co-located `.css` INSIDE the collection root must fall through to
+    /// the normal root-segment walk and classify as `Style`, not `Content`
+    /// — otherwise the CSS rerun for an edit to it is skipped and the
+    /// styles go stale.
+    #[test]
+    fn content_root_does_not_swallow_colocated_css() {
+        let roots = vec![PathBuf::from("src/mdx/notes")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/proj/src/mdx/notes/theme.css"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Style
         );
     }
 
