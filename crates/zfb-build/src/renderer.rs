@@ -207,6 +207,23 @@ pub trait EmbeddedV8Host: Send {
         let _ = (method, headers, body);
         self.dispatch_fetch(url_path)
     }
+
+    /// Drain worker console output buffered since the last drain
+    /// (issue #700).
+    ///
+    /// Returns the captured lines (each prefixed with its console
+    /// level, e.g. `[log] …`) joined with `\n`, and clears the
+    /// host-side buffer. The renderer calls this AFTER a render pass
+    /// completes or fails — never mid-dispatch — so implementations
+    /// may assume no render request is in flight.
+    ///
+    /// `&mut self` because a real drain mutates host state (clears
+    /// the buffer); the production `ThreadedV8Host` round-trips to
+    /// its pinned isolate thread. The default returns an empty
+    /// string so stub hosts and test doubles stay source-compatible.
+    fn drain_console_logs(&mut self) -> String {
+        String::new()
+    }
 }
 
 /// Factory type for constructing an [`EmbeddedV8Host`] from a bundle path.
@@ -384,7 +401,7 @@ impl BackendHandle {
         }
     }
 
-    fn collect_logs(&self) -> String {
+    fn collect_logs(&mut self) -> String {
         match self {
             BackendHandle::Http { .. } => String::new(),
             #[cfg(feature = "embed_v8")]
@@ -734,6 +751,14 @@ impl RendererState {
     /// Gated behind `embed_v8` (issue #371, sub-task 4.1a). When the
     /// feature is off the embedded V8 backend is unavailable and this
     /// accessor does not exist.
+    ///
+    /// Console-capture note (issue #700): dispatches made directly
+    /// through this accessor (the dev SSR seam, `paths()` evaluation)
+    /// accumulate worker console output in the host's capped buffer
+    /// until the next drain — [`render_one`] drains after every
+    /// dev-mode page render. Callers that dispatch heavily outside
+    /// `render_one` can call
+    /// [`EmbeddedV8Host::drain_console_logs`] themselves.
     #[cfg(feature = "embed_v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
@@ -774,7 +799,7 @@ pub fn render_one(
         path: dist_dir.to_path_buf(),
         source: e,
     })?;
-    render_one_inner(
+    let result = render_one_inner(
         &mut state.handle,
         entry,
         dist_dir,
@@ -783,7 +808,18 @@ pub fn render_one(
         // Dev mode never injects prod head assets — see the
         // `prod_head_assets` field doc on `RendererInput`.
         None,
-    )
+    );
+    // Drain the console-capture buffer after every dev-mode render so a
+    // long-lived session does not pin stale logs at the buffer cap
+    // (which would silently stop capturing fresh ones — issue #700).
+    // The lines already reached stdout live via the host's console
+    // passthrough; on failure, surface them next to the error the same
+    // way `render_all` does.
+    let logs = state.handle.collect_logs();
+    if result.is_err() && !logs.trim().is_empty() {
+        eprintln!("[zfb] backend logs at render failure:\n{logs}");
+    }
+    result
 }
 
 /// Tear the dev-mode renderer down. Idempotent — calling on an
@@ -1108,17 +1144,15 @@ impl EmbeddedV8Guard {
         self.host.take();
     }
 
-    /// Collect diagnostic output from the host. The embedded V8 host
-    /// captures console output internally; this surfaces it as a string
-    /// for inclusion in error messages. Returns an empty string when the
-    /// host has already been terminated or when it produced no output.
-    fn collect_logs(&self) -> String {
-        // The embedded host captures console output through the V8
-        // console extension. The exact retrieval API is not yet
-        // defined; for now we return an empty string. Once the host
-        // exposes a `drain_console_logs() -> String` method on the
-        // trait, add it to `EmbeddedV8Host` and call it here.
-        String::new()
+    /// Collect diagnostic output from the host by draining its
+    /// console-capture buffer ([`EmbeddedV8Host::drain_console_logs`]).
+    /// Returns an empty string when the host has already been
+    /// terminated or when it produced no output.
+    fn collect_logs(&mut self) -> String {
+        match self.host.as_mut() {
+            Some(host) => host.drain_console_logs(),
+            None => String::new(),
+        }
     }
 }
 
@@ -1480,6 +1514,149 @@ mod tests {
                 assert!(body.contains("Error: boom"));
             }
             other => unreachable!("expected RenderFailed, got {other:?}"),
+        }
+    }
+
+    /// Console-log surfacing for the embedded V8 backend (issue #700).
+    ///
+    /// The bug fixed here: `EmbeddedV8Guard::collect_logs` hard-coded
+    /// `String::new()`, so the render-failure log-surfacing path in
+    /// [`render_all`] never fired for the production backend. These
+    /// tests pin the wiring with an in-process `EmbeddedV8Host` double
+    /// — the real console capture inside the V8 isolate is covered by
+    /// `zfb-render/tests/embedded_v8_console_logs.rs`.
+    #[cfg(feature = "embed_v8")]
+    mod embedded_v8_console_logs {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// Minimal `EmbeddedV8Host` double: serves a canned response
+        /// (or a dispatch error) and reports canned console logs via
+        /// `drain_console_logs`, recording that the drain happened.
+        struct LoggingHost {
+            /// `None` → every dispatch fails (render-failure path).
+            response: Option<HttpResponseLike>,
+            logs: String,
+            drained: Arc<AtomicBool>,
+        }
+
+        impl EmbeddedV8Host for LoggingHost {
+            fn dispatch_fetch(
+                &mut self,
+                _url_path: &str,
+            ) -> Result<HttpResponseLike, RendererError> {
+                match &self.response {
+                    Some(resp) => Ok(resp.clone()),
+                    None => Err(RendererError::EmbeddedV8("isolate exploded".into())),
+                }
+            }
+
+            fn drain_console_logs(&mut self) -> String {
+                self.drained.store(true, Ordering::SeqCst);
+                std::mem::take(&mut self.logs)
+            }
+        }
+
+        fn embedded_backend(
+            response: Option<HttpResponseLike>,
+            logs: &str,
+            drained: Arc<AtomicBool>,
+        ) -> Backend {
+            let logs = logs.to_string();
+            Backend::EmbeddedV8 {
+                host_factory: Arc::new(move |_bundle_path| {
+                    Ok(Box::new(LoggingHost {
+                        response: response.clone(),
+                        logs: logs.clone(),
+                        drained: drained.clone(),
+                    }))
+                }),
+            }
+        }
+
+        fn single_route_universe() -> Vec<RouteUniverseEntry> {
+            vec![RouteUniverseEntry {
+                url_path: "/".into(),
+                output_path: PathBuf::from("index.html"),
+                route_key: "/".into(),
+                static_html: false,
+                source_path: None,
+            }]
+        }
+
+        fn renderer_input(backend: Backend, dist_dir: PathBuf) -> RendererInput {
+            RendererInput {
+                bundle_path: PathBuf::from("/dev/null"),
+                sourcemap_path: PathBuf::from("/dev/null"),
+                manifest: dummy_manifest(),
+                dist_dir,
+                route_universe: single_route_universe(),
+                prerender_map: BTreeMap::new(),
+                backend,
+                request_timeout: None,
+                prod_head_assets: None,
+                project_root: PathBuf::new(),
+            }
+        }
+
+        #[test]
+        fn render_failure_drains_embedded_host_console_logs() {
+            let drained = Arc::new(AtomicBool::new(false));
+            let backend =
+                embedded_backend(None, "[error] worker exploded mid-render", drained.clone());
+            let dist = tempfile::tempdir().unwrap();
+            let err = render_all(renderer_input(backend, dist.path().to_path_buf()))
+                .expect_err("dispatch failure must fail the render");
+            assert!(
+                matches!(err, RendererError::EmbeddedV8(_)),
+                "expected EmbeddedV8 error, got {err:?}"
+            );
+            assert!(
+                drained.load(Ordering::SeqCst),
+                "render_all must drain the embedded host's console logs on \
+                 the failure path (issue #700: this path never fired because \
+                 collect_logs hard-coded an empty string)"
+            );
+        }
+
+        #[test]
+        fn dev_mode_render_one_drains_console_logs_each_render() {
+            let drained = Arc::new(AtomicBool::new(false));
+            let backend = embedded_backend(None, "[log] stale line", drained.clone());
+            let mut state = start(RendererStartInput {
+                bundle_path: PathBuf::from("/dev/null"),
+                sourcemap_path: PathBuf::from("/dev/null"),
+                backend,
+                request_timeout: None,
+            })
+            .expect("start");
+            let dist = tempfile::tempdir().unwrap();
+            let entry = single_route_universe().remove(0);
+            render_one(&mut state, &entry, dist.path(), Path::new(""))
+                .expect_err("dispatch failure must fail the render");
+            assert!(
+                drained.load(Ordering::SeqCst),
+                "render_one must drain the console buffer so a long-lived \
+                 dev session does not pin stale logs at the cap"
+            );
+        }
+
+        #[test]
+        fn green_render_surfaces_embedded_host_console_logs_as_runtime_logs() {
+            let drained = Arc::new(AtomicBool::new(false));
+            let backend = embedded_backend(
+                Some(html_ok("<html><body>ok</body></html>")),
+                "[log] hello from worker\n[warn] deprecation notice",
+                drained.clone(),
+            );
+            let dist = tempfile::tempdir().unwrap();
+            let out =
+                render_all(renderer_input(backend, dist.path().to_path_buf())).expect("render_all");
+            assert!(drained.load(Ordering::SeqCst));
+            assert_eq!(
+                out.runtime_logs, "[log] hello from worker\n[warn] deprecation notice",
+                "drained console logs must reach RendererOutput::runtime_logs"
+            );
         }
     }
 

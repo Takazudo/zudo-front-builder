@@ -31,6 +31,24 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # Offline shell unit tests (issue #791). tests/unit/install-prerelease.sh
+      # pins install.sh's prerelease tag resolution (jq path + awk fallback +
+      # brace-injection fail-loud, added by #788) but was never executed by any
+      # workflow. Runs in <1s and needs only sh/awk/grep/sed, so it sits here as
+      # a fail-fast gate before any toolchain setup. The glob auto-wires future
+      # tests/unit/*.sh files — #791's root cause was a test that existed but
+      # was never wired. bash -n is a pure parse check (bash parses the POSIX-sh
+      # scripts fine) catching syntax errors in the otherwise untested scripts.
+      - name: Shell script syntax check + offline shell unit tests
+        run: |
+          for f in install.sh scripts/*.sh tests/unit/*.sh; do
+            bash -n "$f"
+          done
+          for t in tests/unit/*.sh; do
+            echo "+ sh $t"
+            sh "$t"
+          done
+
       # Free runner disk BEFORE the rust-cache restore + V8 first-compile (issue
       # #687). rusty_v8 / deno_core produces a multi-GB target/; combined with the
       # restored Swatinem cache it can exhaust the ~14 GB ubuntu-latest disk

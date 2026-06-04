@@ -31,6 +31,23 @@ use zfb_render::{
     BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, PluginRegistryHooks,
 };
 
+/// Message sent from the caller thread to the V8 host thread.
+///
+/// Both request kinds travel over the SAME rendezvous channel so the
+/// host thread serves strictly one at a time — this is what preserves
+/// the isolate-thread invariant AND the drain-after-render rule
+/// (issue #700): a `DrainConsoleLogs` can never interleave with an
+/// in-flight `Dispatch`.
+enum HostRequest {
+    /// Dispatch a synthetic HTTP request through the bundle's
+    /// `default.fetch`.
+    Dispatch(DispatchRequest),
+    /// Drain the worker console output buffered by the host's console
+    /// capture since the last drain. Replies with the joined lines
+    /// (empty when nothing was logged).
+    DrainConsoleLogs { reply: mpsc::SyncSender<String> },
+}
+
 /// Request sent from the caller thread to the V8 host thread.
 struct DispatchRequest {
     url_path: String,
@@ -60,7 +77,7 @@ pub struct ThreadedV8Host {
     /// Sender half of the request channel. Wrapped in `Option` so `Drop`
     /// can `take()` it (move it out of `self`) to close the channel
     /// before joining the thread.
-    tx: Option<mpsc::SyncSender<DispatchRequest>>,
+    tx: Option<mpsc::SyncSender<HostRequest>>,
     /// Join handle for clean shutdown on drop.
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -115,7 +132,7 @@ impl ThreadedV8Host {
         // Use a rendezvous channel (bound = 0) so the request loop cannot
         // get more than one request ahead. This matches the single-threaded
         // contract of `BackendHandle::dispatch`.
-        let (tx, rx) = mpsc::sync_channel::<DispatchRequest>(0);
+        let (tx, rx) = mpsc::sync_channel::<HostRequest>(0);
 
         // Boot result channel: the spawned thread sends `Ok(())` once the
         // host is ready, or `Err(msg)` if boot fails.
@@ -171,7 +188,22 @@ impl ThreadedV8Host {
                         .unwrap_or("bundle.mjs");
                     use zfb_render::RenderHost as _;
                     if let Err(e) = host.execute_module(bundle_name, &bundle_src).await {
-                        let _ = boot_tx.send(Err(format!("bundle load failed: {e}")));
+                        // Module evaluation may have console.logged before
+                        // throwing — the console-capture shim is installed
+                        // at host boot, before bundle execution. The host
+                        // dies with this thread on a boot failure, so the
+                        // only way to surface those lines is to embed them
+                        // in the boot error itself (issue #700).
+                        let console_logs = host.drain_console_logs();
+                        let msg = if console_logs.trim().is_empty() {
+                            format!("bundle load failed: {e}")
+                        } else {
+                            format!(
+                                "bundle load failed: {e}\n\
+                                 worker console output during bundle load:\n{console_logs}"
+                            )
+                        };
+                        let _ = boot_tx.send(Err(msg));
                         return;
                     }
 
@@ -180,8 +212,19 @@ impl ThreadedV8Host {
                     // Drop boot_tx so the caller side's recv returns.
                     drop(boot_tx);
 
-                    // Request loop: serve one dispatch at a time.
-                    for req in rx {
+                    // Request loop: serve one request at a time.
+                    for host_req in rx {
+                        let req = match host_req {
+                            HostRequest::Dispatch(req) => req,
+                            HostRequest::DrainConsoleLogs { reply } => {
+                                // Runs on the isolate thread between
+                                // dispatches — the rendezvous channel
+                                // guarantees no render request is in
+                                // flight (issue #700's re-entrancy rule).
+                                let _ = reply.send(host.drain_console_logs());
+                                continue;
+                            }
+                        };
                         // Construct the request shape expected by
                         // dispatch_fetch. The legacy GET path keeps
                         // method = "GET" + empty headers/body via
@@ -294,6 +337,24 @@ impl EmbeddedV8Host for ThreadedV8Host {
             body.to_vec(),
         )
     }
+
+    fn drain_console_logs(&mut self) -> String {
+        // Best-effort: console logs are failure diagnostics. A host
+        // thread that is already gone (shut down, panicked) must
+        // surface as "no logs", not as an error that masks the render
+        // failure the caller is about to report.
+        let Some(tx) = self.tx.as_ref() else {
+            return String::new();
+        };
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if tx
+            .send(HostRequest::DrainConsoleLogs { reply: reply_tx })
+            .is_err()
+        {
+            return String::new();
+        }
+        reply_rx.recv().unwrap_or_default()
+    }
 }
 
 impl ThreadedV8Host {
@@ -320,7 +381,7 @@ impl ThreadedV8Host {
             reply: reply_tx,
         };
         // Send the request; if the channel is broken the thread died.
-        tx.send(req).map_err(|_| {
+        tx.send(HostRequest::Dispatch(req)).map_err(|_| {
             RendererError::EmbeddedV8("V8 host thread has exited unexpectedly".into())
         })?;
         // Block until the reply arrives.
@@ -395,5 +456,82 @@ pub fn translate_setup_registries_to_hooks(
     PluginRegistryHooks {
         aliases,
         virtual_modules,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_bundle(dir: &tempfile::TempDir, source: &str) -> std::path::PathBuf {
+        let path = dir.path().join("bundle.mjs");
+        std::fs::write(&path, source).expect("write bundle");
+        path
+    }
+
+    /// End-to-end check of the drain request kind (issue #700): worker
+    /// console output produced on the pinned V8 thread — during both
+    /// bundle evaluation and a failing dispatch — round-trips back to
+    /// the caller thread through the shared request channel.
+    #[test]
+    fn drain_console_logs_round_trips_through_host_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            console.log("boot log");
+            export default {
+              fetch(request) {
+                console.warn("about to fail");
+                throw new Error("render exploded");
+              },
+            };
+            "#,
+        );
+        let mut host = ThreadedV8Host::new(&bundle_path).expect("host boot");
+        let err = host
+            .dispatch_fetch("/boom")
+            .expect_err("dispatch must fail when fetch throws");
+        assert!(
+            err.to_string().contains("render exploded"),
+            "dispatch error must carry the thrown message: {err}"
+        );
+        let logs = host.drain_console_logs();
+        assert!(
+            logs.contains("[log] boot log"),
+            "missing boot line: {logs:?}"
+        );
+        assert!(
+            logs.contains("[warn] about to fail"),
+            "missing dispatch-time line: {logs:?}"
+        );
+        // Draining clears the host-side buffer.
+        assert_eq!(host.drain_console_logs(), "");
+    }
+
+    /// A bundle that console.logs and then throws during module
+    /// evaluation never reaches the request loop — the host thread
+    /// dies at boot. The captured lines must still surface, embedded
+    /// in the boot error message (issue #700).
+    #[test]
+    fn boot_failure_embeds_console_output_in_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            console.log("pre-crash detail");
+            throw new Error("boot boom");
+            "#,
+        );
+        let err = ThreadedV8Host::new(&bundle_path)
+            .err()
+            .expect("boot must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("boot boom"), "boot error kept: {msg}");
+        assert!(
+            msg.contains("[log] pre-crash detail"),
+            "console output from the failed bundle load must be embedded \
+             in the boot error: {msg}"
+        );
     }
 }

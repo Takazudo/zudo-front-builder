@@ -53,6 +53,14 @@
 //!   `{ status, headers, body }` as a JS object. The Rust side
 //!   pulls those fields back out via `serde_v8` deserialisation.
 //!
+//! - Worker console output is captured by a shim installed at host
+//!   boot (part of `extensions::HOST_GLOBALS_SHIM_SRC`): the levelled
+//!   `console` methods are patched to buffer each line (capped) while
+//!   still forwarding to the runtime's original stdout printer.
+//!   [`EmbeddedV8RenderHost::drain_console_logs`] retrieves and clears
+//!   the buffer so render failures can surface what the worker
+//!   printed (issue #700).
+//!
 //! ## node:* stubs
 //!
 //! Five specifiers in the v1 list (`node:fs`, `node:fs/promises`,
@@ -404,6 +412,35 @@ impl EmbeddedV8RenderHost {
             .execute_script("zfb:dispatch", script)
             .map_err(|e| RenderError::Runtime(format_js_error(&e)))?;
         Ok(result)
+    }
+
+    /// Drain the worker console output buffered by the host shim's
+    /// console capture (see `js/globals_shim.js`) since the last
+    /// drain.
+    ///
+    /// Returns the buffered lines joined with `\n` — each line carries
+    /// a `[level]` prefix (`[log]`, `[warn]`, …) — and clears the
+    /// JS-side buffer. Returns an empty string when nothing was
+    /// logged, when the shim is missing, or when the drain script
+    /// itself fails: this is strictly best-effort diagnostics and
+    /// must never mask the render error the caller is about to
+    /// surface (issue #700).
+    ///
+    /// Re-entrancy rule: call only BETWEEN dispatches — after a render
+    /// (or module evaluation) completes or fails — never while a
+    /// dispatch is in flight on the isolate.
+    pub fn drain_console_logs(&mut self) -> String {
+        let result = match self.runtime.execute_script(
+            "zfb:drain_console_logs",
+            "globalThis.__zfb && typeof globalThis.__zfb.drainConsoleLogs === \"function\" \
+                 ? globalThis.__zfb.drainConsoleLogs() : \"\"",
+        ) {
+            Ok(v) => v,
+            Err(_) => return String::new(),
+        };
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = v8::Local::new(scope, result);
+        local_to_string_if_string(scope, local).unwrap_or_default()
     }
 
     fn allocate_handle(&self, name: &str) -> ModuleHandle {
