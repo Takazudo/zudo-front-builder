@@ -871,9 +871,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 7. Bind the TCP listener first so the port-in-use error surfaces
     //    before the ready banner is printed. If bind fails here we exit
     //    with an error and no banner — which is the correct ordering.
-    let listener = TcpListener::bind(addr)
+    let listener = match TcpListener::bind(addr)
         .await
-        .with_context(|| format!("failed to bind dev server to {addr}"))?;
+        .with_context(|| format!("failed to bind dev server to {addr}"))
+    {
+        Ok(l) => l,
+        Err(e) => {
+            orch_handle.abort();
+            return Err(e);
+        }
+    };
 
     output::ready_with_interfaces("http", &host, port);
 
