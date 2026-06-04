@@ -22,10 +22,12 @@ use zfb_server::{
 };
 
 /// Convert `Config.plugins` into the wire shape the plugin host wants.
-/// Drops entries without a resolved module specifier (the JSON-config
-/// path produces those, and there's no path-resolution context here to
-/// rescue them). Surfaces a warning so a typo in `zfb.config.json`
-/// doesn't fall on the floor silently.
+/// Drops entries without a resolved module specifier **silently** — the
+/// `filter_map` + `?` skips them with zero diagnostics. Upstream loaders
+/// (`resolve_json_plugin_modules` in config.rs and the TS evaluator) are
+/// responsible for hard-erroring on unresolvable plugins (#211), so a
+/// `None` resolved_module reaching here is effectively unreachable for
+/// config-declared plugins today.
 fn build_plugin_specs(config: &Config) -> Vec<PluginSpec> {
     config
         .plugins
