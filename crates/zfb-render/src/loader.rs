@@ -362,17 +362,27 @@ impl ModuleLoader {
         }
 
         // 2) Probe extensions (`./layout` → `./layout.tsx` etc.).
-        for ext in &self.probe_exts {
-            let mut probe = candidate.clone();
-            let new_name = format!(
-                "{}{}",
-                probe.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                ext
-            );
-            probe.set_file_name(new_name);
-            tried.push(probe.display().to_string());
-            if probe.is_file() {
-                return (Some(probe), tried);
+        // Skip when the specifier already carries one of the known probe
+        // extensions (.tsx/.ts/.jsx/.js) — appending another extension
+        // produces nonsense candidates like `./layout.tsx.tsx`.  Unknown
+        // extensions (e.g. `./file.v2`, `./styles.css`) still probe normally.
+        let specifier_has_probe_ext = Path::new(specifier)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| self.probe_exts.iter().any(|p| p.trim_start_matches('.') == e));
+        if !specifier_has_probe_ext {
+            for ext in &self.probe_exts {
+                let mut probe = candidate.clone();
+                let new_name = format!(
+                    "{}{}",
+                    probe.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                    ext
+                );
+                probe.set_file_name(new_name);
+                tried.push(probe.display().to_string());
+                if probe.is_file() {
+                    return (Some(probe), tried);
+                }
             }
         }
 
