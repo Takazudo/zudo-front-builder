@@ -734,10 +734,8 @@ mod tests {
         }
         fn walk_inner(n: &MdastNode, found: &mut bool) {
             match n {
-                MdastNode::Text(t) => {
-                    if t.value.contains("**重要。**") {
-                        *found = true;
-                    }
+                MdastNode::Text(t) if t.value.contains("**重要。**") => {
+                    *found = true;
                 }
                 MdastNode::Paragraph(p) => {
                     for c in &p.children {
