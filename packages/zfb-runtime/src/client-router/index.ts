@@ -34,5 +34,3 @@ export type { InitOptions } from "./router.js";
 // with the router's `init` above.
 export { prefetch, init as prefetchInit } from "./prefetch.js";
 export type { PrefetchStrategy, PrefetchInitOptions, PrefetchOptions } from "./prefetch.js";
-
-// (cssesc is an internal helper, not part of the public surface — not re-exported.)

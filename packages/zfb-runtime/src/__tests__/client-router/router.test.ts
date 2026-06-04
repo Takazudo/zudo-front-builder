@@ -417,6 +417,41 @@ describe("non-HTML response degrade", () => {
   });
 });
 
+describe("navigate() — fallback=none + no View Transitions → full page load (no fetch)", () => {
+  it("sets location.href directly and does not call fetch when fallback is none and VT is unsupported", async () => {
+    // supportsViewTransitions is already false under happy-dom (document.startViewTransition absent).
+    expect(supportsViewTransitions).toBe(false);
+
+    // Mount the fallback=none meta so getFallback() returns "none".
+    const fallbackMeta = document.createElement("meta");
+    fallbackMeta.setAttribute("name", "zfb-view-transitions-fallback");
+    fallbackMeta.setAttribute("content", "none");
+    document.head.appendChild(fallbackMeta);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Capture location.href assignments (happy-dom's href is read-only by default).
+    const originalHref = location.href;
+    let assignedHref: string | undefined;
+    Object.defineProperty(location, "href", {
+      configurable: true,
+      get: () => originalHref,
+      set: (v: string) => {
+        assignedHref = v;
+      },
+    });
+
+    await navigate("/foo");
+
+    // Full page load path: location.href must be set to the resolved URL.
+    expect(assignedHref).toBeDefined();
+    expect(assignedHref).toContain("/foo");
+    // The guard fires before any fetch — fetch must NOT have been called.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("popstate — forward + back history navigation", () => {
   it("popstate with state.index > current triggers a forward transition; lower triggers back", async () => {
     const fetchMock = vi.fn(async (url: RequestInfo) => {
