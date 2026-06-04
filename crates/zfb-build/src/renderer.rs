@@ -751,6 +751,14 @@ impl RendererState {
     /// Gated behind `embed_v8` (issue #371, sub-task 4.1a). When the
     /// feature is off the embedded V8 backend is unavailable and this
     /// accessor does not exist.
+    ///
+    /// Console-capture note (issue #700): dispatches made directly
+    /// through this accessor (the dev SSR seam, `paths()` evaluation)
+    /// accumulate worker console output in the host's capped buffer
+    /// until the next drain — [`render_one`] drains after every
+    /// dev-mode page render. Callers that dispatch heavily outside
+    /// `render_one` can call
+    /// [`EmbeddedV8Host::drain_console_logs`] themselves.
     #[cfg(feature = "embed_v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
@@ -791,7 +799,7 @@ pub fn render_one(
         path: dist_dir.to_path_buf(),
         source: e,
     })?;
-    render_one_inner(
+    let result = render_one_inner(
         &mut state.handle,
         entry,
         dist_dir,
@@ -800,7 +808,18 @@ pub fn render_one(
         // Dev mode never injects prod head assets — see the
         // `prod_head_assets` field doc on `RendererInput`.
         None,
-    )
+    );
+    // Drain the console-capture buffer after every dev-mode render so a
+    // long-lived session does not pin stale logs at the buffer cap
+    // (which would silently stop capturing fresh ones — issue #700).
+    // The lines already reached stdout live via the host's console
+    // passthrough; on failure, surface them next to the error the same
+    // way `render_all` does.
+    let logs = state.handle.collect_logs();
+    if result.is_err() && !logs.trim().is_empty() {
+        eprintln!("[zfb] backend logs at render failure:\n{logs}");
+    }
+    result
 }
 
 /// Tear the dev-mode renderer down. Idempotent — calling on an
@@ -1597,6 +1616,28 @@ mod tests {
                 "render_all must drain the embedded host's console logs on \
                  the failure path (issue #700: this path never fired because \
                  collect_logs hard-coded an empty string)"
+            );
+        }
+
+        #[test]
+        fn dev_mode_render_one_drains_console_logs_each_render() {
+            let drained = Arc::new(AtomicBool::new(false));
+            let backend = embedded_backend(None, "[log] stale line", drained.clone());
+            let mut state = start(RendererStartInput {
+                bundle_path: PathBuf::from("/dev/null"),
+                sourcemap_path: PathBuf::from("/dev/null"),
+                backend,
+                request_timeout: None,
+            })
+            .expect("start");
+            let dist = tempfile::tempdir().unwrap();
+            let entry = single_route_universe().remove(0);
+            render_one(&mut state, &entry, dist.path(), Path::new(""))
+                .expect_err("dispatch failure must fail the render");
+            assert!(
+                drained.load(Ordering::SeqCst),
+                "render_one must drain the console buffer so a long-lived \
+                 dev session does not pin stale logs at the cap"
             );
         }
 
