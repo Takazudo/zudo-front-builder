@@ -66,12 +66,9 @@ async fn test_c_relative_import_rejected() {
     let err = eval(r#"import "./sibling.js"; export default {};"#)
         .await
         .expect_err("should fail for relative import");
-    let msg = err.to_string();
-    // The loader rejection message or a module-load error embedding it.
     assert!(
-        msg.contains(zfb_render::config_eval::NO_BARE_IMPORTS_ERROR)
-            || msg.contains("bare imports"),
-        "unexpected error: {msg}"
+        matches!(err, ConfigEvalError::BareImportRejected(_)),
+        "unexpected variant: {err:?}"
     );
 }
 
@@ -131,11 +128,9 @@ async fn test_g_node_fs_import_rejected() {
     let err = eval("import \"node:fs\";\nexport default {};")
         .await
         .expect_err("should fail for node:fs import");
-    let msg = err.to_string();
     assert!(
-        msg.contains(zfb_render::config_eval::NO_BARE_IMPORTS_ERROR)
-            || msg.contains("bare imports"),
-        "unexpected error: {msg}"
+        matches!(err, ConfigEvalError::BareImportRejected(_)),
+        "unexpected variant: {err:?}"
     );
 }
 
@@ -145,11 +140,9 @@ async fn test_g_bare_specifier_import_rejected() {
     let err = eval("import \"some-pkg\";\nexport default {};")
         .await
         .expect_err("should fail for bare import");
-    let msg = err.to_string();
     assert!(
-        msg.contains(zfb_render::config_eval::NO_BARE_IMPORTS_ERROR)
-            || msg.contains("bare imports"),
-        "unexpected error: {msg}"
+        matches!(err, ConfigEvalError::BareImportRejected(_)),
+        "unexpected variant: {err:?}"
     );
 }
 
