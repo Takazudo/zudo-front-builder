@@ -114,8 +114,11 @@ resolve_tag() {
     return
   fi
 
-  # Specific tag — pass through as-is (caller supplied "v0.X.Y")
-  printf '%s' "$_version"
+  # Specific tag — must start with 'v' (mirrors install.ps1 rejection logic).
+  case "$_version" in
+    v*) printf '%s' "$_version" ;;
+    *) err "ZFB_VERSION must start with 'v' (e.g. v0.2.0). Got: $_version" ;;
+  esac
 }
 
 # ── Checksum helper ───────────────────────────────────────────────────────────

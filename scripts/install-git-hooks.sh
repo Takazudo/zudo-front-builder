@@ -18,17 +18,13 @@ set -e
 HOOK_MARKER="# x-wt-teams-push-guard v2"
 
 # Skip silently when not in a git repo (e.g. extracted tarball).
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null) || {
+# --path-format=absolute (git >= 2.31) returns an absolute path directly,
+# avoiding the mis-resolution that occurs when --git-common-dir is combined
+# with --show-toplevel to normalize a worktree-relative path.
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
   echo "install-git-hooks: not a git repo, skipping"
   exit 0
 }
-
-# Normalize to absolute path; git-common-dir is relative when run from a
-# regular checkout in some git versions.
-case "$GIT_COMMON_DIR" in
-  /*) ;;
-  *) GIT_COMMON_DIR="$(git rev-parse --show-toplevel)/$GIT_COMMON_DIR" ;;
-esac
 
 HOOKS_DIR="$GIT_COMMON_DIR/hooks"
 TARGET="$HOOKS_DIR/pre-push"

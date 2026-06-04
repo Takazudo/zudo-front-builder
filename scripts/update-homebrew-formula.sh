@@ -200,7 +200,11 @@ fi
 
 echo "==> Committing and pushing to tap ..."
 git -C "$tap_path" add Formula/zfb.rb
-git -C "$tap_path" commit -m "zfb ${semver}"
+if ! git -C "$tap_path" diff --cached --quiet; then
+  git -C "$tap_path" commit -m "zfb ${semver}"
+else
+  echo "    formula unchanged — skipping commit"
+fi
 git -C "$tap_path" push
 
 echo "==> Done — Formula/zfb.rb committed and pushed for zfb ${version_tag}"
