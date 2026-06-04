@@ -408,13 +408,23 @@ fn rewrite_single_island(
 
 /// Generate a collision-free `(open, close)` sentinel pair for one island.
 ///
-/// Each sentinel is `ZFB_OPEN_{key}_{nonce}` / `ZFB_CLOSE_{key}_{nonce}`
-/// where `nonce` is an 8-hex-char value derived from `html` length, the
-/// `key`, and a seed that is incremented until neither sentinel already
-/// appears verbatim in `html`. Hex-only suffixes guarantee the sentinels
-/// never contain `-->`, which would otherwise break `lol_html`'s
-/// comment-text validation when used as replacement content.
+/// Each sentinel is `ZFB_OPEN_{key_digest}_{nonce}` /
+/// `ZFB_CLOSE_{key_digest}_{nonce}` where `key_digest` is a 16-hex-char
+/// FNV-1a hash of the marker key and `nonce` is an 8-hex-char value
+/// derived from `html` length, the key, and a seed that is incremented
+/// until neither sentinel already appears verbatim in `html`.
+///
+/// The key is embedded as a **hex digest** rather than verbatim so the
+/// sentinel is always `[A-Za-z0-9_]`: a raw key containing `& < > " '`
+/// would be HTML-escaped by `Comment::replace(.., ContentType::Text)` in
+/// Phase 1, after which the Phase-2 byte-find for the un-escaped sentinel
+/// would silently miss (a spurious `OpenMarkerMissing`). Hex-only digest +
+/// nonce also guarantee the sentinels never contain `-->`, which would
+/// otherwise break `lol_html`'s comment-text validation.
 fn make_sentinels(html: &str, key: &str) -> (String, String) {
+    // Deterministic by design: same (html, key) → same sentinels on every
+    // run. Reproducible output, and no `rand` dependency.
+    let key_digest = format!("{:016x}", fnv1a(key.as_bytes()));
     let mut seed: u64 = 0;
     loop {
         // Cheap FNV-1a-style hash of (html.len(), key, seed).
@@ -429,13 +439,24 @@ fn make_sentinels(html: &str, key: &str) -> (String, String) {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         let nonce = format!("{:08x}", hash as u32);
-        let open = format!("ZFB_OPEN_{key}_{nonce}");
-        let close = format!("ZFB_CLOSE_{key}_{nonce}");
+        let open = format!("ZFB_OPEN_{key_digest}_{nonce}");
+        let close = format!("ZFB_CLOSE_{key_digest}_{nonce}");
         if !html.contains(&open) && !html.contains(&close) {
             return (open, close);
         }
         seed += 1;
     }
+}
+
+/// FNV-1a hash of `bytes`. Used to turn an arbitrary marker key into an
+/// escape-proof hex token for sentinel construction.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Bridge rewriter for HTML emitted by Sub 4's `<Island when="…">` JSX
@@ -843,6 +864,28 @@ mod tests {
             ),
             "script body must be untouched: {out}"
         );
+    }
+
+    #[test]
+    fn marker_key_with_html_special_chars_round_trips() {
+        // A marker key containing the HTML-special characters & < > " '
+        // (but no `-->`). The sentinels are built from a hex digest of the
+        // key, so Phase-1's ContentType::Text escaping cannot mangle them
+        // and Phase-2's byte-find still locates the span. Before the digest
+        // fix this silently produced OpenMarkerMissing.
+        let key = "k&<>\"'#0";
+        let inner = wrap_with_markers(key, "<button>real</button>");
+        let mut tree = page_with(&inner);
+        let d = IslandDescriptor::new("Counter", json!({"v": 1}), key);
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        let out = tree.serialize();
+        assert!(
+            out.contains(r#"<div data-zfb-island="Counter""#),
+            "island must be wrapped: {out}"
+        );
+        assert!(out.contains("<button>real</button>"));
+        // Markers are gone.
+        assert!(!out.contains("<!--zfb-island:"));
     }
 
     #[test]

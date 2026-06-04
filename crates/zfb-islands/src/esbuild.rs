@@ -1253,7 +1253,7 @@ export default mount;
 }
 
 /// Generate the runtime entry script from a manifest of
-/// `(component_name → asset_url)` pairs.
+/// `(marker_name → asset_url)` pairs.
 ///
 /// The runtime imports the framework-agnostic hydration runtime from
 /// the `zfb` SDK package, hands it the manifest so it can

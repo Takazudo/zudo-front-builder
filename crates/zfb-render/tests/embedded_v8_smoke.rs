@@ -194,9 +194,7 @@ async fn surfaces_v8_stack_with_parseable_frame() {
     // intentionally loose because deno_core's JsError formatter
     // adds a header line; what we need is the LINE:COL token
     // somewhere in the body.
-    let has_line_col_token = msg
-        .lines()
-        .any(|l| extract_line_col(l).is_some());
+    let has_line_col_token = msg.lines().any(|l| extract_line_col(l).is_some());
     assert!(
         has_line_col_token,
         "expected V8 stack with `<specifier>:LINE:COL` frames, got:\n{msg}"
@@ -243,8 +241,8 @@ fn extract_line_col(line: &str) -> Option<(usize, usize)> {
 
 #[test]
 fn isolate_drops_cleanly_on_panic() {
-    use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
+    use std::panic::AssertUnwindSafe;
 
     // Plain `#[test]` (not `#[tokio::test]`) so we can run a
     // tokio runtime inside the closure and let it tear down with
@@ -362,18 +360,27 @@ async fn dispatch_fetch_surfaces_malformed_default_install_error() {
 }
 
 #[tokio::test]
-async fn successful_bundle_after_failed_clears_stale_install_error() {
-    // Two separate host instances simulate the "bad module first, then
-    // good module" scenario.  A single EmbeddedV8RenderHost cannot load
-    // two main modules (deno_core only allows one `load_main_es_module`
-    // call per runtime), so we verify the clearing logic indirectly:
-    // a host that loaded a failed module stores a last_install_error, and
-    // a host whose final load succeeded dispatches without error.
+async fn good_bundle_dispatches_and_bad_only_host_reports_install_error() {
+    // Renamed from `successful_bundle_after_failed_clears_stale_install_error`
+    // to match what the public API actually lets us assert.
+    //
+    // The Ok-arm clear (`*self.last_install_error.borrow_mut() = None` in
+    // execute_module) is deliberately defensive and UNOBSERVABLE through the
+    // public API: `last_install_error` is only ever read by dispatch_fetch's
+    // pre-install error path, and once a workerd-shaped bundle installs,
+    // `bundle_installed` flips true and the field is never read again. So no
+    // black-box test — single-host or otherwise — can witness the clear. We
+    // therefore assert the two observable behaviours that bracket it:
+    //   - a host whose load succeeded dispatches correctly (Ok arm taken);
+    //   - a host whose only load was non-workerd reports the install error
+    //     (Err arm taken).
+    //
+    // (A single EmbeddedV8RenderHost also cannot load two main modules —
+    // deno_core allows only one `load_main_es_module` per runtime — so the
+    // bad-then-good sequence isn't expressible on one host anyway, but the
+    // observability limit above is the real reason this stays two hosts.)
 
-    // Host A: load bad then good is not achievable on one runtime, so we
-    // verify the "cleared" path by ensuring a host whose only successful
-    // load was a workerd-shaped bundle can dispatch correctly (the clear
-    // in install_bundle_default's Ok arm is the mechanism under test).
+    // Host A: only successful load is a workerd-shaped bundle (Ok arm).
     let mut host_good = EmbeddedV8RenderHost::new().expect("host boot (good path)");
     host_good
         .execute_module(

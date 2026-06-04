@@ -135,9 +135,7 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
         collection.exclude.as_deref(),
         collection.id_strip_suffix.as_deref(),
     )
-    .with_context(|| {
-        format!("collection {:?}: invalid filter glob", collection.name)
-    })?;
+    .with_context(|| format!("collection {:?}: invalid filter glob", collection.name))?;
     if !filter.is_noop() {
         files.retain(|p| {
             let rel = p.strip_prefix(&dir).unwrap_or(p);
@@ -158,11 +156,7 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                issues.push(format!(
-                    "{}: io error reading file: {}",
-                    path.display(),
-                    e
-                ));
+                issues.push(format!("{}: io error reading file: {}", path.display(), e));
                 continue;
             }
         };
@@ -275,6 +269,10 @@ fn which_in_path_with_exts(name: &str, extra_exts: &[&str]) -> Option<PathBuf> {
             return Some(with_exe);
         }
         for ext in extra_exts {
+            debug_assert!(
+                ext.starts_with('.'),
+                "extra_exts entries must include the leading dot (got `{ext}`)"
+            );
             let with_ext = dir.join(format!("{name}{ext}"));
             if with_ext.exists() {
                 return Some(with_ext);
@@ -393,10 +391,7 @@ mod tests {
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
-        assert!(
-            issues.is_empty(),
-            "expected no issues, got: {issues:?}"
-        );
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
     }
 
     #[test]
@@ -525,10 +520,7 @@ mod tests {
 
     #[test]
     fn render_summary_shapes() {
-        assert_eq!(
-            render_summary(1, false),
-            "check failed: 1 schema violation"
-        );
+        assert_eq!(render_summary(1, false), "check failed: 1 schema violation");
         assert_eq!(
             render_summary(3, false),
             "check failed: 3 schema violations"
@@ -581,7 +573,12 @@ mod tests {
             assert!(result.is_some(), "expected Some, got None");
             let p = result.unwrap();
             let name = p.file_name().unwrap().to_str().unwrap();
-            assert_eq!(name, "tsc.cmd", "path should end in tsc.cmd, got: {}", p.display());
+            assert_eq!(
+                name,
+                "tsc.cmd",
+                "path should end in tsc.cmd, got: {}",
+                p.display()
+            );
         });
     }
 
@@ -617,5 +614,4 @@ mod tests {
             "locate_tsc must not return bare 'tsc'"
         );
     }
-
 }

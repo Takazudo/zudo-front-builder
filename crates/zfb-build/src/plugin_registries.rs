@@ -241,13 +241,17 @@ pub enum SetupRegistryError {
     },
 
     #[error(
-        "injected route `{pattern}` registered by plugin `{first_plugin}` \
-         conflicts with plugin `{second_plugin}` — same URL pattern"
+        "injected route `{pattern}` registered by plugin `{first_plugin}` -> `{first_entrypoint}` \
+         conflicts with plugin `{second_plugin}` -> `{second_entrypoint}` — same URL pattern, \
+         different entrypoint (a different plugin claiming the pattern, or the same plugin \
+         re-registering it with a different entrypoint)"
     )]
     InjectRouteConflict {
         pattern: String,
         first_plugin: String,
+        first_entrypoint: String,
         second_plugin: String,
+        second_entrypoint: String,
     },
 
     #[error(
@@ -300,7 +304,7 @@ pub(crate) struct PluginSetupAccumulator<'a> {
     command: SetupCommand,
     alias_origin: HashMap<String, (String, PathBuf)>, // from -> (plugin, target)
     virtual_origin: HashMap<String, String>,          // specifier -> plugin
-    route_origin: HashMap<String, String>,            // pattern -> plugin
+    route_origin: HashMap<String, (String, PathBuf)>, // pattern -> (plugin, resolved entrypoint)
     aliases: AliasMap,
     virtual_modules: VirtualModuleRegistry,
     injected_routes: InjectedRouteList,
@@ -407,21 +411,30 @@ impl<'a> PluginSetupAccumulator<'a> {
                             pattern,
                         });
                     }
-                    if let Some(first_plugin) = self.route_origin.get(&pattern) {
-                        if first_plugin != &output.plugin {
+                    let resolved = resolve_against_root(self.project_root, &entrypoint);
+                    if let Some((first_plugin, first_entrypoint)) = self.route_origin.get(&pattern)
+                    {
+                        if first_plugin != &output.plugin || first_entrypoint != &resolved {
+                            // A different plugin claiming the same pattern, OR
+                            // the same plugin re-registering the pattern with a
+                            // DIFFERENT entrypoint, are both real setup bugs —
+                            // surface them rather than silently dropping one.
+                            // Mirrors the Alias arm's same-pattern/different-
+                            // target conflict.
                             return Err(SetupRegistryError::InjectRouteConflict {
                                 pattern: pattern.clone(),
                                 first_plugin: first_plugin.clone(),
+                                first_entrypoint: first_entrypoint.display().to_string(),
                                 second_plugin: output.plugin.clone(),
+                                second_entrypoint: resolved.display().to_string(),
                             });
                         }
-                        // Same plugin re-registering the same pattern is a no-op
-                        // (keep-first, mirrors the Alias path above).
+                        // Same plugin, same pattern, same resolved entrypoint:
+                        // an idempotent no-op (keep-first, mirrors the Alias path).
                         continue;
                     }
-                    let resolved = resolve_against_root(self.project_root, &entrypoint);
                     self.route_origin
-                        .insert(pattern.clone(), output.plugin.clone());
+                        .insert(pattern.clone(), (output.plugin.clone(), resolved.clone()));
                     self.injected_routes.push(InjectedRoute {
                         pattern,
                         entrypoint: resolved,
@@ -642,10 +655,44 @@ mod tests {
                 first_plugin,
                 second_plugin,
                 pattern,
+                ..
             } => {
                 assert_eq!(pattern, "/dev/x");
                 assert_eq!(first_plugin, "a");
                 assert_eq!(second_plugin, "b");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn same_plugin_same_route_different_entrypoint_errors() {
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Dev);
+        acc.ingest(raw_route("a", "/dev/x", "./scripts/a.ts"))
+            .unwrap();
+        // Same plugin, same pattern, but a DIFFERENT entrypoint is a real
+        // setup bug — silently keeping the first would hide it.
+        let err = acc
+            .ingest(raw_route("a", "/dev/x", "./scripts/b.ts"))
+            .expect_err(
+                "same plugin re-registering a pattern with a different entrypoint must error",
+            );
+        match err {
+            SetupRegistryError::InjectRouteConflict {
+                pattern,
+                first_plugin,
+                first_entrypoint,
+                second_plugin,
+                second_entrypoint,
+            } => {
+                assert_eq!(pattern, "/dev/x");
+                assert_eq!(first_plugin, "a");
+                assert_eq!(second_plugin, "a");
+                // resolve_against_root joins verbatim, so the `./` prefix is
+                // preserved in the resolved path.
+                assert_eq!(first_entrypoint, "/proj/./scripts/a.ts");
+                assert_eq!(second_entrypoint, "/proj/./scripts/b.ts");
             }
             other => panic!("wrong error: {other:?}"),
         }

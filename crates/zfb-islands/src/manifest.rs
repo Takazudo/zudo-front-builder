@@ -1,4 +1,4 @@
-//! Islands manifest — `ComponentName → resolved-tsx-path` JSON map.
+//! Islands manifest — `MarkerName → resolved-tsx-path` JSON map.
 //!
 //! ## Stable contract
 //!
@@ -13,10 +13,13 @@
 //! }
 //! ```
 //!
-//! - **Keys** are component-name identities exactly as the scanner emits
-//!   them: the value of [`crate::Island::component_name`]. Default exports
-//!   surface as the literal string `"default"` (per the scanner's
-//!   "Component identity" rules).
+//! - **Keys** are marker-name identities exactly as the scanner emits
+//!   them: the value of [`crate::Island::marker_name`]. This is the same
+//!   identity the runtime/bundling path keys on — the per-island marker
+//!   the SSR side writes into `data-zfb-island`. A default-export island
+//!   carries the identifier name as its `marker_name` (e.g. `"Foo"` for
+//!   `export default function Foo`), so two distinct default exports do
+//!   not collide on the literal `"default"` (their `component_name`).
 //! - **Values** are the resolved source path. They are written either as
 //!   the absolute path the resolver returned, or — when the caller passes a
 //!   `root` to [`Manifest::relative_to`] / [`write_manifest`] — as the
@@ -30,17 +33,17 @@
 //! - **Deterministic key order**: keys are sorted lexicographically. The
 //!   scanner already returns its [`crate::scanner::IslandsSet`] sorted by
 //!   `(source_path, component_name)`; the manifest reorders to a single
-//!   `BTreeMap<String, _>` keyed by name so JSON serialization is stable
-//!   regardless of input order.
+//!   `BTreeMap<String, _>` keyed by marker name so JSON serialization is
+//!   stable regardless of input order.
 //! - **Forward-slash paths**: relative paths use `/` even on Windows hosts
 //!   so the manifest is portable across the JS/TS bundler subprocess that
 //!   reads it. Absolute paths preserve the host separator.
-//! - **One value per key**: when two distinct source files export the same
-//!   component name, the entry whose `source_path` sorts first wins. This
+//! - **One value per key**: when two distinct source files produce the same
+//!   marker name, the entry whose `source_path` sorts first wins. This
 //!   matches the scanner's pre-existing `(source_path, name)` tie-break and
-//!   keeps the manifest a flat `name → path` map. A diagnostic helper,
-//!   [`Manifest::collisions`], surfaces dropped entries so callers that
-//!   want to fail loudly can do so.
+//!   keeps the manifest a flat `marker_name → path` map. A diagnostic
+//!   helper, [`Manifest::collisions`], surfaces dropped entries so callers
+//!   that want to fail loudly can do so.
 //!
 //! ## Downstream contract
 //!
@@ -62,29 +65,29 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::scanner::IslandsSet;
 
-/// A component-name → resolved-source-path map.
+/// A marker-name → resolved-source-path map.
 ///
 /// See the module-level docs for the stable on-disk format and stability
 /// guarantees.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Manifest {
-    /// `ComponentName → path` entries.
+    /// `MarkerName → path` entries.
     ///
     /// `BTreeMap` is the storage type because we need deterministic
     /// iteration order in JSON output and we never produce manifests with
     /// enough entries that hashing would matter.
     entries: BTreeMap<String, PathBuf>,
-    /// Names dropped due to component-name collisions across distinct
+    /// Names dropped due to marker-name collisions across distinct
     /// source files. `(name, dropped_path, kept_path)`.
     collisions: Vec<Collision>,
 }
 
-/// A name-collision entry. Two `(source_path, name)` pairs share `name`
-/// but came from different source paths; the manifest kept `kept_path`
-/// (the first by sort order) and dropped `dropped_path`.
+/// A name-collision entry. Two `(source_path, marker_name)` pairs share
+/// `marker_name` but came from different source paths; the manifest kept
+/// `kept_path` (the first by sort order) and dropped `dropped_path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collision {
-    /// The colliding component name.
+    /// The colliding marker name.
     pub name: String,
     /// The source path that did **not** make it into the manifest.
     pub dropped_path: PathBuf,
@@ -101,22 +104,28 @@ impl Manifest {
     /// Build a manifest from a scanner [`IslandsSet`].
     ///
     /// The scanner's output is already deterministically ordered by
-    /// `(source_path, component_name)`. We reorder by component name and
-    /// drop collisions deterministically (first by `source_path` sort
-    /// order wins). Dropped entries are recorded in
-    /// [`Manifest::collisions`].
+    /// `(source_path, component_name)`. We reorder by **marker name**
+    /// ([`crate::Island::marker_name`]) and drop collisions
+    /// deterministically (first by `source_path` sort order wins).
+    /// Dropped entries are recorded in [`Manifest::collisions`].
+    ///
+    /// Keying on `marker_name` rather than `component_name` keeps the
+    /// scanner-side manifest consistent with the marker-name identity
+    /// model the runtime/bundling path uses: two valid default-export
+    /// islands (both `component_name == "default"`) with distinct
+    /// `marker_name`s are preserved as two entries, not collapsed.
     pub fn from_islands(islands: &IslandsSet) -> Self {
         let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
         let mut collisions: Vec<Collision> = Vec::new();
         for island in islands {
-            match entries.get(&island.component_name) {
+            match entries.get(&island.marker_name) {
                 None => {
-                    entries.insert(island.component_name.clone(), island.source_path.clone());
+                    entries.insert(island.marker_name.clone(), island.source_path.clone());
                 }
                 Some(kept) => {
                     if kept != &island.source_path {
                         collisions.push(Collision {
-                            name: island.component_name.clone(),
+                            name: island.marker_name.clone(),
                             dropped_path: island.source_path.clone(),
                             kept_path: kept.clone(),
                         });
@@ -145,7 +154,7 @@ impl Manifest {
         self.entries.iter().map(|(k, v)| (k.as_str(), v.as_path()))
     }
 
-    /// Look up the source path for a component name.
+    /// Look up the source path for a marker name.
     pub fn get(&self, name: &str) -> Option<&Path> {
         self.entries.get(name).map(PathBuf::as_path)
     }
@@ -339,6 +348,10 @@ mod tests {
         Island::new(name, PathBuf::from(path))
     }
 
+    fn island_marker(component: &str, path: &str, marker: &str) -> Island {
+        Island::with_marker_name(component, PathBuf::from(path), marker)
+    }
+
     #[test]
     fn from_islands_produces_name_keyed_map_in_sorted_order() {
         let set = vec![
@@ -428,6 +441,27 @@ mod tests {
         assert_eq!(c.name, "Counter");
         assert_eq!(c.kept_path, PathBuf::from("/a/counter.tsx"));
         assert_eq!(c.dropped_path, PathBuf::from("/b/counter.tsx"));
+    }
+
+    #[test]
+    fn distinct_default_exports_keyed_by_marker_name_do_not_collide() {
+        // Two default-export islands both have component_name "default"
+        // but distinct marker_names from different source files. Keying on
+        // marker_name keeps both entries; keying on component_name (the old
+        // behaviour) would have collapsed them into one + a false collision.
+        let set = vec![
+            island_marker("default", "/a/foo.tsx", "Foo"),
+            island_marker("default", "/b/bar.tsx", "Bar"),
+        ];
+        let m = Manifest::from_islands(&set);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get("Foo").unwrap(), Path::new("/a/foo.tsx"));
+        assert_eq!(m.get("Bar").unwrap(), Path::new("/b/bar.tsx"));
+        assert!(
+            m.collisions().is_empty(),
+            "no collision: {:?}",
+            m.collisions()
+        );
     }
 
     #[test]
