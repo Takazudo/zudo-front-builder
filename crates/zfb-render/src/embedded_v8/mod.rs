@@ -136,6 +136,10 @@ pub struct EmbeddedV8RenderHost {
     /// `dispatch_fetch` will drive). `None` until `install_bundle_default`
     /// runs.
     active_bundle_specifier: RefCell<Option<String>>,
+    /// Last error returned by [`Self::install_bundle_default`].  Set on
+    /// failure, cleared on success.  Surfaced in [`Self::dispatch_fetch`]'s
+    /// "no bundle loaded" error so operators can see why the install failed.
+    last_install_error: RefCell<Option<String>>,
 }
 
 // SAFETY-of-shape note: explicitly `!Send + !Sync` via `*const ()`-style
@@ -188,6 +192,7 @@ impl EmbeddedV8RenderHost {
             next_handle_id: RefCell::new(1),
             bundle_installed: RefCell::new(false),
             active_bundle_specifier: RefCell::new(None),
+            last_install_error: RefCell::new(None),
         };
         host.bootstrap_host_shim()?;
         Ok(host)
@@ -302,11 +307,13 @@ impl EmbeddedV8RenderHost {
         request: HttpRequestLike,
     ) -> Result<HttpResponseLike> {
         if !*self.bundle_installed.borrow() {
-            return Err(RenderError::Runtime(
-                "embedded V8 host: dispatch_fetch called before any bundle was loaded \
-                 (call execute_module() first)"
-                    .into(),
-            ));
+            let base = "embedded V8 host: dispatch_fetch called before any bundle was loaded \
+                 (call execute_module() first)";
+            let msg = match self.last_install_error.borrow().as_deref() {
+                Some(install_err) => format!("{base}; last install error: {install_err}"),
+                None => base.to_string(),
+            };
+            return Err(RenderError::Runtime(msg));
         }
         // Drive the JS-side `__zfb.dispatch(url, method, headers, body)`
         // helper. It returns a Promise; we wait for it via
@@ -459,16 +466,28 @@ impl RenderHost for EmbeddedV8RenderHost {
         // dispatch_fetch can find it. This is the workerd-shape
         // contract; if the module isn't shaped that way the call
         // here surfaces a clear error.
-        if let Err(e) = self.install_bundle_default(module_id, name) {
-            // Some callers (the existing render-orchestrator path)
-            // load utility modules that don't carry a `default`
-            // export. We tolerate that *non-fatally* for
-            // execute_module compatibility — dispatch_fetch will
-            // still error if called before a shaped bundle is
-            // registered.
-            tracing_warn(&format!(
-                "embedded V8 host: bundle `{name}` not workerd-shaped ({e}); dispatch_fetch disabled until a shaped module loads"
-            ));
+        match self.install_bundle_default(module_id, name) {
+            Ok(()) => {
+                // Clear any failure recorded from an earlier module so
+                // a stale error does not pollute later dispatch_fetch
+                // diagnostics.  (The field is only re-read when
+                // bundle_installed is false, so clearing it here is
+                // defensive — once a good bundle lands the flag is
+                // monotonically true and the field won't be read again.)
+                *self.last_install_error.borrow_mut() = None;
+            }
+            Err(e) => {
+                // Some callers (the existing render-orchestrator path)
+                // load utility modules that don't carry a `default`
+                // export. We tolerate that *non-fatally* for
+                // execute_module compatibility — dispatch_fetch will
+                // still error if called before a shaped bundle is
+                // registered.
+                *self.last_install_error.borrow_mut() = Some(e.to_string());
+                tracing_warn(&format!(
+                    "embedded V8 host: bundle `{name}` not workerd-shaped ({e}); dispatch_fetch disabled until a shaped module loads"
+                ));
+            }
         }
         let handle = self.allocate_handle(name);
         self.handles

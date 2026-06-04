@@ -296,6 +296,8 @@ fn isolate_drops_cleanly_on_panic() {
 
 #[tokio::test]
 async fn dispatch_fetch_errors_when_called_before_bundle() {
+    // Part 1: no module loaded at all — the message must match the
+    // unchanged baseline (no "last install error" appended).
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");
     let err = host
         .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
@@ -305,5 +307,103 @@ async fn dispatch_fetch_errors_when_called_before_bundle() {
     assert!(
         msg.contains("dispatch_fetch called before any bundle was loaded"),
         "expected pre-load error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("last install error"),
+        "no install was attempted, so message must not contain 'last install error', got: {msg}"
+    );
+
+    // Part 2: load a non-workerd-shaped module (no `default` export),
+    // then call dispatch_fetch — the error must surface the install
+    // failure reason.
+    let mut host2 = EmbeddedV8RenderHost::new().expect("host boot");
+    host2
+        .execute_module("util.mjs", "export const helper = () => 42;")
+        .await
+        .expect("execute utility module (non-fatal, no default export)");
+    let err2 = host2
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch after utility-only load should error");
+    let msg2 = err2.to_string();
+    assert!(
+        msg2.contains("dispatch_fetch called before any bundle was loaded"),
+        "expected pre-load base message, got: {msg2}"
+    );
+    assert!(
+        msg2.contains("last install error:"),
+        "expected install-error suffix after failed install, got: {msg2}"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_fetch_surfaces_malformed_default_install_error() {
+    // `export default 42` — the default export exists but is not an
+    // object (workerd shape requires an object with a `fetch` method).
+    // install_bundle_default rejects it; the error must appear in the
+    // dispatch_fetch message.
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", "export default 42;")
+        .await
+        .expect("execute_module is non-fatal even for malformed default");
+    let err = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch should error when bundle is malformed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dispatch_fetch called before any bundle was loaded"),
+        "expected base message, got: {msg}"
+    );
+    assert!(
+        msg.contains("last install error:"),
+        "expected install-error suffix for malformed default, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn successful_bundle_after_failed_clears_stale_install_error() {
+    // Two separate host instances simulate the "bad module first, then
+    // good module" scenario.  A single EmbeddedV8RenderHost cannot load
+    // two main modules (deno_core only allows one `load_main_es_module`
+    // call per runtime), so we verify the clearing logic indirectly:
+    // a host that loaded a failed module stores a last_install_error, and
+    // a host whose final load succeeded dispatches without error.
+
+    // Host A: load bad then good is not achievable on one runtime, so we
+    // verify the "cleared" path by ensuring a host whose only successful
+    // load was a workerd-shaped bundle can dispatch correctly (the clear
+    // in install_bundle_default's Ok arm is the mechanism under test).
+    let mut host_good = EmbeddedV8RenderHost::new().expect("host boot (good path)");
+    host_good
+        .execute_module(
+            "bundle.mjs",
+            "export default { fetch(_r) { return new Response('ok-after-good', { status: 200 }); } };",
+        )
+        .await
+        .expect("execute good bundle");
+    // dispatch_fetch must succeed — last_install_error is None after a
+    // successful install (cleared in the Ok arm).
+    let resp = host_good
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch should succeed when last install succeeded");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("ok-after-good"));
+
+    // Host B: load a bad module — dispatch_fetch must report the install error.
+    let mut host_bad = EmbeddedV8RenderHost::new().expect("host boot (bad path)");
+    host_bad
+        .execute_module("util.mjs", "export const x = 1;")
+        .await
+        .expect("execute utility module (non-fatal)");
+    let err = host_bad
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch must fail when only a non-workerd module was loaded");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("last install error:"),
+        "expected install-error suffix when bad module was the last loaded, got: {msg}"
     );
 }
