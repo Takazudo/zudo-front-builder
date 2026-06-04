@@ -56,33 +56,45 @@ pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
 pub const EXPECTED_ESBUILD_SHA256: &str = {
     // Linux x86_64
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    { "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014" }
+    {
+        "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+    }
 
     // Linux aarch64
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    { "840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449" }
+    {
+        "840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449"
+    }
 
     // macOS aarch64 (Apple Silicon)
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    { "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5" }
+    {
+        "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5"
+    }
 
     // macOS x86_64 (Intel)
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    { "bd09e65a6a1a903c40269d3a4ae23ffc6139f691703728c1faf25f62e48baa40" }
+    {
+        "bd09e65a6a1a903c40269d3a4ae23ffc6139f691703728c1faf25f62e48baa40"
+    }
 
     // Windows x86_64
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    { "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0" }
+    {
+        "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0"
+    }
 
     // Fallback for unsupported platforms: skip checksum gate.
     #[cfg(not(any(
-        all(target_os = "linux",   target_arch = "x86_64"),
-        all(target_os = "linux",   target_arch = "aarch64"),
-        all(target_os = "macos",   target_arch = "aarch64"),
-        all(target_os = "macos",   target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "windows", target_arch = "x86_64"),
     )))]
-    { "" }
+    {
+        ""
+    }
 };
 
 /// One-time cache of `(binary_path → outcome)` for the version + checksum
@@ -369,11 +381,7 @@ impl EsbuildSubprocessConfig {
     /// subprocess (chainable). Most useful for `NODE_PATH=<path>` so
     /// esbuild resolves bare imports against an externally-staged
     /// `node_modules` tree.
-    pub fn with_extra_env(
-        mut self,
-        key: impl Into<OsString>,
-        value: impl Into<OsString>,
-    ) -> Self {
+    pub fn with_extra_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.env_vars.push((key.into(), value.into()));
         self
     }
@@ -849,8 +857,12 @@ pub(crate) fn build_esbuild_args(
         FrameworkKind::from_jsx_import_source(&config.jsx_import_source),
         FrameworkKind::Preact
     ) {
-        args.push(OsString::from("--alias:react/jsx-runtime=preact/jsx-runtime"));
-        args.push(OsString::from("--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"));
+        args.push(OsString::from(
+            "--alias:react/jsx-runtime=preact/jsx-runtime",
+        ));
+        args.push(OsString::from(
+            "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime",
+        ));
     }
     if config.minify {
         args.push(OsString::from("--minify"));
@@ -858,10 +870,7 @@ pub(crate) fn build_esbuild_args(
     if config.sourcemap {
         args.push(OsString::from("--sourcemap=linked"));
     }
-    args.push(OsString::from(format!(
-        "--outfile={}",
-        out_path.display()
-    )));
+    args.push(OsString::from(format!("--outfile={}", out_path.display())));
     // Inline NODE_ENV so React/Preact pick their production build
     // when minifying. esbuild expects the define value to be a JS
     // literal, hence the embedded quotes.
@@ -2078,11 +2087,13 @@ mod tests {
         let cfg = BundleConfig::default().with_minify(true);
         let args = args_as_strings(&cfg);
         assert!(
-            args.iter().any(|a| a == "--define:import.meta.env.PROD=true"),
+            args.iter()
+                .any(|a| a == "--define:import.meta.env.PROD=true"),
             "missing --define:import.meta.env.PROD=true in args: {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "--define:import.meta.env.DEV=false"),
+            args.iter()
+                .any(|a| a == "--define:import.meta.env.DEV=false"),
             "missing --define:import.meta.env.DEV=false in args: {args:?}"
         );
     }
@@ -2097,11 +2108,13 @@ mod tests {
         assert!(!cfg.minify, "default BundleConfig must be dev mode");
         let args = args_as_strings(&cfg);
         assert!(
-            args.iter().any(|a| a == "--define:import.meta.env.PROD=false"),
+            args.iter()
+                .any(|a| a == "--define:import.meta.env.PROD=false"),
             "missing --define:import.meta.env.PROD=false in args: {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "--define:import.meta.env.DEV=true"),
+            args.iter()
+                .any(|a| a == "--define:import.meta.env.DEV=true"),
             "missing --define:import.meta.env.DEV=true in args: {args:?}"
         );
     }
@@ -2145,11 +2158,13 @@ mod tests {
         assert_eq!(cfg.jsx_import_source, "preact", "default must be Preact");
         let args = args_as_strings(&cfg);
         assert!(
-            args.iter().any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
+            args.iter()
+                .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
             "missing --alias:react/jsx-runtime=preact/jsx-runtime in args: {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
+            args.iter()
+                .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
             "missing --alias:react/jsx-dev-runtime=preact/jsx-dev-runtime in args: {args:?}"
         );
     }
@@ -2163,11 +2178,15 @@ mod tests {
         let cfg = BundleConfig::default().with_jsx_import_source("react");
         let args = args_as_strings(&cfg);
         assert!(
-            !args.iter().any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
+            !args
+                .iter()
+                .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
             "react path must not alias react/jsx-runtime: {args:?}"
         );
         assert!(
-            !args.iter().any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
+            !args
+                .iter()
+                .any(|a| a == "--alias:react/jsx-dev-runtime=preact/jsx-dev-runtime"),
             "react path must not alias react/jsx-dev-runtime: {args:?}"
         );
     }
@@ -2183,8 +2202,14 @@ mod tests {
     #[test]
     fn zero_registrations_produce_no_alias_flags_in_config() {
         let cfg = EsbuildSubprocessConfig::default();
-        assert!(cfg.alias_entries.is_empty(), "alias_entries must default to empty");
-        assert!(cfg.virtual_modules.is_empty(), "virtual_modules must default to empty");
+        assert!(
+            cfg.alias_entries.is_empty(),
+            "alias_entries must default to empty"
+        );
+        assert!(
+            cfg.virtual_modules.is_empty(),
+            "virtual_modules must default to empty"
+        );
     }
 
     /// `with_alias_entries` stores the pairs and overwrites the previous list.
@@ -2201,9 +2226,10 @@ mod tests {
     /// `with_virtual_modules` stores the pairs and overwrites the previous list.
     #[test]
     fn with_virtual_modules_stores_pairs() {
-        let vms = vec![
-            ("virtual:my-data".to_string(), "export const x = 1;".to_string()),
-        ];
+        let vms = vec![(
+            "virtual:my-data".to_string(),
+            "export const x = 1;".to_string(),
+        )];
         let cfg = EsbuildSubprocessConfig::default().with_virtual_modules(vms.clone());
         assert_eq!(cfg.virtual_modules, vms);
     }
@@ -2255,12 +2281,14 @@ mod tests {
     #[test]
     fn builder_methods_are_chainable() {
         let cfg = EsbuildSubprocessConfig::default()
-            .with_alias_entries(vec![
-                ("@/components".to_string(), "/abs/src/components".to_string()),
-            ])
-            .with_virtual_modules(vec![
-                ("virtual:meta".to_string(), "export const v = 1;".to_string()),
-            ]);
+            .with_alias_entries(vec![(
+                "@/components".to_string(),
+                "/abs/src/components".to_string(),
+            )])
+            .with_virtual_modules(vec![(
+                "virtual:meta".to_string(),
+                "export const v = 1;".to_string(),
+            )]);
         assert_eq!(cfg.alias_entries.len(), 1);
         assert_eq!(cfg.virtual_modules.len(), 1);
         assert_eq!(cfg.alias_entries[0].0, "@/components");
@@ -2282,6 +2310,10 @@ mod tests {
         let cfg = EsbuildSubprocessConfig::default()
             .with_virtual_modules(vec![("virtual:data".to_string(), source.to_string())]);
         let retrieved = &cfg.virtual_modules[0].1;
-        assert_eq!(retrieved.as_str(), source, "source must survive config round-trip unchanged");
+        assert_eq!(
+            retrieved.as_str(),
+            source,
+            "source must survive config round-trip unchanged"
+        );
     }
 }
