@@ -4,8 +4,9 @@
 # tests/unit/install-prerelease.sh — offline fixture tests for the
 # latest-prerelease tag-resolution logic in install.sh.
 #
-# Runs entirely offline: curl is overridden with a shell function that cats the
-# fixture JSON.  Requires: sh, awk, grep, sed (jq optional — both paths tested).
+# Runs entirely offline: the pipeline logic is extracted inline and fed from
+# shell fixture variables — no curl invocation.
+# Requires: sh, awk, grep, sed (jq optional — both paths tested).
 #
 # Run:
 #   sh tests/unit/install-prerelease.sh
