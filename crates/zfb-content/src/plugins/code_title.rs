@@ -94,25 +94,37 @@ fn strip_title_from_pre(pre: &mut HastNode) {
 }
 
 fn remove_title(meta: &str) -> String {
-    let Some(idx) = meta.find("title=") else {
-        return meta.to_string();
-    };
-    let before = &meta[..idx];
-    let rest = &meta[idx + "title=".len()..];
-    let after = if let Some(stripped) = rest.strip_prefix('"') {
-        match stripped.find('"') {
-            Some(end) => &stripped[end + 1..],
-            None => "",
+    // Scan for "title=" with a token-boundary check: the match is only
+    // valid at index 0 or when the preceding byte is ASCII whitespace.
+    // This prevents false hits on keys like "subtitle=" or "data-title=".
+    let mut search_start = 0;
+    loop {
+        let Some(rel_idx) = meta[search_start..].find("title=") else {
+            return meta.to_string();
+        };
+        let idx = search_start + rel_idx;
+        let at_boundary = idx == 0 || meta.as_bytes()[idx - 1].is_ascii_whitespace();
+        if at_boundary {
+            let before = &meta[..idx];
+            let rest = &meta[idx + "title=".len()..];
+            let after = if let Some(stripped) = rest.strip_prefix('"') {
+                match stripped.find('"') {
+                    Some(end) => &stripped[end + 1..],
+                    None => "",
+                }
+            } else {
+                // No quoted value — drop until next whitespace.
+                match rest.find(char::is_whitespace) {
+                    Some(end) => &rest[end..],
+                    None => "",
+                }
+            };
+            let combined = format!("{}{}", before.trim_end(), after);
+            return combined.trim().to_string();
         }
-    } else {
-        // No quoted value — drop until next whitespace.
-        match rest.find(char::is_whitespace) {
-            Some(end) => &rest[end..],
-            None => "",
-        }
-    };
-    let combined = format!("{}{}", before.trim_end(), after);
-    combined.trim().to_string()
+        // Not at a token boundary — advance past this occurrence and retry.
+        search_start = idx + 1;
+    }
 }
 
 /// If `node` is `<pre>` whose first child is `<code>` with a
@@ -143,12 +155,25 @@ fn title_for_pre(node: &HastNode) -> Option<String> {
 
 /// Pick `title="..."` out of a meta string like
 /// `title="main.rs" foo=1`.
+///
+/// Only accepts the match when it is at a token boundary: index 0 or
+/// preceded by ASCII whitespace. This prevents false hits on keys such
+/// as `subtitle=` or `data-title=`.
 fn extract_title(meta: &str) -> Option<String> {
-    let idx = meta.find("title=")?;
-    let rest = &meta[idx + "title=".len()..];
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut search_start = 0;
+    loop {
+        let rel_idx = meta[search_start..].find("title=")?;
+        let idx = search_start + rel_idx;
+        let at_boundary = idx == 0 || meta.as_bytes()[idx - 1].is_ascii_whitespace();
+        if at_boundary {
+            let rest = &meta[idx + "title=".len()..];
+            let rest = rest.strip_prefix('"')?;
+            let end = rest.find('"')?;
+            return Some(rest[..end].to_string());
+        }
+        // Not at a token boundary — advance past this occurrence and retry.
+        search_start = idx + 1;
+    }
 }
 
 #[cfg(test)]
@@ -241,5 +266,62 @@ mod tests {
         };
         assert_eq!(tag, "div");
         assert!(attrs.contains(&("class".to_string(), "code-block-container".to_string())));
+    }
+
+    // --- Token-boundary regression tests (fixes #728) ---
+
+    #[test]
+    fn subtitle_key_does_not_wrap() {
+        // "subtitle=" contains "title=" as a substring; must NOT trigger wrap.
+        let mut tree = root(vec![pre_with_meta(Some("subtitle=\"x\""))]);
+        let original = tree.clone();
+        CodeTitlePlugin::new().visit(&mut tree);
+        assert_eq!(tree, original);
+    }
+
+    #[test]
+    fn data_title_key_does_not_wrap() {
+        // "data-title=" also contains "title=" as a substring; must NOT trigger wrap.
+        let mut tree = root(vec![pre_with_meta(Some("data-title=\"x\""))]);
+        let original = tree.clone();
+        CodeTitlePlugin::new().visit(&mut tree);
+        assert_eq!(tree, original);
+    }
+
+    #[test]
+    fn title_after_non_title_key_extracted_correctly() {
+        // The real "title=" appears after a "subtitle=" key; extraction must
+        // skip the false hit and return the correct title.
+        let mut tree = root(vec![pre_with_meta(Some(
+            "foo=1 subtitle=\"no\" title=\"real.rs\"",
+        ))]);
+        CodeTitlePlugin::new().visit(&mut tree);
+        let HastNode::Root { children } = tree else {
+            unreachable!("expected HastNode::Root")
+        };
+        // Tree must have been wrapped (a real title= was present).
+        let HastNode::Element { tag, children, .. } = &children[0] else {
+            unreachable!("expected HastNode::Element")
+        };
+        assert_eq!(tag, "div");
+        // First child is the title div; its text must be "real.rs", not "no".
+        let HastNode::Element {
+            children: title_children,
+            ..
+        } = &children[0]
+        else {
+            unreachable!("expected title div")
+        };
+        assert_eq!(title_children, &[HastNode::Text("real.rs".into())]);
+    }
+
+    #[test]
+    fn extract_title_subtitle_returns_none() {
+        assert_eq!(extract_title("subtitle=\"x\""), None);
+    }
+
+    #[test]
+    fn remove_title_subtitle_unchanged() {
+        assert_eq!(remove_title("subtitle=\"x\""), "subtitle=\"x\"");
     }
 }

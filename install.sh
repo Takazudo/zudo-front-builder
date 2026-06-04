@@ -101,12 +101,18 @@ resolve_tag() {
     # Pick the first release entry where "prerelease": true. The naive
     # ?per_page=1 query just returns the most-recent release of ANY kind, so
     # once a stable release is published after a prerelease, "latest-prerelease"
-    # would silently resolve to that stable tag. awk splits on '}' so each
-    # record is one release object; the first one marked prerelease wins.
-    _tag=$(curl -fsSL "${API_BASE}?per_page=30" \
-           | awk -v RS='}' '/"prerelease":[[:space:]]*true/ { print; exit }' \
-           | grep -m1 '"tag_name":' \
-           | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+    # would silently resolve to that stable tag.
+    # jq path: safe against tag names containing '}'; awk path: fallback for
+    # jq-less environments (splits on '}', so tag names with '}' corrupt output).
+    if command -v jq >/dev/null 2>&1; then
+      _tag=$(curl -fsSL "${API_BASE}?per_page=30" \
+             | jq -r 'map(select(.prerelease == true))[0].tag_name // empty')
+    else
+      _tag=$(curl -fsSL "${API_BASE}?per_page=30" \
+             | awk -v RS='}' '/"prerelease":[[:space:]]*true/ { print; exit }' \
+             | grep -m1 '"tag_name":' \
+             | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+    fi
     if [ -z "$_tag" ]; then
       err "could not resolve the latest prerelease tag from GitHub API (no prerelease found in the last 30 releases)"
     fi

@@ -194,9 +194,7 @@ async fn surfaces_v8_stack_with_parseable_frame() {
     // intentionally loose because deno_core's JsError formatter
     // adds a header line; what we need is the LINE:COL token
     // somewhere in the body.
-    let has_line_col_token = msg
-        .lines()
-        .any(|l| extract_line_col(l).is_some());
+    let has_line_col_token = msg.lines().any(|l| extract_line_col(l).is_some());
     assert!(
         has_line_col_token,
         "expected V8 stack with `<specifier>:LINE:COL` frames, got:\n{msg}"
@@ -243,8 +241,8 @@ fn extract_line_col(line: &str) -> Option<(usize, usize)> {
 
 #[test]
 fn isolate_drops_cleanly_on_panic() {
-    use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
+    use std::panic::AssertUnwindSafe;
 
     // Plain `#[test]` (not `#[tokio::test]`) so we can run a
     // tokio runtime inside the closure and let it tear down with
@@ -296,6 +294,8 @@ fn isolate_drops_cleanly_on_panic() {
 
 #[tokio::test]
 async fn dispatch_fetch_errors_when_called_before_bundle() {
+    // Part 1: no module loaded at all — the message must match the
+    // unchanged baseline (no "last install error" appended).
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");
     let err = host
         .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
@@ -305,5 +305,112 @@ async fn dispatch_fetch_errors_when_called_before_bundle() {
     assert!(
         msg.contains("dispatch_fetch called before any bundle was loaded"),
         "expected pre-load error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("last install error"),
+        "no install was attempted, so message must not contain 'last install error', got: {msg}"
+    );
+
+    // Part 2: load a non-workerd-shaped module (no `default` export),
+    // then call dispatch_fetch — the error must surface the install
+    // failure reason.
+    let mut host2 = EmbeddedV8RenderHost::new().expect("host boot");
+    host2
+        .execute_module("util.mjs", "export const helper = () => 42;")
+        .await
+        .expect("execute utility module (non-fatal, no default export)");
+    let err2 = host2
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch after utility-only load should error");
+    let msg2 = err2.to_string();
+    assert!(
+        msg2.contains("dispatch_fetch called before any bundle was loaded"),
+        "expected pre-load base message, got: {msg2}"
+    );
+    assert!(
+        msg2.contains("last install error:"),
+        "expected install-error suffix after failed install, got: {msg2}"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_fetch_surfaces_malformed_default_install_error() {
+    // `export default 42` — the default export exists but is not an
+    // object (workerd shape requires an object with a `fetch` method).
+    // install_bundle_default rejects it; the error must appear in the
+    // dispatch_fetch message.
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", "export default 42;")
+        .await
+        .expect("execute_module is non-fatal even for malformed default");
+    let err = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch should error when bundle is malformed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dispatch_fetch called before any bundle was loaded"),
+        "expected base message, got: {msg}"
+    );
+    assert!(
+        msg.contains("last install error:"),
+        "expected install-error suffix for malformed default, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn good_bundle_dispatches_and_bad_only_host_reports_install_error() {
+    // Renamed from `successful_bundle_after_failed_clears_stale_install_error`
+    // to match what the public API actually lets us assert.
+    //
+    // The Ok-arm clear (`*self.last_install_error.borrow_mut() = None` in
+    // execute_module) is deliberately defensive and UNOBSERVABLE through the
+    // public API: `last_install_error` is only ever read by dispatch_fetch's
+    // pre-install error path, and once a workerd-shaped bundle installs,
+    // `bundle_installed` flips true and the field is never read again. So no
+    // black-box test — single-host or otherwise — can witness the clear. We
+    // therefore assert the two observable behaviours that bracket it:
+    //   - a host whose load succeeded dispatches correctly (Ok arm taken);
+    //   - a host whose only load was non-workerd reports the install error
+    //     (Err arm taken).
+    //
+    // (A single EmbeddedV8RenderHost also cannot load two main modules —
+    // deno_core allows only one `load_main_es_module` per runtime — so the
+    // bad-then-good sequence isn't expressible on one host anyway, but the
+    // observability limit above is the real reason this stays two hosts.)
+
+    // Host A: only successful load is a workerd-shaped bundle (Ok arm).
+    let mut host_good = EmbeddedV8RenderHost::new().expect("host boot (good path)");
+    host_good
+        .execute_module(
+            "bundle.mjs",
+            "export default { fetch(_r) { return new Response('ok-after-good', { status: 200 }); } };",
+        )
+        .await
+        .expect("execute good bundle");
+    // dispatch_fetch must succeed — last_install_error is None after a
+    // successful install (cleared in the Ok arm).
+    let resp = host_good
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch should succeed when last install succeeded");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("ok-after-good"));
+
+    // Host B: load a bad module — dispatch_fetch must report the install error.
+    let mut host_bad = EmbeddedV8RenderHost::new().expect("host boot (bad path)");
+    host_bad
+        .execute_module("util.mjs", "export const x = 1;")
+        .await
+        .expect("execute utility module (non-fatal)");
+    let err = host_bad
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect_err("dispatch must fail when only a non-workerd module was loaded");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("last install error:"),
+        "expected install-error suffix when bad module was the last loaded, got: {msg}"
     );
 }

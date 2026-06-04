@@ -509,7 +509,7 @@ impl EsbuildSubprocessBundler {
     /// produced from a generated entry that imports
     /// `scheduleHydrate` + `mountIslands` from the
     /// `@takazudo/zfb-runtime` style runtime (`packages/zfb/src/runtime.ts`)
-    /// and ships a manifest of `ComponentName → island-bundle-URL` so
+    /// and ships a manifest of `marker_name → island-bundle-URL` so
     /// the runtime can dynamic-import the right per-island bundle for
     /// each `[data-zfb-island]` element on the page.
     ///
@@ -527,8 +527,11 @@ impl EsbuildSubprocessBundler {
     ///
     /// The per-island and runtime bundles are deterministic for a
     /// given `(islands, framework, config)` triple: the island order is
-    /// preserved verbatim from the input slice and the runtime
-    /// manifest is keyed by `component_name` in the same order.
+    /// preserved verbatim from the input slice, the runtime manifest is
+    /// keyed by `marker_name` (the `data-zfb-island` attribute value the
+    /// runtime looks up at hydration time), and the on-disk filenames are
+    /// stable sequential slugs `island-{i}.js` (0-based) that are immune
+    /// to `marker_name` non-uniqueness across source files.
     pub fn bundle_per_island(
         &self,
         islands: &[Island],
@@ -553,7 +556,7 @@ impl EsbuildSubprocessBundler {
         let mut bundle_entries: Vec<IslandBundle> = Vec::with_capacity(islands.len());
         let mut manifest: Vec<(String, String)> = Vec::with_capacity(islands.len());
 
-        for island in islands {
+        for (i, island) in islands.iter().enumerate() {
             // 1. Generate the per-island entry source.
             let entry_source = render_island_entry_source(framework, island);
 
@@ -562,21 +565,37 @@ impl EsbuildSubprocessBundler {
             //    *would* have shipped without spawning esbuild.
             let bundled_js = self.bundle_one_entry(&entry_source, config)?;
 
-            // Stable filename: `<outdir>/islands/<Component>.js`.
-            // `ProductionAssetPipeline` is the only place allowed to
-            // emit content-addressed names; this path keeps a stable
-            // shape so S0's "no hashed URLs in zfb-islands" rule
-            // applies to both the shared-bundle and per-island
-            // emitters. The `IslandBundle::hash` field is still
-            // populated so dev-mode change detection has something to
-            // compare against without touching the on-disk name.
+            // Stable sequential filename: `<outdir>/islands/island-{i}.js`.
+            // Using an index (not marker_name) guarantees collision-freedom:
+            // marker_name is non-unique across files (two files can export
+            // identically-named functions, or both default-export unnamed
+            // components — both get the same marker_name). The sequential
+            // scheme mirrors the shared-bundle's `__zfb_island_{i}` naming.
+            // `ProductionAssetPipeline` is the only place allowed to emit
+            // content-addressed names; this path keeps a stable shape so
+            // S0's "no hashed URLs in zfb-islands" rule applies to both the
+            // shared-bundle and per-island emitters. The `IslandBundle::hash`
+            // field is still populated so dev-mode change detection has
+            // something to compare against without touching the on-disk name.
             let hash = hash_8(&bundled_js);
-            let asset_path = islands_dir.join(format!("{}.js", island.component_name));
+            let filename = format!("island-{i}.js");
+            // Sequential index filenames can never contain a path separator,
+            // but assert the invariant so future scheme changes don't silently
+            // introduce a security hole (path traversal via separator injection).
+            debug_assert!(
+                !filename.contains('/') && !filename.contains(std::path::MAIN_SEPARATOR),
+                "island filename must not contain a path separator: {filename:?}"
+            );
+            let asset_path = islands_dir.join(&filename);
             std::fs::write(&asset_path, bundled_js.as_bytes())
                 .with_context(|| format!("failed to write {}", asset_path.display()))?;
 
             let asset_url = island_link_href(&config.base_url, &asset_path);
-            manifest.push((island.component_name.clone(), asset_url.clone()));
+            // Manifest is keyed by marker_name (the data-zfb-island attribute
+            // value). The runtime's mountIslands does manifest[componentName]
+            // where componentName is derived from the SSR marker — which is
+            // always marker_name, NOT component_name (the export-side name).
+            manifest.push((island.marker_name.clone(), asset_url.clone()));
 
             bundle_entries.push(IslandBundle {
                 component_name: island.component_name.clone(),
@@ -1234,7 +1253,7 @@ export default mount;
 }
 
 /// Generate the runtime entry script from a manifest of
-/// `(component_name → asset_url)` pairs.
+/// `(marker_name → asset_url)` pairs.
 ///
 /// The runtime imports the framework-agnostic hydration runtime from
 /// the `zfb` SDK package, hands it the manifest so it can
@@ -1260,7 +1279,7 @@ mountIslands(ISLAND_MANIFEST);
     )
 }
 
-/// Serialize a manifest of `(component_name → asset_url)` pairs to a
+/// Serialize a manifest of `(marker_name → asset_url)` pairs to a
 /// JSON object literal. Order of keys is preserved (the runtime does
 /// not rely on it but determinism matters for hashing).
 fn serialize_manifest(entries: &[(String, String)]) -> String {
@@ -1485,23 +1504,23 @@ mod tests {
         assert_eq!(out.islands[0].component_name, "Counter");
         assert_eq!(out.islands[1].component_name, "Modal");
 
-        for entry in &out.islands {
+        for (i, entry) in out.islands.iter().enumerate() {
             // Hash is still computed and exposed (8 lowercase hex
             // chars) for dev-mode change detection, but it is **not**
             // part of the on-disk filename or URL — those are stable
             // per the S0 single-source-of-truth-for-hashing contract.
             assert_eq!(entry.hash.len(), 8);
             assert!(entry.hash.chars().all(|c| c.is_ascii_hexdigit()));
-            // File exists on disk at the stable path
-            // `<outdir>/islands/<Component>.js`.
+            // File exists on disk at the stable sequential path
+            // `<outdir>/islands/island-{i}.js`.
             assert!(entry.asset_path.exists(), "{:?}", entry.asset_path);
             assert!(entry.asset_path.starts_with(dir.path().join("islands")));
-            let expected_filename = format!("{}.js", entry.component_name);
+            let expected_filename = format!("island-{i}.js");
             assert_eq!(
                 entry.asset_path.file_name().unwrap().to_string_lossy(),
                 expected_filename,
             );
-            // Public URL is the stable `/islands/<Component>.js`.
+            // Public URL is the stable `/islands/island-{i}.js`.
             assert_eq!(entry.asset_url, format!("/islands/{expected_filename}"));
         }
 
@@ -1541,6 +1560,111 @@ mod tests {
         assert_eq!(a.islands[0].hash, b.islands[0].hash);
         assert_eq!(a.islands[0].asset_url, b.islands[0].asset_url);
         assert_eq!(a.runtime_asset_url, b.runtime_asset_url);
+    }
+
+    #[test]
+    fn bundle_per_island_default_export_islands_do_not_collide() {
+        // Two islands from different files both with marker_name "default"
+        // (anonymous default exports). With component_name-based filenames they
+        // would have written to the same "default.js" path; the sequential
+        // island-{i}.js scheme guarantees distinct files.
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            ..EsbuildSubprocessConfig::default()
+        });
+        // marker_name="default" for both, but distinct source_path.
+        // component_name values ("Foo" / "Bar") are used for the SSR-side
+        // pairing; the runtime manifest key is the marker_name ("Foo"/"Bar"
+        // here, which are also the component_names — note with_marker_name
+        // takes (component_name, source_path, marker_name)).
+        let islands = vec![
+            Island::with_marker_name("default", "/abs/A.tsx", "Foo"),
+            Island::with_marker_name("default", "/abs/B.tsx", "Bar"),
+        ];
+        let config = BundleConfig::default()
+            .with_outdir(dir.path().to_path_buf())
+            .with_base_url("/");
+        let out = bundler
+            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
+            .expect("bundle_per_island with colliding marker_names succeeds");
+
+        assert_eq!(out.islands.len(), 2);
+        // Sequential filenames are distinct — no overwrite.
+        assert_eq!(
+            out.islands[0]
+                .asset_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "island-0.js",
+        );
+        assert_eq!(
+            out.islands[1]
+                .asset_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "island-1.js",
+        );
+        assert!(out.islands[0].asset_path.exists());
+        assert!(out.islands[1].asset_path.exists());
+        // Files have different content (different source_path in entry source).
+        let content_0 = std::fs::read(&out.islands[0].asset_path).unwrap();
+        let content_1 = std::fs::read(&out.islands[1].asset_path).unwrap();
+        assert_ne!(
+            content_0, content_1,
+            "island-0.js and island-1.js must have distinct content"
+        );
+        // Runtime manifest has two distinct entries, keyed by marker_name
+        // ("Foo" and "Bar"), each pointing to the correct island-{i}.js URL.
+        let runtime_src = std::fs::read_to_string(&out.runtime_asset_path).unwrap();
+        assert!(
+            runtime_src.contains(r#""Foo":"/islands/island-0.js""#),
+            "runtime manifest must contain Foo entry: {runtime_src}"
+        );
+        assert!(
+            runtime_src.contains(r#""Bar":"/islands/island-1.js""#),
+            "runtime manifest must contain Bar entry: {runtime_src}"
+        );
+    }
+
+    #[test]
+    fn bundle_per_island_manifest_keys_use_marker_name() {
+        // A default-export island whose marker_name differs from component_name:
+        // the runtime manifest key must be marker_name, not component_name.
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = EsbuildSubprocessBundler::new(EsbuildSubprocessConfig {
+            mock_subprocess: true,
+            ..EsbuildSubprocessConfig::default()
+        });
+        // component_name="default" (export-side), marker_name="SidebarToggle"
+        // (the identifier the SSR side and data-zfb-island attribute use).
+        let islands = vec![Island::with_marker_name(
+            "default",
+            "/abs/SidebarToggle.tsx",
+            "SidebarToggle",
+        )];
+        let config = BundleConfig::default()
+            .with_outdir(dir.path().to_path_buf())
+            .with_base_url("/");
+        let out = bundler
+            .bundle_per_island(&islands, FrameworkKind::Preact, &config)
+            .expect("bundle_per_island with marker_name succeeds");
+
+        assert_eq!(out.islands.len(), 1);
+        // The runtime file is produced by render_runtime_entry_source which
+        // serialises the manifest. In mock mode the bundler echoes the entry
+        // source back, so the file contents contain the raw manifest JS.
+        let runtime_src = std::fs::read_to_string(&out.runtime_asset_path).unwrap();
+        assert!(
+            runtime_src.contains(r#""SidebarToggle":"#),
+            "manifest key must be marker_name 'SidebarToggle': {runtime_src}"
+        );
+        assert!(
+            !runtime_src.contains(r#""default":"#),
+            "manifest key must NOT be component_name 'default': {runtime_src}"
+        );
     }
 
     #[test]

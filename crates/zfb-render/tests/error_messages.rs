@@ -88,6 +88,54 @@ fn broken_relative_import_points_at_importer_file_and_lists_candidates() {
 }
 
 // ---------------------------------------------------------------------------
+// Failure mode 1b — resolver skips extension probing for known-extension specifiers.
+// ---------------------------------------------------------------------------
+
+/// When a specifier already carries a known probe extension (.tsx/.ts/.jsx/.js)
+/// the resolver must skip the extension-probe loop (step 2) and report only
+/// the exact-match candidate in `tried`, never nonsense like `.tsx.tsx`.
+#[test]
+fn resolve_with_known_extension_skips_probe_variants() {
+    let tmp = mk_tmp("known-ext");
+    let pages = tmp.path.join("pages");
+    std::fs::create_dir_all(&pages).unwrap();
+    let importer = pages.join("index.tsx");
+    std::fs::write(
+        &importer,
+        "import Layout from \"./missing-component.tsx\";\nexport default function P(){ return null; }\n",
+    )
+    .unwrap();
+
+    let loader = ModuleLoader::new(JsxRuntime::Preact);
+    let err = loader
+        .resolve_relative_from_file(&importer, "./missing-component.tsx", None, None)
+        .expect_err("resolution should fail — file does not exist");
+
+    match err {
+        RenderError::Resolve { tried, .. } => {
+            // Must NOT contain any double-extension candidates.
+            for bad in [".tsx.tsx", ".tsx.ts", ".tsx.jsx", ".tsx.js"] {
+                assert!(
+                    !tried.iter().any(|t| t.contains(bad)),
+                    "expected no `{bad}` candidate in tried; got tried={tried:?}",
+                );
+            }
+            // Exactly the one exact-match candidate (step 1 only).
+            assert_eq!(
+                tried.len(),
+                1,
+                "expected only the exact-match candidate in tried; got tried={tried:?}",
+            );
+            assert!(
+                tried[0].contains("missing-component.tsx"),
+                "expected exact-match path in tried[0]; got tried={tried:?}",
+            );
+        }
+        other => unreachable!("expected RenderError::Resolve, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Failure mode 3 — `paths()` returning the wrong shape.
 // ---------------------------------------------------------------------------
 

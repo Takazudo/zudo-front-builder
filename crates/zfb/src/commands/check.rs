@@ -17,9 +17,12 @@
 //!    resulting JSON value against the per-collection JSON Schema
 //!    (`collections[].schema`) using [`zfb_content::schema::validate`].
 //! 3. **Invokes `tsc --noEmit`** as a subprocess. Resolution order:
-//!    `node_modules/.bin/tsc` first, falling back to a globally-
-//!    installed `tsc` on `$PATH`. The subprocess inherits stdio so the
-//!    user sees tsc's normal report verbatim. Skip with `--skip-tsc`.
+//!    `node_modules/.bin/tsc` first (including `tsc.cmd` on Windows),
+//!    falling back to a globally-installed `tsc` on `$PATH`. On Windows
+//!    the PATH fallback returns the resolved shim path (e.g.
+//!    `/usr/local/bin/tsc.cmd`) rather than a bare `"tsc"` name. The
+//!    subprocess inherits stdio so the user sees tsc's normal report
+//!    verbatim. Skip with `--skip-tsc`.
 //!
 //! Either failure mode produces a non-zero exit. The tally line at the
 //! end (`✗ 1 schema violation, 2 type errors`) gives the user a single
@@ -132,9 +135,7 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
         collection.exclude.as_deref(),
         collection.id_strip_suffix.as_deref(),
     )
-    .with_context(|| {
-        format!("collection {:?}: invalid filter glob", collection.name)
-    })?;
+    .with_context(|| format!("collection {:?}: invalid filter glob", collection.name))?;
     if !filter.is_noop() {
         files.retain(|p| {
             let rel = p.strip_prefix(&dir).unwrap_or(p);
@@ -155,11 +156,7 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                issues.push(format!(
-                    "{}: io error reading file: {}",
-                    path.display(),
-                    e
-                ));
+                issues.push(format!("{}: io error reading file: {}", path.display(), e));
                 continue;
             }
         };
@@ -216,6 +213,10 @@ fn is_entry_file(path: &Path) -> bool {
 /// Resolution order: prefer `<project>/node_modules/.bin/tsc` (so the
 /// version pinned in the project's lockfile wins), fall back to `tsc`
 /// on `$PATH`, fall back to "tsc not found" with an actionable hint.
+///
+/// No manual cmd.exe /c wrapping is needed: Rust std ≥ 1.77.2 routes
+/// explicit `.cmd`/`.bat` paths through cmd.exe automatically (BatBadBut
+/// fix). If a future MSRV constraint drops below 1.77.2, revisit this.
 fn run_tsc(project_root: &Path) -> Result<bool> {
     let tsc_bin = locate_tsc(project_root)?;
     output::info(format!("running {} --noEmit", tsc_bin.display()));
@@ -242,29 +243,56 @@ fn locate_tsc(project_root: &Path) -> Result<PathBuf> {
             return Ok(c.clone());
         }
     }
-    // Fall back to PATH lookup. We let the OS resolve so the spawn fails
-    // with a clear "command not found" downstream if it's missing.
-    if which_in_path("tsc").is_some() {
-        return Ok(PathBuf::from("tsc"));
+    // Fall back to PATH lookup. Return the resolved path so that spawning
+    // the explicit path (e.g. tsc.cmd on Windows) works correctly.
+    if let Some(resolved) = which_in_path("tsc") {
+        return Ok(resolved);
     }
     bail!(
         "could not find `tsc`. Install TypeScript (e.g. `pnpm add -D typescript`) or run with `--skip-tsc`.",
     )
 }
 
-fn which_in_path(name: &str) -> Option<PathBuf> {
+/// Probe PATH for `name`, `name.exe`, then `name<ext>` for each entry in
+/// `extra_exts`. Returns the first existing path found.
+///
+/// `extra_exts` entries must include the leading dot (e.g. `".cmd"`).
+fn which_in_path_with_exts(name: &str, extra_exts: &[&str]) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     for dir in env::split_paths(&path) {
         let candidate = dir.join(name);
         if candidate.exists() {
             return Some(candidate);
         }
-        let with_ext = dir.join(format!("{name}.exe"));
-        if with_ext.exists() {
-            return Some(with_ext);
+        let with_exe = dir.join(format!("{name}.exe"));
+        if with_exe.exists() {
+            return Some(with_exe);
+        }
+        for ext in extra_exts {
+            debug_assert!(
+                ext.starts_with('.'),
+                "extra_exts entries must include the leading dot (got `{ext}`)"
+            );
+            let with_ext = dir.join(format!("{name}{ext}"));
+            if with_ext.exists() {
+                return Some(with_ext);
+            }
         }
     }
     None
+}
+
+/// Probe PATH for `name`, additionally checking `.cmd` and `.bat` extensions
+/// on Windows (where npm installs shim `.cmd` files into `node_modules/.bin`).
+fn which_in_path(name: &str) -> Option<PathBuf> {
+    // Runtime cfg! so the extension list is compiled in on all platforms but
+    // only activates on Windows; Linux CI still compiles the full code path.
+    let extra_exts: &[&str] = if cfg!(target_os = "windows") {
+        &[".cmd", ".bat"]
+    } else {
+        &[]
+    };
+    which_in_path_with_exts(name, extra_exts)
 }
 
 fn render_summary(schema_count: usize, tsc_failed: bool) -> String {
@@ -363,10 +391,7 @@ mod tests {
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
-        assert!(
-            issues.is_empty(),
-            "expected no issues, got: {issues:?}"
-        );
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
     }
 
     #[test]
@@ -495,10 +520,7 @@ mod tests {
 
     #[test]
     fn render_summary_shapes() {
-        assert_eq!(
-            render_summary(1, false),
-            "check failed: 1 schema violation"
-        );
+        assert_eq!(render_summary(1, false), "check failed: 1 schema violation");
         assert_eq!(
             render_summary(3, false),
             "check failed: 3 schema violations"
@@ -510,4 +532,86 @@ mod tests {
         );
     }
 
+    // Serialize PATH-mutating tests to avoid races between test threads.
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Save the current PATH, set it to `new_path`, run `f`, then restore.
+    fn with_path<F: FnOnce()>(new_path: &std::ffi::OsStr, f: F) {
+        let _guard = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = env::var_os("PATH");
+        env::set_var("PATH", new_path);
+        f();
+        match saved {
+            Some(v) => env::set_var("PATH", v),
+            None => env::remove_var("PATH"),
+        }
+    }
+
+    #[test]
+    fn which_in_path_with_exts_finds_bare_name() {
+        let tmp = TmpDir::new("bare-name");
+        // Write a file with bare name (no extension).
+        std::fs::write(tmp.path.join("tsc"), "").unwrap();
+
+        with_path(tmp.path.as_os_str(), || {
+            let result = which_in_path_with_exts("tsc", &[]);
+            assert!(result.is_some(), "expected Some, got None");
+            let p = result.unwrap();
+            assert!(p.is_absolute(), "path should be absolute: {}", p.display());
+            assert_eq!(p.file_name().unwrap().to_str().unwrap(), "tsc");
+        });
+    }
+
+    #[test]
+    fn which_in_path_with_exts_finds_cmd_extension_on_any_os() {
+        let tmp = TmpDir::new("cmd-ext");
+        // Write tsc.cmd — this tests extension probing on Linux CI too.
+        std::fs::write(tmp.path.join("tsc.cmd"), "").unwrap();
+
+        with_path(tmp.path.as_os_str(), || {
+            let result = which_in_path_with_exts("tsc", &[".cmd"]);
+            assert!(result.is_some(), "expected Some, got None");
+            let p = result.unwrap();
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert_eq!(
+                name,
+                "tsc.cmd",
+                "path should end in tsc.cmd, got: {}",
+                p.display()
+            );
+        });
+    }
+
+    #[test]
+    fn which_in_path_with_exts_returns_none_when_absent() {
+        let tmp = TmpDir::new("absent");
+        // No tsc* files in the tmp dir.
+
+        with_path(tmp.path.as_os_str(), || {
+            let result = which_in_path_with_exts("tsc", &[".cmd", ".bat"]);
+            assert!(result.is_none(), "expected None, got {:?}", result);
+        });
+    }
+
+    #[test]
+    fn locate_tsc_returns_resolved_path_not_bare_name() {
+        // Use the project-local candidate path (node_modules/.bin/tsc) so
+        // no PATH mutation is needed — the local check runs first in locate_tsc.
+        let tmp = TmpDir::new("locate-tsc");
+        let bin_dir = tmp.path.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("tsc"), "").unwrap();
+
+        let result = locate_tsc(&tmp.path).expect("locate_tsc should succeed");
+        assert!(
+            result.is_absolute(),
+            "resolved path should be absolute, got: {}",
+            result.display()
+        );
+        assert_ne!(
+            result,
+            PathBuf::from("tsc"),
+            "locate_tsc must not return bare 'tsc'"
+        );
+    }
 }

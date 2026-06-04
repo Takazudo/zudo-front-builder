@@ -21,10 +21,14 @@
 //!
 //! The renderer wraps each island's server output with a sentinel pair:
 //! `<!--zfb-island:KEY-->…<!--/zfb-island:KEY-->`. The rewriter locates
-//! these via document-level comment handlers in `lol_html`. Because the
-//! markers are HTML comments (not element attributes or text content),
-//! they are structurally distinct from user-authored content and safe
-//! from false positives.
+//! these via document-level comment handlers in `lol_html`, which fire
+//! only on tokens the HTML5 tokenizer parses as actual comments — so a
+//! literal marker byte sequence sitting inside a `<script>`/`<style>`
+//! raw-text body (or a `<textarea>`/`<title>` RCDATA body) is ignored.
+//! The handler *replaces* each matched comment with a unique random
+//! sentinel string before the inner-HTML splice, so the splice can only
+//! target the structurally-confirmed comment and never a raw-text
+//! look-alike.
 //!
 //! ### Attribute-skeleton bridge ([`rewrite_islands_in_attr_skeleton`])
 //!
@@ -78,12 +82,19 @@ use crate::html_tree::HtmlTree;
 /// | `Visible` | `"visible"` |
 /// | `Idle` | `"idle"` |
 /// | `Load` | `"load"` |
-/// | `Media(q)` | `"media(<q>)"` |
 ///
 /// Using an enum instead of a bare `String` means the rewriter and its
 /// callers cannot accidentally pass an unrecognised hint — unknown values
 /// fail at construction time (or static analysis) rather than silently
 /// round-tripping into the HTML.
+///
+/// Media-query-gated hydration (a `Media(query)` variant emitting
+/// `data-when="media(<q>)"`) is a deliberate future feature: it is omitted
+/// here because the client hydration runtime (`packages/zfb/src/runtime.ts`)
+/// has no `window.matchMedia` dispatch branch yet, so emitting such a hint
+/// would silently fall back to immediate (`"load"`) hydration. The variant
+/// will be reintroduced together with the runtime support so callers cannot
+/// construct a no-op hint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhenHint {
@@ -98,10 +109,6 @@ pub enum WhenHint {
     /// unambiguous about intent without relying on the absent-attribute
     /// default.
     Load,
-    /// Hydrate when the given CSS media query matches
-    /// (`window.matchMedia`). The inner string is the raw query, e.g.
-    /// `"(max-width: 768px)"`.
-    Media(String),
 }
 
 impl WhenHint {
@@ -110,14 +117,13 @@ impl WhenHint {
     /// ```
     /// use zfb_islands::hydration::WhenHint;
     /// assert_eq!(WhenHint::Visible.as_str(), "visible");
-    /// assert_eq!(WhenHint::Media("(min-width:600px)".into()).as_str(), "media((min-width:600px))");
+    /// assert_eq!(WhenHint::Idle.as_str(), "idle");
     /// ```
     pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
         match self {
             WhenHint::Visible => std::borrow::Cow::Borrowed("visible"),
             WhenHint::Idle => std::borrow::Cow::Borrowed("idle"),
             WhenHint::Load => std::borrow::Cow::Borrowed("load"),
-            WhenHint::Media(q) => std::borrow::Cow::Owned(format!("media({q})")),
         }
     }
 }
@@ -257,12 +263,12 @@ pub enum IslandSkeletonRewriteError {
 /// ## Implementation note
 ///
 /// Island markers are HTML comments (`<!--zfb-island:KEY-->`). `lol_html`'s
-/// document-level comment handler is used to confirm their structural
-/// presence (i.e. they really are comments in the parsed DOM, not bytes
-/// inside an element's text content). The actual inner-HTML extraction then
-/// uses a targeted string splice — this is safe because the structural
-/// check already confirmed the markers appear at the document level and not
-/// inside quoted attribute values or script data.
+/// document-level comment handler replaces each marker comment with a
+/// unique random sentinel string; the inner-HTML extraction then byte-finds
+/// those sentinels. Because `lol_html` only fires the comment handler on
+/// tokens it parsed as real HTML comments, a literal marker byte sequence
+/// inside a `<script>`/`<style>` raw-text body is never replaced and so
+/// can never be mistaken for the real marker by the subsequent splice.
 ///
 /// # Errors
 ///
@@ -301,9 +307,15 @@ pub fn rewrite_islands(
 
 /// Process one `<!--zfb-island:KEY-->…<!--/zfb-island:KEY-->` pair.
 ///
-/// Uses `lol_html`'s document comment handler to confirm that the markers
-/// exist as actual HTML comments (not inside attribute values or script
-/// data), then performs a targeted string splice to replace the span.
+/// Phase 1 uses `lol_html`'s document comment handler to *replace* each
+/// marker comment with a unique, randomly-suffixed plain-text sentinel.
+/// Because the replacement only happens for tokens `lol_html` parsed as
+/// actual HTML comments, a literal `<!--zfb-island:KEY-->` byte sequence
+/// living inside a raw-text element (`<script>`/`<style>`) or RCDATA
+/// element (`<textarea>`/`<title>`) is left untouched. Phase 2 then
+/// byte-finds the sentinels — which `lol_html` just emitted and which the
+/// raw-text occurrences cannot contain — so the splice can never land on
+/// the wrong span.
 fn rewrite_single_island(
     tree: &mut HtmlTree,
     d: &IslandDescriptor,
@@ -311,31 +323,41 @@ fn rewrite_single_island(
     let open_text = format!("zfb-island:{}", d.marker_key);
     let close_text = format!("/zfb-island:{}", d.marker_key);
 
-    // Phase 1: use lol_html to confirm the markers are actual HTML comments.
-    // Shared flags: use Rc<Cell<bool>> so the closures can capture them.
+    // Generate collision-free sentinels. These are plain-text strings
+    // (hex-only suffix — never contains `-->`, which would break lol_html's
+    // comment-text validation) that replace the marker comments so Phase 2
+    // can byte-find them unambiguously.
+    let (open_sentinel, close_sentinel) = make_sentinels(&tree.html, &d.marker_key);
+
+    // Phase 1: replace each marker comment with its sentinel via a mutating
+    // rewrite. Shared flags (Rc<Cell<bool>>) record which markers fired so
+    // we can surface the missing-marker errors after the pass.
     let open_seen = Rc::new(Cell::new(false));
     let close_seen = Rc::new(Cell::new(false));
 
     {
         let open_seen_c = Rc::clone(&open_seen);
         let close_seen_c = Rc::clone(&close_seen);
+        let open_sentinel_c = open_sentinel.clone();
+        let close_sentinel_c = close_sentinel.clone();
 
         let settings: RewriteStrSettings<'_, '_> = RewriteStrSettings {
             document_content_handlers: vec![doc_comments!(move |c| {
-                let text = c.text().to_string();
+                let text = c.text();
                 if text == open_text {
                     open_seen_c.set(true);
-                }
-                if text == close_text {
+                    c.replace(&open_sentinel_c, ContentType::Text);
+                } else if text == close_text {
                     close_seen_c.set(true);
+                    c.replace(&close_sentinel_c, ContentType::Text);
                 }
                 Ok(())
             })],
             ..RewriteStrSettings::new()
         };
 
-        // We only read; ignore errors (lol_html won't error on well-formed HTML).
-        let _ = lol_html::rewrite_str(&tree.html, settings);
+        tree.rewrite(settings)
+            .expect("lol_html rewriting for marker replacement should not fail");
     }
 
     if !open_seen.get() {
@@ -351,22 +373,19 @@ fn rewrite_single_island(
         });
     }
 
-    // Phase 2: targeted string splice.
-    // Safety: we just confirmed via lol_html that both markers exist as
-    // actual HTML comments in the document. The string find below will
-    // locate the same byte sequences that the comment handler matched.
-    let open_str = format!("<!--zfb-island:{}-->", d.marker_key);
-    let close_str = format!("<!--/zfb-island:{}-->", d.marker_key);
-
+    // Phase 2: targeted string splice on the sentinels. The sentinels were
+    // just emitted by lol_html's comment handler (Phase 1), so a byte-find
+    // is unambiguous — the raw-text marker occurrences that fooled the old
+    // implementation cannot contain these generated strings.
     let html = &tree.html;
-    let open_idx = html
-        .find(&open_str)
-        .ok_or_else(|| IslandRewriteError::OpenMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        })?;
-    let after_open = open_idx + open_str.len();
-    let close_rel = html[after_open..].find(&close_str).ok_or_else(|| {
+    let open_idx =
+        html.find(&open_sentinel)
+            .ok_or_else(|| IslandRewriteError::OpenMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            })?;
+    let after_open = open_idx + open_sentinel.len();
+    let close_rel = html[after_open..].find(&close_sentinel).ok_or_else(|| {
         IslandRewriteError::CloseMarkerMissing {
             component: d.component_name.clone(),
             key: d.marker_key.clone(),
@@ -377,7 +396,7 @@ fn rewrite_single_island(
 
     let replacement = render_wrapper(d, inner_html);
 
-    let end_idx = close_idx + close_str.len();
+    let end_idx = close_idx + close_sentinel.len();
     let mut rebuilt = String::with_capacity(html.len() + replacement.len());
     rebuilt.push_str(&html[..open_idx]);
     rebuilt.push_str(&replacement);
@@ -385,6 +404,59 @@ fn rewrite_single_island(
     tree.html = rebuilt;
 
     Ok(())
+}
+
+/// Generate a collision-free `(open, close)` sentinel pair for one island.
+///
+/// Each sentinel is `ZFB_OPEN_{key_digest}_{nonce}` /
+/// `ZFB_CLOSE_{key_digest}_{nonce}` where `key_digest` is a 16-hex-char
+/// FNV-1a hash of the marker key and `nonce` is an 8-hex-char value
+/// derived from `html` length, the key, and a seed that is incremented
+/// until neither sentinel already appears verbatim in `html`.
+///
+/// The key is embedded as a **hex digest** rather than verbatim so the
+/// sentinel is always `[A-Za-z0-9_]`: a raw key containing `& < > " '`
+/// would be HTML-escaped by `Comment::replace(.., ContentType::Text)` in
+/// Phase 1, after which the Phase-2 byte-find for the un-escaped sentinel
+/// would silently miss (a spurious `OpenMarkerMissing`). Hex-only digest +
+/// nonce also guarantee the sentinels never contain `-->`, which would
+/// otherwise break `lol_html`'s comment-text validation.
+fn make_sentinels(html: &str, key: &str) -> (String, String) {
+    // Deterministic by design: same (html, key) → same sentinels on every
+    // run. Reproducible output, and no `rand` dependency.
+    let key_digest = format!("{:016x}", fnv1a(key.as_bytes()));
+    let mut seed: u64 = 0;
+    loop {
+        // Cheap FNV-1a-style hash of (html.len(), key, seed).
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in (html.len() as u64)
+            .to_le_bytes()
+            .iter()
+            .chain(key.as_bytes())
+            .chain(seed.to_le_bytes().iter())
+        {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let nonce = format!("{:08x}", hash as u32);
+        let open = format!("ZFB_OPEN_{key_digest}_{nonce}");
+        let close = format!("ZFB_CLOSE_{key_digest}_{nonce}");
+        if !html.contains(&open) && !html.contains(&close) {
+            return (open, close);
+        }
+        seed += 1;
+    }
+}
+
+/// FNV-1a hash of `bytes`. Used to turn an arbitrary marker key into an
+/// escape-proof hex token for sentinel construction.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Bridge rewriter for HTML emitted by Sub 4's `<Island when="…">` JSX
@@ -507,6 +579,24 @@ pub fn islands_runtime_script_tag(runtime_url: &str) -> String {
     )
 }
 
+/// Outcome of [`inject_runtime_script_into_head`]: where the runtime
+/// `<script>` tag ended up.
+///
+/// Callers should treat [`PrependFallback`](Self::PrependFallback) as a
+/// renderer bug — a well-formed page is expected to carry a `<head>`, and
+/// the prepend path is only a best-effort fallback for headerless
+/// fragments.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadInjection {
+    /// The tag was appended inside the document's first `<head>` element,
+    /// immediately before `</head>`.
+    Head,
+    /// No `<head>` element was found, so the tag was prepended to the
+    /// document.
+    PrependFallback,
+}
+
 /// Inject the islands-runtime `<script type="module">` tag into the
 /// `<head>` element of `tree`.
 ///
@@ -515,12 +605,15 @@ pub fn islands_runtime_script_tag(runtime_url: &str) -> String {
 /// `<code>` content.
 ///
 /// The tag is inserted **immediately before** `</head>` (appended to the
-/// `<head>` element's inner content). If no `<head>` element is found
-/// the tag is prepended to the document — the caller should treat that
-/// as a renderer bug.
+/// `<head>` element's inner content). Only the document's **first**
+/// `<head>` is mutated; a malformed document with multiple `<head>`
+/// elements would otherwise double-load the runtime. If no `<head>`
+/// element is found the tag is prepended to the document and
+/// [`HeadInjection::PrependFallback`] is returned — the caller should
+/// treat that as a renderer bug.
 ///
 /// `runtime_url` is HTML-attribute-escaped before being embedded.
-pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) {
+pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) -> HeadInjection {
     let tag = islands_runtime_script_tag(runtime_url);
 
     let head_found = Rc::new(Cell::new(false));
@@ -533,6 +626,11 @@ pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) {
         element_content_handlers: vec![(
             Cow::Borrowed(&selector),
             ElementContentHandlers::default().element(move |el: &mut Element<'_, '_, _>| {
+                // Guard against a second <head> (malformed input): only the
+                // first one receives the runtime tag.
+                if head_found_c.get() {
+                    return Ok(());
+                }
                 head_found_c.set(true);
                 el.append(&tag_for_handler, ContentType::Html);
                 Ok(())
@@ -544,12 +642,15 @@ pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) {
     tree.rewrite(settings)
         .expect("lol_html rewriting for head injection should not fail");
 
-    if !head_found.get() {
+    if head_found.get() {
+        HeadInjection::Head
+    } else {
         // Fragment / headerless: prepend the tag.
         let mut out = String::with_capacity(tag.len() + tree.html.len());
         out.push_str(&tag);
         out.push_str(&tree.html);
         tree.html = out;
+        HeadInjection::PrependFallback
     }
 }
 
@@ -701,10 +802,6 @@ mod tests {
         assert_eq!(WhenHint::Visible.as_str(), "visible");
         assert_eq!(WhenHint::Idle.as_str(), "idle");
         assert_eq!(WhenHint::Load.as_str(), "load");
-        assert_eq!(
-            WhenHint::Media("(max-width: 768px)".into()).as_str(),
-            "media((max-width: 768px))"
-        );
     }
 
     #[test]
@@ -714,18 +811,6 @@ mod tests {
         let d = IslandDescriptor::new("Foo", json!({}), "k").with_when(WhenHint::Idle);
         rewrite_islands(&mut tree, &[d]).unwrap();
         assert!(tree.serialize().contains(r#"data-when="idle""#));
-    }
-
-    #[test]
-    fn when_hint_media_is_emitted_in_html() {
-        let inner = wrap_with_markers("k", "<x/>");
-        let mut tree = page_with(&inner);
-        let d = IslandDescriptor::new("Foo", json!({}), "k")
-            .with_when(WhenHint::Media("(min-width: 600px)".into()));
-        rewrite_islands(&mut tree, &[d]).unwrap();
-        assert!(tree
-            .serialize()
-            .contains(r#"data-when="media((min-width: 600px))""#));
     }
 
     #[test]
@@ -748,6 +833,59 @@ mod tests {
         assert!(pos_a < pos_b);
         assert!(out.contains("<i>1</i>"));
         assert!(out.contains("<i>2</i>"));
+    }
+
+    #[test]
+    fn rewrite_single_island_ignores_marker_in_script_body() {
+        // A <script> body containing the literal marker strings appears
+        // BEFORE the real island markers. lol_html does not parse <!-- -->
+        // inside raw-text elements as comments, so Phase 1 only replaces the
+        // real markers and Phase 2 splices the correct span — the script
+        // body is left untouched.
+        let mut html = String::from("<html><body>");
+        html.push_str(r#"<script>window.x = "<!--zfb-island:k--><!--/zfb-island:k-->";</script>"#);
+        html.push_str(&wrap_with_markers("k", "<button>real</button>"));
+        html.push_str("</body></html>");
+
+        let mut tree = HtmlTree::parse(html);
+        let d = IslandDescriptor::new("Counter", json!({"v": 1}), "k");
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        let out = tree.serialize();
+
+        // The real island was wrapped at its true location.
+        assert!(
+            out.contains(r#"<div data-zfb-island="Counter" data-props="{&quot;v&quot;:1}"><button>real</button></div>"#),
+            "actual: {out}"
+        );
+        // The script body literal is preserved verbatim — not spliced.
+        assert!(
+            out.contains(
+                r#"<script>window.x = "<!--zfb-island:k--><!--/zfb-island:k-->";</script>"#
+            ),
+            "script body must be untouched: {out}"
+        );
+    }
+
+    #[test]
+    fn marker_key_with_html_special_chars_round_trips() {
+        // A marker key containing the HTML-special characters & < > " '
+        // (but no `-->`). The sentinels are built from a hex digest of the
+        // key, so Phase-1's ContentType::Text escaping cannot mangle them
+        // and Phase-2's byte-find still locates the span. Before the digest
+        // fix this silently produced OpenMarkerMissing.
+        let key = "k&<>\"'#0";
+        let inner = wrap_with_markers(key, "<button>real</button>");
+        let mut tree = page_with(&inner);
+        let d = IslandDescriptor::new("Counter", json!({"v": 1}), key);
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        let out = tree.serialize();
+        assert!(
+            out.contains(r#"<div data-zfb-island="Counter""#),
+            "island must be wrapped: {out}"
+        );
+        assert!(out.contains("<button>real</button>"));
+        // Markers are gone.
+        assert!(!out.contains("<!--zfb-island:"));
     }
 
     #[test]
@@ -837,7 +975,8 @@ mod tests {
         let mut tree = HtmlTree::parse(html);
         // Stable URL per the S0 contract — `ProductionAssetPipeline`
         // handles any hashing pass downstream.
-        inject_runtime_script_into_head(&mut tree, "/islands/islands-runtime.js");
+        let outcome = inject_runtime_script_into_head(&mut tree, "/islands/islands-runtime.js");
+        assert_eq!(outcome, HeadInjection::Head);
         let out = tree.serialize();
         let head_close = out.find("</head>").unwrap();
         let script_at = out
@@ -851,10 +990,27 @@ mod tests {
     #[test]
     fn inject_runtime_script_falls_back_to_prepend_when_head_missing() {
         let mut tree = HtmlTree::parse("<p>fragment</p>");
-        inject_runtime_script_into_head(&mut tree, "/r.js");
+        let outcome = inject_runtime_script_into_head(&mut tree, "/r.js");
+        assert_eq!(outcome, HeadInjection::PrependFallback);
         let out = tree.serialize();
         assert!(out.starts_with("<script type=\"module\" src=\"/r.js\">"));
         assert!(out.ends_with("<p>fragment</p>"));
+    }
+
+    #[test]
+    fn inject_runtime_script_only_first_head_mutated() {
+        // A malformed document with two <head> start tags (as a buggy
+        // renderer or hand-authored fragment might produce) must receive the
+        // runtime script exactly once — only the first <head> is mutated.
+        let html = "<!doctype html><html><head><title>A</title></head><head><title>B</title></head><body><p>hi</p></body></html>";
+        let mut tree = HtmlTree::parse(html);
+        let outcome = inject_runtime_script_into_head(&mut tree, "/islands/islands-runtime.js");
+        assert_eq!(outcome, HeadInjection::Head);
+        let out = tree.serialize();
+        let count = out
+            .matches("<script type=\"module\" src=\"/islands/islands-runtime.js\">")
+            .count();
+        assert_eq!(count, 1, "runtime script must appear exactly once: {out}");
     }
 
     #[test]

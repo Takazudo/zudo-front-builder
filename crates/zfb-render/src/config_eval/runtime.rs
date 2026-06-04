@@ -73,7 +73,14 @@ async fn evaluate_in_runtime(
     let module_id = runtime
         .load_main_es_module(&main_spec)
         .await
-        .map_err(|e| ConfigEvalError::ModuleLoad(e.to_string()))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains(NO_BARE_IMPORTS_ERROR) {
+                ConfigEvalError::BareImportRejected(msg)
+            } else {
+                ConfigEvalError::ModuleLoad(msg)
+            }
+        })?;
 
     let evaluate = runtime.mod_evaluate(module_id);
     runtime

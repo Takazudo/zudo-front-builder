@@ -377,6 +377,20 @@ impl DependencyGraph {
     /// A removed file invalidates all of its former consumers (they imported
     /// something that no longer exists), so the returned set is exactly the
     /// pages that need rebuilding.
+    ///
+    /// **Asset-layer cleanup:**
+    ///
+    /// - When `path` is a page (Case 1), [`Self::clear_assets_for_page`] is
+    ///   called unconditionally — including for pages registered only via
+    ///   [`Self::set_assets_for_page`] (never in [`Self::pages`]). The call is
+    ///   a safe no-op when no asset record exists.
+    /// - When `path` is a CSS-module file (Case 3), the reverse index entry is
+    ///   drained and the stale path is removed from each consumer page's
+    ///   [`AssetDeps::css_modules`]. CSS consumers are **not** added to
+    ///   `affected`: `affected` is the source-graph rebuild set; CSS-bundle
+    ///   re-emit is the asset-bundler's concern. Callers that need the consumer
+    ///   list should call [`Self::pages_using_css_module`] **before** calling
+    ///   `remove_node`.
     pub fn remove_node(&mut self, path: &Path) -> BTreeSet<PageId> {
         let mut affected: BTreeSet<PageId> = BTreeSet::new();
 
@@ -396,15 +410,17 @@ impl DependencyGraph {
                     }
                 }
             }
-            // Tear down the asset-layer record too — leaving stale reverse
-            // entries would surface this dropped page as an island/css
-            // consumer on subsequent queries.
-            self.clear_assets_for_page(&page_id);
-            affected.insert(page_id);
+            affected.insert(page_id.clone());
             // Do NOT return here: fall through to Case 2 so consumers of this
             // page (recorded in the reverse index under `path`) are also
             // collected into `affected` and their forward edges are cleaned.
         }
+        // Tear down the asset-layer record for the page unconditionally — a
+        // page may have been registered only via set_assets_for_page (never
+        // inserted into self.pages), so calling this only inside the
+        // if-block above would leak its reverse-index entries. clear_assets_for_page
+        // short-circuits when no record exists, so this is always safe.
+        self.clear_assets_for_page(&page_id);
 
         // Case 2: drain reverse-index consumers of `path`. For a plain dep
         // this is the primary branch; for a page that is also a dep this
@@ -416,6 +432,20 @@ impl DependencyGraph {
                 }
             }
             affected.extend(consumers);
+        }
+
+        // Case 3: if `path` is a CSS-module file, drain its reverse-index
+        // entry and remove the stale path from each consumer page's css_modules
+        // set. CSS consumers are intentionally NOT added to `affected` — the
+        // affected set drives source-graph rebuilds; CSS-bundle re-emit is the
+        // asset-bundler's concern. Callers that need the consumer list should
+        // call pages_using_css_module before calling remove_node.
+        if let Some(css_consumers) = self.assets_css_reverse.remove(path) {
+            for page in &css_consumers {
+                if let Some(asset_rec) = self.assets.get_mut(page) {
+                    asset_rec.css_modules.remove(path);
+                }
+            }
         }
 
         affected
@@ -1046,6 +1076,46 @@ mod tests {
         assert!(g.pages_using_island("Counter").is_empty());
         assert!(g.pages_using_css_module(&p("/m.module.css")).is_empty());
         assert!(g.assets_for_page(&pid("/pages/a.tsx")).is_none());
+    }
+
+    /// Defect (a): a page registered only via set_assets_for_page (never
+    /// upserted into the source graph) should have its asset-layer record
+    /// fully cleaned up by remove_node.
+    #[test]
+    fn remove_node_clears_asset_layer_for_asset_only_page() {
+        let mut g = DependencyGraph::new();
+        // Register asset info WITHOUT calling upsert — page is not in self.pages.
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new(["Counter".to_string()], [p("/m.module.css")]),
+        );
+        g.remove_node(&p("/pages/a.tsx"));
+        assert!(g.pages_using_island("Counter").is_empty());
+        assert!(g.pages_using_css_module(&p("/m.module.css")).is_empty());
+        assert!(g.assets_for_page(&pid("/pages/a.tsx")).is_none());
+    }
+
+    /// Defect (b): remove_node on a CSS-module file must drain assets_css_reverse
+    /// and remove the stale path from each consumer page's AssetDeps.css_modules.
+    /// The consuming page is NOT added to affected (CSS-bundle re-emit is the
+    /// asset-bundler's concern; callers query pages_using_css_module before removal).
+    #[test]
+    fn remove_node_drains_css_reverse_when_module_file_deleted() {
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(pid("/pages/a.tsx"), vec![]));
+        g.set_assets_for_page(
+            pid("/pages/a.tsx"),
+            AssetDeps::new([], [p("/styles/h.module.css")]),
+        );
+        let affected = g.remove_node(&p("/styles/h.module.css"));
+        // CSS consumers are not added to the source-rebuild set.
+        assert!(!affected.contains(&pid("/pages/a.tsx")));
+        // Reverse index is drained.
+        assert!(g.pages_using_css_module(&p("/styles/h.module.css")).is_empty());
+        // The module path is removed from the page's asset record, but the
+        // page record itself survives — the page was not deleted.
+        let rec = g.assets_for_page(&pid("/pages/a.tsx")).expect("page record should still exist");
+        assert!(!rec.css_modules.contains(&p("/styles/h.module.css")));
     }
 
     #[test]

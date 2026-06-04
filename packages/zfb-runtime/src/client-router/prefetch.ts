@@ -32,9 +32,9 @@ let initialized = false;
 let prefetchAll = false;
 let defaultStrategy: PrefetchStrategy = "hover";
 
-// Set of hrefs that have been completed or are in-flight.
+// Set of hrefs that have been successfully prefetched.
 const prefetched = new Set<string>();
-// Map of in-flight prefetch promises for dedup.
+// Map of in-flight prefetch promises for dedup (also used as the concurrent short-circuit guard).
 const inFlight = new Map<string, Promise<void>>();
 
 // The viewport observer — retained across post-swap re-scans so new elements
@@ -109,23 +109,23 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
   if (existing) return existing;
 
   const p: Promise<void> = (async () => {
-    const method = opts.with ?? (supportsLinkPrefetch() ? "link" : "fetch");
-    if (method === "link") {
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.href = href;
-      document.head.appendChild(link);
-    } else {
-      await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
+    try {
+      const method = opts.with ?? (supportsLinkPrefetch() ? "link" : "fetch");
+      if (method === "link") {
+        const link = document.createElement("link");
+        link.rel = "prefetch";
+        link.href = href;
+        document.head.appendChild(link);
+      } else {
+        await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
+      }
+      prefetched.add(href);
+    } finally {
+      inFlight.delete(href);
     }
-    prefetched.add(href);
-    inFlight.delete(href);
   })();
 
   inFlight.set(href, p);
-  // Also add to prefetched immediately to prevent concurrent triggers from
-  // queuing duplicate in-flight entries before the async operation resolves.
-  prefetched.add(href);
   return p;
 }
 
@@ -138,9 +138,9 @@ export function prefetch(url: string, opts: PrefetchOptions = {}): void {
 
   if (opts.ignoreSlowConnection !== true && isSlowConnection()) return;
 
-  if (prefetched.has(href)) return;
+  if (prefetched.has(href) || inFlight.has(href)) return;
 
-  void executePrefetch(href, opts);
+  executePrefetch(href, opts).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------

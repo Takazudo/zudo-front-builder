@@ -17,7 +17,7 @@
 //!   content hashing is the production pipeline's job (see
 //!   [`super::prod::ProductionAssetPipeline`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -114,6 +114,15 @@ impl AssetPipeline for DevAssetPipeline {
             let rendered = (ctx.render_pages)(&pages)?;
             outcome.pages_rendered = rendered.len();
 
+            // Collect prune candidates and the live dest set during the
+            // write loop; the actual deletes are deferred to after the
+            // loop. This prevents a page's prune from deleting a path
+            // that a sibling page in the same tick has already written
+            // (or will write) to — i.e. the two-page output-path swap
+            // scenario described in issue #727.
+            let mut prune_candidates: Vec<PathBuf> = Vec::new();
+            let mut live_dests: HashSet<PathBuf> = HashSet::new();
+
             for r in rendered {
                 // Reject any output_path that escapes dist_root via
                 // `..` or absolute roots before we touch the
@@ -123,16 +132,20 @@ impl AssetPipeline for DevAssetPipeline {
                     .with_context(|| format!("while building page {:?}", r.page))?;
                 let new_bytes = r.html.into_bytes();
 
-                // Compute (but do not yet apply) any stale-output
-                // prune. The actual delete happens AFTER the new
-                // artifact lands on disk, so a reader never observes
-                // a window where neither file exists. We also defer
-                // updating `last_output_path` until the write succeeds:
-                // otherwise a transient write failure forgets the
-                // previous path and leaves the stale file in dist
-                // forever (it would never be pruned on subsequent
-                // rebuilds).
-                let prune_target = {
+                // Every dest produced in this tick is "live" regardless
+                // of whether its bytes changed. Record it before any
+                // conditional logic so unchanged pages still protect
+                // their path from a sibling's deferred prune.
+                live_dests.insert(dest.clone());
+
+                // Collect any stale-output prune candidate for this
+                // page. The actual delete is deferred to after the loop
+                // so we can cross-check against live_dests first.
+                // We still defer updating `last_output_path` until the
+                // write succeeds: a transient write failure aborts the
+                // tick (via `?`) before the deferred prune runs, so the
+                // previous path mapping is preserved for the next tick.
+                {
                     let last_out = self.last_output_path.lock().unwrap_or_else(|p| {
                         tracing::warn!(
                             site = "DevAssetPipeline.last_output_path",
@@ -140,11 +153,12 @@ impl AssetPipeline for DevAssetPipeline {
                         );
                         p.into_inner()
                     });
-                    match last_out.get(&r.page) {
-                        Some(prev) if prev != &dest => Some(prev.clone()),
-                        _ => None,
+                    if let Some(prev) = last_out.get(&r.page) {
+                        if prev != &dest {
+                            prune_candidates.push(prev.clone());
+                        }
                     }
-                };
+                }
 
                 let changed = {
                     let cache = self.last_bytes.lock().unwrap_or_else(|p| {
@@ -200,24 +214,28 @@ impl AssetPipeline for DevAssetPipeline {
                         p.into_inner()
                     })
                     .insert(r.page.clone(), dest.clone());
+            }
 
-                // Now that the new artifact is on disk, delete the
-                // stale one. Best-effort: if it was already gone we
-                // silently move on.
-                if let Some(prev) = prune_target {
-                    let _ = std::fs::remove_file(&prev);
-                    self.last_bytes
-                        .lock()
-                        .unwrap_or_else(|p| {
-                            tracing::warn!(
-                                site = "DevAssetPipeline.last_bytes (prune)",
-                                "mutex poisoned, recovering"
-                            );
-                            p.into_inner()
-                        })
-                        .remove(&prev);
-                    outcome.pages_pruned.push(prev);
+            // Deferred prune: remove candidates that are no longer live.
+            // Skip any path that appears in live_dests — another page in
+            // this same tick now owns it, so deleting it would remove
+            // that sibling's freshly-written artifact (the #727 bug).
+            for prev in prune_candidates {
+                if live_dests.contains(&prev) {
+                    continue; // another page now owns this path — skip
                 }
+                let _ = std::fs::remove_file(&prev);
+                self.last_bytes
+                    .lock()
+                    .unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "DevAssetPipeline.last_bytes (prune)",
+                            "mutex poisoned, recovering"
+                        );
+                        p.into_inner()
+                    })
+                    .remove(&prev);
+                outcome.pages_pruned.push(prev);
             }
         }
 
@@ -399,7 +417,10 @@ mod tests {
         };
         let first = pipeline.apply(&plan, &ctx_a).unwrap();
         assert_eq!(first.pages_written.len(), 1);
-        assert!(first.pages_pruned.is_empty(), "first build has nothing to prune");
+        assert!(
+            first.pages_pruned.is_empty(),
+            "first build has nothing to prune"
+        );
         assert!(dir.path().join("sitemap.xml").exists());
 
         // Second build: same page, but output_path flipped to
@@ -415,7 +436,11 @@ mod tests {
         let second = pipeline.apply(&plan, &ctx_b).unwrap();
 
         assert_eq!(second.pages_written.len(), 1, "new artifact written");
-        assert_eq!(second.pages_pruned.len(), 1, "old artifact reported as pruned");
+        assert_eq!(
+            second.pages_pruned.len(),
+            1,
+            "old artifact reported as pruned"
+        );
         assert_eq!(second.pages_pruned[0], dir.path().join("sitemap.xml"));
         assert!(
             !dir.path().join("sitemap.xml").exists(),
@@ -456,6 +481,119 @@ mod tests {
         let second = pipeline.apply(&plan, &ctx).unwrap();
         assert!(first.pages_pruned.is_empty());
         assert!(second.pages_pruned.is_empty());
+    }
+
+    #[test]
+    fn stale_output_prune_skipped_when_sibling_claims_path() {
+        // Regression test for #727: when two pages swap output paths in
+        // a single tick the deferred prune must not delete the path that
+        // a sibling just claimed.
+        //
+        // Topology:
+        //   Tick 1: A → shared.html, B → b.html
+        //   Tick 2: A → a.html,      B → shared.html  (B claims A's old path)
+        //
+        // Expected after tick 2:
+        //   - shared.html still exists with B's content (not deleted)
+        //   - a.html exists with A's content
+        //   - b.html is gone (legitimately pruned — nothing claims it)
+        //   - pages_pruned does NOT contain shared.html
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+
+        // -- Tick 1 ----------------------------------------------------------
+        let tick1 = vec![
+            RenderedPage {
+                page: pid("/p/a.tsx"),
+                output_path: RelDistPath::new("shared.html").unwrap(),
+                html: "<p>A tick1</p>".into(),
+                content_type: None,
+            },
+            RenderedPage {
+                page: pid("/p/b.tsx"),
+                output_path: RelDistPath::new("b.html").unwrap(),
+                html: "<p>B tick1</p>".into(),
+                content_type: None,
+            },
+        ];
+        let ctx1 = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            tick1,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/a.tsx"));
+        sel.insert(pid("/p/b.tsx"));
+        let plan = RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: false,
+            rerun_islands: false,
+            triggers: vec![],
+        };
+        let first = pipeline.apply(&plan, &ctx1).unwrap();
+        assert_eq!(first.pages_written.len(), 2);
+        assert!(first.pages_pruned.is_empty(), "tick 1 has nothing to prune");
+        assert!(dir.path().join("shared.html").exists());
+        assert!(dir.path().join("b.html").exists());
+
+        // -- Tick 2: B claims A's previous path ------------------------------
+        let tick2 = vec![
+            RenderedPage {
+                page: pid("/p/a.tsx"),
+                output_path: RelDistPath::new("a.html").unwrap(),
+                html: "<p>A tick2</p>".into(),
+                content_type: None,
+            },
+            RenderedPage {
+                page: pid("/p/b.tsx"),
+                output_path: RelDistPath::new("shared.html").unwrap(),
+                html: "<p>B tick2</p>".into(),
+                content_type: None,
+            },
+        ];
+        let ctx2 = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            tick2,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let second = pipeline.apply(&plan, &ctx2).unwrap();
+
+        // shared.html is claimed by B — must NOT be in pages_pruned.
+        assert!(
+            !second
+                .pages_pruned
+                .contains(&dir.path().join("shared.html")),
+            "shared.html is a live dest for B — must not be pruned; pages_pruned={:?}",
+            second.pages_pruned,
+        );
+        // shared.html must still exist with B's tick-2 content.
+        assert!(
+            dir.path().join("shared.html").exists(),
+            "shared.html must still exist after tick 2",
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("shared.html")).unwrap(),
+            "<p>B tick2</p>",
+        );
+        // a.html must exist with A's tick-2 content.
+        assert!(
+            dir.path().join("a.html").exists(),
+            "a.html must exist after A moves to it",
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.html")).unwrap(),
+            "<p>A tick2</p>",
+        );
+        // b.html was abandoned by B with nothing claiming it — it should
+        // be pruned (this exercises the normal stale-prune path).
+        assert!(
+            !dir.path().join("b.html").exists(),
+            "b.html was abandoned by B and should be pruned",
+        );
+        assert!(
+            second.pages_pruned.contains(&dir.path().join("b.html")),
+            "b.html must appear in pages_pruned",
+        );
     }
 
     #[test]
