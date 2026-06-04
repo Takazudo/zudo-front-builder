@@ -199,6 +199,9 @@ pub fn apply_prod_asset_pipeline(
         pages: PageSelection::Specific(selection),
         rerun_css: true,
         rerun_islands: true,
+        // One-shot production build: the render session is constructed
+        // against the bundle that was just built — nothing to reload.
+        renderer_fresh: true,
         triggers: vec![],
     };
 

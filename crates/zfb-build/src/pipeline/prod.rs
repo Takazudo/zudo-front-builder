@@ -634,6 +634,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: true,
             rerun_islands: true,
+            renderer_fresh: false,
             triggers: vec![],
         }
     }
@@ -888,6 +889,7 @@ mod tests {
             pages: PageSelection::All,
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());

@@ -124,8 +124,40 @@ pub fn classify_change(
     project_root: &Path,
     is_global: impl FnOnce(&Path) -> bool,
 ) -> PathClass {
+    classify_change_with_content_roots(path, project_root, &[], is_global)
+}
+
+/// Like [`classify_change`], but consults `content_roots` (project-relative
+/// roots of configured content collections, e.g. `src/mdx/notes` from a
+/// consumer's `zfb.config.ts`) **before** the standard root-segment walk.
+///
+/// Without this, a collection configured outside `content/` misclassifies:
+/// `src/mdx/notes/foo.mdx` matches the `src` segment in the walk and comes
+/// back as [`PathClass::Module`] — which both misses the content semantics
+/// and wastefully triggers an islands re-bundle (`src` is a default islands
+/// root). The global check still wins (a globally-registered file under a
+/// collection root must stay nuclear).
+pub fn classify_change_with_content_roots(
+    path: &Path,
+    project_root: &Path,
+    content_roots: &[PathBuf],
+    is_global: impl FnOnce(&Path) -> bool,
+) -> PathClass {
     if is_global(path) {
         return PathClass::Global;
+    }
+
+    if !content_roots.is_empty() {
+        // Match against the project-relative form when the event path is
+        // inside the root; fall back to a direct prefix match so an
+        // absolute (out-of-tree) collection root still classifies.
+        let rel = path.strip_prefix(project_root).ok();
+        let under_content_root = content_roots.iter().any(|root| {
+            rel.map(|r| r.starts_with(root)).unwrap_or(false) || path.starts_with(root)
+        });
+        if under_content_root {
+            return PathClass::Content;
+        }
     }
 
     let lower_ext = path
@@ -232,12 +264,22 @@ pub struct GranularityPolicy {
     /// the islands re-bundle. Defaults to `["components", "src"]` —
     /// callers can override with [`GranularityPolicy::with_islands_roots`].
     pub islands_roots: Vec<PathBuf>,
+
+    /// Project-relative roots of configured content collections (each
+    /// `collections[].path` from the consumer config). Changes under
+    /// these roots classify as [`PathClass::Content`] ahead of the
+    /// standard root-segment walk — see
+    /// [`classify_change_with_content_roots`]. Empty by default (the
+    /// hardcoded `content/` root in the walk keeps covering the
+    /// conventional layout).
+    pub content_roots: Vec<PathBuf>,
 }
 
 impl Default for GranularityPolicy {
     fn default() -> Self {
         Self {
             islands_roots: vec![PathBuf::from("components"), PathBuf::from("src")],
+            content_roots: Vec::new(),
         }
     }
 }
@@ -251,6 +293,17 @@ impl GranularityPolicy {
         P: Into<PathBuf>,
     {
         self.islands_roots = roots.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set the configured content-collection roots (chainable). See
+    /// [`GranularityPolicy::content_roots`].
+    pub fn with_content_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.content_roots = roots.into_iter().map(Into::into).collect();
         self
     }
 
@@ -306,6 +359,79 @@ mod tests {
 
     fn proj() -> &'static Path {
         Path::new("/proj")
+    }
+
+    /// Regression: a collection configured under `src/` (e.g.
+    /// `src/mdx/notes` in a consumer's `zfb.config.ts`) classified as
+    /// `Module` because the root-segment walk matched `src` — missing
+    /// the content semantics and (since `src` is a default islands
+    /// root) wastefully re-bundling islands on every entry edit.
+    #[test]
+    fn configured_content_root_wins_over_module_segment_walk() {
+        let roots = vec![PathBuf::from("src/mdx/notes")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/proj/src/mdx/notes/foo.mdx"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Content
+        );
+        // A sibling module file outside the collection root keeps the
+        // normal Module classification.
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/proj/src/components/button.tsx"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Module
+        );
+    }
+
+    /// The global check must stay ahead of the content-root check — a
+    /// globally-registered file under a collection root is still
+    /// nuclear.
+    #[test]
+    fn global_check_wins_over_configured_content_root() {
+        let roots = vec![PathBuf::from("src/mdx")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/proj/src/mdx/zfb.config.ts"),
+                proj(),
+                &roots,
+                |_| true,
+            ),
+            PathClass::Global
+        );
+    }
+
+    /// An absolute (out-of-tree) collection root still classifies via
+    /// the direct prefix fallback.
+    #[test]
+    fn absolute_content_root_classifies_via_prefix_fallback() {
+        let roots = vec![PathBuf::from("/srv/shared/posts")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/srv/shared/posts/a.mdx"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Content
+        );
+    }
+
+    /// `classify_change` (no content roots) keeps its exact legacy
+    /// behaviour — `src/**.mdx` still walks to `Module`.
+    #[test]
+    fn no_content_roots_preserves_legacy_module_walk() {
+        assert_eq!(
+            classify_change(Path::new("/proj/src/mdx/notes/foo.mdx"), proj(), never_global),
+            PathClass::Module
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ use zfb_watcher::{Change, ChangeKind, Watcher};
 
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
-use crate::policy::{classify_change, GranularityPolicy, PathClass};
+use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
 
 /// Live watch-ADD discovery hook (issue #659).
 ///
@@ -67,17 +67,33 @@ use crate::policy::{classify_change, GranularityPolicy, PathClass};
 /// page-render path an edit tick uses.
 ///
 /// Why a separate hook rather than [`BuildContext::reload_renderer`]:
-/// `reload_renderer` fires on **every** page tick (including edits) and
-/// only reloads the host — it neither rebundles a new content snapshot
-/// nor rediscovers routes, so it cannot make a brand-new file appear.
-/// The Created path is distinct and additive: it leaves the edit path
-/// (which never calls this hook) behaviourally identical.
+/// the discovery hook additionally rediscovers routes and reports the
+/// newly-renderable pages back into the tick's plan — `reload_renderer`
+/// is a fire-and-forget refresh with no way to surface discovered pages.
+/// The two cooperate via [`DiscoveryOutcome::renderer_reloaded`] /
+/// [`crate::RebuildPlan::renderer_fresh`]: when the hook's re-bundle
+/// already refreshed the renderer this tick, the pipeline skips its own
+/// `reload_renderer` call instead of bundling twice.
 ///
-/// Returning an empty `Vec` (no created path mapped to a discoverable
+/// Returning an empty page set (no created path mapped to a discoverable
 /// page) folds into the tick as a no-op for discovery — the rest of the
 /// tick's changes are still planned normally.
 pub type DiscoveryHook =
-    std::sync::Arc<dyn Fn(&[PathBuf]) -> Result<Vec<PageId>> + Send + Sync + 'static>;
+    std::sync::Arc<dyn Fn(&[PathBuf]) -> Result<DiscoveryOutcome> + Send + Sync + 'static>;
+
+/// What a [`DiscoveryHook`] invocation did for this tick.
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryOutcome {
+    /// Source pages whose route set changed (newly renderable). Folded
+    /// into the tick's plan so they render this tick.
+    pub pages: Vec<PageId>,
+
+    /// True when the hook re-bundled and reloaded the renderer in
+    /// place. Propagated to [`crate::RebuildPlan::renderer_fresh`] so the
+    /// pipeline's per-tick `reload_renderer` call is skipped — one
+    /// bundle per tick.
+    pub renderer_reloaded: bool,
+}
 
 /// Construction-time configuration for [`BuildOrchestrator`].
 #[derive(Debug, Clone)]
@@ -213,7 +229,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let path: PathBuf = change.into();
             plan.record_trigger(path.clone());
 
-            let class = classify_change(&path, &self.config.project_root, |p| graph.is_global(p));
+            let class = classify_change_with_content_roots(
+                &path,
+                &self.config.project_root,
+                &self.config.policy.content_roots,
+                |p| graph.is_global(p),
+            );
 
             match class {
                 PathClass::Global => {
@@ -368,7 +389,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // the path-only fold would have produced an empty/no-op plan
         // (a brand-new content file has no reverse edge yet, exactly the
         // #659 symptom).
-        let discovered: Vec<PageId> = match discover {
+        let discovered: DiscoveryOutcome = match discover {
             Some(hook) => {
                 let created: Vec<PathBuf> = changes
                     .iter()
@@ -376,18 +397,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     .map(|(p, _)| p.clone())
                     .collect();
                 if created.is_empty() {
-                    Vec::new()
+                    DiscoveryOutcome::default()
                 } else {
                     hook(&created)?
                 }
             }
-            None => Vec::new(),
+            None => DiscoveryOutcome::default(),
         };
 
         let mut plan = self.plan_for_changes(changes.into_iter().map(|(p, _)| p));
 
-        if !discovered.is_empty() {
-            let set: std::collections::BTreeSet<PageId> = discovered.into_iter().collect();
+        if discovered.renderer_reloaded {
+            plan.mark_renderer_fresh();
+        }
+        if !discovered.pages.is_empty() {
+            let set: std::collections::BTreeSet<PageId> = discovered.pages.into_iter().collect();
             plan.mark_pages(PageSelection::Specific(set));
         }
 
@@ -426,6 +450,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     pub fn initial_build(&self, ctx: &BuildContext) -> Result<Option<BuildOutcome>> {
         let mut plan = RebuildPlan::empty();
         plan.mark_pages(PageSelection::All);
+        // The dev command bundles eagerly at boot right before this
+        // call — the renderer is already bound to a fresh bundle, so the
+        // pipeline must not re-bundle again for the initial render.
+        plan.mark_renderer_fresh();
         self.resolve_all(&mut plan);
         if plan.pages.is_empty() {
             return Ok(None);
