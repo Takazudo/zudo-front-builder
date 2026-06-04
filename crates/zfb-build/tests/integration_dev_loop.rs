@@ -384,12 +384,11 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     assert!(html_path.exists());
     assert_eq!(std::fs::read_to_string(&html_path).unwrap(), "<h1>v2</h1>");
 
-    // Drop the watcher to stop the OS-level watch. We deliberately do
-    // not call `Watcher::shutdown` here — that path awaits the bridge
-    // task which will not exit until `_notify` itself is dropped, so
-    // the test would hang. Drop is the path used in production
-    // (`BuildOrchestrator::run` ends by dropping its watcher), so this
-    // also matches the real shutdown ordering.
+    // Drop the watcher to stop the OS-level watch. `Watcher::shutdown` is
+    // now safe to call (the circular-wait deadlock was fixed in #708/#759
+    // and is covered by a timeout-guarded test in zfb-watcher), but we keep
+    // `drop` here because it matches the production shutdown path
+    // (`BuildOrchestrator::run` ends by dropping its watcher).
     drop(watcher);
 }
 
