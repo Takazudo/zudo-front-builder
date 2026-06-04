@@ -426,12 +426,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // fall back to the All-sentinel for an "unknown" path — re-rendering
         // every page rather than just the affected subset. Collecting the
         // affected set from remove_node is the precise, conservative choice.
+        //
+        // Excluding the removed path from plan_for_changes drops only the
+        // page-fallback; its sub-pipeline side effects (CSS / islands / SSR
+        // reload) are reinstated explicitly below by classifying each removed
+        // path — see the `for path in &removed` loop after the plan is built.
+        let removed: Vec<PathBuf> = changes
+            .iter()
+            .filter(|(_, kind)| *kind == ChangeKind::Removed)
+            .map(|(p, _)| p.clone())
+            .collect();
         let removed_consumers: std::collections::BTreeSet<PageId> = {
-            let removed: Vec<PathBuf> = changes
-                .iter()
-                .filter(|(_, kind)| *kind == ChangeKind::Removed)
-                .map(|(p, _)| p.clone())
-                .collect();
             if removed.is_empty() {
                 std::collections::BTreeSet::new()
             } else {
@@ -489,6 +494,61 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // reload_renderer fire and prune the now-vanished HTML.
         if !removed_consumers.is_empty() {
             plan.mark_pages(PageSelection::Specific(removed_consumers));
+        }
+
+        // Removed paths are excluded from `plan_for_changes` above (the
+        // All-fallback would be wrong for a deletion), but a removal still
+        // has the SAME sub-pipeline side effects as a normal change: a
+        // deleted stylesheet must rerun CSS, a deleted islands module must
+        // rerun islands, a deleted global file must full-rebuild, and any
+        // SSR-relevant source (page / module / content / data) must reload
+        // the V8 host so SSR-only routes don't serve stale output (#807).
+        // Classify each removed path and apply only those rerun/reload flags
+        // — NOT the page fallback, which the `removed_consumers` fold already
+        // handled precisely. Without this, a deletion-only tick leaves CSS /
+        // islands / SSR stale until the next non-removed edit.
+        for path in &removed {
+            let class = {
+                let graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::classify_removed",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                classify_change_with_content_roots(
+                    path,
+                    &self.config.project_root,
+                    &self.config.policy.content_roots,
+                    |p| graph.is_global(p),
+                )
+            };
+            match class {
+                PathClass::Global => {
+                    // A deleted global file invalidates everything. Mirror
+                    // `RebuildPlan::full_rebuild`'s sub-pipeline flags; pages
+                    // come from `resolve_all` over the (post-removal) graph.
+                    plan.mark_pages(PageSelection::All);
+                    plan.mark_css();
+                    plan.mark_islands();
+                    plan.mark_ssr_reload_needed();
+                }
+                PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
+                    plan.mark_ssr_reload_needed();
+                    if matches!(class, PathClass::Module)
+                        && self.config.policy.is_islands_candidate(path)
+                    {
+                        plan.mark_islands();
+                    }
+                }
+                PathClass::Style => {
+                    plan.mark_css();
+                }
+                PathClass::External => {
+                    plan.mark_ssr_reload_needed();
+                }
+                PathClass::Asset | PathClass::Unclassified => {}
+            }
         }
 
         if discovered.renderer_reloaded {

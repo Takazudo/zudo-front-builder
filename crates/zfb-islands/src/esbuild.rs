@@ -531,7 +531,10 @@ impl EsbuildSubprocessBundler {
         let framework = FrameworkKind::from_jsx_import_source(&config.jsx_import_source);
         let entry_source =
             render_shared_bundle_entry_source(framework, islands, config.client_router);
-        self.bundle_one_entry(&entry_source, config)
+        // Shared-bundle path: splitting ON. This is the ONLY path that ships
+        // and serves chunks (#806/#808/#809) — `OneEntryOutput::chunks` is
+        // threaded into `BundleOutput` here.
+        self.bundle_one_entry(&entry_source, config, true)
     }
 
     /// Per-island bundle pass.
@@ -609,14 +612,16 @@ impl EsbuildSubprocessBundler {
             //    as the bundled output so unit tests can assert what we
             //    *would* have shipped without spawning esbuild.
             //
-            //    Per-island chunk shipping/serving is OUT OF SCOPE (#806):
-            //    this path is not production-wired, so we take only the
-            //    entry JS and drop any chunks. A per-island entry has no
-            //    dynamic `import()` of its own today, so `chunks` is empty
-            //    in practice; ignoring it keeps this path's on-disk shape
-            //    (`island-{i}.js`) unchanged while the flag change applies
-            //    uniformly via `build_esbuild_args`.
-            let bundled_js = self.bundle_one_entry(&entry_source, config)?.js;
+            //    Per-island chunk shipping/serving is OUT OF SCOPE (#802/#806):
+            //    this path is not production-wired. We bundle with `splitting =
+            //    false` so esbuild INLINES any dynamic `import()` into the
+            //    single entry — no chunk files are emitted, so taking only the
+            //    entry `.js` is lossless and the on-disk shape (`island-{i}.js`)
+            //    stays self-contained. (Were splitting left on, an island doing
+            //    `import("./heavy")` would emit a dangling
+            //    `import("./islands-chunk-*.js")` to a chunk this path never
+            //    writes.)
+            let bundled_js = self.bundle_one_entry(&entry_source, config, false)?.js;
 
             // Stable sequential filename: `<outdir>/islands/island-{i}.js`.
             // Using an index (not marker_name) guarantees collision-freedom:
@@ -663,9 +668,10 @@ impl EsbuildSubprocessBundler {
         //    internally. Stable filename `islands-runtime.js` —
         //    `ProductionAssetPipeline` would do any hashing pass.
         let runtime_entry_source = render_runtime_entry_source(&manifest);
-        // Runtime bundle, same out-of-scope chunk handling as the per-island
-        // entries above: take only the entry JS.
-        let runtime_js = self.bundle_one_entry(&runtime_entry_source, config)?.js;
+        // Runtime bundle: same out-of-scope, splitting-off handling as the
+        // per-island entries above — dynamic imports inline, no chunks emitted,
+        // take only the entry JS.
+        let runtime_js = self.bundle_one_entry(&runtime_entry_source, config, false)?.js;
         let runtime_asset_path = islands_dir.join("islands-runtime.js");
         std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
             .with_context(|| format!("failed to write {}", runtime_asset_path.display()))?;
@@ -685,6 +691,7 @@ impl EsbuildSubprocessBundler {
         &self,
         entry_source: &str,
         config: &BundleConfig,
+        splitting: bool,
     ) -> Result<OneEntryOutput> {
         if self.config.mock_subprocess {
             // Mock mode: return either the configured mock_output (when
@@ -833,6 +840,7 @@ impl EsbuildSubprocessBundler {
             &self.config.extra_args,
             out_dir.path(),
             entry_tmp.path(),
+            splitting,
         );
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
@@ -884,10 +892,12 @@ impl EsbuildSubprocessBundler {
 /// In-memory result of one `bundle_one_entry` pass: the entry JS plus any
 /// code-split chunks esbuild emitted beside it.
 ///
-/// `chunks` is empty for a zero-dynamic-import entry (and always in mock
-/// mode). Callers that don't ship chunks — the per-island path, which is
-/// not production-wired and whose chunk shipping/serving is out of scope —
-/// read only `js`; the shared-bundle path threads `chunks` into
+/// `chunks` is empty for a zero-dynamic-import entry, always in mock mode,
+/// and always on the per-island/runtime path (which bundles with
+/// `splitting = false`, so esbuild inlines dynamic imports instead of
+/// emitting chunks). The per-island path — not production-wired, chunk
+/// shipping/serving out of scope — reads only `js`; the shared-bundle path
+/// bundles with `splitting = true` and threads `chunks` into
 /// [`BundleOutput`].
 #[derive(Debug)]
 struct OneEntryOutput {
@@ -1036,17 +1046,30 @@ pub(crate) fn build_esbuild_args(
     extra_args: &[OsString],
     out_dir: &Path,
     entry_path: &Path,
+    splitting: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     args.push(OsString::from("--bundle"));
     args.push(OsString::from("--format=esm"));
-    // Code-splitting on (esm-only; we already force `--format=esm`). esbuild
-    // emits the entry plus one chunk per shared / dynamically-imported module
-    // graph, so a consumer's `import("shiki")` lands in its own chunk instead
-    // of being inlined into the multi-MB entry every page loads (issue #800).
-    // A zero-dynamic-import project emits only the entry — identical to the
+    // Code-splitting is enabled ONLY for the shared-bundle path (esm-only; we
+    // already force `--format=esm`). With splitting on, esbuild emits the entry
+    // plus one chunk per shared / dynamically-imported module graph, so a
+    // consumer's `import("shiki")` lands in its own chunk instead of being
+    // inlined into the multi-MB entry every page loads (issue #800). A
+    // zero-dynamic-import project emits only the entry — identical to the
     // pre-splitting single-file build.
-    args.push(OsString::from("--splitting=true"));
+    //
+    // The per-island and runtime paths pass `splitting = false`: their chunk
+    // shipping/serving is OUT OF SCOPE (#802/#806), and those paths read only
+    // the entry `.js` (dropping chunks). With splitting on, an island doing
+    // `import("./heavy")` would emit a relative `import("./islands-chunk-*.js")`
+    // referencing a chunk file that never gets written — a dangling import. With
+    // splitting off, esbuild INLINES dynamic imports into the single entry,
+    // matching the pre-#806 behaviour and keeping the per-island output
+    // self-contained.
+    if splitting {
+        args.push(OsString::from("--splitting=true"));
+    }
     args.push(OsString::from("--tree-shaking=true"));
     // Per-island bundles ship to the browser. See `produce_bundle_js`
     // for the full rationale; mirrored here so both the legacy
@@ -1097,13 +1120,17 @@ pub(crate) fn build_esbuild_args(
     if config.sourcemap {
         args.push(OsString::from("--sourcemap=linked"));
     }
-    // Directory-mode output (required by `--splitting`): esbuild writes the
-    // entry plus any chunks into `out_dir`. `--entry-names` forces the entry's
-    // stable basename (`islands`, sans extension — esbuild appends `.js`) so
-    // the read-back + downstream pipeline can rely on `islands.js`.
-    // `--chunk-names` self-content-hashes each chunk FLAT in the same dir
-    // (`islands-chunk-<hash>.js`); esbuild bakes relative `import("./...")`
-    // references between them, so the names must never be renamed downstream.
+    // Directory-mode output: esbuild writes the entry (and, when splitting is
+    // on, any chunks) into `out_dir`. `--outdir` is always present — the
+    // read-back walks this dir for the stable `islands.js` entry regardless of
+    // splitting. `--entry-names` forces the entry's stable basename (`islands`,
+    // sans extension — esbuild appends `.js`) so the read-back + downstream
+    // pipeline can rely on `islands.js`.
+    // `--chunk-names` (splitting only) self-content-hashes each chunk FLAT in
+    // the same dir (`islands-chunk-<hash>.js`); esbuild bakes relative
+    // `import("./...")` references between them, so the names must never be
+    // renamed downstream. It is meaningless without `--splitting`, so it is
+    // omitted on the per-island/runtime path (which never emits chunks).
     // See `ESBUILD_ENTRY_NAME_TEMPLATE` / `ESBUILD_CHUNK_NAME_TEMPLATE` and the
     // `BundleOutput::chunks` contract for the full rationale. Flag spellings
     // verified against the pinned esbuild 0.25.x CLI.
@@ -1119,9 +1146,11 @@ pub(crate) fn build_esbuild_args(
     args.push(OsString::from(format!(
         "--entry-names={ESBUILD_ENTRY_NAME_TEMPLATE}"
     )));
-    args.push(OsString::from(format!(
-        "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
-    )));
+    if splitting {
+        args.push(OsString::from(format!(
+            "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
+        )));
+    }
     // Inline NODE_ENV so React/Preact pick their production build
     // when minifying. esbuild expects the define value to be a JS
     // literal, hence the embedded quotes.
@@ -2384,11 +2413,12 @@ mod tests {
 
     /// Helper: collect the args produced by `build_esbuild_args` as
     /// plain `String`s so test assertions can use `contains` / equality
-    /// without juggling `OsString` conversions.
-    fn args_as_strings(config: &BundleConfig) -> Vec<String> {
+    /// without juggling `OsString` conversions. `splitting` selects the
+    /// shared-bundle path (`true`) vs the per-island/runtime path (`false`).
+    fn args_as_strings(config: &BundleConfig, splitting: bool) -> Vec<String> {
         let entry = PathBuf::from("/tmp/entry.tsx");
         let out_dir = PathBuf::from("/tmp/zfb-out");
-        build_esbuild_args(config, &[], &out_dir, &entry)
+        build_esbuild_args(config, &[], &out_dir, &entry, splitting)
             .into_iter()
             .map(|os| os.to_string_lossy().into_owned())
             .collect()
@@ -2403,7 +2433,7 @@ mod tests {
     #[test]
     fn build_esbuild_args_enables_splitting_with_outdir_and_naming() {
         let cfg = BundleConfig::default();
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
 
         assert!(
             args.iter().any(|a| a == "--splitting=true"),
@@ -2429,6 +2459,36 @@ mod tests {
             args.iter()
                 .any(|a| a == "--chunk-names=islands-chunk-[hash]"),
             "missing --chunk-names=islands-chunk-[hash] in args: {args:?}"
+        );
+    }
+
+    /// Per-island/runtime path contract (review-fix, codex finding 3):
+    /// `splitting = false` must NOT emit any `--splitting` flag, so esbuild
+    /// inlines dynamic imports into the single entry (pre-#806 behaviour).
+    /// `--chunk-names` is meaningless without splitting and must be absent,
+    /// while `--outdir` + `--entry-names` stay so the read-back still finds
+    /// the stable `islands.js` entry.
+    #[test]
+    fn build_esbuild_args_per_island_path_disables_splitting() {
+        let cfg = BundleConfig::default();
+        let args = args_as_strings(&cfg, false);
+
+        assert!(
+            !args.iter().any(|a| a.starts_with("--splitting")),
+            "per-island path must not pass any --splitting flag: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("--chunk-names")),
+            "per-island path must not pass --chunk-names (no chunks): {args:?}"
+        );
+        // The stable-entry read-back contract still holds without splitting.
+        assert!(
+            args.iter().any(|a| a.starts_with("--outdir=")),
+            "missing --outdir= in args: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--entry-names=islands"),
+            "missing --entry-names=islands in args: {args:?}"
         );
     }
 
@@ -2528,7 +2588,7 @@ mod tests {
     #[test]
     fn build_esbuild_args_includes_automatic_jsx_flags_for_preact_default() {
         let cfg = BundleConfig::default();
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             args.iter().any(|a| a == "--jsx=automatic"),
             "missing --jsx=automatic in args: {args:?}"
@@ -2572,7 +2632,7 @@ mod tests {
     #[test]
     fn build_esbuild_args_defines_import_meta_env_in_prod() {
         let cfg = BundleConfig::default().with_minify(true);
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             args.iter()
                 .any(|a| a == "--define:import.meta.env.PROD=true"),
@@ -2593,7 +2653,7 @@ mod tests {
     fn build_esbuild_args_defines_import_meta_env_in_dev() {
         let cfg = BundleConfig::default();
         assert!(!cfg.minify, "default BundleConfig must be dev mode");
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             args.iter()
                 .any(|a| a == "--define:import.meta.env.PROD=false"),
@@ -2613,7 +2673,7 @@ mod tests {
     #[test]
     fn build_esbuild_args_honours_custom_jsx_import_source() {
         let cfg = BundleConfig::default().with_jsx_import_source("react");
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             args.iter().any(|a| a == "--jsx=automatic"),
             "missing --jsx=automatic in args: {args:?}"
@@ -2643,7 +2703,7 @@ mod tests {
     fn build_esbuild_args_aliases_react_jsx_runtime_for_preact() {
         let cfg = BundleConfig::default();
         assert_eq!(cfg.jsx_import_source, "preact", "default must be Preact");
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             args.iter()
                 .any(|a| a == "--alias:react/jsx-runtime=preact/jsx-runtime"),
@@ -2663,7 +2723,7 @@ mod tests {
     #[test]
     fn build_esbuild_args_omits_react_jsx_runtime_alias_for_react() {
         let cfg = BundleConfig::default().with_jsx_import_source("react");
-        let args = args_as_strings(&cfg);
+        let args = args_as_strings(&cfg, true);
         assert!(
             !args
                 .iter()

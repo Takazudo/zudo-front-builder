@@ -1612,3 +1612,175 @@ fn ssr_only_project_global_change_reloads_renderer() {
     );
     let _ = outcome;
 }
+
+// ---------------------------------------------------------------------------
+// Deletion-only ticks must preserve sub-pipeline rerun/reload flags
+// (review-fix, codex finding 1).
+//
+// Gap: `tick_with_kinds` excludes `ChangeKind::Removed` paths from
+// `plan_for_changes` (so the deletion does not trigger the cold-start
+// All-fallback), and the `removed_consumers` fold only adds page ids. So
+// when a deletion is the ONLY change, `rerun_css` / `rerun_islands` /
+// `ssr_reload_needed` never fired — a deleted stylesheet, islands module,
+// or SSR-relevant source stayed stale until the next non-removed edit.
+//
+// Fix: classify each removed path and reinstate just its rerun/reload
+// flags (not the page fallback).
+// ---------------------------------------------------------------------------
+
+/// A deletion-only tick for a stylesheet must rerun CSS.
+#[test]
+fn removed_stylesheet_only_tick_reruns_css() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("styles")).unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    // SSR-only-ish: empty graph, no SSG pages.
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+
+    let css_runs = Arc::new(AtomicUsize::new(0));
+    let css_runs_cb = css_runs.clone();
+    let reload_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let reload_events_cb = reload_events.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("styles")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_| Ok(vec![])),
+        run_css: Some(Arc::new(move || {
+            css_runs_cb.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        })),
+        run_islands: None,
+        reload_renderer: Some(Arc::new(move || {
+            reload_events_cb.lock().unwrap().push("reload");
+            Ok(vec![])
+        })),
+    };
+
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("styles/main.css"), ChangeKind::Removed)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("deletion-only stylesheet tick must be non-noop");
+
+    assert!(
+        outcome.css_rerun,
+        "deleting a stylesheet must rerun CSS so the removed rule disappears"
+    );
+    assert_eq!(css_runs.load(Ordering::SeqCst), 1, "CSS callback runs once");
+    assert!(
+        reload_events.lock().unwrap().is_empty(),
+        "a Style deletion must NOT reload the renderer; got {:?}",
+        reload_events.lock().unwrap()
+    );
+}
+
+/// A deletion-only tick for an islands module must rerun islands.
+#[test]
+fn removed_islands_module_only_tick_reruns_islands() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    // `components/` is a default islands root → a `.tsx` there classifies
+    // as a `Module` that `is_islands_candidate` accepts.
+    std::fs::create_dir_all(project.join("components")).unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+
+    let islands_runs = Arc::new(AtomicUsize::new(0));
+    let islands_runs_cb = islands_runs.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("components")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_| Ok(vec![])),
+        run_css: None,
+        run_islands: Some(Arc::new(move || {
+            islands_runs_cb.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })),
+        reload_renderer: Some(Arc::new(|| Ok(vec![]))),
+    };
+
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("components/Counter.tsx"), ChangeKind::Removed)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("deletion-only islands module tick must be non-noop");
+
+    assert!(
+        outcome.islands_rerun,
+        "deleting an islands module must rerun the islands bundler"
+    );
+    assert_eq!(
+        islands_runs.load(Ordering::SeqCst),
+        1,
+        "islands callback runs once"
+    );
+}
+
+/// A deletion-only tick for an SSR-relevant source must reload the
+/// renderer even on an SSR-only project (zero SSG pages).
+#[test]
+fn removed_ssr_source_only_tick_reloads_renderer() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("content")).unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    // Empty graph: no consumers, so `removed_consumers` is empty and the
+    // ONLY thing keeping the tick non-noop is `ssr_reload_needed`.
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+
+    let reload_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let reload_events_cb = reload_events.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        reload_renderer: Some(Arc::new(move || {
+            reload_events_cb.lock().unwrap().push("reload");
+            Ok(vec![])
+        })),
+    };
+
+    orch.tick_with_kinds(
+        vec![(project.join("content/post.md"), ChangeKind::Removed)],
+        &ctx,
+        None,
+    )
+    .expect("tick succeeded")
+    .expect("deletion-only SSR source tick must be non-noop (review-fix)");
+
+    assert_eq!(
+        *reload_events.lock().unwrap(),
+        vec!["reload"],
+        "deleting an SSR-relevant source must reload the renderer so a now-removed SSR route stops serving stale output"
+    );
+}

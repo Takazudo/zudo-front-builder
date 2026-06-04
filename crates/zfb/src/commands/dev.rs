@@ -804,16 +804,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // removed `prerender = false` routes are visible to the request
             // dispatcher on the next request, without a dev-server restart.
             if let Some(handle) = &ssr_handle_for_reload {
-                let fresh_dispatcher = {
-                    let renderer_handle = session.renderer_handle();
-                    Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
-                        renderer_handle,
-                    )) as Arc<dyn SsrDispatcher>
-                };
-                let new_set = make_ssr_route_set(&session, fresh_dispatcher);
-                if let Ok(mut lock) = handle.write() {
-                    *lock = new_set;
-                }
+                refresh_live_ssr_routes(&session, handle);
             }
             // Convert relative vanished output paths to absolute dist paths
             // so DevAssetPipeline can delete them directly.
@@ -918,7 +909,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
         .as_ref()
         .map(|session| {
-            make_discovery_hook(session.clone(), Arc::clone(&graph_for_save), dev_html_root.clone())
+            make_discovery_hook(
+                session.clone(),
+                Arc::clone(&graph_for_save),
+                dev_html_root.clone(),
+                // Issue #807 — clone the live handle so the discovery hook can
+                // rewrite it on a watch-ADD tick (the pipeline skips
+                // reload_renderer when the discovery refresh marked the
+                // renderer fresh).
+                ssr_route_set.clone(),
+            )
         });
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
@@ -2294,6 +2294,11 @@ fn make_discovery_hook(
     session: DevRenderSession,
     graph: Arc<Mutex<DependencyGraph>>,
     html_root: PathBuf,
+    // Issue #807 — the live SSR routes handle. The discovery refresh marks
+    // the renderer fresh, so the pipeline skips `reload_renderer`; we must
+    // rewrite the handle HERE or a newly-created `prerender = false` route
+    // 404s until a later edit. `None` when the project has no SSR.
+    ssr_routes: Option<SsrRoutesHandle>,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -2319,6 +2324,17 @@ fn make_discovery_hook(
         }
 
         let (changed, vanished_rel) = session.discover_created(&relevant)?;
+
+        // Issue #807 — the discovery refresh swapped in a fresh V8 host and
+        // rebuilt the route tables, but it reports `renderer_reloaded: true`,
+        // so the pipeline will SKIP `reload_renderer` for this tick. That
+        // closure is the only OTHER place the live SSR route set is rewritten,
+        // so without this call a newly-created `prerender = false` page never
+        // reaches the request dispatcher and 404s until a later edit. Rewrite
+        // the handle here via the same `make_ssr_route_set` path.
+        if let Some(handle) = &ssr_routes {
+            refresh_live_ssr_routes(&session, handle);
+        }
 
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
@@ -2406,6 +2422,33 @@ fn make_ssr_route_set(
         .map(|pattern| SsrRouteRecord { pattern })
         .collect();
     Some(SsrRouteSet::new(records, dispatcher))
+}
+
+/// Rewrite the live [`SsrRoutesHandle`] from the dev session's CURRENT SSR
+/// patterns (issue #807). Builds a fresh dispatcher over the session's
+/// renderer handle and a fresh [`SsrRouteSet`] via [`make_ssr_route_set`],
+/// then swaps it into the `RwLock`.
+///
+/// Shared by BOTH refresh seams so they stay in lock-step:
+/// - the per-tick `reload_renderer` (in-place EDIT ticks), and
+/// - the watch-ADD discovery hook (`make_discovery_hook`).
+///
+/// Without the discovery-hook call site, a newly-created `prerender = false`
+/// page 404s until a later edit: the discovery refresh marks the renderer
+/// fresh, so the pipeline skips `reload_renderer` and the live handle is
+/// never updated for that tick.
+#[cfg(feature = "embed_v8")]
+fn refresh_live_ssr_routes(session: &DevRenderSession, handle: &SsrRoutesHandle) {
+    let fresh_dispatcher = {
+        let renderer_handle = session.renderer_handle();
+        Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
+            renderer_handle,
+        )) as Arc<dyn SsrDispatcher>
+    };
+    let new_set = make_ssr_route_set(session, fresh_dispatcher);
+    if let Ok(mut lock) = handle.write() {
+        *lock = new_set;
+    }
 }
 
 /// Translate Hono-style colon-syntax templates emitted by
@@ -2783,6 +2826,63 @@ mod tests {
         };
         let patterns = session.ssr_patterns();
         assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
+    }
+
+    /// Review-fix (codex finding 2): a discovery-hook refresh must rewrite
+    /// the live `SsrRoutesHandle` so a newly-created `prerender = false`
+    /// route is dispatchable WITHOUT a later edit.
+    ///
+    /// The discovery hook calls `refresh_live_ssr_routes` (it can't rely on
+    /// the pipeline's `reload_renderer`, which is skipped when the discovery
+    /// refresh marks the renderer fresh). This test drives that exact seam:
+    /// a project that booted with ZERO SSR routes (handle wraps `None`),
+    /// then a mid-session discovery adds a `prerender = false` route to the
+    /// session's tables. After `refresh_live_ssr_routes` the handle must hold
+    /// a populated set whose matcher resolves the new route.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn discovery_refresh_updates_live_ssr_routes_without_edit() {
+        // Boot state: no SSR routes → the live handle wraps `None`, exactly
+        // what `build_ssr_route_set` produces for an all-SSG project.
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(HashMap::new(), Vec::new())),
+        };
+        let dispatcher: Arc<dyn SsrDispatcher> = Arc::new(
+            crate::ssr_adapter::EmbeddedV8SsrAdapter::new(session.renderer_handle()),
+        );
+        let handle: SsrRoutesHandle = Arc::new(std::sync::RwLock::new(make_ssr_route_set(
+            &session,
+            Arc::clone(&dispatcher),
+        )));
+        assert!(
+            handle.read().unwrap().is_none(),
+            "boot handle must be empty for an all-SSG project"
+        );
+
+        // Mid-session discovery: a new `prerender = false` page is found and
+        // added to the session's route tables (what `discover_created` does).
+        {
+            let mut tables = session.inner.routes.write().unwrap();
+            tables.ssr_routes.push(RouteUniverseEntry {
+                url_path: "/blog/:slug".into(),
+                output_path: PathBuf::new(),
+                route_key: "/blog/:slug".into(),
+                static_html: false,
+                source_path: None,
+            });
+        }
+
+        // The discovery hook's new call (review-fix) — NOT an edit tick.
+        refresh_live_ssr_routes(&session, &handle);
+
+        let guard = handle.read().unwrap();
+        let set = guard
+            .as_ref()
+            .expect("handle must now hold a populated SsrRouteSet");
+        assert!(
+            set.find_match("/blog/anything").is_some(),
+            "the newly-created prerender=false route must dispatch without an extra edit"
+        );
     }
 
     // ---------------------------------------------------------------------------
