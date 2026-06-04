@@ -164,10 +164,25 @@ if [[ ! -f "$built_binary" ]]; then
 fi
 
 # ── Assert --version equals release semver (mirrors release.yml:284-296) ──────
-# Catches a missed ZFB_RELEASE_VERSION injection before the binary is archived.
+# Rosetta path: run the binary and assert `--version` output equals
+# "zfb $semver" — the only STRONG check this script performs. It catches a
+# missed ZFB_RELEASE_VERSION injection before the binary is archived.
 # Fix (b): on Apple Silicon without Rosetta 2 the x86_64 binary cannot execute
-# (Bad CPU type in executable), so guard the runtime assertion behind a Rosetta
-# check and fall back to a static rodata grep when Rosetta is absent.
+# (Bad CPU type in executable), so fall back to a static rodata scan. That
+# fallback is ONE-WAY (issue #748): the semver being ABSENT proves the stamp
+# was never injected (hard fail), but its PRESENCE cannot prove a correct
+# stamp — so on a match the script only warns and continues; it does NOT
+# claim the version was verified.
+#
+# Empirical facts behind the one-way design (issue #748 — measured against a
+# real stamped x64 binary; do not re-attempt these disproved "fixes"):
+#   - clap stores the program name ("zfb") and the version as SEPARATE rodata
+#     strings: grep -aF "zfb $semver" NEVER matches even a correctly-stamped
+#     binary, so the contiguous literal cannot be asserted.
+#   - Bare-substring signals are noisy in BOTH directions: "0.0.0" appears
+#     ~32x (vendored package metadata), the real semver ~9x, and even "9.9.9"
+#     matches a rodata digit lookup table — so neither a positive bare-semver
+#     match nor a "0.0.0 placeholder absent" assertion is a reliable guard.
 # The version string is embedded via option_env!("ZFB_RELEASE_VERSION") in
 # crates/zfb/src/cli.rs and appears literally in the binary's read-only data.
 expected_version="zfb $semver"
@@ -182,16 +197,21 @@ if arch -x86_64 /usr/bin/true 2>/dev/null; then
     exit 1
   fi
 else
-  # No Rosetta — verify the version stamp statically by grepping rodata.
-  echo "==> Rosetta absent — verifying version stamp via static rodata grep"
-  echo "Expected: $expected_version"
-  if grep -aF "$semver" "$built_binary" >/dev/null 2>&1; then
-    echo "Actual:   $semver found in binary rodata — OK"
-  else
-    echo "ERROR: '$semver' not found in binary rodata." >&2
-    echo "       ZFB_RELEASE_VERSION injection likely failed." >&2
+  # No Rosetta — best-effort static scan (one-way; see comment block above).
+  echo "==> Rosetta absent — best-effort static scan for '$semver' (NOT a real verification)"
+  if ! grep -aF "$semver" "$built_binary" >/dev/null 2>&1; then
+    echo "ERROR: '$semver' not found anywhere in the binary." >&2
+    echo "       ZFB_RELEASE_VERSION injection definitely failed — the stamped" >&2
+    echo "       version would appear literally in the binary's rodata." >&2
     exit 1
   fi
+  echo "WARNING: version stamp NOT verified — only a best-effort substring scan ran." >&2
+  echo "         '$semver' appears somewhere in the binary, but a bare-substring" >&2
+  echo "         match cannot distinguish the injected version stamp from vendored" >&2
+  echo "         package metadata, nor '0.1.0' from '0.1.0-next.N' (issue #748)." >&2
+  echo "         For a real check: install Rosetta 2 (softwareupdate --install-rosetta)" >&2
+  echo "         and re-run, or rely on release CI's --version assertions" >&2
+  echo "         (.github/workflows/release.yml) for published artifacts." >&2
 fi
 
 # ── Place binary in the platform package (mirrors release.yml) ────────────────
