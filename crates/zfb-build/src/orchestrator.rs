@@ -383,6 +383,33 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        // Removal: drop graph edges for deleted files before planning so
+        // the plan fold does not re-dirty their stale consumers. Without
+        // this, a deleted content file's consumer page would keep
+        // re-rendering forever (the dead edge stays in the reverse index,
+        // so every later tick that touches another dependency of that page
+        // would also queue the removed source's consumer — which then
+        // renders against a route table that no longer has the entry).
+        {
+            let removed: Vec<PathBuf> = changes
+                .iter()
+                .filter(|(_, kind)| *kind == ChangeKind::Removed)
+                .map(|(p, _)| p.clone())
+                .collect();
+            if !removed.is_empty() {
+                let mut graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::remove_node",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                for path in &removed {
+                    graph.remove_node(path);
+                }
+            }
+        }
+
         // Discovery runs first so a newly-created page is upserted into
         // the graph (by the hook) before `plan_for_changes` folds the
         // change set — and so the discovered page ids survive even when
@@ -405,7 +432,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             None => DiscoveryOutcome::default(),
         };
 
-        let mut plan = self.plan_for_changes(changes.into_iter().map(|(p, _)| p));
+        // Exclude removed paths from plan_for_changes: a deleted file has no
+        // consumers (remove_node just cleared the edge), and the All-fallback
+        // in plan_for_changes is meant for cold-start unknowns — applying it
+        // to a removed path would enqueue every page unnecessarily. The route
+        // table prune (via reload_renderer) handles the HTML-removal side.
+        let plan_paths: Vec<PathBuf> = changes
+            .iter()
+            .filter(|(_, kind)| *kind != ChangeKind::Removed)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let mut plan = self.plan_for_changes(plan_paths);
 
         if discovered.renderer_reloaded {
             plan.mark_renderer_fresh();
