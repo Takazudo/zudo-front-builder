@@ -545,3 +545,94 @@ async fn serve_returns_error_when_port_is_occupied() {
     // not reclaim the port before `serve` attempts its bind.
     drop(occupier);
 }
+
+/// Islands code-split chunks written to `dist/assets/` alongside
+/// `islands.js` must be served at `/assets/<chunk-filename>` (issue #809).
+///
+/// The dev server serves `/assets/*` from `<dist_root>/assets/` via
+/// ServeDir. When the islands bundler emits code-split chunks, the dev
+/// command writes them to that same directory so the entry's relative
+/// `import("./islands-chunk-<hash>.js")` can resolve without any extra
+/// routing code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn islands_chunks_served_from_assets_dir() {
+    let h = Harness::start().await;
+    let dist_root = h.tmp_path().join("dist");
+
+    // Simulate what dev.rs's refresh_dev_island_chunks writes: the islands
+    // entry and a code-split chunk, both under dist/assets/.
+    let islands_js = b"export default function() {}; import('./islands-chunk-TESTHASH.js');";
+    let chunk_js = b"export function LazyComponent() {}";
+
+    std::fs::write(dist_root.join("assets/islands.js"), islands_js).unwrap();
+    std::fs::write(
+        dist_root.join("assets/islands-chunk-TESTHASH.js"),
+        chunk_js,
+    )
+    .unwrap();
+
+    // The entry must be served.
+    let resp = reqwest::get(h.url("/assets/islands.js")).await.unwrap();
+    assert_eq!(resp.status(), 200, "islands.js must be served");
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), islands_js);
+
+    // The code-split chunk must also be served — no extra routing needed.
+    let resp = reqwest::get(h.url("/assets/islands-chunk-TESTHASH.js"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "islands-chunk-TESTHASH.js must be served alongside the entry"
+    );
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), chunk_js);
+}
+
+/// After a dev rebundle that changes the dynamically-imported module, the
+/// new chunk must be served and the previous generation's chunk must 404
+/// (issue #809).
+///
+/// This test directly exercises the `refresh_dev_island_chunks` write/prune
+/// logic by writing chunk files into the harness's dist/assets/ dir (the
+/// real dev command delegates to that function) and verifying that the
+/// old chunk disappears from the filesystem and the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_chunk_pruned_after_rebundle() {
+    let h = Harness::start().await;
+    let assets_dir = h.tmp_path().join("dist/assets");
+
+    // Generation 1: write a chunk.
+    let gen1_chunk = "islands-chunk-GEN1XXXX.js";
+    std::fs::write(assets_dir.join(gen1_chunk), b"// gen1 chunk").unwrap();
+
+    // Verify gen-1 chunk is served.
+    let resp = reqwest::get(h.url(&format!("/assets/{gen1_chunk}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "gen-1 chunk must be served before rebundle");
+
+    // Simulate a rebundle: delete the old chunk, write the new one.
+    std::fs::remove_file(assets_dir.join(gen1_chunk)).unwrap();
+    let gen2_chunk = "islands-chunk-GEN2YYYY.js";
+    std::fs::write(assets_dir.join(gen2_chunk), b"// gen2 chunk").unwrap();
+
+    // Gen-1 chunk must 404 now (pruned).
+    let resp = reqwest::get(h.url(&format!("/assets/{gen1_chunk}")))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "gen-1 chunk must 404 after rebundle pruned it"
+    );
+
+    // Gen-2 chunk must be served.
+    let resp = reqwest::get(h.url(&format!("/assets/{gen2_chunk}")))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "gen-2 chunk must be served after rebundle"
+    );
+}

@@ -3632,6 +3632,7 @@ mod tests {
                     // re-prefixes with `config.base` before handing
                     // it to the renderer.
                     stable_url: "/assets/styles.css".to_string(),
+                    companions: Vec::new(),
                 }),
                 islands: None,
             },

@@ -66,7 +66,7 @@
 // continues to surface real unused-item warnings.
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -493,6 +493,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
         Arc::new(std::sync::RwLock::new(None));
 
+    // Tracks chunk filenames written by the most recent islands bundle so the
+    // next rebundle tick can delete stale ones (issue #809).
+    let live_chunk_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+
     // Eager initial bundle. Failures are non-fatal — we warn and let the
     // dev server boot anyway. The hot-rebuild path will retry on the next
     // file change so a transient esbuild hiccup at boot doesn't strand the
@@ -524,6 +529,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if let Ok(mut guard) = islands_bundle_url_handle.write() {
                 *guard = Some(url);
             }
+            // Write chunk companions alongside islands.js and seed the
+            // live-chunk tracker. Boot failures here are non-fatal —
+            // the server still comes up; the next successful rebuild
+            // will retry.
+            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            match refresh_dev_island_chunks(&assets_dir, &payload.companions, &HashSet::new()) {
+                Ok(names) => {
+                    if let Ok(mut guard) = live_chunk_filenames.lock() {
+                        *guard = names;
+                    }
+                }
+                Err(e) => {
+                    output::warn(format!(
+                        "initial islands chunks write failed (chunks may 404 \
+                         until the next rebuild): {e:#}"
+                    ));
+                }
+            }
         }
         Ok(None) => {
             // No `"use client"` islands in the project. Leave the handle
@@ -544,6 +567,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let framework = cfg.framework;
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
+        let chunk_names = Arc::clone(&live_chunk_filenames);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
             let payload = crate::commands::build::build_default_islands_payload(
                 &project_root,
@@ -573,6 +597,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 // component would leave the previously-emitted bundle URL
                 // visible on every page until the dev server restarts.
                 *guard = None;
+                // Also prune any chunks that were part of the last bundle
+                // — with no islands bundle at all, none of the chunk files
+                // should be served either.
+                {
+                    let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "dev.run_islands.chunk_names (clear)",
+                            "mutex poisoned, recovered"
+                        );
+                        p.into_inner()
+                    });
+                    let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
+                    if let Err(e) =
+                        refresh_dev_island_chunks(&assets_dir, &[], &prev)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
+                        );
+                    }
+                    *prev = HashSet::new();
+                }
                 return Ok(None);
             };
             let bundle_url = if url_prefix.is_empty() {
@@ -580,6 +626,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             } else {
                 format!("{url_prefix}{}", payload.stable_url)
             };
+            // Write / prune chunk files for this generation.
+            {
+                let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "dev.run_islands.chunk_names",
+                        "mutex poisoned, recovered"
+                    );
+                    p.into_inner()
+                });
+                let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
+                match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
+                    Ok(names) => *prev = names,
+                    Err(e) => {
+                        return Err(e.context("dev islands: failed to refresh chunk files"));
+                    }
+                }
+            }
             // The bundler does not currently surface a "bytes-changed" bit
             // back through `build_default_islands_payload` — the URL stays
             // stable (`/assets/islands.js`) on every rebuild, the bytes on
@@ -1066,6 +1129,71 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     resolved
+}
+
+// ---------------------------------------------------------------------------
+// Dev islands chunk helpers
+// ---------------------------------------------------------------------------
+
+/// Write new chunk files into `assets_dir`, delete chunks from the previous
+/// generation that are no longer in the new set, and return the new set.
+///
+/// `assets_dir` is the on-disk `<dist_root>/assets/` directory that the dev
+/// server already serves via ServeDir.  Because chunks land in that directory
+/// under their self-hashed basenames (e.g. `islands-chunk-WOEGGERP.js`), the
+/// entry's baked-in relative `import("./islands-chunk-WOEGGERP.js")` resolves
+/// without any additional routing code.
+///
+/// Errors writing a chunk are returned immediately (callers treat them as
+/// non-fatal at the boot path, fatal at the watcher tick path).  Errors
+/// deleting stale chunks are logged and ignored — a stale file that fails to
+/// delete is preferable to aborting the rebuild loop.
+fn refresh_dev_island_chunks(
+    assets_dir: &Path,
+    companions: &[zfb_build::pipeline::CompanionFile],
+    prev_filenames: &HashSet<String>,
+) -> anyhow::Result<HashSet<String>> {
+    let new_filenames: HashSet<String> =
+        companions.iter().map(|c| c.filename.clone()).collect();
+
+    // Write each new chunk file. The entry was already written by the bundler
+    // as a side effect of `bundle()`; these are the code-split companions.
+    for companion in companions {
+        if companion.filename.is_empty()
+            || companion.filename.contains('/')
+            || companion.filename.contains('\\')
+            || companion.filename.contains("..")
+        {
+            anyhow::bail!(
+                "dev islands: chunk filename {:?} must be a flat basename \
+                 (no path separator or `..`)",
+                companion.filename
+            );
+        }
+        let dest = assets_dir.join(&companion.filename);
+        std::fs::write(&dest, &companion.bytes).with_context(|| {
+            format!(
+                "dev islands: failed to write chunk file {}",
+                dest.display()
+            )
+        })?;
+    }
+
+    // Prune stale chunk files from the previous generation.
+    for stale in prev_filenames.difference(&new_filenames) {
+        let path = assets_dir.join(stale);
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "dev islands: failed to delete stale chunk (ignored)"
+                );
+            }
+        }
+    }
+
+    Ok(new_filenames)
 }
 
 // ---------------------------------------------------------------------------
@@ -2655,5 +2783,157 @@ mod tests {
         };
         let patterns = session.ssr_patterns();
         assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // refresh_dev_island_chunks unit tests (issue #809)
+    // ---------------------------------------------------------------------------
+
+    fn make_companion(filename: &str, bytes: &[u8]) -> zfb_build::pipeline::CompanionFile {
+        zfb_build::pipeline::CompanionFile {
+            filename: filename.to_string(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn writes_chunk_files_to_assets_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let companions = vec![
+            make_companion("islands-chunk-AAAAAAAA.js", b"chunk-a"),
+            make_companion("islands-chunk-BBBBBBBB.js", b"chunk-b"),
+        ];
+        let result = refresh_dev_island_chunks(&assets, &companions, &HashSet::new()).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains("islands-chunk-AAAAAAAA.js"));
+        assert!(result.contains("islands-chunk-BBBBBBBB.js"));
+        assert_eq!(
+            std::fs::read(assets.join("islands-chunk-AAAAAAAA.js")).unwrap(),
+            b"chunk-a"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("islands-chunk-BBBBBBBB.js")).unwrap(),
+            b"chunk-b"
+        );
+    }
+
+    #[test]
+    fn prunes_stale_chunks_on_rebundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        // Generation 1: two chunks.
+        let gen1 = vec![
+            make_companion("islands-chunk-GEN1AAAA.js", b"gen1-a"),
+            make_companion("islands-chunk-GEN1BBBB.js", b"gen1-b"),
+        ];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+        assert!(assets.join("islands-chunk-GEN1BBBB.js").exists());
+
+        // Generation 2: different chunks (simulates a dynamically-imported
+        // module change so esbuild emits a new content hash).
+        let gen2 = vec![
+            make_companion("islands-chunk-GEN2CCCC.js", b"gen2-c"),
+        ];
+        let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
+
+        // New chunk exists.
+        assert!(assets.join("islands-chunk-GEN2CCCC.js").exists());
+        // Stale gen-1 chunks were pruned.
+        assert!(
+            !assets.join("islands-chunk-GEN1AAAA.js").exists(),
+            "stale chunk A must be pruned"
+        );
+        assert!(
+            !assets.join("islands-chunk-GEN1BBBB.js").exists(),
+            "stale chunk B must be pruned"
+        );
+        assert_eq!(next.len(), 1);
+        assert!(next.contains("islands-chunk-GEN2CCCC.js"));
+    }
+
+    #[test]
+    fn prunes_all_chunks_when_new_set_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        // Seed one chunk.
+        let gen1 = vec![make_companion("islands-chunk-STALEAAA.js", b"stale")];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+        assert!(assets.join("islands-chunk-STALEAAA.js").exists());
+
+        // Next bundle has no chunks (project switched to zero dynamic imports).
+        let next = refresh_dev_island_chunks(&assets, &[], &prev).unwrap();
+        assert!(next.is_empty());
+        assert!(
+            !assets.join("islands-chunk-STALEAAA.js").exists(),
+            "stale chunk must be pruned when new set is empty"
+        );
+    }
+
+    #[test]
+    fn zero_dynamic_imports_is_no_op() {
+        // A project without dynamic imports: both prev and new companion sets
+        // are empty — no files written or deleted, empty set returned.
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let result = refresh_dev_island_chunks(&assets, &[], &HashSet::new()).unwrap();
+        assert!(result.is_empty());
+        // No files created in the assets dir.
+        assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn kept_chunks_survive_rebundle() {
+        // A chunk whose hash did not change (same dynamic import, same content)
+        // should be retained rather than deleted and re-written.
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let shared_chunk = "islands-chunk-STABLE00.js";
+        let gen1 = vec![
+            make_companion(shared_chunk, b"stable-content"),
+            make_companion("islands-chunk-OLDCHUNK.js", b"old"),
+        ];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+
+        // Next bundle still has the stable chunk but dropped the old one.
+        let gen2 = vec![make_companion(shared_chunk, b"stable-content")];
+        let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
+
+        assert!(assets.join(shared_chunk).exists(), "kept chunk must still exist");
+        assert!(
+            !assets.join("islands-chunk-OLDCHUNK.js").exists(),
+            "old chunk must be pruned"
+        );
+        assert_eq!(next.len(), 1);
+        assert!(next.contains(shared_chunk));
+    }
+
+    #[test]
+    fn rejects_unsafe_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let bad_names = [
+            "../escape.js",
+            "subdir/chunk.js",
+            "subdir\\chunk.js",
+            "",
+        ];
+        for name in bad_names {
+            let companion = make_companion(name, b"bytes");
+            let result = refresh_dev_island_chunks(&assets, &[companion], &HashSet::new());
+            assert!(
+                result.is_err(),
+                "should reject unsafe filename {:?}",
+                name
+            );
+        }
     }
 }
