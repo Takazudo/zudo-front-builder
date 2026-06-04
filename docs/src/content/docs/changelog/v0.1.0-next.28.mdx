@@ -1,0 +1,12 @@
+---
+title: v0.1.0-next.28
+sidebar_position: 1028
+---
+
+# v0.1.0-next.28
+
+Released: 2026-06-04
+
+## Bug Fixes
+
+- `zfb-adapter-cloudflare`: ship `emit-worker.mjs` in the published tarball — next.27's shared-emitWorker refactor made `bin/cli.mjs` and `dist/build.js` import the file without adding it to the `files` allowlist or the build's `cp` step, so every adapter consumer crashed at build time with `ERR_MODULE_NOT_FOUND`. Adds a static packaging regression test covering all relative `.mjs` imports. (95db888)
