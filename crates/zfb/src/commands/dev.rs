@@ -2256,19 +2256,20 @@ mod tests {
     }
 
     fn cfg_with_collections(paths: &[&str]) -> config::Config {
-        let mut cfg = config::Config::default();
-        cfg.collections = paths
-            .iter()
-            .map(|p| config::CollectionDef {
-                name: p.replace('/', "-"),
-                path: PathBuf::from(p),
-                schema: None,
-                include: None,
-                exclude: None,
-                id_strip_suffix: None,
-            })
-            .collect();
-        cfg
+        config::Config {
+            collections: paths
+                .iter()
+                .map(|p| config::CollectionDef {
+                    name: p.replace('/', "-"),
+                    path: PathBuf::from(p),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                })
+                .collect(),
+            ..config::Config::default()
+        }
     }
 
     /// Regression: a collection configured outside the default watch
