@@ -94,6 +94,8 @@ export function searchIndexIntegration(): AstroIntegration {
               {
                 name: "search-index-dev",
                 configureServer(server) {
+                  let cache: SearchIndexEntry[] | null = null;
+
                   server.middlewares.use((req, res, next) => {
                     const match =
                       req.url === "/search-index.json" || req.url?.endsWith("/search-index.json");
@@ -103,7 +105,8 @@ export function searchIndexIntegration(): AstroIntegration {
                     }
 
                     try {
-                      const entries = collectSearchEntries();
+                      if (!cache) cache = collectSearchEntries();
+                      const entries = cache;
                       res.setHeader("Content-Type", "application/json");
                       res.end(JSON.stringify(entries));
                     } catch (err) {
@@ -115,6 +118,16 @@ export function searchIndexIntegration(): AstroIntegration {
                         }),
                       );
                     }
+                  });
+
+                  server.watcher.on("change", (f) => {
+                    if (/\.mdx?$/.test(f)) cache = null;
+                  });
+                  server.watcher.on("add", (f) => {
+                    if (/\.mdx?$/.test(f)) cache = null;
+                  });
+                  server.watcher.on("unlink", (f) => {
+                    if (/\.mdx?$/.test(f)) cache = null;
                   });
                 },
               },

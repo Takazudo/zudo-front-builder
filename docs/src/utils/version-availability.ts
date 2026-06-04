@@ -17,7 +17,7 @@ let cached: VersionAvailability | null = null;
  * availability is correct regardless of which locale the page is in.
  */
 export async function getVersionAvailability(): Promise<VersionAvailability> {
-  if (cached) return cached;
+  if (cached && import.meta.env.PROD) return cached;
 
   const result: VersionAvailability = {};
 
