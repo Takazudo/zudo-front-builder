@@ -74,12 +74,12 @@ use anyhow::{Context, Result};
 use tokio::sync::broadcast;
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::renderer::{
-    reload, render_one, shutdown, start, Backend, RendererStartInput, RendererState,
-    RouteUniverseEntry,
+    render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, IslandsBundleInfo,
-    IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
+    BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, DiscoveryOutcome,
+    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
+    RendererReloader,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -111,6 +111,52 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "zfb.config.json",
     "zfb.config.ts",
 ];
+
+/// Strip `.` components so `./src/mdx` and `src/mdx` compare equal in
+/// the dedupe / coverage checks below.
+fn normalize_relative(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect()
+}
+
+/// The dev watcher's source roots: [`DEFAULT_WATCH_ROOTS`] plus each
+/// configured collection's `path`.
+///
+/// Collections may live anywhere in the project (`CollectionDef::path`
+/// is project-root-relative, e.g. `src/mdx/notes`) — only watching the
+/// fixed default roots means edits under such a collection never produce
+/// a watcher event and the dev server serves stale HTML until restart.
+///
+/// Rules:
+/// - paths are normalized (leading `./` stripped) before comparison;
+/// - a collection path already covered by an earlier root is skipped
+///   (`content/blog` is inside the default `content` root; nested
+///   collections dedupe against each other after the shallow-first
+///   sort), avoiding double event delivery from overlapping recursive
+///   watches;
+/// - missing directories are tolerated downstream — the watcher warns
+///   and skips them at registration.
+fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+    let mut collection_paths: Vec<PathBuf> = cfg
+        .collections
+        .iter()
+        .map(|c| normalize_relative(&c.path))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
+    // Shallow-first so a parent collection root lands before its
+    // children and the coverage check below collapses the family to
+    // the parent.
+    collection_paths.sort_by_key(|p| p.components().count());
+    for p in collection_paths {
+        let covered = roots.iter().any(|r| p.starts_with(r));
+        if !covered {
+            roots.push(p);
+        }
+    }
+    roots
+}
 
 /// Entry point for `zfb dev`.
 ///
@@ -340,7 +386,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // matches the current project layout, deserialise and reuse —
     // otherwise build fresh and save the new graph back so the
     // *next* cold start is fast.
-    let watch_roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+    // Includes configured collection paths (e.g. `src/mdx/notes`) so
+    // edits there produce watcher events; the manifest digest below
+    // covers them automatically since it walks the same roots.
+    let watch_roots: Vec<PathBuf> = derive_watch_roots(&cfg);
     let graph_cache_path = project_root.join(".zfb").join("graph.bin");
     let manifest_digest = compute_manifest_digest(&project_root, &watch_roots);
     let initial_graph = load_persisted_graph(&graph_cache_path, manifest_digest.as_ref());
@@ -375,8 +424,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_for_save = Arc::clone(&graph);
     let pipeline = DevAssetPipeline::new();
     let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    // Configured collection roots classify as Content ahead of the
+    // standard root-segment walk — without this, a collection under
+    // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
+    // re-bundles islands on every entry edit.
+    let content_roots: Vec<PathBuf> = cfg
+        .collections
+        .iter()
+        .map(|c| normalize_relative(&c.path))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
-        .with_extra_watch_paths(extra_watch_paths);
+        .with_extra_watch_paths(extra_watch_paths)
+        .with_policy(
+            zfb_build::GranularityPolicy::default().with_content_roots(content_roots),
+        );
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -641,6 +703,31 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }))
     };
 
+    // Per-tick bundle refresh for EDIT ticks. Without this the renderer
+    // stays bound to the boot-time bundle: the content snapshot and page
+    // modules are baked in at bundle time, so an in-place save
+    // (`ChangeKind::Modified` — what VS Code and most editors emit)
+    // re-rendered byte-identical stale HTML forever. Only rename-replace
+    // saves worked, by accident, through the watch-ADD discovery path.
+    // The pipeline skips this when the tick's plan is already
+    // renderer-fresh (boot initial render, watch-ADD discovery
+    // re-bundle), so each tick bundles at most once.
+    let reload_renderer: Option<RendererReloader> = dev_session.as_ref().map(|session| {
+        let session = session.clone();
+        Arc::new(move || {
+            let changed = session
+                .refresh_bundle_and_routes()
+                .context("edit-tick bundle refresh failed")?;
+            if !changed.is_empty() {
+                tracing::debug!(
+                    count = changed.len(),
+                    "edit-tick refresh changed route sets"
+                );
+            }
+            Ok(())
+        }) as RendererReloader
+    });
+
     let ctx = BuildContext {
         // Issue #534 — `DevAssetPipeline::apply` writes
         // `RenderedPage.html` to `<ctx.dist_root>/<output_path>` on every
@@ -657,12 +744,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css,
         run_islands,
-        // The bundle-rebuild + renderer-reload wiring lands
-        // here once the dev-mode bundler is available on a per-tick
-        // basis; for now leave the hook empty so existing behaviour
-        // is preserved (the renderer state stays bound to the
-        // boot-time bundle).
-        reload_renderer: None,
+        reload_renderer,
     };
 
     // 3b. Eager initial render (zfb#642 / #644).
@@ -1195,39 +1277,62 @@ impl DevRenderSession {
 
     /// Discover content files CREATED after dev-server boot (issue #659).
     ///
-    /// This is the load-bearing fix. A content file like
-    /// `content/blog/foo.mdx` is reached through a dynamic
-    /// `pages/blog/[slug].tsx` page whose `paths()` walks the `blog`
-    /// collection. The collection snapshot is baked into the SSR bundle at
-    /// boot, and `routes_by_source` is frozen at boot — so a file created
-    /// afterwards is invisible to the running V8 host and never appears in
-    /// the route table, 404ing until restart.
-    ///
-    /// On a `Created` tick we therefore:
-    /// 1. re-bundle the SSR worker (recomputes the content snapshot from
-    ///    disk, so `getCollection` will see the new file),
-    /// 2. reload the embedded V8 host **in place** — `take()` the
-    ///    `Option<RendererState>` out of the SAME `Arc<Mutex<…>>` the
-    ///    render callback and SSR adapter hold, `reload()` it against the
-    ///    new bundle, and put it back, so the running server sees the new
-    ///    host (NOT a fresh `DevRenderSession` it never reads),
-    /// 3. re-scan the router + re-expand `paths()` through the reloaded
-    ///    host to rebuild `routes_by_source` (now the new `/blog/foo` URL
-    ///    is present),
-    /// 4. swap the rebuilt tables in under the route `RwLock`.
-    ///
-    /// Returns the source [`PageId`]s whose route set changed (the dynamic
-    /// `[slug]` page), so the orchestrator renders them and writes the new
-    /// URL to `dist/`. EDIT ticks never call this (the discovery hook only
-    /// sees `Created` paths), so the edit path is untouched.
-    ///
-    /// `embed_v8`-gated like `boot_dev_renderer` — the reload + `paths()`
-    /// runtime eval need the embedded V8 host.
+    /// Thin gate over [`Self::refresh_bundle_and_routes`] — see there for
+    /// what the refresh does. Kept as a named entry point so the
+    /// discovery hook's intent stays explicit at the call site.
     #[cfg(feature = "embed_v8")]
     fn discover_created(&self, created: &[PathBuf]) -> Result<Vec<PageId>> {
         if created.is_empty() {
             return Ok(Vec::new());
         }
+        self.refresh_bundle_and_routes()
+    }
+
+    /// Re-bundle the SSR worker, swap in a freshly-started embedded V8
+    /// host, and rebuild the route tables — the dev server's "make the
+    /// running renderer see the source tree as it is NOW" primitive.
+    ///
+    /// The collection snapshot and every page module are baked into the
+    /// SSR bundle, and `routes_by_source` is frozen, at whatever point
+    /// this was last run (boot, or a previous refresh). Two paths call
+    /// it:
+    ///
+    /// - the watch-ADD discovery hook (issue #659) — a content file like
+    ///   `content/blog/foo.mdx` CREATED after boot is invisible to the
+    ///   running host (404 until restart) without a refresh;
+    /// - the per-tick `BuildContext::reload_renderer` — an in-place EDIT
+    ///   (`ChangeKind::Modified`) re-renders pages, but against the
+    ///   stale bundle the render output is byte-identical to the boot
+    ///   render, so saves from in-place-writing editors (VS Code et al.)
+    ///   never showed up. Rename-replace saves only worked by accident,
+    ///   via the Created path above.
+    ///
+    /// Steps:
+    /// 1. re-scan the router (cheap; picks up brand-new `pages/` files),
+    /// 2. re-bundle with a fresh content snapshot from disk,
+    /// 3. START a new embedded V8 host against the new bundle, swap it
+    ///    into the SAME `Arc<Mutex<…>>` the render callback and SSR
+    ///    adapter hold, and shut the old host down AFTER the swap.
+    ///    Start-before-swap is deliberate: the old take→reload→put
+    ///    order consumed the previous state up front, so a host-start
+    ///    failure left the slot `None` and every later render broke
+    ///    until restart. Acceptable when only rare watch-ADDs hit the
+    ///    path; fatal now that every edit tick does. (Bundle errors —
+    ///    the common failure, e.g. saving a syntax error — abort in
+    ///    step 2 before the renderer is touched either way.)
+    /// 4. re-expand `paths()` through the new host and swap the rebuilt
+    ///    route tables in under the route `RwLock`. Rebuilding on EDIT
+    ///    ticks too (not just Created) means frontmatter edits that
+    ///    change a dynamic route's `paths()` output surface without a
+    ///    restart.
+    ///
+    /// Returns the source [`PageId`]s whose route set changed (empty for
+    /// a plain content edit).
+    ///
+    /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
+    /// `paths()` runtime eval need the embedded V8 host.
+    #[cfg(feature = "embed_v8")]
+    fn refresh_bundle_and_routes(&self) -> Result<Vec<PageId>> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -1240,51 +1345,61 @@ impl DevRenderSession {
         let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
         let plan = build_route_universe(router.routes());
 
-        // 1. Re-bundle with a fresh content snapshot (reads content/ from
-        //    disk, so the created file is now in the snapshot).
+        // 1. Re-bundle with a fresh content snapshot (reads every
+        //    configured collection from disk, so created AND edited
+        //    entries are in the snapshot).
         let bundler_out = assemble_and_bundle_dev(
             project_root,
             &inputs.cfg,
             inputs.plugin_alias_entries.clone(),
             inputs.plugin_virtual_modules.clone(),
         )
-        .context("watch-add re-bundle failed")?;
+        .context("dev refresh: re-bundle failed")?;
 
-        // 2. Reload the embedded V8 host IN PLACE so the running server's
-        //    render callback + SSR adapter (which share this exact Arc)
-        //    see the rebuilt bundle. Take/reload/put on the existing mutex
-        //    — do NOT construct a fresh session.
+        // 2. Start a NEW embedded V8 host against the rebuilt bundle,
+        //    swap it into the existing mutex (the render callback + SSR
+        //    adapter share this exact Arc), and shut the old host down
+        //    only after the swap — a host-start failure must leave the
+        //    previous renderer serving (see the method docs).
         {
-            let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
-                tracing::warn!(site = "discover_created", "renderer mutex poisoned, recovered");
-                p.into_inner()
-            });
-            let previous = lock
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("renderer not started for watch-add reload"))?;
-            let reloaded = reload(
-                previous,
-                RendererStartInput {
-                    bundle_path: bundler_out.bundle_path.clone(),
-                    sourcemap_path: bundler_out.sourcemap_path.clone(),
-                    backend: Backend::EmbeddedV8 {
-                        host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                            inputs.v8_plugin_hooks.clone(),
-                        ),
-                    },
-                    request_timeout: None,
+            let started = start(RendererStartInput {
+                bundle_path: bundler_out.bundle_path.clone(),
+                sourcemap_path: bundler_out.sourcemap_path.clone(),
+                backend: Backend::EmbeddedV8 {
+                    host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                        inputs.v8_plugin_hooks.clone(),
+                    ),
                 },
-            )
+                request_timeout: None,
+            })
             .map_err(anyhow::Error::from)
-            .context("watch-add renderer reload failed")?;
-            *lock = Some(reloaded);
+            .context("dev refresh: renderer start failed (previous renderer kept serving)")?;
+            let previous = {
+                let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "refresh_bundle_and_routes",
+                        "renderer mutex poisoned, recovered"
+                    );
+                    p.into_inner()
+                });
+                lock.replace(started)
+            };
+            if let Some(prev) = previous {
+                if let Err(err) = shutdown(prev) {
+                    tracing::warn!(
+                        site = "refresh_bundle_and_routes",
+                        error = %err,
+                        "old renderer shutdown failed; continuing with new host"
+                    );
+                }
+            }
         }
 
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let (new_routes_by_source, new_ssr_routes) =
             build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
-                .context("watch-add route-table rebuild failed")?;
+                .context("dev refresh: route-table rebuild failed")?;
 
         // 4. Diff against the frozen table to find which source pages
         //    gained/changed entries, then swap the new tables in.
@@ -1933,17 +2048,22 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 ///
 /// The orchestrator invokes it with the `Created` subset of a tick's
 /// changed paths. We restrict the expensive re-bundle to files created
-/// under `content/` or `pages/` (the roots that feed the SSR bundle and
-/// the route table); a file created elsewhere — `styles/`, `public/` —
-/// can never add a content-collection route, so we skip discovery for it
-/// and let the normal tick handle it.
+/// under `content/`, `pages/`, or any configured collection root (the
+/// roots that feed the SSR bundle and the route table — collections may
+/// live anywhere, e.g. `src/mdx/notes`); a file created elsewhere —
+/// `styles/`, `public/` — can never add a content-collection route, so
+/// we skip discovery for it and let the normal tick handle it.
 ///
 /// On a relevant create we delegate to
-/// [`DevRenderSession::discover_created`] (re-bundle → reload host in
-/// place → rebuild route tables) and then upsert the new file into the
+/// [`DevRenderSession::discover_created`] (re-bundle → swap in a fresh
+/// host → rebuild route tables) and then upsert the new file into the
 /// dependency graph as a content dep of each rediscovered source page, so
 /// a LATER edit of that same file hot-reloads its consumer exactly like a
 /// pre-existing post does.
+///
+/// The returned [`DiscoveryOutcome`] reports `renderer_reloaded: true`
+/// whenever the refresh ran, so the pipeline's per-tick
+/// `reload_renderer` is skipped and the tick bundles exactly once.
 ///
 /// `embed_v8`-gated: discovery needs the embedded V8 host.
 #[cfg(feature = "embed_v8")]
@@ -1951,18 +2071,27 @@ fn make_discovery_hook(
     session: DevRenderSession,
     graph: Arc<Mutex<DependencyGraph>>,
 ) -> zfb_build::DiscoveryHook {
-    let content_root = session.inner.project_root.join("content");
-    let pages_root = session.inner.project_root.join("pages");
+    let mut relevant_roots: Vec<PathBuf> = vec![
+        session.inner.project_root.join("content"),
+        session.inner.project_root.join("pages"),
+    ];
+    for collection in &session.inner.rebuild_inputs.cfg.collections {
+        let root = session.inner.project_root.join(&collection.path);
+        if !relevant_roots.contains(&root) {
+            relevant_roots.push(root);
+        }
+    }
     Arc::new(move |created: &[PathBuf]| {
-        // Only created files under content/ or pages/ can introduce a new
-        // content-collection route; skip the re-bundle otherwise.
+        // Only created files under content/, pages/, or a collection
+        // root can introduce a new content-collection route; skip the
+        // re-bundle otherwise.
         let relevant: Vec<PathBuf> = created
             .iter()
-            .filter(|p| p.starts_with(&content_root) || p.starts_with(&pages_root))
+            .filter(|p| relevant_roots.iter().any(|root| p.starts_with(root)))
             .cloned()
             .collect();
         if relevant.is_empty() {
-            return Ok(Vec::new());
+            return Ok(DiscoveryOutcome::default());
         }
 
         let changed = session.discover_created(&relevant)?;
@@ -1984,7 +2113,10 @@ fn make_discovery_hook(
             }
         }
 
-        Ok(changed)
+        Ok(DiscoveryOutcome {
+            pages: changed,
+            renderer_reloaded: true,
+        })
     })
 }
 
@@ -1998,11 +2130,14 @@ fn make_discovery_hook(
 /// over the same renderer mutex the SSG callback uses, so the V8 host
 /// is shared across build-time and request-time dispatches.
 ///
-/// Live-reload of SSR page sources: editing a `prerender = false` page
-/// during a `zfb dev` session does NOT currently re-evaluate the bundle
-/// inside the running V8 host — `BuildContext::reload_renderer` is
-/// `None` in dev today. The next dev-server restart picks up the new
-/// code. Wiring `reload_renderer` is a follow-up for a future sub-task.
+/// Live-reload of SSR page sources: `BuildContext::reload_renderer` is
+/// wired in dev, so any tick that re-renders SSG pages also swaps in a
+/// freshly-bundled host — the SSR adapter shares that host, so SSR
+/// routes serve the new code from the next request. The remaining gap
+/// is an SSR-ONLY project (or an edit whose tick dirties no SSG page):
+/// no SSG dirty set means no reload, and this `SsrRouteSet` itself is
+/// static after boot, so added/removed `prerender = false` routes still
+/// need a dev-server restart. Follow-up for a future sub-task.
 ///
 /// Compiled in only when the `embed_v8` feature is on (issue #371,
 /// sub-task 4.1a) — the SSR adapter requires the V8 host.
@@ -2118,6 +2253,75 @@ mod tests {
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
+    }
+
+    fn cfg_with_collections(paths: &[&str]) -> config::Config {
+        config::Config {
+            collections: paths
+                .iter()
+                .map(|p| config::CollectionDef {
+                    name: p.replace('/', "-"),
+                    path: PathBuf::from(p),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                })
+                .collect(),
+            ..config::Config::default()
+        }
+    }
+
+    /// Regression: a collection configured outside the default watch
+    /// roots (e.g. `src/mdx/notes`) was never watched, so edits there
+    /// produced no rebuild and the dev server served stale HTML until
+    /// restart. Discovered during usage in a consumer project with
+    /// custom collection paths.
+    #[test]
+    fn derive_watch_roots_appends_custom_collection_paths() {
+        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx/guides"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert!(roots.contains(&PathBuf::from("src/mdx/guides")));
+        // Defaults are preserved in front.
+        assert!(roots.contains(&PathBuf::from("pages")));
+        assert!(roots.contains(&PathBuf::from("content")));
+    }
+
+    /// A collection under the default `content/` root must NOT be
+    /// re-registered — overlapping recursive watches deliver duplicate
+    /// events for the same write.
+    #[test]
+    fn derive_watch_roots_skips_paths_covered_by_default_roots() {
+        let cfg = cfg_with_collections(&["content/blog"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(!roots.contains(&PathBuf::from("content/blog")));
+        assert_eq!(
+            roots.len(),
+            DEFAULT_WATCH_ROOTS.len(),
+            "covered collection path must not add a watch root"
+        );
+    }
+
+    /// Nested collections collapse to the shallowest ancestor regardless
+    /// of declaration order, and duplicates dedupe.
+    #[test]
+    fn derive_watch_roots_collapses_nested_and_duplicate_collections() {
+        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx", "src/mdx/notes"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(roots.contains(&PathBuf::from("src/mdx")));
+        assert!(!roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
+    }
+
+    /// Leading `./` is normalized away so `./src/mdx` and `src/mdx`
+    /// compare equal in the dedupe/coverage checks.
+    #[test]
+    fn derive_watch_roots_normalizes_leading_curdir() {
+        let cfg = cfg_with_collections(&["./src/mdx", "src/mdx"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(roots.contains(&PathBuf::from("src/mdx")));
+        assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live

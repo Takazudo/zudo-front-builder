@@ -18,7 +18,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 use zfb_build::{
     AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook,
-    OrchestratorConfig, PageSelection, RebuildPlan, RelDistPath, RenderedPage,
+    DiscoveryOutcome, OrchestratorConfig, PageSelection, RebuildPlan, RelDistPath, RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_watcher::{ChangeKind, Watcher};
@@ -580,7 +580,10 @@ fn fake_blog_discovery_hook(
                 out.push(page);
             }
         }
-        Ok(out)
+        Ok(DiscoveryOutcome {
+            pages: out,
+            renderer_reloaded: true,
+        })
     })
 }
 
@@ -745,3 +748,242 @@ fn modified_content_file_does_not_invoke_discovery_and_still_hot_reloads() {
 
 #[allow(dead_code)]
 fn _ensure_unused_imports_used(_: PageSelection) {}
+
+// ---------------------------------------------------------------------------
+// Per-tick renderer reload (`BuildContext::reload_renderer` ×
+// `RebuildPlan::renderer_fresh`).
+//
+// The content snapshot and page modules are baked into the SSR bundle, so
+// an EDIT tick that only re-renders against the boot-time bundle emits
+// byte-identical stale HTML — the dev server never reflected in-place
+// saves until restart. The pipeline must therefore invoke
+// `reload_renderer` before rendering on a normal edit tick, and must NOT
+// invoke it when the tick's bundle is already fresh (boot initial render,
+// or a watch-ADD discovery re-bundle in the same tick).
+// ---------------------------------------------------------------------------
+
+/// Shared scaffolding for the reload tests: one md page fixture, a
+/// recording reload hook, and a recording renderer.
+struct ReloadProbe {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl ReloadProbe {
+    fn new() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn ctx(&self, project: &std::path::Path) -> BuildContext {
+        let render_events = self.events.clone();
+        let reload_events = self.events.clone();
+        BuildContext {
+            dist_root: project.join("dist"),
+            render_pages: Arc::new(move |pages: &[PageId]| {
+                render_events.lock().unwrap().push("render");
+                Ok(pages
+                    .iter()
+                    .map(|p| RenderedPage {
+                        page: p.clone(),
+                        output_path: RelDistPath::new(format!(
+                            "{}.html",
+                            p.path().file_stem().unwrap().to_string_lossy()
+                        ))
+                        .expect("test stem is a relative html path"),
+                        html: "<p>x</p>".into(),
+                        content_type: None,
+                    })
+                    .collect())
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || {
+                reload_events.lock().unwrap().push("reload");
+                Ok(())
+            })),
+        }
+    }
+
+    fn events(&self) -> Vec<&'static str> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+fn md_page_fixture(project: &std::path::Path) -> Arc<Mutex<DependencyGraph>> {
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::create_dir_all(project.join("content")).unwrap();
+    std::fs::write(project.join("pages/post.tsx"), "// page\n").unwrap();
+    std::fs::write(project.join("content/post.md"), "# hello\n").unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+    make_graph_with_md_page(project)
+}
+
+/// An in-place EDIT (`Modified`) must reload the renderer BEFORE
+/// rendering — otherwise the render runs against the stale boot bundle
+/// and the output is byte-identical to the previous tick.
+#[test]
+fn modified_content_tick_reloads_renderer_before_render() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    let graph = md_page_fixture(project);
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let probe = ReloadProbe::new();
+    let ctx = probe.ctx(project);
+
+    orch.tick_with_kinds(
+        vec![(project.join("content/post.md"), ChangeKind::Modified)],
+        &ctx,
+        None,
+    )
+    .expect("tick succeeded")
+    .expect("non-noop");
+
+    assert_eq!(
+        probe.events(),
+        vec!["reload", "render"],
+        "edit tick must reload the renderer exactly once, before rendering"
+    );
+}
+
+/// A Created tick whose discovery hook already re-bundled + reloaded
+/// (`DiscoveryOutcome::renderer_reloaded == true`) must NOT trigger the
+/// pipeline's own reload — one bundle per tick.
+#[test]
+fn discovery_reload_suppresses_pipeline_reload_in_same_tick() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    let graph = md_page_fixture(project);
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let probe = ReloadProbe::new();
+    let ctx = probe.ctx(project);
+
+    let new_post = project.join("content/new-post.md");
+    std::fs::write(&new_post, "# new\n").unwrap();
+
+    let hook_pages = vec![pid(project.join("pages/post.tsx"))];
+    let hook: DiscoveryHook = Arc::new(move |_created: &[PathBuf]| {
+        Ok(DiscoveryOutcome {
+            pages: hook_pages.clone(),
+            renderer_reloaded: true,
+        })
+    });
+
+    orch.tick_with_kinds(
+        vec![(new_post.clone(), ChangeKind::Created)],
+        &ctx,
+        Some(&hook),
+    )
+    .expect("tick succeeded")
+    .expect("non-noop");
+
+    assert_eq!(
+        probe.events(),
+        vec!["render"],
+        "discovery already refreshed the bundle — the pipeline must not reload again"
+    );
+}
+
+/// Boot's eager initial render runs right after the boot bundle — the
+/// renderer is already fresh, so `initial_build` must not reload.
+#[test]
+fn initial_build_does_not_reload_renderer() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    let graph = md_page_fixture(project);
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("content")]),
+        graph,
+        DevAssetPipeline::new(),
+    );
+    let probe = ReloadProbe::new();
+    let ctx = probe.ctx(project);
+
+    orch.initial_build(&ctx)
+        .expect("initial build succeeded")
+        .expect("non-empty graph renders");
+
+    assert_eq!(
+        probe.events(),
+        vec!["render"],
+        "initial render must reuse the boot bundle, not re-bundle"
+    );
+}
+
+/// A collection configured under a custom root (`src/mdx/notes`) plans a
+/// Content rebuild — pages re-render, islands do NOT re-bundle (before
+/// the `content_roots` policy, the `src` segment classified the entry as
+/// Module and re-bundled islands on every edit).
+#[test]
+fn modified_entry_under_custom_collection_root_skips_islands() {
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::create_dir_all(project.join("src/mdx/notes")).unwrap();
+    std::fs::write(project.join("pages/post.tsx"), "// page\n").unwrap();
+    std::fs::write(project.join("src/mdx/notes/foo.mdx"), "# hi\n").unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    let mut g = DependencyGraph::new();
+    g.upsert(PageDeps::new(
+        pid(project.join("pages/post.tsx")),
+        vec![(project.join("src/mdx/notes/foo.mdx"), DepKind::Content)],
+    ));
+    let graph = Arc::new(Mutex::new(g));
+
+    let islands_runs = Arc::new(AtomicUsize::new(0));
+    let islands_runs_cb = islands_runs.clone();
+
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(
+            project,
+            vec![PathBuf::from("pages"), PathBuf::from("src/mdx/notes")],
+        )
+        .with_policy(
+            zfb_build::GranularityPolicy::default()
+                .with_content_roots(vec![PathBuf::from("src/mdx/notes")]),
+        ),
+        graph,
+        DevAssetPipeline::new(),
+    );
+
+    let probe = ReloadProbe::new();
+    let mut ctx = probe.ctx(project);
+    ctx.run_islands = Some(Arc::new(move || {
+        islands_runs_cb.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }));
+
+    let outcome = orch
+        .tick_with_kinds(
+            vec![(project.join("src/mdx/notes/foo.mdx"), ChangeKind::Modified)],
+            &ctx,
+            None,
+        )
+        .expect("tick succeeded")
+        .expect("non-noop");
+
+    assert_eq!(outcome.pages_rendered, 1, "consumer page re-rendered");
+    assert!(
+        !outcome.islands_rerun,
+        "a content entry under a configured collection root must not re-bundle islands"
+    );
+    assert_eq!(islands_runs.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        probe.events(),
+        vec!["reload", "render"],
+        "content edit still refreshes the renderer bundle"
+    );
+}

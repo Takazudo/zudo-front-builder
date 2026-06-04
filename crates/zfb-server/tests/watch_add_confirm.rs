@@ -80,7 +80,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_build::{
-    BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook, OrchestratorConfig,
+    BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook, DiscoveryOutcome,
+    OrchestratorConfig,
     RelDistPath, RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
@@ -228,7 +229,10 @@ fn make_discovery_hook(
                 out.push(pid(slug_src.clone()));
             }
         }
-        Ok(out)
+        Ok(DiscoveryOutcome {
+            pages: out,
+            renderer_reloaded: true,
+        })
     })
 }
 
@@ -622,6 +626,209 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     // ----------------------------------------------------------------
     // 5. Teardown
     // ----------------------------------------------------------------
+    orch_task.abort();
+    server.abort();
+}
+
+/// Real-watcher confirmation for the per-tick renderer reload
+/// (`BuildContext::reload_renderer` wiring).
+///
+/// ## Why this test exists
+///
+/// The content snapshot and page modules are baked into the SSR bundle.
+/// Before the reload wiring, an IN-PLACE save (`ChangeKind::Modified` —
+/// what VS Code and most editors emit) re-rendered against the
+/// boot-time bundle, so the re-rendered HTML was byte-identical to the
+/// stale boot output: edits never reached the browser until a dev-server
+/// restart. (Rename-replace saves worked by accident via the watch-ADD
+/// discovery path.) Discovered during usage in a consumer project.
+///
+/// ## How the staleness is modelled
+///
+/// The real staleness lives in the V8 bundle, which crate-level tests
+/// can't reach. The stub here mirrors the semantics exactly:
+///
+/// - `snapshot` (an `Arc<Mutex<String>>`) plays the role of the baked
+///   content snapshot: it is read ONCE at "boot".
+/// - `render_pages` renders from `snapshot`, NOT from disk — like the
+///   real renderer, it cannot see an edit until the bundle refreshes.
+/// - `reload_renderer` re-reads `hello.mdx` from disk into `snapshot` —
+///   like the real re-bundle + host swap.
+///
+/// With `reload_renderer: None` (the pre-fix wiring) the served body
+/// stays at v1 forever and this test fails its marker assertion — the
+/// falsifiable encoding of the user-visible bug.
+#[tokio::test]
+async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
+    let _serial = SERIAL.lock().await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().canonicalize().expect("canonicalize project");
+
+    setup_fixture(&project);
+
+    let routes = seed_route_table(&project);
+    let graph = seed_graph(&project);
+
+    let html_root = project.join("dist");
+    let hello_src = project.join("content/blog/hello.mdx");
+
+    // "Boot bundle": the snapshot reads the source once, up front.
+    let snapshot: Arc<Mutex<String>> = Arc::new(Mutex::new(
+        std::fs::read_to_string(&hello_src).expect("read hello.mdx at boot"),
+    ));
+
+    let reload_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let ctx = {
+        let routes = routes.clone();
+        let snapshot_for_render = snapshot.clone();
+        let snapshot_for_reload = snapshot.clone();
+        let hello_for_reload = hello_src.clone();
+        let reload_count = reload_count.clone();
+        BuildContext {
+            dist_root: html_root.clone(),
+            render_pages: Arc::new(move |pages: &[PageId]| {
+                let table = routes.lock().unwrap();
+                let body = snapshot_for_render.lock().unwrap().clone();
+                let mut out = Vec::new();
+                for p in pages {
+                    for output in table.get(p.path()).into_iter().flatten() {
+                        let html = format!("<html><body><p>{body}</p></body></html>");
+                        let output_path = RelDistPath::new(output.clone())
+                            .expect("test output is a relative path");
+                        out.push(RenderedPage {
+                            page: PageId::new(PathBuf::from(output)),
+                            output_path,
+                            html,
+                            content_type: None,
+                        });
+                    }
+                }
+                Ok(out)
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || {
+                let fresh = std::fs::read_to_string(&hello_for_reload)?;
+                *snapshot_for_reload.lock().unwrap() = fresh;
+                reload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+        }
+    };
+
+    let debounce = Duration::from_millis(200);
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project.clone(), vec![PathBuf::from("content")])
+            .with_debounce(debounce),
+        graph.clone(),
+        DevAssetPipeline::new(),
+    );
+
+    // Pre-render the hello route from the boot snapshot so the server
+    // serves v1 at boot.
+    {
+        let hello_dir = html_root.join("blog/hello");
+        std::fs::create_dir_all(&hello_dir).unwrap();
+        let body = snapshot.lock().unwrap().clone();
+        std::fs::write(
+            hello_dir.join("index.html"),
+            format!("<html><body><p>{body}</p></body></html>"),
+        )
+        .unwrap();
+    }
+
+    let (listener, addr) = bind_ephemeral().await;
+    let (tx, _rx) = broadcast::channel::<ReloadEvent>(8);
+    let opts = ServeOpts {
+        project_root: project.clone(),
+        dist_root: html_root.clone(),
+        html_root: html_root.clone(),
+        public_root: project.join("public"),
+        addr,
+        pages: PageCache::new(),
+        broadcast: tx,
+        plugins: None,
+        injected_routes: None,
+        ssr_routes: None,
+        base: None,
+        trailing_slash: false,
+        mode: zfb_server::ServerMode::Dev,
+        islands_bundle_url: None,
+        css_bundle_url: None,
+    };
+    let server = tokio::spawn(async move {
+        serve_with_listener(opts, listener, std::future::pending::<()>()).await
+    });
+    tokio::task::yield_now().await;
+
+    let client = reqwest::Client::new();
+    let r0 = client
+        .get(format!("http://{addr}/blog/hello"))
+        .send()
+        .await
+        .expect("GET /blog/hello initial");
+    assert_eq!(r0.status().as_u16(), 200);
+    assert!(
+        !r0.text().await.unwrap().contains("V2-MARKER"),
+        "marker must not be present before the edit"
+    );
+
+    // No discovery hook: the per-tick reload is the only refresh path,
+    // exactly the EDIT scenario under test.
+    let orch_task = tokio::spawn(async move { orch.run(ctx, None, |_outcome| {}).await });
+
+    // Watcher-live handshake (same FSEvents dead-window mitigation as the
+    // ADD test, but probed through the reload counter since there is no
+    // discovery hook here): write fresh-named throwaway files under
+    // content/blog/ until a tick lands.
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut i = 0;
+        while reload_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher-live handshake timed out (no tick within 15s)"
+            );
+            std::fs::write(
+                project.join(format!("content/blog/.warmup-{i}.md")),
+                "warmup\n",
+            )
+            .unwrap();
+            i += 1;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
+
+    // The actual in-place EDIT: same path, same inode, truncate + write.
+    std::fs::write(&hello_src, "---\ntitle: Hello\n---\nV2-MARKER content\n")
+        .expect("in-place edit hello.mdx");
+
+    // Poll until the SERVED body carries the new content.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut served_fresh = false;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(resp) = client.get(format!("http://{addr}/blog/hello")).send().await {
+            if resp.status().as_u16() == 200 {
+                if let Ok(body) = resp.text().await {
+                    if body.contains("V2-MARKER") {
+                        served_fresh = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        served_fresh,
+        "an in-place edit must reach the served HTML via the per-tick renderer \
+         reload within 30s (stale-bundle regression: without reload_renderer the \
+         body stays at v1 forever)",
+    );
+
     orch_task.abort();
     server.abort();
 }

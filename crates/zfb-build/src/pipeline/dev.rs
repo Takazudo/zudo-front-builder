@@ -104,11 +104,16 @@ impl AssetPipeline for DevAssetPipeline {
 
         if !pages.is_empty() {
             // Reload the SSR renderer (embedded V8 host) before rendering
-            // pages whenever the dirty set is non-empty. Errors abort the
+            // pages whenever the dirty set is non-empty — UNLESS the
+            // renderer bundle was already refreshed this tick (boot's
+            // eager initial render, or a watch-ADD discovery re-bundle;
+            // see `RebuildPlan::renderer_fresh`). Errors abort the
             // tick — the watcher stays alive and the previous renderer
             // state is preserved by the orchestrator.
-            if let Some(reload) = &ctx.reload_renderer {
-                reload()?;
+            if !plan.renderer_fresh {
+                if let Some(reload) = &ctx.reload_renderer {
+                    reload()?;
+                }
             }
 
             let rendered = (ctx.render_pages)(&pages)?;
@@ -315,6 +320,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
 
@@ -347,6 +353,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
 
@@ -380,6 +387,7 @@ mod tests {
             pages: PageSelection::none(),
             rerun_css: true,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
 
@@ -413,6 +421,7 @@ mod tests {
             pages: PageSelection::Specific(sel.clone()),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx_a).unwrap();
@@ -475,6 +484,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx).unwrap();
@@ -528,6 +538,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
         let first = pipeline.apply(&plan, &ctx1).unwrap();
@@ -611,6 +622,7 @@ mod tests {
             pages: PageSelection::All,
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: vec![],
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
@@ -641,6 +653,7 @@ mod tests {
             pages: PageSelection::none(),
             rerun_css: true,
             rerun_islands: true,
+            renderer_fresh: false,
             triggers: vec![],
         };
         let outcome = pipeline.apply(&plan, &ctx).unwrap();

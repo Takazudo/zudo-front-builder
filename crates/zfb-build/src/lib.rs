@@ -74,7 +74,7 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, needs_html5_doctype,
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
-pub use orchestrator::{BuildOrchestrator, DiscoveryHook, OrchestratorConfig};
+pub use orchestrator::{BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, OrchestratorConfig};
 pub use plugin_registries::{
     AliasEntry, AliasMap, InjectedRoute, InjectedRouteList, SetupCommand, SetupRegistries,
     SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,
@@ -92,7 +92,7 @@ pub use pipeline::{
     ProductionEmitters, RelDistPath, RenderedPage, RendererReloader,
 };
 pub use plan::{PageSelection, RebuildPlan};
-pub use policy::{classify_change, GranularityPolicy, PathClass};
+pub use policy::{classify_change, classify_change_with_content_roots, GranularityPolicy, PathClass};
 pub use renderer::{
     render_all, render_one, reload, shutdown, start, Backend, EmbeddedV8Host,
     EmbeddedV8HostFactory, HttpResponseLike, RendererError, RendererInput, RendererOutput,

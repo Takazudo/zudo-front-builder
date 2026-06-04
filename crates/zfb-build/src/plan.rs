@@ -29,6 +29,13 @@ pub struct RebuildPlan {
     /// Whether the islands bundler should run again.
     pub rerun_islands: bool,
 
+    /// True when the renderer's bundle was already refreshed for this
+    /// tick — by the boot bundle (initial render) or by the watch-ADD
+    /// discovery hook's re-bundle + host reload. The pipeline consults
+    /// this to skip its own `reload_renderer` call so a single tick
+    /// never bundles twice.
+    pub renderer_fresh: bool,
+
     /// The raw paths that triggered this plan, kept around purely for
     /// diagnostics. Not consumed by the pipeline.
     pub triggers: Vec<PathBuf>,
@@ -92,6 +99,7 @@ impl RebuildPlan {
             pages: PageSelection::none(),
             rerun_css: false,
             rerun_islands: false,
+            renderer_fresh: false,
             triggers: Vec::new(),
         }
     }
@@ -102,8 +110,15 @@ impl RebuildPlan {
             pages: PageSelection::All,
             rerun_css: true,
             rerun_islands: true,
+            renderer_fresh: false,
             triggers: Vec::new(),
         }
+    }
+
+    /// Mark the renderer bundle as already refreshed for this tick (see
+    /// [`RebuildPlan::renderer_fresh`]).
+    pub fn mark_renderer_fresh(&mut self) {
+        self.renderer_fresh = true;
     }
 
     /// Add `path` to the diagnostics trigger list.
