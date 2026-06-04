@@ -37,9 +37,9 @@ pub mod manifest;
 pub mod scanner;
 
 pub use bundler::{
-    build_production_islands_asset, bundle_link_href, island_link_href, BundleConfig, BundleOutput,
-    ClientBundler, FrameworkKind, Island, IslandBundle, ModuleId, PerIslandBundleOutput,
-    ProductionIslandsAsset,
+    build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
+    BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk, ModuleId,
+    PerIslandBundleOutput, ProductionIslandsAsset,
 };
 pub use esbuild::{
     hash_8, render_island_entry_source, render_runtime_entry_source,

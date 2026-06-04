@@ -93,6 +93,22 @@ pub struct DiscoveryOutcome {
     /// pipeline's per-tick `reload_renderer` call is skipped — one
     /// bundle per tick.
     pub renderer_reloaded: bool,
+
+    /// Absolute dist-root paths that vanished globally from the live
+    /// route set during this hook's route-table rebuild (issue #804).
+    ///
+    /// A Create tick can cause routes to vanish — for example a dynamic
+    /// `paths()` that keeps only the N most-recent posts, or an
+    /// editor rename delivered as Removed+Created. Because the hook
+    /// sets `renderer_reloaded = true`, the pipeline skips its own
+    /// `reload_renderer` call and never learns about the vanished paths
+    /// through that channel. Carrying them here lets the orchestrator
+    /// fold them into [`crate::RebuildPlan::prune_paths`] so the pipeline
+    /// still prunes the stale HTML files.
+    ///
+    /// Values are absolute paths (the hook is responsible for joining
+    /// the relative output path with the appropriate dist root).
+    pub vanished_output_paths: Vec<PathBuf>,
 }
 
 /// Construction-time configuration for [`BuildOrchestrator`].
@@ -272,6 +288,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         dirty
                     };
                     plan.mark_pages(effective);
+                    // Content/Page/Module/Data changes may affect SSR output —
+                    // flag the plan so the pipeline reloads the V8 host even
+                    // on SSR-only projects where pages is always empty (issue #807).
+                    plan.mark_ssr_reload_needed();
 
                     // Modules under an islands root re-bundle islands.
                     if matches!(class, PathClass::Module)
@@ -311,6 +331,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // `schema.graphql` under an extra watch root
                     // actually re-render. Deep-review fix (PR #376).
                     plan.mark_pages(PageSelection::All);
+                    plan.mark_ssr_reload_needed();
                 }
             }
         }
@@ -349,8 +370,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         self.resolve_all(&mut plan);
         // After resolution an `All` plan can become an empty plan (the
         // graph has zero pages). Treat that as a no-op rather than
-        // erroring out of the pipeline.
-        if plan.pages.is_empty() && !plan.rerun_css && !plan.rerun_islands {
+        // erroring out of the pipeline UNLESS an SSR-only reload is needed
+        // (SSR-only projects have zero SSG pages but still require a
+        // renderer refresh on every relevant tick — issue #807).
+        if plan.pages.is_empty()
+            && !plan.rerun_css
+            && !plan.rerun_islands
+            && !plan.ssr_reload_needed
+        {
             return Ok(None);
         }
         let outcome = self.pipeline.apply(&plan, ctx)?;
@@ -383,6 +410,51 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        // Removal: drop graph edges for deleted files before planning and
+        // collect the former consumers so they can be added to the plan.
+        //
+        // Why collect consumers? The deleted file's route must be pruned
+        // from disk. That prune happens in DevAssetPipeline when
+        // reload_renderer fires, which only runs when the plan has pages.
+        // By folding the former consumers into the plan we guarantee a
+        // non-noop tick — even when the deletion is the only change — so
+        // reload_renderer runs, refreshes the route table, and returns the
+        // vanished paths to the prune loop.
+        //
+        // Why NOT pass the removed path through plan_for_changes? After
+        // remove_node the path has no consumers, so plan_for_changes would
+        // fall back to the All-sentinel for an "unknown" path — re-rendering
+        // every page rather than just the affected subset. Collecting the
+        // affected set from remove_node is the precise, conservative choice.
+        //
+        // Excluding the removed path from plan_for_changes drops only the
+        // page-fallback; its sub-pipeline side effects (CSS / islands / SSR
+        // reload) are reinstated explicitly below by classifying each removed
+        // path — see the `for path in &removed` loop after the plan is built.
+        let removed: Vec<PathBuf> = changes
+            .iter()
+            .filter(|(_, kind)| *kind == ChangeKind::Removed)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let removed_consumers: std::collections::BTreeSet<PageId> = {
+            if removed.is_empty() {
+                std::collections::BTreeSet::new()
+            } else {
+                let mut graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::remove_node",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                let mut affected = std::collections::BTreeSet::new();
+                for path in &removed {
+                    affected.extend(graph.remove_node(path));
+                }
+                affected
+            }
+        };
+
         // Discovery runs first so a newly-created page is upserted into
         // the graph (by the hook) before `plan_for_changes` folds the
         // change set — and so the discovered page ids survive even when
@@ -405,7 +477,79 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             None => DiscoveryOutcome::default(),
         };
 
-        let mut plan = self.plan_for_changes(changes.into_iter().map(|(p, _)| p));
+        // Exclude removed paths from plan_for_changes: after remove_node the
+        // path has no consumers. Passing it through plan_for_changes would
+        // trigger the cold-start All-fallback ("unknown file → rebuild all")
+        // which is wrong for an intentional deletion. The former consumers
+        // collected above are added directly to the plan instead.
+        let plan_paths: Vec<PathBuf> = changes
+            .iter()
+            .filter(|(_, kind)| *kind != ChangeKind::Removed)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let mut plan = self.plan_for_changes(plan_paths);
+
+        // Fold former consumers of removed files into the plan so the tick
+        // is non-noop even when deletion is the only change. This lets
+        // reload_renderer fire and prune the now-vanished HTML.
+        if !removed_consumers.is_empty() {
+            plan.mark_pages(PageSelection::Specific(removed_consumers));
+        }
+
+        // Removed paths are excluded from `plan_for_changes` above (the
+        // All-fallback would be wrong for a deletion), but a removal still
+        // has the SAME sub-pipeline side effects as a normal change: a
+        // deleted stylesheet must rerun CSS, a deleted islands module must
+        // rerun islands, a deleted global file must full-rebuild, and any
+        // SSR-relevant source (page / module / content / data) must reload
+        // the V8 host so SSR-only routes don't serve stale output (#807).
+        // Classify each removed path and apply only those rerun/reload flags
+        // — NOT the page fallback, which the `removed_consumers` fold already
+        // handled precisely. Without this, a deletion-only tick leaves CSS /
+        // islands / SSR stale until the next non-removed edit.
+        for path in &removed {
+            let class = {
+                let graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::classify_removed",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                classify_change_with_content_roots(
+                    path,
+                    &self.config.project_root,
+                    &self.config.policy.content_roots,
+                    |p| graph.is_global(p),
+                )
+            };
+            match class {
+                PathClass::Global => {
+                    // A deleted global file invalidates everything. Mirror
+                    // `RebuildPlan::full_rebuild`'s sub-pipeline flags; pages
+                    // come from `resolve_all` over the (post-removal) graph.
+                    plan.mark_pages(PageSelection::All);
+                    plan.mark_css();
+                    plan.mark_islands();
+                    plan.mark_ssr_reload_needed();
+                }
+                PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
+                    plan.mark_ssr_reload_needed();
+                    if matches!(class, PathClass::Module)
+                        && self.config.policy.is_islands_candidate(path)
+                    {
+                        plan.mark_islands();
+                    }
+                }
+                PathClass::Style => {
+                    plan.mark_css();
+                }
+                PathClass::External => {
+                    plan.mark_ssr_reload_needed();
+                }
+                PathClass::Asset | PathClass::Unclassified => {}
+            }
+        }
 
         if discovered.renderer_reloaded {
             plan.mark_renderer_fresh();
@@ -414,12 +558,24 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let set: std::collections::BTreeSet<PageId> = discovered.pages.into_iter().collect();
             plan.mark_pages(PageSelection::Specific(set));
         }
+        // Thread vanished output paths from the discovery refresh into
+        // the plan's prune list (issue #804 — P2). The discovery hook
+        // sets `renderer_fresh`, so the pipeline skips `reload_renderer`
+        // and would otherwise miss these vanished paths entirely.
+        if !discovered.vanished_output_paths.is_empty() {
+            plan.add_prune_paths(discovered.vanished_output_paths);
+        }
 
         if plan.is_noop() {
             return Ok(None);
         }
         self.resolve_all(&mut plan);
-        if plan.pages.is_empty() && !plan.rerun_css && !plan.rerun_islands {
+        if plan.pages.is_empty()
+            && !plan.rerun_css
+            && !plan.rerun_islands
+            && !plan.ssr_reload_needed
+            && plan.prune_paths.is_empty()
+        {
             return Ok(None);
         }
         let outcome = self.pipeline.apply(&plan, ctx)?;

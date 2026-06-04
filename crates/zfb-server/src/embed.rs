@@ -60,7 +60,7 @@ use tracing::info;
 use crate::embed_handlers::{erase_handler, EmbedHandler, EmbedHandlerSet, RouteParams};
 use crate::middleware::{apply_request_extension_layer, make_injector, RequestExtensionInjector};
 use crate::routes::{build_router, AppState, PageCache};
-use crate::ssr::SsrRouteSet;
+use crate::ssr::SsrRoutesHandle;
 use crate::{DevMiddlewareSet, InjectedRouteSet, ReloadEvent, ReloadTx};
 
 use axum::body::Body;
@@ -120,7 +120,7 @@ pub struct Server {
     broadcast: ReloadTx,
     plugins: Option<DevMiddlewareSet>,
     injected_routes: Option<InjectedRouteSet>,
-    ssr_routes: Option<SsrRouteSet>,
+    ssr_routes: Option<SsrRoutesHandle>,
     embed_handlers: Option<EmbedHandlerSet>,
     request_extensions: Vec<RequestExtensionInjector>,
 }

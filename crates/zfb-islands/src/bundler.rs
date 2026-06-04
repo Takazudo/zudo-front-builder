@@ -271,6 +271,29 @@ impl BundleConfig {
     }
 }
 
+/// One code-split chunk emitted alongside the entry by the bundler.
+///
+/// See [`BundleOutput::chunks`] for the full chunk contract. `filename`
+/// is a **flat** basename (validated to contain no path separators and to
+/// match the `islands-chunk-*` shape) carrying esbuild's own content hash
+/// — e.g. `islands-chunk-WOEGGERP.js`. `bytes` is the chunk's raw JS.
+///
+/// Downstream consumers (the prod pipeline, the dev server) MUST write
+/// each chunk to the same directory as the entry under its `filename`
+/// verbatim and MUST NOT rename it: the entry's `import("./<filename>")`
+/// references are relative and resolve only when entry and chunk share a
+/// directory under the un-renamed chunk name.
+#[derive(Debug, Clone)]
+pub struct BundleChunk {
+    /// Flat, self-hashed chunk basename (e.g. `islands-chunk-WOEGGERP.js`).
+    /// Never contains a path separator. Never to be renamed downstream.
+    pub filename: String,
+
+    /// The chunk's raw JS bytes, read back verbatim from esbuild's
+    /// staging outdir.
+    pub bytes: Vec<u8>,
+}
+
 /// Result of a successful [`ClientBundler::bundle`] call.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
@@ -292,6 +315,35 @@ pub struct BundleOutput {
     /// Identifiers of the modules included in the bundle. Order is stable
     /// across runs for a given input.
     pub module_ids: Vec<ModuleId>,
+
+    /// Code-split chunks emitted by esbuild's `--splitting` alongside the
+    /// `islands.js` entry, one per shared/dynamically-imported module
+    /// graph (see [`BundleChunk`]). Empty when the islands set has no
+    /// dynamic `import()` — a zero-dynamic-import project yields exactly
+    /// the entry and behaves identically to the pre-splitting build.
+    ///
+    /// ## Chunk contract (consumed by the prod-shipping and dev-serving
+    /// sub-issues; a future bundler swap, e.g. the Rolldown spike #318,
+    /// MUST honour it)
+    ///
+    /// - esbuild owns the content hash. The entry is emitted under the
+    ///   stable name `islands.js` (via `--entry-names=islands`); chunks are
+    ///   `islands-chunk-<hash>.js` (via `--chunk-names=islands-chunk-[hash]`),
+    ///   **flat** in the same staging directory as the entry.
+    /// - The entry references chunks via **relative** imports esbuild bakes
+    ///   into the JS (`import("./islands-chunk-<hash>.js")`). Because the
+    ///   hash is esbuild's, those names are content-stable across identical
+    ///   rebuilds and the imports resolve as long as entry and chunks share
+    ///   a directory.
+    /// - **Downstream MUST NOT rename chunk files.** Only the *entry* may
+    ///   later be renamed by the prod pipeline (`islands.js` →
+    ///   `islands-<hash>.js`); its relative chunk imports still resolve
+    ///   because the chunks sit beside it under their un-renamed names.
+    ///   Renaming a chunk would break the baked-in relative import.
+    /// - Filenames here are validated flat (no path separators / `..`) and
+    ///   `islands-chunk-*`-shaped before they reach this field; consumers
+    ///   may write them under the entry's directory verbatim.
+    pub chunks: Vec<BundleChunk>,
 }
 
 /// Abstraction over "bundle this islands set into a single browser-ready
@@ -458,6 +510,21 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
     format!("{trimmed}/assets/{filename}")
 }
 
+/// One code-split chunk to ship verbatim alongside the islands entry.
+///
+/// Mirrors [`BundleChunk`] but lives here as a separate type so the
+/// `ProductionIslandsAsset` adapter stays self-contained without a
+/// `zfb-build` dependency cycle. Callers (the bin crate) map each
+/// element to `zfb_build::pipeline::CompanionFile` before handing
+/// the payload to `AssetEmitterPayload`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandsChunk {
+    /// Flat basename of the chunk (e.g. `islands-chunk-WOEGGERP.js`).
+    pub filename: String,
+    /// Raw JS bytes — verbatim, never rewritten or hashed.
+    pub bytes: Vec<u8>,
+}
+
 /// Bytes-only payload describing the islands client bundle as a single
 /// hashable production asset, ready for plugging into
 /// `zfb_build::pipeline::prod::ProductionAssetPipeline` (S4 wiring).
@@ -476,6 +543,8 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
 /// - `stable_url` is the unhashed public URL the renderer embeds
 ///   (`/assets/islands.js`); the pipeline rewrites every match in the
 ///   rendered HTML to the hashed form.
+/// - `chunks` carries verbatim code-split companions (empty for
+///   zero-dynamic-import projects).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionIslandsAsset {
     /// Bundled JS bytes — already minified per `BundleConfig::production`
@@ -492,6 +561,14 @@ pub struct ProductionIslandsAsset {
     /// (`/assets/islands.js`). The pipeline rewrites every match of this
     /// string in HTML bodies with the hashed equivalent.
     pub stable_url: String,
+
+    /// Code-split chunk companions emitted alongside the entry.
+    ///
+    /// Each must be shipped verbatim (no hashing, no renaming) to the
+    /// same directory as the hashed entry so the entry's relative
+    /// `import("./islands-chunk-<hash>.js")` references resolve.
+    /// Empty for projects with no dynamic `import()`.
+    pub chunks: Vec<IslandsChunk>,
 }
 
 /// Run `bundler` over `islands` and return a bytes-only adapter payload
@@ -545,10 +622,20 @@ pub fn build_production_islands_asset(
 
     let relative_path = PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME);
 
+    let chunks = output
+        .chunks
+        .into_iter()
+        .map(|c| IslandsChunk {
+            filename: c.filename,
+            bytes: c.bytes,
+        })
+        .collect();
+
     Ok(Some(ProductionIslandsAsset {
         bytes,
         relative_path,
         stable_url: STABLE_ISLANDS_URL.to_string(),
+        chunks,
     }))
 }
 
@@ -712,6 +799,7 @@ mod tests {
                 asset_path,
                 asset_url,
                 module_ids,
+                chunks: Vec::new(),
             })
         }
     }

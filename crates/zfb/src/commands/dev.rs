@@ -66,11 +66,12 @@
 // continues to surface real unused-item warnings.
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::renderer::{
@@ -84,8 +85,8 @@ use zfb_build::{
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
-    outcome_to_events, serve, PageCache, ReloadEvent, ServeOpts, SsrDispatcher, SsrRouteRecord,
-    SsrRouteSet,
+    outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
+    SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 
 use crate::cli::DevArgs;
@@ -492,6 +493,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
         Arc::new(std::sync::RwLock::new(None));
 
+    // Tracks chunk filenames written by the most recent islands bundle so the
+    // next rebundle tick can delete stale ones (issue #809).
+    let live_chunk_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+
     // Eager initial bundle. Failures are non-fatal — we warn and let the
     // dev server boot anyway. The hot-rebuild path will retry on the next
     // file change so a transient esbuild hiccup at boot doesn't strand the
@@ -523,6 +529,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if let Ok(mut guard) = islands_bundle_url_handle.write() {
                 *guard = Some(url);
             }
+            // Write chunk companions alongside islands.js and seed the
+            // live-chunk tracker. Boot failures here are non-fatal —
+            // the server still comes up; the next successful rebuild
+            // will retry.
+            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            match refresh_dev_island_chunks(&assets_dir, &payload.companions, &HashSet::new()) {
+                Ok(names) => {
+                    if let Ok(mut guard) = live_chunk_filenames.lock() {
+                        *guard = names;
+                    }
+                }
+                Err(e) => {
+                    output::warn(format!(
+                        "initial islands chunks write failed (chunks may 404 \
+                         until the next rebuild): {e:#}"
+                    ));
+                }
+            }
         }
         Ok(None) => {
             // No `"use client"` islands in the project. Leave the handle
@@ -543,6 +567,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let framework = cfg.framework;
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
+        let chunk_names = Arc::clone(&live_chunk_filenames);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
             let payload = crate::commands::build::build_default_islands_payload(
                 &project_root,
@@ -572,6 +597,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 // component would leave the previously-emitted bundle URL
                 // visible on every page until the dev server restarts.
                 *guard = None;
+                // Also prune any chunks that were part of the last bundle
+                // — with no islands bundle at all, none of the chunk files
+                // should be served either.
+                {
+                    let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "dev.run_islands.chunk_names (clear)",
+                            "mutex poisoned, recovered"
+                        );
+                        p.into_inner()
+                    });
+                    let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
+                    if let Err(e) =
+                        refresh_dev_island_chunks(&assets_dir, &[], &prev)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
+                        );
+                    }
+                    *prev = HashSet::new();
+                }
                 return Ok(None);
             };
             let bundle_url = if url_prefix.is_empty() {
@@ -579,6 +626,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             } else {
                 format!("{url_prefix}{}", payload.stable_url)
             };
+            // Write / prune chunk files for this generation.
+            {
+                let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "dev.run_islands.chunk_names",
+                        "mutex poisoned, recovered"
+                    );
+                    p.into_inner()
+                });
+                let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
+                match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
+                    Ok(names) => *prev = names,
+                    Err(e) => {
+                        return Err(e.context("dev islands: failed to refresh chunk files"));
+                    }
+                }
+            }
             // The bundler does not currently surface a "bytes-changed" bit
             // back through `build_default_islands_payload` — the URL stays
             // stable (`/assets/islands.js`) on every rebuild, the bytes on
@@ -703,6 +767,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }))
     };
 
+    // Issue #807 — build the live SSR routes handle here, before the
+    // reload_renderer closure, so the closure can hold a clone of the
+    // Arc and update it on each tick. The dispatcher is built once and
+    // shared across all refreshes (the Arc<Mutex<Option<RendererState>>>
+    // it wraps is the same one the refresh swaps the new host into).
+    let ssr_route_set = build_ssr_route_set(dev_session.as_ref());
+
     // Per-tick bundle refresh for EDIT ticks. Without this the renderer
     // stays bound to the boot-time bundle: the content snapshot and page
     // modules are baked in at bundle time, so an in-place save
@@ -714,8 +785,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // re-bundle), so each tick bundles at most once.
     let reload_renderer: Option<RendererReloader> = dev_session.as_ref().map(|session| {
         let session = session.clone();
+        let html_root = dev_html_root.clone();
+        // Clone the handle so the closure can write a fresh SsrRouteSet
+        // into it after each bundle refresh (issue #807). `None` when
+        // the renderer is disabled (no SSR in this project).
+        let ssr_handle_for_reload = ssr_route_set.clone();
         Arc::new(move || {
-            let changed = session
+            let (changed, vanished_rel) = session
                 .refresh_bundle_and_routes()
                 .context("edit-tick bundle refresh failed")?;
             if !changed.is_empty() {
@@ -724,7 +800,25 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     "edit-tick refresh changed route sets"
                 );
             }
-            Ok(())
+            // Issue #807 — update the live SSR route set so newly-added or
+            // removed `prerender = false` routes are visible to the request
+            // dispatcher on the next request, without a dev-server restart.
+            if let Some(handle) = &ssr_handle_for_reload {
+                refresh_live_ssr_routes(&session, handle);
+            }
+            // Convert relative vanished output paths to absolute dist paths
+            // so DevAssetPipeline can delete them directly.
+            let vanished_abs: Vec<std::path::PathBuf> = vanished_rel
+                .into_iter()
+                .map(|rel| html_root.join(rel))
+                .collect();
+            if !vanished_abs.is_empty() {
+                tracing::debug!(
+                    count = vanished_abs.len(),
+                    "edit-tick refresh found globally-vanished routes"
+                );
+            }
+            Ok(vanished_abs)
         }) as RendererReloader
     });
 
@@ -814,7 +908,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // behaviour.
     let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
         .as_ref()
-        .map(|session| make_discovery_hook(session.clone(), Arc::clone(&graph_for_save)));
+        .map(|session| {
+            make_discovery_hook(
+                session.clone(),
+                Arc::clone(&graph_for_save),
+                dev_html_root.clone(),
+                // Issue #807 — clone the live handle so the discovery hook can
+                // rewrite it on a watch-ADD tick (the pipeline skips
+                // reload_renderer when the discovery refresh marked the
+                // renderer fresh).
+                ssr_route_set.clone(),
+            )
+        });
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
             output::error(format!("build orchestrator stopped: {err:#}"));
@@ -828,11 +933,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // pipeline stamps onto asset URLs. Without this the dev HTML emits
     // `<link href="/<base>/assets/styles.css">` while the dev server
     // only knew about unprefixed `/assets/...` — every request 404s.
-    // Issue #367 — build the SSR route set from the dev session's
-    // `prerender = false` pages, backed by the embedded V8 host the
-    // SSG pipeline already owns. None when no session (renderer
-    // disabled) or when the project has zero SSR pages.
-    let ssr_route_set = build_ssr_route_set(dev_session.as_ref());
+    // Issue #367 / #807 — `ssr_route_set` was built before the
+    // reload_renderer closure above so the closure holds a clone of the
+    // Arc and can update it on each tick (making added/removed
+    // `prerender = false` routes visible without a restart).
 
     let opts = ServeOpts {
         project_root,
@@ -867,17 +971,31 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         css_bundle_url: Some(Arc::clone(&css_bundle_url_handle)),
     };
 
+    // 7. Bind the TCP listener first so the port-in-use error surfaces
+    //    before the ready banner is printed. If bind fails here we exit
+    //    with an error and no banner — which is the correct ordering.
+    let listener = match TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind dev server to {addr}"))
+    {
+        Ok(l) => l,
+        Err(e) => {
+            orch_handle.abort();
+            return Err(e);
+        }
+    };
+
     output::ready_with_interfaces("http", &host, port);
 
-    // 7. Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
-    //    signal so axum drains in-flight connections before exiting. The
-    //    renderer guard tears down on drop here — the explicit `shutdown`
-    //    call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
+    // Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
+    // signal so axum drains in-flight connections before exiting. The
+    // renderer guard tears down on drop here — the explicit `shutdown`
+    // call belt-and-braces keeps the surface symmetrical (start ↔ shutdown).
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
     let result = tokio::select! {
-        res = serve(opts, ctrl_c) => {
+        res = serve_with_listener(opts, listener, ctrl_c) => {
             orch_handle.abort();
             res
         }
@@ -1011,6 +1129,71 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     resolved
+}
+
+// ---------------------------------------------------------------------------
+// Dev islands chunk helpers
+// ---------------------------------------------------------------------------
+
+/// Write new chunk files into `assets_dir`, delete chunks from the previous
+/// generation that are no longer in the new set, and return the new set.
+///
+/// `assets_dir` is the on-disk `<dist_root>/assets/` directory that the dev
+/// server already serves via ServeDir.  Because chunks land in that directory
+/// under their self-hashed basenames (e.g. `islands-chunk-WOEGGERP.js`), the
+/// entry's baked-in relative `import("./islands-chunk-WOEGGERP.js")` resolves
+/// without any additional routing code.
+///
+/// Errors writing a chunk are returned immediately (callers treat them as
+/// non-fatal at the boot path, fatal at the watcher tick path).  Errors
+/// deleting stale chunks are logged and ignored — a stale file that fails to
+/// delete is preferable to aborting the rebuild loop.
+fn refresh_dev_island_chunks(
+    assets_dir: &Path,
+    companions: &[zfb_build::pipeline::CompanionFile],
+    prev_filenames: &HashSet<String>,
+) -> anyhow::Result<HashSet<String>> {
+    let new_filenames: HashSet<String> =
+        companions.iter().map(|c| c.filename.clone()).collect();
+
+    // Write each new chunk file. The entry was already written by the bundler
+    // as a side effect of `bundle()`; these are the code-split companions.
+    for companion in companions {
+        if companion.filename.is_empty()
+            || companion.filename.contains('/')
+            || companion.filename.contains('\\')
+            || companion.filename.contains("..")
+        {
+            anyhow::bail!(
+                "dev islands: chunk filename {:?} must be a flat basename \
+                 (no path separator or `..`)",
+                companion.filename
+            );
+        }
+        let dest = assets_dir.join(&companion.filename);
+        std::fs::write(&dest, &companion.bytes).with_context(|| {
+            format!(
+                "dev islands: failed to write chunk file {}",
+                dest.display()
+            )
+        })?;
+    }
+
+    // Prune stale chunk files from the previous generation.
+    for stale in prev_filenames.difference(&new_filenames) {
+        let path = assets_dir.join(stale);
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "dev islands: failed to delete stale chunk (ignored)"
+                );
+            }
+        }
+    }
+
+    Ok(new_filenames)
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,10 +1463,18 @@ impl DevRenderSession {
     /// Thin gate over [`Self::refresh_bundle_and_routes`] — see there for
     /// what the refresh does. Kept as a named entry point so the
     /// discovery hook's intent stays explicit at the call site.
+    ///
+    /// Returns the changed source [`PageId`]s and the relative output paths
+    /// that vanished from the global live route set. The caller is
+    /// responsible for joining the relative paths with the appropriate dist
+    /// root before propagating them (issue #804 P2).
     #[cfg(feature = "embed_v8")]
-    fn discover_created(&self, created: &[PathBuf]) -> Result<Vec<PageId>> {
+    fn discover_created(
+        &self,
+        created: &[PathBuf],
+    ) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
         if created.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         self.refresh_bundle_and_routes()
     }
@@ -1326,13 +1517,18 @@ impl DevRenderSession {
     ///    change a dynamic route's `paths()` output surface without a
     ///    restart.
     ///
-    /// Returns the source [`PageId`]s whose route set changed (empty for
-    /// a plain content edit).
+    /// Returns `(changed_sources, vanished_output_paths)` where:
+    /// - `changed_sources`: source [`PageId`]s whose route set changed
+    ///   (empty for a plain content edit).
+    /// - `vanished_output_paths`: relative output paths (under dist) that
+    ///   existed in the old live route set but are absent from the new one,
+    ///   globally across all sources. Used by the caller to prune stale
+    ///   HTML files and invalidate PageCache entries (issue #804).
     ///
     /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "embed_v8")]
-    fn refresh_bundle_and_routes(&self) -> Result<Vec<PageId>> {
+    fn refresh_bundle_and_routes(&self) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -1401,11 +1597,16 @@ impl DevRenderSession {
             build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
                 .context("dev refresh: route-table rebuild failed")?;
 
-        // 4. Diff against the frozen table to find which source pages
-        //    gained/changed entries, then swap the new tables in.
-        let changed: Vec<PageId> = {
+        // 4. Diff against the frozen table to find:
+        //    (a) which source pages gained/changed entries, and
+        //    (b) which output paths vanished globally (were live before
+        //        but are absent from every source in the new table).
+        //    The global diff is critical: if route A loses /x while route B
+        //    simultaneously gains /x, /x must NOT be considered vanished.
+        let (changed, vanished_output_paths) = {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
-            new_routes_by_source
+
+            let changed: Vec<PageId> = new_routes_by_source
                 .iter()
                 .filter(|(src, entries)| {
                     old.routes_by_source
@@ -1414,7 +1615,26 @@ impl DevRenderSession {
                         .unwrap_or(true)
                 })
                 .map(|(src, _)| PageId::new(src.clone()))
-                .collect()
+                .collect();
+
+            // Collect the globally-live output_path sets for old and new.
+            // Use HashSet for O(1) membership checks.
+            let old_live: std::collections::HashSet<std::path::PathBuf> = old
+                .routes_by_source
+                .values()
+                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
+                .collect();
+            let new_live: std::collections::HashSet<std::path::PathBuf> = new_routes_by_source
+                .values()
+                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
+                .collect();
+
+            let vanished: Vec<std::path::PathBuf> = old_live
+                .difference(&new_live)
+                .cloned()
+                .collect();
+
+            (changed, vanished)
         };
         {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
@@ -1422,7 +1642,7 @@ impl DevRenderSession {
             tables.ssr_routes = new_ssr_routes;
         }
 
-        Ok(changed)
+        Ok((changed, vanished_output_paths))
     }
 }
 
@@ -2064,12 +2284,21 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 /// The returned [`DiscoveryOutcome`] reports `renderer_reloaded: true`
 /// whenever the refresh ran, so the pipeline's per-tick
 /// `reload_renderer` is skipped and the tick bundles exactly once.
+/// Any routes that vanished during the rebuild are propagated in
+/// `vanished_output_paths` so the pipeline can prune their HTML files
+/// (issue #804 P2).
 ///
 /// `embed_v8`-gated: discovery needs the embedded V8 host.
 #[cfg(feature = "embed_v8")]
 fn make_discovery_hook(
     session: DevRenderSession,
     graph: Arc<Mutex<DependencyGraph>>,
+    html_root: PathBuf,
+    // Issue #807 — the live SSR routes handle. The discovery refresh marks
+    // the renderer fresh, so the pipeline skips `reload_renderer`; we must
+    // rewrite the handle HERE or a newly-created `prerender = false` route
+    // 404s until a later edit. `None` when the project has no SSR.
+    ssr_routes: Option<SsrRoutesHandle>,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -2094,7 +2323,18 @@ fn make_discovery_hook(
             return Ok(DiscoveryOutcome::default());
         }
 
-        let changed = session.discover_created(&relevant)?;
+        let (changed, vanished_rel) = session.discover_created(&relevant)?;
+
+        // Issue #807 — the discovery refresh swapped in a fresh V8 host and
+        // rebuilt the route tables, but it reports `renderer_reloaded: true`,
+        // so the pipeline will SKIP `reload_renderer` for this tick. That
+        // closure is the only OTHER place the live SSR route set is rewritten,
+        // so without this call a newly-created `prerender = false` page never
+        // reaches the request dispatcher and 404s until a later edit. Rewrite
+        // the handle here via the same `make_ssr_route_set` path.
+        if let Some(handle) = &ssr_routes {
+            refresh_live_ssr_routes(&session, handle);
+        }
 
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
@@ -2113,51 +2353,102 @@ fn make_discovery_hook(
             }
         }
 
+        // Map relative vanished output paths to absolute dist paths so the
+        // orchestrator can forward them to the pipeline's prune loop.
+        let vanished_abs: Vec<PathBuf> = vanished_rel
+            .into_iter()
+            .map(|rel| html_root.join(rel))
+            .collect();
+
         Ok(DiscoveryOutcome {
             pages: changed,
             renderer_reloaded: true,
+            vanished_output_paths: vanished_abs,
         })
     })
 }
 
-/// Build the [`SsrRouteSet`] for the dev server from the dev session
-/// (issue #367 / Gap 1).
+/// Build the initial live [`SsrRoutesHandle`] for the dev server from the
+/// dev session (issue #367 / Gap 1, live-update issue #807).
 ///
 /// Returns `None` when the dev session is absent (renderer disabled —
-/// the SSR layer would have no V8 host to dispatch through) or when
-/// every page in the project is SSG (no `prerender = false` routes).
-/// Otherwise constructs an [`crate::ssr_adapter::EmbeddedV8SsrAdapter`]
-/// over the same renderer mutex the SSG callback uses, so the V8 host
-/// is shared across build-time and request-time dispatches.
+/// the SSR layer would have no V8 host to dispatch through). When every
+/// page is SSG (no `prerender = false` routes at boot), the handle still
+/// wraps `None` so the request dispatcher does nothing but a later refresh
+/// can populate it if the user adds a `prerender = false` route mid-session.
 ///
-/// Live-reload of SSR page sources: `BuildContext::reload_renderer` is
-/// wired in dev, so any tick that re-renders SSG pages also swaps in a
-/// freshly-bundled host — the SSR adapter shares that host, so SSR
-/// routes serve the new code from the next request. The remaining gap
-/// is an SSR-ONLY project (or an edit whose tick dirties no SSG page):
-/// no SSG dirty set means no reload, and this `SsrRouteSet` itself is
-/// static after boot, so added/removed `prerender = false` routes still
-/// need a dev-server restart. Follow-up for a future sub-task.
+/// The handle is an `Arc<RwLock<Option<SsrRouteSet>>>`. The per-tick
+/// renderer reload callback holds a clone of this `Arc` and writes a fresh
+/// `SsrRouteSet` into it after each bundle refresh — adding or removing
+/// `prerender = false` routes mid-session is reflected on the next request
+/// without a dev-server restart (issue #807).
+///
+/// The dispatcher is constructed once from the session's renderer handle
+/// and reused across refreshes (the `Arc<Mutex<Option<RendererState>>>`
+/// it wraps is the same one the refresh swaps the new host into, so
+/// request-time SSR automatically sees the new bundle).
 ///
 /// Compiled in only when the `embed_v8` feature is on (issue #371,
 /// sub-task 4.1a) — the SSR adapter requires the V8 host.
 #[cfg(feature = "embed_v8")]
-fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRouteSet> {
+fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRoutesHandle> {
     let session = session?;
-    let patterns = session.ssr_patterns();
-    if patterns.is_empty() {
-        return None;
-    }
     let renderer_handle = session.renderer_handle();
     let dispatcher: Arc<dyn SsrDispatcher> =
         Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
             renderer_handle,
         ));
+    let initial_set = make_ssr_route_set(session, Arc::clone(&dispatcher));
+    Some(Arc::new(std::sync::RwLock::new(initial_set)))
+}
+
+/// Build an [`SsrRouteSet`] from the dev session's current SSR patterns.
+///
+/// Returns `None` when the session has zero `prerender = false` routes,
+/// which the request dispatcher treats identically to "no SSR configured."
+/// Called at boot (inside [`build_ssr_route_set`]) and after each tick's
+/// renderer reload to refresh the live handle (issue #807).
+#[cfg(feature = "embed_v8")]
+fn make_ssr_route_set(
+    session: &DevRenderSession,
+    dispatcher: Arc<dyn SsrDispatcher>,
+) -> Option<SsrRouteSet> {
+    let patterns = session.ssr_patterns();
+    if patterns.is_empty() {
+        return None;
+    }
     let records = patterns
         .into_iter()
         .map(|pattern| SsrRouteRecord { pattern })
         .collect();
     Some(SsrRouteSet::new(records, dispatcher))
+}
+
+/// Rewrite the live [`SsrRoutesHandle`] from the dev session's CURRENT SSR
+/// patterns (issue #807). Builds a fresh dispatcher over the session's
+/// renderer handle and a fresh [`SsrRouteSet`] via [`make_ssr_route_set`],
+/// then swaps it into the `RwLock`.
+///
+/// Shared by BOTH refresh seams so they stay in lock-step:
+/// - the per-tick `reload_renderer` (in-place EDIT ticks), and
+/// - the watch-ADD discovery hook (`make_discovery_hook`).
+///
+/// Without the discovery-hook call site, a newly-created `prerender = false`
+/// page 404s until a later edit: the discovery refresh marks the renderer
+/// fresh, so the pipeline skips `reload_renderer` and the live handle is
+/// never updated for that tick.
+#[cfg(feature = "embed_v8")]
+fn refresh_live_ssr_routes(session: &DevRenderSession, handle: &SsrRoutesHandle) {
+    let fresh_dispatcher = {
+        let renderer_handle = session.renderer_handle();
+        Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
+            renderer_handle,
+        )) as Arc<dyn SsrDispatcher>
+    };
+    let new_set = make_ssr_route_set(session, fresh_dispatcher);
+    if let Ok(mut lock) = handle.write() {
+        *lock = new_set;
+    }
 }
 
 /// Translate Hono-style colon-syntax templates emitted by
@@ -2535,5 +2826,214 @@ mod tests {
         };
         let patterns = session.ssr_patterns();
         assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
+    }
+
+    /// Review-fix (codex finding 2): a discovery-hook refresh must rewrite
+    /// the live `SsrRoutesHandle` so a newly-created `prerender = false`
+    /// route is dispatchable WITHOUT a later edit.
+    ///
+    /// The discovery hook calls `refresh_live_ssr_routes` (it can't rely on
+    /// the pipeline's `reload_renderer`, which is skipped when the discovery
+    /// refresh marks the renderer fresh). This test drives that exact seam:
+    /// a project that booted with ZERO SSR routes (handle wraps `None`),
+    /// then a mid-session discovery adds a `prerender = false` route to the
+    /// session's tables. After `refresh_live_ssr_routes` the handle must hold
+    /// a populated set whose matcher resolves the new route.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn discovery_refresh_updates_live_ssr_routes_without_edit() {
+        // Boot state: no SSR routes → the live handle wraps `None`, exactly
+        // what `build_ssr_route_set` produces for an all-SSG project.
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(HashMap::new(), Vec::new())),
+        };
+        let dispatcher: Arc<dyn SsrDispatcher> = Arc::new(
+            crate::ssr_adapter::EmbeddedV8SsrAdapter::new(session.renderer_handle()),
+        );
+        let handle: SsrRoutesHandle = Arc::new(std::sync::RwLock::new(make_ssr_route_set(
+            &session,
+            Arc::clone(&dispatcher),
+        )));
+        assert!(
+            handle.read().unwrap().is_none(),
+            "boot handle must be empty for an all-SSG project"
+        );
+
+        // Mid-session discovery: a new `prerender = false` page is found and
+        // added to the session's route tables (what `discover_created` does).
+        {
+            let mut tables = session.inner.routes.write().unwrap();
+            tables.ssr_routes.push(RouteUniverseEntry {
+                url_path: "/blog/:slug".into(),
+                output_path: PathBuf::new(),
+                route_key: "/blog/:slug".into(),
+                static_html: false,
+                source_path: None,
+            });
+        }
+
+        // The discovery hook's new call (review-fix) — NOT an edit tick.
+        refresh_live_ssr_routes(&session, &handle);
+
+        let guard = handle.read().unwrap();
+        let set = guard
+            .as_ref()
+            .expect("handle must now hold a populated SsrRouteSet");
+        assert!(
+            set.find_match("/blog/anything").is_some(),
+            "the newly-created prerender=false route must dispatch without an extra edit"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // refresh_dev_island_chunks unit tests (issue #809)
+    // ---------------------------------------------------------------------------
+
+    fn make_companion(filename: &str, bytes: &[u8]) -> zfb_build::pipeline::CompanionFile {
+        zfb_build::pipeline::CompanionFile {
+            filename: filename.to_string(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn writes_chunk_files_to_assets_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let companions = vec![
+            make_companion("islands-chunk-AAAAAAAA.js", b"chunk-a"),
+            make_companion("islands-chunk-BBBBBBBB.js", b"chunk-b"),
+        ];
+        let result = refresh_dev_island_chunks(&assets, &companions, &HashSet::new()).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains("islands-chunk-AAAAAAAA.js"));
+        assert!(result.contains("islands-chunk-BBBBBBBB.js"));
+        assert_eq!(
+            std::fs::read(assets.join("islands-chunk-AAAAAAAA.js")).unwrap(),
+            b"chunk-a"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("islands-chunk-BBBBBBBB.js")).unwrap(),
+            b"chunk-b"
+        );
+    }
+
+    #[test]
+    fn prunes_stale_chunks_on_rebundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        // Generation 1: two chunks.
+        let gen1 = vec![
+            make_companion("islands-chunk-GEN1AAAA.js", b"gen1-a"),
+            make_companion("islands-chunk-GEN1BBBB.js", b"gen1-b"),
+        ];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+        assert!(assets.join("islands-chunk-GEN1BBBB.js").exists());
+
+        // Generation 2: different chunks (simulates a dynamically-imported
+        // module change so esbuild emits a new content hash).
+        let gen2 = vec![
+            make_companion("islands-chunk-GEN2CCCC.js", b"gen2-c"),
+        ];
+        let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
+
+        // New chunk exists.
+        assert!(assets.join("islands-chunk-GEN2CCCC.js").exists());
+        // Stale gen-1 chunks were pruned.
+        assert!(
+            !assets.join("islands-chunk-GEN1AAAA.js").exists(),
+            "stale chunk A must be pruned"
+        );
+        assert!(
+            !assets.join("islands-chunk-GEN1BBBB.js").exists(),
+            "stale chunk B must be pruned"
+        );
+        assert_eq!(next.len(), 1);
+        assert!(next.contains("islands-chunk-GEN2CCCC.js"));
+    }
+
+    #[test]
+    fn prunes_all_chunks_when_new_set_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        // Seed one chunk.
+        let gen1 = vec![make_companion("islands-chunk-STALEAAA.js", b"stale")];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+        assert!(assets.join("islands-chunk-STALEAAA.js").exists());
+
+        // Next bundle has no chunks (project switched to zero dynamic imports).
+        let next = refresh_dev_island_chunks(&assets, &[], &prev).unwrap();
+        assert!(next.is_empty());
+        assert!(
+            !assets.join("islands-chunk-STALEAAA.js").exists(),
+            "stale chunk must be pruned when new set is empty"
+        );
+    }
+
+    #[test]
+    fn zero_dynamic_imports_is_no_op() {
+        // A project without dynamic imports: both prev and new companion sets
+        // are empty — no files written or deleted, empty set returned.
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let result = refresh_dev_island_chunks(&assets, &[], &HashSet::new()).unwrap();
+        assert!(result.is_empty());
+        // No files created in the assets dir.
+        assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn kept_chunks_survive_rebundle() {
+        // A chunk whose hash did not change (same dynamic import, same content)
+        // should be retained rather than deleted and re-written.
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let shared_chunk = "islands-chunk-STABLE00.js";
+        let gen1 = vec![
+            make_companion(shared_chunk, b"stable-content"),
+            make_companion("islands-chunk-OLDCHUNK.js", b"old"),
+        ];
+        let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
+
+        // Next bundle still has the stable chunk but dropped the old one.
+        let gen2 = vec![make_companion(shared_chunk, b"stable-content")];
+        let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
+
+        assert!(assets.join(shared_chunk).exists(), "kept chunk must still exist");
+        assert!(
+            !assets.join("islands-chunk-OLDCHUNK.js").exists(),
+            "old chunk must be pruned"
+        );
+        assert_eq!(next.len(), 1);
+        assert!(next.contains(shared_chunk));
+    }
+
+    #[test]
+    fn rejects_unsafe_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+
+        let bad_names = [
+            "../escape.js",
+            "subdir/chunk.js",
+            "subdir\\chunk.js",
+            "",
+        ];
+        for name in bad_names {
+            let companion = make_companion(name, b"bytes");
+            let result = refresh_dev_island_chunks(&assets, &[companion], &HashSet::new());
+            assert!(
+                result.is_err(),
+                "should reject unsafe filename {:?}",
+                name
+            );
+        }
     }
 }

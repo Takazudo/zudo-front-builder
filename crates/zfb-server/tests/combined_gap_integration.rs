@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ use tokio::time::timeout;
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{
     serve_with_listener, PageCache, ServeOpts, SsrDispatchError, SsrDispatcher, SsrRequest,
-    SsrResponse, SsrRouteRecord, SsrRouteSet,
+    SsrResponse, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 use zfb_watcher::Watcher;
 
@@ -126,6 +126,7 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local_addr");
 
+    let ssr_handle: SsrRoutesHandle = Arc::new(RwLock::new(Some(ssr_set)));
     let opts = ServeOpts {
         project_root: project.path().to_path_buf(),
         dist_root: dist_root.clone(),
@@ -136,7 +137,7 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         broadcast: tx,
         plugins: None,
         injected_routes: None,
-        ssr_routes: Some(ssr_set),
+        ssr_routes: Some(ssr_handle),
         base: None,
         trailing_slash: false,
         mode: zfb_server::ServerMode::Dev,

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use tokio::net::TcpListener;
@@ -30,7 +30,7 @@ use zfb_server::{
     serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache,
     PluginDispatchError, PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding, ServeOpts, SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse,
-    SsrRouteRecord, SsrRouteSet,
+    SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 
 /// Records the last request and returns a fixed canned response.
@@ -117,6 +117,10 @@ async fn boot_with_base(
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
+    // Wrap the SsrRouteSet in the live handle (issue #807).
+    let ssr_handle: Option<SsrRoutesHandle> =
+        ssr_routes.map(|s| Arc::new(RwLock::new(Some(s))));
+
     let opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
@@ -127,7 +131,7 @@ async fn boot_with_base(
         broadcast: tx,
         plugins: plugin_set,
         injected_routes: None,
-        ssr_routes,
+        ssr_routes: ssr_handle,
         base,
         trailing_slash: false,
         mode: zfb_server::ServerMode::Dev,
@@ -402,6 +406,256 @@ async fn post_to_ssr_route_reaches_dispatcher() {
         .get("content-type")
         .map(|v| v.contains("application/json"))
         .unwrap_or(false));
+
+    server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Live SsrRouteSet (issue #807 Gap 2).
+//
+// The `SsrRoutesHandle` is an `Arc<RwLock<Option<SsrRouteSet>>>`. A writer
+// (the per-tick reload callback) can swap in a fresh route set mid-session.
+// These tests verify:
+//   1. Adding a new SSR route mid-session makes it dispatchable immediately.
+//   2. Removing a route mid-session makes it 404 on the next request.
+//   3. Mixed SSG/SSR: the SSR set update does not break static page serving.
+// ---------------------------------------------------------------------------
+
+/// Helper: boot a server with a live `SsrRoutesHandle` and return the handle
+/// so the test can write fresh route sets mid-session.
+async fn boot_with_live_handle(
+    initial_ssr: Option<SsrRouteSet>,
+    _dispatcher: Arc<dyn SsrDispatcher>,
+) -> (
+    SocketAddr,
+    SsrRoutesHandle,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+    PageCache,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist_root = tmp.path().join("dist");
+    let public_root = tmp.path().join("public");
+    std::fs::create_dir_all(dist_root.join("assets")).unwrap();
+    std::fs::create_dir_all(&public_root).unwrap();
+
+    let pages = PageCache::new();
+    let (tx, _rx) = broadcast::channel::<ReloadEvent>(8);
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // The handle wraps the initial set; the test will mutate it later.
+    let handle: SsrRoutesHandle = Arc::new(RwLock::new(initial_ssr));
+
+    let opts = ServeOpts {
+        project_root: tmp.path().to_path_buf(),
+        dist_root: dist_root.clone(),
+        html_root: dist_root,
+        public_root,
+        addr,
+        pages: pages.clone(),
+        broadcast: tx,
+        plugins: None,
+        injected_routes: None,
+        ssr_routes: Some(Arc::clone(&handle)),
+        base: None,
+        trailing_slash: false,
+        mode: zfb_server::ServerMode::Dev,
+        islands_bundle_url: None,
+        css_bundle_url: None,
+    };
+    let server = tokio::spawn(async move {
+        serve_with_listener(opts, listener, std::future::pending::<()>()).await
+    });
+    tokio::task::yield_now().await;
+    (addr, handle, server, tmp, pages)
+}
+
+/// Adding a new `prerender = false` route mid-session: before the write the
+/// URL 404s; after the write (simulating a reload callback updating the handle)
+/// the URL dispatches through the SSR set and returns 200.
+#[tokio::test]
+async fn adding_ssr_route_mid_session_becomes_dispatchable() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: {
+            let mut h = std::collections::BTreeMap::new();
+            h.insert("content-type".into(), "text/plain".into());
+            h
+        },
+        body: b"new-route-body".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+
+    // Boot with an empty initial route set (no SSR routes at startup).
+    let empty_set = SsrRouteSet::new(vec![], dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, handle, server, _tmp, _pages) =
+        boot_with_live_handle(Some(empty_set), dispatcher.clone() as Arc<dyn SsrDispatcher>).await;
+
+    let client = reqwest::Client::new();
+
+    // Baseline: route not yet registered → 404.
+    let before = client
+        .get(format!("http://{addr}/new-route"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        before.status().as_u16(),
+        404,
+        "/new-route must 404 before it is added"
+    );
+
+    // Simulate the reload callback writing a fresh SsrRouteSet with the new route.
+    {
+        let new_set = SsrRouteSet::new(
+            vec![SsrRouteRecord {
+                pattern: "/new-route".into(),
+            }],
+            dispatcher.clone() as Arc<dyn SsrDispatcher>,
+        );
+        *handle.write().unwrap() = Some(new_set);
+    }
+
+    // After the update the route must dispatch.
+    let after = client
+        .get(format!("http://{addr}/new-route"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        200,
+        "/new-route must return 200 after being added to the live handle"
+    );
+    let body = after.text().await.unwrap();
+    assert!(
+        body.contains("new-route-body"),
+        "body must contain the SSR response; got: {body}"
+    );
+
+    server.abort();
+}
+
+/// Removing a `prerender = false` route mid-session: route is initially live,
+/// then the handle is updated to remove it, and the next request gets 404.
+#[tokio::test]
+async fn removing_ssr_route_mid_session_becomes_404() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: std::collections::BTreeMap::new(),
+        body: b"dynamic-body".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+
+    // Boot with one active route.
+    let initial_set = SsrRouteSet::new(
+        vec![SsrRouteRecord {
+            pattern: "/dynamic".into(),
+        }],
+        dispatcher.clone() as Arc<dyn SsrDispatcher>,
+    );
+    let (addr, handle, server, _tmp, _pages) =
+        boot_with_live_handle(Some(initial_set), dispatcher.clone() as Arc<dyn SsrDispatcher>).await;
+
+    let client = reqwest::Client::new();
+
+    // Baseline: route exists → 200.
+    let before = client
+        .get(format!("http://{addr}/dynamic"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        before.status().as_u16(),
+        200,
+        "/dynamic must return 200 when registered"
+    );
+
+    // Simulate the reload callback removing the route (empty set).
+    {
+        let empty_set = SsrRouteSet::new(vec![], dispatcher.clone() as Arc<dyn SsrDispatcher>);
+        *handle.write().unwrap() = Some(empty_set);
+    }
+
+    // Route is gone → 404.
+    let after = client
+        .get(format!("http://{addr}/dynamic"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "/dynamic must 404 after being removed from the live handle"
+    );
+
+    server.abort();
+}
+
+/// Mixed SSG/SSR: updating the SSR route handle must not break static pages
+/// already in the page cache.
+#[tokio::test]
+async fn ssr_route_update_does_not_break_static_pages() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: std::collections::BTreeMap::new(),
+        body: b"ssr-body".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+
+    let (addr, handle, server, _tmp, pages) =
+        boot_with_live_handle(None, dispatcher.clone() as Arc<dyn SsrDispatcher>).await;
+
+    // Seed a static SSG page.
+    pages
+        .insert("/static", "<html><body>static</body></html>")
+        .await;
+
+    let client = reqwest::Client::new();
+
+    // Static page must serve before any SSR changes.
+    let r1 = client
+        .get(format!("http://{addr}/static"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status().as_u16(), 200);
+
+    // Now add an SSR route mid-session.
+    {
+        let new_set = SsrRouteSet::new(
+            vec![SsrRouteRecord {
+                pattern: "/ssr-new".into(),
+            }],
+            dispatcher.clone() as Arc<dyn SsrDispatcher>,
+        );
+        *handle.write().unwrap() = Some(new_set);
+    }
+
+    // SSR route now dispatches.
+    let r2 = client
+        .get(format!("http://{addr}/ssr-new"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r2.status().as_u16(), 200, "/ssr-new must dispatch after handle update");
+
+    // Static page still serves correctly after the SSR update.
+    let r3 = client
+        .get(format!("http://{addr}/static"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r3.status().as_u16(),
+        200,
+        "/static must still serve 200 after SSR handle update"
+    );
+    let body = r3.text().await.unwrap();
+    assert!(body.contains("static"), "static page body must be unchanged");
 
     server.abort();
 }

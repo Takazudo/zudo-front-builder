@@ -295,6 +295,192 @@ export default function NoEffectFn() { return null; }
     );
 }
 
+/// Stage a minimal `node_modules` under `root` that satisfies the bare
+/// imports the synthesized shared-bundle entry emits (`@takazudo/zfb/runtime`
+/// and `preact`), so the real-esbuild splitting tests below are hermetic
+/// (no dependency on the workspace's own install). Only the symbols the
+/// entry imports are stubbed.
+fn stage_minimal_node_modules(root: &Path) {
+    let nm = root.join("node_modules");
+
+    let zfb_runtime = nm.join("@takazudo/zfb");
+    std::fs::create_dir_all(&zfb_runtime).unwrap();
+    std::fs::write(
+        zfb_runtime.join("package.json"),
+        r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        zfb_runtime.join("runtime.js"),
+        "export function mountIslands() {}\n",
+    )
+    .unwrap();
+
+    let preact = nm.join("preact");
+    std::fs::create_dir_all(&preact).unwrap();
+    std::fs::write(
+        preact.join("package.json"),
+        r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        preact.join("index.js"),
+        "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+    )
+    .unwrap();
+}
+
+/// Acceptance (#806): an island with a dynamic `import()` of a local module
+/// must split — the bundler output contains the stable `islands.js` entry
+/// PLUS at least one self-hashed chunk, and the dynamically-imported code
+/// lives in the chunk, NOT in the entry. Determinism: an identical rebuild
+/// produces the same chunk filename(s).
+#[test]
+#[ignore = "Requires the real esbuild binary. Run locally with \
+            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+fn splitting_emits_chunk_for_dynamic_import() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    // The dynamically-imported local module carries a unique marker token
+    // we can grep for to prove it landed in a chunk, not the entry.
+    std::fs::write(
+        tmp.path().join("heavy.js"),
+        "export const HEAVY_MARKER = \"zfb_heavy_split_marker\";\n",
+    )
+    .expect("write heavy");
+
+    // The island source dynamic-imports the heavy module. esbuild resolves
+    // `./heavy.js` relative to the island file (same temp dir).
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "export default function Island() {\n  \
+         return import(\"./heavy.js\").then((m) => m.HEAVY_MARKER);\n}\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect("real esbuild splitting bundle");
+
+    // Entry exists and is the stable name.
+    assert!(out.asset_path.exists());
+    let entry = std::fs::read_to_string(&out.asset_path).expect("read entry");
+
+    // At least one chunk emitted.
+    assert!(
+        !out.chunks.is_empty(),
+        "dynamic import must produce >=1 chunk; entry was:\n{entry}"
+    );
+    for chunk in &out.chunks {
+        assert!(
+            chunk.filename.starts_with("islands-chunk-"),
+            "chunk filename must be self-hashed islands-chunk-*: {}",
+            chunk.filename
+        );
+        assert!(
+            !chunk.filename.contains('/') && !chunk.filename.contains('\\'),
+            "chunk filename must be flat: {}",
+            chunk.filename
+        );
+    }
+
+    // The dynamically-imported code must live in a CHUNK, not the entry.
+    assert!(
+        !entry.contains("zfb_heavy_split_marker"),
+        "dynamically-imported code leaked into the entry:\n{entry}"
+    );
+    let in_chunk = out
+        .chunks
+        .iter()
+        .any(|c| String::from_utf8_lossy(&c.bytes).contains("zfb_heavy_split_marker"));
+    assert!(in_chunk, "dynamically-imported code not found in any chunk");
+
+    // The entry references the chunk via a relative import esbuild baked in.
+    assert!(
+        entry.contains("./islands-chunk-"),
+        "entry must reference the chunk by a relative import:\n{entry}"
+    );
+
+    // Determinism: an identical rebuild yields the same chunk filename(s).
+    let tmp2 = tempfile::tempdir().expect("tempdir2");
+    stage_minimal_node_modules(tmp2.path());
+    std::fs::write(
+        tmp2.path().join("heavy.js"),
+        "export const HEAVY_MARKER = \"zfb_heavy_split_marker\";\n",
+    )
+    .unwrap();
+    let island_src2 = tmp2.path().join("island.tsx");
+    std::fs::write(
+        &island_src2,
+        "export default function Island() {\n  \
+         return import(\"./heavy.js\").then((m) => m.HEAVY_MARKER);\n}\n",
+    )
+    .unwrap();
+    let bundler2 = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp2.path()),
+    );
+    let cfg2 = BundleConfig::production()
+        .with_outdir(tmp2.path().join("dist"))
+        .with_minify(false);
+    let out2 = bundler2
+        .bundle(&[Island::new("Island", island_src2)], &cfg2)
+        .expect("real esbuild rebuild");
+
+    let mut names1: Vec<&str> = out.chunks.iter().map(|c| c.filename.as_str()).collect();
+    let mut names2: Vec<&str> = out2.chunks.iter().map(|c| c.filename.as_str()).collect();
+    names1.sort_unstable();
+    names2.sort_unstable();
+    assert_eq!(
+        names1, names2,
+        "chunk filenames must be content-hash stable across identical rebuilds"
+    );
+}
+
+/// Acceptance (#806): an islands set with NO dynamic imports must produce
+/// exactly one output file — the entry, zero chunks — so non-splitting
+/// projects carry zero new complexity.
+#[test]
+#[ignore = "Requires the real esbuild binary. Run locally with \
+            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+fn no_dynamic_import_yields_single_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "export default function Island() { return null; }\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect("real esbuild bundle");
+
+    assert!(out.asset_path.exists());
+    assert!(
+        out.chunks.is_empty(),
+        "a zero-dynamic-import project must emit exactly the entry, no chunks: {:?}",
+        out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
+    );
+}
+
 // -----------------------------------------------------------------------------
 // Sub-task 3 — manifest emission (acceptance)
 //

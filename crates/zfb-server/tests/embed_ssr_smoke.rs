@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -38,7 +38,7 @@ use zfb_server::{
     build_router, AppState, DevMiddlewareDispatcher, DevMiddlewareSet, EmbedHandler,
     EmbedHandlerSet, PageCache, PluginDispatchError, PluginDispatchOutcome, PluginRegistration,
     PluginRequest, PluginResponse, PluginResponseEncoding, RouteParams, SsrDispatchError,
-    SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
+    SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 
 /// SSR dispatcher that counts invocations and returns a canned body.
@@ -114,13 +114,14 @@ async fn boot_with_plugins(
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
+    let ssr_handle: SsrRoutesHandle = Arc::new(RwLock::new(Some(ssr)));
     let state = AppState {
         mode: zfb_server::ServerMode::Dev,
         pages,
         broadcast: tx,
         plugins,
         injected_routes: None,
-        ssr_routes: Some(ssr),
+        ssr_routes: Some(ssr_handle),
         embed_handlers: Some(handlers),
         dist_root: dist_root.clone(),
         html_root: dist_root,
