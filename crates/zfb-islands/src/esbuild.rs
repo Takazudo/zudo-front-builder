@@ -1279,7 +1279,7 @@ mountIslands(ISLAND_MANIFEST);
     )
 }
 
-/// Serialize a manifest of `(component_name → asset_url)` pairs to a
+/// Serialize a manifest of `(marker_name → asset_url)` pairs to a
 /// JSON object literal. Order of keys is preserved (the runtime does
 /// not rely on it but determinism matters for hashing).
 fn serialize_manifest(entries: &[(String, String)]) -> String {
