@@ -308,10 +308,12 @@ pub trait ClientBundler {
 /// [`crate::EsbuildSubprocessBundler::bundle_per_island`].
 ///
 /// Per-island bundles land at the stable path
-/// `{outdir}/islands/{component}.js` so the runtime can dynamic-import
-/// each island's JS independently. Sharing is the bundler's concern —
-/// at this layer we just record one entry per island. The
-/// content-hash field is still computed and exposed (see
+/// `{outdir}/islands/island-{i}.js` (0-based sequential index) so the
+/// runtime can dynamic-import each island's JS independently. The
+/// sequential index avoids filename collisions when multiple source files
+/// export identically-named functions (same `marker_name`). Sharing is
+/// the bundler's concern — at this layer we just record one entry per
+/// island. The content-hash field is still computed and exposed (see
 /// [`IslandBundle::hash`]) for dev-mode change detection and for
 /// downstream consumers that wrap this output through
 /// `ProductionAssetPipeline`, but it is **not** baked into the
@@ -321,11 +323,11 @@ pub struct IslandBundle {
     /// Component export name. Mirrors [`Island::component_name`] of the
     /// input island so callers can pair entries by name.
     pub component_name: String,
-    /// Output file path on disk — the stable form
-    /// `dist/islands/{component}.js`.
+    /// Output file path on disk — the stable sequential form
+    /// `dist/islands/island-{i}.js` (0-based index into the input slice).
     pub asset_path: PathBuf,
-    /// Public URL the runtime should `import()` from — the stable form
-    /// `/islands/{component}.js`.
+    /// Public URL the runtime should `import()` from — the stable sequential
+    /// form `/islands/island-{i}.js` (0-based index into the input slice).
     pub asset_url: String,
     /// 8-char content hash (lowercase hex) of the bundled JS. Reported
     /// for dev-mode change detection and for downstream consumers
