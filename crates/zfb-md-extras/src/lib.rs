@@ -19,10 +19,10 @@
 // in the natural location (this is the "features" crate, after all) without
 // reaching past it for the type.
 pub use zfb_md_ast::{
-    directives_enabled, feature_enabled, heading_marker_toc_enabled, CodeEnrichmentConfig,
-    DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle,
-    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
-    MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig, into_directive_def,
+    directives_enabled, feature_enabled, heading_marker_toc_enabled, into_directive_def,
+    CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions,
+    FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 /// Test harness module — `run_fixture` and helpers for fixture-based
@@ -33,6 +33,9 @@ pub use zfb_md_ast::{
 ///   `zfb-md-extras = { path = "...", features = ["test-utils"] }`
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_harness;
+
+// ── Crate-private shared utilities ─────────────────────────────────────────
+mod toc_common;
 
 // ── Wave 3 feature modules (moved from zfb-content in #570) ────────────────
 
