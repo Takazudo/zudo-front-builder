@@ -82,6 +82,26 @@ pub enum AssetKind {
     Islands,
 }
 
+/// One verbatim companion file shipped alongside an [`EmittedAsset`] entry.
+///
+/// Companions are written to the **same directory** as the hashed entry
+/// under their `filename` verbatim — no content-hashing, no renaming.
+/// The canonical use case is esbuild code-split chunks: the entry's
+/// relative `import("./islands-chunk-<hash>.js")` bakes the chunk
+/// filename in, so renaming the chunk would break the import.
+///
+/// The pipeline validates that `filename` is a safe flat basename before
+/// writing (no path separators, no `..`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompanionFile {
+    /// Flat basename for the companion (e.g. `islands-chunk-WOEGGERP.js`).
+    /// Must not contain a path separator or `..`.
+    pub filename: String,
+
+    /// Raw bytes to write verbatim — never rewritten or hashed.
+    pub bytes: Vec<u8>,
+}
+
 /// One asset the production pipeline is asked to ship.
 ///
 /// The pipeline:
@@ -94,6 +114,7 @@ pub enum AssetKind {
 /// 3. Records the hashed URL in [`BuildOutcome::hashed_asset_urls`].
 /// 4. Rewrites every occurrence of `stable_url` in the rendered HTML
 ///    to the new hashed URL.
+/// 5. Writes each [`CompanionFile`] verbatim to the same directory.
 ///
 /// `stable_url` and `relative_path` are kept as separate fields so a
 /// caller can mount assets at a CDN URL while still emitting them under
@@ -121,6 +142,16 @@ pub struct EmittedAsset {
     /// rather than by the rendered HTML — the rewrites for those
     /// happen elsewhere.
     pub stable_url: Option<String>,
+
+    /// Verbatim companion files to write beside the hashed entry.
+    ///
+    /// Each companion is written to the **same directory** as the entry
+    /// under its own `filename` with no hashing or renaming. Empty for
+    /// assets that have no companions (CSS, zero-chunk islands bundles).
+    ///
+    /// See [`CompanionFile`] for the flat-basename contract and the
+    /// canonical code-split-chunks use case.
+    pub companions: Vec<CompanionFile>,
 }
 
 /// Pluggable producer of an [`EmittedAsset`].
@@ -389,6 +420,9 @@ fn is_url_boundary_byte(b: Option<u8>) -> bool {
 
 /// Hash, write, and record the URL for a single emitted asset.
 ///
+/// Writes the entry under a content-hashed filename, then writes each
+/// [`CompanionFile`] verbatim in the same directory with no renaming.
+///
 /// Returns the hashed public URL the pipeline will rewrite into HTML.
 fn ship_asset(
     ctx: &BuildContext,
@@ -414,6 +448,31 @@ fn ship_asset(
             dest.display()
         )
     })?;
+
+    // Write each companion verbatim to the same directory as the entry.
+    // Companions must have flat basenames (no path separators) so they
+    // land beside the entry without escaping the asset directory.
+    if !asset.companions.is_empty() {
+        let entry_dir = dest
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("production: hashed asset path has no parent dir"))?;
+        for companion in &asset.companions {
+            if companion.filename.contains('/') || companion.filename.contains('\\') || companion.filename.contains("..") {
+                return Err(anyhow::anyhow!(
+                    "production: companion filename {:?} contains a path separator or `..`; \
+                     only flat basenames are allowed",
+                    companion.filename
+                ));
+            }
+            let companion_path = entry_dir.join(&companion.filename);
+            atomic_write(&companion_path, &companion.bytes).with_context(|| {
+                format!(
+                    "production: failed to write companion file {}",
+                    companion_path.display()
+                )
+            })?;
+        }
+    }
 
     let hashed_url = if let Some(ref stable) = asset.stable_url {
         rewrite_url(stable, &asset.relative_path, &hashed_relative)
@@ -654,6 +713,7 @@ mod tests {
                 bytes: css_bytes.clone(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: Some("/assets/styles.css".into()),
+                companions: Vec::new(),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
@@ -712,6 +772,7 @@ mod tests {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
                         stable_url: Some("/assets/styles.css".into()),
+                        companions: Vec::new(),
                     }))
                 })),
                 islands: None,
@@ -731,6 +792,7 @@ mod tests {
                         bytes: css_a.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
                         stable_url: Some("/assets/styles.css".into()),
+                        companions: Vec::new(),
                     }))
                 })),
                 islands: None,
@@ -751,6 +813,7 @@ mod tests {
                         bytes: css_b.clone(),
                         relative_path: PathBuf::from("assets/styles.css"),
                         stable_url: Some("/assets/styles.css".into()),
+                        companions: Vec::new(),
                     }))
                 })),
                 islands: None,
@@ -773,6 +836,7 @@ mod tests {
                 bytes: b"/* css */".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: Some("/assets/styles.css".into()),
+                companions: Vec::new(),
             }))
         };
         let islands_emitter = || {
@@ -780,6 +844,7 @@ mod tests {
                 bytes: b"// islands".to_vec(),
                 relative_path: PathBuf::from("assets/islands.js"),
                 stable_url: Some("/assets/islands.js".into()),
+                companions: Vec::new(),
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {

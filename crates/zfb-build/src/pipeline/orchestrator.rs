@@ -51,7 +51,7 @@ use anyhow::{anyhow, Context, Result};
 use zfb_graph::PageId;
 
 use crate::pipeline::prod::{
-    AssetEmitter, EmittedAsset, ProductionAssetPipeline, ProductionEmitters,
+    AssetEmitter, CompanionFile, EmittedAsset, ProductionAssetPipeline, ProductionEmitters,
 };
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RelDistPath, RenderedPage};
 use crate::plan::{PageSelection, RebuildPlan};
@@ -72,6 +72,11 @@ pub struct AssetEmitterPayload {
     /// `/assets/styles.css`. The pipeline rewrites every boundary-
     /// anchored match in HTML to the hashed equivalent.
     pub stable_url: String,
+    /// Verbatim companion files to write beside the hashed entry (e.g.
+    /// esbuild code-split chunks for the islands bundle). Written to the
+    /// same directory as the entry with no hashing or renaming.
+    /// Empty for assets without companions (CSS, zero-chunk islands).
+    pub companions: Vec<CompanionFile>,
 }
 
 /// Inputs to [`apply_prod_asset_pipeline`].
@@ -226,6 +231,7 @@ fn payload_to_emitter(payload: AssetEmitterPayload) -> Box<dyn AssetEmitter> {
             bytes: payload.bytes.clone(),
             relative_path: payload.relative_path.clone(),
             stable_url: Some(payload.stable_url.clone()),
+            companions: payload.companions.clone(),
         }))
     })
 }
@@ -280,6 +286,7 @@ mod tests {
                 bytes: css_bytes,
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: "/assets/styles.css".to_string(),
+                companions: Vec::new(),
             }),
             islands: None,
         };
@@ -338,6 +345,7 @@ mod tests {
                 bytes: b"/*tiny*/".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: "/assets/styles.css".to_string(),
+                companions: Vec::new(),
             }),
             islands: None,
         };
@@ -370,11 +378,13 @@ mod tests {
                 bytes: b".x{color:red}".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: "/assets/styles.css".to_string(),
+                companions: Vec::new(),
             }),
             islands: Some(AssetEmitterPayload {
                 bytes: b"// hydrate".to_vec(),
                 relative_path: PathBuf::from("assets/islands.js"),
                 stable_url: "/assets/islands.js".to_string(),
+                companions: Vec::new(),
             }),
         };
 
@@ -415,6 +425,7 @@ mod tests {
                 bytes: b"x".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: "/assets/styles.css".to_string(),
+                companions: Vec::new(),
             }),
             islands: None,
         };
@@ -437,6 +448,7 @@ mod tests {
                 bytes: b".y{}".to_vec(),
                 relative_path: PathBuf::from("assets/styles.css"),
                 stable_url: "/assets/styles.css".to_string(),
+                companions: Vec::new(),
             }),
             islands: None,
         };

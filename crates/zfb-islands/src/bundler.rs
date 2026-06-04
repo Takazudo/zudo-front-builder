@@ -510,6 +510,21 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
     format!("{trimmed}/assets/{filename}")
 }
 
+/// One code-split chunk to ship verbatim alongside the islands entry.
+///
+/// Mirrors [`BundleChunk`] but lives here as a separate type so the
+/// `ProductionIslandsAsset` adapter stays self-contained without a
+/// `zfb-build` dependency cycle. Callers (the bin crate) map each
+/// element to `zfb_build::pipeline::CompanionFile` before handing
+/// the payload to `AssetEmitterPayload`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandsChunk {
+    /// Flat basename of the chunk (e.g. `islands-chunk-WOEGGERP.js`).
+    pub filename: String,
+    /// Raw JS bytes — verbatim, never rewritten or hashed.
+    pub bytes: Vec<u8>,
+}
+
 /// Bytes-only payload describing the islands client bundle as a single
 /// hashable production asset, ready for plugging into
 /// `zfb_build::pipeline::prod::ProductionAssetPipeline` (S4 wiring).
@@ -528,6 +543,8 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
 /// - `stable_url` is the unhashed public URL the renderer embeds
 ///   (`/assets/islands.js`); the pipeline rewrites every match in the
 ///   rendered HTML to the hashed form.
+/// - `chunks` carries verbatim code-split companions (empty for
+///   zero-dynamic-import projects).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionIslandsAsset {
     /// Bundled JS bytes — already minified per `BundleConfig::production`
@@ -544,6 +561,14 @@ pub struct ProductionIslandsAsset {
     /// (`/assets/islands.js`). The pipeline rewrites every match of this
     /// string in HTML bodies with the hashed equivalent.
     pub stable_url: String,
+
+    /// Code-split chunk companions emitted alongside the entry.
+    ///
+    /// Each must be shipped verbatim (no hashing, no renaming) to the
+    /// same directory as the hashed entry so the entry's relative
+    /// `import("./islands-chunk-<hash>.js")` references resolve.
+    /// Empty for projects with no dynamic `import()`.
+    pub chunks: Vec<IslandsChunk>,
 }
 
 /// Run `bundler` over `islands` and return a bytes-only adapter payload
@@ -597,10 +622,20 @@ pub fn build_production_islands_asset(
 
     let relative_path = PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME);
 
+    let chunks = output
+        .chunks
+        .into_iter()
+        .map(|c| IslandsChunk {
+            filename: c.filename,
+            bytes: c.bytes,
+        })
+        .collect();
+
     Ok(Some(ProductionIslandsAsset {
         bytes,
         relative_path,
         stable_url: STABLE_ISLANDS_URL.to_string(),
+        chunks,
     }))
 }
 

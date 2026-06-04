@@ -57,7 +57,7 @@ use zfb_build::head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, ProdHeadAssets,
 };
 use zfb_build::pipeline::{
-    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload,
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload, CompanionFile,
     ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_css::{
@@ -332,6 +332,7 @@ fn prod_asset_graph_emits_hashed_css_and_rewrites_html_via_real_orchestrator() {
             bytes: emitter_out.bytes.clone(),
             relative_path: css_relative_path(),
             stable_url: emitter_out.stable_url.clone(),
+            companions: Vec::new(),
         }),
         islands: None,
     };
@@ -476,11 +477,13 @@ fn prod_asset_graph_emits_hashed_css_and_islands_when_project_has_both() {
             bytes: emitter_out.bytes.clone(),
             relative_path: css_relative_path(),
             stable_url: emitter_out.stable_url.clone(),
+            companions: Vec::new(),
         }),
         islands: Some(AssetEmitterPayload {
             bytes: islands_bytes,
             relative_path: islands_relative,
             stable_url: STABLE_ISLANDS_URL.to_string(),
+            companions: Vec::new(),
         }),
     };
     let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
@@ -731,6 +734,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
             bytes: emitter_out.bytes.clone(),
             relative_path: css_relative_path(),
             stable_url: emitter_out.stable_url.clone(),
+            companions: Vec::new(),
         }),
         islands: None,
     };
@@ -750,4 +754,226 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         "static-fallback contract violated under real Tailwind binary",
     );
     assert!(!html.contains(&format!("\"{STABLE_CSS_URL}\"")));
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic-import chunks test — #808 acceptance criteria
+// ---------------------------------------------------------------------------
+
+/// Dynamic-import islands: when the islands entry has companion chunks
+/// (esbuild code-split output), the pipeline ships the hashed entry AND
+/// all chunk companions verbatim. HTML references only the hashed entry;
+/// chunk file contents are never rewritten; chunk filenames match what
+/// the bundler emitted.
+///
+/// This is the load-bearing test for issue #808:
+/// - `dist/assets/` contains `islands-<hash>.js` (hashed entry) + every
+///   `islands-chunk-<hash>.js` companion (verbatim, no pipeline hash).
+/// - The HTML `<script type="module" src="…">` points only at the hashed
+///   ENTRY, never at a chunk filename.
+/// - Each chunk file the entry references exists on disk beside it
+///   (static-fallback / lazy-import contract).
+/// - Chunk bytes on disk are byte-identical to the bundler's output (no
+///   `boundary_replace` or any other rewriting).
+/// - Zero-chunk behaviour: a second run without companions produces only
+///   the hashed entry, no extra files.
+#[test]
+fn prod_asset_graph_ships_dynamic_import_chunks_verbatim() {
+    let fixture = stage_minimal_fixture();
+    let dist_dir = fixture.project_root.path().join("dist");
+    fs::create_dir_all(&dist_dir).unwrap();
+
+    let mock_css = ".text-red-500{color:red}\nbody{font-family:system-ui}\n";
+    let pipeline = mock_css_pipeline(fixture.project_root.path(), &dist_dir, mock_css);
+    let emitter_out = pipeline
+        .build_emitter()
+        .expect("CssPipeline::build_emitter must succeed");
+
+    // Synthetic islands entry that has a relative import for a chunk —
+    // this is the byte shape esbuild emits when code-splitting is active.
+    let chunk_hash = "WOEGGERP";
+    let chunk_filename = format!("islands-chunk-{chunk_hash}.js");
+    let islands_entry_bytes = format!(
+        "// islands entry\nimport(\"./{chunk_filename}\");\nexport function hydrate(){{}}\n"
+    )
+    .into_bytes();
+    let chunk_bytes =
+        b"// dynamic chunk: shiki syntax highlighter\nexport const highlight = () => null;\n"
+            .to_vec();
+
+    let islands_relative = PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME);
+
+    let head_assets = ProdHeadAssets {
+        css_url: Some(STABLE_CSS_URL.to_string()),
+        island_module_urls: vec![STABLE_ISLANDS_URL.to_string()],
+    };
+    let pages = vec![
+        stage_html_with_head_inject(&dist_dir, "index.html", "Home", &head_assets),
+        stage_html_with_head_inject(&dist_dir, "about/index.html", "About", &head_assets),
+    ];
+
+    let inputs = ProdAssetEmitterInputs {
+        css: Some(AssetEmitterPayload {
+            bytes: emitter_out.bytes.clone(),
+            relative_path: css_relative_path(),
+            stable_url: emitter_out.stable_url.clone(),
+            companions: Vec::new(),
+        }),
+        islands: Some(AssetEmitterPayload {
+            bytes: islands_entry_bytes.clone(),
+            relative_path: islands_relative,
+            stable_url: STABLE_ISLANDS_URL.to_string(),
+            companions: vec![CompanionFile {
+                filename: chunk_filename.clone(),
+                bytes: chunk_bytes.clone(),
+            }],
+        }),
+    };
+    let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
+        .expect("apply_prod_asset_pipeline must succeed with chunks");
+
+    let assets_dir = dist_dir.join(DIST_ASSETS_DIR);
+    let mut entries: Vec<String> = fs::read_dir(&assets_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+
+    // dist/assets/ must hold: CSS hashed file, islands hashed entry, chunk companion.
+    assert_eq!(
+        entries.len(),
+        3,
+        "expected CSS + islands entry + chunk companion; got {entries:?}",
+    );
+    let css_name = entries
+        .iter()
+        .find(|n| n.starts_with("styles-") && n.ends_with(".css"))
+        .unwrap_or_else(|| panic!("no hashed CSS file in {entries:?}"));
+    let islands_entry_name = entries
+        .iter()
+        .find(|n| n.starts_with("islands-") && n.ends_with(".js") && n.contains('-') && !n.contains("chunk"))
+        .unwrap_or_else(|| panic!("no hashed islands entry in {entries:?}"));
+    let chunk_on_disk = entries
+        .iter()
+        .find(|n| n.as_str() == chunk_filename.as_str())
+        .unwrap_or_else(|| panic!("chunk companion {chunk_filename} not found in {entries:?}"));
+
+    // Chunk filename is verbatim (not pipeline-hashed).
+    assert_eq!(
+        chunk_on_disk, &chunk_filename,
+        "chunk must be written under its esbuild-given filename without renaming",
+    );
+
+    // Chunk bytes on disk are byte-identical to bundler output (no rewriting).
+    let chunk_bytes_on_disk = fs::read(assets_dir.join(chunk_on_disk)).unwrap();
+    assert_eq!(
+        chunk_bytes_on_disk, chunk_bytes,
+        "chunk bytes must be verbatim — boundary_replace must not touch chunk contents",
+    );
+
+    // The hashed entry exists and is non-empty.
+    let entry_bytes_on_disk = fs::read(assets_dir.join(islands_entry_name)).unwrap();
+    assert!(!entry_bytes_on_disk.is_empty(), "hashed islands entry must be non-empty");
+
+    // HTML references only the HASHED ENTRY — never a chunk filename.
+    let hashed_islands_url = format!("/assets/{islands_entry_name}");
+    let hashed_css_url = format!("/assets/{css_name}");
+    for page in &pages {
+        let html = fs::read_to_string(dist_dir.join(page.output_path.as_path())).unwrap();
+
+        assert!(
+            html.contains(&island_module_script_tag(&hashed_islands_url)),
+            "HTML must reference hashed islands entry; got:\n{html}",
+        );
+        assert!(
+            html.contains(&css_link_tag(&hashed_css_url)),
+            "HTML must reference hashed CSS; got:\n{html}",
+        );
+
+        // Chunk filename must NOT appear in any rendered HTML.
+        assert!(
+            !html.contains(&chunk_filename),
+            "chunk filename {chunk_filename} leaked into HTML — only the entry must be referenced:\n{html}",
+        );
+
+        // No unhashed stable URLs.
+        assert!(
+            !html.contains(&format!("\"{STABLE_ISLANDS_URL}\"")),
+            "unhashed islands URL leaked: {html}",
+        );
+        assert!(
+            !html.contains(&format!("\"{STABLE_CSS_URL}\"")),
+            "unhashed CSS URL leaked: {html}",
+        );
+
+        // Static-fallback: URLs in HTML must resolve to real files on disk.
+        let islands_on_disk = url_to_disk_path(&dist_dir, &hashed_islands_url);
+        assert!(
+            islands_on_disk.is_file(),
+            "static-fallback contract violated: hashed islands entry {hashed_islands_url} missing",
+        );
+    }
+
+    // BuildOutcome reports the two hashed URLs (CSS + islands entry).
+    // Chunk companions do NOT appear as separate hashed_asset_urls entries.
+    assert_eq!(
+        outcome.hashed_asset_urls.len(),
+        2,
+        "expected exactly CSS + islands entry in hashed_asset_urls; got {:?}",
+        outcome.hashed_asset_urls,
+    );
+    let urls: std::collections::BTreeSet<String> = outcome
+        .hashed_asset_urls
+        .iter()
+        .map(|(_, u)| u.clone())
+        .collect();
+    assert!(urls.contains(&hashed_css_url));
+    assert!(urls.contains(&hashed_islands_url));
+
+    // --- Zero-chunk regression: a second run without companions produces
+    //     only the hashed entry, no leftover chunk files from the first run.
+    //     (The test uses a fresh tempdir so residual files are not an issue;
+    //     this shape documents the contract explicitly.)
+    let dist2 = fixture.project_root.path().join("dist2");
+    fs::create_dir_all(&dist2).unwrap();
+
+    let pages2 = vec![stage_html_with_head_inject(
+        &dist2,
+        "index.html",
+        "Zero-chunk",
+        &ProdHeadAssets {
+            css_url: Some(STABLE_CSS_URL.to_string()),
+            island_module_urls: vec![STABLE_ISLANDS_URL.to_string()],
+        },
+    )];
+    let inputs_no_chunks = ProdAssetEmitterInputs {
+        css: Some(AssetEmitterPayload {
+            bytes: emitter_out.bytes.clone(),
+            relative_path: css_relative_path(),
+            stable_url: emitter_out.stable_url.clone(),
+            companions: Vec::new(),
+        }),
+        islands: Some(AssetEmitterPayload {
+            bytes: b"// zero-chunk entry\nexport function hydrate(){}\n".to_vec(),
+            relative_path: PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME),
+            stable_url: STABLE_ISLANDS_URL.to_string(),
+            companions: Vec::new(),
+        }),
+    };
+    apply_prod_asset_pipeline(&dist2, pages2, inputs_no_chunks)
+        .expect("zero-chunk pipeline run must succeed");
+
+    let assets2_entries: Vec<String> = fs::read_dir(dist2.join(DIST_ASSETS_DIR))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        assets2_entries.len(),
+        2,
+        "zero-chunk run must produce exactly CSS + islands entry; got {assets2_entries:?}",
+    );
+    assert!(
+        !assets2_entries.iter().any(|n| n.contains("chunk")),
+        "no chunk files must appear in a zero-chunk run; got {assets2_entries:?}",
+    );
 }
