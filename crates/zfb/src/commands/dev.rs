@@ -827,7 +827,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // behaviour.
     let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
         .as_ref()
-        .map(|session| make_discovery_hook(session.clone(), Arc::clone(&graph_for_save)));
+        .map(|session| {
+            make_discovery_hook(session.clone(), Arc::clone(&graph_for_save), dev_html_root.clone())
+        });
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
             output::error(format!("build orchestrator stopped: {err:#}"));
@@ -1294,16 +1296,19 @@ impl DevRenderSession {
     /// what the refresh does. Kept as a named entry point so the
     /// discovery hook's intent stays explicit at the call site.
     ///
-    /// Returns only the changed source [`PageId`]s; the vanished-path set
-    /// from the route-table diff is discarded here because a CREATE tick
-    /// never removes routes (the old-vs-new diff will be empty or zero).
+    /// Returns the changed source [`PageId`]s and the relative output paths
+    /// that vanished from the global live route set. The caller is
+    /// responsible for joining the relative paths with the appropriate dist
+    /// root before propagating them (issue #804 P2).
     #[cfg(feature = "embed_v8")]
-    fn discover_created(&self, created: &[PathBuf]) -> Result<Vec<PageId>> {
+    fn discover_created(
+        &self,
+        created: &[PathBuf],
+    ) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
         if created.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
-        let (changed, _vanished) = self.refresh_bundle_and_routes()?;
-        Ok(changed)
+        self.refresh_bundle_and_routes()
     }
 
     /// Re-bundle the SSR worker, swap in a freshly-started embedded V8
@@ -2111,12 +2116,16 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 /// The returned [`DiscoveryOutcome`] reports `renderer_reloaded: true`
 /// whenever the refresh ran, so the pipeline's per-tick
 /// `reload_renderer` is skipped and the tick bundles exactly once.
+/// Any routes that vanished during the rebuild are propagated in
+/// `vanished_output_paths` so the pipeline can prune their HTML files
+/// (issue #804 P2).
 ///
 /// `embed_v8`-gated: discovery needs the embedded V8 host.
 #[cfg(feature = "embed_v8")]
 fn make_discovery_hook(
     session: DevRenderSession,
     graph: Arc<Mutex<DependencyGraph>>,
+    html_root: PathBuf,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -2141,7 +2150,7 @@ fn make_discovery_hook(
             return Ok(DiscoveryOutcome::default());
         }
 
-        let changed = session.discover_created(&relevant)?;
+        let (changed, vanished_rel) = session.discover_created(&relevant)?;
 
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
@@ -2160,9 +2169,17 @@ fn make_discovery_hook(
             }
         }
 
+        // Map relative vanished output paths to absolute dist paths so the
+        // orchestrator can forward them to the pipeline's prune loop.
+        let vanished_abs: Vec<PathBuf> = vanished_rel
+            .into_iter()
+            .map(|rel| html_root.join(rel))
+            .collect();
+
         Ok(DiscoveryOutcome {
             pages: changed,
             renderer_reloaded: true,
+            vanished_output_paths: vanished_abs,
         })
     })
 }

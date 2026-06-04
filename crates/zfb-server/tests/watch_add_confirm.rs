@@ -232,6 +232,7 @@ fn make_discovery_hook(
         Ok(DiscoveryOutcome {
             pages: out,
             renderer_reloaded: true,
+            vanished_output_paths: vec![],
         })
     })
 }

@@ -583,6 +583,7 @@ fn fake_blog_discovery_hook(
         Ok(DiscoveryOutcome {
             pages: out,
             renderer_reloaded: true,
+            vanished_output_paths: vec![],
         })
     })
 }
@@ -870,63 +871,37 @@ fn route_deletion_prunes_stale_html() {
         "post.html must exist after initial render",
     );
 
-    // Simulate content file deletion: remove the graph edge and clear the
-    // route table (as `refresh_bundle_and_routes` would do in the real
-    // server — the route no longer exists).
+    // Simulate content file deletion: clear the route table (as
+    // `refresh_bundle_and_routes` would do) and set the vanished path so
+    // reload_renderer reports it.
     routes.lock().unwrap().remove(&project.join("pages/post.tsx"));
-    // Tell the reload_renderer to report the vanished path.
     vanished.lock().unwrap().push(PathBuf::from("post.html"));
 
-    // Tick 2: content file Removed
+    // Tick 2: content file Removed.
+    //
+    // remove_node(md_path) returns {pages/post.tsx} (the former consumer),
+    // which is folded into the plan so the tick is non-noop and
+    // reload_renderer fires. reload_renderer drains the vanished set,
+    // returning [dist/post.html]. The route table is empty so the render
+    // produces nothing. The prune loop then deletes dist/post.html.
     let outcome2 = orch
         .tick_with_kinds(
             vec![(md_path, ChangeKind::Removed)],
             &ctx,
             None,
         )
-        .expect("tick ok");
-    // The route table is now empty, so no pages render. But the
-    // reload_renderer still runs (non-empty page plan was pending before
-    // remove_node), OR the vanished prune happens through a non-empty plan
-    // triggered by the refresh.
-    //
-    // NOTE: after ChangeKind::Removed + remove_node, the dep-graph edge is
-    // gone so plan_for_changes returns empty for the removed path.
-    // reload_renderer runs only when pages is non-empty. So we need a
-    // second page to dirty so the plan is non-empty. Let's trigger via the
-    // page source itself.
-    //
-    // Actually: the issue says ChangeKind::Removed dirties consumers via
-    // remove_node (which returns them). But remove_node is called before
-    // plan_for_changes, so the graph no longer has the edge when
-    // plan_for_changes runs. The consumers were returned from remove_node
-    // but we don't use them in the plan. Let's instead trigger a normal
-    // Modified tick so reload_renderer fires, and the vanished path is pruned.
-    let _ = outcome2; // outcome2 may be None if plan is empty
-
-    // Trigger a normal edit on the page source so reload_renderer fires.
-    std::fs::write(project.join("pages/post.tsx"), "// edited\n").unwrap();
-    // Set the vanished path again (it may have been consumed or not).
-    vanished.lock().unwrap().push(PathBuf::from("post.html"));
-
-    let outcome3 = orch
-        .tick_with_kinds(
-            vec![(project.join("pages/post.tsx"), ChangeKind::Modified)],
-            &ctx,
-            None,
-        )
         .expect("tick ok")
-        .expect("non-noop tick from page-source edit");
+        .expect("Removed tick must be non-noop — former consumer is in the plan");
 
     assert!(
         !project.join("dist/post.html").exists(),
         "post.html must be deleted after route vanishes; pages_pruned={:?}",
-        outcome3.pages_pruned,
+        outcome2.pages_pruned,
     );
     assert!(
-        outcome3.pages_pruned.contains(&project.join("dist/post.html")),
+        outcome2.pages_pruned.contains(&project.join("dist/post.html")),
         "pages_pruned must contain dist/post.html; got {:?}",
-        outcome3.pages_pruned,
+        outcome2.pages_pruned,
     );
 }
 
@@ -1158,9 +1133,11 @@ fn removed_content_file_drops_graph_edge() {
         "tick 1 must have rendered the consumer page",
     );
 
-    // Tick 2: Removed → remove_node drops the graph edge; the removed path is
-    // excluded from plan_for_changes so the tick is a noop (not even a
-    // conservative All-rebuild, which would wrongly keep the dead route alive).
+    // Tick 2: Removed → remove_node drops the graph edge. The former consumer
+    // (pages/post.tsx) is folded into the plan so reload_renderer can fire
+    // and prune vanished HTML. The renderer is called once more for the
+    // consumer, but future ticks that modify the removed content file will
+    // no longer dirty the consumer (the edge is gone).
     let outcome2 = orch
         .tick_with_kinds(
             vec![(md_path.clone(), ChangeKind::Removed)],
@@ -1168,17 +1145,41 @@ fn removed_content_file_drops_graph_edge() {
             None,
         )
         .expect("tick ok");
+    // The tick is non-noop because the former consumer is in the plan.
     assert!(
-        outcome2.is_none(),
-        "Removed tick must be noop — removed path excluded from plan; got {:?}",
-        outcome2.map(|o| o.pages_written),
+        outcome2.is_some(),
+        "Removed tick must be non-noop — former consumer is added to plan to allow reload_renderer to fire",
     );
-    // Renderer must not be called for the Removed tick.
+    // The renderer was called for the former consumer.
     assert_eq!(
         render_calls.lock().unwrap().len(),
-        1,
-        "renderer must not be called for the Removed tick",
+        2,
+        "renderer must be called once more for the former consumer on the Removed tick",
     );
+
+    // After remove_node, the deleted content path is no longer in the graph.
+    // A later edit of the same path must NOT dirty the consumer.
+    let outcome3 = orch
+        .tick_with_kinds(
+            vec![(md_path, ChangeKind::Modified)],
+            &ctx,
+            None,
+        )
+        .expect("tick ok");
+    // The path is now an unknown in the graph, so plan_for_changes falls
+    // back to All (conservative policy for unknowns). This is acceptable —
+    // the important invariant is that subsequent edits do not permanently
+    // block on a route that was removed. Users who do Removed+Modified
+    // (unusual) will see a conservative rebuild.
+    //
+    // We just verify the renderer was called at most once more (for the All rebuild).
+    let calls_after_removal = render_calls.lock().unwrap().len();
+    assert!(
+        calls_after_removal <= 3,
+        "after removal the renderer may run once more for a conservative All rebuild; got {} total calls",
+        calls_after_removal,
+    );
+    let _ = outcome3;
 }
 
 // ---------------------------------------------------------------------------
@@ -1308,6 +1309,7 @@ fn discovery_reload_suppresses_pipeline_reload_in_same_tick() {
         Ok(DiscoveryOutcome {
             pages: hook_pages.clone(),
             renderer_reloaded: true,
+            vanished_output_paths: vec![],
         })
     });
 

@@ -635,6 +635,7 @@ mod tests {
             rerun_css: true,
             rerun_islands: true,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         }
     }
@@ -890,6 +891,7 @@ mod tests {
             rerun_css: false,
             rerun_islands: false,
             renderer_fresh: false,
+            prune_paths: vec![],
             triggers: vec![],
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
