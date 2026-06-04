@@ -1,0 +1,67 @@
+---
+title: v0.1.0-next.27
+sidebar_position: 1027
+---
+
+# v0.1.0-next.27
+
+Released: 2026-06-04
+
+## Features
+
+- Embedded-V8 backend now captures worker console output: a console shim buffers levelled `console.*` lines (capped, with truncation marker) while preserving stdout passthrough. (98e2c9d)
+- Embedded-V8 console logs are drained on the render path, so render failures finally surface the worker's console output instead of an empty log. (3055ea5)
+- Console-log drain is routed through the pinned V8 host thread as a second request kind on the same channel, preserving the isolate-thread invariant; boot failures embed captured console output in the boot error. (862b71b)
+- `dispatch_fetch` surfaces the last `install_bundle_default` error instead of a generic failure. (d0aa9c5)
+
+## Bug Fixes
+
+- Drain the embedded-V8 console buffer after each dev-mode `render_one`, so long dev sessions don't pin stale logs at the buffer cap. (4979593)
+- `build-macos-x64-local.sh`: the no-Rosetta version-stamp fallback is now honest/advisory — semver absent in rodata stays a hard fail, semver present is an explicit inconclusive warning instead of a false "OK". (f44b5fe)
+- Soften the `InjectRouteConflict` message lead clause. (208fdf9)
+- Honor `history=="replace"` on `fallback=none` full-page loads in the client router. (d64e6bb)
+- Address deep-review findings across build/islands/render/check. (c08fac6)
+- `executePrefetch` rejection handling: failed prefetches are retryable instead of being cached as permanently failed. (19a218a)
+- Client router: null-guard the `data-props` copy, delete dead `cssesc` dependency, and navigate via full load on `fallback=none`. (9e9f4a9)
+- `install.sh`: jq-first prerelease tag resolution with an awk fallback. (db7deaa)
+- Docs site: PROD-only version cache, watched search-index cache, and flanked-underscore stripping. (2dcaf8c)
+- `zfb check`: `which_in_path` handles Windows `.cmd`/`.bat` shims and returns the resolved path. (e805b05)
+- Prefer IPv4 for localhost to fix a URL/address mismatch. (a0287e5)
+- Skip extension probing for known-extension specifiers in the render resolver. (bfad2be)
+- Reclassify bare-import failures as `BareImportRejected`. (eb991e8)
+- Defer stale-output prunes to end of tick and skip live destinations. (a6b3ade)
+- `zfb-graph`: `remove_node` always cleans asset-layer indexes. (a1ceee4)
+- Scanner: skip type-only named re-exports in `exported_island_records`. (611c29c)
+- Harden the islands hydration rewriter. (efbd8ac)
+- `zfb-md-extras`: drop per-Text space and inject a block-boundary separator in Paragraph/Heading/TableCell. (291891f)
+- `InjectRoute` same-plugin re-registration is now a keep-first no-op. (f85b460)
+- Token-boundary check in `extract_title`/`remove_title`. (056474b)
+- Re-key the islands manifest on `marker_name` and use sequential `island-{i}.js` filenames. (5c4f61e)
+- `render_framed` short-circuits to header-only when the diagnostic line is past source end. (a2562ce)
+- Correct misleading header comment in `install-prerelease.sh`. (68d7080)
+- Address deep-review findings (old-git guard message, UTF-8 caveat). (d6070e1)
+- Docs: correct CLAUDE.md sidebar ordering and make md-ext strip honor `trailingSlash`. (521505f)
+- Dev server degrades gracefully on livereload rewrite errors. (41fab76)
+- Avoid a stale `pendingCancels` entry after a synchronous scheduler fire. (8f2e944)
+- `create-zfb`/`zfb-adapter-cloudflare`: keep abort armed across body read and share `emitWorker`. (79c3f79)
+- CI workflow + installer/script fixes. (5546f22)
+- Forward `project_root` when stripping absolute sourcemap paths. (42234dd)
+- Skip type-only import/export edges in the island DFS graph walk. (6a5ab7b)
+- Sort catchall routes after plain dynamic routes at equal static depth. (b767501)
+- Containment guard in `image_dimensions` and img-src fragment handling. (5cdbe3b)
+- `zfb-watcher`: avoid a `shutdown()` circular wait on the bridge task. (2a7eecc)
+- Thread `inside_raw` through normalize recursion in test-utils. (0af1d07)
+- Escape `@source` globs and strip comments before Tailwind import detection. (87f2755)
+- `zfb-graph`: `remove_node` must not early-return for a page that is also a dependency. (e336e72)
+
+## Other Changes
+
+- CI now runs the offline shell unit tests (`tests/unit/*.sh`, including `install-prerelease.sh`) and `bash -n` parse checks as a fail-fast step in the health workflow. (e2c3e2e)
+- Dedup search-index watcher handlers; make the dist-tag script executable. (5bfeb57)
+- Extract the release.yml dual-tag block into `scripts/advance-latest-dist-tag.sh`. (9b31c75)
+- Extract shared TOC pure helpers into `toc_common`. (f050103)
+- Extract `expand_resolved_urls` helper from a duplicated loop. (120b647)
+- Collapse a nested `if` into a match guard (new clippy 1.95 lint). (89b839b)
+- Correct the `serialize_manifest` doc to `marker_name` keying. (85e0586)
+- Correct stale doc comments in `plugins.rs` and `dev.rs`. (aa217e3)
+- Remove an unused `el` variable from the island1 swap-functions test. (75806de)

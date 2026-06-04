@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-adapter-cloudflare",
-  "version": "0.1.0-next.26",
+  "version": "0.1.0-next.27",
   "private": false,
   "type": "module",
   "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. Cloudflare Pages adapter.",
