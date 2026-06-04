@@ -42,8 +42,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
+use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
+
+use crate::link_validation::normalize_path;
 
 /// Cached entry: `(mtime, width, height)`.
 type CacheEntry = (SystemTime, u32, u32);
@@ -151,9 +153,7 @@ fn try_inject_dimensions(
 
     // Skip remote URLs when `skipRemote` is true (the default).
     if should_skip_remote(config)
-        && (src.starts_with("http://")
-            || src.starts_with("https://")
-            || src.starts_with("//"))
+        && (src.starts_with("http://") || src.starts_with("https://") || src.starts_with("//"))
     {
         return;
     }
@@ -170,11 +170,35 @@ fn try_inject_dimensions(
         None => {
             emit_warning(
                 ctx,
-                format!("imageDimensions: could not resolve src '{src}' — no source path available"),
+                format!(
+                    "imageDimensions: could not resolve src '{src}' — no source path available"
+                ),
             );
             return;
         }
     };
+
+    // Containment guard: reject paths that escape the expected root directory.
+    // Absolute `/…` srcs are resolved into `public_dir`; relative srcs into
+    // `project_root`. Lexically normalize to collapse any `..` components
+    // injected via crafted src values (e.g. `../../etc/hosts`).
+    let is_absolute_src = src.starts_with('/');
+    let expected_root = if is_absolute_src {
+        &ctx.public_dir
+    } else {
+        &ctx.project_root
+    };
+    let normalized = normalize_path(&abs_path);
+    if !normalized.starts_with(expected_root) {
+        emit_warning(
+            ctx,
+            format!(
+                "imageDimensions: src '{src}' resolves outside the expected root '{}' — skipping",
+                expected_root.display()
+            ),
+        );
+        return;
+    }
 
     // Probe dimensions (from cache or disk).
     match probe_dimensions(&abs_path, cache, read_count) {
@@ -278,8 +302,13 @@ mod tests {
     }
 
     fn get_attr<'a>(node: &'a HastNode, name: &str) -> Option<&'a str> {
-        let HastNode::Element { attrs, .. } = node else { return None; };
-        attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        let HastNode::Element { attrs, .. } = node else {
+            return None;
+        };
+        attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
@@ -310,33 +339,21 @@ mod tests {
 
     #[test]
     fn resolve_src_absolute_uses_public_dir() {
-        let ctx = BuildContext::for_paths(
-            "/project/src/page.mdx",
-            "/project",
-            "/project/public",
-        );
+        let ctx = BuildContext::for_paths("/project/src/page.mdx", "/project", "/project/public");
         let resolved = resolve_src("/img/foo.png", &ctx);
         assert_eq!(resolved, Some(PathBuf::from("/project/public/img/foo.png")));
     }
 
     #[test]
     fn resolve_src_relative_uses_source_dir() {
-        let ctx = BuildContext::for_paths(
-            "/project/src/page.mdx",
-            "/project",
-            "/project/public",
-        );
+        let ctx = BuildContext::for_paths("/project/src/page.mdx", "/project", "/project/public");
         let resolved = resolve_src("./assets/foo.png", &ctx);
         assert_eq!(resolved, Some(PathBuf::from("/project/src/assets/foo.png")));
     }
 
     #[test]
     fn resolve_src_relative_no_leading_dot() {
-        let ctx = BuildContext::for_paths(
-            "/project/src/page.mdx",
-            "/project",
-            "/project/public",
-        );
+        let ctx = BuildContext::for_paths("/project/src/page.mdx", "/project", "/project/public");
         let resolved = resolve_src("assets/foo.png", &ctx);
         assert_eq!(resolved, Some(PathBuf::from("/project/src/assets/foo.png")));
     }
@@ -362,13 +379,17 @@ mod tests {
 
     #[test]
     fn should_skip_remote_explicit_true() {
-        let cfg = ImageDimensionsConfig { skip_remote: Some(true) };
+        let cfg = ImageDimensionsConfig {
+            skip_remote: Some(true),
+        };
         assert!(should_skip_remote(&cfg));
     }
 
     #[test]
     fn should_skip_remote_explicit_false() {
-        let cfg = ImageDimensionsConfig { skip_remote: Some(false) };
+        let cfg = ImageDimensionsConfig {
+            skip_remote: Some(false),
+        };
         assert!(!should_skip_remote(&cfg));
     }
 
@@ -392,5 +413,86 @@ mod tests {
         assert_eq!(get_attr(&node, "src"), Some("foo.png"));
         assert_eq!(get_attr(&node, "alt"), Some("desc"));
         assert_eq!(get_attr(&node, "width"), None);
+    }
+
+    // ── Fix #703: containment guard tests ────────────────────────────────────
+
+    /// Helper: run `try_inject_dimensions` for a given src and return collected warnings.
+    fn collect_warnings_for_src(
+        src: &str,
+        project_root: &str,
+        public_dir: &str,
+        source_path: &str,
+    ) -> Vec<String> {
+        use zfb_md_ast::diagnostics::CollectingSink;
+
+        let mut node = img(&[("src", src)]);
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let config = ImageDimensionsConfig::default();
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = zfb_md_ast::BuildContext {
+            source_path: Some(PathBuf::from(source_path)),
+            project_root: PathBuf::from(project_root),
+            public_dir: PathBuf::from(public_dir),
+            heading_registry: None,
+            diagnostics: Some(&mut sink),
+        };
+        try_inject_dimensions(&mut node, &mut ctx, &config, &cache, &read_count);
+        sink.take()
+            .into_iter()
+            .filter_map(|d| match d {
+                zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic { message, .. } => {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A relative src that escapes the project root via `../../` must be rejected
+    /// with a containment warning and must NOT trigger a disk probe.
+    #[test]
+    fn relative_path_traversal_rejected_with_warning() {
+        // `../../etc/hosts` resolves outside project_root → containment warning.
+        let warnings = collect_warnings_for_src(
+            "../../etc/hosts",
+            "/project",
+            "/project/public",
+            "/project/src/page.mdx",
+        );
+        assert!(
+            !warnings.is_empty(),
+            "expected a containment warning for path-traversal src"
+        );
+        assert!(
+            warnings[0].contains("resolves outside the expected root"),
+            "warning should mention containment: {:?}",
+            warnings[0]
+        );
+    }
+
+    /// An absolute src that escapes `public_dir` via `/../../` must be rejected.
+    #[test]
+    fn absolute_path_traversal_rejected_with_warning() {
+        // `/../../etc/hosts` → join public_dir `/project/public` →
+        // `/project/public/../../etc/hosts` → normalizes to `/etc/hosts`
+        // → not under `/project/public` → containment warning.
+        let warnings = collect_warnings_for_src(
+            "/../../etc/hosts",
+            "/project",
+            "/project/public",
+            "/project/src/page.mdx",
+        );
+        assert!(
+            !warnings.is_empty(),
+            "expected a containment warning for absolute path-traversal src"
+        );
+        assert!(
+            warnings[0].contains("resolves outside the expected root"),
+            "warning should mention containment: {:?}",
+            warnings[0]
+        );
     }
 }

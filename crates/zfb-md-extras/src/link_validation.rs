@@ -44,8 +44,8 @@
 use std::path::{Path, PathBuf};
 
 use zfb_md_ast::{
-    BuildContext, HastNode, HastVisitor, LinkValidationConfig,
     diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation},
+    BuildContext, HastNode, HastVisitor, LinkValidationConfig,
 };
 
 // ── External URL detection ────────────────────────────────────────────────────
@@ -130,7 +130,10 @@ fn resolve_relative(source_path: &Path, file_ref: &str) -> Option<PathBuf> {
 /// Algorithm: iterate components and maintain a stack; `..` pops the last
 /// component (unless the stack is empty or the last component is also `..`),
 /// `.` is dropped, and everything else is pushed.
-fn normalize_path(path: &Path) -> PathBuf {
+///
+/// `pub(crate)` so sibling modules (e.g. `image_dimensions`) can share it
+/// without duplicating logic or adding a new module.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut components: Vec<std::ffi::OsString> = Vec::new();
     let mut has_root = false;
@@ -229,7 +232,14 @@ impl HastVisitor for LinkValidationPlugin {
         let severity = self.severity();
         let allow_external = self.allow_external();
         let project_root = ctx.project_root.clone();
-        collect_diagnostics(node, &source_path, &project_root, ctx, severity, allow_external);
+        collect_diagnostics(
+            node,
+            &source_path,
+            &project_root,
+            ctx,
+            severity,
+            allow_external,
+        );
     }
 }
 
@@ -245,14 +255,34 @@ fn collect_diagnostics(
     allow_external: bool,
 ) {
     match node {
-        HastNode::Element { tag, attrs, children, .. } => {
+        HastNode::Element {
+            tag,
+            attrs,
+            children,
+            ..
+        } => {
             // Extract the link target: href for <a>, src for <img>.
-            let href_opt = if tag == "a" {
-                attrs.iter().find(|(k, _)| k == "href").map(|(_, v)| v.clone())
+            // Track whether the element is an <img> so fragment validation
+            // can be skipped — images use fragment syntax for SVG sprites
+            // (e.g. sprite.svg#icon-x) which are not heading anchors.
+            let (href_opt, is_img) = if tag == "a" {
+                (
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == "href")
+                        .map(|(_, v)| v.clone()),
+                    false,
+                )
             } else if tag == "img" {
-                attrs.iter().find(|(k, _)| k == "src").map(|(_, v)| v.clone())
+                (
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == "src")
+                        .map(|(_, v)| v.clone()),
+                    true,
+                )
             } else {
-                None
+                (None, false)
             };
 
             if let Some(href) = href_opt {
@@ -263,17 +293,32 @@ fn collect_diagnostics(
                     ctx,
                     severity,
                     allow_external,
+                    is_img,
                 );
             }
 
             // Recurse into children.
             for child in children {
-                collect_diagnostics(child, source_path, project_root, ctx, severity, allow_external);
+                collect_diagnostics(
+                    child,
+                    source_path,
+                    project_root,
+                    ctx,
+                    severity,
+                    allow_external,
+                );
             }
         }
         HastNode::Root { children } => {
             for child in children {
-                collect_diagnostics(child, source_path, project_root, ctx, severity, allow_external);
+                collect_diagnostics(
+                    child,
+                    source_path,
+                    project_root,
+                    ctx,
+                    severity,
+                    allow_external,
+                );
             }
         }
         // Leaf nodes.
@@ -282,6 +327,11 @@ fn collect_diagnostics(
 }
 
 /// Validate a single link `href` and emit a diagnostic if broken.
+///
+/// `is_img` must be `true` when the link comes from an `<img src>` attribute.
+/// Images support fragment syntax for SVG sprites (e.g. `sprite.svg#icon-x`),
+/// so `FileWithFragment` and `BareFragment` skip heading-anchor validation and
+/// only confirm file existence (or skip bare fragments entirely).
 fn validate_link(
     href: &str,
     source_path: &Path,
@@ -289,6 +339,7 @@ fn validate_link(
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
     allow_external: bool,
+    is_img: bool,
 ) {
     let parsed = parse_link(href);
     match parsed {
@@ -298,8 +349,14 @@ fn validate_link(
             let _ = allow_external;
         }
         ParsedLink::BareFragment(fragment) => {
-            // Check fragment against the current file's heading entries.
-            validate_fragment_in_file(href, &fragment, source_path, ctx, severity);
+            if is_img {
+                // Bare fragment on an <img> (e.g. `#icon`) — no file to check,
+                // no heading registry applies; skip silently.
+                let _ = fragment;
+            } else {
+                // Check fragment against the current file's heading entries.
+                validate_fragment_in_file(href, &fragment, source_path, ctx, severity);
+            }
         }
         ParsedLink::FilePath(path) => {
             // Check that the file exists on disk relative to source_path,
@@ -307,8 +364,22 @@ fn validate_link(
             validate_file_exists(href, &path, source_path, project_root, ctx, severity);
         }
         ParsedLink::FileWithFragment { path, fragment } => {
-            // Resolve the target file, then check the fragment in that file.
-            validate_file_with_fragment(href, &path, &fragment, source_path, project_root, ctx, severity);
+            if is_img {
+                // For <img>, fragments are SVG sprite IDs — not heading anchors.
+                // Only validate file existence; ignore the fragment part.
+                validate_file_exists(href, &path, source_path, project_root, ctx, severity);
+            } else {
+                // Resolve the target file, then check the fragment in that file.
+                validate_file_with_fragment(
+                    href,
+                    &path,
+                    &fragment,
+                    source_path,
+                    project_root,
+                    ctx,
+                    severity,
+                );
+            }
         }
     }
 }
@@ -441,7 +512,10 @@ mod tests {
 
     #[test]
     fn parse_bare_fragment() {
-        assert_eq!(parse_link("#intro"), ParsedLink::BareFragment("intro".to_string()));
+        assert_eq!(
+            parse_link("#intro"),
+            ParsedLink::BareFragment("intro".to_string())
+        );
         assert_eq!(parse_link("#"), ParsedLink::BareFragment(String::new()));
     }
 
@@ -505,5 +579,50 @@ mod tests {
     fn normalize_path_double_parent() {
         let p = PathBuf::from("/a/b/c/../../d");
         assert_eq!(normalize_path(&p), PathBuf::from("/a/d"));
+    }
+
+    // ── Fix #733: img-src fragment should not trigger heading-anchor check ────
+
+    /// An `<img src="sprite.svg#icon-x">` where the file exists must NOT emit a
+    /// BrokenLink diagnostic even when `icon-x` is not a heading in any registry.
+    #[test]
+    fn img_src_with_svg_sprite_fragment_no_broken_link() {
+        use tempdir::TempDir;
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let dir = TempDir::new("link_val_img_fragment").unwrap();
+        let sprite_path = dir.path().join("sprite.svg");
+        // File must exist so validate_file_exists passes.
+        std::fs::write(&sprite_path, "<svg/>").unwrap();
+        let source_path = dir.path().join("page.mdx");
+        std::fs::write(&source_path, "").unwrap();
+
+        // Build a hast tree: <img src="sprite.svg#icon-x">
+        let img_node = HastNode::Element {
+            tag: "img".to_string(),
+            attrs: vec![("src".to_string(), "sprite.svg#icon-x".to_string())],
+            children: vec![],
+            void: true,
+        };
+        let mut root = HastNode::Root {
+            children: vec![img_node],
+        };
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = BuildContext {
+            source_path: Some(source_path),
+            project_root: dir.path().to_path_buf(),
+            public_dir: dir.path().to_path_buf(),
+            heading_registry: None, // no headings registered → fragment would fail if checked
+            diagnostics: Some(&mut sink),
+        };
+        let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+        plugin.visit_with_context(&mut root, &mut ctx);
+
+        let diags = sink.take();
+        assert!(
+            diags.is_empty(),
+            "img src with svg sprite fragment must not emit BrokenLink: {diags:?}"
+        );
     }
 }
