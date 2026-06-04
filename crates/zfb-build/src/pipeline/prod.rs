@@ -450,25 +450,39 @@ fn ship_asset(
     })?;
 
     // Write each companion verbatim to the same directory as the entry.
-    // Companions must have flat basenames (no path separators) so they
-    // land beside the entry without escaping the asset directory.
+    // Companions must be FLAT basenames (no path separators / `..` / empty)
+    // so they land beside the entry without escaping the asset directory —
+    // a separator means esbuild's chunk contract was violated upstream, so
+    // we reject loudly rather than ship it. The hashed entry's relative
+    // directory is then re-joined and run through the same symlink-aware
+    // `validate_output_path` the entry used, so a planted symlink inside
+    // dist cannot redirect the write outside dist_root.
     if !asset.companions.is_empty() {
-        let entry_dir = dest
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("production: hashed asset path has no parent dir"))?;
+        let entry_rel_dir = hashed_relative.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         for companion in &asset.companions {
-            if companion.filename.contains('/') || companion.filename.contains('\\') || companion.filename.contains("..") {
+            if companion.filename.is_empty()
+                || companion.filename.contains('/')
+                || companion.filename.contains('\\')
+                || companion.filename.contains("..")
+            {
                 return Err(anyhow::anyhow!(
-                    "production: companion filename {:?} contains a path separator or `..`; \
-                     only flat basenames are allowed",
+                    "production: companion filename {:?} must be a non-empty flat basename \
+                     (no path separator or `..`)",
                     companion.filename
                 ));
             }
-            let companion_path = entry_dir.join(&companion.filename);
-            atomic_write(&companion_path, &companion.bytes).with_context(|| {
+            let companion_rel = entry_rel_dir.join(&companion.filename);
+            let companion_dest =
+                validate_output_path(&ctx.dist_root, &companion_rel).with_context(|| {
+                    format!(
+                        "production: refused to write companion relative path {}",
+                        companion_rel.display()
+                    )
+                })?;
+            atomic_write(&companion_dest, &companion.bytes).with_context(|| {
                 format!(
                     "production: failed to write companion file {}",
-                    companion_path.display()
+                    companion_dest.display()
                 )
             })?;
         }
@@ -889,6 +903,88 @@ mod tests {
         assert_eq!(assets.len(), 2);
         assert!(assets.iter().any(|n| n.starts_with("styles-") && n.ends_with(".css")));
         assert!(assets.iter().any(|n| n.starts_with("islands-") && n.ends_with(".js")));
+    }
+
+    /// Companion files are written verbatim beside the hashed entry —
+    /// no content hashing, no rename, no HTML rewrite touching their
+    /// bytes (#808).
+    #[test]
+    fn prod_pipeline_ships_companions_verbatim() {
+        let dir = tempdir().unwrap();
+        let chunk_bytes = b"import(\"./other.js\");export const x=1;".to_vec();
+        let chunk_for_emitter = chunk_bytes.clone();
+        let islands_emitter = move || {
+            Ok(Some(EmittedAsset {
+                bytes: b"// entry\nimport(\"./islands-chunk-AAAA1111.js\");".to_vec(),
+                relative_path: PathBuf::from("assets/islands.js"),
+                stable_url: Some("/assets/islands.js".into()),
+                companions: vec![CompanionFile {
+                    filename: "islands-chunk-AAAA1111.js".to_string(),
+                    bytes: chunk_for_emitter.clone(),
+                }],
+            }))
+        };
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: None,
+            islands: Some(Box::new(islands_emitter)),
+        });
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+        let plan = plan_full(vec![]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        // Only the entry is reported as a hashed asset URL; the chunk is not.
+        assert_eq!(outcome.hashed_asset_urls.len(), 1);
+
+        let assets: Vec<String> = std::fs::read_dir(dir.path().join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        // Hashed entry + verbatim chunk.
+        assert_eq!(assets.len(), 2, "expected hashed entry + chunk; got {assets:?}");
+        assert!(
+            assets.iter().any(|n| n.starts_with("islands-") && n.ends_with(".js") && !n.contains("chunk")),
+            "hashed entry missing: {assets:?}",
+        );
+        assert!(
+            assets.iter().any(|n| n == "islands-chunk-AAAA1111.js"),
+            "verbatim chunk missing: {assets:?}",
+        );
+        // Chunk bytes are byte-identical to the input — never rewritten.
+        let on_disk = std::fs::read(dir.path().join("assets").join("islands-chunk-AAAA1111.js")).unwrap();
+        assert_eq!(on_disk, chunk_bytes);
+    }
+
+    /// A companion with a non-flat filename (path separator / `..` /
+    /// empty) is rejected loudly rather than written — esbuild's chunk
+    /// contract guarantees flat basenames, so anything else is a bug
+    /// upstream we refuse to ship.
+    #[test]
+    fn prod_pipeline_rejects_non_flat_companion_filenames() {
+        for bad in ["../escape.js", "sub/dir.js", "a\\b.js", ""] {
+            let dir = tempdir().unwrap();
+            let bad = bad.to_string();
+            let islands_emitter = move || {
+                Ok(Some(EmittedAsset {
+                    bytes: b"// entry".to_vec(),
+                    relative_path: PathBuf::from("assets/islands.js"),
+                    stable_url: Some("/assets/islands.js".into()),
+                    companions: vec![CompanionFile {
+                        filename: bad.clone(),
+                        bytes: b"x".to_vec(),
+                    }],
+                }))
+            };
+            let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+                css: None,
+                islands: Some(Box::new(islands_emitter)),
+            });
+            let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
+            let plan = plan_full(vec![]);
+            assert!(
+                pipeline.apply(&plan, &ctx).is_err(),
+                "non-flat companion filename must be rejected",
+            );
+        }
     }
 
     /// Production never relies on the dev-style bool runners. Even
