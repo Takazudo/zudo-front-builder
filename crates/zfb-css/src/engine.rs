@@ -277,6 +277,11 @@ fn push_escaped_source(out: &mut String, value: &str) {
 /// by `"`, `'`, or `` ` ``) take precedence over comment scanning so that
 /// `/*` inside a string is treated as literal text, not a comment start.
 /// Only the "active" (uncommented) characters are returned.
+///
+/// Caveat: bytes are pushed via `b as char`, so multi-byte UTF-8 sequences
+/// are mangled in the returned text. Harmless here — the result is a
+/// detection-only scratch copy (the original bytes are what get emitted),
+/// and the `@import "tailwindcss"` needle is pure ASCII.
 fn strip_css_comments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
