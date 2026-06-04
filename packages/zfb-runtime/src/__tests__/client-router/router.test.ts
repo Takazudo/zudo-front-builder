@@ -450,6 +450,43 @@ describe("navigate() — fallback=none + no View Transitions → full page load 
     // The guard fires before any fetch — fetch must NOT have been called.
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("uses location.replace (not href) when options.history is 'replace'", async () => {
+    expect(supportsViewTransitions).toBe(false);
+
+    const fallbackMeta = document.createElement("meta");
+    fallbackMeta.setAttribute("name", "zfb-view-transitions-fallback");
+    fallbackMeta.setAttribute("content", "none");
+    document.head.appendChild(fallbackMeta);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Capture href assignments separately from replace() calls so we can
+    // assert push-vs-replace semantics. happy-dom's location.replace is a
+    // real method, so spy on it; href is read-only, so shim it.
+    const originalHref = location.href;
+    let assignedHref: string | undefined;
+    Object.defineProperty(location, "href", {
+      configurable: true,
+      get: () => originalHref,
+      set: (v: string) => {
+        assignedHref = v;
+      },
+    });
+    const replaceSpy = vi.spyOn(location, "replace").mockImplementation(() => {});
+
+    await navigate("/bar", { history: "replace" });
+
+    // Replace semantics: location.replace called with the resolved URL,
+    // href setter NOT touched.
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(String(replaceSpy.mock.calls[0]?.[0])).toContain("/bar");
+    expect(assignedHref).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    replaceSpy.mockRestore();
+  });
 });
 
 describe("popstate — forward + back history navigation", () => {

@@ -665,7 +665,14 @@ export async function navigate(href: string, options?: Options) {
     return;
   }
   if (!supportsViewTransitions && getFallback() === "none") {
-    location.href = new URL(href, location.href).href;
+    const url = new URL(href, location.href);
+    // Honor the history option on the full-load fallback path: "replace"
+    // must not leave a back-button entry, so use location.replace().
+    if (options?.history === "replace") {
+      location.replace(url.href);
+    } else {
+      location.href = url.href;
+    }
     return;
   }
   await transition("forward", originalLocation, new URL(href, location.href), options ?? {});
