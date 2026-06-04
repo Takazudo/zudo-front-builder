@@ -365,8 +365,10 @@ impl DependencyGraph {
 
     /// Remove a node from the graph and return its former consumers.
     ///
-    /// - If `path` was a page, the page is dropped and its reverse-index
-    ///   entries are cleaned up. The returned set contains just that page id.
+    /// - If `path` was a page, the page is dropped and its own forward edges
+    ///   are cleaned up. The returned set includes that page id AND any other
+    ///   pages that depended on it (a page can also be a dep of other pages,
+    ///   e.g. `/pages/b.tsx` imported by `/pages/a.tsx`).
     /// - If `path` was a non-page dep, every page that depended on it loses
     ///   that edge. The returned set is the former consumer list — these
     ///   pages should be rebuilt.
@@ -378,7 +380,10 @@ impl DependencyGraph {
     pub fn remove_node(&mut self, path: &Path) -> BTreeSet<PageId> {
         let mut affected: BTreeSet<PageId> = BTreeSet::new();
 
-        // Case 1: removing a page.
+        // Case 1: removing a page. Tear down page-specific state, then fall
+        // through to Case 2 so any OTHER pages that imported this page (it may
+        // be both a page and a dep) are collected into `affected` and have their
+        // forward edges cleaned up.
         let page_id = PageId::new(path.to_path_buf());
         if self.pages.remove(&page_id) {
             if let Some(deps) = self.forward.remove(&page_id) {
@@ -396,10 +401,14 @@ impl DependencyGraph {
             // consumer on subsequent queries.
             self.clear_assets_for_page(&page_id);
             affected.insert(page_id);
-            return affected;
+            // Do NOT return here: fall through to Case 2 so consumers of this
+            // page (recorded in the reverse index under `path`) are also
+            // collected into `affected` and their forward edges are cleaned.
         }
 
-        // Case 2: removing a non-page dep. Collect consumers, clear edges.
+        // Case 2: drain reverse-index consumers of `path`. For a plain dep
+        // this is the primary branch; for a page that is also a dep this
+        // collects the OTHER pages that imported it.
         if let Some(consumers) = self.reverse.remove(path) {
             for page in &consumers {
                 if let Some(forward_deps) = self.forward.get_mut(page) {
@@ -612,11 +621,7 @@ impl DependencyGraph {
     /// Lookup helper: every recorded dep of a page (kind included), sorted by
     /// path. Returns an empty `Vec` for unknown pages.
     pub fn deps_of(&self, page: &PageId) -> Vec<(PathBuf, DepKind)> {
-        let mut v = self
-            .forward
-            .get(page)
-            .cloned()
-            .unwrap_or_default();
+        let mut v = self.forward.get(page).cloned().unwrap_or_default();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
@@ -819,6 +824,56 @@ mod tests {
         assert!(removed.is_empty());
     }
 
+    /// Regression test for the "page that is also a dep" bug (issue #758 / finding #707).
+    ///
+    /// A imports /pages/b.tsx as a dep. After removing B, A must appear in
+    /// `affected` so the build orchestrator knows to rebuild it. A subsequent
+    /// `dirty_pages(/pages/b.tsx)` must NOT resurface A (the reverse entry
+    /// should have been drained by `remove_node`).
+    #[test]
+    fn remove_node_page_that_is_also_dep_includes_consumers_in_affected() {
+        let mut g = DependencyGraph::new();
+        // Page A imports page B (a page can be a dep of another page).
+        g.upsert(PageDeps::new(
+            pid("/pages/a.tsx"),
+            vec![(p("/pages/b.tsx"), DepKind::Module)],
+        ));
+        g.upsert(PageDeps::new(pid("/pages/b.tsx"), vec![]));
+
+        // Sanity: both pages are registered.
+        assert_eq!(g.page_count(), 2);
+
+        // Remove page B — it is both a page and a dep of A.
+        let affected = g.remove_node(&p("/pages/b.tsx"));
+
+        // B itself must be in affected (it is the removed page).
+        assert!(
+            affected.contains(&pid("/pages/b.tsx")),
+            "removed page must be in affected"
+        );
+        // A must also be in affected (it was a consumer of B via reverse index).
+        assert!(
+            affected.contains(&pid("/pages/a.tsx")),
+            "consumer of removed page must be in affected; got: {affected:?}"
+        );
+
+        // Subsequent dirty_pages for the deleted path must return empty —
+        // the reverse entry should have been drained.
+        let d = g.dirty_pages(&p("/pages/b.tsx"));
+        assert_eq!(
+            d.as_pages().unwrap(),
+            Vec::<PageId>::new(),
+            "dirty_pages after remove_node must return empty (no stale reverse entry)"
+        );
+
+        // A's forward edges must no longer reference B.
+        let a_deps = g.deps_of(&pid("/pages/a.tsx"));
+        assert!(
+            !a_deps.iter().any(|(dep, _)| dep == &p("/pages/b.tsx")),
+            "A's forward edges must not reference deleted B"
+        );
+    }
+
     #[test]
     fn add_node_is_idempotent_for_known_paths() {
         let mut g = DependencyGraph::new();
@@ -842,7 +897,11 @@ mod tests {
         g.upsert(PageDeps::new(pid("/pages/b.tsx"), vec![]));
         assert_eq!(
             g.pages(),
-            vec![pid("/pages/a.tsx"), pid("/pages/b.tsx"), pid("/pages/c.tsx")]
+            vec![
+                pid("/pages/a.tsx"),
+                pid("/pages/b.tsx"),
+                pid("/pages/c.tsx")
+            ]
         );
     }
 
@@ -932,7 +991,10 @@ mod tests {
             pid("/pages/b.tsx"),
             AssetDeps::new(
                 [],
-                [p("/styles/header.module.css"), p("/styles/footer.module.css")],
+                [
+                    p("/styles/header.module.css"),
+                    p("/styles/footer.module.css"),
+                ],
             ),
         );
         assert_eq!(
@@ -959,10 +1021,7 @@ mod tests {
             AssetDeps::new(["New".to_string()], [p("/styles/new.module.css")]),
         );
         assert!(g.pages_using_island("Old").is_empty());
-        assert_eq!(
-            g.pages_using_island("New"),
-            vec![pid("/pages/a.tsx")],
-        );
+        assert_eq!(g.pages_using_island("New"), vec![pid("/pages/a.tsx")],);
         assert!(g
             .pages_using_css_module(&p("/styles/old.module.css"))
             .is_empty());
@@ -994,7 +1053,10 @@ mod tests {
         let mut g = DependencyGraph::new();
         g.set_assets_for_page(
             pid("/pages/a.tsx"),
-            AssetDeps::new(["Z".to_string(), "A".to_string()], [p("/y.css"), p("/x.css")]),
+            AssetDeps::new(
+                ["Z".to_string(), "A".to_string()],
+                [p("/y.css"), p("/x.css")],
+            ),
         );
         g.set_assets_for_page(
             pid("/pages/b.tsx"),
@@ -1080,8 +1142,12 @@ mod tests {
         let a = g.dirty_pages(&p("/shared.tsx"));
         let b = g.dirty_pages(&p("/other.tsx"));
         let mut union: BTreeSet<PageId> = BTreeSet::new();
-        if let DirtySet::Specific(s) = a { union.extend(s); }
-        if let DirtySet::Specific(s) = b { union.extend(s); }
+        if let DirtySet::Specific(s) = a {
+            union.extend(s);
+        }
+        if let DirtySet::Specific(s) = b {
+            union.extend(s);
+        }
         assert_eq!(batch_pages, union.into_iter().collect::<Vec<_>>());
     }
 

@@ -24,6 +24,8 @@ pub enum GraphError {
     /// On-disk file did not start with the expected magic / version
     /// header. Treated as "not a graph file we can read" and surfaced
     /// so callers can decide whether to discard and rebuild.
-    #[error("graph persistence: invalid file header (not a zfb-graph snapshot, or version mismatch)")]
+    #[error(
+        "graph persistence: invalid file header (not a zfb-graph snapshot, or version mismatch)"
+    )]
     BadHeader,
 }
