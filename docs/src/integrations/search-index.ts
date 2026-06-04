@@ -120,15 +120,12 @@ export function searchIndexIntegration(): AstroIntegration {
                     }
                   });
 
-                  server.watcher.on("change", (f) => {
+                  const invalidate = (f: string) => {
                     if (/\.mdx?$/.test(f)) cache = null;
-                  });
-                  server.watcher.on("add", (f) => {
-                    if (/\.mdx?$/.test(f)) cache = null;
-                  });
-                  server.watcher.on("unlink", (f) => {
-                    if (/\.mdx?$/.test(f)) cache = null;
-                  });
+                  };
+                  for (const event of ["change", "add", "unlink"] as const) {
+                    server.watcher.on(event, invalidate);
+                  }
                 },
               },
             ],
