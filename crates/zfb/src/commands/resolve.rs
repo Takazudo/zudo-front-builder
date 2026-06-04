@@ -49,14 +49,30 @@ pub fn resolve_host(cli: Option<&str>, cfg: Option<&str>, default_host: &str) ->
 
 /// Resolve a `host:port` pair into a bindable [`SocketAddr`]. Accepts the same
 /// host forms both `dev` and `preview` support (`localhost`, `127.0.0.1`,
-/// `0.0.0.0`, IPv6, …). Returns the first resolved address.
+/// `0.0.0.0`, IPv6, …).
+///
+/// When `host` is `"localhost"` (case-insensitive), the first IPv4 address
+/// among the resolved candidates is preferred so that the dev/preview server
+/// banner (`http://localhost:PORT/`) matches the bound address family. If no
+/// IPv4 address is available (rare IPv6-only environments), the first resolved
+/// address is used as a fallback. All other host forms — explicit IP literals,
+/// IPv6 bracket addresses, named hosts — return the first resolved address
+/// unchanged.
 pub fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     let pair = format!("{host}:{port}");
-    let mut iter = pair
+    let addrs: Vec<SocketAddr> = pair
         .to_socket_addrs()
-        .with_context(|| format!("could not resolve bind address {pair}"))?;
-    iter.next()
-        .ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
+        .with_context(|| format!("could not resolve bind address {pair}"))?
+        .collect();
+    let chosen = if host.eq_ignore_ascii_case("localhost") {
+        // Prefer IPv4 so the printed URL (http://localhost:PORT/) and the
+        // actual bound address are on the same family; fall back to first if
+        // the resolver returns only IPv6 (e.g. some Docker / minimal containers).
+        addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).copied()
+    } else {
+        addrs.first().copied()
+    };
+    chosen.ok_or_else(|| anyhow::anyhow!("no socket addresses resolved for {pair}"))
 }
 
 #[cfg(test)]
@@ -170,5 +186,32 @@ mod tests {
 
         let any = resolve_addr("0.0.0.0", 4321).unwrap();
         assert!(any.ip().is_unspecified(), "0.0.0.0 must bind all interfaces");
+    }
+
+    /// Verify that `resolve_addr("localhost", …)` returns an IPv4 loopback
+    /// address when one is available — the banner URL `http://localhost:PORT/`
+    /// must match the bound address family (fixes #725).
+    ///
+    /// On extremely rare IPv6-only environments (some Docker / minimal
+    /// containers) the resolver may return only `[::1]`; in that case the
+    /// fallback-to-first behaviour still applies and the test would fail.
+    /// Mark the test `#[ignore]` manually if running in such an environment.
+    #[test]
+    fn resolve_addr_localhost_prefers_ipv4() {
+        let addr = resolve_addr("localhost", 4321).expect("localhost must resolve");
+        assert!(addr.is_ipv4(), "expected IPv4 for localhost, got {addr:?}");
+        assert!(
+            addr.ip().is_loopback(),
+            "expected loopback IP for localhost, got {addr:?}"
+        );
+        assert_eq!(addr.port(), 4321);
+    }
+
+    /// Verify the case-insensitive match — `LOCALHOST` should also prefer IPv4.
+    #[test]
+    fn resolve_addr_localhost_uppercase_prefers_ipv4() {
+        let addr = resolve_addr("LOCALHOST", 4321).expect("LOCALHOST must resolve");
+        assert!(addr.is_ipv4(), "expected IPv4 for LOCALHOST, got {addr:?}");
+        assert!(addr.ip().is_loopback());
     }
 }
