@@ -1,0 +1,31 @@
+---
+title: v0.1.0-next.29
+sidebar_position: 1029
+---
+
+# v0.1.0-next.29
+
+Released: 2026-06-05
+
+## Features
+
+- Islands code-splitting: consumer dynamic `import()` boundaries now become separate, esbuild-self-hashed chunks (`islands-chunk-<hash>.js`) instead of being inlined into the page-blocking `islands.js`. The shared-bundle esbuild invocation runs with `--splitting` into a staging outdir; the stable `islands.js` entry keeps the existing hashed-URL contract and HTML rewriting is unchanged. Zero-dynamic-import projects behave exactly as before. (ee13d0d, 8e6b064)
+- `zfb build` ships dynamic-import chunks verbatim to `dist/assets/` next to the hashed entry via a new `EmittedAsset.companions` contract — chunk files are never renamed, so esbuild's relative inter-chunk imports stay valid. (fbaf651)
+- `zfb dev` writes and prunes code-split chunks alongside `islands.js` on each rebundle generation, served through the existing `/assets/*` mount; stale chunks from a previous generation are dropped before the reload event fires. (04519af)
+- `zfb dev`: SSR-only projects (every page `prerender = false`) now reload the embedded V8 host on source edits, and the SSR route set is live after boot — adding or removing a `prerender = false` route mid-session is dispatchable immediately via a shared `SsrRoutesHandle`. (f6c07ae)
+- `zfb dev`: stale HTML and page-cache entries are pruned when a route disappears or renames via content edit — route-table rebuilds diff the global live output-path set, vanished URLs lose their `dev-pages` HTML and `PageCache` entries (new `PageCache::remove` API), and deleted content files drop their dependency-graph nodes. (f36c730, 48d534b, 85c4e6a, 6b18943)
+- `zfb build` wipes the outdir's contents at build start so `dist/` reflects exactly the current build — no more stale hashed assets or orphan HTML accumulating across rebuilds. The wipe is symlink-safe (outdir-as-symlink survives; child symlinks are unlinked, not traversed), refuses to run when outdir is the project root or an ancestor of it, and runs before the `preBuild` plugin hook so plugin-emitted artifacts survive. (1c8c353)
+
+## Bug Fixes
+
+- `zfb dev`: the `→ ready on …` banner prints only after the TCP listener actually binds — starting on an occupied port now shows the bind error with no misleading ready banner, and the watcher task aborts on bind failure. (09e0a82, 7ec3ab2)
+- Deletion-only watcher ticks preserve rebuild classification flags (css/islands/full-rebuild/ssr-reload), so deleting a stylesheet, client module, or SSR-only source no longer leaves stale output until an unrelated edit; discovery refreshes also rewrite the live SSR route handle; the per-island bundling path keeps splitting disabled so dynamic imports inline there instead of referencing unshipped chunks. (5e22897)
+- Prod companion-chunk writes go through symlink-aware output-path validation. (a45a463)
+- Route-prune hardening: `reload_renderer` fires on deletion-only ticks, and discovery-hook refreshes thread vanished output paths into the prune step. (2249920)
+- Windows: outdir wipe removes directory symlinks via `remove_dir` instead of failing. (703541e)
+- `zfb dev` refreshes the bundle on edit ticks and watches configured collection paths outside `src/content/`; the content-root override is gated to content-shaped files. (a61745a, c38ac34)
+
+## Other Changes
+
+- Integration tests for route pruning and dependency-graph edge removal. (a08cdb3)
+- Clippy style fix: struct-init for test config. (074dc16)
