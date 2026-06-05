@@ -1,20 +1,20 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), and stop before publishing. Fully autonomous by default (no confirmation prompts); pass --confirm to vet the proposal interactively. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, and watch release.yml to completion. Fully autonomous end-to-end by default (no confirmation prompts, publishes without asking); pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. --confirm — present the bump proposal and wait for explicit user confirmation (default is fully autonomous). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing (default is fully autonomous end-to-end). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise notifies and defers that leg to CI), and **stops before publishing**. The user decides when to publish.
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-13 CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — and watches that run to completion. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish.
 
 ## Invocation & autonomy
 
 This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it.
 
-**Default: fully autonomous — NEVER ask for confirmation.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). The only stopping point is the by-design STOP at Step 11 — the skill still never publishes the draft (see Boundaries).
+**Default: fully autonomous end-to-end — NEVER ask for confirmation, NEVER stop and wait.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). There is no stopping point: Step 11 **publishes the Release itself** and watches the triggered `release.yml` run to completion. Do not pause to ask "publish?", "go?", or any equivalent — the invocation itself is the authorization.
 
-**`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), and ask before acting on the Step 1 / Step 8 edge cases. Use this when the version strategy needs vetting before anything is written. Without this flag, do NOT pause anywhere.
+**`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -36,9 +36,10 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
 
 ## Boundaries
 
-- This skill **never** publishes the draft Release. The user runs `gh release edit v<version> --draft=false` themselves.
+- **Default**: this skill publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`) once the Mac asset situation is settled, then watches the triggered `release.yml` run to completion. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
 - This skill **never** pushes a tag separately. The draft Release creation (`gh release create --draft`) creates the tag remotely.
-- This skill **never** publishes to npm. `release.yml` does that when the draft is published.
+- This skill **never** publishes to npm directly. `release.yml` does that when the Release is published.
+- This skill **never** runs the Homebrew formula update (stable releases only; manual — see Step 11's report).
 
 ## Step 1: Preconditions
 
@@ -320,7 +321,7 @@ Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must
 
 ### If NOT `Darwin`
 
-Do not attempt the build (the cross-target needs an Apple host). **Notify the user** with this message, then continue to Step 11:
+Do not attempt the build (the cross-target needs an Apple host). **Print this note**, then continue to Step 11. (Default: Step 11 publishes anyway and `release.yml`'s macos-13 leg builds the Mac binary on CI — slower but autonomous. With `--confirm`: the user can run `/l-make-mac-release-binary` on a Mac before publishing manually.)
 
 ```
 ⚠️  Not a macOS host (uname = <result>). Skipping the local Mac build.
@@ -332,7 +333,31 @@ Do not attempt the build (the cross-target needs an Apple host). **Notify the us
     Otherwise, publishing the draft will let CI build the macos-13 leg (slower).
 ```
 
-## Step 11: Notify + STOP
+## Step 11: Publish + Watch (default) / Notify + STOP (`--confirm`)
+
+The Homebrew gating and the prerelease dual-tag note below apply to BOTH paths.
+
+### Default path (autonomous): publish the Release and watch release.yml
+
+Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
+
+1. **Publish**:
+
+   ```bash
+   gh release edit v<version> --draft=false
+   ```
+
+2. **Find the triggered `release.yml` run** (it fires on `release: published`; allow a few seconds for it to appear):
+
+   ```bash
+   gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
+   ```
+
+3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-13 leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 9 npm packages.
+4. **On success**: print a final report — Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a **stable** release, remind the user to run `./scripts/update-homebrew-formula.sh v<version> --push` (manual — never run it from this skill). For prereleases, skip Homebrew per the gating below.
+5. **On failure**: fetch the failed logs (`gh run view <id> --log-failed`) and report. If the failure is clearly transient (network flake, runner eviction), retry once with `gh run rerun <id> --failed`. Otherwise surface to the user with the failure summary — do NOT unpublish or delete the Release, and do NOT retry more than once.
+
+### `--confirm` path: notify + STOP
 
 Print the message below **verbatim** (substitute the actual version string for `<version>`), picking the block that matches whether the Mac archive was uploaded in Step 10. Do not paraphrase command strings or URLs.
 
@@ -423,7 +448,7 @@ installer with ZFB_VERSION=latest-prerelease:
 ============================================================
 ````
 
-Then **STOP**. Do NOT publish the draft from this skill.
+Then **STOP**. On the `--confirm` path the skill does NOT publish the draft — the user does. (On the default path, publishing already happened above and the skill ends after the release.yml watch + final report.)
 
 ## Cancelling a release / cleaning up an orphaned draft
 
