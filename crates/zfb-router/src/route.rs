@@ -16,17 +16,6 @@ pub enum RouteKind {
     Catchall,
 }
 
-impl RouteKind {
-    /// Lower numbers sort first (i.e. higher priority).
-    pub(crate) fn order_key(self) -> u8 {
-        match self {
-            RouteKind::Static => 0,
-            RouteKind::Dynamic => 1,
-            RouteKind::Catchall => 2,
-        }
-    }
-}
-
 /// A single resolved route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {

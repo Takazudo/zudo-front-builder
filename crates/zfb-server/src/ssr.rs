@@ -252,4 +252,54 @@ mod tests {
         assert!(s.is_empty());
         assert_eq!(s.len(), 0);
     }
+
+    // ---- scan-order dispatch parity (#814) ---------------------------------
+    //
+    // `find_match` is first-match over `records`, and the bin crate fills
+    // `records` in `zfb_router` scan order (most specific first). These pin
+    // that a static-prefixed optional catchall, ordered ahead of a sibling
+    // top-level dynamic SSR route by the per-segment sort, wins the URLs the
+    // bundled Hono runtime would also send to it — dev/prod parity.
+
+    fn set(patterns: &[&str]) -> SsrRouteSet {
+        SsrRouteSet::new(
+            patterns.iter().map(|p| rec(p)).collect(),
+            Arc::new(StubDispatcher::new(SsrResponse::default())),
+        )
+    }
+
+    #[test]
+    fn optional_catchall_wins_bare_prefix_over_top_level_dynamic() {
+        // Scan order for `pages/docs/[[...slug]].tsx` + `pages/[id].tsx`:
+        // the static-prefixed catchall sorts first. `/docs` (the
+        // zero-segment case of the optional catchall) must dispatch to it,
+        // not to `/[id]`.
+        let s = set(&["/docs/[[...slug]]", "/[id]"]);
+        assert_eq!(
+            s.find_match("/docs").map(|r| r.pattern.as_str()),
+            Some("/docs/[[...slug]]"),
+        );
+        // A non-`/docs` single segment still falls through to `/[id]`.
+        assert_eq!(
+            s.find_match("/other").map(|r| r.pattern.as_str()),
+            Some("/[id]"),
+        );
+    }
+
+    #[test]
+    fn optional_catchall_wins_nested_path_over_dynamic_pair() {
+        // Scan order for `pages/docs/[[...slug]].tsx` +
+        // `pages/[lang]/[slug].tsx`: the static-prefixed catchall sorts
+        // first. `/docs/a` must dispatch to it, not to `/[lang]/[slug]`.
+        let s = set(&["/docs/[[...slug]]", "/[lang]/[slug]"]);
+        assert_eq!(
+            s.find_match("/docs/a").map(|r| r.pattern.as_str()),
+            Some("/docs/[[...slug]]"),
+        );
+        // A two-segment URL with a different prefix falls through.
+        assert_eq!(
+            s.find_match("/en/intro").map(|r| r.pattern.as_str()),
+            Some("/[lang]/[slug]"),
+        );
+    }
 }

@@ -548,29 +548,36 @@ fn detect_optional_catchall_conflicts(routes: &[Route]) -> Result<(), RouterErro
 }
 
 /// Sort routes by:
-/// 1. Kind (static < dynamic < catchall) — most specific first.
-/// 2. Number of segments, longer first.
-/// 3. `index.tsx` before non-index siblings (via specificity bonus).
-/// 4. Per-segment kind from left to right (static beats dynamic beats catchall).
-/// 5. Source path, lexicographically, for total ordering.
+/// 1. Per-segment rank vector, compared lexicographically left to right
+///    (static `0` < dynamic `1` < catchall / optional-catchall `2`); a
+///    shorter prefix-matching vector sorts first — most specific first.
+/// 2. `index.tsx` before non-index siblings (via specificity bonus).
+/// 3. Source path, lexicographically, for total ordering.
+///
+/// The rank-vector key is kept byte-for-byte in sync with
+/// `zfb_build::bundler::route_sort_key` (the JS/Hono runtime's
+/// registration order). Mirroring it here is load-bearing: dev SSR
+/// dispatch (`DevRenderSession::ssr_patterns` → `SsrRouteSet::find_match`,
+/// first-match) preserves this scan order, so a coarse per-route kind
+/// sort (the previous design) would let a top-level dynamic SSR route
+/// (`/[id]`, `/[lang]/[slug]`) steal `/docs` / `/docs/a` from a
+/// static-prefixed optional catchall (`/docs/[[...slug]]`) in dev while
+/// the bundled Hono runtime correctly chose the catchall — a dev/prod
+/// routing divergence for the optional-catchall route type.
 fn sort_routes(routes: &mut [Route]) {
     routes.sort_by(|a, b| {
-        a.kind
-            .order_key()
-            .cmp(&b.kind.order_key())
-            .then_with(|| b.segments.len().cmp(&a.segments.len()))
+        route_rank_vector(&a.segments)
+            .cmp(&route_rank_vector(&b.segments))
             .then_with(|| b.specificity.cmp(&a.specificity))
-            .then_with(|| {
-                for (sa, sb) in a.segments.iter().zip(b.segments.iter()) {
-                    let ord = segment_rank(sa).cmp(&segment_rank(sb));
-                    if ord != std::cmp::Ordering::Equal {
-                        return ord;
-                    }
-                }
-                std::cmp::Ordering::Equal
-            })
             .then_with(|| a.source_path.cmp(&b.source_path))
     });
+}
+
+/// Per-segment specificity rank vector for a route. Mirrors
+/// `zfb_build::bundler::route_sort_key` so dev and prod agree on which
+/// of two overlapping routes is more specific (see [`sort_routes`]).
+fn route_rank_vector(segments: &[Segment]) -> Vec<u8> {
+    segments.iter().map(segment_rank).collect()
 }
 
 fn segment_rank(seg: &Segment) -> u8 {
@@ -784,6 +791,105 @@ mod tests {
         let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"])
             .expect("static-prefix optional catchall must coexist with /[id]");
         assert_eq!(routes.len(), 2);
+    }
+
+    /// Index of `template` in a scanned + sorted route list, or panic.
+    fn template_index(routes: &[Route], template: &str) -> usize {
+        routes
+            .iter()
+            .position(|r| r.template() == template)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing route {template}; got {:?}",
+                    routes.iter().map(Route::template).collect::<Vec<_>>(),
+                )
+            })
+    }
+
+    // ---- per-segment specificity sort (dev/prod parity, #814) --------------
+    //
+    // These pin the scan order that dev SSR first-match dispatch
+    // (`SsrRouteSet::find_match`) preserves, against the JS/Hono runtime's
+    // `route_sort_key` registration order in zfb-build's bundler.
+
+    #[test]
+    fn optional_catchall_sorts_before_top_level_dynamic_sibling() {
+        // Divergence case 1: URL `/docs` is matched by both
+        // `pages/docs/[[...slug]].tsx` (zero-segment optional catchall) and
+        // `pages/[id].tsx`. The static-prefixed catchall is strictly more
+        // specific at `/docs`, so it must sort FIRST — otherwise dev SSR
+        // first-match would send `/docs` to the less-specific `/[id]`.
+        let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/docs/:slug{.+}?")
+                < template_index(&routes, "/:id"),
+            "optional catchall /docs/[[...slug]] must sort before /[id]: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn optional_catchall_sorts_before_top_level_dynamic_pair() {
+        // Divergence case 2: URL `/docs/a` is matched by both
+        // `pages/docs/[[...slug]].tsx` and `pages/[lang]/[slug].tsx`. The
+        // static-prefixed catchall (rank `[0, 2]`) is more specific than the
+        // fully-dynamic pair (rank `[1, 1]`) — first differing segment is
+        // static-vs-dynamic at index 0 — so it must sort FIRST.
+        let routes = scan_tree(&["[lang]/[slug].tsx", "docs/[[...slug]].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/docs/:slug{.+}?")
+                < template_index(&routes, "/:lang/:slug"),
+            "optional catchall /docs/[[...slug]] must sort before /[lang]/[slug]: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn required_catchall_orderings_unchanged() {
+        // Existing required-catchall / dynamic invariants stay green under
+        // the per-segment sort:
+        //   - a plain dynamic sibling sorts before the catchall at the same
+        //     static depth (`/docs/[id]` before `/docs/[...slug]`);
+        //   - a static-prefixed catchall sorts before a fully-dynamic pair
+        //     (`/docs/[...slug]` before `/[lang]/[slug]`);
+        //   - a deeper dynamic descendant sorts before the shallow catchall
+        //     (`/docs/v/[page]` before `/docs/[...slug]`).
+        let routes = scan_tree(&[
+            "docs/[id].tsx",
+            "docs/[...slug].tsx",
+            "docs/v/[page].tsx",
+            "[lang]/[slug].tsx",
+        ])
+        .expect("scan");
+        let cat = template_index(&routes, "/docs/:slug{.+}");
+        assert!(
+            template_index(&routes, "/docs/:id") < cat,
+            "/docs/:id before /docs/:slug{{.+}}: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert!(
+            cat < template_index(&routes, "/:lang/:slug"),
+            "/docs/:slug{{.+}} before /:lang/:slug: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert!(
+            template_index(&routes, "/docs/v/:page") < cat,
+            "/docs/v/:page before /docs/:slug{{.+}}: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn index_sibling_outranks_top_level_dynamic() {
+        // The index-bonus path still resolves a same-shape tie: `/foo`
+        // (from `pages/foo/index.tsx`) and `/:foo` (from `pages/[foo].tsx`)
+        // are both single-segment; the static one must sort first.
+        let routes = scan_tree(&["foo/index.tsx", "[foo].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/foo") < template_index(&routes, "/:foo"),
+            "static /foo must sort before dynamic /:foo: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
     }
 
     #[test]

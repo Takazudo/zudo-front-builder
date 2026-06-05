@@ -161,50 +161,67 @@ fn dynamic_param_name_preserved() {
 }
 
 #[test]
-fn sort_order_static_then_dynamic_then_catchall() {
+fn sort_order_is_per_segment_rank_vector() {
+    // Routes are sorted by the per-segment rank vector (static `0` <
+    // dynamic `1` < catchall `2`), compared lexicographically — the same
+    // key `zfb_build::bundler::route_sort_key` uses for Hono registration
+    // order (#814). The whole table must be non-decreasing in that key.
+    // A coarse per-route kind sort is intentionally NOT the contract: a
+    // static-prefixed catchall (`/docs/:slug{.+}` → `[0, 2]`) sorts ahead
+    // of a fully-dynamic pair (`/:lang/:slug` → `[1, 1]`).
     let router = Router::scan(&fixture("pages")).expect("scan");
-    let kinds: Vec<RouteKind> = router.routes().iter().map(|r| r.kind).collect();
-    let mut last_rank: u8 = 0;
-    for kind in kinds {
-        let rank = kind_rank(kind);
-        assert!(last_rank <= rank, "routes not sorted by kind");
-        last_rank = rank;
+    let keys: Vec<Vec<u8>> = router.routes().iter().map(rank_vector).collect();
+    for w in keys.windows(2) {
+        assert!(
+            w[0] <= w[1],
+            "routes not sorted by per-segment rank vector: {:?} before {:?}",
+            w[0],
+            w[1],
+        );
     }
 }
 
-fn kind_rank(k: RouteKind) -> u8 {
-    match k {
-        RouteKind::Static => 0,
-        RouteKind::Dynamic => 1,
-        RouteKind::Catchall => 2,
-    }
+fn rank_vector(route: &Route) -> Vec<u8> {
+    route
+        .segments
+        .iter()
+        .map(|s| match s {
+            Segment::Static(_) => 0u8,
+            Segment::Dynamic(_) => 1,
+            Segment::Catchall(_) | Segment::OptionalCatchall(_) => 2,
+        })
+        .collect()
 }
 
 #[test]
-fn longer_paths_sort_before_shorter_within_kind() {
+fn more_specific_routes_sort_before_looser_overlapping_ones() {
     let router = Router::scan(&fixture("pages")).expect("scan");
     let templates = templates(router.routes());
+    let pos = |t: &str| {
+        templates
+            .iter()
+            .position(|x| x == t)
+            .unwrap_or_else(|| panic!("missing {t} in {templates:?}"))
+    };
 
-    // Among static routes, /about and /blog (1 segment) should appear before /
-    // (0 segments).
-    let pos_root = templates.iter().position(|t| t == "/").expect("/");
-    let pos_about = templates.iter().position(|t| t == "/about").expect("/about");
-    let pos_blog = templates.iter().position(|t| t == "/blog").expect("/blog");
-    assert!(pos_about < pos_root, "/about should sort before /");
-    assert!(pos_blog < pos_root, "/blog should sort before /");
+    // The empty (index) route carries the empty rank vector, which sorts
+    // first — matching the bundler (`/ → []` "empty vector sorts first").
+    // `/` never overlaps `/about`, so this is a deterministic tiebreak only.
+    assert!(pos("/") < pos("/about"), "/ (empty vector) sorts first");
 
-    // Catchall /docs/:slug{.+} must come last (after everything dynamic).
-    let pos_docs = templates
-        .iter()
-        .position(|t| t == "/docs/:slug{.+}")
-        .expect("/docs/:slug{.+}");
-    let pos_blog_slug = templates
-        .iter()
-        .position(|t| t == "/blog/:slug")
-        .expect("/blog/:slug");
+    // Static prefix beats a fully-dynamic pair at the same depth: a URL
+    // like `/docs/a` is matched by both `/docs/:slug{.+}` and `/:lang/:slug`
+    // and must dispatch to the static-prefixed catchall (#814).
     assert!(
-        pos_blog_slug < pos_docs,
-        "dynamic should beat catchall in sort order",
+        pos("/docs/:slug{.+}") < pos("/:lang/:slug"),
+        "static-prefixed catchall must beat the fully-dynamic pair",
+    );
+
+    // A deeper static-prefixed dynamic route still beats a fully-dynamic
+    // pair too (`/blog/:slug` before `/:lang/:slug`).
+    assert!(
+        pos("/blog/:slug") < pos("/:lang/:slug"),
+        "static-prefixed dynamic must beat the fully-dynamic pair",
     );
 }
 
