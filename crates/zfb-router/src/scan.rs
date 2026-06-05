@@ -435,18 +435,54 @@ fn score(segments: &[Segment], source: &Path) -> u32 {
 }
 
 fn detect_ambiguity(routes: &[Route]) -> Result<(), RouterError> {
-    let mut seen: HashMap<String, &Path> = HashMap::new();
+    // Optional-catchall conflicts run first: those pairs (an `[[...name]]`
+    // route vs a same-shaped sibling or another catchall at its prefix) get
+    // the more specific `OptionalCatchallConflict` error, including the
+    // cross-length cases the full-shape check below cannot see (a `[[...]]`
+    // also matches zero segments).
+    detect_optional_catchall_conflicts(routes)?;
+    detect_shape_duplicates(routes)
+}
+
+/// Reject two DIFFERENT source files whose routes share a segment-kind shape
+/// (static segments by literal, dynamic / catchall / optional-catchall by
+/// kind only). Such routes match exactly the same set of URLs regardless of
+/// how their params are named, so one would silently shadow the other via an
+/// arbitrary tiebreak.
+///
+/// This generalises the older byte-identical-template check: a duplicate
+/// template has an identical shape too, but so does `docs/[a].tsx` vs
+/// `docs/[b].tsx` (`/docs/:*`) and `docs/[...a].tsx` vs `docs/[...b].tsx`
+/// (`/docs/:...`), which the template check missed (zfb#816). When the two
+/// templates are byte-identical we keep the clearer `AmbiguousRoute` error;
+/// when only the shape matches we raise `AmbiguousShape`.
+///
+/// Differing static segments keep legitimate siblings legal:
+/// `/[lang]/[slug]` (`/:*/:*`) vs `/blog/[slug]` (`/blog/:*`) differ at index
+/// 0, and `/docs/[a]/x` (`/docs/:*/x`) vs `/docs/[b]/y` (`/docs/:*/y`) differ
+/// in the static tail.
+fn detect_shape_duplicates(routes: &[Route]) -> Result<(), RouterError> {
+    let mut seen: HashMap<String, &Route> = HashMap::new();
     for route in routes {
-        let template = route.template();
-        if let Some(prev) = seen.insert(template.clone(), &route.source_path) {
-            return Err(RouterError::AmbiguousRoute {
-                template,
-                first: prev.to_path_buf(),
+        let key = shape_key(&route.segments);
+        if let Some(prev) = seen.insert(key.clone(), route) {
+            let prev_template = prev.template();
+            let template = route.template();
+            if prev_template == template {
+                return Err(RouterError::AmbiguousRoute {
+                    template,
+                    first: prev.source_path.clone(),
+                    second: route.source_path.clone(),
+                });
+            }
+            return Err(RouterError::AmbiguousShape {
+                shape: key,
+                first: prev.source_path.clone(),
                 second: route.source_path.clone(),
             });
         }
     }
-    detect_optional_catchall_conflicts(routes)
+    Ok(())
 }
 
 /// Render a segment slice as a param-name-insensitive shape key: static
@@ -910,6 +946,102 @@ mod tests {
             "/docs/:slug{.+}?",
             "optional catchall should sort last: {:?}",
             routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    // ---- param-name-insensitive shape conflicts (#816) ---------------------
+
+    #[test]
+    fn required_catchall_siblings_with_different_param_names_conflict() {
+        // `pages/docs/[...a].tsx` (`/docs/:a{.+}`) and
+        // `pages/docs/[...b].tsx` (`/docs/:b{.+}`) overlap on every URL
+        // either can serve. Same shape, different param names → conflict.
+        let err = scan_tree(&["docs/[...a].tsx", "docs/[...b].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::AmbiguousShape { .. }),
+            "expected AmbiguousShape, got {err:?}",
+        );
+        assert!(err.to_string().contains("/docs/:..."), "got: {err}");
+    }
+
+    #[test]
+    fn dynamic_siblings_with_different_param_names_conflict() {
+        // `pages/docs/[a].tsx` vs `pages/docs/[b].tsx`: full overlap for
+        // single-segment dynamics.
+        let err = scan_tree(&["docs/[a].tsx", "docs/[b].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::AmbiguousShape { .. }),
+            "expected AmbiguousShape, got {err:?}",
+        );
+        assert!(err.to_string().contains("/docs/:*"), "got: {err}");
+    }
+
+    #[test]
+    fn top_level_dynamic_siblings_with_different_param_names_conflict() {
+        // `pages/[a].tsx` vs `pages/[b].tsx` (`/:a` vs `/:b`).
+        let err = scan_tree(&["[a].tsx", "[b].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::AmbiguousShape { .. }));
+    }
+
+    #[test]
+    fn nested_dynamic_siblings_with_different_param_names_conflict() {
+        // Mixed static + dynamic shape: `/docs/:*/edit` shared by both.
+        let err =
+            scan_tree(&["docs/[a]/edit.tsx", "docs/[b]/edit.tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::AmbiguousShape { .. }));
+    }
+
+    #[test]
+    fn byte_identical_templates_still_report_ambiguous_route() {
+        // The clearer `AmbiguousRoute` error is preserved when the two
+        // templates are byte-identical (same param name too).
+        let err = scan_tree(&["blog.tsx", "blog/index.tsx"]).unwrap_err();
+        match err {
+            RouterError::AmbiguousRoute { template, .. } => {
+                assert_eq!(template, "/blog");
+            }
+            other => unreachable!("expected AmbiguousRoute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn different_static_prefix_same_shape_is_legal() {
+        // `/[lang]/[slug]` (`/:*/:*`) vs `/blog/[slug]` (`/blog/:*`) differ
+        // at index 0 — different static prefix, both legal.
+        let routes = scan_tree(&["[lang]/[slug].tsx", "blog/[slug].tsx"])
+            .expect("different static prefixes must coexist");
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn same_dynamic_prefix_different_static_tail_is_legal() {
+        // `/docs/[a]/x` (`/docs/:*/x`) vs `/docs/[b]/y` (`/docs/:*/y`):
+        // same dynamic prefix shape but different static tail → distinct
+        // URL sets, both legal.
+        let routes = scan_tree(&["docs/[a]/x.tsx", "docs/[b]/y.tsx"])
+            .expect("different static tails must coexist");
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn dynamic_and_catchall_at_same_prefix_are_legal() {
+        // `/docs/[id]` (`/docs/:*`) and `/docs/[...slug]` (`/docs/:...`) have
+        // DIFFERENT shapes (dynamic vs catchall) — they coexist via the
+        // specificity sort, not a conflict.
+        let routes = scan_tree(&["docs/[id].tsx", "docs/[...slug].tsx"])
+            .expect("dynamic and catchall at the same prefix must coexist");
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn required_catchall_optional_catchall_conflict_kept() {
+        // Optional-catchall-involving pairs still get the more specific
+        // OptionalCatchallConflict error even though they share a shape key
+        // (the optional-catchall pass runs first).
+        let err = scan_tree(&["docs/[...a].tsx", "docs/[[...b]].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::OptionalCatchallConflict { .. }),
+            "expected OptionalCatchallConflict, got {err:?}",
         );
     }
 
