@@ -982,20 +982,34 @@ pub(crate) fn build_default_islands_payload(
     // import ships — so the empty-islands short-circuit below only fires
     // when client-router is NOT in play.
     if islands_set.is_empty() && !scan_meta.uses_client_router {
-        // Issue #122 / #117: this branch used to be silent, which made
-        // pnpm-workspace consumers with `"use client"` islands inside a
-        // workspace package look "fine" while shipping no client
-        // runtime. Surface it loudly so authoring problems (a missing
-        // `"use client"` directive, an island reachable only through a
-        // path the scanner can't follow) become discoverable.
-        output::warn(format!(
-            "scanned {} page entr{} but found no \"use client\" islands; \
-             dist/assets/islands.js will not be emitted. \
-             Verify each island module starts with the literal directive \
-             \"use client\" and is reachable from a page in pages/.",
-            entries.len(),
-            if entries.len() == 1 { "y" } else { "ies" }
-        ));
+        // Issue #822: only the loud warning + verify-hint when the scan
+        // saw a *near-miss* — a module that looks like it meant to be a
+        // `"use client"` island but didn't register one (a misplaced or
+        // misspelled directive, or a valid directive with no exported
+        // component). For a project that is island-free on purpose
+        // (`near_miss_candidates == 0`), the verify-hint is permanent
+        // noise, so we demote to a quiet info note with no hint.
+        if scan_meta.near_miss_candidates == 0 {
+            output::info(
+                "no \"use client\" islands found; skipping islands bundle \
+                 (dist/assets/islands.js will not be emitted)",
+            );
+        } else {
+            // Issue #122 / #117: this branch used to be silent, which made
+            // pnpm-workspace consumers with `"use client"` islands inside a
+            // workspace package look "fine" while shipping no client
+            // runtime. Surface it loudly so authoring problems (a missing
+            // `"use client"` directive, an island reachable only through a
+            // path the scanner can't follow) become discoverable.
+            output::warn(format!(
+                "scanned {} page entr{} but found no \"use client\" islands; \
+                 dist/assets/islands.js will not be emitted. \
+                 Verify each island module starts with the literal directive \
+                 \"use client\" and is reachable from a page in pages/.",
+                entries.len(),
+                if entries.len() == 1 { "y" } else { "ies" }
+            ));
+        }
         return Ok(None);
     }
 
@@ -4014,6 +4028,47 @@ mod tests {
         assert!(
             payload.is_none(),
             "expected None when no use-client components; got {payload:?}",
+        );
+    }
+
+    /// Issue #822: a page that imports a module with a *misplaced*
+    /// `"use client"` directive still emits no islands bundle (the
+    /// directive is rejected), so the payload is `None`. This exercises
+    /// the near-miss branch of the empty-islands report — the one that
+    /// keeps the loud warning + verify-hint. We can't assert on the
+    /// stderr text here, but the `None` return confirms the short-circuit
+    /// fires on the same path the near-miss accounting flows through.
+    #[test]
+    fn default_runner_returns_none_islands_for_near_miss_directive() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "import { Counter } from \"../components/counter\";\n\
+             export default function Index() { return <Counter/>; }\n",
+        )
+        .unwrap();
+        // Directive is not first in the prologue (an import precedes it),
+        // so it is rejected and no island is registered.
+        std::fs::write(
+            project_root.join("components/counter.tsx"),
+            "import { useState } from \"preact/hooks\";\n\
+             \"use client\";\n\
+             export function Counter() { return null; }\n",
+        )
+        .unwrap();
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
+        assert!(
+            payload.is_none(),
+            "expected None for a misplaced use-client directive; got {payload:?}",
         );
     }
 
