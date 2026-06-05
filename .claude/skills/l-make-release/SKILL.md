@@ -1,16 +1,20 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), and stop before publishing. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), and stop before publishing. Fully autonomous by default (no confirmation prompts); pass --confirm to vet the proposal interactively. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. --confirm — present the bump proposal and wait for explicit user confirmation (default is fully autonomous). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
 
 Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise notifies and defers that leg to CI), and **stops before publishing**. The user decides when to publish.
 
-## Invocation & confirmation
+## Invocation & autonomy
 
-This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it. **It must never mutate anything before the user explicitly confirms.** Steps 1–3 are read-only (preconditions, version computation, change analysis); the first mutation is Step 4. Always present the Step 3 proposal (current → new version + categorized changelog) and **wait for explicit user confirmation** before proceeding to Step 4. If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
+This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it.
+
+**Default: fully autonomous — NEVER ask for confirmation.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). The only stopping point is the by-design STOP at Step 11 — the skill still never publishes the draft (see Boundaries).
+
+**`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), and ask before acting on the Step 1 / Step 8 edge cases. Use this when the version strategy needs vetting before anything is written. Without this flag, do NOT pause anywhere.
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -50,7 +54,10 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
    gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
    ```
 
-   If this prints any tag, surface it to the user. A draft for a version **other than** the one you are about to release is an orphan from an abandoned run — offer to delete it per ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) before continuing. (A draft for the version you are about to release is handled later in Step 8.) Do not auto-delete; wait for the user — unless the user has already authorized cleanup this session.
+   If this prints any tag, a draft for a version **other than** the one you are about to release is an orphan from an abandoned run. (A draft for the version you are about to release is handled later in Step 8.)
+
+   - **Default (autonomous)**: delete the orphan(s) per ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) — never-published drafts have no tag ref and no consumers — then report what was deleted and continue.
+   - **With `--confirm`**: surface the orphan(s) and offer to delete; wait for the user before continuing.
 
 ## Step 2: Determine Next Version
 
@@ -131,7 +138,10 @@ Other Changes:
 - description (hash)
 ```
 
-Only show sections that have entries. **Wait for user confirmation before proceeding.**
+Only show sections that have entries.
+
+- **Default (autonomous)**: the printout is for visibility only — proceed straight to Step 4 without waiting.
+- **With `--confirm`**: **wait for explicit user confirmation before proceeding.** If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
 
 ## Step 4: Bump + Sync + Changelog mdx
 
@@ -257,11 +267,15 @@ Before creating the draft Release, check whether a release for this version alre
 gh release view v<version> 2>/dev/null
 ```
 
-If it exists, present the user with three options and wait for their choice:
+If it exists:
 
-- **Reuse**: skip the `gh release create` step and proceed to the notify message.
-- **Delete and recreate**: `gh release delete v<version> --yes --cleanup-tag` then re-create.
-- **Abort**: stop.
+- **Default (autonomous)**:
+  - Existing release is a **draft** (`gh release view v<version> --json isDraft --jq '.isDraft'` is `true`) → delete and recreate: `gh release delete v<version> --yes` (no `--cleanup-tag` — a never-published draft has no tag ref), then proceed to Step 9. Report what was deleted.
+  - Existing release is **published** → STOP with an error. The version is already live; never delete a published Release. Re-run `/l-make-release` so Step 2 bumps past it.
+- **With `--confirm`**: present the user with three options and wait for their choice:
+  - **Reuse**: skip the `gh release create` step and proceed to the notify message.
+  - **Delete and recreate**: `gh release delete v<version> --yes` then re-create (only for drafts — never delete a published Release).
+  - **Abort**: stop.
 
 This check is scoped to the **target** version. A draft for a *different* (earlier, superseded) version is an orphan from an abandoned run — that case is caught by Step 1's draft scan and cleaned up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft).
 
@@ -479,7 +493,7 @@ Fix the issue, commit the fix, push, then re-invoke `/watch-ci`. Do not proceed 
 
 ### Existing draft Release for the version (Step 8)
 
-Prompt: reuse / delete-and-recreate / abort. Wait for user choice before acting.
+Default (autonomous): draft → delete and recreate; published → stop with an error (never delete a published Release). With `--confirm`: prompt reuse / delete-and-recreate / abort and wait for user choice before acting.
 
 ### Mismatched mdx + commit (Step 8)
 
