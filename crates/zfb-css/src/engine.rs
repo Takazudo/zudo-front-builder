@@ -491,6 +491,78 @@ impl TailwindSubprocessEngine {
     }
 }
 
+/// Filename prefix for the synthesised Tailwind entry temp file. Shared by
+/// the create site and the self-healing sweep so the two never drift.
+const ENTRY_TMP_PREFIX: &str = "zfb-tailwind-entry-";
+/// Filename suffix (extension) for the synthesised Tailwind entry temp file.
+const ENTRY_TMP_SUFFIX: &str = ".css";
+/// Minimum age before the sweep will delete a stranded entry temp file.
+///
+/// The sweep removes only files older than this so two concurrent builds in
+/// the same project dir cannot delete each other's *live* entry file: a
+/// Tailwind pass opens its `-i` entry at spawn (milliseconds), ~1000x under
+/// this window, so a file this old is necessarily orphaned by an earlier
+/// aborted run.
+///
+/// Out of scope (deliberately): the residual cross-process race where two
+/// `zfb` builds run in the *same* `working_dir` and one build's Tailwind has
+/// not opened its entry within this window (e.g. a multi-minute-latency
+/// wrapper via `ZFB_TAILWIND_BIN`). std offers no portable file-liveness
+/// check, a lockfile would add a dependency for a non-supported workflow, and
+/// the worst case is a single build failing loudly with "file not found" —
+/// never corruption or a silent bad artifact. On Unix, unlinking a file the
+/// reader has already opened is harmless (the inode survives until fd close),
+/// so only the create→open gap is at risk; on Windows the open file cannot be
+/// unlinked at all.
+const ENTRY_TMP_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Delete `zfb-tailwind-entry-*.css` files left in `dir` by a previous run
+/// that died before its [`tempfile::NamedTempFile`] `Drop` could clean up
+/// (SIGKILL / crash / Ctrl-C). See zfb#821.
+///
+/// Only files older than [`ENTRY_TMP_STALE_AFTER`] are removed, so a sibling
+/// build running concurrently in the same project keeps its freshly-created
+/// live entry. Best-effort: any individual error (unreadable dir, racing
+/// unlink, permission denied) is ignored — a failed sweep must never break a
+/// build.
+fn sweep_stale_entry_files(dir: &Path) {
+    sweep_stale_entry_files_at(dir, std::time::SystemTime::now());
+}
+
+/// Core of [`sweep_stale_entry_files`], parameterised on the reference time
+/// so tests can drive staleness without manipulating file mtimes (which has
+/// no `std`-only setter). A file counts as stale when
+/// `now - mtime >= ENTRY_TMP_STALE_AFTER`.
+fn sweep_stale_entry_files_at(dir: &Path, now: std::time::SystemTime) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with(ENTRY_TMP_PREFIX) && name.ends_with(ENTRY_TMP_SUFFIX)) {
+            continue;
+        }
+        // Skip directories and anything we can't stat.
+        let metadata = match entry.metadata() {
+            Ok(m) if m.is_file() => m,
+            _ => continue,
+        };
+        // Age out via mtime: only sweep files that have been sitting long
+        // enough to be certainly orphaned, never a sibling's live entry.
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|mtime| now.duration_since(mtime).ok())
+            .map(|age| age >= ENTRY_TMP_STALE_AFTER)
+            .unwrap_or(false);
+        if old_enough {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 impl CssEngine for TailwindSubprocessEngine {
     fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String> {
         // Build the synthesised entry CSS. Read user input_css if set —
@@ -526,13 +598,24 @@ impl CssEngine for TailwindSubprocessEngine {
             ));
         }
 
+        // Self-heal: delete entry temp files stranded by a past abnormal
+        // termination (SIGKILL / crash / Ctrl-C skips the RAII `Drop` that
+        // normally removes them). Done before we create the new file so the
+        // project root is clean even if `git add -A` ran since the leak.
+        // See zfb#821.
+        sweep_stale_entry_files(&self.config.working_dir);
+
         // Materialise the synthesised entry CSS into a temp file so
-        // Tailwind's `@source` resolution uses our wrapper (and the user
-        // file's relative imports still resolve, since the temp file is
-        // adjacent to the working_dir, not to the user file).
+        // Tailwind's `@source` resolution uses our wrapper. The file lives
+        // in `working_dir` (not a subdir like `.zfb/`) on purpose: the
+        // user's `input_css` is inlined into this entry, so any relative
+        // `@import "./x.css";` in it resolves against the entry file's
+        // directory — which must be `working_dir` for those imports to find
+        // the user's siblings. `@source` paths are already absolute, so they
+        // are unaffected by the location.
         let mut entry_tmp = tempfile::Builder::new()
-            .prefix("zfb-tailwind-entry-")
-            .suffix(".css")
+            .prefix(ENTRY_TMP_PREFIX)
+            .suffix(ENTRY_TMP_SUFFIX)
             .tempfile_in(&self.config.working_dir)
             .context("failed to allocate temp file for tailwind entry CSS")?;
         {
@@ -862,5 +945,91 @@ mod tests {
             stripped.contains("@import \"tailwindcss\";"),
             "active import after block comment must survive stripping; got:\n{stripped}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#821 — self-healing sweep of stranded entry temp files
+    // -----------------------------------------------------------------------
+
+    use std::time::{Duration, SystemTime};
+
+    /// A reference "now" far enough in the future that any just-written file
+    /// reads as stale to the sweep — exercises the stale branch without an
+    /// mtime setter (which `std` lacks).
+    fn future_now() -> SystemTime {
+        SystemTime::now() + ENTRY_TMP_STALE_AFTER + Duration::from_secs(3600)
+    }
+
+    /// A stale `zfb-tailwind-entry-*.css` left in `working_dir` by an aborted
+    /// run (SIGKILL skipped its RAII `Drop`) must be removed by the sweep so a
+    /// later `git add -A` cannot sweep it into the user's repo.
+    #[test]
+    fn sweep_removes_stale_entry_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stranded = dir.path().join("zfb-tailwind-entry-UErIaE.css");
+        std::fs::write(&stranded, b"/* leaked */").unwrap();
+
+        // `now` in the future → the just-written file is past the stale window.
+        sweep_stale_entry_files_at(dir.path(), future_now());
+
+        assert!(
+            !stranded.exists(),
+            "stale entry temp file should have been swept; still present at {}",
+            stranded.display()
+        );
+    }
+
+    /// The sweep must NOT delete a freshly-created entry file — that would be
+    /// a *live* sibling's file in a concurrent build in the same project dir.
+    #[test]
+    fn sweep_keeps_fresh_entry_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let live = dir.path().join("zfb-tailwind-entry-rN8CIp.css");
+        std::fs::write(&live, b"/* live */").unwrap();
+
+        // Real `now`: the file's mtime is within the stale window, so it stays.
+        sweep_stale_entry_files_at(dir.path(), SystemTime::now());
+
+        assert!(
+            live.exists(),
+            "a fresh entry temp file (live concurrent build) must be kept"
+        );
+    }
+
+    /// The sweep must touch ONLY `zfb-tailwind-entry-*.css` files. Unrelated
+    /// files in the project root — even ones old enough to be eligible by age
+    /// — must survive.
+    #[test]
+    fn sweep_leaves_unrelated_files_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user_file = dir.path().join("global.css");
+        let other_tmp = dir.path().join("zfb-tailwind-out-abc.css"); // output temp, different prefix
+        let no_ext = dir.path().join("zfb-tailwind-entry-noext"); // right prefix, wrong suffix
+        std::fs::write(&user_file, b"body{}").unwrap();
+        std::fs::write(&other_tmp, b"/* out */").unwrap();
+        std::fs::write(&no_ext, b"x").unwrap();
+
+        // Future `now` makes every file age-eligible; only the name filter
+        // protects the unrelated ones.
+        sweep_stale_entry_files_at(dir.path(), future_now());
+
+        assert!(user_file.exists(), "user CSS must never be swept");
+        assert!(
+            other_tmp.exists(),
+            "output temp (different prefix) must not be swept by the entry sweep"
+        );
+        assert!(
+            no_ext.exists(),
+            "file with the entry prefix but wrong suffix must not be swept"
+        );
+    }
+
+    /// The sweep on a non-existent directory must be a silent no-op (best
+    /// effort) — it must never panic or surface an error into the build.
+    #[test]
+    fn sweep_on_missing_dir_is_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        sweep_stale_entry_files_at(&missing, future_now()); // must not panic
     }
 }
