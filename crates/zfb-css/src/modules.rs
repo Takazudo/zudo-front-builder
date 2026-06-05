@@ -35,6 +35,28 @@ pub struct CssModulesConfig {
     /// Class-name pattern. Defaults to lightningcss's `[hash]_[local]`
     /// equivalent (its own default).
     pub pattern: Option<String>,
+
+    /// Project root used to derive the *project-relative* filename that
+    /// lightningcss hashes into the scoped class prefix (`[hash]`).
+    ///
+    /// The default `[hash]_[local]` pattern derives `[hash]` from the
+    /// filename we hand to lightningcss. Passing the absolute module path
+    /// there makes byte-identical sources produce different scoped class
+    /// names — and a different `styles-<hash>.css` filename — across
+    /// machines/checkout paths (see issue #825). Passing the path
+    /// relative to this root (with `/` separators) keeps `[hash]` stable
+    /// across checkouts while staying unique across same-basename modules
+    /// in different directories.
+    ///
+    /// When `None`, or when a module path is not under this root, we fall
+    /// back to the absolute path — the non-reproducible-but-correct
+    /// behaviour from before #825.
+    ///
+    /// Note: this only affects the *string fed to lightningcss for
+    /// hashing*. The returned [`CssModulesOutput::class_maps`] stays keyed
+    /// by the original absolute path so downstream bundler lookups are
+    /// unaffected.
+    pub project_root: Option<PathBuf>,
 }
 
 /// Output of [`CssModulesProcessor::process`].
@@ -49,6 +71,24 @@ pub struct CssModulesOutput {
     /// Consumers (JSX/TSX module-graph rewriters) use this map to rewrite
     /// `import styles from "./foo.module.css"` references at build time.
     pub class_maps: HashMap<PathBuf, HashMap<String, String>>,
+}
+
+impl CssModulesConfig {
+    /// Production config that hashes scoped class names off the
+    /// *project-relative* module path (issue #825).
+    ///
+    /// This is the single source of truth for the reproducible-hash config
+    /// used by the build's CSS pipeline: the emitted `styles-<hash>.css` and
+    /// the build-time JSX class-map rewrite MUST construct their
+    /// `CssModulesProcessor` with the same `project_root` so the scoped names
+    /// (and therefore the asset hash) agree. Using this constructor at every
+    /// such site makes the invariant structural instead of comment-enforced.
+    pub fn for_project_root(root: &Path) -> Self {
+        Self {
+            project_root: Some(root.to_path_buf()),
+            ..Self::default()
+        }
+    }
 }
 
 /// Compiles `*.module.css` files into scoped CSS plus a class-name map.
@@ -122,7 +162,7 @@ impl CssModulesProcessor {
             .map_err(|e| anyhow::anyhow!("invalid CSS Modules pattern {pattern:?}: {e}"))?;
 
         let parser_opts = ParserOptions {
-            filename: path.to_string_lossy().into_owned(),
+            filename: hash_filename(path, self.config.project_root.as_deref()),
             css_modules: Some(LcssConfig {
                 pattern: pattern_parsed,
                 dashed_idents: false,
@@ -155,5 +195,141 @@ impl CssModulesProcessor {
         }
 
         Ok((printed.code, names))
+    }
+}
+
+/// Derive the filename string fed to a *user-visible hash* for a CSS
+/// Modules file.
+///
+/// When `project_root` is `Some` and `path` is under it, returns the
+/// project-relative path with `/` separators (so the hash is stable
+/// across machines/checkout paths — see issue #825, and matches across
+/// OSes by normalising Windows `\` to `/`). Otherwise falls back to the
+/// absolute (lossy) path: stable within a build, just not across
+/// relocations.
+///
+/// Used for the lightningcss `[hash]` prefix in [`CssModulesProcessor`]
+/// and for the class-map JSON filename hash in `pipeline.rs`, so both
+/// user-visible hashes derive from the same normalised string.
+pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String {
+    let rel = project_root.and_then(|root| path.strip_prefix(root).ok());
+    let chosen = rel.unwrap_or(path);
+    let lossy = chosen.to_string_lossy();
+    // Normalise Windows separators so the hash matches across OSes.
+    if lossy.contains('\\') {
+        lossy.replace('\\', "/")
+    } else {
+        lossy.into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SOURCE: &str = ".section { color: red; }";
+
+    fn processor_with_root(root: &str) -> CssModulesProcessor {
+        CssModulesProcessor::new(CssModulesConfig {
+            project_root: Some(PathBuf::from(root)),
+            ..CssModulesConfig::default()
+        })
+    }
+
+    /// Synthetic absolute paths only — no tempdirs. A disk-backed
+    /// tempdir on macOS resolves `/var` → `/private/var`, which would
+    /// make `strip_prefix(project_root)` flaky; the production inputs
+    /// are lexical (see `scanner::resolve_specifier`), so synthetic
+    /// paths model them faithfully.
+    fn scoped_name(processor: &CssModulesProcessor, path: &str) -> String {
+        let (_, names) = processor
+            .process_source(Path::new(path), SOURCE)
+            .expect("process_source");
+        names
+            .get("section")
+            .cloned()
+            .expect("scoped name for `section`")
+    }
+
+    /// #825: byte-identical sources at the *same project-relative path*
+    /// under two different absolute roots must produce identical scoped
+    /// class names, so builds are reproducible across machines/checkout
+    /// paths.
+    #[test]
+    fn scoped_names_are_stable_across_project_roots() {
+        let a = scoped_name(
+            &processor_with_root("/home/runner/work/proj"),
+            "/home/runner/work/proj/src/card.module.css",
+        );
+        let b = scoped_name(
+            &processor_with_root("/Users/dev/repos/proj"),
+            "/Users/dev/repos/proj/src/card.module.css",
+        );
+        assert_eq!(
+            a, b,
+            "same relative path under different roots must hash identically"
+        );
+    }
+
+    /// Uniqueness is preserved: two same-basename modules in different
+    /// subdirectories of the *same* root must still get different scoped
+    /// names (the relative path, not just the basename, feeds the hash).
+    #[test]
+    fn scoped_names_differ_for_same_basename_in_different_dirs() {
+        let processor = processor_with_root("/proj");
+        let a = scoped_name(&processor, "/proj/src/a/card.module.css");
+        let b = scoped_name(&processor, "/proj/src/b/card.module.css");
+        assert_ne!(
+            a, b,
+            "same basename in different dirs must keep distinct scoped names"
+        );
+    }
+
+    /// Without a `project_root`, the absolute path feeds the hash (the
+    /// pre-#825 behaviour): two different absolute paths yield different
+    /// names — correct within a build, just not reproducible across
+    /// relocations.
+    #[test]
+    fn scoped_names_fall_back_to_absolute_path_without_root() {
+        let processor = CssModulesProcessor::with_default_config();
+        let a = scoped_name(&processor, "/root-a/src/card.module.css");
+        let b = scoped_name(&processor, "/root-b/src/card.module.css");
+        assert_ne!(
+            a, b,
+            "absolute-path fallback keeps per-build uniqueness when no root is set"
+        );
+    }
+
+    #[test]
+    fn hash_filename_relativises_under_root() {
+        assert_eq!(
+            hash_filename(
+                Path::new("/proj/src/card.module.css"),
+                Some(Path::new("/proj"))
+            ),
+            "src/card.module.css"
+        );
+    }
+
+    #[test]
+    fn hash_filename_falls_back_to_absolute_outside_root() {
+        // Path not under the root → lossy absolute fallback.
+        assert_eq!(
+            hash_filename(
+                Path::new("/elsewhere/card.module.css"),
+                Some(Path::new("/proj"))
+            ),
+            "/elsewhere/card.module.css"
+        );
+    }
+
+    #[test]
+    fn hash_filename_normalises_backslashes() {
+        // Even on a non-Windows host, a backslash in the relative tail
+        // must normalise so the hash matches a Unix checkout.
+        assert_eq!(
+            hash_filename(Path::new(r"sub\card.module.css"), None),
+            "sub/card.module.css"
+        );
     }
 }

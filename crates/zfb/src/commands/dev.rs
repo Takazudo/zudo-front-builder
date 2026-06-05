@@ -704,7 +704,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         }
         Ok(None) => {
-            // Tailwind disabled or no sources. Leave the handle at None.
+            // No CSS to ship (no authored globals, no CSS Modules, and —
+            // when Tailwind is enabled — no scannable sources). Leave the
+            // handle at None. Tailwind being disabled no longer implies
+            // None on its own: authored CSS still ships (issue #824).
         }
         Err(err) => {
             output::warn(format!(
@@ -1766,12 +1769,13 @@ fn assemble_and_bundle_dev(
     // CSS Modules — mirror the production-build wiring so dev preview
     // resolves `import styles from "./x.module.css"` to the same scoped
     // class names `zfb build` produces. The scoped names are
-    // deterministic (both sides use `CssModulesConfig::default()`), so
+    // deterministic (both sides go through `compute_css_module_class_maps`,
+    // which hashes the project-relative module path — issue #825), so
     // the dev stylesheet and dev-rendered HTML agree. A failure here is
     // non-fatal: log it and continue with empty maps (`.module.css`
     // imports then degrade to `{}` rather than aborting the dev boot).
     bundler_input.css_module_class_maps =
-        match crate::commands::build::compute_css_module_class_maps(project_root, cfg) {
+        match crate::commands::build::compute_css_module_class_maps(project_root) {
             Ok(maps) => maps,
             Err(e) => {
                 crate::output::warn(format!(

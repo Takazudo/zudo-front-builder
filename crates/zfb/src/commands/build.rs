@@ -61,8 +61,8 @@ use zfb_build::pipeline::{
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_css::{
-    css_relative_path, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine, CssPipeline,
+    CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_islands::{
     build_production_islands_asset, scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler,
@@ -660,15 +660,20 @@ impl BuildRunner for DefaultRunner {
 /// Run the real `CssPipeline::build_emitter` for a project and return
 /// its bytes packaged for [`ProductionAssetPipeline`].
 ///
+/// When the user disabled Tailwind via `zfb.config.{ts,json}`
+/// (`tailwind: { enabled: false }`), this skips the Tailwind layers
+/// (import / `@source` scan / preflight / subprocess) but still
+/// processes the authored global stylesheet and CSS Modules — see
+/// [`build_authored_only_css_payload`]. `enabled: false` means "no
+/// Tailwind", not "no CSS" (issue #824).
+///
 /// Returns `Ok(None)` when:
 ///
-/// - the user explicitly disabled Tailwind via
-///   `zfb.config.{ts,json}` (`tailwind: { enabled: false }`), OR
 /// - no scannable source files were found under the conventional
-///   project roots (`pages/`, `components/`, `layouts/`, `content/`).
-///   In that case the project carries no utility-class authoring
-///   surface and emitting an empty stylesheet would just leave a
-///   broken `<link>` tag in HTML.
+///   project roots (`pages/`, `components/`, `layouts/`, `content/`)
+///   AND no authored global stylesheet exists. In that case the
+///   project carries no CSS authoring surface and emitting an empty
+///   stylesheet would just leave a broken `<link>` tag in HTML.
 ///
 /// On `Ok(Some(_))` the orchestrator hashes the bytes and writes
 /// `dist/assets/styles-<hash>.css`. The `relative_path` /
@@ -681,12 +686,14 @@ pub(crate) fn build_default_css_payload(
     outdir: &Path,
     config: &Config,
 ) -> Result<Option<AssetEmitterPayload>> {
-    // Honour the user's opt-out switch before doing any source
-    // discovery work — keeps the default runner free of subprocess
-    // cost when the project explicitly does not want Tailwind.
+    // `tailwind: { enabled: false }` disables only the Tailwind layers,
+    // not the authored-CSS pipeline. Route to the Tailwind-free path so
+    // global CSS + CSS Modules still ship (issue #824). Falling back to
+    // the Tailwind subprocess path here would re-add the preflight the
+    // user opted out of and incur subprocess cost.
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        return Ok(None);
+        return build_authored_only_css_payload(project_root, outdir);
     }
 
     let sources = discover_css_source_files(project_root);
@@ -749,33 +756,160 @@ pub(crate) fn build_default_css_payload(
 
     let engine = TailwindSubprocessEngine::new(tw_cfg);
 
+    // Tailwind path always ships a payload — its preflight bytes are never
+    // empty, so there is no whitespace-only guard here (unlike the
+    // authored-only path).
+    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    Ok(Some(payload))
+}
+
+/// Shared tail of the two CSS-emitter paths
+/// ([`build_default_css_payload`] and [`build_authored_only_css_payload`]).
+///
+/// Given an already-configured [`CssEngine`] (Tailwind subprocess or
+/// authored-verbatim), builds the [`CssPipelineConfig`], runs
+/// [`CssPipeline::build_emitter`], and packages the result as an
+/// [`AssetEmitterPayload`]. Both call sites feed the same `project_root`
+/// and `outdir`, so the CSS Modules hash root is identical across them and
+/// matches [`compute_css_module_class_maps`] (issue #825). The per-call-site
+/// differences (the authored path's whitespace-only `None` guard vs the
+/// Tailwind path's always-emit) stay at the call sites, not in this helper.
+fn run_css_emitter<E: CssEngine>(
+    engine: E,
+    project_root: &Path,
+    outdir: &Path,
+    sources: Vec<PathBuf>,
+) -> Result<AssetEmitterPayload> {
     let pipe_cfg = CssPipelineConfig {
         sources,
         // The on-disk class-map JSON writer is not used: the build-time
         // CSS Modules rewrite consumes the maps in-memory instead.
         // `compute_css_module_class_maps` runs `CssModulesProcessor`
-        // directly (same default config this emitter uses, so scoped
-        // names agree) and feeds `BundlerInput::css_module_class_maps`,
-        // which the bundler applies in the shadow tree. No JSON channel
-        // is needed, so `class_map_dir` stays `None`.
+        // directly (same config this emitter uses, so scoped names agree)
+        // and feeds `BundlerInput::css_module_class_maps`, which the
+        // bundler applies in the shadow tree. No JSON channel is needed,
+        // so `class_map_dir` stays `None`.
         class_map_dir: None,
         // `output_root` is unused by `build_emitter` (it does not
         // write the hashed asset itself) but is read by the
         // class-map writer when `class_map_dir` is `Some`. Pin it to
         // the configured outdir for forward-compat.
         output_root: outdir.to_path_buf(),
+        // Hash root shared with `compute_css_module_class_maps` via
+        // `CssModulesConfig::for_project_root` (issue #825).
+        modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
         ..CssPipelineConfig::default()
     };
 
     let pipeline = CssPipeline::new(engine, pipe_cfg);
     let emitter_out = pipeline.build_emitter()?;
 
-    Ok(Some(AssetEmitterPayload {
+    Ok(AssetEmitterPayload {
         bytes: emitter_out.bytes,
         relative_path: css_relative_path(),
         stable_url: emitter_out.stable_url,
         companions: Vec::new(),
-    }))
+    })
+}
+
+/// CSS payload for the `tailwind: { enabled: false }` path: authored
+/// global stylesheet + CSS Modules, with the Tailwind layers
+/// (import / `@source` scan / preflight / subprocess) skipped entirely.
+///
+/// `enabled: false` opts out of Tailwind, not out of CSS (issue #824).
+/// The authored global stylesheet currently rides *inside* the Tailwind
+/// engine via its `input_css` slot, so simply skipping the engine would
+/// drop the user's globals too. Instead we read the authored global CSS
+/// independently (same probe order as the Tailwind path,
+/// [`resolve_input_global_css`]) and feed it through an
+/// [`AuthoredCssEngine`] — a no-subprocess engine that returns the
+/// authored bytes verbatim as the "engine half" of the combined
+/// stylesheet. CSS Modules processing, concatenation, hashing, and
+/// asset emission are engine-agnostic and run unchanged via
+/// [`CssPipeline::build_emitter`].
+///
+/// Returns `Ok(None)` when the project has neither an authored global
+/// stylesheet nor any CSS Modules — the combined output would be
+/// whitespace only, and emitting it would leave a broken `<link>` tag
+/// in HTML. This mirrors the empty-stylesheet guard on the Tailwind
+/// path.
+fn build_authored_only_css_payload(
+    project_root: &Path,
+    outdir: &Path,
+) -> Result<Option<AssetEmitterPayload>> {
+    let authored_css = match resolve_input_global_css(project_root) {
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
+            // Skip the Tailwind import layer: the default zfb template's
+            // `styles/global.css` ships `@import "tailwindcss";` (or the
+            // split `tailwindcss/preflight` / `utilities` forms). With no
+            // Tailwind subprocess to resolve them, emitting those lines
+            // verbatim would make the browser request a non-existent
+            // stylesheet, so we drop them here (issue #824).
+            strip_tailwind_imports(&raw)
+        }
+        None => String::new(),
+    };
+
+    let sources = discover_css_source_files(project_root);
+    let engine = AuthoredCssEngine::new(authored_css);
+
+    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+
+    // Skip the link when there is nothing to ship. With Tailwind off and
+    // no authored globals + no modules, `combine` yields only its `"\n"`
+    // separator; emitting that would inject a `<link>` to an effectively
+    // empty stylesheet. The Tailwind path never hits this because its
+    // preflight bytes are always non-empty.
+    if payload.bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+
+    Ok(Some(payload))
+}
+
+/// Drop `@import "tailwindcss"` directives from authored global CSS for
+/// the Tailwind-disabled path.
+///
+/// Removes whole physical lines whose trimmed form starts with the
+/// Tailwind import, covering both the umbrella import and the v4 split
+/// sub-imports (`tailwindcss/preflight`, `tailwindcss/utilities`, …), in
+/// either quote style. The per-line test is the shared
+/// [`zfb_css::is_tailwind_import_line`] predicate — the same one
+/// `build_synthesised_entry_css`'s `user_has_import` detection uses — so
+/// the enabled and disabled paths agree byte-for-byte on what counts as
+/// "the Tailwind import".
+///
+/// Scope: this strips the `@import` layer only. Other Tailwind-v4-only
+/// at-rules (`@theme`, `@apply`, `@source`, `@utility`) are left as-is —
+/// a zero-Tailwind project (the `enabled: false` scenario, issue #824)
+/// does not author them, and sanitising the full Tailwind syntax is out
+/// of scope.
+///
+/// Known limitations (intentional — this is a line filter, not a CSS
+/// parser, and unlike the Tailwind path it does **not** strip comments
+/// before scanning):
+///
+/// - An `@import "tailwindcss";` line *inside* a multi-line
+///   `/* … */` block comment is dropped even though it is already inert.
+///   Harmless: the surrounding comment delimiters stay, the output is
+///   still valid CSS, and the browser requests nothing. (A single-line
+///   `/* @import "tailwindcss"; */` is untouched — its trimmed line starts
+///   with `/*`, not `@import`.)
+/// - A same-line trailing rule (`@import "tailwindcss"; .real{…}`) is lost
+///   along with the import, because whole physical lines are dropped. The
+///   default zfb template puts the import on its own line, so this does not
+///   bite real projects.
+fn strip_tailwind_imports(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    for line in css.split_inclusive('\n') {
+        if is_tailwind_import_line(line) {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Locate the project's authored global Tailwind input CSS file.
@@ -869,24 +1003,19 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 /// config `CssPipeline` uses inside `build_emitter`), so the scoped
 /// names agree without a shared channel.
 ///
-/// Returns an empty map when Tailwind/CSS is disabled or no
-/// `.module.css` files are reachable — the build then behaves exactly
-/// as before.
+/// Returns an empty map when no `.module.css` files are reachable — the
+/// build then behaves exactly as before.
+///
+/// CSS Modules are processed regardless of `tailwind.enabled`: the
+/// authored-CSS pipeline (and hence the emitted `styles-<hash>.css`)
+/// ships the scoped module CSS even when Tailwind is off (issue #824),
+/// so the class-map rewrite must run in lockstep or the HTML `class`
+/// attributes would reference classes that never appear in the
+/// stylesheet.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
-    config: &Config,
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
-
-    // CSS Modules processing is independent of Tailwind, but the CSS
-    // emitter is gated on `tailwind.enabled`. When CSS is disabled
-    // entirely there is no stylesheet to carry the scoped CSS, so a
-    // class-map rewrite would point at classes that never ship. Keep
-    // the two sides consistent: skip the rewrite when CSS is off.
-    let css_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
-    if !css_enabled {
-        return Ok(HashMap::new());
-    }
 
     let sources = discover_css_source_files(project_root);
     if sources.is_empty() {
@@ -909,8 +1038,13 @@ pub(crate) fn compute_css_module_class_maps(
         return Ok(HashMap::new());
     }
 
-    let processor =
-        zfb_css::CssModulesProcessor::new(zfb_css::modules::CssModulesConfig::default());
+    // Hash scoped names off the project-relative path via the shared
+    // `for_project_root` constructor (issue #825) — the same config
+    // `run_css_emitter` feeds its pipeline, so the scoped names baked into
+    // the JSX rewrite match the ones in the emitted `styles-<hash>.css`.
+    let processor = zfb_css::CssModulesProcessor::new(
+        zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+    );
     let out = processor
         .process(&module_files)
         .context("CSS Modules compilation failed")?;
@@ -982,20 +1116,34 @@ pub(crate) fn build_default_islands_payload(
     // import ships — so the empty-islands short-circuit below only fires
     // when client-router is NOT in play.
     if islands_set.is_empty() && !scan_meta.uses_client_router {
-        // Issue #122 / #117: this branch used to be silent, which made
-        // pnpm-workspace consumers with `"use client"` islands inside a
-        // workspace package look "fine" while shipping no client
-        // runtime. Surface it loudly so authoring problems (a missing
-        // `"use client"` directive, an island reachable only through a
-        // path the scanner can't follow) become discoverable.
-        output::warn(format!(
-            "scanned {} page entr{} but found no \"use client\" islands; \
-             dist/assets/islands.js will not be emitted. \
-             Verify each island module starts with the literal directive \
-             \"use client\" and is reachable from a page in pages/.",
-            entries.len(),
-            if entries.len() == 1 { "y" } else { "ies" }
-        ));
+        // Issue #822: only the loud warning + verify-hint when the scan
+        // saw a *near-miss* — a module that looks like it meant to be a
+        // `"use client"` island but didn't register one (a misplaced or
+        // misspelled directive, or a valid directive with no exported
+        // component). For a project that is island-free on purpose
+        // (`near_miss_candidates == 0`), the verify-hint is permanent
+        // noise, so we demote to a quiet info note with no hint.
+        if scan_meta.near_miss_candidates == 0 {
+            output::info(
+                "no \"use client\" islands found; skipping islands bundle \
+                 (dist/assets/islands.js will not be emitted)",
+            );
+        } else {
+            // Issue #122 / #117: this branch used to be silent, which made
+            // pnpm-workspace consumers with `"use client"` islands inside a
+            // workspace package look "fine" while shipping no client
+            // runtime. Surface it loudly so authoring problems (a missing
+            // `"use client"` directive, an island reachable only through a
+            // path the scanner can't follow) become discoverable.
+            output::warn(format!(
+                "scanned {} page entr{} but found no \"use client\" islands; \
+                 dist/assets/islands.js will not be emitted. \
+                 Verify each island module starts with the literal directive \
+                 \"use client\" and is reachable from a page in pages/.",
+                entries.len(),
+                if entries.len() == 1 { "y" } else { "ies" }
+            ));
+        }
         return Ok(None);
     }
 
@@ -1592,7 +1740,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `CssModulesProcessor` with the default config so the scoped
     // names match. Empty for projects with no `.module.css` files.
     bundler_input.css_module_class_maps =
-        compute_css_module_class_maps(project_root, config)
+        compute_css_module_class_maps(project_root)
             .context("CSS Modules class-map computation failed")?;
 
     // Snapshot the bundler input before consuming it so the runtime-only
@@ -3943,29 +4091,165 @@ mod tests {
         assert_eq!(resolve_input_global_css(project_root), None);
     }
 
-    /// Tailwind disabled in config => CSS emitter slot is `None`.
-    /// This is the cheap, no-subprocess coverage point for
-    /// `DefaultRunner::emit_prod_assets`'s CSS branch.
+    /// Regression (issue #824): `tailwind.enabled = false` disables only
+    /// the Tailwind layers, NOT the authored-CSS pipeline. With an
+    /// authored global stylesheet and a CSS Module present, the emitter
+    /// must still ship a stylesheet containing both — and crucially WITHOUT
+    /// the Tailwind preflight (no `@import "tailwindcss"`, no subprocess).
+    /// This path runs `AuthoredCssEngine`, so the test is hermetic (no
+    /// tailwind binary required).
     #[test]
-    fn default_runner_returns_none_css_when_tailwind_disabled_in_config() {
+    fn css_payload_ships_authored_css_when_tailwind_disabled() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
-        // Stage some sources so the empty-sources branch wouldn't
-        // be the reason for None — only `tailwind.enabled = false`
-        // should drive the result.
+
+        // Authored global stylesheet at the conventional location.
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            ".authored-global { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        // A page importing a CSS Module so auto-discovery picks it up.
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "import styles from \"./index.module.css\";\nexport default function() { return null }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("pages/index.module.css"),
+            ".box { display: grid; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
+            .expect("should not error")
+            .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            css.contains(".authored-global"),
+            "authored global CSS must survive tailwind.enabled=false; got:\n{css}",
+        );
+        assert!(
+            css.contains("display: grid") || css.contains("display:grid"),
+            "CSS Module rule must be emitted; got:\n{css}",
+        );
+        // The Tailwind layers must be skipped entirely — no preflight, no
+        // synthesised import.
+        assert!(
+            !css.contains("@import \"tailwindcss\""),
+            "tailwind import must NOT be synthesised when disabled; got:\n{css}",
+        );
+        assert!(
+            !css.contains("tailwindcss v4"),
+            "tailwind preflight banner must NOT appear when disabled; got:\n{css}",
+        );
+
+        // And the class-map producer must run in lockstep so the HTML
+        // `class` attributes reference classes that actually ship.
+        let maps = compute_css_module_class_maps(project_root).expect("class maps");
+        assert!(
+            !maps.is_empty(),
+            "CSS Modules class maps must be non-empty when tailwind is disabled",
+        );
+        let scoped = maps
+            .values()
+            .flat_map(|m| m.values())
+            .any(|scoped| scoped.ends_with("_box") || scoped.contains("box"));
+        assert!(
+            scoped,
+            "scoped class for `.box` must appear in the class map; got: {maps:?}",
+        );
+    }
+
+    /// `tailwind.enabled = false` AND no authored CSS AND no CSS Modules
+    /// => no stylesheet to ship, so the emitter slot stays `None` (avoids
+    /// a `<link>` to an empty stylesheet).
+    #[test]
+    fn css_payload_none_when_tailwind_disabled_and_no_css() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        // A page with no module import and no global stylesheet.
         std::fs::create_dir_all(project_root.join("pages")).unwrap();
         std::fs::write(
             project_root.join("pages/index.tsx"),
             "export default function() { return null }\n",
         )
         .unwrap();
-        let cfg = Config { tailwind: Some(crate::config::TailwindConfig { enabled: false }), ..Config::default() };
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
         let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
             .expect("should not error");
         assert!(
             payload.is_none(),
-            "expected None when tailwind.enabled=false; got {payload:?}",
+            "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
         );
+    }
+
+    /// Regression (issue #824): with Tailwind disabled, a `@import
+    /// "tailwindcss"` in the authored global stylesheet must be stripped
+    /// (no subprocess resolves it, so emitting it would 404 in the
+    /// browser) while the rest of the authored CSS survives.
+    #[test]
+    fn css_payload_strips_tailwind_import_when_disabled() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            "@import \"tailwindcss\";\n.real-rule { color: red; }\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
+            .expect("should not error")
+            .expect("authored CSS must still ship");
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("@import \"tailwindcss\""),
+            "tailwind import must be stripped from authored CSS when disabled; got:\n{css}",
+        );
+        assert!(
+            css.contains(".real-rule"),
+            "non-import authored rules must survive the strip; got:\n{css}",
+        );
+    }
+
+    #[test]
+    fn strip_tailwind_imports_drops_only_tailwind_imports() {
+        let input = concat!(
+            "@import \"tailwindcss\";\n",
+            "@import 'tailwindcss/preflight';\n",
+            "@import \"tailwindcss/utilities\";\n",
+            "@import \"./vendor.css\";\n",
+            ".keep { color: blue; }\n",
+        );
+        let out = strip_tailwind_imports(input);
+        assert!(!out.contains("tailwindcss"), "all tailwind imports gone; got:\n{out}");
+        assert!(out.contains("@import \"./vendor.css\""), "vendor import kept");
+        assert!(out.contains(".keep"), "authored rule kept");
+    }
+
+    #[test]
+    fn strip_tailwind_imports_keeps_commented_import() {
+        let input = "/* @import \"tailwindcss\"; */\n.keep { color: green; }\n";
+        let out = strip_tailwind_imports(input);
+        // A commented-out import is inert; leaving it is harmless and the
+        // trimmed line starts with `/*`, not `@import`.
+        assert!(out.contains("/* @import \"tailwindcss\"; */"), "commented import kept");
+        assert!(out.contains(".keep"), "authored rule kept");
     }
 
     /// No `pages/` directory => islands emitter slot is `None`.
@@ -4014,6 +4298,47 @@ mod tests {
         assert!(
             payload.is_none(),
             "expected None when no use-client components; got {payload:?}",
+        );
+    }
+
+    /// Issue #822: a page that imports a module with a *misplaced*
+    /// `"use client"` directive still emits no islands bundle (the
+    /// directive is rejected), so the payload is `None`. This exercises
+    /// the near-miss branch of the empty-islands report — the one that
+    /// keeps the loud warning + verify-hint. We can't assert on the
+    /// stderr text here, but the `None` return confirms the short-circuit
+    /// fires on the same path the near-miss accounting flows through.
+    #[test]
+    fn default_runner_returns_none_islands_for_near_miss_directive() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "import { Counter } from \"../components/counter\";\n\
+             export default function Index() { return <Counter/>; }\n",
+        )
+        .unwrap();
+        // Directive is not first in the prologue (an import precedes it),
+        // so it is rejected and no island is registered.
+        std::fs::write(
+            project_root.join("components/counter.tsx"),
+            "import { useState } from \"preact/hooks\";\n\
+             \"use client\";\n\
+             export function Counter() { return null; }\n",
+        )
+        .unwrap();
+        let payload = build_default_islands_payload(
+            project_root,
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+        )
+        .expect("should not error");
+        assert!(
+            payload.is_none(),
+            "expected None for a misplaced use-client directive; got {payload:?}",
         );
     }
 
