@@ -842,6 +842,15 @@ fn build_authored_only_css_payload(
         sources,
         class_map_dir: None,
         output_root: outdir.to_path_buf(),
+        // Same project-relative hash root as `build_default_css_payload`
+        // and `compute_css_module_class_maps` (issue #825) — without it,
+        // the emitted stylesheet would hash absolute paths while the
+        // build-time JSX class rewrite hashes relative ones, and the
+        // scoped names would not match on the Tailwind-disabled path.
+        modules_config: zfb_css::modules::CssModulesConfig {
+            project_root: Some(project_root.to_path_buf()),
+            ..zfb_css::modules::CssModulesConfig::default()
+        },
         ..CssPipelineConfig::default()
     };
 
