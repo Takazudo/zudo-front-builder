@@ -73,7 +73,7 @@ const PREACT_VERSION: &str = "10.29.1";
 const PREACT_RTS_VERSION: &str = "6.6.7";
 
 /// Pinned `hono` version (transitive dep of `@takazudo/zfb-runtime`).
-const HONO_VERSION: &str = "4.12.15";
+const HONO_VERSION: &str = "4.12.23";
 
 // ---------------------------------------------------------------------------
 // SHA-256 constants — esbuild 0.25.12 (from the npm package binary)
