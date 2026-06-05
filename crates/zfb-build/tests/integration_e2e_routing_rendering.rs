@@ -10,6 +10,7 @@
 //!   - pagination dynamic (`/blog/page/[page]`)
 //!   - nested dynamic (`/[lang]/[slug]`)
 //!   - catchall (`/docs/[...slug]`)
+//!   - optional catchall (`/manual/[[...slug]]` — bare `/manual` + nested; #812)
 //!
 //! Fixture source lives at
 //! `crates/zfb-render/tests/fixtures/routing-rendering/`. The test
@@ -214,6 +215,23 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
             source_path: None,
         });
     }
+
+    // --- /manual/[[...slug]] — optional catchall (#812): the bare
+    // directory URL (zero segments) plus one nested page ---
+    entries.push(RouteUniverseEntry {
+        url_path: "/manual".into(),
+        output_path: PathBuf::from("manual/index.html"),
+        route_key: "/manual/[[...slug]]".into(),
+        static_html: false,
+        source_path: None,
+    });
+    entries.push(RouteUniverseEntry {
+        url_path: "/manual/setup/quick".into(),
+        output_path: PathBuf::from("manual/setup/quick/index.html"),
+        route_key: "/manual/[[...slug]]".into(),
+        static_html: false,
+        source_path: None,
+    });
 
     entries
 }
@@ -487,4 +505,8 @@ fn check_rendered_html(pages: &[(String, Vec<u8>)]) {
     has("/docs/intro", "Intro doc");
     has("/docs/guides/install", "Install guide");
     has("/docs/guides/config/framework", "Framework config");
+
+    // Manual optional catchall (#812) — bare directory URL + nested path
+    has("/manual", "Manual home");
+    has("/manual/setup/quick", "Quick setup");
 }

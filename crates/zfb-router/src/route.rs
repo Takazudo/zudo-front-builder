@@ -120,7 +120,9 @@ impl Route {
         for seg in &self.segments {
             url_parts.push(match seg {
                 Segment::Static(s) => s.clone(),
-                Segment::Dynamic(_) | Segment::Catchall(_) => seg.template(),
+                Segment::Dynamic(_) | Segment::Catchall(_) | Segment::OptionalCatchall(_) => {
+                    seg.template()
+                }
             });
         }
 

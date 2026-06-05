@@ -317,13 +317,26 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       // an empty object — the component signature has no required props.
       // For dynamic routes whose URL params do not match any paths()
       // entry, we return a 404 rather than rendering with empty props.
-      const rawUrlParams = c.req.param();
-      const urlParams = (rawUrlParams ?? {}) as Record<string, string>;
-      const hasDynamicParams = Object.keys(urlParams).length > 0;
+      //
+      // Whether the route is dynamic is derived from the ROUTE PATTERN,
+      // not from the captured params: for an optional catchall
+      // (`/docs/:slug{.+}?`), Hono matches the bare `/docs` with NO
+      // params captured at all, so `Object.keys(c.req.param())` would
+      // be empty and the old gate skipped paths() entirely — rendering
+      // with `{}` instead of the entry whose `slug` is `[]`.
+      const declaredParams = routeParamSpecs(page.route);
+      const rawUrlParams = c.req.param() ?? {};
+      const urlParams: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawUrlParams)) {
+        // Unmatched optional params may surface as undefined — drop them
+        // so "param absent" is represented uniformly.
+        if (typeof v === "string") urlParams[k] = v;
+      }
+      const isDynamicRoute = declaredParams.length > 0;
 
       let componentInput: Record<string, unknown> = {};
 
-      if (hasDynamicParams && typeof mod.paths === "function") {
+      if (isDynamicRoute && typeof mod.paths === "function") {
         let pathsResult: unknown;
         try {
           pathsResult = await mod.paths();
@@ -358,15 +371,27 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
         // /docs/[...slug]), Hono returns a slash-joined string (e.g.
         // "guides/install"), so we compare against the paths() entry's
         // params.slug joined with "/".
+        //
+        // Matching iterates the params DECLARED by the route pattern so
+        // the zero-segment optional-catchall case is covered: when Hono
+        // matched `/docs` for `/docs/:slug{.+}?` no `slug` param exists
+        // in the URL, and the matching entry is the one whose param is
+        // the explicit empty array (`{ slug: [] }`).
         const match = (pathsResult as PathsEntry[]).find((entry) => {
-          return Object.entries(urlParams).every(([k, v]) => {
-            const paramVal = entry.params[k];
+          return declaredParams.every(({ name, optionalCatchall }) => {
+            const urlVal = urlParams[name];
+            const paramVal = entry.params[name];
+            if (urlVal === undefined) {
+              // Param absent from the URL: only valid for an optional
+              // catchall, and only against the explicit `[]` entry.
+              return optionalCatchall && Array.isArray(paramVal) && paramVal.length === 0;
+            }
             if (Array.isArray(paramVal)) {
               // catchall: paths() emits slug as string[] but Hono
               // provides it as a "/"-joined string
-              return paramVal.join("/") === v;
+              return paramVal.join("/") === urlVal;
             }
-            return String(paramVal) === v;
+            return String(paramVal) === urlVal;
           });
         });
 
@@ -386,7 +411,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
           params: match.params,
           ...(match.props ?? {}),
         };
-      } else if (!hasDynamicParams && typeof mod.getStaticProps === "function") {
+      } else if (!isDynamicRoute && typeof mod.getStaticProps === "function") {
         // Static route with `getStaticProps`: call it to fetch build-time
         // data and pass the returned props to the default component. This
         // supports the `export async function getStaticProps()` pattern
@@ -490,13 +515,48 @@ function isPathsEntry(x: unknown): x is PathsEntry {
 }
 
 /**
+ * One param declared by a Hono route pattern. `optionalCatchall` is
+ * `true` for the `:name{.+}?` form (file-system `[[...name]]`), whose
+ * zero-segment match captures no param at all.
+ */
+interface RouteParamSpec {
+  readonly name: string;
+  readonly optionalCatchall: boolean;
+}
+
+/**
+ * Parse the params declared by a Hono route pattern (the `route` string
+ * the build pipeline registers, e.g. `/blog/:slug`, `/docs/:slug{.+}`,
+ * `/docs/:slug{.+}?`). Static routes return an empty list.
+ *
+ * Only the pattern shapes emitted by `bracket_to_hono` (zfb-build) are
+ * recognised — `:name`, `:name{.+}`, `:name{.+}?` — which is the entire
+ * grammar the file router produces.
+ */
+function routeParamSpecs(route: string): RouteParamSpec[] {
+  const specs: RouteParamSpec[] = [];
+  for (const seg of route.split("/")) {
+    if (!seg.startsWith(":")) continue;
+    const optionalCatchall = seg.endsWith("?");
+    const body = optionalCatchall ? seg.slice(1, -1) : seg.slice(1);
+    const braceIdx = body.indexOf("{");
+    const name = braceIdx === -1 ? body : body.slice(0, braceIdx);
+    if (name.length > 0) {
+      specs.push({ name, optionalCatchall });
+    }
+  }
+  return specs;
+}
+
+/**
  * Heuristic check for user-authored routes that may shadow the
  * synthetic `/__paths__/<encoded-route-key>` endpoint.
  *
  * Returns true when the route literal contains `/__paths__` (an
  * obvious collision) or when its first segment is a Hono catchall
- * (`:name{.+}`) or a file-system catchall (`[...name]`) at the root —
- * those would match `/__paths__/...` once Hono dispatches to them.
+ * (`:name{.+}`, optionally `:name{.+}?`) or a file-system catchall
+ * (`[...name]` / `[[...name]]`) at the root — those would match
+ * `/__paths__/...` once Hono dispatches to them.
  */
 function routeShadowsPathsEndpoint(route: string): boolean {
   if (route.includes("/__paths__")) {
@@ -506,12 +566,15 @@ function routeShadowsPathsEndpoint(route: string): boolean {
   // anything deeper cannot match `/__paths__` because the literal
   // first segment differs.
   const firstSeg = route.replace(/^\/+/, "").split("/")[0] ?? "";
-  // Hono regex-quantifier catchall: `:name{.+}`.
-  if (/^:[A-Za-z_][\w]*\{\.[+*]\}$/.test(firstSeg)) {
+  // Hono regex-quantifier catchall: `:name{.+}` / optional `:name{.+}?`.
+  if (/^:[A-Za-z_][\w]*\{\.[+*]\}\??$/.test(firstSeg)) {
     return true;
   }
-  // File-system catchall (pre-bracket-to-hono): `[...name]`.
+  // File-system catchall (pre-bracket-to-hono): `[...name]` / `[[...name]]`.
   if (/^\[\.\.\.[A-Za-z_][\w]*\]$/.test(firstSeg)) {
+    return true;
+  }
+  if (/^\[\[\.\.\.[A-Za-z_][\w]*\]\]$/.test(firstSeg)) {
     return true;
   }
   return false;

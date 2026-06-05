@@ -128,6 +128,7 @@ you need to look up an entry by it.
 | `pages/about.tsx` | static | `/about` | n/a |
 | `pages/blog/[slug].tsx` | dynamic | `/blog/hello-zfb` | `{ slug: string }` |
 | `pages/docs/[...slug].tsx` | catchall | `/docs/a/b/c` | `{ slug: string[] }` |
+| `pages/docs/[[...slug]].tsx` | optional catchall | `/docs` and `/docs/a/b/c` | `{ slug: string[] }` (`[]` for the bare URL) |
 | `pages/[lang]/[slug].tsx` | dynamic × 2 | `/ja/intro` | `{ lang: string, slug: string }` |
 
 When two patterns can match the same URL, the more specific one wins:
@@ -141,6 +142,11 @@ this when it builds the route table — see
   error before any HTML is written.
 - For catchall segments, `params.slug` must be a `string[]` (even with
   one element). Passing a plain string is a type error.
+- A required catchall (`[...slug]`) rejects the empty array — it always
+  needs at least one segment. To build the bare directory URL (`/docs`),
+  rename the file to the optional form (`[[...slug]]`) and return an
+  explicit `{ params: { slug: [] } }` entry. `[""]` and `""` stay
+  invalid for both forms.
 - `paths()` is **synchronous**. The whole content snapshot is loaded
   before any page evaluates, so there's no async boundary to wait
   on. Keep it pure-data and deterministic — the router calls it

@@ -29,6 +29,7 @@ fn scans_canonical_pages_dir() {
         "/blog/:slug",
         "/blog/page/:page",
         "/docs/:slug{.+}",
+        "/manual/:slug{.+}?",
         "/:lang/:slug",
     ] {
         assert!(
@@ -99,6 +100,26 @@ fn classifies_static_dynamic_catchall() {
     assert_eq!(by_template["/blog/page/:page"], RouteKind::Dynamic);
     assert_eq!(by_template["/:lang/:slug"], RouteKind::Dynamic);
     assert_eq!(by_template["/docs/:slug{.+}"], RouteKind::Catchall);
+    // The optional catchall shares RouteKind::Catchall (it only drives
+    // sorting/dispatch; the segment carries the optional-ness).
+    assert_eq!(by_template["/manual/:slug{.+}?"], RouteKind::Catchall);
+}
+
+#[test]
+fn optional_catchall_param_name_preserved() {
+    let router = Router::scan(&fixture("pages")).expect("scan");
+    let manual = router
+        .routes()
+        .iter()
+        .find(|r| r.template() == "/manual/:slug{.+}?")
+        .expect("/manual/:slug{.+}?");
+    assert_eq!(
+        manual.segments,
+        vec![
+            Segment::Static("manual".into()),
+            Segment::OptionalCatchall("slug".into()),
+        ],
+    );
 }
 
 #[test]

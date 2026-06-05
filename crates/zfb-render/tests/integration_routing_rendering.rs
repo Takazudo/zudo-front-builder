@@ -61,6 +61,7 @@ fn router_discovers_all_required_routes() {
         "/blog/:slug",
         "/blog/page/:page",
         "/docs/:slug{.+}",
+        "/manual/:slug{.+}?",
         "/:lang/:slug",
     ] {
         assert!(
@@ -89,5 +90,7 @@ fn router_classifies_route_kinds_correctly() {
     assert_eq!(kind_of("/blog/:slug"), RouteKind::Dynamic);
     assert_eq!(kind_of("/blog/page/:page"), RouteKind::Dynamic);
     assert_eq!(kind_of("/docs/:slug{.+}"), RouteKind::Catchall);
+    // Optional catchall (#812) shares RouteKind::Catchall.
+    assert_eq!(kind_of("/manual/:slug{.+}?"), RouteKind::Catchall);
     assert_eq!(kind_of("/:lang/:slug"), RouteKind::Dynamic);
 }

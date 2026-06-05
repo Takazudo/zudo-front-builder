@@ -585,7 +585,7 @@ fn expand_resolved_urls(
     let catchall_names: std::collections::HashSet<&str> = segments
         .iter()
         .filter_map(|seg| {
-            if let Segment::Catchall(name) = seg {
+            if let Segment::Catchall(name) | Segment::OptionalCatchall(name) = seg {
                 Some(name.as_str())
             } else {
                 None
@@ -613,7 +613,14 @@ fn expand_resolved_urls(
         for (k, v) in &r.params {
             if catchall_names.contains(k.as_str()) {
                 // Catchall strings were joined from an array; split back.
-                let parts: Vec<String> = v.split('/').map(|s| s.to_string()).collect();
+                // An optional catchall's zero-segment case is the empty
+                // string — that must surface as `[]` in the manifest, not
+                // `[""]` (which `"".split('/')` would produce).
+                let parts: Vec<String> = if v.is_empty() {
+                    Vec::new()
+                } else {
+                    v.split('/').map(|s| s.to_string()).collect()
+                };
                 arrays.insert(k.clone(), parts);
             } else {
                 scalars.insert(k.clone(), v.clone());
@@ -1885,6 +1892,64 @@ mod tests {
         assert_eq!(
             out.resolved[1].output_path,
             PathBuf::from("docs/x/y/z/index.html")
+        );
+    }
+
+    #[test]
+    fn expand_dynamic_routes_handles_optional_catchall_zero_segments() {
+        // `[[...slug]]` with `slug: []` must produce the bare directory
+        // URL (`/docs`, no trailing slash — matching the existing
+        // url_path style) and `docs/index.html`, and the manifest must
+        // report `slug: []` (an empty array, not `[""]`). #812.
+        let body = r#"
+            export function paths() {
+                return [
+                    { params: { slug: [] } },
+                    { params: { slug: ["guides", "install"] } },
+                ];
+            }
+        "#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/docs/[[...slug]].tsx",
+            vec![
+                Segment::Static("docs".into()),
+                Segment::OptionalCatchall("slug".into()),
+            ],
+            "/docs/:slug{.+}?",
+            body,
+        );
+        let mut cache = PathsCache::new();
+        let out = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("optional catchall with literal paths() should succeed");
+
+        assert_eq!(out.deferred.len(), 0, "deferred: {:?}", out.deferred);
+        assert_eq!(out.resolved.len(), 2);
+
+        // Zero-segment entry: bare URL + directory-index output.
+        assert_eq!(out.resolved[0].url_path, "/docs");
+        assert_eq!(
+            out.resolved[0].output_path,
+            PathBuf::from("docs/index.html"),
+        );
+        assert_eq!(out.resolved[0].route_key, "/docs/:slug{.+}?");
+
+        // Nested entry unchanged.
+        assert_eq!(out.resolved[1].url_path, "/docs/guides/install");
+        assert_eq!(
+            out.resolved[1].output_path,
+            PathBuf::from("docs/guides/install/index.html"),
+        );
+
+        // Manifest params: the zero case is an EMPTY array, never `[""]`.
+        assert_eq!(out.resolved_with_params.len(), 2);
+        assert_eq!(
+            out.resolved_with_params[0].params.arrays.get("slug"),
+            Some(&Vec::<String>::new()),
+            "zero-segment optional catchall must surface `slug: []`",
+        );
+        assert_eq!(
+            out.resolved_with_params[1].params.arrays.get("slug"),
+            Some(&vec!["guides".to_string(), "install".to_string()]),
         );
     }
 

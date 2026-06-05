@@ -2041,7 +2041,13 @@ fn materialise_shadow(
             if seg.is_empty() {
                 continue; // leading slash
             }
-            if seg.starts_with("[...") && seg.ends_with(']') {
+            if seg.starts_with("[[...") && seg.ends_with("]]") {
+                // Optional catchall sorts with the (required) catchall
+                // bucket — it is the loosest matcher. A required and an
+                // optional catchall can never coexist at the same prefix
+                // (scan-time conflict), so no finer ordering is needed.
+                catchall_count += 1;
+            } else if seg.starts_with("[...") && seg.ends_with(']') {
                 catchall_count += 1;
             } else if seg.starts_with('[') && seg.ends_with(']') {
                 dynamic_count += 1;
@@ -3809,6 +3815,8 @@ pub(crate) fn render_md_page_shell(
 /// `createPageRouter` registers with the Hono app.
 ///
 /// Segment rules:
+/// - `[[...param]]` → `:param{.+}?` (optional catchall — zero or more
+///   path segments; the zero case matches the bare prefix URL)
 /// - `[...param]` → `:param{.+}` (catchall — one or more path
 ///   segments separated by `/`, matched by Hono's regex quantifier)
 /// - `[param]`    → `:param` (single-segment dynamic param)
@@ -3830,7 +3838,17 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
     let mut out = String::with_capacity(route.len() + 4);
     for segment in &segments {
         out.push('/');
-        if segment.starts_with("[...") && segment.ends_with(']') {
+        if segment.starts_with("[[...") && segment.ends_with("]]") {
+            // Optional catchall: `[[...param]]` → `:param{.+}?`. Checked
+            // before the single-bracket forms so the doubled brackets do
+            // not fall into the plain-dynamic branch. Must stay
+            // bit-identical to `Segment::OptionalCatchall::template()` so
+            // the worker's `pagesByRoute` lookup keys match.
+            let name = &segment[5..segment.len() - 2];
+            out.push(':');
+            out.push_str(name);
+            out.push_str("{.+}?");
+        } else if segment.starts_with("[...") && segment.ends_with(']') {
             // Catchall: `[...param]` → `:param{.+}`
             let name = &segment[4..segment.len() - 1];
             out.push(':');
@@ -5827,6 +5845,36 @@ mod tests {
         assert_eq!(bracket_to_hono("/docs/[...slug]"), "/docs/:slug{.+}");
         // Fully dynamic catchall.
         assert_eq!(bracket_to_hono("/[...rest]"), "/:rest{.+}");
+        // Optional catchall (zero or more segments).
+        assert_eq!(bracket_to_hono("/docs/[[...slug]]"), "/docs/:slug{.+}?");
+        // Fully dynamic optional catchall.
+        assert_eq!(bracket_to_hono("/[[...rest]]"), "/:rest{.+}?");
+    }
+
+    #[test]
+    fn optional_catchall_route_key_round_trips_with_router_template() {
+        // The worker registers `bracket_to_hono(derive_route(file))` while
+        // the render pipeline keys on `zfb_router::Route::template()`. The
+        // two strings must stay bit-identical or the `pagesByRoute` /
+        // `__paths__` lookup 404s silently. Pin the round trip for the
+        // optional catchall form.
+        let route = derive_route(Path::new("docs/[[...slug]].tsx")).expect("derive");
+        assert_eq!(route, "/docs/[[...slug]]");
+        assert_eq!(bracket_to_hono(&route), "/docs/:slug{.+}?");
+
+        let scanned = {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let docs = tmp.path().join("docs");
+            fs::create_dir_all(&docs).unwrap();
+            fs::write(
+                docs.join("[[...slug]].tsx"),
+                "export default function P() { return null; }\n",
+            )
+            .unwrap();
+            zfb_router::scan_pages(tmp.path()).expect("scan")
+        };
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].template(), bracket_to_hono(&route));
     }
 
     #[test]
@@ -5932,8 +5980,16 @@ mod tests {
             fs::create_dir_all(root.join(d)).unwrap();
         }
         let stub = "export default function P() { return null; }\n";
-        for f in ["pages/docs/[id].tsx", "pages/docs/[...slug].tsx"] {
-            fs::write(root.join(f), stub).unwrap();
+        for f in [
+            "pages/docs/[id].tsx",
+            "pages/docs/[...slug].tsx",
+            "pages/manual/about.tsx",
+            "pages/manual/[id].tsx",
+            "pages/manual/[[...slug]].tsx",
+        ] {
+            let abs = root.join(f);
+            fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            fs::write(abs, stub).unwrap();
         }
         let mut routes = Vec::new();
         let shadow_pages_dest = root.join("shadow").join("pages");
@@ -5970,6 +6026,17 @@ mod tests {
         assert!(
             idx("/docs/[id]") < idx("/docs/[...slug]"),
             "/docs/[id] should be registered before /docs/[...slug]"
+        );
+
+        // The optional catchall sorts with the catchall bucket — after a
+        // static sibling and after a plain dynamic at equal static depth.
+        assert!(
+            idx("/manual/about") < idx("/manual/[[...slug]]"),
+            "/manual/about should be registered before /manual/[[...slug]]"
+        );
+        assert!(
+            idx("/manual/[id]") < idx("/manual/[[...slug]]"),
+            "/manual/[id] should be registered before /manual/[[...slug]]"
         );
     }
 
