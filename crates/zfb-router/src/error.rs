@@ -45,6 +45,23 @@ pub enum RouterError {
         second: PathBuf,
     },
 
+    /// Two source files have the same segment-kind shape but different
+    /// parameter names (e.g. `docs/[a].tsx` vs `docs/[b].tsx`, or
+    /// `docs/[...a].tsx` vs `docs/[...b].tsx`). They match exactly the same
+    /// set of URLs regardless of how their params are named, so one would
+    /// silently shadow the other via an arbitrary tiebreak. Keep one.
+    #[error(
+        "ambiguous route shape {shape:?}: {first} and {second} differ only in parameter names \
+         and match the same URLs; rename one to a distinct path or remove it",
+        first = first.display(),
+        second = second.display(),
+    )]
+    AmbiguousShape {
+        shape: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
+
     /// An optional catchall route (`[[...name]]`) overlaps another route:
     /// either both serve the same bare URL (the zero-segment case), or
     /// another catchall occupies the same position (full overlap on every
