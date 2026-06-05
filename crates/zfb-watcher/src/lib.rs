@@ -290,6 +290,59 @@ struct Pending {
     last_seen: Instant,
 }
 
+/// Merge an incoming [`ChangeKind`] with whatever kind is already pending
+/// for the same path within the debounce window.
+///
+/// Truth table (rows = pending, cols = incoming):
+///
+/// | pending \ incoming | Created | Modified | Removed |
+/// |--------------------|---------|----------|---------|
+/// | None               | Created | Modified | Removed |
+/// | Created            | Created | Created  | Removed |
+/// | Modified           | Created | Modified | Removed |
+/// | Removed            | Created | Modified | Removed |
+///
+/// Rules:
+///   - An incoming `Removed` always wins: the file is gone, so any preceding
+///     Create/Modify is moot.
+///   - `Created` followed by `Modified` stays `Created`: on macOS FSEvents
+///     (and some Linux inotify setups) `fs::write` to a brand-new path fires
+///     Create then one or more Modify events within the window. Collapsing to
+///     `Modified` would drop the `Created` signal the watch-ADD discovery hook
+///     relies on (`tick_with_kinds` only calls the hook for `Created`).
+///   - A pending `Removed` followed by `Created`/`Modified` takes the incoming
+///     kind: git's restore path (`git checkout --`, `git pull`, `git stash
+///     pop`) unlinks then recreates a tracked file, so a Remove immediately
+///     followed by a Create/Modify on the same path must surface as a real
+///     change — NOT a stale `Removed` that `tick_with_kinds` would treat as a
+///     deletion and skip from rebuild planning (issue #823). `Removed` is no
+///     longer sticky.
+///   - Otherwise take the incoming kind.
+fn merge_kind(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind {
+    match existing {
+        Some(ChangeKind::Created) if incoming == ChangeKind::Modified => ChangeKind::Created,
+        _ => incoming,
+    }
+}
+
+/// Resolve the kind to actually emit for a path at flush time.
+///
+/// Defense-in-depth on top of `merge_kind` for issue #823: some platforms
+/// (e.g. macOS FSEvents under load) can deliver a bare `Remove` for a git
+/// restore without a paired `Create` ever arriving — so the coalescer never
+/// gets a Create/Modify to override the pending `Removed`. If the pending
+/// kind is `Removed` but the path is in fact still present on disk, the file
+/// was restored, not deleted: emit `Modified` so the rebuild loop re-renders
+/// it instead of pruning it. Any I/O error falls through to the original kind
+/// (treat as genuinely removed — the conservative choice).
+fn resolve_emit_kind(path: &Path, kind: ChangeKind) -> ChangeKind {
+    if kind == ChangeKind::Removed && path.try_exists().unwrap_or(false) {
+        ChangeKind::Modified
+    } else {
+        kind
+    }
+}
+
 /// The debouncer loop. Runs on a tokio task.
 ///
 /// Strategy: bridge the sync `notify` channel onto a tokio channel via
@@ -354,41 +407,10 @@ async fn debouncer_task(
                         let kind = classify(&evt.kind);
                         let now = Instant::now();
                         for path in evt.paths {
-                            // Merge the incoming kind with any already-pending
-                            // kind for this path, preserving the highest-priority
-                            // kind across the burst window.
-                            //
-                            // Priority (highest → lowest): Removed > Created > Modified.
-                            //
-                            // Rationale:
-                            //   - `Removed` always wins: the file is gone — any
-                            //     preceding Create/Modify is moot.
-                            //   - `Created` wins over `Modified`: on macOS FSEvents
-                            //     (and some Linux inotify setups), `fs::write` to a
-                            //     brand-new path fires both a Create event and then
-                            //     one or more Modify events within the debounce
-                            //     window. The old "keep latest" rule collapsed the
-                            //     burst to `Modified`, silently dropping the `Created`
-                            //     signal that the watch-ADD discovery hook relies on
-                            //     (`tick_with_kinds` only calls the hook for
-                            //     `ChangeKind::Created`). Preserving `Created` when
-                            //     it was ever seen during the burst closes that hole.
-                            //   - `Modified` is a no-op upgrade when `Created` is
-                            //     already pending: the consumer re-reads the file
-                            //     either way, so demoting `Created` to `Modified`
-                            //     would only hurt (breaks discovery), never help.
-                            let merged_kind = match pending.get(&path).map(|p| p.kind) {
-                                Some(ChangeKind::Removed) => ChangeKind::Removed, // Removed is sticky
-                                Some(ChangeKind::Created) => {
-                                    // Created already seen; only Removed can upgrade it.
-                                    if kind == ChangeKind::Removed {
-                                        ChangeKind::Removed
-                                    } else {
-                                        ChangeKind::Created
-                                    }
-                                }
-                                _ => kind, // Modified or nothing: take the incoming kind
-                            };
+                            // Coalesce the incoming kind with any already-pending
+                            // kind for this path across the burst window. See
+                            // `merge_kind` for the full truth table and rationale.
+                            let merged_kind = merge_kind(pending.get(&path).map(|p| p.kind), kind);
                             pending.insert(path, Pending { kind: merged_kind, last_seen: now });
                         }
                     }
@@ -410,6 +432,7 @@ async fn debouncer_task(
                     pending.remove(path);
                 }
                 for (path, kind) in ready {
+                    let kind = resolve_emit_kind(&path, kind);
                     if out_tx.send(Change { path, kind }).await.is_err() {
                         // Receiver dropped; bail out of the loop.
                         bridge.abort();
@@ -426,7 +449,8 @@ async fn debouncer_task(
 
 async fn flush_all(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
     for (path, p) in pending.drain() {
-        if out_tx.send(Change { path, kind: p.kind }).await.is_err() {
+        let kind = resolve_emit_kind(&path, p.kind);
+        if out_tx.send(Change { path, kind }).await.is_err() {
             return;
         }
     }
@@ -456,39 +480,26 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Burst-coalescing merge tests (the "sticky Created" fix — issue #660).
+    // Burst-coalescing merge tests for `merge_kind` (the production helper).
     //
-    // On macOS FSEvents (and some Linux inotify setups), `fs::write` to a
-    // brand-new path fires both a `Create` event and then one or more
-    // `Modify` events within the debounce window. The "keep latest kind" rule
-    // that existed before this fix collapsed such a burst to `Modified`,
-    // silently dropping the `Created` signal that the watch-ADD discovery hook
-    // relies on. The merged-kind logic below guarantees `Created` is preserved
-    // when it was ever seen for a path during the burst window.
+    // Two coalescing rules are exercised here:
+    //   - The "sticky Created" fix (issue #660): `fs::write` to a brand-new
+    //     path fires Create then one or more Modify events within the debounce
+    //     window. Collapsing the burst to `Modified` would drop the `Created`
+    //     signal the watch-ADD discovery hook relies on, so `(Created,
+    //     Modified) → Created`.
+    //   - The git-restore fix (issue #823): git's restore path unlinks then
+    //     recreates a tracked file. A pending `Removed` must NOT be sticky —
+    //     a subsequent Create/Modify on the same path overrides it, so the
+    //     restored file surfaces as a real change rather than a stale deletion.
     // ---------------------------------------------------------------------------
-
-    /// Simulate the merge logic inline so we can property-test it without
-    /// reaching into the private debouncer internals.
-    fn merge(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind {
-        match existing {
-            Some(ChangeKind::Removed) => ChangeKind::Removed,
-            Some(ChangeKind::Created) => {
-                if incoming == ChangeKind::Removed {
-                    ChangeKind::Removed
-                } else {
-                    ChangeKind::Created
-                }
-            }
-            _ => incoming,
-        }
-    }
 
     #[test]
     fn created_then_modified_stays_created() {
-        // The primary fix: a new file write on macOS fires Create→Modify.
-        // Downstream discovery hook requires Created.
+        // A new file write on macOS fires Create→Modify; the downstream
+        // discovery hook requires Created.
         assert_eq!(
-            merge(Some(ChangeKind::Created), ChangeKind::Modified),
+            merge_kind(Some(ChangeKind::Created), ChangeKind::Modified),
             ChangeKind::Created,
             "Created must survive a subsequent Modified in the same burst",
         );
@@ -498,7 +509,7 @@ mod tests {
     fn created_then_removed_becomes_removed() {
         // Created then immediately Removed: file is gone; Removed wins.
         assert_eq!(
-            merge(Some(ChangeKind::Created), ChangeKind::Removed),
+            merge_kind(Some(ChangeKind::Created), ChangeKind::Removed),
             ChangeKind::Removed,
         );
     }
@@ -506,24 +517,39 @@ mod tests {
     #[test]
     fn modified_then_removed_becomes_removed() {
         assert_eq!(
-            merge(Some(ChangeKind::Modified), ChangeKind::Removed),
+            merge_kind(Some(ChangeKind::Modified), ChangeKind::Removed),
             ChangeKind::Removed,
         );
     }
 
     #[test]
-    fn removed_is_sticky_against_anything() {
-        // Once Removed is the pending kind, nothing demotes it.
-        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Created), ChangeKind::Removed);
-        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Modified), ChangeKind::Removed);
-        assert_eq!(merge(Some(ChangeKind::Removed), ChangeKind::Removed), ChangeKind::Removed);
+    fn removed_then_recreate_overrides() {
+        // Issue #823: a git restore (unlink + recreate) lands as Remove→Create
+        // (or Remove→Modify) on the same path within the debounce window. The
+        // recreate MUST override the pending Removed so the page rebuilds
+        // instead of being treated as a deletion. A repeated Removed stays
+        // Removed (a genuine delete).
+        assert_eq!(
+            merge_kind(Some(ChangeKind::Removed), ChangeKind::Created),
+            ChangeKind::Created,
+            "a Create after a pending Removed must override it (git restore)",
+        );
+        assert_eq!(
+            merge_kind(Some(ChangeKind::Removed), ChangeKind::Modified),
+            ChangeKind::Modified,
+            "a Modify after a pending Removed must override it (git restore)",
+        );
+        assert_eq!(
+            merge_kind(Some(ChangeKind::Removed), ChangeKind::Removed),
+            ChangeKind::Removed,
+        );
     }
 
     #[test]
     fn no_prior_takes_incoming_kind() {
-        assert_eq!(merge(None, ChangeKind::Created), ChangeKind::Created);
-        assert_eq!(merge(None, ChangeKind::Modified), ChangeKind::Modified);
-        assert_eq!(merge(None, ChangeKind::Removed), ChangeKind::Removed);
+        assert_eq!(merge_kind(None, ChangeKind::Created), ChangeKind::Created);
+        assert_eq!(merge_kind(None, ChangeKind::Modified), ChangeKind::Modified);
+        assert_eq!(merge_kind(None, ChangeKind::Removed), ChangeKind::Removed);
     }
 
     #[test]
@@ -531,9 +557,48 @@ mod tests {
         // Unusual but possible: Modify event arrives before Create (OS ordering).
         // The incoming Created must win over the prior Modified.
         assert_eq!(
-            merge(Some(ChangeKind::Modified), ChangeKind::Created),
+            merge_kind(Some(ChangeKind::Modified), ChangeKind::Created),
             ChangeKind::Created,
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Flush-time existence reconciliation (`resolve_emit_kind`) — issue #823
+    // defense-in-depth. If a path's pending kind is Removed but the file is
+    // present on disk at flush time, it was restored (e.g. git checkout that
+    // emitted only a bare Remove on this platform): emit Modified, not Removed.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn resolve_emit_kind_removed_but_present_becomes_modified() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("restored.txt");
+        std::fs::write(&file, b"hello").expect("write");
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Removed),
+            ChangeKind::Modified,
+            "Removed for an existing path means it was restored",
+        );
+    }
+
+    #[test]
+    fn resolve_emit_kind_removed_and_absent_stays_removed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("gone.txt");
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Removed),
+            ChangeKind::Removed,
+            "Removed for a missing path is a genuine deletion",
+        );
+    }
+
+    #[test]
+    fn resolve_emit_kind_non_removed_is_passthrough() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("any.txt");
+        std::fs::write(&file, b"x").expect("write");
+        assert_eq!(resolve_emit_kind(&file, ChangeKind::Created), ChangeKind::Created);
+        assert_eq!(resolve_emit_kind(&file, ChangeKind::Modified), ChangeKind::Modified);
     }
 
     /// Regression test for the `Watcher::shutdown()` circular-wait deadlock
@@ -553,5 +618,103 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), watcher.shutdown())
             .await
             .expect("Watcher::shutdown() must complete (circular-wait deadlock regression)");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Real-watcher integration tests for issue #823 (git-restore not picked up).
+    //
+    // These drive a live `notify` watcher in a tempdir and assert that a
+    // git-restore-shaped mutation — `remove_file(target)` then re-creating the
+    // same path — surfaces as a NON-`Removed` change. We assert "not Removed"
+    // (rather than an exact kind) because FSEvents/inotify may coalesce the
+    // remove+recreate into a single Create, deliver Remove→Create, or (under
+    // load) emit only a bare Remove that the `resolve_emit_kind` existence
+    // check then upgrades to Modified. All three paths must reach the rebuild
+    // loop, so the only wrong outcome is a surviving `Removed`.
+    //
+    // Timing is deliberately generous (200ms debounce, multi-second drain
+    // deadlines) so the tests stay reliable on a busy CI runner.
+    // ---------------------------------------------------------------------------
+
+    /// Collect changes touching `target` until `deadline`, returning the last
+    /// kind seen for that path (or `None` if no event arrived in time).
+    async fn last_kind_for(
+        rx: &mut mpsc::Receiver<Change>,
+        target: &Path,
+        deadline: Duration,
+    ) -> Option<ChangeKind> {
+        let mut seen = None;
+        let _ = tokio::time::timeout(deadline, async {
+            while let Some(change) = rx.recv().await {
+                if change.path == target {
+                    seen = Some(change.kind);
+                }
+            }
+        })
+        .await;
+        seen
+    }
+
+    /// `git checkout -- <file>` unlinks then recreates the tracked file. The
+    /// watcher must report a non-`Removed` change so the dev server re-renders
+    /// instead of serving the pre-restore page forever (issue #823).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn git_restore_remove_then_write_is_reported() {
+        // FSEvents reports canonical paths (/var/folders → /private/...), so
+        // canonicalize the root before watching to match received paths.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let target = root.join("hello.txt");
+        std::fs::write(&target, b"original\n").expect("seed file");
+
+        let debounce = Duration::from_millis(200);
+        let (watcher, mut rx) =
+            Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
+                .expect("watcher start");
+
+        // Let the OS watch settle and drain the seed/create noise.
+        let _ = last_kind_for(&mut rx, &target, Duration::from_millis(500)).await;
+
+        // Simulate git's write_entry: unlink, then recreate with new bytes.
+        std::fs::remove_file(&target).expect("remove");
+        std::fs::write(&target, b"restored\n").expect("recreate");
+
+        let kind = last_kind_for(&mut rx, &target, Duration::from_secs(3)).await;
+        assert!(
+            matches!(kind, Some(ChangeKind::Created) | Some(ChangeKind::Modified)),
+            "git restore (remove+write) must surface a non-Removed change, got {kind:?}",
+        );
+
+        watcher.shutdown().await;
+    }
+
+    /// The other git-restore shape: unlink the target, then rename a temp file
+    /// over it (atomic replace, new inode). Must also report non-`Removed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn git_restore_remove_then_rename_over_is_reported() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let target = root.join("hello.txt");
+        std::fs::write(&target, b"original\n").expect("seed file");
+
+        let debounce = Duration::from_millis(200);
+        let (watcher, mut rx) =
+            Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
+                .expect("watcher start");
+
+        let _ = last_kind_for(&mut rx, &target, Duration::from_millis(500)).await;
+
+        std::fs::remove_file(&target).expect("remove");
+        let staged = root.join("hello.txt.tmp");
+        std::fs::write(&staged, b"restored\n").expect("stage");
+        std::fs::rename(&staged, &target).expect("rename over");
+
+        let kind = last_kind_for(&mut rx, &target, Duration::from_secs(3)).await;
+        assert!(
+            matches!(kind, Some(ChangeKind::Created) | Some(ChangeKind::Modified)),
+            "git restore (remove+rename-over) must surface a non-Removed change, got {kind:?}",
+        );
+
+        watcher.shutdown().await;
     }
 }
