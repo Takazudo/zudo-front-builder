@@ -500,8 +500,20 @@ const ENTRY_TMP_SUFFIX: &str = ".css";
 ///
 /// The sweep removes only files older than this so two concurrent builds in
 /// the same project dir cannot delete each other's *live* entry file: a
-/// Tailwind pass reads its entry within seconds, well under this window, so a
-/// file this old is necessarily orphaned by an earlier aborted run.
+/// Tailwind pass opens its `-i` entry at spawn (milliseconds), ~1000x under
+/// this window, so a file this old is necessarily orphaned by an earlier
+/// aborted run.
+///
+/// Out of scope (deliberately): the residual cross-process race where two
+/// `zfb` builds run in the *same* `working_dir` and one build's Tailwind has
+/// not opened its entry within this window (e.g. a multi-minute-latency
+/// wrapper via `ZFB_TAILWIND_BIN`). std offers no portable file-liveness
+/// check, a lockfile would add a dependency for a non-supported workflow, and
+/// the worst case is a single build failing loudly with "file not found" —
+/// never corruption or a silent bad artifact. On Unix, unlinking a file the
+/// reader has already opened is harmless (the inode survives until fd close),
+/// so only the create→open gap is at risk; on Windows the open file cannot be
+/// unlinked at all.
 const ENTRY_TMP_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Delete `zfb-tailwind-entry-*.css` files left in `dir` by a previous run
