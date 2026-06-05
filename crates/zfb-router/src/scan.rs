@@ -449,9 +449,31 @@ fn detect_ambiguity(routes: &[Route]) -> Result<(), RouterError> {
     detect_optional_catchall_conflicts(routes)
 }
 
+/// Render a segment slice as a param-name-insensitive shape key: static
+/// segments keep their literal, dynamic segments collapse to `:*`, and
+/// catchall segments to `:...`. Two routes (or prefixes) with equal shape
+/// keys match exactly the same set of URLs regardless of how their params
+/// are named — `/[id]` and `/[lang]` both render as `/:*`.
+fn shape_key(segments: &[Segment]) -> String {
+    if segments.is_empty() {
+        return "/".to_string();
+    }
+    let mut out = String::new();
+    for seg in segments {
+        out.push('/');
+        match seg {
+            Segment::Static(s) => out.push_str(s),
+            Segment::Dynamic(_) => out.push_str(":*"),
+            Segment::Catchall(_) | Segment::OptionalCatchall(_) => out.push_str(":..."),
+        }
+    }
+    out
+}
+
 /// Render the template of a segment-slice prefix (`/docs` for
 /// `[Static("docs")]`, `/` for the empty slice). Mirrors
-/// [`Route::template`] but over an arbitrary prefix.
+/// [`Route::template`] but over an arbitrary prefix. Used for error
+/// messages only — conflict comparisons use [`shape_key`].
 fn prefix_template(segments: &[Segment]) -> String {
     if segments.is_empty() {
         return "/".to_string();
@@ -469,14 +491,16 @@ fn prefix_template(segments: &[Segment]) -> String {
 /// never hide a conflict — `[` sorts before `i`, so `[[...slug]].tsx` is
 /// walked before a sibling `index.tsx`.
 ///
-/// For each `[[...name]]` route with prefix `P` (the URL it serves for
-/// zero segments):
+/// For each `[[...name]]` route with prefix `P` (the URL set it serves
+/// for zero segments):
 ///
-/// 1. Any route whose full template equals `P` conflicts — both produce
-///    the bare URL (e.g. `pages/docs/index.tsx` / `pages/docs.tsx` vs
-///    `pages/docs/[[...slug]].tsx`, all serving `/docs`).
-/// 2. Any other catchall (required or optional) at the same prefix
-///    conflicts regardless of param name — they overlap on every
+/// 1. Any route whose full shape equals `P`'s shape conflicts — both
+///    produce the bare URL (e.g. `pages/docs/index.tsx` / `pages/docs.tsx`
+///    vs `pages/docs/[[...slug]].tsx`, all serving `/docs`). The shape
+///    comparison is param-name-insensitive so `pages/[id].tsx` also
+///    conflicts with `pages/[lang]/[[...slug]].tsx` — both match `/en`.
+/// 2. Any other catchall (required or optional) at a same-shaped prefix
+///    conflicts regardless of param names — they overlap on every
 ///    non-empty path.
 ///
 /// Deeper / more specific routes under the prefix (`docs/about.tsx`,
@@ -487,12 +511,14 @@ fn detect_optional_catchall_conflicts(routes: &[Route]) -> Result<(), RouterErro
         if !matches!(route.segments.last(), Some(Segment::OptionalCatchall(_))) {
             continue;
         }
-        let prefix = prefix_template(&route.segments[..route.segments.len() - 1]);
+        let prefix_segs = &route.segments[..route.segments.len() - 1];
+        let prefix_shape = shape_key(prefix_segs);
+        let prefix = prefix_template(prefix_segs);
         for (j, other) in routes.iter().enumerate() {
             if i == j {
                 continue;
             }
-            if other.template() == prefix {
+            if shape_key(&other.segments) == prefix_shape {
                 return Err(RouterError::OptionalCatchallConflict {
                     first: other.source_path.clone(),
                     second: route.source_path.clone(),
@@ -505,7 +531,7 @@ fn detect_optional_catchall_conflicts(routes: &[Route]) -> Result<(), RouterErro
             if matches!(
                 other.segments.last(),
                 Some(Segment::Catchall(_) | Segment::OptionalCatchall(_))
-            ) && prefix_template(&other.segments[..other.segments.len() - 1]) == prefix
+            ) && shape_key(&other.segments[..other.segments.len() - 1]) == prefix_shape
             {
                 return Err(RouterError::OptionalCatchallConflict {
                     first: other.source_path.clone(),
@@ -727,6 +753,37 @@ mod tests {
     fn root_optional_catchall_conflicts_with_root_index() {
         let err = scan_tree(&["[[...rest]].tsx", "index.tsx"]).unwrap_err();
         assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn dynamic_prefix_bare_conflict_is_param_name_insensitive() {
+        // `pages/[id].tsx` (`/:id`) and `pages/[lang]/[[...slug]].tsx`
+        // (zero-segment prefix `/:lang`) both match `/en` — the differing
+        // param names must not hide the conflict.
+        let err = scan_tree(&["[id].tsx", "[lang]/[[...slug]].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::OptionalCatchallConflict { .. }),
+            "expected OptionalCatchallConflict, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn dynamic_prefix_catchall_overlap_is_param_name_insensitive() {
+        // `pages/[a]/[...x].tsx` and `pages/[b]/[[...y]].tsx` overlap on
+        // every non-empty nested path regardless of param names.
+        let err = scan_tree(&["[a]/[...x].tsx", "[b]/[[...y]].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn static_prefix_dynamic_sibling_is_not_a_bare_conflict() {
+        // `pages/[id].tsx` and `pages/docs/[[...slug]].tsx`: `/docs` is
+        // matched by both at runtime, but the static-prefixed catchall is
+        // strictly more specific there — this is ordinary overlap resolved
+        // by the specificity sort, not a conflict.
+        let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"])
+            .expect("static-prefix optional catchall must coexist with /[id]");
+        assert_eq!(routes.len(), 2);
     }
 
     #[test]
