@@ -2459,6 +2459,7 @@ fn refresh_live_ssr_routes(session: &DevRenderSession, handle: &SsrRoutesHandle)
 /// Grammar:
 /// - `:name`        → `[name]`        (single-segment dynamic param)
 /// - `:name{.+}`    → `[...name]`     (catchall — Hono regex quantifier)
+/// - `:name{.+}?`   → `[[...name]]`   (optional catchall — zero or more)
 /// - literal segments are preserved unchanged
 ///
 /// The root `/` is preserved as `/`.
@@ -2471,8 +2472,13 @@ fn colon_template_to_bracket(template: &str) -> String {
     for seg in &segments {
         out.push('/');
         if let Some(rest) = seg.strip_prefix(':') {
-            // Catchall (Hono `:name{.+}`) wins over single-segment.
-            if let Some(name) = rest.strip_suffix("{.+}") {
+            // Optional catchall (`:name{.+}?`) wins over required
+            // (`:name{.+}`), which wins over single-segment.
+            if let Some(name) = rest.strip_suffix("{.+}?") {
+                out.push_str("[[...");
+                out.push_str(name);
+                out.push_str("]]");
+            } else if let Some(name) = rest.strip_suffix("{.+}") {
                 out.push_str("[...");
                 out.push_str(name);
                 out.push(']');
@@ -2792,6 +2798,15 @@ mod tests {
         assert_eq!(
             colon_template_to_bracket("/docs/:rest{.+}"),
             "/docs/[...rest]",
+        );
+        // Optional catchall (`:name{.+}?`) → `[[...name]]`.
+        assert_eq!(
+            colon_template_to_bracket("/docs/:rest{.+}?"),
+            "/docs/[[...rest]]",
+        );
+        assert_eq!(
+            colon_template_to_bracket("/:rest{.+}?"),
+            "/[[...rest]]",
         );
         assert_eq!(
             colon_template_to_bracket("/a/:b/c/:d"),

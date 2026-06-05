@@ -12,6 +12,7 @@
 //! | `pages/blog/[slug].tsx`             | `/blog/:slug`      |                                |
 //! | `pages/blog/page/[page].tsx`        | `/blog/page/:page` |                                |
 //! | `pages/docs/[...slug].tsx`          | `/docs/:slug{.+}`  |                                |
+//! | `pages/docs/[[...slug]].tsx`        | `/docs/:slug{.+}?` | optional catchall: also `/docs`|
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
@@ -242,13 +243,15 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
     let total = raw_segments.len();
     for (i, raw) in raw_segments.iter().enumerate() {
         let parsed = parse_segment(source, raw)?;
-        if let Segment::Catchall(_) = &parsed {
-            if i != total - 1 {
-                return Err(RouterError::CatchallNotLast {
-                    path: source.to_path_buf(),
-                    segment: raw.clone(),
-                });
-            }
+        if matches!(
+            &parsed,
+            Segment::Catchall(_) | Segment::OptionalCatchall(_)
+        ) && i != total - 1
+        {
+            return Err(RouterError::CatchallNotLast {
+                path: source.to_path_buf(),
+                segment: raw.clone(),
+            });
         }
         segments.push(parsed);
     }
@@ -322,6 +325,30 @@ fn parse_segment(source: &Path, raw: &str) -> Result<Segment, RouterError> {
         return Ok(Segment::Static(raw.to_string()));
     }
 
+    // Optional catchall: `[[...name]]` (Next.js-style). Matched before the
+    // single-bracket forms so the doubled brackets are not mis-parsed as a
+    // parameter literally named `[...name]`.
+    if raw.starts_with("[[") && raw.ends_with("]]") {
+        let inner = &raw[2..raw.len() - 2];
+        let Some(name) = inner.strip_prefix("...") else {
+            return Err(RouterError::InvalidSegment {
+                path: source.to_path_buf(),
+                segment: raw.to_string(),
+                message: "double brackets are only valid as an optional catchall `[[...name]]`"
+                    .into(),
+            });
+        };
+        if name.is_empty() {
+            return Err(RouterError::InvalidSegment {
+                path: source.to_path_buf(),
+                segment: raw.to_string(),
+                message: "empty optional catchall parameter name".into(),
+            });
+        }
+        validate_param_name(source, raw, name)?;
+        return Ok(Segment::OptionalCatchall(name.to_string()));
+    }
+
     // Strip outer brackets.
     let inner = &raw[1..raw.len() - 1];
     if inner.is_empty() {
@@ -371,7 +398,11 @@ fn classify(segments: &[Segment]) -> RouteKind {
     let mut has_dynamic = false;
     for seg in segments {
         match seg {
-            Segment::Catchall(_) => return RouteKind::Catchall,
+            // Optional catchalls share `RouteKind::Catchall`: the kind only
+            // drives sorting/dispatch, and a required + optional catchall
+            // can never coexist at the same prefix (scan-time conflict), so
+            // no finer ordering between them is ever needed.
+            Segment::Catchall(_) | Segment::OptionalCatchall(_) => return RouteKind::Catchall,
             Segment::Dynamic(_) => has_dynamic = true,
             Segment::Static(_) => {}
         }
@@ -389,7 +420,7 @@ fn score(segments: &[Segment], source: &Path) -> u32 {
         total = total.saturating_add(match seg {
             Segment::Static(_) => STATIC_WEIGHT,
             Segment::Dynamic(_) => DYNAMIC_WEIGHT,
-            Segment::Catchall(_) => CATCHALL_WEIGHT,
+            Segment::Catchall(_) | Segment::OptionalCatchall(_) => CATCHALL_WEIGHT,
         });
     }
     if source
@@ -415,40 +446,148 @@ fn detect_ambiguity(routes: &[Route]) -> Result<(), RouterError> {
             });
         }
     }
+    detect_optional_catchall_conflicts(routes)
+}
+
+/// Render a segment slice as a param-name-insensitive shape key: static
+/// segments keep their literal, dynamic segments collapse to `:*`, and
+/// catchall segments to `:...`. Two routes (or prefixes) with equal shape
+/// keys match exactly the same set of URLs regardless of how their params
+/// are named — `/[id]` and `/[lang]` both render as `/:*`.
+fn shape_key(segments: &[Segment]) -> String {
+    if segments.is_empty() {
+        return "/".to_string();
+    }
+    let mut out = String::new();
+    for seg in segments {
+        out.push('/');
+        match seg {
+            Segment::Static(s) => out.push_str(s),
+            Segment::Dynamic(_) => out.push_str(":*"),
+            Segment::Catchall(_) | Segment::OptionalCatchall(_) => out.push_str(":..."),
+        }
+    }
+    out
+}
+
+/// Render the template of a segment-slice prefix (`/docs` for
+/// `[Static("docs")]`, `/` for the empty slice). Mirrors
+/// [`Route::template`] but over an arbitrary prefix. Used for error
+/// messages only — conflict comparisons use [`shape_key`].
+fn prefix_template(segments: &[Segment]) -> String {
+    if segments.is_empty() {
+        return "/".to_string();
+    }
+    let mut out = String::new();
+    for seg in segments {
+        out.push('/');
+        out.push_str(&seg.template());
+    }
+    out
+}
+
+/// Detect conflicts specific to optional catchall routes. A full-set pass
+/// (not folded into the incremental template map) so file-visit order can
+/// never hide a conflict — `[` sorts before `i`, so `[[...slug]].tsx` is
+/// walked before a sibling `index.tsx`.
+///
+/// For each `[[...name]]` route with prefix `P` (the URL set it serves
+/// for zero segments):
+///
+/// 1. Any route whose full shape equals `P`'s shape conflicts — both
+///    produce the bare URL (e.g. `pages/docs/index.tsx` / `pages/docs.tsx`
+///    vs `pages/docs/[[...slug]].tsx`, all serving `/docs`). The shape
+///    comparison is param-name-insensitive so `pages/[id].tsx` also
+///    conflicts with `pages/[lang]/[[...slug]].tsx` — both match `/en`.
+/// 2. Any other catchall (required or optional) at a same-shaped prefix
+///    conflicts regardless of param names — they overlap on every
+///    non-empty path.
+///
+/// Deeper / more specific routes under the prefix (`docs/about.tsx`,
+/// `docs/sub/[id].tsx`) are NOT conflicts — they coexist via the
+/// specificity sort exactly as they do with a required `[...slug]`.
+fn detect_optional_catchall_conflicts(routes: &[Route]) -> Result<(), RouterError> {
+    for (i, route) in routes.iter().enumerate() {
+        if !matches!(route.segments.last(), Some(Segment::OptionalCatchall(_))) {
+            continue;
+        }
+        let prefix_segs = &route.segments[..route.segments.len() - 1];
+        let prefix_shape = shape_key(prefix_segs);
+        let prefix = prefix_template(prefix_segs);
+        for (j, other) in routes.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if shape_key(&other.segments) == prefix_shape {
+                return Err(RouterError::OptionalCatchallConflict {
+                    first: other.source_path.clone(),
+                    second: route.source_path.clone(),
+                    reason: format!(
+                        "both serve the bare URL `{prefix}` (an optional catchall \
+                         `[[...name]]` matches zero segments)"
+                    ),
+                });
+            }
+            if matches!(
+                other.segments.last(),
+                Some(Segment::Catchall(_) | Segment::OptionalCatchall(_))
+            ) && shape_key(&other.segments[..other.segments.len() - 1]) == prefix_shape
+            {
+                return Err(RouterError::OptionalCatchallConflict {
+                    first: other.source_path.clone(),
+                    second: route.source_path.clone(),
+                    reason: format!(
+                        "two catchall routes at the same prefix `{prefix}` overlap on \
+                         every non-empty path; keep exactly one of them"
+                    ),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
 /// Sort routes by:
-/// 1. Kind (static < dynamic < catchall) — most specific first.
-/// 2. Number of segments, longer first.
-/// 3. `index.tsx` before non-index siblings (via specificity bonus).
-/// 4. Per-segment kind from left to right (static beats dynamic beats catchall).
-/// 5. Source path, lexicographically, for total ordering.
+/// 1. Per-segment rank vector, compared lexicographically left to right
+///    (static `0` < dynamic `1` < catchall / optional-catchall `2`); a
+///    shorter prefix-matching vector sorts first — most specific first.
+/// 2. `index.tsx` before non-index siblings (via specificity bonus).
+/// 3. Source path, lexicographically, for total ordering.
+///
+/// The rank-vector key is kept byte-for-byte in sync with
+/// `zfb_build::bundler::route_sort_key` (the JS/Hono runtime's
+/// registration order). Mirroring it here is load-bearing: dev SSR
+/// dispatch (`DevRenderSession::ssr_patterns` → `SsrRouteSet::find_match`,
+/// first-match) preserves this scan order, so a coarse per-route kind
+/// sort (the previous design) would let a top-level dynamic SSR route
+/// (`/[id]`, `/[lang]/[slug]`) steal `/docs` / `/docs/a` from a
+/// static-prefixed optional catchall (`/docs/[[...slug]]`) in dev while
+/// the bundled Hono runtime correctly chose the catchall — a dev/prod
+/// routing divergence for the optional-catchall route type.
 fn sort_routes(routes: &mut [Route]) {
     routes.sort_by(|a, b| {
-        a.kind
-            .order_key()
-            .cmp(&b.kind.order_key())
-            .then_with(|| b.segments.len().cmp(&a.segments.len()))
+        route_rank_vector(&a.segments)
+            .cmp(&route_rank_vector(&b.segments))
             .then_with(|| b.specificity.cmp(&a.specificity))
-            .then_with(|| {
-                for (sa, sb) in a.segments.iter().zip(b.segments.iter()) {
-                    let ord = segment_rank(sa).cmp(&segment_rank(sb));
-                    if ord != std::cmp::Ordering::Equal {
-                        return ord;
-                    }
-                }
-                std::cmp::Ordering::Equal
-            })
             .then_with(|| a.source_path.cmp(&b.source_path))
     });
+}
+
+/// Per-segment specificity rank vector for a route. Mirrors
+/// `zfb_build::bundler::route_sort_key` so dev and prod agree on which
+/// of two overlapping routes is more specific (see [`sort_routes`]).
+fn route_rank_vector(segments: &[Segment]) -> Vec<u8> {
+    segments.iter().map(segment_rank).collect()
 }
 
 fn segment_rank(seg: &Segment) -> u8 {
     match seg {
         Segment::Static(_) => 0,
         Segment::Dynamic(_) => 1,
-        Segment::Catchall(_) => 2,
+        // Required and optional catchalls share a rank: they can never
+        // coexist at the same prefix (scan-time conflict), so a finer
+        // ordering between them is unreachable.
+        Segment::Catchall(_) | Segment::OptionalCatchall(_) => 2,
     }
 }
 
@@ -512,6 +651,277 @@ mod tests {
         let p = PathBuf::from("blog/[].tsx");
         let err = parse_route(&p, &p).unwrap_err();
         assert!(matches!(err, RouterError::InvalidSegment { .. }));
+    }
+
+    // ---- optional catchall `[[...name]]` (#812) -----------------------------
+
+    #[test]
+    fn parses_optional_catchall_segment() {
+        let r = route_from("docs/[[...slug]].tsx");
+        assert_eq!(r.template(), "/docs/:slug{.+}?");
+        assert_eq!(r.kind, RouteKind::Catchall);
+        assert_eq!(
+            r.segments,
+            vec![
+                Segment::Static("docs".into()),
+                Segment::OptionalCatchall("slug".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn parses_top_level_optional_catchall() {
+        let r = route_from("[[...rest]].tsx");
+        assert_eq!(r.template(), "/:rest{.+}?");
+        assert_eq!(r.kind, RouteKind::Catchall);
+        assert_eq!(r.segments, vec![Segment::OptionalCatchall("rest".into())]);
+    }
+
+    #[test]
+    fn rejects_optional_catchall_in_middle() {
+        let p = PathBuf::from("docs/[[...slug]]/edit.tsx");
+        let err = parse_route(&p, &p).unwrap_err();
+        assert!(matches!(err, RouterError::CatchallNotLast { .. }));
+    }
+
+    #[test]
+    fn rejects_double_bracket_without_catchall_dots() {
+        // `[[slug]]` is not a valid form — optional params exist only as
+        // the optional catchall `[[...slug]]`.
+        let p = PathBuf::from("docs/[[slug]].tsx");
+        let err = parse_route(&p, &p).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidSegment { .. }));
+    }
+
+    #[test]
+    fn rejects_empty_optional_catchall_name() {
+        let p = PathBuf::from("docs/[[...]].tsx");
+        let err = parse_route(&p, &p).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidSegment { .. }));
+    }
+
+    #[test]
+    fn rejects_invalid_optional_catchall_name() {
+        let p = PathBuf::from("docs/[[...1slug]].tsx");
+        let err = parse_route(&p, &p).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidSegment { .. }));
+    }
+
+    fn scan_tree(files: &[&str]) -> Result<Vec<Route>, RouterError> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        for rel in files {
+            let abs = tmp.path().join(rel);
+            fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            fs::write(&abs, "export default function P() { return null; }\n").unwrap();
+        }
+        // TempDir must outlive the scan; routes carry owned PathBufs so
+        // returning them after drop is fine.
+        scan_pages(tmp.path())
+    }
+
+    #[test]
+    fn optional_catchall_conflicts_with_sibling_index() {
+        // Both produce the bare `/docs` URL. Note `[` sorts before `i` in
+        // the directory walk, so this also pins the full-set conflict pass
+        // (a forward-only check would visit `[[...slug]].tsx` first and
+        // miss `index.tsx`).
+        let err = scan_tree(&["docs/[[...slug]].tsx", "docs/index.tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::OptionalCatchallConflict { .. }),
+            "expected OptionalCatchallConflict, got {err:?}",
+        );
+        assert!(err.to_string().contains("/docs"), "got: {err}");
+    }
+
+    #[test]
+    fn optional_catchall_conflicts_with_file_route_at_prefix() {
+        // `pages/docs.tsx` also produces `/docs`.
+        let err = scan_tree(&["docs.tsx", "docs/[[...slug]].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn optional_catchall_conflicts_with_required_catchall_any_name() {
+        // Overlap on every non-empty path, regardless of param name.
+        let err = scan_tree(&["docs/[...a].tsx", "docs/[[...b]].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn two_optional_catchalls_at_same_prefix_conflict() {
+        let err = scan_tree(&["docs/[[...a]].tsx", "docs/[[...b]].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn root_optional_catchall_conflicts_with_root_index() {
+        let err = scan_tree(&["[[...rest]].tsx", "index.tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn dynamic_prefix_bare_conflict_is_param_name_insensitive() {
+        // `pages/[id].tsx` (`/:id`) and `pages/[lang]/[[...slug]].tsx`
+        // (zero-segment prefix `/:lang`) both match `/en` — the differing
+        // param names must not hide the conflict.
+        let err = scan_tree(&["[id].tsx", "[lang]/[[...slug]].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::OptionalCatchallConflict { .. }),
+            "expected OptionalCatchallConflict, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn dynamic_prefix_catchall_overlap_is_param_name_insensitive() {
+        // `pages/[a]/[...x].tsx` and `pages/[b]/[[...y]].tsx` overlap on
+        // every non-empty nested path regardless of param names.
+        let err = scan_tree(&["[a]/[...x].tsx", "[b]/[[...y]].tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::OptionalCatchallConflict { .. }));
+    }
+
+    #[test]
+    fn static_prefix_dynamic_sibling_is_not_a_bare_conflict() {
+        // `pages/[id].tsx` and `pages/docs/[[...slug]].tsx`: `/docs` is
+        // matched by both at runtime, but the static-prefixed catchall is
+        // strictly more specific there — this is ordinary overlap resolved
+        // by the specificity sort, not a conflict.
+        let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"])
+            .expect("static-prefix optional catchall must coexist with /[id]");
+        assert_eq!(routes.len(), 2);
+    }
+
+    /// Index of `template` in a scanned + sorted route list, or panic.
+    fn template_index(routes: &[Route], template: &str) -> usize {
+        routes
+            .iter()
+            .position(|r| r.template() == template)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing route {template}; got {:?}",
+                    routes.iter().map(Route::template).collect::<Vec<_>>(),
+                )
+            })
+    }
+
+    // ---- per-segment specificity sort (dev/prod parity, #814) --------------
+    //
+    // These pin the scan order that dev SSR first-match dispatch
+    // (`SsrRouteSet::find_match`) preserves, against the JS/Hono runtime's
+    // `route_sort_key` registration order in zfb-build's bundler.
+
+    #[test]
+    fn optional_catchall_sorts_before_top_level_dynamic_sibling() {
+        // Divergence case 1: URL `/docs` is matched by both
+        // `pages/docs/[[...slug]].tsx` (zero-segment optional catchall) and
+        // `pages/[id].tsx`. The static-prefixed catchall is strictly more
+        // specific at `/docs`, so it must sort FIRST — otherwise dev SSR
+        // first-match would send `/docs` to the less-specific `/[id]`.
+        let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/docs/:slug{.+}?")
+                < template_index(&routes, "/:id"),
+            "optional catchall /docs/[[...slug]] must sort before /[id]: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn optional_catchall_sorts_before_top_level_dynamic_pair() {
+        // Divergence case 2: URL `/docs/a` is matched by both
+        // `pages/docs/[[...slug]].tsx` and `pages/[lang]/[slug].tsx`. The
+        // static-prefixed catchall (rank `[0, 2]`) is more specific than the
+        // fully-dynamic pair (rank `[1, 1]`) — first differing segment is
+        // static-vs-dynamic at index 0 — so it must sort FIRST.
+        let routes = scan_tree(&["[lang]/[slug].tsx", "docs/[[...slug]].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/docs/:slug{.+}?")
+                < template_index(&routes, "/:lang/:slug"),
+            "optional catchall /docs/[[...slug]] must sort before /[lang]/[slug]: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn required_catchall_orderings_unchanged() {
+        // Existing required-catchall / dynamic invariants stay green under
+        // the per-segment sort:
+        //   - a plain dynamic sibling sorts before the catchall at the same
+        //     static depth (`/docs/[id]` before `/docs/[...slug]`);
+        //   - a static-prefixed catchall sorts before a fully-dynamic pair
+        //     (`/docs/[...slug]` before `/[lang]/[slug]`);
+        //   - a deeper dynamic descendant sorts before the shallow catchall
+        //     (`/docs/v/[page]` before `/docs/[...slug]`).
+        let routes = scan_tree(&[
+            "docs/[id].tsx",
+            "docs/[...slug].tsx",
+            "docs/v/[page].tsx",
+            "[lang]/[slug].tsx",
+        ])
+        .expect("scan");
+        let cat = template_index(&routes, "/docs/:slug{.+}");
+        assert!(
+            template_index(&routes, "/docs/:id") < cat,
+            "/docs/:id before /docs/:slug{{.+}}: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert!(
+            cat < template_index(&routes, "/:lang/:slug"),
+            "/docs/:slug{{.+}} before /:lang/:slug: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert!(
+            template_index(&routes, "/docs/v/:page") < cat,
+            "/docs/v/:page before /docs/:slug{{.+}}: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn index_sibling_outranks_top_level_dynamic() {
+        // The index-bonus path still resolves a same-shape tie: `/foo`
+        // (from `pages/foo/index.tsx`) and `/:foo` (from `pages/[foo].tsx`)
+        // are both single-segment; the static one must sort first.
+        let routes = scan_tree(&["foo/index.tsx", "[foo].tsx"]).expect("scan");
+        assert!(
+            template_index(&routes, "/foo") < template_index(&routes, "/:foo"),
+            "static /foo must sort before dynamic /:foo: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn optional_catchall_coexists_with_deeper_routes() {
+        // More-specific routes under the prefix are NOT conflicts — they
+        // coexist via the specificity sort, exactly like with a required
+        // catchall.
+        let routes = scan_tree(&[
+            "docs/[[...slug]].tsx",
+            "docs/about.tsx",
+            "docs/sub/[id].tsx",
+        ])
+        .expect("deeper routes under an optional catchall must coexist");
+        assert_eq!(routes.len(), 3);
+        // The optional catchall must sort last (loosest matcher).
+        assert_eq!(
+            routes.last().unwrap().template(),
+            "/docs/:slug{.+}?",
+            "optional catchall should sort last: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn required_catchall_unaffected_by_optional_support() {
+        // The strict form keeps its behaviour: a required catchall at one
+        // prefix and an optional at another coexist.
+        let routes = scan_tree(&["docs/[...slug].tsx", "manual/[[...slug]].tsx"])
+            .expect("catchalls at different prefixes must coexist");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert!(templates.contains(&"/docs/:slug{.+}".to_string()));
+        assert!(templates.contains(&"/manual/:slug{.+}?".to_string()));
     }
 
     // ---- non-HTML page convention (Sub 49) -------------------------------

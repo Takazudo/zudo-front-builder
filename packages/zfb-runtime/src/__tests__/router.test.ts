@@ -842,3 +842,108 @@ describe("createPageRouter — __paths__ endpoint", () => {
     expect(body).toEqual([{ params: { slug: "hello" } }, { params: { slug: "world" } }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #812 — optional catchall (`[[...slug]]` → `/docs/:slug{.+}?`)
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — optional catchall (issue #812)", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  /**
+   * Helper: build a router with one optional-catchall page whose paths()
+   * covers the zero-segment case (`slug: []`) and a nested path. Captures
+   * the input passed to default() for shape assertions.
+   */
+  function optionalCatchallRouter(): {
+    router: ReturnType<typeof createPageRouter>;
+    received: () => unknown;
+  } {
+    let received: unknown = null;
+    const page: PageModule & { paths: () => unknown[] } = {
+      default: (input) => {
+        received = input;
+        return null;
+      },
+      paths: () => [
+        { params: { slug: [] }, props: { title: "Docs home" } },
+        { params: { slug: ["guides", "install"] }, props: { title: "Install" } },
+      ],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/docs/:slug{.+}?", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+    return { router, received: () => received };
+  }
+
+  it("renders the bare URL from the explicit `slug: []` paths() entry", async () => {
+    // Hono matches `/docs` for `/docs/:slug{.+}?` with NO params captured.
+    // The router must still resolve the paths() entry whose slug is []
+    // instead of rendering with `{}` (the pre-#812 bug).
+    const { router, received } = optionalCatchallRouter();
+    const res = await router(new Request("http://test.local/docs"));
+    expect(res.status).toBe(200);
+    expect(received()).toEqual({
+      params: { slug: [] },
+      title: "Docs home",
+    });
+  });
+
+  it("renders nested paths exactly like a required catchall", async () => {
+    const { router, received } = optionalCatchallRouter();
+    const res = await router(new Request("http://test.local/docs/guides/install"));
+    expect(res.status).toBe(200);
+    expect(received()).toEqual({
+      params: { slug: ["guides", "install"] },
+      title: "Install",
+    });
+  });
+
+  it("returns 404 for a nested URL not enumerated by paths()", async () => {
+    const { router } = optionalCatchallRouter();
+    const res = await router(new Request("http://test.local/docs/missing"));
+    expect(res.status).toBe(404);
+  });
+
+  it("does not match the trailing-slash form of the bare URL", async () => {
+    // `/docs/` is NOT matched by Hono's `:slug{.+}?` (probed on 4.12.x);
+    // pin that here so a Hono behaviour change is caught by CI.
+    const { router } = optionalCatchallRouter();
+    const res = await router(new Request("http://test.local/docs/"));
+    expect(res.status).toBe(404);
+  });
+
+  it("required catchall keeps rejecting the bare URL (no zero-segment match)", async () => {
+    const page: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { slug: ["a"] } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/docs/:slug{.+}", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+    const bare = await router(new Request("http://test.local/docs"));
+    expect(bare.status).toBe(404);
+    const nested = await router(new Request("http://test.local/docs/a"));
+    expect(nested.status).toBe(200);
+  });
+
+  it("zero-segment URL 404s when paths() has no `[]` entry", async () => {
+    const page: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => [{ params: { slug: ["a"] } }],
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/docs/:slug{.+}?", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+    const res = await router(new Request("http://test.local/docs"));
+    expect(res.status).toBe(404);
+  });
+});

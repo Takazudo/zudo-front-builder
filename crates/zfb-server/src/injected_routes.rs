@@ -97,6 +97,10 @@ impl InjectedRouteSet {
 /// - `foo` matches the literal segment `foo` only.
 /// - `[name]` matches exactly one segment (cannot be empty).
 /// - `[...rest]` matches one or more segments (catch-all).
+/// - `[[...rest]]` matches zero or more segments (optional catch-all).
+///   The zero case matches the bare prefix (`/docs` for
+///   `/docs/[[...rest]]`) but NOT the trailing-slash form (`/docs/`),
+///   mirroring Hono's `:rest{.+}?` behaviour.
 ///
 /// Mirrors the subset of `pages/`-router semantics the spec
 /// explicitly calls out (`/blog/[slug]`); full feature parity with
@@ -109,6 +113,25 @@ pub fn pattern_matches(pattern: &str, url_path: &str) -> bool {
     let mut ui = 0usize;
     while pi < p_segments.len() {
         let p = p_segments[pi];
+        // Optional catch-all `[[...rest]]` — checked before the
+        // single-bracket forms so the doubled brackets are not
+        // mis-read as a param literally named `[...rest]`.
+        if p.starts_with("[[...") && p.ends_with("]]") {
+            if pi != p_segments.len() - 1 {
+                return false;
+            }
+            let remaining = &u_segments[ui..];
+            if remaining.iter().any(|s| !s.is_empty()) {
+                // One or more segments: same as the required catch-all.
+                return true;
+            }
+            // Zero segments: only the bare prefix (no trailing slash)
+            // or the root URL itself. `/docs/` leaves an empty trailing
+            // segment which Hono's `:rest{.+}?` also rejects; `/` is
+            // special-cased because the root URL always splits to one
+            // empty segment.
+            return remaining.is_empty() || url_path == "/";
+        }
         if let Some(name) = strip_brackets(p) {
             if let Some(rest) = name.strip_prefix("...") {
                 // Catch-all `[...rest]` — must be the last pattern
@@ -188,6 +211,36 @@ mod tests {
         assert!(s.find_match("/docs/a/b/c").is_some());
         assert!(s.find_match("/docs").is_none());
         assert!(s.find_match("/docs/").is_none());
+    }
+
+    #[test]
+    fn optional_catchall_matches_zero_or_more_segments() {
+        let s = InjectedRouteSet::new(vec![rec("/docs/[[...rest]]")]);
+        // Zero segments: the bare prefix matches…
+        assert!(s.find_match("/docs").is_some());
+        // …but the trailing-slash form does not (Hono `:rest{.+}?` parity).
+        assert!(s.find_match("/docs/").is_none());
+        // One or more segments: same as the required catch-all.
+        assert!(s.find_match("/docs/a").is_some());
+        assert!(s.find_match("/docs/a/b/c").is_some());
+        // Different prefix never matches.
+        assert!(s.find_match("/other").is_none());
+        assert!(s.find_match("/other/a").is_none());
+    }
+
+    #[test]
+    fn root_optional_catchall_matches_root_url() {
+        let s = InjectedRouteSet::new(vec![rec("/[[...rest]]")]);
+        assert!(s.find_match("/").is_some());
+        assert!(s.find_match("/a").is_some());
+        assert!(s.find_match("/a/b").is_some());
+    }
+
+    #[test]
+    fn optional_catchall_must_be_last_pattern_segment() {
+        let s = InjectedRouteSet::new(vec![rec("/docs/[[...rest]]/edit")]);
+        assert!(s.find_match("/docs/a/edit").is_none());
+        assert!(s.find_match("/docs/edit").is_none());
     }
 
     #[test]

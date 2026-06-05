@@ -189,12 +189,16 @@ pub fn resolve_paths(
             expected: "an array of `{ params, props }` objects".to_string(),
         })?;
 
-    // Required param names + whether they are catch-all.
-    let required: Vec<(&str, bool)> = route_segments
+    // Required param names + their kind. Every declared param — including
+    // an optional catchall — must appear as a key in each entry's `params`
+    // object; "optional" refers to the URL segments it matches (zero is
+    // allowed via an explicit empty array), not to the key itself.
+    let required: Vec<(&str, ParamKind)> = route_segments
         .iter()
         .filter_map(|seg| match seg {
-            Segment::Dynamic(name) => Some((name.as_str(), false)),
-            Segment::Catchall(name) => Some((name.as_str(), true)),
+            Segment::Dynamic(name) => Some((name.as_str(), ParamKind::Dynamic)),
+            Segment::Catchall(name) => Some((name.as_str(), ParamKind::Catchall)),
+            Segment::OptionalCatchall(name) => Some((name.as_str(), ParamKind::OptionalCatchall)),
             Segment::Static(_) => None,
         })
         .collect();
@@ -233,7 +237,7 @@ pub fn resolve_paths(
 
         // Required-param check + value extraction.
         let mut params_map: HashMap<String, String> = HashMap::with_capacity(required.len());
-        for (name, is_catchall) in &required {
+        for (name, kind) in &required {
             let raw = params_obj
                 .get(*name)
                 .ok_or_else(|| PathsError::MissingParam {
@@ -241,10 +245,10 @@ pub fn resolve_paths(
                     route: route_template.to_string(),
                     provided: sorted_keys(params_obj.keys()),
                 })?;
-            let resolved = if *is_catchall {
-                catchall_string(raw, name, route_template)?
-            } else {
-                dynamic_string(raw, name, route_template)?
+            let resolved = match kind {
+                ParamKind::Dynamic => dynamic_string(raw, name, route_template)?,
+                ParamKind::Catchall => catchall_string(raw, name, route_template, false)?,
+                ParamKind::OptionalCatchall => catchall_string(raw, name, route_template, true)?,
             };
             params_map.insert((*name).to_string(), resolved);
         }
@@ -288,6 +292,14 @@ pub fn resolve_paths(
     Ok(result)
 }
 
+/// Kind of a declared route param, derived from its [`Segment`] variant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParamKind {
+    Dynamic,
+    Catchall,
+    OptionalCatchall,
+}
+
 /// Validate and extract a single-segment dynamic param value (must be a
 /// non-empty string with no `/`).
 fn dynamic_string(val: &Value, name: &str, route: &str) -> Result<String, PathsError> {
@@ -316,14 +328,30 @@ fn dynamic_string(val: &Value, name: &str, route: &str) -> Result<String, PathsE
 /// Validate and extract a catch-all param value. Accepts either a single
 /// string (`"a/b/c"`) or an array of strings (`["a", "b", "c"]`); both are
 /// normalized to a slash-joined string used as one URL segment-bag.
-fn catchall_string(val: &Value, name: &str, route: &str) -> Result<String, PathsError> {
+///
+/// `optional` is `true` for an optional catchall (`[[...name]]`): the ONLY
+/// extra shape it accepts is the explicit empty array `[]` (→ the bare
+/// directory URL, normalized to the empty string here). `""`, `"/"`, and
+/// `[""]` stay invalid for both forms — zero segments must be spelled
+/// `[]`, never an empty string.
+fn catchall_string(
+    val: &Value,
+    name: &str,
+    route: &str,
+    optional: bool,
+) -> Result<String, PathsError> {
     match val {
         Value::String(s) => {
             let trimmed = s.trim_matches('/');
             if trimmed.is_empty() {
+                let hint = if optional {
+                    " (use an empty array `[]` for the zero-segment case)"
+                } else {
+                    ""
+                };
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
-                    reason: "catchall param string must not be empty".to_string(),
+                    reason: format!("catchall param string must not be empty{hint}"),
                     route: route.to_string(),
                 });
             }
@@ -339,6 +367,11 @@ fn catchall_string(val: &Value, name: &str, route: &str) -> Result<String, Paths
         }
         Value::Array(arr) => {
             if arr.is_empty() {
+                if optional {
+                    // Zero segments: the optional catchall serves the bare
+                    // directory URL. Joined-string convention → empty.
+                    return Ok(String::new());
+                }
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
                     reason: "catchall param array must not be empty".to_string(),
@@ -395,6 +428,16 @@ fn build_url(route_segments: &[Segment], params: &HashMap<String, String>) -> St
             Segment::Dynamic(name) | Segment::Catchall(name) => {
                 if let Some(v) = params.get(name) {
                     parts.push(v.as_str());
+                }
+            }
+            Segment::OptionalCatchall(name) => {
+                // Zero segments resolve to the empty string — skip the
+                // segment entirely so `/docs` comes out bare, never
+                // `/docs/` with a dangling separator.
+                if let Some(v) = params.get(name) {
+                    if !v.is_empty() {
+                        parts.push(v.as_str());
+                    }
                 }
             }
         }
@@ -858,5 +901,152 @@ mod tests {
         let _ = resolve_paths(&mut cache, "[lang]/[slug].tsx", &segs, &a).unwrap();
         let _ = resolve_paths(&mut cache, "[lang]/[slug].tsx", &segs, &b).unwrap();
         assert_eq!(cache.hit_count(), 1);
+    }
+
+    // ---- optional catchall `[[...slug]]` (#812) -----------------------------
+
+    fn route_docs_optional_catchall() -> Vec<Segment> {
+        vec![
+            Segment::Static("docs".to_string()),
+            Segment::OptionalCatchall("slug".to_string()),
+        ]
+    }
+
+    #[test]
+    fn optional_catchall_empty_array_resolves_bare_url() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([
+            { "params": { "slug": [] }, "props": { "title": "Docs home" } }
+        ]);
+
+        let out =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "/docs", "zero segments must map to the bare URL");
+        assert_eq!(out[0].params.get("slug").unwrap(), "");
+        assert_eq!(out[0].props, json!({ "title": "Docs home" }));
+    }
+
+    #[test]
+    fn optional_catchall_nested_paths_still_resolve() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([
+            { "params": { "slug": [] } },
+            { "params": { "slug": ["a", "b"] } },
+            { "params": { "slug": "c/d" } }
+        ]);
+
+        let out =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
+
+        let urls: Vec<&str> = out.iter().map(|r| r.url.as_str()).collect();
+        assert_eq!(urls, vec!["/docs", "/docs/a/b", "/docs/c/d"]);
+    }
+
+    #[test]
+    fn top_level_optional_catchall_zero_segments_is_root() {
+        let mut cache = PathsCache::new();
+        let segs = vec![Segment::OptionalCatchall("rest".to_string())];
+        let export = json!([{ "params": { "rest": [] } }]);
+
+        let out = resolve_paths(&mut cache, "[[...rest]].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/");
+    }
+
+    #[test]
+    fn optional_catchall_rejects_empty_string() {
+        // `""` stays invalid — zero segments must be spelled `[]`.
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([{ "params": { "slug": "" } }]);
+
+        let err =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
+        assert!(
+            err.to_string().contains("[]"),
+            "error should hint at the `[]` spelling: {err}",
+        );
+    }
+
+    #[test]
+    fn optional_catchall_rejects_slash_string() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([{ "params": { "slug": "/" } }]);
+
+        let err =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
+    }
+
+    #[test]
+    fn optional_catchall_rejects_array_with_empty_element() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([{ "params": { "slug": [""] } }]);
+
+        let err =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
+    }
+
+    #[test]
+    fn optional_catchall_still_requires_the_param_key() {
+        // The zero case needs an explicit `slug: []` — a missing key is
+        // still a MissingParam error, not an implicit empty.
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([{ "params": {} }]);
+
+        let err =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::MissingParam { .. }));
+    }
+
+    #[test]
+    fn optional_catchall_duplicate_bare_urls_are_ambiguous() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([
+            { "params": { "slug": [] } },
+            { "params": { "slug": [] } }
+        ]);
+
+        let err =
+            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::AmbiguousResolution { .. }));
+    }
+
+    #[test]
+    fn required_catchall_still_rejects_empty_array() {
+        // The strict `[...slug]` form keeps its guard: `[]` is invalid.
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": [] } }]);
+
+        let err = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap_err();
+        match err {
+            PathsError::InvalidParamType { reason, .. } => {
+                assert!(
+                    reason.contains("must not be empty"),
+                    "unexpected reason: {reason}",
+                );
+            }
+            other => unreachable!("expected InvalidParamType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn required_catchall_still_rejects_empty_string() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": "" } }]);
+
+        let err = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
     }
 }

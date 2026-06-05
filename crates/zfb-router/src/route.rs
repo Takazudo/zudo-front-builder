@@ -16,17 +16,6 @@ pub enum RouteKind {
     Catchall,
 }
 
-impl RouteKind {
-    /// Lower numbers sort first (i.e. higher priority).
-    pub(crate) fn order_key(self) -> u8 {
-        match self {
-            RouteKind::Static => 0,
-            RouteKind::Dynamic => 1,
-            RouteKind::Catchall => 2,
-        }
-    }
-}
-
 /// A single resolved route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {
@@ -120,7 +109,9 @@ impl Route {
         for seg in &self.segments {
             url_parts.push(match seg {
                 Segment::Static(s) => s.clone(),
-                Segment::Dynamic(_) | Segment::Catchall(_) => seg.template(),
+                Segment::Dynamic(_) | Segment::Catchall(_) | Segment::OptionalCatchall(_) => {
+                    seg.template()
+                }
             });
         }
 

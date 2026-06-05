@@ -2011,53 +2011,59 @@ fn materialise_shadow(
     // Hono dispatches requests in registration order. Without explicit
     // ordering a fully-dynamic route like `/[lang]/[slug]` (→ `/:lang/:slug`)
     // registered BEFORE `/blog/[slug]` would steal `/blog/hello` by matching
-    // it as (lang=blog, slug=hello). We prevent this by sorting from most-
-    // specific to least-specific using a composite key:
+    // it as (lang=blog, slug=hello).
     //
-    //   (−static_segments, +dynamic_segments, +catchall_segments)
+    // The key is the route's per-segment rank vector, compared
+    // lexicographically left to right:
     //
-    // Interpretation:
-    //   - More static segments → lower (higher priority) primary key.
-    //   - Among same static count, fewer dynamic → lower secondary key.
-    //   - Catchall (rest) segments always sort after plain dynamic ones.
-    //   - Alphabetical order breaks remaining ties (stable and deterministic).
+    //   static = 0  <  dynamic `[p]` = 1  <  catchall `[...p]` / `[[...p]]` = 2
+    //
+    // Two overlapping patterns always agree on a common prefix and first
+    // differ at a segment where one is looser than the other, so ordering
+    // by the first differing rank registers the more-specific route first.
+    // Alphabetical order breaks remaining ties (stable and deterministic);
+    // rank-tied routes never overlap (their static segments differ).
+    //
+    // An aggregate count key (the previous design:
+    // `(−static, +dynamic, +catchall)`) is NOT sufficient here: it ranked
+    // `/docs/[...rest]` (1 static, 1 catchall) before
+    // `/docs/[version]/[page]` (1 static, 2 dynamic), letting the catchall
+    // steal `/docs/v1/intro` from the deeper dynamic route (or 404 it when
+    // the catchall's `paths()` lacks the entry). The per-segment vector
+    // compares rank 2 (catchall) against rank 1 (dynamic) at segment index
+    // 1 and orders the dynamic descendant first, matching zfb-router's
+    // per-segment sort. Probed against Hono 4.12.x: registration order is
+    // what decides between the two patterns.
+    //
+    // Required and optional catchalls share rank 2 — they can never
+    // coexist at the same prefix (scan-time conflict), so a finer
+    // ordering between them is unreachable.
     //
     // Example ordering for the routing-rendering fixture:
-    //   /              → (0, 0, 0) — static, most specific
-    //   /about         → (−1, 0, 0)
-    //   /blog          → (−1, 0, 0) — tie broken alphabetically
-    //   /blog/page/[p] → (−2, 1, 0) — 2 static segs, 1 dynamic
-    //   /blog/[slug]   → (−1, 1, 0) — 1 static seg, 1 dynamic
-    //   /docs/[...s]   → (−1, 0, 1) — 1 static seg, 1 catchall
-    //   /[lang]/[slug] → (0, 2, 0)  — 0 static segs, 2 dynamic (least specific)
-    //
-    // Using isize allows negative values for the static component, which is
-    // what we want — we want "more static" to sort EARLIER (lower).
-    fn route_sort_key(route: &str) -> (isize, isize, isize) {
-        let mut static_count = 0isize;
-        let mut dynamic_count = 0isize;
-        let mut catchall_count = 0isize;
-        for seg in route.split('/') {
-            if seg.is_empty() {
-                continue; // leading slash
-            }
-            if seg.starts_with("[...") && seg.ends_with(']') {
-                catchall_count += 1;
-            } else if seg.starts_with('[') && seg.ends_with(']') {
-                dynamic_count += 1;
-            } else {
-                static_count += 1;
-            }
-        }
-        // Negate static_count so higher static count → lower (earlier) key.
-        // Add catchall_count into the dynamic bucket so catchall segments sort
-        // after plain dynamic at equal static depth (e.g. /docs/[...slug] after
-        // /docs/[id]), preserving the invariant documented at line 2022.
-        (
-            -static_count,
-            dynamic_count + catchall_count,
-            catchall_count,
-        )
+    //   /              → []     — empty vector sorts first (no overlaps)
+    //   /about         → [0]    — tie with /blog broken alphabetically
+    //   /blog          → [0]
+    //   /blog/page/[p] → [0, 0, 1]
+    //   /blog/[slug]   → [0, 1]
+    //   /docs/[id]     → [0, 1]
+    //   /docs/[...s]   → [0, 2] — after /docs/[id] (rank 2 > 1 at index 1)
+    //   /[lang]/[slug] → [1, 1] — least specific (dynamic at index 0)
+    fn route_sort_key(route: &str) -> Vec<u8> {
+        route
+            .split('/')
+            .filter(|seg| !seg.is_empty())
+            .map(|seg| {
+                if (seg.starts_with("[[...") && seg.ends_with("]]"))
+                    || (seg.starts_with("[...") && seg.ends_with(']'))
+                {
+                    2
+                } else if seg.starts_with('[') && seg.ends_with(']') {
+                    1
+                } else {
+                    0
+                }
+            })
+            .collect()
     }
     routes.sort_by(|a, b| {
         let ka = route_sort_key(&a.route);
@@ -3809,6 +3815,8 @@ pub(crate) fn render_md_page_shell(
 /// `createPageRouter` registers with the Hono app.
 ///
 /// Segment rules:
+/// - `[[...param]]` → `:param{.+}?` (optional catchall — zero or more
+///   path segments; the zero case matches the bare prefix URL)
 /// - `[...param]` → `:param{.+}` (catchall — one or more path
 ///   segments separated by `/`, matched by Hono's regex quantifier)
 /// - `[param]`    → `:param` (single-segment dynamic param)
@@ -3830,7 +3838,17 @@ pub(crate) fn bracket_to_hono(route: &str) -> String {
     let mut out = String::with_capacity(route.len() + 4);
     for segment in &segments {
         out.push('/');
-        if segment.starts_with("[...") && segment.ends_with(']') {
+        if segment.starts_with("[[...") && segment.ends_with("]]") {
+            // Optional catchall: `[[...param]]` → `:param{.+}?`. Checked
+            // before the single-bracket forms so the doubled brackets do
+            // not fall into the plain-dynamic branch. Must stay
+            // bit-identical to `Segment::OptionalCatchall::template()` so
+            // the worker's `pagesByRoute` lookup keys match.
+            let name = &segment[5..segment.len() - 2];
+            out.push(':');
+            out.push_str(name);
+            out.push_str("{.+}?");
+        } else if segment.starts_with("[...") && segment.ends_with(']') {
             // Catchall: `[...param]` → `:param{.+}`
             let name = &segment[4..segment.len() - 1];
             out.push(':');
@@ -5827,6 +5845,36 @@ mod tests {
         assert_eq!(bracket_to_hono("/docs/[...slug]"), "/docs/:slug{.+}");
         // Fully dynamic catchall.
         assert_eq!(bracket_to_hono("/[...rest]"), "/:rest{.+}");
+        // Optional catchall (zero or more segments).
+        assert_eq!(bracket_to_hono("/docs/[[...slug]]"), "/docs/:slug{.+}?");
+        // Fully dynamic optional catchall.
+        assert_eq!(bracket_to_hono("/[[...rest]]"), "/:rest{.+}?");
+    }
+
+    #[test]
+    fn optional_catchall_route_key_round_trips_with_router_template() {
+        // The worker registers `bracket_to_hono(derive_route(file))` while
+        // the render pipeline keys on `zfb_router::Route::template()`. The
+        // two strings must stay bit-identical or the `pagesByRoute` /
+        // `__paths__` lookup 404s silently. Pin the round trip for the
+        // optional catchall form.
+        let route = derive_route(Path::new("docs/[[...slug]].tsx")).expect("derive");
+        assert_eq!(route, "/docs/[[...slug]]");
+        assert_eq!(bracket_to_hono(&route), "/docs/:slug{.+}?");
+
+        let scanned = {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let docs = tmp.path().join("docs");
+            fs::create_dir_all(&docs).unwrap();
+            fs::write(
+                docs.join("[[...slug]].tsx"),
+                "export default function P() { return null; }\n",
+            )
+            .unwrap();
+            zfb_router::scan_pages(tmp.path()).expect("scan")
+        };
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].template(), bracket_to_hono(&route));
     }
 
     #[test]
@@ -5932,8 +5980,20 @@ mod tests {
             fs::create_dir_all(root.join(d)).unwrap();
         }
         let stub = "export default function P() { return null; }\n";
-        for f in ["pages/docs/[id].tsx", "pages/docs/[...slug].tsx"] {
-            fs::write(root.join(f), stub).unwrap();
+        for f in [
+            "pages/docs/[id].tsx",
+            "pages/docs/[...slug].tsx",
+            "pages/manual/about.tsx",
+            "pages/manual/[id].tsx",
+            "pages/manual/[[...slug]].tsx",
+            "pages/api/[version]/[page].tsx",
+            "pages/api/[...rest].tsx",
+            "pages/kb/[version]/[page].tsx",
+            "pages/kb/[[...rest]].tsx",
+        ] {
+            let abs = root.join(f);
+            fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            fs::write(abs, stub).unwrap();
         }
         let mut routes = Vec::new();
         let shadow_pages_dest = root.join("shadow").join("pages");
@@ -5970,6 +6030,31 @@ mod tests {
         assert!(
             idx("/docs/[id]") < idx("/docs/[...slug]"),
             "/docs/[id] should be registered before /docs/[...slug]"
+        );
+
+        // The optional catchall sorts with the catchall bucket — after a
+        // static sibling and after a plain dynamic at equal static depth.
+        assert!(
+            idx("/manual/about") < idx("/manual/[[...slug]]"),
+            "/manual/about should be registered before /manual/[[...slug]]"
+        );
+        assert!(
+            idx("/manual/[id]") < idx("/manual/[[...slug]]"),
+            "/manual/[id] should be registered before /manual/[[...slug]]"
+        );
+
+        // A catchall must register AFTER a deeper dynamic descendant at the
+        // same prefix — Hono dispatches in registration order, so the old
+        // aggregate-count key let `/api/[...rest]` steal `/api/v1/intro`
+        // from `/api/[version]/[page]` (probed on Hono 4.12.x). Pin both
+        // the required and the optional form.
+        assert!(
+            idx("/api/[version]/[page]") < idx("/api/[...rest]"),
+            "/api/[version]/[page] should be registered before /api/[...rest]"
+        );
+        assert!(
+            idx("/kb/[version]/[page]") < idx("/kb/[[...rest]]"),
+            "/kb/[version]/[page] should be registered before /kb/[[...rest]]"
         );
     }
 

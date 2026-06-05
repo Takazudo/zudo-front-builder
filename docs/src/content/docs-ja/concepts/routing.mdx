@@ -18,6 +18,7 @@ zfb は `pages/` ディレクトリ配下で **ファイルシステムルーテ
 | `pages/blog/index.tsx` | `/blog` | |
 | `pages/blog/[slug].tsx` | `/blog/:slug`（動的） | |
 | `pages/docs/[...slug].tsx` | `/docs/:slug*`（catchall） | |
+| `pages/docs/[[...slug]].tsx` | `/docs/:slug*?`（オプショナル catchall） | ベース URL の `/docs` にもマッチ |
 | `pages/[lang]/[slug].tsx` | `/:lang/:slug` | |
 
 最初に押さえておきたいルールがいくつかあります。
@@ -33,6 +34,8 @@ zfb は `pages/` ディレクトリ配下で **ファイルシステムルーテ
 ## 静的・動的・catchall ルート
 
 静的ルート（`pages/about.tsx`）は単一の具体的な URL にマッチします。動的ルートはファイル名に `[param]` の角括弧を使って単一のパスセグメントをキャプチャし、catchall ルートは `[...param]` を使って末尾の任意個数のセグメントをキャプチャします。
+
+catchall は **オプショナル** にもできます。二重角括弧の `[[...param]]` はディレクトリ直下のベース URL にもマッチします — `pages/docs/[[...slug]].tsx` は `/docs/a/b` に加えて `/docs`（`slug = []`）も配信します。必須形の `[...param]` は厳密なままで、ゼロセグメントには決してマッチしません。オプショナル catchall はルートの最後のセグメントでなければならず、同じ位置の兄弟 `index.tsx`（または同位置の `[...param]`）とは共存できません — 同じ URL を取り合うため、ルーターはスキャン時にこの組み合わせを拒否します。
 
 ```tsx
 // pages/blog/[slug].tsx

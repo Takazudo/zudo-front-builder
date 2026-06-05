@@ -44,4 +44,19 @@ pub enum RouterError {
         first: PathBuf,
         second: PathBuf,
     },
+
+    /// An optional catchall route (`[[...name]]`) overlaps another route:
+    /// either both serve the same bare URL (the zero-segment case), or
+    /// another catchall occupies the same position (full overlap on every
+    /// non-empty path, regardless of param name).
+    #[error(
+        "conflicting routes {first} and {second}: {reason}",
+        first = first.display(),
+        second = second.display(),
+    )]
+    OptionalCatchallConflict {
+        first: PathBuf,
+        second: PathBuf,
+        reason: String,
+    },
 }

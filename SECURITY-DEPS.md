@@ -26,7 +26,7 @@ users of the package.
 
 | Package | Version range | Rationale |
 | ------- | ------------- | --------- |
-| `hono`  | `^4.7.0`      | Hono is the page-router runtime — it is the entire point of this package. `zfb-runtime` wraps Hono's routing primitives to provide file-system-based page routing, content snapshots, and SSR for Cloudflare Workers. A Node built-in cannot replace a full HTTP routing framework. The dep is retained. |
+| `hono`  | `^4.12.23`    | Hono is the page-router runtime — it is the entire point of this package. `zfb-runtime` wraps Hono's routing primitives to provide file-system-based page routing, content snapshots, and SSR for Cloudflare Workers. A Node built-in cannot replace a full HTTP routing framework. The dep is retained. Floor raised from `^4.7.0` to clear 9 advisories patched at >=4.12.21 (#813). |
 
 ### `@takazudo/zfb-adapter-cloudflare`
 
