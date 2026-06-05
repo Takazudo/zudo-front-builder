@@ -811,8 +811,17 @@ fn build_authored_only_css_payload(
     outdir: &Path,
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
-        Some(path) => std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read global CSS at {}", path.display()))?,
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
+            // Skip the Tailwind import layer: the default zfb template's
+            // `styles/global.css` ships `@import "tailwindcss";` (or the
+            // split `tailwindcss/preflight` / `utilities` forms). With no
+            // Tailwind subprocess to resolve them, emitting those lines
+            // verbatim would make the browser request a non-existent
+            // stylesheet, so we drop them here (issue #824).
+            strip_tailwind_imports(&raw)
+        }
         None => String::new(),
     };
 
@@ -844,6 +853,42 @@ fn build_authored_only_css_payload(
         stable_url: emitter_out.stable_url,
         companions: Vec::new(),
     }))
+}
+
+/// Drop `@import "tailwindcss"` directives from authored global CSS for
+/// the Tailwind-disabled path.
+///
+/// Removes whole lines whose trimmed form starts with the Tailwind
+/// import, covering both the umbrella import and the v4 split sub-imports
+/// (`tailwindcss/preflight`, `tailwindcss/utilities`, …), in either quote
+/// style. The matched patterns mirror `user_has_import` in
+/// `zfb_css::engine::build_synthesised_entry_css` so the enabled and
+/// disabled paths agree on what counts as "the Tailwind import".
+///
+/// Scope: this strips the `@import` layer only. Other Tailwind-v4-only
+/// at-rules (`@theme`, `@apply`, `@source`, `@utility`) are left as-is —
+/// a zero-Tailwind project (the `enabled: false` scenario, issue #824)
+/// does not author them, and sanitising the full Tailwind syntax is out
+/// of scope. A commented-out import (`/* @import "tailwindcss"; */`) is
+/// inert and intentionally left untouched: its trimmed line starts with
+/// `/*`, not `@import`, so it never matches.
+fn strip_tailwind_imports(css: &str) -> String {
+    fn is_tailwind_import(line: &str) -> bool {
+        let t = line.trim();
+        t.starts_with("@import \"tailwindcss\"")
+            || t.starts_with("@import 'tailwindcss'")
+            || t.starts_with("@import \"tailwindcss/")
+            || t.starts_with("@import 'tailwindcss/")
+    }
+
+    let mut out = String::with_capacity(css.len());
+    for line in css.split_inclusive('\n') {
+        if is_tailwind_import(line) {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Locate the project's authored global Tailwind input CSS file.
@@ -4110,6 +4155,63 @@ mod tests {
             payload.is_none(),
             "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
         );
+    }
+
+    /// Regression (issue #824): with Tailwind disabled, a `@import
+    /// "tailwindcss"` in the authored global stylesheet must be stripped
+    /// (no subprocess resolves it, so emitting it would 404 in the
+    /// browser) while the rest of the authored CSS survives.
+    #[test]
+    fn css_payload_strips_tailwind_import_when_disabled() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            "@import \"tailwindcss\";\n.real-rule { color: red; }\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
+            .expect("should not error")
+            .expect("authored CSS must still ship");
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("@import \"tailwindcss\""),
+            "tailwind import must be stripped from authored CSS when disabled; got:\n{css}",
+        );
+        assert!(
+            css.contains(".real-rule"),
+            "non-import authored rules must survive the strip; got:\n{css}",
+        );
+    }
+
+    #[test]
+    fn strip_tailwind_imports_drops_only_tailwind_imports() {
+        let input = concat!(
+            "@import \"tailwindcss\";\n",
+            "@import 'tailwindcss/preflight';\n",
+            "@import \"tailwindcss/utilities\";\n",
+            "@import \"./vendor.css\";\n",
+            ".keep { color: blue; }\n",
+        );
+        let out = strip_tailwind_imports(input);
+        assert!(!out.contains("tailwindcss"), "all tailwind imports gone; got:\n{out}");
+        assert!(out.contains("@import \"./vendor.css\""), "vendor import kept");
+        assert!(out.contains(".keep"), "authored rule kept");
+    }
+
+    #[test]
+    fn strip_tailwind_imports_keeps_commented_import() {
+        let input = "/* @import \"tailwindcss\"; */\n.keep { color: green; }\n";
+        let out = strip_tailwind_imports(input);
+        // A commented-out import is inert; leaving it is harmless and the
+        // trimmed line starts with `/*`, not `@import`.
+        assert!(out.contains("/* @import \"tailwindcss\"; */"), "commented import kept");
+        assert!(out.contains(".keep"), "authored rule kept");
     }
 
     /// No `pages/` directory => islands emitter slot is `None`.
