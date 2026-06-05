@@ -704,7 +704,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         }
         Ok(None) => {
-            // Tailwind disabled or no sources. Leave the handle at None.
+            // No CSS to ship (no authored globals, no CSS Modules, and —
+            // when Tailwind is enabled — no scannable sources). Leave the
+            // handle at None. Tailwind being disabled no longer implies
+            // None on its own: authored CSS still ships (issue #824).
         }
         Err(err) => {
             output::warn(format!(
