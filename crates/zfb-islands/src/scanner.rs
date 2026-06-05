@@ -142,6 +142,32 @@ pub struct ScanMeta {
     /// only cost is a few KB; treating the import as the signal keeps the
     /// scanner cheap.
     pub uses_client_router: bool,
+
+    /// Count of scanned modules that *look like* they intended to be a
+    /// `"use client"` island but did not register one — i.e. the source
+    /// text contains the literal substring `use client`, yet the module
+    /// contributed zero islands (issue #822).
+    ///
+    /// This is a cheap "near-miss" heuristic, not a precise diagnostic.
+    /// It flags the two authoring mistakes the empty-islands warning is
+    /// actually written for:
+    ///
+    /// - a misplaced directive — `"use client"` appears, but not as the
+    ///   first statement of the module prologue, so
+    ///   [`has_use_client_directive`] rejects it; and
+    /// - a misspelled / mis-cased directive (e.g. `"use  client"`,
+    ///   `'use client '`) that still contains the `use client` substring.
+    ///
+    /// It deliberately does *not* try to detect islands that are simply
+    /// unreachable from `pages/` (the scanner never reads those files, so
+    /// it has nothing to inspect) — that case is left to documentation.
+    ///
+    /// The caller uses this to decide *how* to report an empty island
+    /// set: when `> 0` there is a plausible authoring mistake, so the
+    /// loud warning + verify-hint is justified; when `0` the project is
+    /// island-free on purpose, so a quiet info note suffices and the
+    /// verify-hint would be pure noise.
+    pub near_miss_candidates: usize,
 }
 
 /// Abstraction over module resolution + source reading.
@@ -1279,6 +1305,10 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // verdict (following `export *` re-export edges) is computed from
     // these once the walk completes.
     let mut client_router_facts: HashMap<PathBuf, ClientRouterFacts> = HashMap::new();
+    // Issue #822: count modules that contain a `"use client"`-like
+    // substring but contributed no island — likely a misplaced /
+    // misspelled directive the empty-islands warning should point at.
+    let mut near_miss_candidates: usize = 0;
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current.clone()) {
@@ -1320,13 +1350,29 @@ pub fn scan_islands_with_meta<R: Resolver>(
             collect_client_router_facts(&module, |spec| resolver.resolve(&importer_dir, spec));
 
         if has_use_client_directive(&module) {
-            for record in exported_island_records(&module) {
+            let records = exported_island_records(&module);
+            if records.is_empty() {
+                // Issue #822: a valid `"use client"` module that exports
+                // nothing is still a near-miss — the author flagged it as
+                // an island but gave the bundler nothing to ship. Keep the
+                // verify-hint pointing at it.
+                near_miss_candidates += 1;
+            }
+            for record in records {
                 let key = (current.clone(), record.component_name.clone());
                 let path = current.clone();
                 found.entry(key).or_insert_with(|| {
                     Island::with_marker_name(record.component_name, path, record.marker_name)
                 });
             }
+        } else if source.contains("use client") {
+            // Issue #822: the module didn't register a valid directive
+            // (so `has_use_client_directive` is false) yet its source
+            // still mentions `use client` — a misplaced or misspelled
+            // directive is the most likely cause. Count it so the caller
+            // can keep the loud verify-hint for this genuine near-miss
+            // instead of nagging an intentionally island-free project.
+            near_miss_candidates += 1;
         }
 
         // Walk imports → push resolved paths onto the stack.
@@ -1354,6 +1400,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
         found.into_values().collect(),
         ScanMeta {
             uses_client_router: resolve_client_router_usage(&client_router_facts),
+            near_miss_candidates,
         },
     ))
 }
@@ -5451,6 +5498,157 @@ mod tests {
         assert!(
             !islands.iter().any(|i| i.component_name == "Foo"),
             "Foo is a per-specifier type-only export and must NOT be emitted as an island; got {islands:?}"
+        );
+    }
+
+    // --- near-miss candidate detection (issue #822) ---------------------
+
+    #[test]
+    fn island_free_project_reports_zero_near_miss_candidates() {
+        // A page that imports a server-only component — no `"use client"`
+        // anywhere. The scanner must report zero near-miss candidates so
+        // the caller can demote the empty-islands warning to a quiet note.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { ServerOnly } from "../components/server-only";
+                export default function Home() { return <ServerOnly/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/server-only.tsx"),
+                r#"export function ServerOnly() { return <div/>; }
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(islands.is_empty(), "no islands expected: {islands:?}");
+        assert_eq!(
+            meta.near_miss_candidates, 0,
+            "island-free project must report zero near-miss candidates"
+        );
+    }
+
+    #[test]
+    fn misplaced_use_client_directive_counts_as_near_miss() {
+        // The directive is present but not first in the prologue (an
+        // import precedes it), so `has_use_client_directive` rejects it
+        // and no island is registered — but the author clearly intended
+        // one. This is the case the verify-hint is written for.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#"import { useState } from "preact/hooks";
+                "use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "misplaced directive must not register an island: {islands:?}"
+        );
+        assert_eq!(
+            meta.near_miss_candidates, 1,
+            "a module with a misplaced `use client` directive is a near-miss"
+        );
+    }
+
+    #[test]
+    fn malformed_use_client_directive_counts_as_near_miss() {
+        // A directive with a trailing space: `has_use_client_directive`
+        // requires the exact `use client` literal value, so `"use client "`
+        // is rejected — but the source still contains the `use client`
+        // substring, so it is correctly flagged as a near-miss.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client ";
+                export function Counter() {}
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "misspelled directive must not register an island: {islands:?}"
+        );
+        assert_eq!(
+            meta.near_miss_candidates, 1,
+            "a module with a malformed `use client` directive is a near-miss"
+        );
+    }
+
+    #[test]
+    fn valid_directive_with_no_exports_counts_as_near_miss() {
+        // A valid `"use client"` module that exports nothing: flagged as
+        // an island by the author but giving the bundler nothing to ship.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                function Counter() {}
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "no exported island expected: {islands:?}"
+        );
+        assert_eq!(
+            meta.near_miss_candidates, 1,
+            "a valid directive with no exported component is a near-miss"
+        );
+    }
+
+    #[test]
+    fn valid_island_reports_zero_near_miss_candidates() {
+        // The happy path: a correctly-authored island. It registers as an
+        // island, so it must NOT be double-counted as a near-miss.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1, "expected one island: {islands:?}");
+        assert_eq!(
+            meta.near_miss_candidates, 0,
+            "a correctly-authored island must not be counted as a near-miss"
         );
     }
 }
