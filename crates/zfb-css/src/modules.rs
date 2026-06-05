@@ -73,6 +73,24 @@ pub struct CssModulesOutput {
     pub class_maps: HashMap<PathBuf, HashMap<String, String>>,
 }
 
+impl CssModulesConfig {
+    /// Production config that hashes scoped class names off the
+    /// *project-relative* module path (issue #825).
+    ///
+    /// This is the single source of truth for the reproducible-hash config
+    /// used by the build's CSS pipeline: the emitted `styles-<hash>.css` and
+    /// the build-time JSX class-map rewrite MUST construct their
+    /// `CssModulesProcessor` with the same `project_root` so the scoped names
+    /// (and therefore the asset hash) agree. Using this constructor at every
+    /// such site makes the invariant structural instead of comment-enforced.
+    pub fn for_project_root(root: &Path) -> Self {
+        Self {
+            project_root: Some(root.to_path_buf()),
+            ..Self::default()
+        }
+    }
+}
+
 /// Compiles `*.module.css` files into scoped CSS plus a class-name map.
 #[derive(Debug, Clone)]
 pub struct CssModulesProcessor {

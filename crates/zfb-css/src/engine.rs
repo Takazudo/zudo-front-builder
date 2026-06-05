@@ -343,6 +343,29 @@ fn strip_css_comments(text: &str) -> String {
     out
 }
 
+/// Whether a single CSS line is an `@import "tailwindcss"` directive.
+///
+/// Matches the v4 umbrella import (`@import "tailwindcss"`) and the split
+/// sub-imports (`tailwindcss/preflight`, `tailwindcss/utilities`, …) in
+/// either quote style, after trimming surrounding whitespace. This is the
+/// single predicate shared by:
+///
+/// - [`build_synthesised_entry_css`]'s `user_has_import` detection (the
+///   Tailwind-enabled path), and
+/// - the `zfb` build command's authored-CSS import stripper (the
+///   `tailwind.enabled = false` path, issue #824),
+///
+/// so both paths agree byte-for-byte on what counts as "the Tailwind
+/// import". The caller passes a raw line; trimming happens here, so callers
+/// feeding lines with or without a trailing `\n` get identical results.
+pub fn is_tailwind_import_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("@import \"tailwindcss\"")
+        || t.starts_with("@import 'tailwindcss'")
+        || t.starts_with("@import \"tailwindcss/")
+        || t.starts_with("@import 'tailwindcss/")
+}
+
 /// Build the synthesised entry CSS that the engine hands to Tailwind v4.
 ///
 /// The output, in order, is:
@@ -380,13 +403,7 @@ pub fn build_synthesised_entry_css(
     let user_has_import = input_css_text
         .map(|t| {
             let stripped = strip_css_comments(t);
-            stripped.lines().any(|l| {
-                let t = l.trim();
-                t.starts_with("@import \"tailwindcss\"")
-                    || t.starts_with("@import 'tailwindcss'")
-                    || t.starts_with("@import \"tailwindcss/")
-                    || t.starts_with("@import 'tailwindcss/")
-            })
+            stripped.lines().any(is_tailwind_import_line)
         })
         .unwrap_or(false);
 

@@ -350,6 +350,10 @@ fn merge_kind(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind 
 fn resolve_emit_kind(path: &Path, kind: ChangeKind) -> ChangeKind {
     let exists = path.try_exists().unwrap_or(false);
     match (kind, exists) {
+        // Accepted trade-off: a bare-Remove from a git-restore of a
+        // brand-new route upgrades to Modified (never Created), so the
+        // orchestrator's watch-ADD discovery hook does not fire for that
+        // restored route on this tick.
         (ChangeKind::Removed, true) => ChangeKind::Modified,
         (ChangeKind::Removed, false) => ChangeKind::Removed,
         (_, true) => kind,

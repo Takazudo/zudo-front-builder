@@ -61,8 +61,8 @@ use zfb_build::pipeline::{
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_css::{
-    css_relative_path, AuthoredCssEngine, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine, CssPipeline,
+    CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_islands::{
     build_production_islands_asset, scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler,
@@ -756,43 +756,60 @@ pub(crate) fn build_default_css_payload(
 
     let engine = TailwindSubprocessEngine::new(tw_cfg);
 
+    // Tailwind path always ships a payload — its preflight bytes are never
+    // empty, so there is no whitespace-only guard here (unlike the
+    // authored-only path).
+    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    Ok(Some(payload))
+}
+
+/// Shared tail of the two CSS-emitter paths
+/// ([`build_default_css_payload`] and [`build_authored_only_css_payload`]).
+///
+/// Given an already-configured [`CssEngine`] (Tailwind subprocess or
+/// authored-verbatim), builds the [`CssPipelineConfig`], runs
+/// [`CssPipeline::build_emitter`], and packages the result as an
+/// [`AssetEmitterPayload`]. Both call sites feed the same `project_root`
+/// and `outdir`, so the CSS Modules hash root is identical across them and
+/// matches [`compute_css_module_class_maps`] (issue #825). The per-call-site
+/// differences (the authored path's whitespace-only `None` guard vs the
+/// Tailwind path's always-emit) stay at the call sites, not in this helper.
+fn run_css_emitter<E: CssEngine>(
+    engine: E,
+    project_root: &Path,
+    outdir: &Path,
+    sources: Vec<PathBuf>,
+) -> Result<AssetEmitterPayload> {
     let pipe_cfg = CssPipelineConfig {
         sources,
         // The on-disk class-map JSON writer is not used: the build-time
         // CSS Modules rewrite consumes the maps in-memory instead.
         // `compute_css_module_class_maps` runs `CssModulesProcessor`
-        // directly (same default config this emitter uses, so scoped
-        // names agree) and feeds `BundlerInput::css_module_class_maps`,
-        // which the bundler applies in the shadow tree. No JSON channel
-        // is needed, so `class_map_dir` stays `None`.
+        // directly (same config this emitter uses, so scoped names agree)
+        // and feeds `BundlerInput::css_module_class_maps`, which the
+        // bundler applies in the shadow tree. No JSON channel is needed,
+        // so `class_map_dir` stays `None`.
         class_map_dir: None,
         // `output_root` is unused by `build_emitter` (it does not
         // write the hashed asset itself) but is read by the
         // class-map writer when `class_map_dir` is `Some`. Pin it to
         // the configured outdir for forward-compat.
         output_root: outdir.to_path_buf(),
-        // Hash CSS Modules scoped names off the *project-relative* path
-        // so byte-identical sources yield identical scoped names (and a
-        // stable `styles-<hash>.css`) across machines/checkout paths
-        // (issue #825). Must match `compute_css_module_class_maps` below
-        // — both feed the same absolute module paths and the same root,
-        // so the build-time JSX rewrite and the emitted CSS agree.
-        modules_config: zfb_css::modules::CssModulesConfig {
-            project_root: Some(project_root.to_path_buf()),
-            ..zfb_css::modules::CssModulesConfig::default()
-        },
+        // Hash root shared with `compute_css_module_class_maps` via
+        // `CssModulesConfig::for_project_root` (issue #825).
+        modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
         ..CssPipelineConfig::default()
     };
 
     let pipeline = CssPipeline::new(engine, pipe_cfg);
     let emitter_out = pipeline.build_emitter()?;
 
-    Ok(Some(AssetEmitterPayload {
+    Ok(AssetEmitterPayload {
         bytes: emitter_out.bytes,
         relative_path: css_relative_path(),
         stable_url: emitter_out.stable_url,
         companions: Vec::new(),
-    }))
+    })
 }
 
 /// CSS payload for the `tailwind: { enabled: false }` path: authored
@@ -838,71 +855,56 @@ fn build_authored_only_css_payload(
     let sources = discover_css_source_files(project_root);
     let engine = AuthoredCssEngine::new(authored_css);
 
-    let pipe_cfg = CssPipelineConfig {
-        sources,
-        class_map_dir: None,
-        output_root: outdir.to_path_buf(),
-        // Same project-relative hash root as `build_default_css_payload`
-        // and `compute_css_module_class_maps` (issue #825) — without it,
-        // the emitted stylesheet would hash absolute paths while the
-        // build-time JSX class rewrite hashes relative ones, and the
-        // scoped names would not match on the Tailwind-disabled path.
-        modules_config: zfb_css::modules::CssModulesConfig {
-            project_root: Some(project_root.to_path_buf()),
-            ..zfb_css::modules::CssModulesConfig::default()
-        },
-        ..CssPipelineConfig::default()
-    };
-
-    let pipeline = CssPipeline::new(engine, pipe_cfg);
-    let emitter_out = pipeline.build_emitter()?;
+    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
 
     // Skip the link when there is nothing to ship. With Tailwind off and
     // no authored globals + no modules, `combine` yields only its `"\n"`
     // separator; emitting that would inject a `<link>` to an effectively
     // empty stylesheet. The Tailwind path never hits this because its
     // preflight bytes are always non-empty.
-    if emitter_out.bytes.iter().all(u8::is_ascii_whitespace) {
+    if payload.bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
 
-    Ok(Some(AssetEmitterPayload {
-        bytes: emitter_out.bytes,
-        relative_path: css_relative_path(),
-        stable_url: emitter_out.stable_url,
-        companions: Vec::new(),
-    }))
+    Ok(Some(payload))
 }
 
 /// Drop `@import "tailwindcss"` directives from authored global CSS for
 /// the Tailwind-disabled path.
 ///
-/// Removes whole lines whose trimmed form starts with the Tailwind
-/// import, covering both the umbrella import and the v4 split sub-imports
-/// (`tailwindcss/preflight`, `tailwindcss/utilities`, …), in either quote
-/// style. The matched patterns mirror `user_has_import` in
-/// `zfb_css::engine::build_synthesised_entry_css` so the enabled and
-/// disabled paths agree on what counts as "the Tailwind import".
+/// Removes whole physical lines whose trimmed form starts with the
+/// Tailwind import, covering both the umbrella import and the v4 split
+/// sub-imports (`tailwindcss/preflight`, `tailwindcss/utilities`, …), in
+/// either quote style. The per-line test is the shared
+/// [`zfb_css::is_tailwind_import_line`] predicate — the same one
+/// `build_synthesised_entry_css`'s `user_has_import` detection uses — so
+/// the enabled and disabled paths agree byte-for-byte on what counts as
+/// "the Tailwind import".
 ///
 /// Scope: this strips the `@import` layer only. Other Tailwind-v4-only
 /// at-rules (`@theme`, `@apply`, `@source`, `@utility`) are left as-is —
 /// a zero-Tailwind project (the `enabled: false` scenario, issue #824)
 /// does not author them, and sanitising the full Tailwind syntax is out
-/// of scope. A commented-out import (`/* @import "tailwindcss"; */`) is
-/// inert and intentionally left untouched: its trimmed line starts with
-/// `/*`, not `@import`, so it never matches.
+/// of scope.
+///
+/// Known limitations (intentional — this is a line filter, not a CSS
+/// parser, and unlike the Tailwind path it does **not** strip comments
+/// before scanning):
+///
+/// - An `@import "tailwindcss";` line *inside* a multi-line
+///   `/* … */` block comment is dropped even though it is already inert.
+///   Harmless: the surrounding comment delimiters stay, the output is
+///   still valid CSS, and the browser requests nothing. (A single-line
+///   `/* @import "tailwindcss"; */` is untouched — its trimmed line starts
+///   with `/*`, not `@import`.)
+/// - A same-line trailing rule (`@import "tailwindcss"; .real{…}`) is lost
+///   along with the import, because whole physical lines are dropped. The
+///   default zfb template puts the import on its own line, so this does not
+///   bite real projects.
 fn strip_tailwind_imports(css: &str) -> String {
-    fn is_tailwind_import(line: &str) -> bool {
-        let t = line.trim();
-        t.starts_with("@import \"tailwindcss\"")
-            || t.starts_with("@import 'tailwindcss'")
-            || t.starts_with("@import \"tailwindcss/")
-            || t.starts_with("@import 'tailwindcss/")
-    }
-
     let mut out = String::with_capacity(css.len());
     for line in css.split_inclusive('\n') {
-        if is_tailwind_import(line) {
+        if is_tailwind_import_line(line) {
             continue;
         }
         out.push_str(line);
@@ -1009,11 +1011,9 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 /// ships the scoped module CSS even when Tailwind is off (issue #824),
 /// so the class-map rewrite must run in lockstep or the HTML `class`
 /// attributes would reference classes that never appear in the
-/// stylesheet. The `_config` parameter is retained for call-site
-/// symmetry with [`build_default_css_payload`].
+/// stylesheet.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
-    _config: &Config,
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
 
@@ -1038,16 +1038,13 @@ pub(crate) fn compute_css_module_class_maps(
         return Ok(HashMap::new());
     }
 
-    // Hash scoped names off the project-relative path (issue #825). This
-    // MUST use the same `project_root` as `build_default_css_payload`'s
-    // pipeline above so the scoped names baked into the JSX rewrite match
-    // the ones in the emitted `styles-<hash>.css`. Both sides derive
-    // module paths from `discover_css_source_files(project_root)`, so the
-    // absolute inputs — and therefore the relative hash strings — agree.
-    let processor = zfb_css::CssModulesProcessor::new(zfb_css::modules::CssModulesConfig {
-        project_root: Some(project_root.to_path_buf()),
-        ..zfb_css::modules::CssModulesConfig::default()
-    });
+    // Hash scoped names off the project-relative path via the shared
+    // `for_project_root` constructor (issue #825) — the same config
+    // `run_css_emitter` feeds its pipeline, so the scoped names baked into
+    // the JSX rewrite match the ones in the emitted `styles-<hash>.css`.
+    let processor = zfb_css::CssModulesProcessor::new(
+        zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+    );
     let out = processor
         .process(&module_files)
         .context("CSS Modules compilation failed")?;
@@ -1743,7 +1740,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // `CssModulesProcessor` with the default config so the scoped
     // names match. Empty for projects with no `.module.css` files.
     bundler_input.css_module_class_maps =
-        compute_css_module_class_maps(project_root, config)
+        compute_css_module_class_maps(project_root)
             .context("CSS Modules class-map computation failed")?;
 
     // Snapshot the bundler input before consuming it so the runtime-only
@@ -4157,7 +4154,7 @@ mod tests {
 
         // And the class-map producer must run in lockstep so the HTML
         // `class` attributes reference classes that actually ship.
-        let maps = compute_css_module_class_maps(project_root, &cfg).expect("class maps");
+        let maps = compute_css_module_class_maps(project_root).expect("class maps");
         assert!(
             !maps.is_empty(),
             "CSS Modules class maps must be non-empty when tailwind is disabled",

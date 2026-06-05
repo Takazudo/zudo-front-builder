@@ -1775,7 +1775,7 @@ fn assemble_and_bundle_dev(
     // non-fatal: log it and continue with empty maps (`.module.css`
     // imports then degrade to `{}` rather than aborting the dev boot).
     bundler_input.css_module_class_maps =
-        match crate::commands::build::compute_css_module_class_maps(project_root, cfg) {
+        match crate::commands::build::compute_css_module_class_maps(project_root) {
             Ok(maps) => maps,
             Err(e) => {
                 crate::output::warn(format!(
