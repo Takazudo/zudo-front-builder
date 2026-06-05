@@ -771,6 +771,16 @@ pub(crate) fn build_default_css_payload(
         // class-map writer when `class_map_dir` is `Some`. Pin it to
         // the configured outdir for forward-compat.
         output_root: outdir.to_path_buf(),
+        // Hash CSS Modules scoped names off the *project-relative* path
+        // so byte-identical sources yield identical scoped names (and a
+        // stable `styles-<hash>.css`) across machines/checkout paths
+        // (issue #825). Must match `compute_css_module_class_maps` below
+        // — both feed the same absolute module paths and the same root,
+        // so the build-time JSX rewrite and the emitted CSS agree.
+        modules_config: zfb_css::modules::CssModulesConfig {
+            project_root: Some(project_root.to_path_buf()),
+            ..zfb_css::modules::CssModulesConfig::default()
+        },
         ..CssPipelineConfig::default()
     };
 
@@ -1019,8 +1029,16 @@ pub(crate) fn compute_css_module_class_maps(
         return Ok(HashMap::new());
     }
 
-    let processor =
-        zfb_css::CssModulesProcessor::new(zfb_css::modules::CssModulesConfig::default());
+    // Hash scoped names off the project-relative path (issue #825). This
+    // MUST use the same `project_root` as `build_default_css_payload`'s
+    // pipeline above so the scoped names baked into the JSX rewrite match
+    // the ones in the emitted `styles-<hash>.css`. Both sides derive
+    // module paths from `discover_css_source_files(project_root)`, so the
+    // absolute inputs — and therefore the relative hash strings — agree.
+    let processor = zfb_css::CssModulesProcessor::new(zfb_css::modules::CssModulesConfig {
+        project_root: Some(project_root.to_path_buf()),
+        ..zfb_css::modules::CssModulesConfig::default()
+    });
     let out = processor
         .process(&module_files)
         .context("CSS Modules compilation failed")?;

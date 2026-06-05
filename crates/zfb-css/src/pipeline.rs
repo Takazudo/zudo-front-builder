@@ -173,7 +173,11 @@ impl<E: CssEngine> CssPipeline<E> {
 
         // Emit JSON class-name maps if requested.
         let class_map_files = if let Some(dir) = &self.config.class_map_dir {
-            write_class_map_files(dir, &modules.class_maps)?
+            write_class_map_files(
+                dir,
+                &modules.class_maps,
+                self.config.modules_config.project_root.as_deref(),
+            )?
         } else {
             HashMap::new()
         };
@@ -225,7 +229,11 @@ impl<E: CssEngine> CssPipeline<E> {
         // break the bytes-only path for any project that uses CSS
         // Modules.
         if let Some(dir) = &self.config.class_map_dir {
-            write_class_map_files(dir, &modules.class_maps)?;
+            write_class_map_files(
+                dir,
+                &modules.class_maps,
+                self.config.modules_config.project_root.as_deref(),
+            )?;
         }
 
         Ok(CssEmitterOutput {
@@ -278,16 +286,23 @@ impl<E: CssEngine> CssPipeline<E> {
 /// guarantees uniqueness across the whole module set even when two
 /// modules share a basename, while keeping the basename visible for
 /// debugging.
+///
+/// `project_root` is used to relativize the path before hashing so the
+/// JSON filename prefix is stable across machines/checkout paths — the
+/// same normalisation lightningcss uses for the scoped `[hash]` prefix
+/// (see issue #825 and [`crate::modules::hash_filename`]). The
+/// `class_maps` keys stay absolute; only the hash *input* is normalised.
 fn write_class_map_files(
     dir: &Path,
     class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+    project_root: Option<&Path>,
 ) -> Result<HashMap<PathBuf, PathBuf>> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("failed to create class-map dir {}", dir.display()))?;
     let mut out: HashMap<PathBuf, PathBuf> = HashMap::new();
     for (module_path, names) in class_maps {
         let mut hasher = Sha256::new();
-        hasher.update(module_path.to_string_lossy().as_bytes());
+        hasher.update(crate::modules::hash_filename(module_path, project_root).as_bytes());
         let h = hex::encode(hasher.finalize());
         let prefix: &str = &h[..8];
         let basename = module_path

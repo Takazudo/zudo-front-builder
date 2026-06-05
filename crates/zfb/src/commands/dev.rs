@@ -1769,7 +1769,8 @@ fn assemble_and_bundle_dev(
     // CSS Modules — mirror the production-build wiring so dev preview
     // resolves `import styles from "./x.module.css"` to the same scoped
     // class names `zfb build` produces. The scoped names are
-    // deterministic (both sides use `CssModulesConfig::default()`), so
+    // deterministic (both sides go through `compute_css_module_class_maps`,
+    // which hashes the project-relative module path — issue #825), so
     // the dev stylesheet and dev-rendered HTML agree. A failure here is
     // non-fatal: log it and continue with empty maps (`.module.css`
     // imports then degrade to `{}` rather than aborting the dev boot).
