@@ -325,21 +325,35 @@ fn merge_kind(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind 
     }
 }
 
-/// Resolve the kind to actually emit for a path at flush time.
+/// Resolve the kind to actually emit for a path at flush time, reconciling
+/// the coalesced kind against the path's actual on-disk state.
 ///
-/// Defense-in-depth on top of `merge_kind` for issue #823: some platforms
-/// (e.g. macOS FSEvents under load) can deliver a bare `Remove` for a git
-/// restore without a paired `Create` ever arriving — so the coalescer never
-/// gets a Create/Modify to override the pending `Removed`. If the pending
-/// kind is `Removed` but the path is in fact still present on disk, the file
-/// was restored, not deleted: emit `Modified` so the rebuild loop re-renders
-/// it instead of pruning it. Any I/O error falls through to the original kind
-/// (treat as genuinely removed — the conservative choice).
+/// On-disk existence is authoritative for the **Removed boundary** (it never
+/// touches the Created vs Modified distinction — that is `merge_kind`'s job,
+/// where the #660 discovery-hook fix lives):
+///
+/// - Pending `Removed` but the path is present → the file was restored, not
+///   deleted: emit `Modified`. Covers platforms (e.g. macOS FSEvents under
+///   load) that deliver a bare `Remove` for a git restore with no paired
+///   `Create`, so the coalescer never got a Create/Modify to override it
+///   (issue #823).
+/// - Pending `Created`/`Modified` but the path is absent → it really is gone:
+///   emit `Removed`. A backend can deliver `Remove` then a trailing
+///   `Modify`-like event (name/metadata flags) for an already-deleted path,
+///   which `merge_kind` coalesces to `Modified`; without this branch the
+///   deletion would be lost and `tick_with_kinds` would skip its prune path.
+/// - Otherwise pass the kind through unchanged.
+///
+/// `try_exists().unwrap_or(false)` is the conservative default in both
+/// directions: an I/O error is treated as "absent", which biases toward
+/// emitting `Removed` — the change we can least afford to drop.
 fn resolve_emit_kind(path: &Path, kind: ChangeKind) -> ChangeKind {
-    if kind == ChangeKind::Removed && path.try_exists().unwrap_or(false) {
-        ChangeKind::Modified
-    } else {
-        kind
+    let exists = path.try_exists().unwrap_or(false);
+    match (kind, exists) {
+        (ChangeKind::Removed, true) => ChangeKind::Modified,
+        (ChangeKind::Removed, false) => ChangeKind::Removed,
+        (_, true) => kind,
+        (_, false) => ChangeKind::Removed,
     }
 }
 
@@ -593,12 +607,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_emit_kind_non_removed_is_passthrough() {
+    fn resolve_emit_kind_present_non_removed_is_passthrough() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let file = tmp.path().join("any.txt");
         std::fs::write(&file, b"x").expect("write");
         assert_eq!(resolve_emit_kind(&file, ChangeKind::Created), ChangeKind::Created);
         assert_eq!(resolve_emit_kind(&file, ChangeKind::Modified), ChangeKind::Modified);
+    }
+
+    #[test]
+    fn resolve_emit_kind_absent_non_removed_becomes_removed() {
+        // A real deletion can land as Remove→Modify (trailing name/metadata
+        // event) for an already-gone path; merge_kind coalesces that to
+        // Modified, so flush-time existence must downgrade it back to Removed
+        // or the orchestrator skips its prune path.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("gone.txt");
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Modified),
+            ChangeKind::Removed,
+            "Modified for a missing path is a genuine deletion",
+        );
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Created),
+            ChangeKind::Removed,
+            "Created for a missing path is a genuine deletion",
+        );
     }
 
     /// Regression test for the `Watcher::shutdown()` circular-wait deadlock
