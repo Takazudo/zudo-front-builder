@@ -125,7 +125,7 @@ with no legitimate reason to opt out. Examples: `HeadingLinksPlugin`,
 **Opt-in (wire into `Pipeline::with_defaults_and_features`)** when the
 feature is valuable but not universally needed, or when it requires
 project-specific config (a source map, a feature flag, custom options).
-Examples: all 13 features in `zfb-md-extras`.
+Examples: all 12 features in `zfb-md-extras`.
 
 The promotion threshold follows the [three-consumer rule](/concepts/design-philosophy):
 don't extract until the same pattern has been written by hand in three
@@ -143,7 +143,9 @@ crates/zfb-content/src/plugins/
 ├── code_title.rs
 ├── directives.rs
 ├── external_links.rs
+├── hard_breaks.rs
 ├── heading_links.rs
+├── mermaid.rs
 ├── resolve_links.rs
 ├── strip_md_ext.rs
 ├── syntect_plugin.rs
@@ -151,7 +153,6 @@ crates/zfb-content/src/plugins/
 └── util/
 
 crates/zfb-md-extras/src/
-├── admonitions_preset.rs
 ├── code_enrichment.rs
 ├── code_tabs.rs
 ├── github_alerts.rs
@@ -209,7 +210,7 @@ p
 If your plugin is opt-in, do **not** put it in `with_defaults()`.
 Wire it into `Pipeline::with_defaults_and_features()`, which accepts
 a `MarkdownFeatures` config struct and appends only the visitors whose
-flags are set. That is how all 13 features in `zfb-md-extras` are wired.
+flags are set. That is how all 12 features in `zfb-md-extras` are wired.
 `ResolveLinksPlugin` and `StripMdExtensionPlugin` are handled separately
 because they need a project-specific source map, not just a feature flag.
 
@@ -282,15 +283,18 @@ matching round-trip case in `crates/zfb-content/tests/`.
 
 ## What about runtime / userland plugins?
 
-There is no plugin loader today. Every visitor compiles into the
-binary. The closest the user-facing config (`zfb.config`) gets to
-plugins is a `plugins: []` field reserved for future use; it is not
-yet wired into the build pipeline.
+There is no Markdown-pipeline plugin loader. Every visitor compiles
+into the binary. The `plugins: []` field in `zfb.config` is a
+**build-orchestration** plugin system (four hooks: `setup`, `preBuild`,
+`postBuild`, `devMiddleware`) — it handles alias registration, virtual
+modules, extra file emission, and dev-server routes. It does not
+reach into the Markdown parse-and-visitor chain, which runs entirely
+inside the Rust engine.
 
-For now the practical extension model is: add the visitor in-tree.
-The visitor traits are stable across the workspace, so a feature
-written as a fresh `plugins/` file rarely needs follow-up changes
-when the rest of the codebase moves.
+The practical Markdown-pipeline extension model is: add the visitor
+in-tree. The visitor traits are stable across the workspace, so a
+feature written as a fresh `plugins/` file rarely needs follow-up
+changes when the rest of the codebase moves.
 
 ## See also
 
@@ -308,5 +312,5 @@ when the rest of the codebase moves.
   `HastVisitor` example.
 - `crates/zfb-content/src/plugins/heading_links.rs` — stateful
   `HastVisitor` (per-document slug counter) example.
-- `crates/zfb-content/src/plugins/admonitions.rs` — façade over
-  `DirectiveRegistry`, an `MdastVisitor` example.
+- `crates/zfb-content/src/plugins/directives.rs` — `DirectiveRegistry`
+  and its `MdastVisitor` implementation.

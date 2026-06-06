@@ -58,8 +58,8 @@ export default defineConfig({
   is the rough equivalent of 11ty's `eleventyComputed`:
 
 ```ts
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");  // synchronous — no await
   return posts.map((post) => ({
     params: { slug: post.slug },
     props: { post, year: post.data.pubDate.getFullYear() },
@@ -73,8 +73,8 @@ export async function paths() {
 `paths()`. See /api/paginate for the full surface, but the shape is:
 
 ```ts
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");  // synchronous — no await
   return paginate(posts, { pageSize: 10 });
 }
 ```

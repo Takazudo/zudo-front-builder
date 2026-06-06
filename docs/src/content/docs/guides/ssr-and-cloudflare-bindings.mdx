@@ -77,18 +77,15 @@ What this means in practice:
   the SSR layer sits between plugin middleware and the static page
   cache.
 
-One intentional limitation of the dev-side SSR path today:
+One practical note about the dev-side SSR path:
 
-**No live reload of the SSR bundle.** Editing a `prerender = false`
-page's source during a `zfb dev` session does not re-evaluate the
-bundle inside the running V8 host. Restart `zfb dev` to pick up the
-new code. (Live reload of the static-HTML cache works unchanged —
-only the SSR bundle path is restart-only.)
-
-This limitation does not apply to the **production** Cloudflare
-adapter — which is what the dev server is mirroring. The point of
-dev parity is that the rendered output matches, not that every dev
-feature is the final shipping shape.
+**SSR source edits are picked up automatically, but the browser does not
+auto-refresh.** On every edit tick, `zfb dev` re-bundles, starts a fresh V8
+host, swaps it into the running server, and shuts the old host down — so the
+next request to a `prerender = false` route renders the updated code. However,
+SSR-only edits produce no static HTML writes, which means no SSE `Page` event
+fires and the open browser tab does not automatically reload. **Reload the
+browser tab manually** after editing an SSR page to see the new output.
 
 <Warning title="prerender = false must be a literal export">
 

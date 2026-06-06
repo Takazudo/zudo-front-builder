@@ -14,7 +14,8 @@ Tauri — each is the right answer for a different project. Choose deliberately:
   Tauri-side code.
 - **Mode C** wins when the dynamic part of your app is Rust-doable without zfb
   in the process.
-- **Mode D** is the future mode once the in-process embed API ships.
+- **Mode D** wins when you want tight in-process Tauri integration — no child
+  process, no port management.
 
 The core invariant that governs all four modes:
 
@@ -39,22 +40,30 @@ not need to edit content inside the running app, Mode A is the right choice.
 ```json
 {
   "build": {
-    "distDir": "../dist",
-    "devPath": "http://localhost:4321"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:3000"
   }
 }
 ```
 
-Point `distDir` at your `dist/` folder (adjust the relative path to match your
-project layout). Tauri's built-in static file server handles the rest. There is
-no Node.js process and no HTTP server required in the packaged app.
+<Note>
+
+  Tauri v2 renamed `distDir` → `frontendDist` and `devPath` → `devUrl`. If you
+  are on Tauri v1, use the old key names and see the
+  [Tauri v1 config reference](https://tauri.app/v1/api/config/) instead.
+
+</Note>
+
+Point `frontendDist` at your `dist/` folder (adjust the relative path to match
+your project layout). Tauri's built-in static file server handles the rest. There
+is no Node.js process and no HTTP server required in the packaged app.
 
 1. Run `zfb build` on the developer machine (or in CI).
 2. Include the resulting `dist/` in your Tauri app bundle.
 3. Ship it. Done.
 
-See the [Tauri `tauri.conf.json` reference](https://tauri.app/v1/api/config/) for
-the full set of asset-serving options, including custom protocols and security
+See the [Tauri v2 configuration reference](https://v2.tauri.app/reference/config/)
+for the full set of asset-serving options, including custom protocols and security
 policies.
 
 **Tradeoff.** Updating content requires a new app release. There is no mechanism
@@ -112,26 +121,50 @@ control over the runtime behaviour, and zero V8 dependency in the packaged app.
 
 ---
 
-## Mode D — Embed zfb as a Rust crate inside Tauri (FUTURE)
+## Mode D — Embed zfb as a Rust crate inside Tauri
 
-**What it is.** Tauri's `setup` hook would spawn a zfb server on a Tokio thread
-inside the Tauri process — no child process, no port management, in-process
-Rust-to-Rust handoff for `prerender = false` routes and Tauri IPC calls. The
-WebView would talk directly to the embedded server without a network port.
+**What it is.** Tauri's `setup` hook spawns a zfb server on a dedicated OS
+thread inside the Tauri process — no child process, no port management,
+in-process Rust-to-Rust handoff for `prerender = false` routes and Tauri IPC
+calls. The WebView points at the ephemeral port the embedded server binds to.
 
-**When to pick it (once it ships).** You want zfb's full runtime dynamism and
-tight Tauri integration — IPC, filesystem access, hot content reload — without
-the sidecar lifecycle plumbing of Mode B.
+**When to pick it.** You want zfb's full runtime dynamism and tight Tauri
+integration — IPC, filesystem access, hot content reload — without the sidecar
+lifecycle plumbing of Mode B.
 
-**What's involved.** The embed API does not exist yet. When it ships it will
-require depending on `zfb-core` or a similar crate and calling an initialization
-function in the Tauri `setup` hook. The exact surface is still being designed.
+**What's involved.** Add `zfb-server` as a Cargo dependency and call
+`Server::builder()` inside Tauri's synchronous `setup` callback:
 
-**This mode does NOT work today.** Follow the research issue for progress:
-[https://github.com/Takazudo/zudo-front-builder/issues/346](https://github.com/Takazudo/zudo-front-builder/issues/346)
+```rust
+use zfb_server::{Server, ServerMode};
 
-**Tradeoff.** Once it ships: no sidecar plumbing, tighter IPC, cleaner packaging.
-Until it ships: not an option.
+tauri::Builder::default()
+    .setup(|app| {
+        let handle = Server::builder()
+            .config_path("./zfb.config.json")
+            .mode(ServerMode::Embed)
+            .bind("127.0.0.1:0".parse()?)
+            .with_request_extension(app.handle().clone())
+            .build()?
+            .serve_in_thread()?;
+
+        let port = handle.addr().port();
+        // open the WebView at http://127.0.0.1:{port}
+        Ok(())
+    })
+```
+
+`serve_in_thread()` spawns a dedicated OS thread with its own `current_thread`
+tokio runtime, so the Tauri synchronous `setup` callback works without changes.
+Read the bound port back from `ServerHandle::addr()` before opening the WebView.
+
+See the [Embed as Library](/guides/embed-as-library) guide for the full builder
+API, request-extension injection, and the host-handler seam.
+
+**Tradeoff.** No sidecar plumbing, tighter IPC, cleaner packaging. The embed
+builder API is intentionally small (≤ 10 methods on `Server` + `ServerBuilder`),
+so complex per-request routing still goes through `with_ssr_handler` patterns
+rather than arbitrary axum middleware.
 
 ---
 
@@ -144,9 +177,9 @@ the right approach depends on what you need:
 - **Mode B** (sidecar) is the best path today if you need full MDX rendering.
   The sidecar keeps the file-watch / incremental-rebuild loop running in the
   background; the WebView reflects changes without an app restart.
-- **Mode D** (in-process embed) will be the preferred path once it ships —
-  no child process, no port, tighter integration with Tauri IPC and the
-  filesystem.
+- **Mode D** (in-process embed) is the preferred path for tight integration —
+  no child process, no port, direct access to Tauri IPC and the filesystem
+  via `with_request_extension`.
 - **Mode A or C** do not help here: both assume content is static at the point
   the packaged app runs.
 
@@ -180,10 +213,11 @@ works.
 
 A few practical notes for Tauri integrations:
 
-**`dist/` as the asset source.** Set `distDir` to point at the `dist/`
-directory zfb produces. During development, set `devPath` to
-`http://localhost:4321` (the default `zfb dev` port) so Tauri loads from the
-live dev server rather than a stale snapshot.
+**`dist/` as the asset source.** Set `frontendDist` (Tauri v2) or `distDir`
+(Tauri v1) to point at the `dist/` directory zfb produces. During development,
+set `devUrl` (Tauri v2) or `devPath` (Tauri v1) to `http://localhost:3000`
+(the default `zfb dev` port) so Tauri loads from the live dev server rather
+than a stale snapshot.
 
 **Content Security Policy.** Tauri's default CSP may block inline scripts. zfb's
 island hydration uses inline `<script type="module">` tags. Relax or extend the
@@ -196,6 +230,8 @@ use the `tauri://` protocol. If you use `file://` directly, you may need to set
 
 ## See also
 
+- [Embed as Library](/guides/embed-as-library) — full `Server` builder API,
+  request-extension injection, and host-handler seam for Mode D.
 - [Build pipeline](/concepts/build-pipeline) — how `zfb build` produces `dist/`
   and what each crate contributes to the output.
 - [Architecture: build engine](/architecture/build-engine) — the crate split and
