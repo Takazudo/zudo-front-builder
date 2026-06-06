@@ -16,7 +16,7 @@
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
-//! Accepted page extensions: `.tsx`, `.md`, `.html`. Files with any other
+//! Accepted page extensions: `.tsx`, `.mdx`, `.md`, `.html`. Files with any other
 //! extension are skipped with a `tracing::warn!` so authors notice accidental
 //! mis-placements.
 //!
