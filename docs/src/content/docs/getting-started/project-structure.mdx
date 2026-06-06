@@ -10,8 +10,12 @@ When you run `zfb new my-site`, the `basic-blog` template lays down a small but 
 my-site/
 ├── pages/
 │   ├── index.tsx
-│   └── blog/
-│       └── [slug].tsx
+│   ├── blog/
+│   │   ├── [slug].tsx
+│   │   └── page/
+│   │       └── [page].tsx
+│   └── tags/
+│       └── [tag].tsx
 ├── layouts/
 │   └── default.tsx
 ├── components/
@@ -19,10 +23,15 @@ my-site/
 │   └── theme-toggle.tsx
 ├── content/
 │   └── blog/
-│       └── hello-zfb.mdx
+│       ├── deploying-static-sites.md
+│       ├── dev-loop-feel.md
+│       ├── hello-zfb.mdx
+│       ├── ssr-and-islands.md
+│       └── why-rust-cli.md
+├── lib/
+│   └── types.ts
 ├── styles/
 │   └── global.css
-├── public/
 ├── zfb.config.json
 ├── package.json
 ├── tsconfig.json
@@ -38,7 +47,7 @@ File-system routing lives here. Every `.tsx` file under `pages/` becomes a route
 - `pages/blog/[slug].tsx` → `/blog/:slug` (dynamic route — one HTML file per resolved slug)
 - `pages/docs/[...slug].tsx` → catchall, matches any depth
 
-The default template ships an index page and one dynamic blog route. A dynamic route file exports a `paths()` function; zfb calls it at build time to expand `[slug]` into one HTML file per resolved slug. See [Dynamic routes](/concepts/dynamic-routes) for the full API.
+The default template ships an index page and three dynamic routes: `blog/[slug].tsx` (one HTML file per post), `blog/page/[page].tsx` (paginated listing), and `tags/[tag].tsx` (per-tag archive). A dynamic route file exports a `paths()` function; zfb calls it at build time to expand the parameter into one HTML file per resolved value. See [Dynamic routes](/concepts/dynamic-routes) for the full API.
 
 ## layouts/
 
@@ -50,7 +59,11 @@ Plain components and **islands**. The template ships `components/note.tsx` (a se
 
 ## content/
 
-Content collections. `content/blog/` holds the seed entries of a `blog` collection: Markdown and MDX files in a named directory, queryable from pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.ts` under `collections`.
+Content collections. `content/blog/` holds five seed entries of a `blog` collection: Markdown and MDX files in a named directory, queryable from pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.ts` under `collections`.
+
+## lib/
+
+Shared TypeScript utilities. The template ships `lib/types.ts` with the frontmatter type definitions used across pages and components. There is no framework magic here — it is a plain TypeScript module you import wherever you need it.
 
 ## styles/
 
@@ -58,7 +71,7 @@ Global CSS. `styles/global.css` is the entry point — import it from your root 
 
 ## public/
 
-Static assets served as-is from the site root. Put `favicon.ico`, `robots.txt`, SVGs, raster images, fonts, manifest files, or any binary you want to reference by absolute URL here. The directory does NOT appear in the URL — `public/logo.svg` is reachable at `/logo.svg`, both in `zfb dev` and after `zfb build`.
+Static assets served as-is from the site root. The template does not scaffold a `public/` directory — create it when you need to serve static files. Put `favicon.ico`, `robots.txt`, SVGs, raster images, fonts, manifest files, or any binary you want to reference by absolute URL here. The directory does NOT appear in the URL — `public/logo.svg` is reachable at `/logo.svg`, both in `zfb dev` and after `zfb build`.
 
 Reference these files by URL from your TSX, MDX, or CSS:
 
@@ -75,7 +88,7 @@ See [Static Assets](/concepts/static-assets) for the full reference, including w
 
 ## zfb.config.json
 
-The config file uses a camelCase schema with these keys: `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`.
+The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](/api/define-config) for the full schema reference.
 
 The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, zfb loads it via the bundled esbuild binary and you get full TypeScript types and IDE completion — the schema is identical in both formats.
 

@@ -26,7 +26,7 @@ If you already have the zfb CLI installed globally (see [Installation](/getting-
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` is the default and currently the only available template, so you can omit it.
+`--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — see [Install without Node](/install/node-free) for details.
 
 ## Start the dev server
 
@@ -36,7 +36,7 @@ pnpm zfb dev
 npx zfb dev
 ```
 
-You'll see a "ready" banner with the host and port (defaults: `http://localhost:3000`). zfb watches the project directory; saving any file in `pages/`, `layouts/`, `components/`, `content/`, or `styles/` triggers a live-reload broadcast to connected browsers. The server also serves anything you drop into `public/`.
+You'll see a "ready" banner with the host and port (defaults: `http://localhost:3000`). zfb watches a fixed set of project roots — `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`, `public/`, and the two config files (`zfb.config.json`, `zfb.config.ts`) — plus any additional paths declared as collection `path` values in your config. Saving any tracked file triggers a live-reload broadcast to connected browsers.
 
 You can override host and port from the CLI — they always win over `zfb.config.ts`:
 

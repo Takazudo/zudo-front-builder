@@ -58,7 +58,7 @@ zfb's renderer compiles a page's TSX through SWC, hands the resulting ESM to a J
 
 ## Runtime candidate evaluation
 
-The spike crate (`crates/zfb-runtime-spike/`) implemented the same `RenderHost` trait against three candidates, gated behind cargo features so the heavy V8 build was opt-in. The following table is historical context — this evaluation informed the runtime choice.
+A now-removed spike crate implemented the same `RenderHost` trait against three candidates, gated behind cargo features so the heavy V8 build was opt-in. The following table is historical context — this evaluation informed the runtime choice.
 
 ### Candidates
 
@@ -97,10 +97,11 @@ Two project-level invariants shape the choice.
 Everything above the host is written against the `RenderHost` trait in `crates/zfb-render/src/render_host.rs`:
 
 ```rust
+#[async_trait(?Send)]
 pub trait RenderHost {
-    fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle>;
-    fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
-    fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
+    async fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle>;
+    async fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
+    async fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
 }
 ```
 
