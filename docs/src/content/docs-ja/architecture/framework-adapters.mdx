@@ -24,11 +24,12 @@ export default {
 コントラクトは `crates/zfb-render/src/adapters/mod.rs` にあります。すべてのアダプターは同じ狭いトレイトを実装します。
 
 ```rust
+#[async_trait(?Send)]
 pub trait Adapter {
     fn name(&self) -> &'static str;
     fn jsx_import_source(&self) -> &'static str;
     fn render_to_string_module(&self) -> &'static str;
-    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
+    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
     fn hydrate_shim_specifier(&self) -> &'static str;
     fn hydrate_shim_source(&self) -> &'static str;
 }

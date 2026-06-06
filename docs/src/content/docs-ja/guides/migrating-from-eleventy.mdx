@@ -45,8 +45,8 @@ export default defineConfig({
 - **ページごとのデータ** — ページの `paths()` エクスポートから返します。これは 11ty の `eleventyComputed` におおよそ相当します:
 
 ```ts
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");  // synchronous — no await
   return posts.map((post) => ({
     params: { slug: post.slug },
     props: { post, year: post.data.pubDate.getFullYear() },
@@ -59,8 +59,8 @@ export async function paths() {
 11ty の `pagination` フロントマターキーは、`paths()` の内部で使う `paginate()` ヘルパーになります。全体の API については /ja/api/paginate を参照してください。形は次のとおりです:
 
 ```ts
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");  // synchronous — no await
   return paginate(posts, { pageSize: 10 });
 }
 ```

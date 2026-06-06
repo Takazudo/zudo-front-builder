@@ -58,7 +58,7 @@ zfb のレンダラーはページの TSX を SWC を通してコンパイルし
 
 ## ランタイム候補の評価
 
-スパイク用クレート（`crates/zfb-runtime-spike/`）は、重い V8 ビルドをオプトインにするため cargo フィーチャーでゲートした上で、同じ `RenderHost` トレイトを 3 つの候補に対して実装しました。次の表は歴史的な文脈です — この評価がランタイムの選択を裏付けました。
+いまは削除されたスパイク用クレートが、重い V8 ビルドをオプトインにするため cargo フィーチャーでゲートした上で、同じ `RenderHost` トレイトを 3 つの候補に対して実装しました。次の表は歴史的な文脈です — この評価がランタイムの選択を裏付けました。
 
 ### 候補
 
@@ -97,10 +97,11 @@ V8 クラスのエンジンは正しさの軸で勝ち、QuickJS はフットプ
 ホストより上のすべては、`crates/zfb-render/src/render_host.rs` の `RenderHost` トレイトに対して書かれています。
 
 ```rust
+#[async_trait(?Send)]
 pub trait RenderHost {
-    fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle>;
-    fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
-    fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
+    async fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle>;
+    async fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
+    async fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
 }
 ```
 

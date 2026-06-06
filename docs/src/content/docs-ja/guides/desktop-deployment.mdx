@@ -9,7 +9,7 @@ sidebar_position: 6
 - **モード A** は、コンテンツがビルド時に作成され、各リリースに同梱される場合に最適です。
 - **モード B** は、Tauri 側のコードを最小限に抑えつつ zfb のランタイムの動的機能をフルに使いたい場合に最適です。
 - **モード C** は、アプリの動的な部分を、zfb をプロセスに含めずに Rust で実現できる場合に最適です。
-- **モード D** は、インプロセス埋め込み API が提供されたあとの将来のモードです。
+- **モード D** は、子プロセスもポート管理もない緊密なインプロセス Tauri 統合を求める場合に最適です。
 
 4 つのモードすべてを支配する中核的な不変条件:
 
@@ -28,19 +28,27 @@ zfb の静的な出力は意図的にランタイム非依存に設計されて�
 ```json
 {
   "build": {
-    "distDir": "../dist",
-    "devPath": "http://localhost:4321"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:3000"
   }
 }
 ```
 
-`distDir` を `dist/` フォルダに向けます（相対パスはプロジェクト構成に合わせて調整してください）。残りは Tauri 組み込みの静的ファイルサーバーが処理します。パッケージされたアプリに Node.js プロセスや HTTP サーバーは不要です。
+<Note>
+
+  Tauri v2 では `distDir` → `frontendDist`、`devPath` → `devUrl` にキー名が変更されました。
+  Tauri v1 を使っている場合は旧来のキー名を使い、代わりに
+  [Tauri v1 設定リファレンス](https://tauri.app/v1/api/config/)を参照してください。
+
+</Note>
+
+`frontendDist` を `dist/` フォルダに向けます（相対パスはプロジェクト構成に合わせて調整してください）。残りは Tauri 組み込みの静的ファイルサーバーが処理します。パッケージされたアプリに Node.js プロセスや HTTP サーバーは不要です。
 
 1. 開発マシン（または CI）で `zfb build` を実行する。
 2. 生成された `dist/` を Tauri アプリのバンドルに含める。
 3. 出荷する。完了です。
 
-アセット配信のオプション一式（カスタムプロトコルやセキュリティポリシーを含む）については、[Tauri `tauri.conf.json` リファレンス](https://tauri.app/v1/api/config/)を参照してください。
+アセット配信のオプション一式（カスタムプロトコルやセキュリティポリシーを含む）については、[Tauri v2 設定リファレンス](https://v2.tauri.app/reference/config/)を参照してください。
 
 **トレードオフ。** コンテンツの更新には新しいアプリのリリースが必要です。新しいビルドなしにユーザーが最新のコンテンツを見られる仕組みはありません。
 
@@ -70,18 +78,38 @@ zfb の静的な出力は意図的にランタイム非依存に設計されて�
 
 ---
 
-## モード D — zfb を Rust クレートとして Tauri 内に埋め込む（将来）
+## モード D — zfb を Rust クレートとして Tauri 内に埋め込む
 
-**概要。** Tauri の `setup` フックが、Tauri プロセス内の Tokio スレッド上で zfb サーバーを起動します。子プロセスもポート管理もなく、`prerender = false` のルートや Tauri IPC 呼び出しを Rust 対 Rust のインプロセス受け渡しで処理します。WebView はネットワークポートを介さず、埋め込まれたサーバーと直接やり取りします。
+**概要。** Tauri の `setup` フックが、Tauri プロセス内の専用 OS スレッド上で zfb サーバーを起動します。子プロセスもポート管理もなく、`prerender = false` のルートや Tauri IPC 呼び出しを Rust 対 Rust のインプロセス受け渡しで処理します。WebView は、埋め込まれたサーバーがバインドするエフェメラルなポートを指します。
 
-**選ぶべきとき（提供されたら）。** zfb のランタイムの動的機能と緊密な Tauri 統合（IPC、ファイルシステムアクセス、コンテンツのホットリロード）を、モード B のサイドカーのライフサイクル配線なしに使いたい場合。
+**選ぶべきとき。** zfb のランタイムの動的機能と緊密な Tauri 統合（IPC、ファイルシステムアクセス、コンテンツのホットリロード）を、モード B のサイドカーのライフサイクル配線なしに使いたい場合。
 
-**必要な作業。** 埋め込み API はまだ存在しません。提供される際には、`zfb-core` などのクレートに依存し、Tauri の `setup` フックで初期化関数を呼び出すことが必要になる見込みです。正確な API 表面は現在も設計中です。
+**必要な作業。** `zfb-server` を Cargo の依存として追加し、Tauri の同期的な `setup` コールバックの中で `Server::builder()` を呼び出します:
 
-**このモードは現時点では動作しません。** 進捗は次のリサーチイシューで追跡してください:
-[https://github.com/Takazudo/zudo-front-builder/issues/346](https://github.com/Takazudo/zudo-front-builder/issues/346)
+```rust
+use zfb_server::{Server, ServerMode};
 
-**トレードオフ。** 提供されたあとは、サイドカーの配線なし、より緊密な IPC、よりクリーンなパッケージング。提供されるまでは、選択肢になりません。
+tauri::Builder::default()
+    .setup(|app| {
+        let handle = Server::builder()
+            .config_path("./zfb.config.json")
+            .mode(ServerMode::Embed)
+            .bind("127.0.0.1:0".parse()?)
+            .with_request_extension(app.handle().clone())
+            .build()?
+            .serve_in_thread()?;
+
+        let port = handle.addr().port();
+        // open the WebView at http://127.0.0.1:{port}
+        Ok(())
+    })
+```
+
+`serve_in_thread()` は自身の `current_thread` tokio ランタイムを持つ専用の OS スレッドを起動するため、Tauri の同期的な `setup` コールバックは変更なしで機能します。WebView を開く前に、バインドされたポートを `ServerHandle::addr()` から読み取ってください。
+
+ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目については、[Embed as Library](/guides/embed-as-library) ガイドを参照してください。
+
+**トレードオフ。** サイドカーの配線なし、より緊密な IPC、よりクリーンなパッケージング。埋め込みビルダー API は意図的に小さく保たれているため（`Server` + `ServerBuilder` で 10 メソッド以下）、複雑なリクエストごとのルーティングは任意の axum ミドルウェアではなく、引き続き `with_ssr_handler` のパターンを通します。
 
 ---
 
@@ -90,7 +118,7 @@ zfb の静的な出力は意図的にランタイム非依存に設計されて�
 ユーザーがローカルで Markdown ファイルを編集し、実行中のアプリ内でライブプレビューを見られるようにする必要がある場合（要するにパッケージされたウィンドウ内で `zfb dev` を動かす場合）、正しいアプローチは必要なものによって変わります。
 
 - フルな MDX レンダリングが必要なら、**モード B**（サイドカー）が今日の最善の道です。サイドカーがファイル監視 / インクリメンタルリビルドのループをバックグラウンドで動かし続け、WebView はアプリの再起動なしに変更を反映します。
-- **モード D**（インプロセス埋め込み）は、提供されたあとに望ましい道になります。子プロセスもポートもなく、Tauri IPC とファイルシステムとの統合がより緊密です。
+- **モード D**（インプロセス埋め込み）は、緊密な統合のための望ましい道です。子プロセスもポートもなく、`with_request_extension` を通じて Tauri IPC とファイルシステムに直接アクセスできます。
 - **モード A や C** はここでは役に立ちません。どちらもパッケージされたアプリが動く時点でコンテンツが静的であることを前提にしているためです。
 
 ランタイムで Node.js が必要な場合（たとえば Node.js 依存を持つカスタム `zfb` プラグインを動かす場合）は、代わりに Electron を検討してください。**Electron** は Node.js を埋め込むため、`zfb dev` はメインプロセス内で自然に動作します。その代償として、バイナリサイズが大幅に増加し、パッケージングがより複雑になります。これは zfb のモードそのものではなく、ランタイムでの Node.js 要件によって決まるフレームワークの選択です。
@@ -111,7 +139,7 @@ zfb の静的な出力は意図的にランタイム非依存に設計されて�
 
 Tauri 統合についての実践的なメモをいくつか。
 
-**アセットソースとしての `dist/`。** `distDir` を zfb が生成する `dist/` ディレクトリに向けて設定します。開発中は `devPath` を `http://localhost:4321`（デフォルトの `zfb dev` ポート）に設定し、古いスナップショットではなくライブの開発サーバーから Tauri がロードするようにします。
+**アセットソースとしての `dist/`。** `frontendDist`（Tauri v2）または `distDir`（Tauri v1）を zfb が生成する `dist/` ディレクトリに向けて設定します。開発中は `devUrl`（Tauri v2）または `devPath`（Tauri v1）を `http://localhost:3000`（デフォルトの `zfb dev` ポート）に設定し、古いスナップショットではなくライブの開発サーバーから Tauri がロードするようにします。
 
 **コンテンツセキュリティポリシー（CSP）。** Tauri のデフォルト CSP はインラインスクリプトをブロックすることがあります。zfb のアイランドハイドレーションはインラインの `<script type="module">` タグを使用します。アプリでアイランドを使う場合は、`tauri.conf.json` の CSP ポリシーを緩和または拡張してください。
 
@@ -119,6 +147,7 @@ Tauri 統合についての実践的なメモをいくつか。
 
 ## 関連項目
 
+- [Embed as Library](/guides/embed-as-library) — モード D 向けの `Server` ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目。
 - [Build pipeline](/concepts/build-pipeline) — `zfb build` がどのように `dist/` を生成し、各クレートが出力に何を寄与するか。
 - [Architecture: build engine](/architecture/build-engine) — クレートの分割と、`dist/` への書き込みがアトミックである理由。
 - [Installation](/getting-started/installation) — ビルドおよび開発ツールの Node.js 要件はここに記載されています。
