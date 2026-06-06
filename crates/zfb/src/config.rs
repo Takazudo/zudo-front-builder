@@ -942,11 +942,11 @@ pub struct MarkdownConfig {
 // like `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}` and
 // `zfb::config::TocConfig` continue to resolve.
 pub use zfb_md_ast::{
-    directives_enabled, into_directive_def, reading_time_enabled, CodeEnrichmentConfig,
-    DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle,
-    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
-    MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig,
-    TranscludeConfig,
+    directives_enabled, heading_id_strategy, into_directive_def, reading_time_enabled,
+    CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions,
+    FeatureToggle, GithubAutolinksConfig, HeadingIdStrategy, HeadingIdsConfig,
+    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
+    ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 /// Options for the `rehype-external-links` port.

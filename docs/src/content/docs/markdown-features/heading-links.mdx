@@ -39,8 +39,57 @@ Produces:
 
 ## Config
 
-Always on, no config key. The slug algorithm is fixed (GitHub-slugger
-rules) and cannot be customised from `zfb.config.ts`.
+The plugin itself is always on. The **ID strategy** is configurable via
+`markdown.features.headingIds`:
+
+```ts
+// zfb.config.ts
+export default {
+  markdown: {
+    features: {
+      headingIds: { strategy: "hierarchical" },
+    },
+  },
+};
+```
+
+### `strategy: "flat"` (default)
+
+The behaviour described above: GitHub-slugger slugs with one dedup counter
+shared across `h2`–`h6`. Omitting `headingIds` entirely keeps this scheme.
+
+### `strategy: "hierarchical"`
+
+Each heading's ID is prefixed with its ancestor chain, joined by `-`:
+
+```md
+## Foo
+
+### Moo
+
+#### Mew
+```
+
+Produces `id="foo"`, `id="foo-moo"`, `id="foo-moo-mew"` (instead of the
+flat `foo`, `moo`, `mew`). The in-heading hash-link anchors, the
+`headings` export, [TOC export](/markdown-features/toc-export), and
+[link validation](/markdown-features/link-validation) all follow the
+same IDs.
+
+Details:
+
+- A duplicated full path still gets the dedup counter (`a-b`, `a-b-1`).
+- A deduplicated parent contributes its **final** ID to children: the
+  second `## Foo` is `foo-1`, so its `### Bar` becomes `foo-1-bar`.
+- Hierarchical anchors are reconstructible from the heading outline and
+  collide far less often than flat slugs, at the cost of longer URLs.
+
+<Warning>
+
+Switching strategies is **anchor-breaking**: existing deep links to
+nested headings (`#moo`) stop resolving once IDs become `#foo-moo`.
+
+</Warning>
 
 ## Ordering note
 

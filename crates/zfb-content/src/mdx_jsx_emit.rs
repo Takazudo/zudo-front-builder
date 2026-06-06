@@ -52,7 +52,7 @@ use crate::pipeline::{
     constructs_for_jsx_emit, mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline,
     PipelineError, ResolvedGfmConstructs,
 };
-use crate::plugins::heading_links::{next_slug, slugify};
+use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 
 /// Options controlling the emitted JSX module.
 #[derive(Debug, Clone)]
@@ -238,16 +238,24 @@ fn mdx_to_jsx_module_inner(
     // Heading metadata is collected from the post-mdast-visitor tree
     // either way — hast plugins like `HeadingLinksPlugin` mutate the
     // hast (slug → `id` attribute, anchor child) but the slug
-    // computation in `collect_headings` shares the same `next_slug`
-    // helper so the emitted `headings` array stays in lockstep with
+    // computation in `collect_headings` shares the same `SlugAllocator`
+    // so the emitted `headings` array stays in lockstep with
     // the rendered `<hN id="…">`. Custom hast visitors that rewrite
     // heading text or remove headings would diverge — none ship with
     // `Pipeline::with_defaults()` today; if a future plugin needs to
     // rewrite headings, this collection should move post-hast.
+    //
+    // The heading-ID strategy comes from the pipeline (set by
+    // `with_defaults_and_full_config` from `features.headingIds`,
+    // zfb#871). No pipeline → flat, matching the legacy constructors.
+    let strategy = pipeline_mut
+        .as_deref()
+        .map(|p| p.heading_id_strategy())
+        .unwrap_or_default();
     let CollectedHeadings {
         entries: headings,
         nested_slugs,
-    } = collect_headings(&children);
+    } = collect_headings(&children, strategy);
 
     let (body, html_tags, component_names, hoisted_esm) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
@@ -418,15 +426,18 @@ struct CollectedHeadings {
 /// Walk the parsed mdast and collect every heading in document order.
 ///
 /// Slugs match what [`crate::plugins::heading_links`] would emit for
-/// the same document: same `slugify`, same `-1`, `-2`, … numbering for
-/// repeats. Per heading_links semantics, only `<h2>`–`<h6>` participate
-/// in the dedup counter; `<h1>` slugs are emitted raw.
+/// the same document and strategy: the walk shares the plugin's
+/// [`SlugAllocator`], so flat mode gets the same `slugify` + `-1`, `-2`,
+/// … numbering, and hierarchical mode (zfb#871) gets the same
+/// ancestor-prefixed candidates. Per heading_links semantics, only
+/// `<h2>`–`<h6>` participate in the allocator; `<h1>` slugs are emitted
+/// raw.
 ///
 /// ## Dedup ordering across the two render passes
 ///
 /// On the production hast-detour path, top-level headings stay real
 /// hast `<hN>` elements and get their `id` from `HeadingLinksPlugin`
-/// (its own `seen` map). Headings nested inside an MDX JSX body are
+/// (its own `SlugAllocator`). Headings nested inside an MDX JSX body are
 /// rendered to an opaque JsxRaw string before hast visitors run, so
 /// `HeadingLinksPlugin` never sees them — `jsx_render_child` must stamp
 /// their `id` instead. This walk is the single source of truth that
@@ -443,23 +454,30 @@ struct CollectedHeadings {
 /// this walk through the pipeline/bridge — invasive and not required by
 /// the issue (its acceptance case is top-level-first). The common case
 /// (top-level heading before any same-text nested heading) is exact.
-fn collect_headings(children: &[MdastNode]) -> CollectedHeadings {
+///
+/// The hierarchical strategy has the analogous asymmetry: a JSX-nested
+/// heading joins this walk's ancestor stack but not the plugin's, so a
+/// *top-level* heading that is deeper than a preceding JSX-nested one
+/// gets a different prefix in the two passes. Same root cause, same
+/// accepted scope — plain-markdown outlines (the zfb#871 consumer's
+/// case) never hit it.
+fn collect_headings(children: &[MdastNode], strategy: HeadingIdStrategy) -> CollectedHeadings {
     let mut out = CollectedHeadings {
         entries: Vec::new(),
         nested_slugs: Vec::new(),
     };
-    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut slugs = SlugAllocator::new(strategy);
     // `in_jsx == false` at the top level; flips to true once we descend
     // into an MDX JSX element body so we can route those headings' slugs
     // into `nested_slugs` for the emitter to replay.
-    walk_collect_headings(children, &mut out, &mut seen, false);
+    walk_collect_headings(children, &mut out, &mut slugs, false);
     out
 }
 
 fn walk_collect_headings(
     nodes: &[MdastNode],
     out: &mut CollectedHeadings,
-    seen: &mut HashMap<String, usize>,
+    slugs: &mut SlugAllocator,
     in_jsx: bool,
 ) {
     for node in nodes {
@@ -468,14 +486,14 @@ fn walk_collect_headings(
                 let depth = h.depth.clamp(1, 6);
                 let text = mdast_inline_text(&h.children);
                 let base = slugify(&text);
-                // For h2-h6 we must mirror heading_links' next_slug()
+                // For h2-h6 we must mirror heading_links' SlugAllocator
                 // exactly so `headings[i].slug` matches the rendered
-                // `<hN id="…">`. h1 is left out of the dedup pool
+                // `<hN id="…">`. h1 is left out of the allocator
                 // because heading_links never sees it.
                 let slug = if depth == 1 {
                     base
                 } else {
-                    next_slug(seen, &base)
+                    slugs.allocate(depth, &base)
                 };
                 // A heading inside an MDX JSX body is emitted by
                 // `jsx_render_child`, not by HeadingLinksPlugin — record
@@ -492,10 +510,10 @@ fn walk_collect_headings(
             // so descend into block-level containers. We deliberately do
             // NOT descend into Paragraph/Heading children themselves —
             // headings cannot appear there.
-            MdastNode::Root(r) => walk_collect_headings(&r.children, out, seen, in_jsx),
-            MdastNode::Blockquote(b) => walk_collect_headings(&b.children, out, seen, in_jsx),
-            MdastNode::List(l) => walk_collect_headings(&l.children, out, seen, in_jsx),
-            MdastNode::ListItem(li) => walk_collect_headings(&li.children, out, seen, in_jsx),
+            MdastNode::Root(r) => walk_collect_headings(&r.children, out, slugs, in_jsx),
+            MdastNode::Blockquote(b) => walk_collect_headings(&b.children, out, slugs, in_jsx),
+            MdastNode::List(l) => walk_collect_headings(&l.children, out, slugs, in_jsx),
+            MdastNode::ListItem(li) => walk_collect_headings(&li.children, out, slugs, in_jsx),
             // Descend into MDX JSX element bodies (e.g. `<Outro>## …`).
             // Everything below here is rendered by `jsx_render_child`, so
             // flip `in_jsx` on so the slugs land in `nested_slugs`. The
@@ -504,10 +522,10 @@ fn walk_collect_headings(
             // pop order will drift from this walk (debug_assert in
             // `mdx_to_jsx_module*` guards against that).
             MdastNode::MdxJsxFlowElement(j) => {
-                walk_collect_headings(&j.children, out, seen, true);
+                walk_collect_headings(&j.children, out, slugs, true);
             }
             MdastNode::MdxJsxTextElement(j) => {
-                walk_collect_headings(&j.children, out, seen, true);
+                walk_collect_headings(&j.children, out, slugs, true);
             }
             _ => {}
         }

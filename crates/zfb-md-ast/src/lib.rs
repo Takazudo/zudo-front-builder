@@ -29,11 +29,12 @@ pub use directives::{
     ValidatedAttrValue,
 };
 pub use features_config::{
-    directives_enabled, feature_enabled, heading_marker_toc_enabled, reading_time_enabled,
-    CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions,
-    FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions, TocConfig,
-    TocExportConfig, TranscludeConfig, into_directive_def,
+    directives_enabled, feature_enabled, heading_id_strategy, heading_marker_toc_enabled,
+    reading_time_enabled, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec,
+    DirectiveSpecKind, FeatureOptions, FeatureToggle, GithubAutolinksConfig, HeadingIdStrategy,
+    HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig,
+    TranscludeConfig, into_directive_def,
 };
 pub use hast_text::extract_text;
 

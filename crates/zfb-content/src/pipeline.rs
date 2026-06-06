@@ -23,6 +23,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
+use zfb_md_ast::HeadingIdStrategy;
 
 use crate::plugins::{
     BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
@@ -190,6 +191,11 @@ pub struct Pipeline {
     /// after the directives step) so link rewriting sees finalized
     /// mdast link nodes.
     resolve_links: Option<ResolveLinksPlugin>,
+    /// Heading-ID strategy the wired `HeadingLinksPlugin` uses
+    /// (`markdown.features.headingIds`, zfb#871). Read back by the
+    /// JSX-emit path so `collect_headings` mirrors the same scheme.
+    /// Default: [`HeadingIdStrategy::Flat`].
+    heading_id_strategy: HeadingIdStrategy,
 }
 
 impl Default for Pipeline {
@@ -257,6 +263,7 @@ impl Pipeline {
             gfm_constructs: resolved,
             add_trailing_slash: true,
             resolve_links: None,
+            heading_id_strategy: HeadingIdStrategy::default(),
         }
     }
 
@@ -270,6 +277,34 @@ impl Pipeline {
     #[must_use]
     pub fn gfm_constructs(&self) -> ResolvedGfmConstructs {
         self.gfm_constructs
+    }
+
+    /// The heading-ID strategy this pipeline's `HeadingLinksPlugin` was
+    /// wired with (`markdown.features.headingIds`, zfb#871).
+    ///
+    /// The JSX-emit detour reads this so `collect_headings` computes the
+    /// same slugs the rendered `<hN id="…">` carries. Defaults to
+    /// [`HeadingIdStrategy::Flat`] on every constructor except
+    /// [`Pipeline::with_defaults_and_full_config`], which resolves it from
+    /// `markdown.features`.
+    #[must_use]
+    pub fn heading_id_strategy(&self) -> HeadingIdStrategy {
+        self.heading_id_strategy
+    }
+
+    /// Declare the heading-ID strategy of a manually wired
+    /// [`HeadingLinksPlugin`] so the JSX-emit path (`collect_headings`)
+    /// mirrors the rendered `<hN id="…">`.
+    ///
+    /// Only needed for custom pipelines that call
+    /// [`add_hast_visitor`](Pipeline::add_hast_visitor) with
+    /// `HeadingLinksPlugin::with_strategy(…)` themselves — without this,
+    /// the `headings` export stays on the flat default while the rendered
+    /// ids are hierarchical. [`Pipeline::with_defaults_and_full_config`]
+    /// sets it automatically from `features.headingIds`.
+    pub fn set_heading_id_strategy(&mut self, strategy: HeadingIdStrategy) -> &mut Self {
+        self.heading_id_strategy = strategy;
+        self
     }
 
     /// Set the `add_trailing_slash` option. Affects subsequent
@@ -722,7 +757,12 @@ impl Pipeline {
             p.add_mdast_visitor(Box::new(HardBreaksPlugin::new()));
         }
         // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
-        p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+        // HeadingLinksPlugin honours `features.headingIds.strategy` (zfb#871);
+        // the resolved strategy is also stored on the pipeline so the
+        // JSX-emit path (`collect_headings`) mirrors the same scheme.
+        let strategy = zfb_md_extras::heading_id_strategy(&features.heading_ids);
+        p.set_heading_id_strategy(strategy);
+        p.add_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
