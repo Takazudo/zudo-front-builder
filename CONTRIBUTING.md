@@ -5,7 +5,7 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: **Node 22 or later and pnpm 10 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engine-strict=true` in `.npmrc`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22 is required (not 20) because `@mermaid-js/parser` (transitive dep of the docs site) pulls in `chevrotain@12` which declares `engines.node >=22`.
+- **Node / pnpm**: **Node 22 or later and pnpm 11 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22 is required (not 20) because the docs site declares `engines.node >=22.12.0` (the Astro 6 floor).
 
 ## First build expectation
 
@@ -71,8 +71,8 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook` runs the pre-commit pipeline (rustfmt, clippy, JS/CSS formatters). For ad-hoc checks before opening a PR, `cargo fmt` and `cargo clippy --workspace` are still useful.
-- Open a PR against `main` (or the relevant epic base branch). CI runs the same checks as the pre-commit pipeline.
+- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. For ad-hoc Rust checks before opening a PR, `cargo fmt` and `cargo clippy --workspace` are still useful; rustfmt and clippy run in CI, not in the pre-commit hook.
+- Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline: it also runs `cargo build`, `cargo clippy -D warnings`, the full test suite, and actionlint.
 
 ## Formatting
 
@@ -118,14 +118,14 @@ The pin lives in two places that **must move together**:
 | Tool        | Rust constant                                                                                       | Where                                          | npm-side pin                          |
 | ----------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------- |
 | esbuild     | `EXPECTED_ESBUILD_VERSION`, `EXPECTED_ESBUILD_SHA256`                                               | `crates/zfb-islands/src/esbuild.rs`            | (binary; populated by release engineering into `crates/zfb/binaries/esbuild/esbuild`) |
-| wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb/src/commands/preview.rs`           | `wrangler` in `package.json`          |
-| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via wrangler → `pnpm-lock.yaml`)     | `crates/zfb/src/commands/preview.rs`           | (transitive; resolved in `pnpm-lock.yaml`) |
+| wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb-toolchain-pins/src/lib.rs`         | `wrangler` in `package.json`          |
+| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via wrangler → `pnpm-lock.yaml`)     | `crates/zfb-toolchain-pins/src/lib.rs`         | (transitive; resolved in `pnpm-lock.yaml`) |
 
 ### Bumping wrangler / workerd
 
 1. Pick the new versions you want (typically a coordinated wrangler + workerd set; see the [wrangler changelog](https://github.com/cloudflare/workers-sdk/releases?q=wrangler) for matched sets).
 2. Edit the `wrangler` entry in `package.json` to the new exact version.
-3. Edit `EXPECTED_WRANGLER_VERSION` and `EXPECTED_WORKERD_VERSION` in `crates/zfb/src/commands/preview.rs` to match.
+3. Edit `EXPECTED_WRANGLER_VERSION` and `EXPECTED_WORKERD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs` to match.
 4. Run `pnpm install` to refresh `pnpm-lock.yaml`. Confirm the resolved `workerd` version in the lockfile matches the constant you just set.
 5. Run `cargo test -p zfb` to make sure the version-gate tests still pass.
 6. Commit `package.json`, `pnpm-lock.yaml`, and the constants change in one commit so the pin moves atomically.

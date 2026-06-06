@@ -9,7 +9,7 @@ This document covers the toolchain and one-time setup needed to build, test, and
 | Tool   | Version            | Notes                                             |
 | ------ | ------------------ | ------------------------------------------------- |
 | Rust   | stable             | `rustup install stable && rustup default stable`  |
-| Node   | ≥ 22 (LTS)         | The fetch script and Node-side glue use ESM + `fetch`; `engine-strict=true` is set, and the docs site's transitive `chevrotain@12` declares `engines.node >=22`. |
+| Node   | ≥ 22 (LTS)         | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. Node 22 is the minimum floor; the docs site requires `>=22.12.0` (Astro 6). |
 | pnpm   | as pinned          | The repo declares `packageManager` in `package.json`; use Corepack (`corepack enable`) or install the matching pnpm version directly. |
 
 CI uses Node 22 and Rust stable on `ubuntu-latest`.
@@ -102,4 +102,4 @@ pnpm fetch:tailwind       # (re-)materialize the Tailwind v4 binary
 
 ## Release builds and cross-compilation
 
-The per-platform binaries shipped on npm (`linux-x64-gnu`, `darwin-x64`, `darwin-arm64`, `win32-x64-msvc`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform. `linux-arm64-gnu` is on the roadmap but deferred past v0.1.0.
+The per-platform binaries shipped on npm (`linux-x64-gnu`, `linux-arm64-gnu`, `darwin-x64`, `darwin-arm64`, `win32-x64-msvc`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform.
