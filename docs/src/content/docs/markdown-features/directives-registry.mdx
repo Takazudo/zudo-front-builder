@@ -37,15 +37,17 @@ warning diagnostic and leaves the source paragraph unchanged.
 ## Typed attribute schemas (from #584)
 
 The registry accepts typed attribute schemas for each registered directive.
-Unknown attributes or type mismatches emit a build-time warning rather than
-silently passing raw strings. The schema is declared alongside the
+Unknown attributes emit a build-time **warning** (the attr still passes
+through unchanged). Type-coercion failures (e.g. a non-boolean value for
+a `Boolean` attr) emit hard **errors**. The schema is declared alongside the
 `register` call:
 
 ```rust
-registry.register_typed(
-    "badge",
-    DirectiveShape::Text,
-    BadgeSchema::schema(),
+registry.register(
+    DirectiveDef::text("badge", "Badge")
+        .with_attrs(vec![
+            AttrSchema { name: "tone".into(), ty: AttrType::String, default: None, required: false },
+        ]),
 );
 ```
 

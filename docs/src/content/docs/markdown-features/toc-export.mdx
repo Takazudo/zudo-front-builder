@@ -37,7 +37,7 @@ Each entry in the exported array has the following fields:
 
 ```ts
 type TocEntry = {
-  depth: number;        // absolute heading depth: 2 | 3 | 4 | 5
+  depth: number;        // absolute heading depth: 2–6
   id: string;           // slug assigned by HeadingLinksPlugin
   text: string;         // plain-text heading content (hash-link stripped)
   children: TocEntry[]; // nested sub-headings within maxDepth
