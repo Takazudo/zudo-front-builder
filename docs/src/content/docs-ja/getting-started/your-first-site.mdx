@@ -26,7 +26,7 @@ zfb CLI をすでにグローバルインストールしている場合（[Insta
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` はデフォルトであり、現時点で唯一利用可能なテンプレートなので、省略できます。
+`--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。詳細は [Install without Node](/install/node-free) を参照してください。
 
 ## 開発サーバーを起動する
 
@@ -36,7 +36,7 @@ pnpm zfb dev
 npx zfb dev
 ```
 
-ホストとポートを示す「ready」バナーが表示されます（デフォルトは `http://localhost:3000`）。zfb はプロジェクトディレクトリを監視します。`pages/`・`layouts/`・`components/`・`content/`・`styles/` 内のファイルを保存すると、接続中のブラウザにライブリロードがブロードキャストされます。サーバーは `public/` に置いたものも配信します。
+ホストとポートを示す「ready」バナーが表示されます（デフォルトは `http://localhost:3000`）。zfb は固定された一連のプロジェクトルートを監視します。`pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`・`public/` と、2 つの設定ファイル（`zfb.config.json`、`zfb.config.ts`）です。これに加えて、設定でコレクションの `path` 値として宣言された任意のパスも監視します。監視対象のファイルを保存すると、接続中のブラウザにライブリロードがブロードキャストされます。
 
 ホストとポートは CLI から上書きできます。これらは常に `zfb.config.ts` より優先されます。
 
