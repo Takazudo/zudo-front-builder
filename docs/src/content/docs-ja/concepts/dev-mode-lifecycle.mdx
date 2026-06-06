@@ -14,12 +14,13 @@ category: Concepts
 リビルドを影響を受けるページに限定するかについては
 [Incremental rebuild](/concepts/incremental-rebuild) を参照してください。
 
-このページは **SSG / 静的 HTML の dev ループのみ** を説明します。`prerender = false` の
-SSR ルートについては、`zfb dev` セッション中のソース編集は **ホットリロードされません** —
-V8 SSR バンドルは起動時の JS バンドルにバインドされており、再起動でのみ反映されます。下記の
-ティックごとのリビルドは SSR レンダラを **リロードしません**。それはレンダラがブートストラップ
-された際の SSG 出力を再レンダリングします。SSR ガイドの
-[No live reload of the SSR bundle](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
+`prerender = false` の SSR ルートについて: 各 EDIT ティックは新しい V8 ホストを再バンドルし、
+それを共有レンダラの mutex にスワップします（下記のステップ 1 を参照）。そのため SSR リクエストは、
+ティックが完了した直後から更新後のコードを配信します — 再起動は不要です。1 つだけ残る制約は、
+SSR のみの編集は SSG の HTML 書き込みを生まないため、`Page` SSE イベントが発行されず、開いている
+ブラウザタブが自動リフレッシュされない点です。更新後の SSR 出力を見るには、タブを手動でリロード
+してください。dev 側の SSR 経路の背景については
+[SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
 を参照してください。
 
 </Info>
@@ -29,9 +30,10 @@ V8 SSR バンドルは起動時の JS バンドルにバインドされており
 保存した瞬間、オペレーティングシステムがそのファイルのパスに対してファイルシステムイベントを
 発火します。`crates/zfb-watcher` は関連するすべてのディレクトリ — `pages/`・`components/`・
 `content/`・`layouts/`・`styles/`・`data/`・`public/`、そして 2 つの設定ファイル
-`zfb.config.json` と `zfb.config.ts` — を [`notify`](https://crates.io/crates/notify)
+`zfb.config.json` と `zfb.config.ts`、加えて設定された各コレクションの `path` がそれらの
+デフォルトルートの外にある場合はそれも — を [`notify`](https://crates.io/crates/notify)
 クレート経由で監視しています。（正規のリストは `crates/zfb/src/commands/dev.rs` の
-`DEFAULT_WATCH_ROOTS` を参照してください。）
+`DEFAULT_WATCH_ROOTS` と `derive_watch_roots` を参照してください。）
 
 エディタの保存が単一のきれいなイベントであることはまれです。vim はスワップファイルを元の
 ファイルにリネームし、VS Code はメタデータ→データのイベントを立て続けに複数発行し、
@@ -53,14 +55,20 @@ OS が分類できないイベント種別はすべて `Modified` に折りた�
 立てられます。CSS ソースが変更されていれば `rerun_css` が立てられます。その後、
 `DevAssetPipeline::apply()` メソッドが次の順序で実行されます。
 
-1. **ページの再レンダリング。** オーケストレーターはダーティセット内の各ページについてレンダラを
-   呼び出し、`zfb dev` 起動時にブートされた組み込み V8 ホストを通して SSG 出力を駆動します。
-   レンダリングされた各 `RenderedPage.html` は、直近の既知の出力とバイト単位で比較されます。
-   バイトが同一なら（セマンティックな HTML の変化を生まない純粋なリファクタリング）、そのページ
-   についてはファイルが書き込まれず、リロードシグナルも送られません。V8 ホスト自体はティック
-   ごとに **リロードされません** — 今日の dev では `BuildContext::reload_renderer` は
-   `None` であり（`crates/zfb/src/commands/dev.rs` を参照）、レンダラはセッション全体を通して
-   起動時のバンドルにバインドされたままです。
+1. **ページの再レンダリング。** レンダラが呼び出される前に、EDIT ティック（すなわち
+   `ChangeKind::Modified` — VS Code とほとんどのエディタが発行するもの）では
+   `BuildContext::reload_renderer` が発火します。これはディスクから取得した新しいコンテンツ
+   スナップショットで再バンドルし、リビルドしたバンドルに対して新しい組み込み V8 ホストを起動し、
+   それを共有レンダラの mutex にスワップします（start-before-swap — 古いホストはスワップが
+   成功した後にのみシャットダウンされるため、バンドルエラーが起きても前のレンダラが配信を続けます）。
+   レンダリングコールバックと SSR アダプタはどちらも同じ mutex への `Arc` を保持するため、この
+   ティック内の以降のすべてのリクエストは新しいホストを通してレンダリングされます。その後、
+   オーケストレーターはダーティセット内の各ページについてレンダラを呼び出します。レンダリングされた
+   各 `RenderedPage.html` は、直近の既知の出力とバイト単位で比較されます。バイトが同一なら
+   （セマンティックな HTML の変化を生まない純粋なリファクタリング）、そのページについてはファイルが
+   書き込まれず、リロードシグナルも送られません。（ブートの初回レンダリングと watch-ADD の発見は
+   すでに新しいバンドルを持っているため、これらの経路ではリロードステップがスキップされます — 各
+   ティックは多くても一度しか再バンドルしません。）
 2. **CSS パイプライン。** `rerun_css` が true のとき、Tailwind v4 + PostCSS が実行されます。
    CSS 出力が前のティックとバイト単位で同一なら、`Css` イベントは発行されません。
 3. **アイランドの再バンドル。** `rerun_islands` が true のとき、esbuild の Go バイナリの
@@ -154,4 +162,4 @@ CSS パイプラインが実行され、出力が変わっていれば `Css` イ
 - [Build pipeline](/concepts/build-pipeline) — CLI から `dist/` までの完全なパイプラインと、dev モードがその上にどう乗るか
 - [Incremental rebuild](/concepts/incremental-rebuild) — リビルドを影響を受けるページに限定する依存グラフと `DirtySet`
 - [Islands](/concepts/islands) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるか
-- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — dev における `prerender = false` ルートの再起動のみという制約を含む
+- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — dev 側の SSR パリティ: `prerender = false` ルートが同じ V8 レンダラを通してどう配信されるか

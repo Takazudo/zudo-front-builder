@@ -6,7 +6,7 @@ sidebar_position: 5
 
 ## パターン
 
-すべてのページモジュールは、ページの `<head>` データ（タイトル、説明、Open Graph タグ、正規 URL など）を記述する `meta` 定数（または同じレコードを返す async 関数）をエクスポートできます。レンダラはこのエクスポートを `RenderHost::get_export` 経由で読み取り、ページレイアウトの `<head>` ブロックにマージします。
+すべてのページモジュールは、ページの `<head>` データ（タイトル、説明、レイアウトの上書き）を記述する `meta` 定数（または同じレコードを返す async 関数）をエクスポートできます。レンダラはこのエクスポートを `RenderHost::get_export` 経由で読み取り、ページレイアウトの `<head>` ブロックにマージします。
 
 ## 例
 
@@ -14,11 +14,6 @@ sidebar_position: 5
 export const meta = {
   title: "Blog — My Site",
   description: "Latest writing on web development.",
-  canonical: "https://example.com/blog",
-  og: {
-    image: "/og/blog.png",
-    type: "website",
-  },
 };
 
 export default function BlogPage() {
@@ -26,27 +21,28 @@ export default function BlogPage() {
 }
 ```
 
-meta を計算するためにコレクションや async ソースからのデータが必要な場合（例: CMS フィールドから導出する OG 画像）は、`meta` を async 関数としてエクスポートします。レンダラはページシェルをレンダリングする前にそれを await します。
+meta を計算するためにコレクションや async ソースからのデータが必要な場合（例: CMS フィールドから導出するタイトル）は、`meta` を async 関数としてエクスポートします。レンダラはページシェルをレンダリングする前にそれを await します。
 
 ```tsx
 export async function meta() {
   const post = getCollection("blog")[0];
   return {
     title: post.data.title,
-    og: { image: `/og/${post.slug}.png` },
+    description: post.data.description,
   };
 }
 ```
 
 ## サポートされるキー
 
-レンダラは `meta` を寛容なバッグとして扱いますが、ページレイアウトが参照するサポート対象のサブセットは以下のキーです。
+`PageMeta` は以下のキーのみを受け付けます。未知のキーはパース時に **拒否される**（`deny_unknown_fields`）ため、タイプミスは黙って捨てられるのではなくビルドエラーとして表面化します。
 
 - `title?: string` — このページについてレイアウトのデフォルトを上書きします。
-- `description?: string` — `<meta name="description">` タグに使われ、OG のフォールバックにもなります。
-- `canonical?: string` — `<link rel="canonical">` 用の絶対 URL。
-- `og?: { title?, description?, image?, type?, url? }` — Open Graph タグ。欠けているフィールドは、意味が通る範囲でトップレベルの `title` / `description` にフォールバックします。
-- `twitter?: { card?, site?, creator?, image? }` — Twitter Card タグ。
+- `description?: string` — `<meta name="description">` タグに使われます。
 - `layout?: string` — ページレイアウトコンポーネントのモジュール specifier（相対パスまたはベア specifier）。指定がない場合はプロジェクトのデフォルトレイアウトが使われます。
 
-未知のキーはそのまま素通りするため、プラグインやカスタムレイアウトコンポーネント向けの構造化データを格納しておけます。
+<Note>
+
+正規 URL、Open Graph、Twitter Card タグのサポートはまだ `PageMeta` の一部ではありません。これらはフォローアップとして追跡されています。それまでは、meta エクスポートの `title` と `description` の値を使ってレイアウトコンポーネントで直接これらを注入するか、プラグインを使ってビルド時に `<head>` タグを出力してください。
+
+</Note>

@@ -55,6 +55,8 @@ export default function Hero() {
 
 Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` ディレクティブを通じてサポートされます。トークンのカスタマイズは JS の設定ファイルではなく CSS を編集して行います。
 
+`tailwind: { enabled: false }` を設定すると `AuthoredCssEngine` に切り替わり、あなたが書いた `styles/global.css` がそのまま素通りします。Tailwind の `@import` も、ユーティリティのスキャンも、preflight のリセットも、サブプロセスもありません。CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はすべて変わらず動作し続け、Tailwind 固有のステップだけがスキップされます。
+
 ## コンポーネントスコープなスタイリング
 
 コンポーネントレベルのスタイリングには、十分にサポートされたパターンが 2 つあります。Tailwind ユーティリティクラスと CSS Modules です。

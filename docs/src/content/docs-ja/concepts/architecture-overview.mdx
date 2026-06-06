@@ -43,12 +43,14 @@ Rust オーケストレーターはこのバンドルを組み込み V8 アイ�
 その本番経路についてはこのページの後半と
 [SSR guide](/guides/ssr-and-cloudflare-bindings) で扱います。）
 
-**アイランドバンドル — ブラウザにオンデマンドで配信されます。**
+**アイランドバンドル — ブラウザに配信されます。**
 
-`"use client"` でマークされたコンポーネントは別物です。esbuild はそれぞれを個別の ESM
-モジュールとしてバンドルし、それらのバンドルは HTML ファイルと並んで `dist/` に配置されます。
-ブラウザはそれらをオンデマンドでダウンロードし、対応する DOM ノードをハイドレートします。
-アイランドバンドルはエンドユーザーに到達する *唯一* の JavaScript です。
+`"use client"` でマークされたコンポーネントは別物です。esbuild はそれらすべてをまとめて
+単一の共有 ESM モジュール（`dist/assets/islands-<hash>.js`）にバンドルし、それは HTML
+ファイルと並んで `dist/assets/` に配置されます。アイランドを含むビルドでは、このバンドルを
+参照する単一の `<script type="module">` タグがプロジェクト全体に注入されます。バンドルは
+読み込み時に `mountIslands()` を呼び出し、ページ上のすべての `[data-zfb-island]` 要素を
+ハイドレートします。アイランドバンドルはエンドユーザーに到達する *唯一* の JavaScript です。
 
 この区別が重要なのは、2 つのバンドルがまったく異なるライフタイム、異なる実行環境、異なる
 最適化目標を持つからです。両者を混同することが、zfb の動作についての混乱のほとんどの原因です。
@@ -64,13 +66,13 @@ flowchart TD
     subgraph build["zfb build — your machine"]
         esbuild_worker["esbuild\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
-        esbuild_islands["esbuild\n(island bundles)"]
+        esbuild_islands["esbuild\n(shared island bundle)"]
         dist_html["dist/\nHTML files"]
-        dist_js["dist/\nisland JS files"]
+        dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
     end
 
     deploy["Static host\n(any CDN / Cloudflare Pages)"]
-    browser["Browser\n(island bundles hydrate on-demand)"]
+    browser["Browser\n(island bundle hydrates via mountIslands())"]
 
     src --> esbuild_worker
     esbuild_worker --> v8
