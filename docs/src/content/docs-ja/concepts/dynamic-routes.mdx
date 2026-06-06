@@ -1,19 +1,168 @@
 ---
 title: 動的ルート
-description: paths() の形と、params と props の渡し方
+description: paths() を使って [slug].tsx や [...slug].tsx ページがビルドすべき具体的な URL を列挙し、URL ごとの props をコンポーネントへ渡す。
 sidebar_position: 1.5
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+<Info title="このページで扱う内容">
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Dynamic Routes](/concepts/dynamic-routes)
+`paths()` が、動的ページやキャッチオールページが出力すべき URL をどう
+列挙するか、それが返す `{ params, props }` の契約、そしてページ
+コンポーネントがそのデータをどう受け取るかを解説します。静的ルートの
+基礎については [Routing](/concepts/routing) を参照してください。
 
 </Info>
 
-## 概要
+動的ルート — `pages/blog/[slug].tsx` — は単一の URL にマッピングされません。
+角かっこで囲まれたセグメントはパラメータであり、zfb はビルド時にそれを
+どの具体的な値で埋めればよいかを知る必要があります。それが `paths()` の
+仕事です。
 
-`[slug].tsx` のような動的ルートで `paths()` 関数が返す形、および `params` と `props` をページコンポーネントに渡すしくみについて解説します。
+キャッチオールルート — `pages/docs/[...slug].tsx` — も同じように動作しますが、
+その `slug` パラメータは単一のセグメントではなく、末尾の 1 つ以上の
+セグメントをキャプチャします。
 
-英語の最新ドキュメントは [Dynamic Routes](/concepts/dynamic-routes) を参照してください。
+## `paths()` の契約
+
+`paths()` は同期的なエクスポートです。`{ params, props }` オブジェクトの
+配列を返します。ルーターはその配列を消費し、1 エントリが 1 つの
+レンダリング済み URL になります。
+
+```ts
+type PathEntry<P = Record<string, unknown>> = {
+  /** Values for the bracketed segments, keyed by parameter name. */
+  params: Record<string, string | string[]>;
+  /** Optional per-URL data threaded to the page component as `props`. */
+  props?: P;
+};
+
+export function paths(): PathEntry[];
+```
+
+- `params` のキーは、ファイル名の角かっこ内の名前と一致する必要があります。
+  `[slug].tsx` ならキーは `slug` です。`[lang]/[slug].tsx` なら `lang` と
+  `slug` の両方を指定します。キャッチオール `[...slug].tsx` では、`slug` は
+  末尾セグメントの `string[]` です。
+- `props` はオプションで、エンジンにとっては不透明であり、`props` prop と
+  してページコンポーネントへそのまま転送されます。エンジンがそれを検査
+  することはありません。
+
+## ブログ記事ページ
+
+`paths()` の典型的な用途は、コンテンツコレクションから slug を列挙する
+ことです。
+
+```tsx
+// pages/blog/[slug].tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "Blog post" };
+
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { title: post.data.title },
+  }));
+}
+
+export default function BlogPost({ params, props }) {
+  const post = getCollection("blog").find((e) => e.slug === params.slug);
+  if (!post) return <p>Not found.</p>;
+  return (
+    <article>
+      <h2>{props.title}</h2>
+      <post.Content />
+    </article>
+  );
+}
+```
+
+いくつか注目すべき点があります。
+
+- `getCollection` は同期的です。完全なコンテンツのスナップショットは、
+  どの TSX が実行されるよりも前に Rust 側で事前構築されています。
+  `paths()` に `async` は不要で、ページコンポーネントにも不要です。
+- `params.slug` が URL に現れるものです。`slug: "hello-zfb"` の記事は
+  `/blog/hello-zfb` になります。
+- `props.title` はエンジンにとって不透明で、コンポーネントへ渡される
+  ただのデータです。シリアライズ可能なものなら何でも入れられます。
+
+## キャッチオール: ツリー全体のドキュメントページ
+
+キャッチオールルートは末尾セグメントを任意の数だけキャプチャします。
+同じテンプレートが 1 つのプレフィックスの下で多くの深さをレンダリングする
+場合に便利です。`slug` パラメータは `string[]` として到着します。
+
+```tsx
+// pages/docs/[...slug].tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "Docs" };
+
+export function paths() {
+  const entries = getCollection("docs");
+  return entries.map((entry) => ({
+    // entry.slug looks like "guides/setup" or "concepts/routing"
+    params: { slug: entry.slug.split("/") },
+  }));
+}
+
+export default function DocsPage({ params }) {
+  const slugPath = params.slug.join("/");
+  const entry = getCollection("docs").find((e) => e.slug === slugPath);
+  if (!entry) return <p>Not found.</p>;
+  return <entry.Content />;
+}
+```
+
+`/docs/concepts/routing` は `params.slug === ["concepts", "routing"]` で
+マッチします。`/docs/guides/setup` は `params.slug === ["guides", "setup"]`
+でマッチします。エントリをスラッシュ区切りの形で検索する必要があるときは、
+ルーターがその形（`slug.join("/")`）を再構築します。
+
+## 静的・動的・キャッチオール — どう組み合わさるか
+
+| ファイル名 | 種類 | URL の例 | `params` の形 |
+| -------- | ---- | ----------- | -------------- |
+| `pages/about.tsx` | 静的 | `/about` | なし |
+| `pages/blog/[slug].tsx` | 動的 | `/blog/hello-zfb` | `{ slug: string }` |
+| `pages/docs/[...slug].tsx` | キャッチオール | `/docs/a/b/c` | `{ slug: string[] }` |
+| `pages/docs/[[...slug]].tsx` | オプショナルキャッチオール | `/docs` と `/docs/a/b/c` | `{ slug: string[] }`（素の URL では `[]`） |
+| `pages/[lang]/[slug].tsx` | 動的 × 2 | `/ja/intro` | `{ lang: string, slug: string }` |
+
+2 つのパターンが同じ URL にマッチしうる場合は、より具体的なほうが
+勝ちます。**静的が動的に勝ち、動的がキャッチオールに勝ちます。**
+ルーターはルートテーブルを構築するときにこれを強制します。完全な
+ソート順については [Routing](/concepts/routing) を参照してください。
+
+## ルールと落とし穴
+
+- すべての `params` キーには値が必要です。キーが欠けていると、HTML が
+  1 つでも書き出される前にビルドエラーが発生します。
+- キャッチオールセグメントでは、`params.slug` は（要素が 1 つでも）
+  `string[]` でなければなりません。素の文字列を渡すと型エラーになります。
+- 必須キャッチオール（`[...slug]`）は空配列を拒否します。常に少なくとも
+  1 つのセグメントが必要です。素のディレクトリ URL（`/docs`）をビルド
+  するには、ファイルをオプショナル形（`[[...slug]]`）にリネームし、
+  明示的に `{ params: { slug: [] } }` エントリを返してください。`[""]` と
+  `""` はどちらの形でも無効のままです。
+- `paths()` は **同期的** です。コンテンツのスナップショット全体は、どの
+  ページが評価されるよりも前に読み込まれるため、待つべき非同期の境界は
+  ありません。純粋なデータで決定論的に保ってください。ルーターはレンダーの
+  はるか前、ルート列挙の段階でこれを呼び出します。
+- 同じテンプレートに解決される 2 つのルートは、ビルド時に
+  `RouterError::AmbiguousRoute` を発生させます。また、2 つのルートが
+  パラメータ名だけ異なり、同じ URL にマッチする場合（たとえば
+  `docs/[a].tsx` と `docs/[b].tsx`）には `RouterError::AmbiguousShape` を、
+  オプショナルキャッチオールが同じ位置で別のルートと重なる場合には
+  `RouterError::OptionalCatchallConflict` を発生させます。ルーターが黙って
+  勝者を選ぶことは決してありません。
+
+## 関連項目
+
+- [Routing](/concepts/routing) — 静的ルートの基礎。
+- [Content Collections](/concepts/content-collections) — ほとんどの
+  `paths()` 呼び出しがデータソースとして参照するもの。同期的な
+  `getCollection` API についても解説しています。
