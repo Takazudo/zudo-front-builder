@@ -22,26 +22,98 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use zfb_md_ast::HeadingIdStrategy;
+
 use crate::heading_registry::HeadingEntry;
 use crate::pipeline::{BuildContext, HastNode, HastVisitor};
 use crate::plugins::util::hast_text::extract_text;
 
 /// Visitor that adds permalink anchors to headings.
 pub struct HeadingLinksPlugin {
-    seen: HashMap<String, usize>,
+    slugs: SlugAllocator,
 }
 
 impl HeadingLinksPlugin {
-    /// New plugin with an empty per-document slug counter.
+    /// New plugin with the default flat strategy and an empty per-document
+    /// slug counter.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_strategy(HeadingIdStrategy::Flat)
+    }
+
+    /// New plugin with an explicit heading-ID strategy
+    /// (`markdown.features.headingIds.strategy`, zfb#871).
+    #[must_use]
+    pub fn with_strategy(strategy: HeadingIdStrategy) -> Self {
         Self {
+            slugs: SlugAllocator::new(strategy),
+        }
+    }
+}
+
+/// Strategy-aware slug allocator shared by [`HeadingLinksPlugin`] and
+/// `mdx_jsx_emit::collect_headings` so the rendered `<hN id="…">` and the
+/// emitted `headings[i].slug` can never drift (zfb#871).
+///
+/// - [`HeadingIdStrategy::Flat`] delegates to [`next_slug`] untouched —
+///   byte-identical to the pre-#871 scheme.
+/// - [`HeadingIdStrategy::Hierarchical`] prefixes each slug with its
+///   ancestor chain: the candidate is `{parent_final_id}-{base}` (just
+///   `base` for a top-of-outline heading), deduped on the full candidate
+///   through the same [`next_slug`] counter. The ancestor stack records the
+///   parent's *final* (post-dedup) id, so a child anchor always extends the
+///   anchor of the section it actually lives in.
+///
+/// Empty `base` short-circuits to the empty string in BOTH strategies and
+/// leaves all state untouched — empty-text headings get no id and do not
+/// participate in the outline.
+pub struct SlugAllocator {
+    strategy: HeadingIdStrategy,
+    seen: HashMap<String, usize>,
+    /// Hierarchical ancestor stack of `(depth, final id)`. Unused in flat
+    /// mode.
+    stack: Vec<(u8, String)>,
+}
+
+impl SlugAllocator {
+    /// New allocator with empty per-document state.
+    #[must_use]
+    pub fn new(strategy: HeadingIdStrategy) -> Self {
+        Self {
+            strategy,
             seen: HashMap::new(),
+            stack: Vec::new(),
         }
     }
 
-    fn next_slug(&mut self, base: &str) -> String {
-        next_slug(&mut self.seen, base)
+    /// Allocate the slug for a heading of `depth` (2–6) whose slugified
+    /// text is `base`. Returns the empty string for an empty `base`.
+    pub fn allocate(&mut self, depth: u8, base: &str) -> String {
+        match self.strategy {
+            HeadingIdStrategy::Flat => next_slug(&mut self.seen, base),
+            HeadingIdStrategy::Hierarchical => {
+                if base.is_empty() {
+                    return String::new();
+                }
+                while self.stack.last().is_some_and(|(d, _)| *d >= depth) {
+                    self.stack.pop();
+                }
+                let candidate = match self.stack.last() {
+                    Some((_, parent)) => format!("{parent}-{base}"),
+                    None => base.to_string(),
+                };
+                let slug = next_slug(&mut self.seen, &candidate);
+                self.stack.push((depth, slug.clone()));
+                slug
+            }
+        }
+    }
+
+    /// Clear all per-document state (dedup counters AND the hierarchical
+    /// ancestor stack) — called between documents (zfb#187).
+    pub fn reset(&mut self) {
+        self.seen.clear();
+        self.stack.clear();
     }
 }
 
@@ -77,14 +149,15 @@ impl Default for HeadingLinksPlugin {
 }
 
 impl HastVisitor for HeadingLinksPlugin {
-    /// Reset the per-document slug counter.
+    /// Reset the per-document slug state (dedup counter + hierarchical
+    /// ancestor stack).
     ///
     /// Called by [`Pipeline::reset_per_entry`] between documents so the
     /// same `## Basic Usage` heading always produces `basic-usage` in each
     /// file rather than `basic-usage-7` when the pipeline is reused across
     /// multiple entries (zfb#187).
     fn reset(&mut self) {
-        self.seen.clear();
+        self.slugs.reset();
     }
 
     fn visit(&mut self, node: &mut HastNode) {
@@ -120,7 +193,7 @@ impl HeadingLinksPlugin {
                 let text = extract_text(node);
                 let base = slugify(&text);
                 if !base.is_empty() {
-                    slug_and_text = Some((self.next_slug(&base), text, depth));
+                    slug_and_text = Some((self.slugs.allocate(depth, &base), text, depth));
                 }
             }
         }

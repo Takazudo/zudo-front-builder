@@ -30,8 +30,8 @@ pub use plugins::toc::TocConfig;
 // threading `markdown.features` into the feature-aware pipeline constructor,
 // without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
 pub use zfb_md_extras::{
-    directives_enabled, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureToggle,
-    MarkdownFeaturesConfig, into_directive_def,
+    directives_enabled, heading_id_strategy, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
+    FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig, into_directive_def,
 };
 
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
