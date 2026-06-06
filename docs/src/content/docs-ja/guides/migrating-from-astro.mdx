@@ -4,22 +4,101 @@ description: 既存の Astro 静的サイトを zfb に移行するための概�
 sidebar_position: 1
 ---
 
-<Info title="翻訳予定">
+すでに Astro サイトを運用している方なら、zfb の大部分には馴染みを感じるはずです。どちらのプロジェクトもファイルベースのルーティング、コンテンツコレクション、パーシャルハイドレーションを備えています。違いは主にスコープにあります。zfb はより小さく、より意見が強く（opinionated）、エンド・ツー・エンドで Rust に支えられています。
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Migrating from Astro](/guides/migrating-from-astro)
+## ディレクトリ構成
 
-</Info>
+Astro はすべてを `src/` の下に配置します。zfb はそうしません。
 
-## 概要
+| Astro                | zfb                  |
+| -------------------- | -------------------- |
+| `src/pages/`         | `pages/`             |
+| `src/layouts/`       | `layouts/`           |
+| `src/components/`    | `components/`        |
+| `src/content/`       | `content/`           |
+| `astro.config.mjs`   | `zfb.config.ts`      |
 
-Astro サイトをお持ちの方は、zfb の多くの部分に馴染みを感じるでしょう。どちらもファイルベースのルーティング、コンテンツコレクション、パーシャルハイドレーションを提供しています。主な違いはスコープにあります。zfb はより小さく、よりエンド・ツー・エンドで Rust を基盤としています。
+このフラットな構成は、より小さな表面積に合わせたものです。覚えておくべき `src/` という名前空間は存在しません。
 
-英語の最新ドキュメントは [Migrating from Astro](/guides/migrating-from-astro) を参照してください。
+## コンポーネント: モデルは 1 つ、2 つではない
 
-## エンジンの追加機能（v0 以降）
+Astro の目玉機能は `.astro` ファイル — サーバー専用のテンプレート言語であり、オプションでフレームワークコードのアイランドを含められます。zfb はこれを単一のコンポーネントモデルに統合します。すべてのコンポーネントは `.tsx` ファイルです。`zfb.config` の `framework` フィールドで Preact か React のどちらかを選択し、レイアウト・ページ・コンポーネントのすべてで同じ JSX の流儀を使います。
 
-以下の機能は初期リリース後に追加されたものです。Astro で同等のパターンを使用していた場合、zfb での対応箇所を示します。
+```tsx
+export default function MarketingPage() {
+  return <main><h1>Hello</h1></main>;
+}
+```
+
+別途学ぶべきテンプレート構文はありませんが、コンポーネントの外でのトップレベル `await` のような用途で `.astro` に依存していた場合は、その処理を `paths()` エクスポートやデータコレクションに移す必要があります。
+
+## コンテンツコレクション
+
+`astro:content` の `getCollection("blog")` には、zfb でほぼ直接の対応物があります:
+
+```ts
+import { getCollection } from "zfb/content";
+
+const posts = getCollection("blog");  // synchronous — no await
+```
+
+返される形状も似ています。各エントリは `slug`、`data`（フロントマター）、`body` を公開します。全体の仕様については /api/get-collection を参照してください。
+
+スキーマはインラインの Zod から宣言的な設定へと移ります。コレクションは `zfb.config.ts` で `defineConfig` を使って宣言します:
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  collections: [
+    { name: "blog", path: "content/blog" },
+  ],
+});
+```
+
+Zod はありません。スキーマの検証には最小限の JSON-Schema 方言を使います。`schema` フィールドは `type` キーや `properties` キーを持つ JSON オブジェクトを受け付けます。`type` に指定できる値は `"string"`、`"number"`、`"integer"`、`"boolean"`、`"array"`、`"object"`、`"null"` です（`"date"` はなく、オプショナルを表す末尾の `?` もありません）。スキーマは設定読み込み時に構造が検証されますが、フロントマターのフィールドはビルド時にスキーマに対して現状では強制されません。完全な形状については [`defineConfig`](/api/define-config) を参照してください。
+
+## アイランド
+
+Astro はインポートしたフレームワークコンポーネントの JSX 属性として `client:load`、`client:visible` などを使います。zfb はその代わりにファイルレベルの `"use client"` ディレクティブを使います — Next.js App Router が広めたのと同じパターンです:
+
+```tsx
+"use client";
+
+export default function Counter() {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(n + 1)}>{n}</button>;
+}
+```
+
+`"use client"` ファイルからインポートされたものは、自動的にアイランドになります。/api/island を参照してください。
+
+## スロットとレイアウト
+
+Astro の `<slot />` は素の JSX `children` になります:
+
+```tsx
+export default function DocsLayout({ children }) {
+  return <div className="prose">{children}</div>;
+}
+```
+
+## zfb が異なる形で提供するもの
+
+いくつかの Astro 機能には、別の名前で zfb の直接的な対応物があります:
+
+- **ビュートランジション** — `@takazudo/zfb-runtime` の `<ClientRouter />` を使います
+  （Astro の `<ClientRouter />` が提供するのと同じ、ビュートランジションアニメーション付きの
+  SPA ルーターです）。
+- **アイランド / クライアントディレクティブ** — `"use client"` ファイルディレクティブに
+  置き換えられています（Next.js App Router のパターン）。[アイランド](/concepts/islands)を参照してください。
+
+現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
+
+### v0 以降のエンジン追加機能
+
+以下の機能は zfb の初期リリースには含まれていませんでしたが、現在では利用可能です。Astro サイトで同等のパターンを使っていた場合、zfb での対応箇所は次のとおりです:
 
 **サイトの正規 URL（`site`）**
 
@@ -32,17 +111,47 @@ export default defineConfig({
 });
 ```
 
+設定すると、レンダリング時に `globalThis.__zfb.site` が利用可能になり、レイアウトで正規 `<link>` タグや OpenGraph メタを構築できます。[`defineConfig`](/api/define-config) を参照してください。
+
 **プラグインライフサイクル: `setup`、`addAlias`、`addVirtualModule`、`injectRoute`**
 
-Astro インテグレーションの `astro:config:setup` フックに相当するのが、zfb プラグインの `setup` フックです。`addAlias` でインポートエイリアスを登録し、`addVirtualModule` で仮想 ESM モジュールを提供し、`injectRoute` で開発サーバー専用のルートを追加できます。詳細は [Plugins](/concepts/plugins) を参照してください。
+Astro インテグレーションは `astro:config:setup` フック中に `updateConfig`、`addWatchFile`、`injectRoute` を公開します。zfb での同等物は、プラグインライフサイクルの `setup` フックです:
+
+```ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  setup({ command, addAlias, addVirtualModule, injectRoute }) {
+    addAlias("@/components/foo", "./src/components/foo.tsx");
+    addVirtualModule("virtual:my-data", () =>
+      `export default ${JSON.stringify({ key: "value" })}`,
+    );
+    if (command === "dev") {
+      injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+    }
+  },
+});
+```
+
+`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は指定子（specifier）によって合成 ESM モジュールを公開します。`injectRoute` は開発専用で、`zfb build` 中に呼び出すとエラーになります。完全な契約については [プラグイン](/concepts/plugins) を参照してください。
 
 **`postBuild` でのルートマニフェスト（`ctx.routes`）**
 
-`postBuild` フックは `ctx.routes` を受け取ります。これはビルドが出力したすべての URL の完全なマニフェストです。サイトマップや RSS フィードの生成に利用できます。詳細は [Plugins](/concepts/plugins) を参照してください。
+Astro は `injectRoute` + `astro:build:done` のパターンでビルド後の処理を公開します。zfb では、`postBuild` プラグインが `ctx.routes` を受け取ります — これはビルドが出力したすべての URL の完全なマニフェストです:
 
-**Markdown: 目次（TOC）、外部リンク、CJK フレンドリーな強調**
+```ts
+postBuild({ outDir, routes }) {
+  const htmlRoutes = routes.routes.filter((r) => r.extension === "html");
+  // write sitemap, feed, etc.
+},
+```
 
-Astro でよく使われる `remark-toc` や `rehype-external-links` に相当する機能は、zfb では `markdown` 設定ブロックの組み込みオプションとして提供されています:
+`ZfbRouteManifest` の完全な形状と、サイトマップの実例については [プラグイン](/concepts/plugins) のページを参照してください。
+
+**Markdown: 目次（Table of Contents）、外部リンク、CJK フレンドリーな強調**
+
+Astro ユーザーはしばしば `remark-toc`、`rehype-external-links`、CJK パッチをインテグレーションとして導入します。zfb では、これらは `markdown` 設定ブロック内の組み込みのオプトインとして提供されています:
 
 ```ts
 // zfb.config.ts
@@ -50,16 +159,16 @@ export default defineConfig({
   markdown: {
     toc: { heading: "TOC", maxDepth: 2 },
     externalLinks: { target: "_blank", rel: ["noopener", "noreferrer"] },
-    cjkFriendly: true, // デフォルトで有効
+    cjkFriendly: true, // on by default
   },
 });
 ```
 
-詳細は [Customizing Markdown](/guides/customizing-markdown) を参照してください。
+詳細は [Markdown のカスタマイズ](/guides/customizing-markdown) を参照してください。
 
-**シンタックスハイライトのカスタムテーマ（`codeHighlight.themesDir`）**
+**シンタックスハイライト用のカスタムテーマファイル（`codeHighlight.themesDir`）**
 
-zfb は syntect（Sublime Text 互換の `.tmTheme` 形式）を使用しています。`codeHighlight.themesDir` で `.tmTheme` ファイルを含むディレクトリを指定します:
+Astro の `shiki` インテグレーションは任意の Shiki テーマ名を受け付けます。zfb は syntect（Sublime Text 互換の `.tmTheme` ファイル）を使います。`codeHighlight.themesDir` に `.tmTheme` ファイルを含むディレクトリを指定してください:
 
 ```ts
 export default defineConfig({
@@ -70,15 +179,17 @@ export default defineConfig({
 });
 ```
 
-詳細は [Syntax Highlighting](/guides/syntax-highlighting) を参照してください。
+[シンタックスハイライト](/guides/syntax-highlighting)を参照してください。
 
 ## ユーザースペースに移行するパターン
 
-zfb は Astro の一部の機能を意図的に省略しています。これらのパターンは、純粋な JSX/Preact モデルにおいて、エンジンサポートなしにクリーンなユーザーランドの解決策があるためです。
+zfb はいくつかの Astro 機能を意図的に省略しています。これは見落としではありません — これらのパターンは、純粋な JSX/Preact モデルにおいてエンジンのサポートを必要としないクリーンなユーザーランドの解決策を持っています。以下の各セクションでは、それぞれについて推奨されるレシピを示します。
 
 ### `client:media` — メディアクエリによる条件付きハイドレーション
 
-Astro の `client:media="(max-width: 768px)"` に相当するパターンは、コンポーネント内部での早期リターンです:
+Astro の `client:media="(max-width: 768px)"` は、メディアクエリがマッチするまでハイドレーションを遅延させます。zfb の `"use client"` ディレクティブは常にロード時にハイドレーションします。
+
+Preact での同等物は、コンポーネント自身の内部での早期リターンです:
 
 ```tsx
 "use client";
@@ -89,7 +200,7 @@ interface Props {
   children: preact.ComponentChildren;
 }
 
-/** クエリにマッチするビューポートでのみ children をレンダリングする */
+/** Renders children only on viewports that match the query. */
 export default function MediaMount({ children }: Props) {
   const [matches, setMatches] = useState(false);
 
@@ -106,26 +217,164 @@ export default function MediaMount({ children }: Props) {
 }
 ```
 
+これはラッパーとして使います: `<MediaMount><MobileMenu /></MediaMount>`。ラップされたコンポーネントはクエリがマッチしたときにのみマウントされ、クエリがマッチしなくなるとアンマウントされます。
+
 ### ページごとの `<head>` 追加（Astro の `<Fragment slot="head">`）
 
-Astro の `<Fragment slot="head">` に相当する機能はエンジンレベルでは提供されていません。
+Astro はページが `<Fragment slot="head">` を介して任意の `<head>` 要素を注入できるようにします。zfb にはエンジンレベルでのスロット機構はありません。
 
 <Note>
 
-  `PageMeta` は現在 unknown フィールドを拒否します。将来の ADR でこの制約が緩和された場合、このレシピはよりシンプルになります。
+  `PageMeta` は現在 unknown フィールドを拒否します。将来この制約が緩和されれば、このレシピはよりシンプルになります。
 
 </Note>
 
-ユーザーランドのパターンは **Preact コンテキストベースのヘルメット** です。レイアウトがページボディを先にレンダリングしてコレクターに登録し、その後収集されたヘッドノードを出力します。詳細なスニペットは英語版 [Migrating from Astro](/guides/migrating-from-astro#per-page-head-additions-astros-fragment-slothead) を参照してください。
+ユーザーランドのパターンは **Preact コンテキストベースのヘルメット** です。レイアウトがまずページボディをレンダリングし（コレクターを満たし）、その後収集されたヘッドノードを出力します。これにより 2 回目のレンダーパスを避けられます:
+
+```tsx
+// components/head-context.tsx
+import { createContext } from "preact";
+import { useContext, useRef } from "preact/hooks";
+
+interface HeadContextValue {
+  nodes: preact.VNode[];
+  add(node: preact.VNode): void;
+}
+
+export const HeadContext = createContext<HeadContextValue>({
+  nodes: [],
+  add() {},
+});
+
+export function useHead() {
+  return useContext(HeadContext);
+}
+```
+
+```tsx
+// components/head.tsx — drop inside a page to register head nodes
+import { useHead } from "./head-context";
+
+interface Props {
+  children: preact.VNode | preact.VNode[];
+}
+
+export function Head({ children }: Props) {
+  const { add } = useHead();
+  const registered = useRef(false);
+  if (!registered.current) {
+    registered.current = true;
+    const nodes = Array.isArray(children) ? children : [children];
+    nodes.forEach(add);
+  }
+  return null; // renders nothing inline
+}
+```
+
+```tsx
+// layouts/base.tsx
+import { useState } from "preact/hooks";
+import { HeadContext } from "../components/head-context";
+
+export default function BaseLayout({ children }: { children: preact.ComponentChildren }) {
+  const [nodes] = useState<preact.VNode[]>([]);
+  const ctx = { nodes, add: (n: preact.VNode) => nodes.push(n) };
+
+  // Render children first so Head calls populate `nodes` before we emit <head>.
+  const body = <main>{children}</main>;
+
+  return (
+    <HeadContext.Provider value={ctx}>
+      <html>
+        <head>
+          <meta charSet="utf-8" />
+          {nodes}
+        </head>
+        {body}
+      </html>
+    </HeadContext.Provider>
+  );
+}
+```
+
+```tsx
+// pages/blog/[slug].tsx
+import { Head } from "../../components/head";
+
+export default function BlogPost({ post }) {
+  return (
+    <>
+      <Head>
+        <title>{post.data.title}</title>
+        <meta name="description" content={post.data.description} />
+      </Head>
+      <article>{/* ... */}</article>
+    </>
+  );
+}
+```
+
+<Warning title="SSR のレンダー順序">
+
+  このパターンは、Preact が同じパス内で兄弟要素より先に children をレンダリングすることに依存しています。zfb の静的ビルド SSR（トップダウンのレンダリング、親の `{nodes}` 出力より先に children をレンダリング）では機能します。ストリーミング SSR アダプターを追加する場合は、ボディのレンダリングが完了した後にヘッドがフラッシュされることを確認してください。
+
+</Warning>
 
 ### Preact-compat エイリアス（`@/components/svg`、`@/components/responsive-image`）
 
-Astro のコンポーネントモデルの回避策として登録されていたエイリアスは、移行時に**削除してください**。zfb ではすべてのコンポーネントが最初から `.tsx` であるため、これらのブリッジレイヤーは不要です。コンポーネントを直接ファイルパスで（またはシンプルなエイリアスで）インポートしてください。
+一部の Astro プロジェクトは、Astro のコンポーネントモデルを回避するために `@/components/svg` や `@/components/responsive-image` のようなエイリアスを登録します — 例えば `.astro` の SVG コンポーネントを JSX アイランドへ橋渡しするためです。
+
+zfb ではすべてのコンポーネントが最初から `.tsx` であり、これらのエイリアスが提供していたブリッジレイヤーは存在しません。移行時には、**これらのエイリアスを削除し、コンポーネントをファイルパスで直接インポートしてください**（あるいは `.tsx` ファイルを直接指すよりシンプルなエイリアスを使ってください）:
+
+```ts
+// Before (Astro workaround — remove):
+// addAlias("@/components/svg", "./src/components/astro-svg-bridge");
+
+// After (zfb — import directly or use a simple alias):
+addAlias("@/svg", "./components/svg.tsx");
+```
+
+エイリアス先のファイルが Astro コンポーネント（`.astro`）だった場合は、先にそれを `.tsx` コンポーネントとして書き直す必要があります。
 
 ### `data-island` マーカーによるカスタムハイドレーション
 
-このパターンは zfb に**バイト単位でそのまま**移行できます。`"use client"` アイランドとして自前の `<script>` を用意し、マーカーを `querySelectorAll` して Preact の `hydrate()` を呼び出します。詳細は英語版 [Migrating from Astro](/guides/migrating-from-astro#custom-hydration-with-data-island-markers) を参照してください。
+Astro のアイランドは、レンダリングされた HTML の隣にある `<script type="application/json">` タグ内に、コンポーネントの props を JSON としてシリアライズします。一部のプロジェクトは、きめ細かな制御のためにこれをカスタムの `data-island` 属性で拡張します。
+
+このパターンは zfb に**バイト単位でそのまま**移植できます — ハイドレーション戦略の全体を自分で所有します。マーカーをクエリして Preact の `hydrate()` を呼び出す、自前の `<script>` を用意してください:
+
+```tsx
+"use client";
+
+// components/island-hydrator.tsx — add to your root layout as a "use client" island
+import { hydrate } from "preact";
+import { useEffect } from "preact/hooks";
+import MyWidget from "./my-widget";
+
+const REGISTRY: Record<string, preact.ComponentType> = {
+  "my-widget": MyWidget,
+  // add more components here
+};
+
+export default function IslandHydrator() {
+  useEffect(() => {
+    document.querySelectorAll<HTMLElement>("[data-island]").forEach((el) => {
+      const name = el.dataset.island!;
+      const Component = REGISTRY[name];
+      if (!Component) return;
+      const props = JSON.parse(el.dataset.props ?? "{}");
+      hydrate(<Component {...props} />, el);
+    });
+  }, []);
+  return null;
+}
+```
+
+その上で、サーバーレンダリングされたマークアップ内で `<div data-island="my-widget" data-props='{"label":"Click me"}' />` を出力します。
 
 ### カスタム remark / rehype プラグイン
 
-zfb の Markdown パイプラインは Rust バックエンドであり、npm レベルの remark/rehype プラグインローダーはありません。Markdown レベルのカスタマイズは in-tree の Rust visitor として実装します。一般的な組み込みプラグイン（TOC、外部リンク、CJK 修正）はすでに `zfb.config.ts` のオプションとして提供されています。より固有のカスタマイズが必要な場合は [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。
+Astro は `astro.config.mjs` の `remarkPlugins` / `rehypePlugins` を介して任意の remark プラグインや rehype プラグインを受け付けます。
+
+zfb の Markdown パイプラインは Rust バックエンドです。remark や rehype 向けの npm レベルのプラグインローダーはありません。Markdown レベルのカスタマイズは、バイナリにコンパイルされる in-tree の Rust ビジター — `MdastVisitor` または `HastVisitor` の実装 — として提供します。
+
+ほとんどのサイトにとって、これは移行の妨げにはなりません。よく使われる組み込みの remark プラグイン（TOC、外部リンク、CJK 修正）は、すでに `zfb.config.ts` のファーストクラスのオプションとして利用可能です。より固有のことのためにカスタムプラグインに依存していた場合は、in-tree Rust ビジターの道筋について [Markdown パイプラインの拡張](/guides/extending-the-markdown-pipeline) を参照してください。
