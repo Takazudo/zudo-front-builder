@@ -50,7 +50,7 @@ equivalent in zfb:
 ```ts
 import { getCollection } from "zfb/content";
 
-const posts = await getCollection("blog");
+const posts = getCollection("blog");  // synchronous — no await
 ```
 
 The return shape is similar — each entry exposes `slug`, `data`
@@ -70,10 +70,13 @@ export default defineConfig({
 });
 ```
 
-There is no Zod — front-matter field validation is expressed as string tags
-(`"string"`, `"number"`, `"date"`, with a trailing `?` for optional) inside
-the optional `schema` field. See [`defineConfig`](/api/define-config) for
-the full shape.
+There is no Zod — schema validation uses a minimal JSON-Schema dialect.
+The `schema` field accepts a JSON object with `type` and/or `properties` keys.
+Valid `type` values are `"string"`, `"number"`, `"integer"`, `"boolean"`,
+`"array"`, `"object"`, and `"null"` (no `"date"`, no trailing `?` for
+optional). The schema is validated for structure at config load time but
+frontmatter fields are not currently enforced against it at build time.
+See [`defineConfig`](/api/define-config) for the full shape.
 
 ## Islands
 

@@ -23,8 +23,8 @@ render its `Content` component:
 ```tsx
 import { getCollection } from "zfb/content";
 
-export async function paths() {
-  const posts = await getCollection("blog");
+export function paths() {
+  const posts = getCollection("blog");
   return posts.map((post) => ({
     params: { slug: post.slug },
     props: { post },
@@ -49,12 +49,13 @@ for `entry.body` instead.
 ## Extension points
 
 The `plugins: []` field in `zfb.config` is the build-orchestration plugin
-system. Each registered plugin exposes three optional hooks — `preBuild`,
-`postBuild`, and `devMiddleware` — for tasks like emitting extra files
-alongside the build, running post-build verification, or adding routes to
-the dev server. Plugins do **not** participate in Markdown rendering: the
-parse and visitor chain run inside the Rust engine and never call back into
-npm-installed plugins.
+system. Each registered plugin exposes four optional hooks — `setup`,
+`preBuild`, `postBuild`, and `devMiddleware` — for tasks like registering
+import aliases and virtual modules at boot (`setup`), emitting extra files
+alongside the build (`preBuild`), running post-build verification
+(`postBuild`), or adding routes to the dev server (`devMiddleware`). Plugins
+do **not** participate in Markdown rendering: the parse and visitor chain run
+inside the Rust engine and never call back into npm-installed plugins.
 
 Markdown-pipeline customisation lives in-tree as `MdastVisitor` /
 `HastVisitor` implementations on the engine side. See
