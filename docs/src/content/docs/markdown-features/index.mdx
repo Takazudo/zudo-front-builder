@@ -79,10 +79,10 @@ Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
 - [GitHub autolinks](/markdown-features/github-autolinks) — links GitHub issue/PR/commit references (`#123`, `org/repo#456`, `abc1234`) automatically.
 - [Code-block enrichment](/markdown-features/code-enrichment) — adds diff markers and per-line highlighting to fenced code blocks.
 - [Code tabs](/markdown-features/code-tabs) — groups consecutive fenced code blocks into a tabbed switcher.
-- [Ruby annotation](/markdown-features/ruby) — renders `{漢字|かんじ}` syntax as HTML `<ruby>` elements.
+- [Ruby annotation](/markdown-features/ruby) — renders `{これは}^{これ}` (caret, primary) or `{漢字|かんじ}` (pipe, legacy alias) syntax as HTML `<ruby>` elements.
 - [TOC export](/markdown-features/toc-export) — exports a structured heading tree into the compiled JSX module for framework-side rendering.
 - [Image dimensions](/markdown-features/image-dimensions) — injects `width` and `height` attributes on `<img>` elements from the actual file.
-- [Link validation](/markdown-features/link-validation) — treats broken internal links as hard build errors.
+- [Link validation](/markdown-features/link-validation) — warns on broken internal links by default; hard build errors with `failOnBroken: true`.
 - [Transclusion](/markdown-features/transclude) — inlines the content of another file using the `:::include` directive.
 
 ## See also

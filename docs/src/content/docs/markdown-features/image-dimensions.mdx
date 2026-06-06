@@ -26,7 +26,8 @@ export default defineConfig({
 For each `<img>` element, the plugin:
 
 1. Skips elements that already carry `width` or `height` attributes.
-2. Skips remote URLs (`http://`, `https://`, `//`) and `data:` URLs.
+2. Skips `data:` URLs unconditionally. Skips `http://`, `https://`, and
+   protocol-relative (`//`) URLs when `skipRemote` is `true` (the default).
 3. Resolves the `src` to an absolute path (see **Source resolution** below).
 4. Reads only the image file header — no full decode occurs — and injects `width="W" height="H"`.
 5. If the file cannot be found or is not a recognised image format, emits a build warning and leaves the element unchanged.
@@ -43,7 +44,7 @@ The plugin resolves `src` values against the file system using `BuildContext`:
 
 ## Options
 
-- `skipRemote` (default `true`) — when `true`, `http://` and `https://` image sources are skipped. Set to `false` only for unusual setups; probing remote images requires network access at build time.
+- `skipRemote` (default `true`) — when `true`, `http://`, `https://`, and protocol-relative (`//`) image sources are skipped. Set to `false` only for unusual setups; probing remote images requires network access at build time. `data:` URLs are always skipped regardless of this setting.
 
 ```ts
 imageDimensions: { skipRemote: false },

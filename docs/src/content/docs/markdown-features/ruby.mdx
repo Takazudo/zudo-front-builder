@@ -1,10 +1,10 @@
 ---
 title: Ruby annotations
-description: Render ruby (furigana) annotations with the {base|ruby} syntax.
+description: Render ruby (furigana) annotations with the caret syntax — {base}^{ruby} or base^{ruby}.
 tier: Opt-in
 ---
 
-The `ruby` feature parses `{base|ruby}` inline syntax and renders it as
+The `ruby` feature parses caret-syntax inline annotations and renders them as
 `<ruby><rb>base</rb><rt>ruby</rt></ruby>` HTML — the standard markup for
 phonetic annotations such as Japanese furigana.
 
@@ -21,9 +21,61 @@ export default defineConfig({
 });
 ```
 
-## Usage
+## Primary syntax — caret
 
-Wrap the base text and its annotation in `{...}` separated by `|`:
+There are two caret forms:
+
+### Braced base
+
+Wrap both sides in `{…}` with a `^` between them:
+
+```md
+{これは}^{これ}
+```
+
+Renders as:
+
+```html
+<ruby><rb>これは</rb><rt>これ</rt></ruby>
+```
+
+Any base text works — the non-ASCII rule (see below) does **not** apply
+to the braced form, so `{ABC}^{xyz}` is honored.
+
+### Bare base
+
+Omit the braces around the base — the caret consumes the full preceding
+text run as the base:
+
+```md
+これは^{これ}
+```
+
+Renders as:
+
+```html
+<ruby><rb>これは</rb><rt>これ</rt></ruby>
+```
+
+**Non-ASCII base required for the bare form.** Because the bare form
+shares its AST shape with ASCII superscripts (`2^{n}`, `x^{i}`), the
+parser applies a false-positive guard: the base run must contain at least
+one non-ASCII character. CJK/kana bases are fine; ASCII-only bases are
+left untouched. For ASCII bases, use the braced form.
+
+Multiple annotations in one paragraph are supported:
+
+```md
+{日本語}^{にほんご}を{学ぶ}^{まなぶ}
+```
+
+```html
+<ruby><rb>日本語</rb><rt>にほんご</rt></ruby>を<ruby><rb>学ぶ</rb><rt>まなぶ</rt></ruby>
+```
+
+## Legacy alias — pipe syntax
+
+The pipe syntax from earlier versions is kept for backward compatibility:
 
 ```md
 {漢字|かんじ}を{学ぶ|まなぶ}
@@ -35,26 +87,21 @@ Renders as:
 <ruby><rb>漢字</rb><rt>かんじ</rt></ruby>を<ruby><rb>学ぶ</rb><rt>まなぶ</rt></ruby>
 ```
 
-Multiple annotations in one paragraph are supported. Annotations can appear
-anywhere inline — at the start, middle, or end of a sentence:
-
-```md
-私は{東京|とうきょう}に住んでいます。
-```
+Use the caret syntax for new content. The pipe form produces identical
+output and will remain supported, but it is no longer the primary syntax.
 
 ## Edge cases
 
-Inputs as authored in markdown (not in a table because the pipe in the
-ruby syntax collides with markdown table cell separators):
+Caret-form edge cases (both forms treated analogously for the pipe form):
 
-- `` `{漢字|かんじ}` `` → `<ruby>` element
-- `` `{|ruby}` `` (empty base) → left as literal text
-- `` `{base|}` `` (empty annotation) → left as literal text
-- `` `{text}` `` (no pipe) → left as literal text
+- `{これは}^{これ}` → `<ruby>` element
+- `2^{n}`, `x^{i}` (ASCII bare base) → left as literal text
+- `{base}^{}` (empty annotation) → left as literal text
+- `^{ruby}` (no base) → left as literal text
 
 ## Scope limitation — no auto-furigana
 
-This feature **only** parses the explicit `{base|ruby}` syntax. It does **not**
+This feature **only** parses the explicit caret/pipe syntax. It does **not**
 automatically detect kanji and add furigana through morphological analysis
 (e.g. kuromoji-style segmentation). Automatic furigana assignment is a
 separate, much harder problem that is intentionally out of scope.
