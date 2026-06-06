@@ -7,7 +7,7 @@ category: Concepts
 
 zfb pages render to static HTML by default. **Islands** are the escape hatch — small components that ship JavaScript to the browser and hydrate on the client, while the rest of the page stays as plain HTML.
 
-The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a theme toggle — are islands embedded inside that document, each loaded and hydrated independently.
+The mental model is straightforward: most of your page is a static document. A few interactive bits — a counter, a search box, a theme toggle — are islands embedded inside that document, hydrated in the browser from a single shared bundle.
 
 ## What an island is
 
