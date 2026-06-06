@@ -80,7 +80,7 @@ If you genuinely need to inline an SVG as JSX (so CSS can style strokes, fills, 
 
 The dev server and the production build agree on URL shape. This is a guarantee, not a coincidence:
 
-- **`zfb dev`** — the page handler falls back to reading from `<public_root>/<path>` after a page-cache miss and a `dist/` miss. The `public/` directory has no URL prefix and no top-level `nest_service` mount; files appear at the site root directly.
+- **`zfb dev`** — the page handler falls back to reading from `<public_root>/<path>` after a page-cache miss and a `<project>/.zfb-build/dev-pages/` miss. The `public/` directory has no URL prefix and no top-level `nest_service` mount; files appear at the site root directly. (Note: compiled CSS and the islands bundle are served from `dist/assets/`, but per-route HTML is written to `.zfb-build/dev-pages/`, not `dist/`.)
 - **`zfb build`** — `copy_public_dir` (in `crates/zfb/src/commands/build.rs`) copies every file under `public/` into `dist/<rel>`, recursively. The static `dist/` tree your edge CDN serves is the same shape your browser saw in dev.
 
 That means `<img src="/logo.svg">` written once in your page works in both modes without conditional logic, environment checks, or a `withBase`-style helper.
@@ -91,8 +91,10 @@ It is possible — though usually unintentional — to have a `pages/foo.tsx` ro
 
 1. **Plugin dev-middleware** that claims `/foo` runs first.
 2. **Page cache** — the rendered output of `pages/foo.tsx` wins next.
-3. **`dist/` directory** — files written by the build pipeline are served next.
-4. **`public/` directory** — only consulted if all three of the above miss.
+3. **`.zfb-build/dev-pages/` directory** — the dev HTML root (per-route files written
+   by the dev pipeline) is checked next; `/assets/*` (CSS, islands bundle) is served
+   from `dist/assets/`.
+4. **`public/` directory** — only consulted if all of the above miss.
 5. **404** otherwise.
 
 So a same-named TSX page always shadows a public file. The reverse is not possible — `public/foo` cannot override a route. If you need a static file at a URL that a page also claims, rename one of them.
