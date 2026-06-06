@@ -48,9 +48,28 @@ while let Some(Change { path, kind }) = rx.recv().await {
 - **Three-variant `ChangeKind`** (`Created` / `Modified` / `Removed`).
   Anything notify reports that we cannot positively classify falls into
   `Modified` — we'd rather rebuild unnecessarily than miss a real change.
-- **Drop = stop.** Dropping the `Watcher` handle aborts the debouncer
-  task and drops the underlying notify watcher (which stops the OS-level
-  watch).
+- **Drop = graceful flush-and-detach.** Dropping the `Watcher` handle sends a
+  shutdown signal to the debouncer so pending events can flush, then detaches
+  the JoinHandle without aborting. The underlying notify watcher is also
+  dropped, which stops the OS-level watch. For a fully-awaited flush, prefer
+  the async `Watcher::shutdown()` method.
+
+## Git-restore reconciliation
+
+Raw FS events from `git checkout --`, `git pull`, and `git stash pop` can arrive
+out of order: a `Remove` event with no paired `Create` (bare-Remove platform
+quirk) or a `Remove`/`Create` pair within one debounce window. The debouncer
+handles both cases at flush time — a pending `Removed` whose path exists on disk
+is upgraded to `Modified`, and a pending `Removed` followed by `Created` takes
+the `Created` kind — so downstream rebuild logic always sees the correct change
+kind instead of a stale deletion (issue #823).
+
+## Extra watch paths
+
+`Watcher::start_with_extras` accepts a second set of absolute paths watched in
+addition to the relative paths joined against `project_root`. Use this for
+out-of-tree directories (e.g. a shared design-token package) that must
+participate in dev-mode rebuilds without being under the project root.
 
 ## Non-goals
 
