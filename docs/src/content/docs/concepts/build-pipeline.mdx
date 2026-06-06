@@ -11,12 +11,12 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 
 1. **CLI** — `crates/zfb`. Parses command-line args, loads `zfb.config.{ts,json}`, and dispatches to the `dev`, `build`, or `preview` command.
 2. **Router** — `crates/zfb-router`. Scans `pages/` and produces the route table. See [Routing](/concepts/routing).
-3. **Watcher** — `crates/zfb-watcher`. Dev mode only. Observes `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`, `public/`, and `zfb.config.ts`, and emits a stream of change events.
+3. **Watcher** — `crates/zfb-watcher`. Dev mode only. Observes `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`, `public/`, and `zfb.config.ts` by default, plus each configured collection's path when it falls outside the default roots. Emits a stream of change events.
 4. **Dependency graph** — `crates/zfb-graph`. Tracks page-to-source dependencies. When the watcher reports a change, the graph answers a single question: which pages need to be rebuilt?
 5. **Build orchestrator** — `crates/zfb-build`. Coordinates the per-page work and writes outputs atomically via `atomic_write_string`, so a partial write can never leave `dist/` in a half-broken state.
 6. **Renderer** — `crates/zfb-render`. Compiles TSX to JS with SWC, evaluates the resulting ES module via the JS runtime host, and calls the page's `default()` export to produce an HTML string. Content collection entries (`.md` / `.mdx`) are compiled through the same pipeline as JSX modules — the renderer resolves `mdx://<collection>/<slug>` specifiers and surfaces them to user pages as `entry.Content` (see [MDX Components](/concepts/mdx-components)).
 7. **CSS pipeline** — `crates/zfb-css`. Runs Tailwind v4 and PostCSS as needed. See [Styling](/concepts/styling).
-8. **Islands pipeline** — `crates/zfb-islands`. Bundles each `"use client"` component as a separate ESM module via esbuild. See [Islands](/concepts/islands).
+8. **Islands pipeline** — `crates/zfb-islands`. Scans for `"use client"` components and bundles them all into a single shared ESM module via esbuild, plus any code-split chunks for dynamic `import()` calls. See [Islands](/concepts/islands).
 9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/reload` for browser reload events (see [Dev mode lifecycle](/concepts/dev-mode-lifecycle) for the full event-type breakdown).
 
 ## Production: `zfb build`

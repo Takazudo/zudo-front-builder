@@ -44,13 +44,14 @@ same bundle shape also deploys unchanged to Cloudflare Workers for any
 `prerender = false` routes; that production path is covered later in
 this page and in the [SSR guide](/guides/ssr-and-cloudflare-bindings).)
 
-**Island bundles — shipped to the browser, on-demand.**
+**Island bundle — shipped to the browser.**
 
 Components marked with `"use client"` are a different story. esbuild bundles
-each one as a separate ESM module, and those bundles land in `dist/` alongside
-the HTML files. The browser downloads them on-demand and hydrates the
-corresponding DOM nodes. Island bundles are the *only* JavaScript that ever
-reaches end users.
+all of them together into a single shared ESM module (`dist/assets/islands-<hash>.js`),
+which lands in `dist/assets/` alongside the HTML files. A single `<script type="module">`
+tag referencing this bundle is injected project-wide on island-bearing builds; the bundle
+calls `mountIslands()` at load time, which hydrates every `[data-zfb-island]` element on
+the page. The island bundle is the *only* JavaScript that ever reaches end users.
 
 The distinction matters because the two bundles have completely different
 lifetimes, different execution environments, and different optimization targets.
@@ -67,13 +68,13 @@ flowchart TD
     subgraph build["zfb build — your machine"]
         esbuild_worker["esbuild\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
-        esbuild_islands["esbuild\n(island bundles)"]
+        esbuild_islands["esbuild\n(shared island bundle)"]
         dist_html["dist/\nHTML files"]
-        dist_js["dist/\nisland JS files"]
+        dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
     end
 
     deploy["Static host\n(any CDN / Cloudflare Pages)"]
-    browser["Browser\n(island bundles hydrate on-demand)"]
+    browser["Browser\n(island bundle hydrates via mountIslands())"]
 
     src --> esbuild_worker
     esbuild_worker --> v8
