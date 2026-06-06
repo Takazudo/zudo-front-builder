@@ -1,0 +1,23 @@
+---
+title: v0.1.0-next.32
+sidebar_position: 1032
+---
+
+# v0.1.0-next.32
+
+Released: 2026-06-07
+
+## Features
+
+- Nested-island self-wrap warning during hydration (dev only): when a `[data-zfb-island]` (or `[data-zfb-island-skip-ssr]`) element is found nested inside another island marker, a `console.warn` names the component and points at the call-site fix. Warn-only — mounting still proceeds; each nested element warns at most once; production stays silent. (#859) (8662028)
+- `readingTime` words-per-minute is configurable: `readingTime: { wpm: 250 }` deserialises to a concrete WPM, `readingTime: true` keeps the default 200. TS mirror types added and the outdated fixed-WPM docs Note removed. (#855) (ef26e5c, 8f4ede1, e493422)
+- `getEntry` is now exported at runtime from `zfb/content` — a thin wrapper over `getCollection(...).find(...)` that inherits both the snapshot and fs load paths. The docs Note claiming it would throw at runtime is gone. (#857) (55a0b2b)
+- The collection walker now emits a non-fatal build warning naming the path when it encounters `.json`, `.yaml`, `.yml`, or `.toml` files under a collection directory, instead of silently skipping them. Other extensions remain silently ignored. (#856) (b7b1622)
+
+## Other Changes
+
+- Docs accuracy refresh across the EN + JA trees (PR #844): getting-started, guides (Mode D shipped, ports, hooks, sync `getCollection` in `paths()`, SSR dev reload), islands story rewritten to the shared-bundle model, routing/content/dev-lifecycle/CSS concepts, markdown-features pages, API pages (define-config / get-collection), recipes index, plus CONTRIBUTING / BUILDING / SECURITY-DEPS. Schema validation documented as enforced by `zfb check` only, not the build. (e820b77)
+- Crate READMEs added for zfb, zfb-content, zfb-router, zfb-diagnostics, zfb-render, zfb-md-ast, zfb-types, zfb-server, zfb-plugin-resolver, zfb-test-utils, and zfb-toolchain-pins; the zfb-css README gained a CSS pipeline architecture section (CssEngine trait, entry-CSS ordering contract, CSS Modules hashing, stylesheet concatenation contract). (#860, #861, #862, #863) (8d2fccb, b3f84bf, b7ac76d, 06c031b)
+- `meta` export docs corrected: the renderer emits no `<head>` HTML — the layout owns `<head>`, and `description` is made available to the layout, which decides whether to emit it. (#858) (66f2748)
+- Japanese docs: translated the content-collections, plugins, md-html-pages, custom-directives, and dynamic-routes concepts plus the migrating-from-astro and extending-pipeline guides. (#864, #865, #866, #867, #868)
+- zfb-router module doc-comment now lists all four accepted page extensions, including `.mdx`. (#852) (39c20ae)
