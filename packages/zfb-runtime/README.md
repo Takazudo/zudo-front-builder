@@ -141,8 +141,8 @@ interface PageModule {
   readonly prerender?: boolean;          // literal `false` excludes from SSG
   readonly contentType?: string;         // overrides Content-Type (e.g. "application/xml")
   readonly headings?: readonly PageHeading[]; // MDX-emitted TOC data
-  readonly paths?: () => unknown[] | Promise<unknown[]>; // dynamic route param list (SSG)
-  readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>; // per-request data fetch
+  readonly paths?: () => unknown[] | Promise<unknown[]>; // enumerates concrete URLs for dynamic routes (SSG)
+  readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>; // fetches props at build/render time; result spread into default()
 }
 
 interface PageHeading {

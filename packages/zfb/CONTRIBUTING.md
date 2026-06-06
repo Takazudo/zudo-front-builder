@@ -56,8 +56,9 @@ the compiled `./dist/` artifacts (`tsc` emitting `.js` + `.d.ts`).
 ```
 
 The `build` script (`tsc`) and the `prepublishOnly` hook (`pnpm build && pnpm test`)
-are already wired in `package.json`. The `files` field ships only `dist/`, `bin/`,
-and docs — raw `src/` is not included in the published tarball.
+are already wired in `package.json`. The `files` field ships `dist/`, `bin/`,
+`README.md`, `CHANGELOG.md`, and `LICENSE` — raw `src/` is not included in the
+published tarball.
 
 `private: true` has been dropped; the package publishes to the public registry
 under `publishConfig.access: "public"`.
