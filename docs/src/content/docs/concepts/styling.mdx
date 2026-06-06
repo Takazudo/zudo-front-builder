@@ -55,6 +55,12 @@ export default function Hero() {
 
 Tailwind v4's CSS-first configuration is supported through `@theme` directives in `global.css` — you customise tokens by editing CSS, not a JS config file.
 
+Setting `tailwind: { enabled: false }` switches to an `AuthoredCssEngine` that passes
+your authored `styles/global.css` through verbatim — no Tailwind `@import`, no utility
+scan, no preflight reset, no subprocess. CSS Modules compilation, class-name hashing,
+and asset emission all keep working unchanged; only the Tailwind-specific steps are
+skipped.
+
 ## Component-scoped styling
 
 There are two well-supported patterns for component-level styling: Tailwind utility classes, and CSS Modules.
