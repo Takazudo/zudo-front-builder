@@ -1,6 +1,6 @@
 ---
 title: Data
-description: Three options for sourcing structured data in zfb — content collections, data collections, and plain TS modules.
+description: Three options for sourcing structured data in zfb — content collections, frontmatter-only entries, and plain TS modules.
 sidebar_position: 3
 category: Concepts
 ---
@@ -13,9 +13,19 @@ When the data is **prose** — blog posts, docs articles, recipes — use a cont
 
 This is the right choice whenever the body of each entry is meant to be read.
 
-## 2. Data collections
+## 2. Structured records via frontmatter-only entries
 
-When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — use a data collection: a directory of JSON / YAML / TOML files declared in `zfb.config.ts`. The same `[{ name, path }]` shape that content collections use (see [Content Collections](/concepts/content-collections)) accepts data directories without ceremony:
+When the data is **structured** — a list of products, a directory of team members, a set of pricing tiers — you can use a content collection whose entries carry all their data in frontmatter with an empty body. The collection walker accepts `.md` and `.mdx` files; a file with just a frontmatter block and no body is perfectly valid:
+
+```md
+---
+name: "Widget Pro"
+price: 49
+featured: true
+---
+```
+
+Declare the directory in `zfb.config.ts` with an optional `schema` for per-field validation (see [`defineConfig`](/api/define-config)):
 
 ```ts
 export default {
@@ -23,12 +33,21 @@ export default {
     {
       name: "products",
       path: "data/products",
+      schema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          price: { type: "number" },
+          featured: { type: "boolean" },
+        },
+        required: ["name", "price"],
+      },
     },
   ],
 };
 ```
 
-Each file becomes one entry. You can supply an optional `schema` field with per-field validators (see [`defineConfig`](/api/define-config) for the full shape). You load data entries the same way as content entries:
+Load entries the same way as content entries — `entry.data` holds the validated frontmatter; `entry.Content` renders the (empty) body and can be ignored:
 
 ```tsx
 import { getCollection } from "zfb/content";
@@ -36,7 +55,17 @@ import { getCollection } from "zfb/content";
 const products = getCollection("products");
 ```
 
-A data collection earns its keep when you want **per-entry validation, slug derivation, and the same loading API as your prose content** — without the Markdown-rendering step.
+This approach earns its keep when you want **per-entry schema validation, slug derivation, and the same `getCollection` API as your prose content** — without requiring a Markdown body.
+
+<Note title="JSON / YAML / TOML data files not yet supported">
+
+The collection walker currently accepts only `.md`, `.mdx`, and `.tsx`
+files. JSON, YAML, and TOML data files are silently skipped (zero
+entries returned). For raw structured data without a Markdown wrapper,
+use a plain TS module (option 3 below) until data-file collection
+support ships.
+
+</Note>
 
 ## 3. Plain TS modules under `data/`
 
@@ -64,7 +93,7 @@ There is no schema, no slug, and no per-entry overhead. Use this when the "colle
 A useful rule of thumb:
 
 - The data is **content meant to be read** → content collection.
-- The data is **structured records that share a shape** → data collection.
+- The data is **structured records that share a shape and benefit from per-entry validation** → frontmatter-only `.md` entries in a collection.
 - The data is **a handful of constants or a helper** → TS module under `data/`.
 
 You can mix all three in the same project without conflict.

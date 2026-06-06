@@ -54,7 +54,7 @@ collection:
 
 ```tsx
 // pages/blog/[slug].tsx
-import { getCollection, getEntry } from "zfb/content";
+import { getCollection } from "zfb/content";
 
 export const frontmatter = { title: "Blog post" };
 
@@ -67,7 +67,7 @@ export function paths() {
 }
 
 export default function BlogPost({ params, props }) {
-  const post = getEntry("blog", params.slug);
+  const post = getCollection("blog").find((e) => e.slug === params.slug);
   if (!post) return <p>Not found.</p>;
   return (
     <article>
@@ -80,7 +80,7 @@ export default function BlogPost({ params, props }) {
 
 A few things worth noting:
 
-- `getCollection` and `getEntry` are synchronous — the full content
+- `getCollection` is synchronous — the full content
   snapshot is pre-built in Rust before any TSX runs. `paths()` doesn't
   need `async`, and neither does the page component.
 - `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
@@ -96,7 +96,7 @@ parameter arrives as `string[]`:
 
 ```tsx
 // pages/docs/[...slug].tsx
-import { getCollection, getEntry } from "zfb/content";
+import { getCollection } from "zfb/content";
 
 export const frontmatter = { title: "Docs" };
 
@@ -110,7 +110,7 @@ export function paths() {
 
 export default function DocsPage({ params }) {
   const slugPath = params.slug.join("/");
-  const entry = getEntry("docs", slugPath);
+  const entry = getCollection("docs").find((e) => e.slug === slugPath);
   if (!entry) return <p>Not found.</p>;
   return <entry.Content />;
 }
@@ -152,12 +152,16 @@ this when it builds the route table — see
   on. Keep it pure-data and deterministic — the router calls it
   during route enumeration, well before render.
 - Two routes that resolve to the same template raise
-  `RouterError::AmbiguousRoute` at build time. The router never
-  silently picks a winner.
+  `RouterError::AmbiguousRoute` at build time. The router also raises
+  `RouterError::AmbiguousShape` when two routes differ only in
+  parameter names but match the same URLs (e.g. `docs/[a].tsx` vs
+  `docs/[b].tsx`), and `RouterError::OptionalCatchallConflict` when an
+  optional catchall overlaps another route at the same position. The
+  router never silently picks a winner.
 
 ## See also
 
 - [Routing](/concepts/routing) — static-route fundamentals.
 - [Content Collections](/concepts/content-collections) — the data
   source most `paths()` calls draw from; also documents the synchronous
-  `getCollection` / `getEntry` API.
+  `getCollection` API.

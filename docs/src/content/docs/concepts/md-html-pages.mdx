@@ -14,10 +14,12 @@ shared by both.
 
 </Info>
 
-zfb accepts three page source extensions: `.tsx`, `.md`, and `.html`.
-All three follow the same file-system routing conventions under
+zfb accepts four page source extensions: `.tsx`, `.mdx`, `.md`, and `.html`.
+All four follow the same file-system routing conventions under
 `pages/` — `pages/about.md` and `pages/about.tsx` both produce the
 route `/about`. What differs is the render path each extension takes.
+`.mdx` shares the MDX pipeline with `.md` and accepts the same frontmatter
+keys (see below).
 
 ## `.md` pages
 
@@ -133,11 +135,13 @@ mode.
 ## Shared: SSG-only constraint
 
 Both `.md` and `.html` pages are build-time (SSG) only. Dynamic routes
-using `[param]` or `[...param]` brackets are valid for `.md` and
-`.html` file names — the router parses them the same way as `.tsx` —
-but the `paths()` export mechanism used to enumerate dynamic URLs at
-build time is a `.tsx`-only feature in v1. Static (non-parameterised)
-`.md` and `.html` page paths work correctly.
+using `[param]` or `[...param]` brackets in `.md` or `.html` file names
+are **not supported** — the scanner skips them with a warning and
+produces no output pages. There is no `paths()` story for these
+extensions in v1 (`.tsx` cannot be `export`-ed from a plain Markdown or
+HTML file). If you need dynamic routes, author them as `.tsx` pages
+instead. Static (non-parameterised) `.md` and `.html` page paths work
+correctly.
 
 ## Choosing the right extension
 
