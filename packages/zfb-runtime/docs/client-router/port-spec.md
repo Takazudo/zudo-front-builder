@@ -65,6 +65,17 @@ Astro's source lives under `src/transitions/` because Astro uses "transitions" a
 
 **Top-level file naming:** `client-router.tsx` for the Preact component (singular .tsx file, JSX-bearing) sits beside the `client-router/` directory. If TypeScript's `moduleResolution` policy makes the dir-and-file pairing fragile, we may instead put the component at `client-router/component.tsx` and re-export from `client-router/index.ts`. W3A picks one — either is acceptable, no further design judgment needed; they are equivalent under "replicate, do not redesign" because Astro itself has the component file (`ClientRouter.astro`) outside the runtime sources. Default: `client-router.tsx` at top level.
 
+> **Post-spec note (2026-06):** The shipped file is `client-router.ts` (plain
+> `.ts`, not `.tsx`). JSX syntax is avoided; head nodes are minted by calling
+> `jsx` from `react/jsx-runtime` directly so the file needs no `tsconfig` JSX
+> pragma change and the engine's alias-rewrite (`react/jsx-runtime` →
+> `preact/jsx-runtime` in Preact mode) handles framework selection.
+> Additionally, the spec's "final decision for W3A" describing a separate
+> `client-router/init.ts` module was not the shipped approach — instead
+> `init()` lives in `client-router/router.ts` and is called as a side effect
+> on first import of `client-router.ts` (guarded by the `initialized` flag in
+> `router.ts`). There is no `client-router/init.ts` file.
+
 ---
 
 ## 2. Public API surface (decision #2)
@@ -97,6 +108,13 @@ export { swapFunctions, swap } from "./client-router/swap-functions.ts";
 // Types
 export type { Direction, Fallback, NavigationTypeString, Options } from "./client-router/types.ts";
 ```
+
+> **Post-spec note (2026-06):** The shipped `index.ts` exports a sixth event
+> constant not listed in this spec: `TRANSITION_NAVIGATION_ABORTED =
+> "zfb:navigation-aborted"` (see `client-router/events.ts:10` and
+> `index.ts:54`). The constant is exported alongside the five constants above.
+> Additionally, the spec code block above references `"./client-router.tsx"`;
+> the shipped file is `"./client-router.js"` (compiled from `client-router.ts`).
 
 The existing `ViewTransitions` typed no-op stays exported as a deprecated alias. Note: it is NOT replaced by `ClientRouter`; the names are separate and the deprecation comment on `ViewTransitions` already explains the migration path (CSS `@view-transition` at-rule), so consumers can keep it mounted while they switch.
 
@@ -211,6 +229,14 @@ URL: https://github.com/zudolab/zudo-doc/issues/1527
 The new `<ClientRouter />` script does NOT include the Astro `init({ prefetchAll: true })` call. The Vite plugin's `__PREFETCH_DISABLED__` substitution is also out of scope (decision #9 expands).
 
 If user wants prefetch in v1: raise during W2A confirm gate, W3C absorbs.
+
+> **Post-spec note (2026-06):** Prefetch shipped post-spec via issue #276.
+> `packages/zfb-runtime/src/client-router/prefetch.ts` was added, exporting
+> `prefetch` and `init` (re-exported as `prefetchInit` from `index.ts`).
+> `<ClientRouter prefetchAll>` triggers `prefetchInit({ prefetchAll: true })`
+> via a module-level guard in `client-router.ts`. The `./client-router` subpath
+> also exposes the prefetch surface. The `__PREFETCH_DISABLED__` Vite gate
+> was not needed — the guard is a runtime boolean check.
 
 ---
 
@@ -443,6 +469,12 @@ Lines: 103. Self-contained. No external deps.
 
 **Deprecation comments:** Astro marks the constants as `@deprecated This will be removed in Astro 7`. zfb does NOT carry the deprecation note — these are NEW exports for zfb consumers, with no v0 → v1 deprecation path. Drop the `/** @deprecated */` JSDoc comments. **Named technical cause:** the deprecation is Astro-internal lifecycle; replicating it would mislead zfb consumers into thinking the API is unstable from day one.
 
+> **Post-spec note (2026-06):** A sixth constant was added in the shipped
+> implementation that is absent from this spec's mapping table:
+> `TRANSITION_NAVIGATION_ABORTED = "zfb:navigation-aborted"` (see
+> `packages/zfb-runtime/src/client-router/events.ts:10` and `index.ts:54`).
+> It is exported from both `events.ts` and the top-level `index.ts`.
+
 ### 13.4 `swap-functions.ts`
 
 | Astro symbol | zfb symbol | Mapping |
@@ -574,6 +606,16 @@ The inline script's body is a mechanical port of `ClientRouter.astro`'s `<script
 
 **Named technical cause for this structural deviation:** Astro processes the SFC `<script>` block through Vite's bundler at build time. Preact JSX inside zfb does not have an equivalent bundler-passed inline-script transform; emitting raw `<script dangerouslySetInnerHTML>` would bypass module resolution entirely. Splitting the JS interceptors into a separately-imported `init.ts` is the literal mechanical equivalent in a non-SFC framework. Astro's authors would do the same if they were not writing inside an Astro component.
 
+> **Post-spec note (2026-06):** The shipped implementation differs from the
+> spec's "Final decision for W3A" in two ways: (1) The file is `client-router.ts`
+> (`.ts`, not `.tsx`) — JSX syntax is not used; `jsx` from `react/jsx-runtime`
+> is called directly so no tsconfig JSX pragma is needed and the engine's
+> `react/jsx-runtime` → `preact/jsx-runtime` alias handles framework selection.
+> (2) There is no `client-router/init.ts` — the click/submit intercepts live in
+> `client-router/router.ts` and are activated by calling `init()` there.
+> `client-router.ts` calls `init()` as a side effect on first import (guarded by
+> the `initialized` flag in `router.ts`). No inline `<script>` tag is emitted.
+
 ### 13.7 `vite-plugin-transitions.ts` — SKIP
 
 Out of scope for v1 (decision #9). No port.
@@ -601,6 +643,10 @@ If user wants `slide()`/`fade()` helpers in v1: trivial port (~80 lines), can be
 | Persisted-island props-refresh path | #12.3.1 hybrid case | inline TODO; W3D leaves stub |
 | `/** @deprecated */` JSDoc on event constants | #13.3 | (intentional drop) |
 | `internalFetchHeaders` adapter integration | #13.5 | inline TODO; consumed when adapter exposes it |
+
+> **Post-spec note (2026-06):** The first two rows (prefetch module, Vite plugin
+> prefetch gate) shipped post-spec via issue #276 and are no longer deferred.
+> See the §7 post-spec note above for details.
 
 ---
 

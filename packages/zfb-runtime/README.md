@@ -39,7 +39,9 @@ user pages/ + content/ + layouts/ + components/
 
 This package supplies the page-router factory the Worker entry calls. It
 is built on [Hono][hono] but does not leak Hono types through the public
-surface — consumers only see the four types in `src/index.ts`.
+surface — consumers import from `src/index.ts`, which re-exports the
+page-router types, the client-router and prefetch API, lifecycle event
+constants, and plugin types, none of which require Hono.
 
 [hono]: https://hono.dev/
 
@@ -62,6 +64,35 @@ import type {
   ContentSnapshot,
   EntrySnapshot,
 } from "@takazudo/zfb-runtime";
+```
+
+### Client-router / view-transitions / prefetch
+
+```ts
+import {
+  ClientRouter,               // <ClientRouter /> Preact component — mounts view-transition intercepts
+  navigate,                   // imperative navigation
+  supportsViewTransitions,    // browser capability check
+  transitionEnabledOnThisPage, // reads zfb-view-transitions-enabled meta
+  prefetch,                   // prefetch a URL on demand
+  prefetchInit,               // bootstrap prefetch strategy (e.g. { prefetchAll: true })
+  TRANSITION_BEFORE_PREPARATION,
+  TRANSITION_AFTER_PREPARATION,
+  TRANSITION_BEFORE_SWAP,
+  TRANSITION_AFTER_SWAP,
+  TRANSITION_PAGE_LOAD,
+  TRANSITION_NAVIGATION_ABORTED,
+  swapFunctions,              // swap step overrides for advanced consumers
+  swap,
+} from "@takazudo/zfb-runtime";
+```
+
+The `./snapshot` and `./client-router` subpath exports are also available for
+consumers that only need part of the surface:
+
+```ts
+import type { ContentSnapshot } from "@takazudo/zfb-runtime/snapshot";
+import { ClientRouter } from "@takazudo/zfb-runtime/client-router";
 ```
 
 ### `createPageRouter(options) → PageRouter`
@@ -108,8 +139,10 @@ The shape every page module must export:
 interface PageModule {
   readonly default: (props: Record<string, unknown>) => unknown;
   readonly prerender?: boolean;          // literal `false` excludes from SSG
-  readonly content_type?: string;        // overrides Content-Type (e.g. "application/xml")
+  readonly contentType?: string;         // overrides Content-Type (e.g. "application/xml")
   readonly headings?: readonly PageHeading[]; // MDX-emitted TOC data
+  readonly paths?: () => unknown[] | Promise<unknown[]>; // enumerates concrete URLs for dynamic routes (SSG)
+  readonly getStaticProps?: () => Promise<{ props: Record<string, unknown> }>; // fetches props at build/render time; result spread into default()
 }
 
 interface PageHeading {
@@ -126,11 +159,8 @@ Default `Content-Type` is `text/html; charset=utf-8`.
 ```ts
 interface FrameworkAdapter {
   renderToString: (vnode: unknown) => string;
-  hydrate?: (...args: unknown[]) => unknown;  // reserved for follow-up SSR-with-hydration
 }
 ```
-
-`hydrate` is reserved — the page router does not call it today.
 
 ### `ContentSnapshot` / `EntrySnapshot`
 
@@ -200,7 +230,7 @@ enumerated route and writing the response body to `dist/{route}/index.html`.
 - The returned function is **always** `(request: Request) => Promise<Response>`,
   even if the underlying Hono path returns synchronously.
 - `Content-Type` defaults to `text/html; charset=utf-8`. Page modules
-  with a `content_type` field override it.
+  with a `contentType` field override it.
 - Errors in page evaluation surface as 500 responses with a diagnostic
   text body; the host's source-map plumbing projects those back to the
   user's TSX line.
