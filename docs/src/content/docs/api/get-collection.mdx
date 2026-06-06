@@ -10,7 +10,7 @@ sidebar_position: 2
 getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[]
 ```
 
-Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. The function is synchronous — it returns a plain array, not a Promise. Schema validation runs against each entry as it is read, so by the time the array reaches your component, frontmatter is already typed and verified.
+Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. The function is synchronous — it returns a plain array, not a Promise. The TypeScript generic `T` is a type hint only; runtime schema validation happens at build time and via `zfb check` in the Rust pipeline, not inside the `getCollection` call itself.
 
 ## CollectionEntry shape
 
