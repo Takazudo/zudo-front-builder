@@ -754,6 +754,35 @@ export type MarkdownFeaturesConfig = {
    * `HeadingMarkerTocFeature` enum.
    */
   headingMarkerToc?: HeadingMarkerTocFeature;
+
+  /**
+   * Heading-ID strategy for the always-on `HeadingLinks` plugin.
+   * Absent → `"flat"` (the long-standing github-slugger scheme).
+   * `{ strategy: "hierarchical" }` opts into ancestor-prefixed anchor
+   * IDs (`## Foo` / `### Moo` / `#### Mew` → `foo`, `foo-moo`,
+   * `foo-moo-mew`) — see {@link HeadingIdsConfig}.
+   */
+  headingIds?: HeadingIdsConfig;
+};
+
+/**
+ * Options for the `headingIds` entry in `markdown.features`.
+ *
+ * Configures the always-on `HeadingLinks` plugin rather than toggling an
+ * opt-in feature. Note: switching to `"hierarchical"` is anchor-breaking
+ * for existing deep links to nested headings.
+ *
+ * Mirrors `HeadingIdsConfig` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type HeadingIdsConfig = {
+  /**
+   * `"flat"` (default): github-slugger slugs with a per-document dedup
+   * counter shared across h2–h6 (`overview`, `overview-1`, …).
+   * `"hierarchical"`: each heading's slug is prefixed with its ancestor
+   * chain and deduped on the full path — anchors become reconstructible
+   * from the heading outline.
+   */
+  strategy?: "flat" | "hierarchical";
 };
 
 /**
