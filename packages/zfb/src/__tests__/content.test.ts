@@ -20,6 +20,7 @@ import {
   defaultComponents,
   getCollection,
   getContentSnapshot,
+  getEntry,
   mergeMdxComponents,
   parseFrontmatter,
   setContentSnapshot,
@@ -840,6 +841,71 @@ describe("setContentSnapshot bridge", () => {
     expect(node?.props["data-zfb-content-fallback"]).toBe("");
     expect(node?.props.children as string).toContain("[zfb fallback render]");
     expect(node?.props.children as string).toContain("ignored when bridge active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `getEntry` — thin wrapper over `getCollection(...).find(...)`.
+//
+// Resolves via the snapshot path (no fs I/O) using `setContentSnapshot`.
+// Three scenarios per acceptance criterion 3:
+//   1. matching slug → returns the entry;
+//   2. non-existent slug → undefined;
+//   3. non-existent collection → undefined.
+// ---------------------------------------------------------------------------
+
+describe("getEntry", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  it("returns the matching entry for an existing slug", () => {
+    setContentSnapshot({
+      collections: {
+        blog: [
+          {
+            slug: "hello-zfb",
+            frontmatter: { title: "Hello zfb" },
+            body: "hello body",
+            module_specifier: "mdx://blog/hello-zfb",
+            rel_path: "hello-zfb.md",
+          },
+          {
+            slug: "another-post",
+            frontmatter: { title: "Another" },
+            body: "another body",
+            module_specifier: "mdx://blog/another-post",
+            rel_path: "another-post.md",
+          },
+        ],
+      },
+    });
+    const entry = getEntry<{ title: string }>("blog", "hello-zfb");
+    expect(entry?.slug).toBe("hello-zfb");
+    expect(entry?.data.title).toBe("Hello zfb");
+    expect(entry?.body).toBe("hello body");
+  });
+
+  it("returns undefined for a slug that does not exist in the collection", () => {
+    setContentSnapshot({
+      collections: {
+        blog: [
+          {
+            slug: "exists",
+            frontmatter: { title: "Exists" },
+            body: "",
+            module_specifier: "mdx://blog/exists",
+            rel_path: "exists.md",
+          },
+        ],
+      },
+    });
+    expect(getEntry("blog", "no-such-slug")).toBeUndefined();
+  });
+
+  it("returns undefined for a collection name absent from the snapshot", () => {
+    setContentSnapshot({ collections: {} });
+    expect(getEntry("no-such-collection", "any-slug")).toBeUndefined();
   });
 });
 

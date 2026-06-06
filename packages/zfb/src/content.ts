@@ -557,6 +557,32 @@ export function getCollection<T = Record<string, unknown>>(name: string): Collec
 }
 
 /**
+ * Look up a single entry in a content collection by slug.
+ *
+ * Thin wrapper over [`getCollection`]: inherits both resolution paths
+ * (snapshot via `globalThis.__zfb.contentSnapshot` and the `node:fs`
+ * fallback) for free. Returns `undefined` when either the collection does
+ * not exist or no entry matches `slug`.
+ *
+ * **Runtime vs. generated types divergence.** The generated `types.d.ts`
+ * emits a keyed overload (`K extends keyof ZfbCollections`) that ties the
+ * return type to the collection's declared schema. This runtime form is
+ * intentionally structural — it does not reference `ZfbCollections` and
+ * does not attempt to reconcile with the keyed shape. (#857)
+ *
+ * @example
+ *   const post = getEntry<{ title: string }>("blog", "hello-zfb");
+ *   if (!post) return null;
+ *   return <post.Content />;
+ */
+export function getEntry<T = Record<string, unknown>>(
+  name: string,
+  slug: string,
+): CollectionEntry<T> | undefined {
+  return getCollection<T>(name).find((e) => e.slug === slug);
+}
+
+/**
  * Construct a [`CollectionEntry`] from a [`SnapshotEntry`]. The snapshot
  * carries `frontmatter` as a possibly-`null` JSON value (matches the
  * Rust contract for entries with no frontmatter); we normalise `null` /
