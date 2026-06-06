@@ -1,19 +1,316 @@
 ---
 title: カスタムディレクティブ
-description: MDX ディレクティブレジストリで Rust を書かずにディレクティブを追加する
+description: コンテナ・リーフ・テキストの独自 MDX ディレクティブを登録し、Rust を一切書かずに JSX コンポーネントへマッピングする。
 sidebar_position: 2.7
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+<Info title="このページで扱う内容">
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Custom Directives](/concepts/custom-directives)
+MDX ディレクティブ（コンテナ・リーフ・テキスト）を登録し、執筆者が
+`:::callout`、`::youtube{id="…"}`、`:badge[new]` のように書いたものを
+JSX コンポーネントへ展開する方法を解説します。v1 の属性制約や、
+未知のディレクティブをエンジンがどう診断として報告するかも含みます。
 
 </Info>
 
-## 概要
+zfb の MDX パイプラインは、mdast ビジターのひとつとして
+**ディレクティブレジストリ** を実行します。レジストリはエンジンの
+プリミティブであり、フレームワーク（あるいは自分のプロジェクト）が
+その中身を populate します。ディレクティブ名を登録し、それを JSX
+コンポーネントに結び付けると、パイプラインがマッチした段落を
+`<YourComponent>` JSX ノードへ書き換えます。
 
-MDX のディレクティブレジストリを使い、Rust コードを書かずに独自のディレクティブを追加する方法について解説します。
+その形は
+[CommonMark Directives proposal](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444)
+に従います。コンテナ、リーフ、テキストの 3 つです。レジストリが唯一の
+仕組みであり、特別扱いされたり事前登録されたりするディレクティブ名は
+ありません。アドモニション風のディレクティブも含め、すべてをユーザーランドが
+登録します（[Admonitions レシピ](/recipes/admonitions) を参照）。
 
-英語の最新ドキュメントは [Custom Directives](/concepts/custom-directives) を参照してください。
+Rust を書かずに設定からディレクティブを登録したいだけであれば、下記の
+Rust API の代わりに、`zfb.config.ts` のオプトイン機能
+[`directives`](/markdown-features/directives) を使ってください。
+
+## 3 つのディレクティブの形
+
+### コンテナ — `:::name … :::`
+
+ブロックレベル。フェンスの間にある本文がその JSX 要素の子要素になります。
+コールアウトやセクションなど、複数段落の本文を包むものに使います。
+
+```md
+:::callout{tone="info"}
+
+Body content runs through the markdown pipeline normally. **Inline
+markdown** works. So do nested elements.
+
+:::
+```
+
+次のようにコンパイルされます。
+
+```tsx
+<Callout tone="info">
+  <p>Body content runs through the markdown pipeline normally. <strong>Inline
+  markdown</strong> works. So do nested elements.</p>
+</Callout>
+```
+
+### リーフ — `::name[label]{attrs}`
+
+ブロックレベルの 1 行。フェンスで囲まれた本文はありません。属性が
+データを担う、自己完結した埋め込みに使います。
+
+```md
+::youtube[Intro to zfb]{id="abc123" start="42"}
+```
+
+次のようにコンパイルされます。
+
+```tsx
+<Youtube title="Intro to zfb" id="abc123" start="42" />
+```
+
+（`[label]` が `title="…"` 属性になるか子要素になるかは、登録時に指定する
+ディレクティブの `title_from_label` フラグ次第です。）
+
+### テキスト — `:name[label]{attrs}`
+
+段落内のインライン。バッジ、インラインアイコンなど、文章に混ぜ込みたい
+ものに使います。
+
+```md
+The new feature is :badge[new]{tone="green"} now in beta.
+```
+
+次のようにコンパイルされます。
+
+```tsx
+<p>
+  The new feature is <Badge tone="green">new</Badge> now in beta.
+</p>
+```
+
+## ディレクティブの登録（Rust 側）
+
+フレームワークは Rust 側で `DirectiveRegistry` を populate し、それを
+パイプラインへ挿入することでディレクティブを登録します。各ディレクティブは
+`(name, kind, component_name)` のトリプルに `title_from_label` フラグを
+加えたものです。
+
+```rust
+use zfb_content::plugins::directives::{
+    DirectiveDef, DirectiveKind, DirectiveRegistry,
+};
+use zfb_content::pipeline::Pipeline;
+
+let mut registry = DirectiveRegistry::new();
+
+// Container: :::callout … :::
+registry.register(DirectiveDef::container("callout", "Callout"));
+
+// Leaf: ::youtube[label]{id="…"}
+registry.register(DirectiveDef::leaf("youtube", "Youtube"));
+
+// Text: :badge[new]
+registry.register(DirectiveDef::text("badge", "Badge"));
+
+let mut pipeline = Pipeline::with_defaults();
+pipeline.add_mdast_visitor(registry.into_visitor());
+```
+
+登録後、コンテンツの執筆者はソース側の構文（markdown/MDX のブロック）を
+使い、パイプラインが適切な JSX 要素を出力します。JSX コンポーネントの
+識別子（`Callout`、`Youtube`、`Badge`）がページモジュールのスコープに
+あることを保証するのはあなたの責任です。これは通常の MDX コンポーネントの
+配線にすぎません。
+
+<Note>
+
+`Pipeline::with_defaults()` が出発点です。標準のプラグインセット
+（syntect ハイライト、見出しリンクなど）を、空の `DirectiveRegistry` と
+ともに配線します。クリーンな状態のレジストリが欲しい場合は、
+`DirectiveRegistry::new()` から明示的に始めることもできます。どちらの
+場合も、事前登録されたディレクティブ名はありません。
+
+</Note>
+
+## 属性のエスケープ（v1）
+
+すべてのディレクティブ属性は **JSX の文字列リテラル属性** として出力されます。
+執筆者は `{tone="green"}` や `{data-foo="bar"}` と書け、エミッターはそれを
+`tone="green"` / `data-foo="bar"` としてそのままレンダリングします。
+
+<Warning title="v1 では raw 式の属性は使えない">
+
+`{count={5}}` や `{when={isLive}}` の構文は v1 では **サポートされていません**。
+すべての属性値は文字列リテラルとして通過します。JSX コンポーネントが
+文字列型の prop として受け取れるものが、執筆者が渡せるものです。
+コンポーネントに非文字列の prop が必要なら、文字列形式で受け取って
+自分でパースするか、別の仕組み（コンテキスト、レイアウトの prop、
+frontmatter フィールド）でデータを公開してください。
+
+</Warning>
+
+下流の JSX エミッター（`zfb-content::mdx_jsx_emit`）は、属性値内の `"`、
+`&`、`<`、`>`、および行終端子をエスケープするため、執筆者がそれらを
+通じて誤ってマークアップを注入してしまうことはありません。
+
+## 未知のディレクティブ: エラーではなく診断
+
+レジストリが認識できないディレクティブ名を見つけると、ビルドを失敗させる
+代わりに `DirectiveDiagnostic` を出力します。元の段落はそのまま残ります。
+オーケストレーターは各パイプライン実行のあとに診断を drain し、警告として
+表面化させます。
+
+```rust
+pub struct DirectiveDiagnostic {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+```
+
+パイプラインは、コンパイル済みモジュールとあわせて
+`Vec<DirectiveDiagnostic>` のシンクを返します。典型的なオーケストレーターは、
+ファイル間でそれらを drain して出力します。
+
+```rust
+let diagnostics = registry.take_diagnostics();
+for d in diagnostics {
+    eprintln!(
+        "warning: {} (at {}:{})",
+        d.message,
+        d.line.unwrap_or(0),
+        d.column.unwrap_or(0),
+    );
+}
+```
+
+デフォルトで非致命的にしている理由は、markdown 記事のタイプミスが
+1,000 ページのビルドを壊すべきではないからです。診断は出力をブロックせずに
+問題を表面化させます。
+
+## 型付き属性スキーマ
+
+`AttrSchema` と `AttrType` を使って、ディレクティブが受け付ける属性を
+宣言します。レジストリは展開時に生の MDX 属性をスキーマに対して検証し、
+違反があれば `DirectiveDiagnostic` を出力します。これにより、不正なデータが
+JSX コンポーネントへ黙って渡される前に、コンテンツのエラーを早期に
+表面化できます。
+
+```rust
+use zfb_content::plugins::directives::{
+    AttrSchema, AttrType, DirectiveDef, DirectiveRegistry,
+};
+
+let mut registry = DirectiveRegistry::new();
+
+registry.register(
+    DirectiveDef::container("callout", "Callout")
+        .with_attrs(vec![
+            // Required enum — must be one of the declared values.
+            AttrSchema {
+                name: "tone".to_string(),
+                ty: AttrType::Enum(vec![
+                    "info".to_string(),
+                    "warn".to_string(),
+                    "tip".to_string(),
+                ]),
+                default: None,
+                required: true,
+            },
+            // Optional string with a default.
+            AttrSchema {
+                name: "title".to_string(),
+                ty: AttrType::String,
+                default: Some("Note".to_string()),
+                required: false,
+            },
+            // Optional boolean, defaults false.
+            AttrSchema {
+                name: "compact".to_string(),
+                ty: AttrType::Boolean,
+                default: Some("false".to_string()),
+                required: false,
+            },
+            // Optional number.
+            AttrSchema {
+                name: "max-width".to_string(),
+                ty: AttrType::Number,
+                default: None,
+                required: false,
+            },
+        ]),
+);
+```
+
+`AttrType` の 4 つのバリアント:
+
+| バリアント | 入力 | 検証のされ方 |
+| --- | --- | --- |
+| `String` | 任意の値 | そのまま通過 |
+| `Enum(variants)` | 宣言された文字列のいずれかと一致する必要がある（大文字小文字を区別） | `ValidatedAttrValue::Enum` |
+| `Boolean` | `"true"`、`"false"`、または空文字列（属性名のみ = `true`） | `ValidatedAttrValue::Boolean` — JSX には `"true"` / `"false"` を出力 |
+| `Number` | `f64` としてパース可能な任意の文字列 | `ValidatedAttrValue::Number`（元の文字列を保持） |
+
+### 検証ルール
+
+- **必須属性の欠落** → 診断を出力。展開は生の属性のままにフォールバックする。
+- **Enum の不一致**（値が宣言されたバリアントに含まれない）→ 診断。
+- **型変換の失敗**（`Number` 属性に対する `x="abc"`）→ 診断。
+- **デフォルト値** — 不在のオプション属性は、JSX を構築する前に
+  その `default` が適用される。
+
+### 未知の属性のポリシー: **警告のみ**
+
+MDX ソースには存在するがスキーマで宣言されていない属性は、**警告** の
+診断を出力します。これらはエラーではなく、JSX 要素へそのまま通過します。
+これにより既存の寛容さが保たれ（執筆者は宣言せずに `data-*` や `aria-*`
+のような HTML 属性を渡せます）、スキーマエントリの欠落がビルドを壊すことは
+決してありません。
+
+```
+warning: directive `callout`: unknown attribute `data-testid` (warning only — attr passes through unchanged)
+```
+
+厳格モードが欲しい場合は、すべての属性を登録し、オーケストレーター側で
+あらゆる診断をビルドエラーとして扱ってください。このポリシーは設計上
+「エラーではなく警告」です。エンジンは、認識できない属性を理由に出力を
+ブロックすることは決してありません。
+
+### 後方互換性
+
+`.with_attrs(…)` を付けずに登録したディレクティブ（つまり `container`、
+`leaf`、`text` のコンストラクタをチェーンせずに使ったもの）は、検証を
+完全にスキップします。既存の呼び出し箇所はすべて、これまでどおり
+コンパイルされ、同一に振る舞います。
+
+## エンジンが行わないこと
+
+- **属性値を JSX コンポーネントの prop の型に対して検証すること。**
+  エンジンはあなたが宣言した `AttrSchema`（型と enum の値）に対して
+  検証します。JSX コンポーネント側の TypeScript の型付けは、依然として
+  あなたの責任です。
+- **デフォルトのディレクティブセットを提供すること。** 組み込みの
+  `:::callout`、`:::card`、`:::note`、`::youtube` などはありません。
+  どのフレームワークも、[`directives`](/markdown-features/directives)
+  の設定機能か Rust API を通じて、自分の語彙を選びます。
+- **JSX コンポーネントを自動インポートすること。** コンポーネントを
+  ページモジュールのスコープに置くのはあなたの責任です（グローバルな
+  コンポーネントマップ、MDX レイアウト、明示的なインポート）。
+  `defaultComponents` のレシピについては
+  [MDX Components](/concepts/mdx-components) を参照してください。
+
+## 関連項目
+
+- [`directives` 機能](/markdown-features/directives) — Rust を書かずに `zfb.config.ts` からディレクティブ名を登録する。
+- [レシピ: Admonitions](/recipes/admonitions) — `directives` 機能を使って `:::note`、`:::tip` などを登録する実践例。
+- [MDX Components](/concepts/mdx-components) — コンパイル済みの MDX
+  モジュールが要素レベルのオーバーライドをどう参照するか。
+- [Engine vs Framework](/concepts/engine-vs-framework) — なぜ
+  レジストリがエンジン形であり、ディレクティブセットが
+  フレームワーク形なのか。
+- `crates/zfb-content/src/plugins/directives.rs` — 各形のパーサー
+  フィクスチャを含む、レジストリの実装。
