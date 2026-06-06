@@ -212,12 +212,6 @@ export default defineConfig({
 
 The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
 
-<Note title="SSR route over-inclusion gap">
-
-The filter `r.extension === "html"` above will over-include server-rendered (SSR) routes — routes where `prerender` is `false` — once SSR ships. Today `ctx.routes[].prerender` does not exist on `ZfbRouteEntry`. When it does, the correct filter will be `r.extension === "html" && r.prerender !== false`. Do not use that expression yet; the field is not there. Tracked in [zudo-front-builder#347](https://github.com/Takazudo/zudo-front-builder/issues/347).
-
-</Note>
-
 ## `devMiddleware(ctx)`
 
 Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, handler)`; handlers return `{ status, headers, body }` (or `undefined` to fall through to zfb's built-in dev routes).

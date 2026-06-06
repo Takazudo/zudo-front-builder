@@ -105,7 +105,7 @@ use zfb_content::plugins::directives::{
 };
 use zfb_content::pipeline::Pipeline;
 
-let mut registry = DirectiveRegistry::with_defaults();
+let mut registry = DirectiveRegistry::new();
 
 // Container: :::callout … :::
 registry.register(DirectiveDef::container("callout", "Callout"));

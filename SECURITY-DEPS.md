@@ -8,9 +8,9 @@ Add deps only when a Node built-in cannot do the job, document the reason here, 
 
 ## Intended-public packages and their runtime deps
 
-The three packages intended for publication are `@takazudo/zfb`, `@takazudo/zfb-runtime`,
-and `@takazudo/zfb-adapter-cloudflare`. Their `dependencies` fields (NOT `devDependencies`)
-are audited here.
+The four packages intended for publication are `@takazudo/zfb`, `@takazudo/zfb-runtime`,
+`@takazudo/zfb-adapter-cloudflare`, and `create-zfb`. Their `dependencies` fields (NOT
+`devDependencies`) are audited here.
 
 ### `@takazudo/zfb`
 
@@ -37,6 +37,14 @@ users of the package.
 `node:url`) and one project-internal import (`../src/worker-wrapper.mjs`). No external npm
 package is imported at runtime. The file carries an explicit `// invariant: no runtime npm
 deps — see SECURITY-DEPS.md` comment to make this contractual.
+
+### `create-zfb`
+
+**Runtime deps:**
+
+| Package          | Version range                  | Rationale |
+| ---------------- | ------------------------------ | --------- |
+| `@takazudo/zfb`  | `workspace:0.1.0-next.31`      | Scaffold tool uses the first-party `@takazudo/zfb` package. `@takazudo/zfb` itself has no external runtime deps (see above), so `create-zfb` introduces no third-party transitive runtime surface. |
 
 ## Audit policy
 

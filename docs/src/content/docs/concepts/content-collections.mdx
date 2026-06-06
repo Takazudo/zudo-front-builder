@@ -24,15 +24,15 @@ export default {
 
 The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
 
-You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter at build time. The supported keywords (`type`, `properties`, `items`, `required`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
+You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter when you run `zfb check` (the build itself does not enforce it). The supported keywords (`type`, `properties`, `items`, `required`, `enum`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
 
 ## Loading entries from a page
 
-Pages use `getCollection()` to enumerate every entry, or `getEntry()`
-to look up a single one by slug:
+Pages use `getCollection()` to enumerate every entry, or filter the
+result to look up a single one by slug:
 
 ```tsx
-import { getCollection, getEntry } from "zfb/content";
+import { getCollection } from "zfb/content";
 
 export default function BlogIndex() {
   const posts = getCollection("blog");
@@ -49,20 +49,29 @@ export default function BlogIndex() {
 ```
 
 ```tsx
-import { getEntry } from "zfb/content";
+import { getCollection } from "zfb/content";
 
 export default function FeaturedPost() {
-  const featured = getEntry("blog", "hello-zfb");
+  const featured = getCollection("blog").find((e) => e.slug === "hello-zfb");
   if (!featured) return null;
   return <featured.Content />;
 }
 ```
 
-Both calls are **synchronous**. The entire content snapshot is built
+`getCollection()` is **synchronous**. The entire content snapshot is built
 in Rust before any TSX module runs and embedded on `globalThis.__zfb`,
 so there's no I/O at call time and no `await` to thread through. The
 Rust↔JS bridge contract that backs this surface is stable and versioned
 with the `zfb` package.
+
+<Note title="getEntry is not available at runtime">
+
+`getEntry` appears in the generated `types.d.ts` (so it type-checks),
+but it is not exported from the `zfb/content` runtime module and will
+throw at runtime. Use `getCollection(name).find((e) => e.slug === slug)`
+instead.
+
+</Note>
 
 Each entry has three things you can rely on:
 
@@ -70,8 +79,7 @@ Each entry has three things you can rely on:
 - `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](/concepts/mdx-components) for details and `defaultComponents` recipes.
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
-The function signatures live in [`getCollection`](/api/get-collection)
-and the matching `getEntry`.
+The function signature is documented at [`getCollection`](/api/get-collection).
 
 ## How parsing works
 

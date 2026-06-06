@@ -13,13 +13,13 @@ react without an unnecessary full page reload. For the overall build step order 
 [Build pipeline](/concepts/build-pipeline); for how the dependency graph limits
 rebuilds to affected pages read [Incremental rebuild](/concepts/incremental-rebuild).
 
-This page describes the **SSG / static-HTML dev loop only**. For `prerender = false`
-SSR routes, source edits during a `zfb dev` session do **not** hot-reload — the V8
-SSR bundle is bound to the boot-time JS bundle and is restart-only. The per-tick
-rebuild described below does **not** reload the SSR renderer; it re-renders the
-SSG output that the renderer was bootstrapped with. See
-[No live reload of the SSR bundle](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
-in the SSR guide.
+For `prerender = false` SSR routes: each EDIT tick re-bundles and swaps a fresh V8
+host into the shared renderer mutex (see step 1 below), so SSR requests serve the
+updated code immediately after the tick completes — no restart needed. One
+limitation remains: an SSR-only edit produces no SSG HTML writes, so no `Page` SSE
+event is emitted and the open browser tab does not auto-refresh. Manually reload the
+tab to see the updated SSR output. For context on the dev-side SSR path, see
+[SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false).
 
 </Info>
 
@@ -28,9 +28,10 @@ in the SSR guide.
 The moment you save, the operating system fires a filesystem event on the file's
 path. `crates/zfb-watcher` is watching every relevant directory — `pages/`,
 `components/`, `content/`, `layouts/`, `styles/`, `data/`, `public/`, and the two
-config files `zfb.config.json` and `zfb.config.ts` — via the
-[`notify`](https://crates.io/crates/notify) crate. (See `DEFAULT_WATCH_ROOTS` in
-`crates/zfb/src/commands/dev.rs` for the canonical list.)
+config files `zfb.config.json` and `zfb.config.ts` — plus each configured
+collection's `path` when it lives outside those default roots — via the
+[`notify`](https://crates.io/crates/notify) crate. (See `DEFAULT_WATCH_ROOTS` and
+`derive_watch_roots` in `crates/zfb/src/commands/dev.rs` for the canonical list.)
 
 Editor saves are rarely a single clean event. vim renames a swap file over the
 original; VS Code emits several metadata-then-data events in quick succession; a
@@ -52,15 +53,20 @@ is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag 
 set. If a CSS source changed, `rerun_css` is set. Then the
 `DevAssetPipeline::apply()` method runs, in this order:
 
-1. **Pages re-rendered.** The orchestrator calls the renderer for each page in
-   the dirty set, driving SSG output through the embedded V8 host that was booted
-   when `zfb dev` started. Each rendered `RenderedPage.html` is compared
-   byte-for-byte against the last-known output. If the bytes are identical (a
-   pure refactor that produced no semantic HTML change), no file is written and
-   no reload signal is sent for that page. The V8 host itself is **not** reloaded
-   per tick — `BuildContext::reload_renderer` is `None` in dev today (see
-   `crates/zfb/src/commands/dev.rs`), so the renderer stays bound to the
-   boot-time bundle for the whole session.
+1. **Pages re-rendered.** Before the renderer is called, `BuildContext::reload_renderer`
+   fires for EDIT ticks (i.e. `ChangeKind::Modified` — what VS Code and most editors
+   emit). It re-bundles with a fresh content snapshot from disk, starts a new embedded
+   V8 host against the rebuilt bundle, and swaps it into the shared renderer mutex
+   (start-before-swap — the old host is shut down only after the swap succeeds, so a
+   bundle error leaves the previous renderer serving). The render callback and the SSR
+   adapter both hold an `Arc` to the same mutex, so all subsequent requests in this
+   tick render through the new host. The orchestrator then calls the renderer for each
+   page in the dirty set; each rendered `RenderedPage.html` is compared byte-for-byte
+   against the last-known output. If the bytes are identical (a pure refactor that
+   produced no semantic HTML change), no file is written and no reload signal is sent
+   for that page. (Boot's initial render and watch-ADD discovery already carry a fresh
+   bundle, so the reload step is skipped on those paths — each tick re-bundles at most
+   once.)
 2. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + PostCSS run. If the
    CSS output is byte-identical to the previous tick, no `Css` event is emitted.
 3. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
@@ -158,5 +164,5 @@ preserved.
   `DirtySet` that limit rebuilds to affected pages
 - [Islands](/concepts/islands) — how `"use client"` opts a component into the
   islands bundle
-- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — including
-  the restart-only limitation for `prerender = false` routes in dev
+- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — dev-side SSR
+  parity: how `prerender = false` routes are served through the same V8 renderer

@@ -1,6 +1,6 @@
 ---
 title: データ
-description: zfb で構造化データを取り込む 3 つの選択肢 — コンテンツコレクション、データコレクション、プレーンな TS モジュール。
+description: zfb で構造化データを取り込む 3 つの選択肢 — コンテンツコレクション、フロントマターのみのエントリ、プレーンな TS モジュール。
 sidebar_position: 3
 category: Concepts
 ---
@@ -17,13 +17,23 @@ zfb は構造化データをページに取り込むための 3 つの異なる�
 
 各エントリの本文が読まれることを意図している場合は、常にこれが正しい選択です。
 
-## 2. データコレクション
+## 2. フロントマターのみのエントリによる構造化レコード
 
 データが **構造化されている** とき（製品のリスト、チームメンバーのディレクトリ、料金ティアの
-集合など）はデータコレクションを使います。`zfb.config.ts` で宣言する JSON / YAML / TOML
-ファイルのディレクトリです。コンテンツコレクションが使うのと同じ `[{ name, path }]` の形
-（[Content Collections](/concepts/content-collections) を参照）が、手続きなしでデータ
-ディレクトリを受け付けます。
+集合など）は、すべてのデータをフロントマターに持ち本文を空にしたエントリからなるコンテンツ
+コレクションを使えます。コレクションウォーカーは `.md` と `.mdx` ファイルを受け付けます。
+フロントマターブロックだけで本文を持たないファイルは、まったく問題ありません。
+
+```md
+---
+name: "Widget Pro"
+price: 49
+featured: true
+---
+```
+
+ディレクトリを `zfb.config.ts` で宣言し、フィールドごとの検証のために任意の `schema` を
+指定します（[`defineConfig`](/api/define-config) を参照）。
 
 ```ts
 export default {
@@ -31,14 +41,23 @@ export default {
     {
       name: "products",
       path: "data/products",
+      schema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          price: { type: "number" },
+          featured: { type: "boolean" },
+        },
+        required: ["name", "price"],
+      },
     },
   ],
 };
 ```
 
-各ファイルが 1 つのエントリになります。フィールドごとのバリデータを持つオプションの `schema`
-フィールドを指定できます（完全な形は [`defineConfig`](/api/define-config) を参照）。データ
-エントリはコンテンツエントリと同じ方法でロードします。
+エントリはコンテンツエントリと同じ方法でロードします。`entry.data` には検証済みの
+フロントマターが入ります。`entry.Content` は（空の）本文をレンダリングするもので、無視して
+構いません。
 
 ```tsx
 import { getCollection } from "zfb/content";
@@ -46,9 +65,17 @@ import { getCollection } from "zfb/content";
 const products = getCollection("products");
 ```
 
-データコレクションが真価を発揮するのは、**エントリ単位のバリデーション、slug の導出、そして
-文章コンテンツと同じロード API** が欲しいけれど、Markdown のレンダリングステップは不要、
-というときです。
+この方法が真価を発揮するのは、**エントリ単位のスキーマ検証、slug の導出、そして文章コンテンツと
+同じ `getCollection` API** が欲しいけれど、Markdown の本文は必須にしたくない、というときです。
+
+<Note title="JSON / YAML / TOML のデータファイルはまだ非サポート">
+
+コレクションウォーカーは現在 `.md`・`.mdx`・`.tsx` ファイルのみを受け付けます。JSON・YAML・
+TOML のデータファイルは黙ってスキップされます（返されるエントリは 0 件）。Markdown のラッパー
+なしの生の構造化データには、データファイルコレクションのサポートが出荷されるまで、プレーンな
+TS モジュール（下の選択肢 3）を使ってください。
+
+</Note>
 
 ## 3. `data/` 配下のプレーンな TS モジュール
 
@@ -78,7 +105,7 @@ import { siteName, formatDate } from "../data/site";
 役に立つ目安:
 
 - データが **読まれることを意図したコンテンツ** → コンテンツコレクション。
-- データが **同じ形を共有する構造化レコード** → データコレクション。
+- データが **同じ形を共有し、エントリ単位の検証から恩恵を受ける構造化レコード** → コレクション内のフロントマターのみの `.md` エントリ。
 - データが **ひと握りの定数やヘルパー** → `data/` 配下の TS モジュール。
 
 3 つすべてを同じプロジェクトの中で衝突なく混在させられます。

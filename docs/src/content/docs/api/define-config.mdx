@@ -14,23 +14,39 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 ## Config shape
 
-All keys are camelCase and mirror `crates/zfb/src/config.rs`.
+All keys are camelCase. The shape is enforced by the Rust serde deserializer (`crates/zfb/src/config.rs`) — the TypeScript type in `packages/zfb/src/config.ts` mirrors it for editor IntelliSense.
 
 - `outDir?: string` — output directory. Default: `"dist"`.
 - `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
-- `collections?: CollectionDef[]` — content collections. Each entry has `name` (identifier used in `getCollection` calls), `path` (directory relative to the project root), and optional `schema` (validated at config-load time; frontmatter is checked against the schema by `zfb check` and the build).
+- `collections?: CollectionDef[]` — content collections. Each entry has:
+  - `name: string` — identifier used in `getCollection` calls.
+  - `path: string` — directory relative to the project root.
+  - `schema?: Record<string, unknown>` — optional JSON Schema for frontmatter validation (enforced by `zfb check`; the build does not validate frontmatter against it).
+  - `include?: string[]` — glob patterns (globset dialect, relative to `path`); when set, only matching entries are kept.
+  - `exclude?: string[]` — glob patterns; matching entries are dropped (evaluated after `include`).
+  - `idStripSuffix?: string` — suffix stripped from each entry's slug and module specifier (e.g. `".en"` for multi-locale layouts).
 - `tailwind?: { enabled?: boolean }` — Tailwind options.
+- `prefetch?: { disabled?: boolean }` — prefetch options. When `disabled: true`, the runtime's prefetch wiring is skipped entirely via a build-time meta tag.
+- `bundle?: { exclude?: string[]; mainFields?: string[]; external?: string[] }` — esbuild escape hatches for the `--platform=neutral` page/SSR pass. `exclude` lists project-relative globs of source files to keep out of the esbuild graph; `mainFields` overrides the main-fields list for deps without an `exports` map; `external` marks bare specifiers as external so esbuild leaves them unbundled. Useful for CJS-only deps that fail under the neutral platform (see issues #680/#676).
 - `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks). See [Plugins](/concepts/plugins) for the full hook contract — `setup`, `preBuild`, `postBuild`, `devMiddleware` — including virtual modules, import aliases, and dev-only injected routes.
 - `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Pages).
+- `output?: "static" | "hybrid" | "auto"` — project output mode. `"static"` errors at build start if any route exports `prerender = false`; `"hybrid"` always enables V8/SSR even if no SSR routes currently exist; `"auto"` (default) detects from the route set.
 - `site?: string` — canonical origin URL (e.g. `"https://example.com"`). When set, exposes `globalThis.__zfb.site` so layouts can build canonical `<link>` tags, OpenGraph meta, sitemap absolute hrefs, and hreflang alternates. Must be an absolute HTTP/HTTPS URL; omit for builds that do not need server-side canonical URL construction. Distinct from `base` — see below.
 - `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`). Distinct from `site`: `base` prefixes asset URLs; `site` is the full canonical origin used in metadata.
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
 - `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
+- `markdown?: MarkdownConfig` — Markdown/MDX parsing options (e.g. GFM toggle). See the [Markdown Features](/markdown-features) section.
 - `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs.
+- `emitRoutesManifest?: boolean` — whether `zfb build` writes the post-build route manifest to `<outDir>/__zfb/routes.json`. Default: `true` (emit). Set `false` to suppress.
 - `extraWatchPaths?: string[]` — extra absolute filesystem paths the dev watcher follows in addition to the in-project source roots. See [Watching paths outside the project root](#watching-paths-outside-the-project-root).
+
+The following keys are accepted by the Rust config loader and ignored by the TypeScript type (they apply only when `zfb` runs as a Rust binary, not the JS dev tooling):
+
+- `codeHighlight` — syntect syntax-highlight theme options. See the syntax-highlighting guide.
+- `pluginHookTimeoutSecs` — timeout (seconds) for plugin hook invocations.
 
 ## Watching paths outside the project root
 

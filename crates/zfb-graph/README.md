@@ -6,7 +6,8 @@ modules) and answers: "given this file changed, which pages need to be
 re-rendered?"
 
 This crate is part of Epic 6 (build infrastructure) and is consumed by
-`zfb-build`. It is a pure in-memory data structure with no IO.
+`zfb-build`. `DependencyGraph` itself is a pure in-memory data structure; the
+`persist` module provides optional disk persistence for cold-start caching.
 
 ## Public API
 
@@ -20,9 +21,14 @@ This crate is part of Epic 6 (build infrastructure) and is consumed by
   recorded edge invalidates its owning page — but the build orchestrator can
   use the tag to decide which sub-pipeline (CSS, islands, etc.) to re-run.
 - `PageDeps` — input record: `{ page, deps: Vec<(PathBuf, DepKind)> }`.
+- `AssetDeps` — per-page asset-dependency record: the island components the
+  page hydrates (`islands: BTreeSet<String>`) and the CSS-Modules paths it
+  pulls in (`css_modules: BTreeSet<PathBuf>`).
 - `DependencyGraph` — the graph itself.
 - `DirtySet` — return shape of `dirty_pages`. Either `All` (sentinel meaning
   "rebuild every page") or `Specific(BTreeSet<PageId>)`.
+- `GraphError` — crate-wide error type covering IO and codec failures from the
+  persist module.
 
 ### Construction
 
@@ -41,6 +47,9 @@ Or build empty and `upsert` page-by-page as the resolver finishes each one.
 - `dirty_pages(&path) -> DirtySet` — minimal set of pages whose output is
   affected by changing `path`. Read-only. Returns `DirtySet::All` for files
   registered as global, an empty `DirtySet::Specific` for unknown paths.
+- `dirty_pages_batch(paths) -> DirtySet` — batch variant: deduplicated union
+  over an iterable of changed paths. Short-circuits to `DirtySet::All` on the
+  first global hit, more efficient than looping over `dirty_pages`.
 - `add_node(path) -> bool` — register a brand-new file (e.g., a fresh
   markdown entry). Returns `true` if newly added. The graph cannot infer
   consumers; the caller should re-resolve affected pages and feed the new
@@ -53,8 +62,29 @@ Or build empty and `upsert` page-by-page as the resolver finishes each one.
   before installing the new ones.
 - `mark_global(path) / unmark_global(&path) / is_global(&path)` — manage the
   set of files whose change forces `DirtySet::All`.
-- `pages() / page_count() / deps_of(&page) / consumers_of(&path) / snapshot()`
+- `set_assets_for_page(page, deps)` — replace the `AssetDeps` record for a
+  page. Maintains reverse indexes for O(1) island/CSS-module lookups.
+- `clear_assets_for_page(&page)` — drop the asset record for a page (no-op if
+  not present). Called automatically by `remove_node`.
+- `assets_for_page(&page) -> Option<&AssetDeps>` — borrow the asset-dep record
+  for a page.
+- `pages_using_island(component) -> Vec<PageId>` — pages that hydrate the
+  given island component identifier. Sorted.
+- `pages_using_css_module(path) -> Vec<PageId>` — pages that pull in the given
+  CSS-Modules source path. Sorted.
+- `all_islands() -> Vec<String>` — all distinct island identifiers across every
+  page, sorted. Useful as scan input for the islands bundler.
+- `all_css_modules() -> Vec<PathBuf>` — all distinct CSS-Modules paths, sorted.
+- `pages() / page_count() / deps_of(&page) / consumers_of(&path)`
   — diagnostics + introspection helpers.
+
+### Persistence (`persist` module)
+
+- `persist::save_to_disk(graph, digest, path)` — serialise the graph and a
+  manifest digest to `path`. Writes via an atomic temp-file rename.
+- `persist::load_from_disk(path, expected)` — deserialise and validate; returns
+  `Ok(None)` for missing/stale/mismatched files so callers can fall back to a
+  fresh graph without an error path.
 
 ## Coarse-rebuild policy
 

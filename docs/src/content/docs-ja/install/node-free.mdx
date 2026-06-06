@@ -5,15 +5,16 @@ sidebar_position: 1
 ---
 
 zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも
-Node.js は不要です** — ビルドエンジン・esbuild・Tailwind はすべてバイナリに
-コンパイル済み、あるいは Go バイナリとして同梱されています。Node が必要になるのは
-一部の機能をオプトインで使う場合だけです（下記の「Node が依然として必要なケース」を
-参照）。
+Node.js は不要です** — esbuild と Tailwind は `zfb` 実行ファイルと並んでスタンドアロンの
+ネイティブバイナリとして（リリース tarball の `binaries/` スロットに）同梱され、`zfb`
+実行ファイル自身からの相対位置で見つけられてサブプロセスとして呼び出されます。Node が
+必要になるのは一部の機能をオプトインで使う場合だけです（下記の「Node が依然として
+必要なケース」を参照）。
 
 Node なしの経路でもコンテンツサイト向けの全機能が利用できます。Markdown・MDX・
-HTML ページ、**さらに islands** まで対応します — esbuild と Tailwind は zfb バイナリ内に
-組み込まれた Go バイナリとして動作するため、クライアントサイドのハイドレーションも
-Node を一切介さずに動きます。
+HTML ページ、**さらに islands** まで対応します — esbuild と Tailwind は `zfb` に同梱された
+スタンドアロンのネイティブバイナリとして動作するため、クライアントサイドの
+ハイドレーションも CSS 処理も Node を一切介さずに動きます。
 
 ## インストール経路
 
@@ -128,12 +129,13 @@ Node 専用 API は評価器内では利用できません。TypeScript の型�
 {
   "framework": "preact",
   "outDir": "dist",
-  "collections": {
-    "blog": {
-      "dir": "content/blog",
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog",
       "schema": { "type": "object", "properties": { "title": { "type": "string" } } }
     }
-  }
+  ]
 }
 ```
 

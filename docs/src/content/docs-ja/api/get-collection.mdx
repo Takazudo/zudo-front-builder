@@ -10,7 +10,7 @@ sidebar_position: 2
 getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[]
 ```
 
-ページモジュールから `getCollection` を呼び出すと、名前付きコレクション内のすべてのエントリを読み込めます。コレクションは `zfb.config` の `collections` で宣言されている必要があります。この関数は同期的で、Promise ではなくプレーンな配列を返します。スキーマ検証は各エントリの読み込み時に実行されるため、配列がコンポーネントに届く頃にはフロントマターは型付けされ検証済みになっています。
+ページモジュールから `getCollection` を呼び出すと、名前付きコレクション内のすべてのエントリを読み込めます。コレクションは `zfb.config` の `collections` で宣言されている必要があります。この関数は同期的で、Promise ではなくプレーンな配列を返します。TypeScript のジェネリック `T` は型ヒントにすぎません。実行時のスキーマ検証は、`getCollection` の呼び出し自体の中ではなく、Rust パイプラインにおいてビルド時および `zfb check` を通じて行われます。
 
 ## CollectionEntry の形状
 

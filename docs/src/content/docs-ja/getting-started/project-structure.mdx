@@ -10,8 +10,12 @@ sidebar_position: 4
 my-site/
 ├── pages/
 │   ├── index.tsx
-│   └── blog/
-│       └── [slug].tsx
+│   ├── blog/
+│   │   ├── [slug].tsx
+│   │   └── page/
+│   │       └── [page].tsx
+│   └── tags/
+│       └── [tag].tsx
 ├── layouts/
 │   └── default.tsx
 ├── components/
@@ -19,10 +23,15 @@ my-site/
 │   └── theme-toggle.tsx
 ├── content/
 │   └── blog/
-│       └── hello-zfb.mdx
+│       ├── deploying-static-sites.md
+│       ├── dev-loop-feel.md
+│       ├── hello-zfb.mdx
+│       ├── ssr-and-islands.md
+│       └── why-rust-cli.md
+├── lib/
+│   └── types.ts
 ├── styles/
 │   └── global.css
-├── public/
 ├── zfb.config.json
 ├── package.json
 ├── tsconfig.json
@@ -38,7 +47,7 @@ my-site/
 - `pages/blog/[slug].tsx` → `/blog/:slug`（動的ルート — 解決された slug ごとに 1 つの HTML ファイル）
 - `pages/docs/[...slug].tsx` → キャッチオール、任意の深さにマッチ
 
-デフォルトテンプレートには index ページと 1 つの動的なブログルートが含まれます。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して `[slug]` を解決された slug ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](/concepts/dynamic-routes) を参照してください。
+デフォルトテンプレートには index ページと 3 つの動的ルートが含まれます。`blog/[slug].tsx`（記事ごとに 1 つの HTML ファイル）、`blog/page/[page].tsx`（ページ分割された一覧）、`tags/[tag].tsx`（タグごとのアーカイブ）です。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して、パラメータを解決された値ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](/concepts/dynamic-routes) を参照してください。
 
 ## layouts/
 
@@ -50,7 +59,11 @@ my-site/
 
 ## content/
 
-コンテンツコレクションです。`content/blog/` は `blog` コレクションのシードエントリを保持します。名前付きディレクトリ内の Markdown・MDX ファイルで、ページから `getCollection("blog")` でクエリできます。コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。
+コンテンツコレクションです。`content/blog/` は `blog` コレクションの 5 つのシードエントリを保持します。名前付きディレクトリ内の Markdown・MDX ファイルで、ページから `getCollection("blog")` でクエリできます。コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。
+
+## lib/
+
+共有の TypeScript ユーティリティです。テンプレートには `lib/types.ts` が含まれ、ページやコンポーネント全体で使われるフロントマターの型定義を持ちます。ここにフレームワークのマジックはありません。必要な場所で import する素の TypeScript モジュールです。
 
 ## styles/
 
@@ -58,7 +71,7 @@ my-site/
 
 ## public/
 
-サイトのルートからそのまま配信される静的アセットです。`favicon.ico`・`robots.txt`・SVG・ラスター画像・フォント・マニフェストファイルなど、絶対 URL で参照したいバイナリをここに置きます。このディレクトリは URL には現れません。`public/logo.svg` は `zfb dev` でも `zfb build` 後でも `/logo.svg` で到達できます。
+サイトのルートからそのまま配信される静的アセットです。テンプレートは `public/` ディレクトリをスキャフォールドしません。静的ファイルを配信する必要が出たときに作成してください。`favicon.ico`・`robots.txt`・SVG・ラスター画像・フォント・マニフェストファイルなど、絶対 URL で参照したいバイナリをここに置きます。このディレクトリは URL には現れません。`public/logo.svg` は `zfb dev` でも `zfb build` 後でも `/logo.svg` で到達できます。
 
 これらのファイルは TSX・MDX・CSS から URL で参照します。
 
@@ -75,7 +88,7 @@ my-site/
 
 ## zfb.config.json
 
-設定ファイルは次のキーを持つ camelCase スキーマを使います。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。
+設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](/api/define-config) を参照してください。
 
 テンプレートは `zfb.config.json` をスキャフォールドします。これを `zfb.config.ts` にリネームすると、zfb は同梱の esbuild バイナリ経由でロードし、完全な TypeScript 型と IDE 補完が得られます。スキーマはどちらの形式でも同一です。
 

@@ -6,7 +6,7 @@ sidebar_position: 5
 
 ## The pattern
 
-Every page module may export a `meta` constant (or an async function returning the same record) describing the page's `<head>` data — title, description, Open Graph tags, canonical URL, and so on. The renderer reads this export via `RenderHost::get_export` and merges it into the page layout's `<head>` block.
+Every page module may export a `meta` constant (or an async function returning the same record) describing the page's `<head>` data — title, description, and layout override. The renderer reads this export via `RenderHost::get_export` and merges it into the page layout's `<head>` block.
 
 ## Example
 
@@ -14,11 +14,6 @@ Every page module may export a `meta` constant (or an async function returning t
 export const meta = {
   title: "Blog — My Site",
   description: "Latest writing on web development.",
-  canonical: "https://example.com/blog",
-  og: {
-    image: "/og/blog.png",
-    type: "website",
-  },
 };
 
 export default function BlogPage() {
@@ -26,27 +21,28 @@ export default function BlogPage() {
 }
 ```
 
-If you need data from a collection or an async source to compute meta — for example, an OG image derived from a CMS field — export `meta` as an async function. The renderer awaits it before rendering the page shell.
+If you need data from a collection or an async source to compute meta — for example, a title derived from a CMS field — export `meta` as an async function. The renderer awaits it before rendering the page shell.
 
 ```tsx
 export async function meta() {
   const post = getCollection("blog")[0];
   return {
     title: post.data.title,
-    og: { image: `/og/${post.slug}.png` },
+    description: post.data.description,
   };
 }
 ```
 
 ## Supported keys
 
-The renderer treats `meta` as a permissive bag, but the following keys are the supported subset that page layouts look for:
+`PageMeta` accepts exactly the following keys. Unknown keys are **rejected** at parse time (`deny_unknown_fields`) so that typos surface as build errors rather than being silently dropped.
 
 - `title?: string` — overrides the layout default for this page.
-- `description?: string` — used for the `<meta name="description">` tag and as the OG fallback.
-- `canonical?: string` — absolute URL for `<link rel="canonical">`.
-- `og?: { title?, description?, image?, type?, url? }` — Open Graph tags. Missing fields fall back to top-level `title` / `description` where it makes sense.
-- `twitter?: { card?, site?, creator?, image? }` — Twitter Card tags.
+- `description?: string` — used for the `<meta name="description">` tag.
 - `layout?: string` — module specifier (relative path or bare specifier) for the page layout component. When absent, the project default layout is used.
 
-Unknown keys pass through untouched, which lets you stash structured data for plugins or custom layout components.
+<Note>
+
+Support for canonical URL, Open Graph, and Twitter Card tags is not yet part of `PageMeta`. These are tracked as a follow-up. In the meantime, inject them directly in your layout component using the `title` and `description` values from the meta export, or use a plugin to emit `<head>` tags at build time.
+
+</Note>

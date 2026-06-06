@@ -1,13 +1,20 @@
 ---
 title: Reading time
-description: Inject an estimated reading-time as an MDX named export available alongside frontmatter.
+description: Inject an estimated reading-time as an MDX named export available in the compiled module.
 tier: Opt-in
 ---
 
 The `readingTime` feature walks the parsed markdown AST, counts words, and injects
-`export const readingTimeMinutes = N;` into the compiled MDX module. The export is
-then available as `entry.readingTimeMinutes` in any TSX page that imports the
-collection.
+`export const readingTimeMinutes = N;` into the compiled MDX module. Import the
+named export directly from the MDX file to use it in your page.
+
+<Note>
+
+The words-per-minute rate is fixed at **200 WPM** and cannot be customised via
+config. Passing `{ wpm: 250 }` is rejected at deserialization (unknown field) and
+will cause a config error.
+
+</Note>
 
 ## Enable
 
@@ -22,24 +29,13 @@ export default defineConfig({
 });
 ```
 
-To customise the words-per-minute rate:
-
-```ts
-// zfb.config.ts
-export default defineConfig({
-  markdown: {
-    features: {
-      readingTime: { wpm: 250 },
-    },
-  },
-});
-```
-
 ## Usage in a TSX page
+
+Import the named export directly from the compiled MDX module:
 
 ```tsx
 // src/pages/blog/[...slug].tsx
-const { readingTimeMinutes, ...rest } = await entry.render();
+import { readingTimeMinutes } from "./my-page.mdx";
 
 // readingTimeMinutes is a number — use it in your layout:
 <p>{readingTimeMinutes} min read</p>
@@ -64,7 +60,7 @@ The plugin combines two passes:
    Source: [remark-reading-time](https://www.npmjs.com/package/remark-reading-time) —
    "It also uses CJK character count for languages that don't use spaces between words."
 
-The total word count (Latin tokens + CJK characters) is divided by the WPM value,
+The total word count (Latin tokens + CJK characters) is divided by 200 WPM,
 ceiling-rounded to the nearest whole minute, with a minimum of 1.
 
 ### Code blocks are excluded
@@ -74,13 +70,12 @@ contains hundreds of lines will not be over-estimated based on code content.
 
 ## Examples
 
-| Input | WPM | Result |
-|-------|-----|--------|
-| 200 Latin words | 200 (default) | 1 minute |
-| 600 Latin words | 200 (default) | 3 minutes |
-| 200 CJK characters | 200 (default) | 1 minute |
-| 5 words | 200 (default) | 1 minute (minimum) |
-| 400 words | 250 | 2 minutes |
+| Input | Result |
+|-------|--------|
+| 200 Latin words | 1 minute |
+| 600 Latin words | 3 minutes |
+| 200 CJK characters | 1 minute |
+| 5 words | 1 minute (minimum) |
 
 ## Notes
 

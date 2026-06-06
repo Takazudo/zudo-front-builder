@@ -18,41 +18,50 @@ locally only when the SDK genuinely needs them (e.g. `verbatimModuleSyntax`,
 
 ## Publishing notes — consumers outside the workspace
 
-The package is **published source-first**: every entry in `package.json`
-`exports` points at a raw `./src/*.ts` file rather than a built artifact.
-There is no `build` script, no `dist/` directory, and `prepublishOnly`
-does not run a compiler.
+The package ships a **dual src / dist layout**. In the workspace, `exports`
+points at raw `./src/*.ts` files so workspace siblings type-check and run
+without a build step. On publish, `publishConfig` repoints every entry to
+the compiled `./dist/` artifacts (`tsc` emitting `.js` + `.d.ts`).
+
+**Development (workspace):**
 
 ```jsonc
 "exports": {
-  ".":         { "types": "./src/index.ts",   "default": "./src/index.ts" },
-  "./runtime": { "types": "./src/runtime.ts", "default": "./src/runtime.ts" },
-  "./content": { "types": "./src/content.ts", "default": "./src/content.ts" },
-  "./paginate":{ "types": "./src/paginate.ts","default": "./src/paginate.ts" },
-  "./config":  { "types": "./src/config.ts",  "default": "./src/config.ts"  },
+  ".":            { "types": "./src/index.ts",      "default": "./src/index.ts" },
+  "./runtime":    { "types": "./src/runtime.ts",    "default": "./src/runtime.ts" },
+  "./content":    { "types": "./src/content.ts",    "default": "./src/content.ts" },
+  "./paginate":   { "types": "./src/paginate.ts",   "default": "./src/paginate.ts" },
+  "./config":     { "types": "./src/config.ts",     "default": "./src/config.ts" },
+  "./plugins":    { "types": "./src/plugins.ts",    "default": "./src/plugins.ts" },
+  "./frontmatter":{ "types": "./src/frontmatter.ts","default": "./src/frontmatter.ts" },
 }
 ```
 
-That choice is intentional — the package's only first-party consumers today
-are workspace siblings (the zfb runtime, and standalone demo repos such as
-https://github.com/Takazudo/zfb-example-blog), and the zfb dev pipeline strips TS at
-load time. So the workspace pays no cost for raw `.ts` consumption.
+**Published (npm registry — `publishConfig` overrides the above):**
 
-If/when `zfb` is published to a public registry for non-workspace consumers,
-a few things must change first — capture them here as a checklist:
+```jsonc
+"publishConfig": {
+  "main":  "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".":            { "types": "./dist/index.d.ts",      "default": "./dist/index.js" },
+    "./runtime":    { "types": "./dist/runtime.d.ts",    "default": "./dist/runtime.js" },
+    "./content":    { "types": "./dist/content.d.ts",    "default": "./dist/content.js" },
+    "./paginate":   { "types": "./dist/paginate.d.ts",   "default": "./dist/paginate.js" },
+    "./config":     { "types": "./dist/config.d.ts",     "default": "./dist/config.js" },
+    "./plugins":    { "types": "./dist/plugins.d.ts",    "default": "./dist/plugins.js" },
+    "./frontmatter":{ "types": "./dist/frontmatter.d.ts","default": "./dist/frontmatter.js" },
+  }
+}
+```
 
-- [ ] Add a `build` script (likely `tsc -p tsconfig.build.json` emitting
-      to `./dist/`).
-- [ ] Repoint each `exports` entry to its `./dist/` counterpart (keep
-      `"types"` on the matching `.d.ts`).
-- [ ] Drop `private: true` from `package.json` (or scope the registry
-      accordingly).
-- [ ] Decide on a `prepublishOnly` that runs the build + the test suite.
-- [ ] Bump the version to a real semver.
+The `build` script (`tsc`) and the `prepublishOnly` hook (`pnpm build && pnpm test`)
+are already wired in `package.json`. The `files` field ships `dist/`, `bin/`,
+`README.md`, `CHANGELOG.md`, and `LICENSE` — raw `src/` is not included in the
+published tarball.
 
-Until that work happens, keep the source-first stance: `exports` should
-keep pointing at `./src/*.ts` so workspace siblings type-check and run
-without an extra build step in the dev loop.
+`private: true` has been dropped; the package publishes to the public registry
+under `publishConfig.access: "public"`.
 
 ## Bridge contract — `globalThis.__zfb.content`
 
@@ -108,3 +117,15 @@ a new helper means:
 Removing or renaming an existing helper is a breaking change and needs an
 ADR — even before v1.0, the workspace's other crates depend on the names
 through `import "zfb"` strings.
+
+### Export reference table
+
+| Subpath | Source file | Description |
+|---------|-------------|-------------|
+| `.` | `src/index.ts` | Re-exports all public symbols |
+| `./runtime` | `src/runtime.ts` | Islands runtime (`mountIslands`, `mountNewIslands`) |
+| `./content` | `src/content.ts` | Content collections (`getCollection`, `CollectionEntry`) |
+| `./paginate` | `src/paginate.ts` | Pagination helper |
+| `./config` | `src/config.ts` | Project config types |
+| `./plugins` | `src/plugins.ts` | Plugin lifecycle types (`ZfbPlugin`, build/dev hooks) |
+| `./frontmatter` | `src/frontmatter.ts` | Frontmatter schema helpers |
