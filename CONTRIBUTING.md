@@ -5,7 +5,7 @@ Thanks for your interest in `zudo-front-builder`. The full build pipeline is shi
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.
-- **Node / pnpm**: **Node 22 or later and pnpm 11 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22 is required (not 20) because the docs site declares `engines.node >=22.12.0` (the Astro 6 floor).
+- **Node / pnpm**: **Node 22.12.0 or later and pnpm 11 or later are required.** pnpm is pinned via [Corepack](https://nodejs.org/api/corepack.html) (the `packageManager` field in `package.json`). Run `corepack enable` once and pnpm will resolve to the pinned version automatically. The repo sets `engineStrict: true` in `pnpm-workspace.yaml`, so `pnpm install` will hard-error if your Node or pnpm version is below the minimum — install the correct version before running install. Node 22.12.0 is the effective floor (Astro 6 floor declared in `docs/package.json`); earlier 22.x versions will fail `pnpm install`.
 
 ## First build expectation
 
@@ -71,7 +71,7 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. For ad-hoc Rust checks before opening a PR, `cargo fmt` and `cargo clippy --workspace` are still useful; rustfmt and clippy run in CI, not in the pre-commit hook.
+- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt` and `cargo clippy --workspace` manually before opening a PR.
 - Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline: it also runs `cargo build`, `cargo clippy -D warnings`, the full test suite, and actionlint.
 
 ## Formatting
