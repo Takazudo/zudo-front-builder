@@ -1,13 +1,14 @@
 # `zfb-islands`
 
 Islands runtime pipeline for `zfb`. Scans for `"use client"` components,
-bundles them via the esbuild CLI subprocess into a single hashed JS asset,
-and emits the hydration markup + runtime glue.
+bundles them via the esbuild CLI subprocess into a shared entry bundle
+plus code-split chunks, and emits the hydration markup + runtime glue.
 
-> This README currently documents the **esbuild version pin** for Sub 2 of
-> [issue #6](https://github.com/Takazudo/zudo-front-builder/issues/6).
-> Crate-level documentation (architecture, `ClientBundler` trait, public
-> API) lives in `src/lib.rs` rustdoc and will be expanded by Subs 1 and 3.
+The crate is fully built out. See `src/lib.rs` rustdoc for the
+architecture overview: the `ClientBundler` trait,
+`EsbuildSubprocessBundler`, the scanner, hydration rewrite, manifest,
+and code-splitting. The `NativeRustBundler` placeholder lives in
+`src/future_rust_native.rs`.
 
 ## esbuild Version
 
@@ -23,8 +24,9 @@ This crate invokes the **esbuild standalone CLI** as a subprocess.
 
 > The pin **must be reviewed and refreshed before each `zfb` release**.
 > Bump `0.25.12` to whatever the latest stable esbuild 0.x is at
-> release-cut time, and re-run the release-engineering binary-fetch step
-> (future epic) to materialize the matching binary.
+> release-cut time. Update the SHA-256 constants in `crates/zfb/build.rs`
+> and the `EXPECTED_ESBUILD_VERSION` / `EXPECTED_ESBUILD_SHA256` constants
+> in `crates/zfb-islands/src/esbuild.rs` in the same commit.
 
 ### Why a pinned version
 
@@ -34,10 +36,12 @@ This crate invokes the **esbuild standalone CLI** as a subprocess.
 - **Bundled binary.** The release tarball ships the exact binary
   `zfb-islands` expects — no `npx`, no `node_modules`, no network calls at
   user build time.
-- **Subprocess contract.** The CLI flags this crate calls (`--bundle`,
-  `--format=esm`, `--splitting=false`, `--minify`, `--tree-shaking=true`,
-  `--sourcemap=linked`, `--outfile`) are the 0.x surface area; locking the
-  version prevents flag drift from breaking the wrapper.
+- **Subprocess contract.** The CLI flags this crate calls for the shared
+  bundle path (`--bundle`, `--format=esm`, `--splitting=true`,
+  `--tree-shaking=true`, `--entry-names=islands`,
+  `--chunk-names=islands-chunk-[hash]`, `--outdir`) are the 0.x surface
+  area; locking the version prevents flag drift from breaking the wrapper.
+  `--minify` and `--sourcemap=linked` are applied per `BundleConfig`.
 
 ### Why a subprocess wrapper (and not a Rust-native bundler)
 
@@ -50,7 +54,8 @@ get correct, up-to-date bundling output.
 To keep us free to swap implementations later, the subprocess call lives
 behind an internal `ClientBundler` trait. The esbuild binary is one
 implementation; a hypothetical Rust-native crate would be another, with no
-changes required at call sites. See `src/native_bundler.rs` for the stub.
+changes required at call sites. See `src/future_rust_native.rs` for the
+`NativeRustBundler` stub.
 
 ### Why the binary lives at `crates/zfb/binaries/esbuild`
 
@@ -62,5 +67,6 @@ contract. See `crates/zfb/binaries/README.md` for the slot-level details
 (this slot mirrors the Tailwind v4 slot reserved by Epic 4 / Sub 4).
 
 The binary file itself is **not** committed to git — `.gitignore` excludes
-it, and release engineering (a future, separate epic) is responsible for
-populating the slot before tarball assembly.
+it. `crates/zfb/build.rs` downloads and SHA-verifies the esbuild binary
+from the npm registry at `cargo build` / `cargo install` time, so no
+manual fetch step is needed for a standard build.

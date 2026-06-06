@@ -27,19 +27,28 @@ Wiring concrete renderers / engines / bundlers happens in the bin crate
 
 ## Public API
 
-The crate exports five top-level items:
+`lib.rs` re-exports items across several module groups:
 
-- `BuildOrchestrator<P>` — owns the watcher config, the dependency
-  graph, and an `AssetPipeline` impl.
-- `OrchestratorConfig` — `(project_root, watch_roots, policy,
-  debounce)`.
-- `AssetPipeline` trait — single-method `apply(plan, ctx) ->
-  BuildOutcome`. Production / SSR / edge builds plug in their own impl.
-- `DevAssetPipeline` — the default `zfb dev` implementation: render,
-  CSS, islands, atomic dist write, byte-cache so unchanged HTML is not
-  re-emitted.
-- `atomic_write` / `atomic_write_string` — the `write-then-rename`
-  helper any other crate can use to land bytes safely under `dist/`.
+- **Orchestrator** — `BuildOrchestrator<P>`, `OrchestratorConfig`
+  (five fields: `project_root`, `watch_roots`, `extra_watch_paths`,
+  `policy`, `debounce`), `DiscoveryHook`, `DiscoveryOutcome`.
+- **Pipeline (dev / prod)** — `AssetPipeline` trait, `DevAssetPipeline`,
+  `ProductionAssetPipeline`, `apply_prod_asset_pipeline`,
+  `BuildContext` (legacy transition shim — see below),
+  `DevBuildContext`, `ProdBuildContext`, `BuildOutcome`, and the
+  runner types `CssRunner`, `IslandsRunner`, `PageRenderer`,
+  `RendererReloader`.
+- **Bundler** — `bundle`, `BundleManifest`, `BundleMode`,
+  `BundlerInput`, `BundlerOutput`, and related content-collection
+  types.
+- **Adapter** — `AdapterRunner`, `DefaultAdapterRunner`,
+  `run_adapter_bundle`, `AdapterChoice`, and supporting types.
+- **Plugin host** — `PluginHost`, `PluginSpec`, `BuildHookContext`,
+  `DevRegisterContext`, and the plugin-registry types.
+- **Renderer** — `start`, `render_all`, `render_one`, `reload`,
+  `shutdown`, `Backend`, and supporting SSR types.
+- **Atomic** — `atomic_write`, `atomic_write_string`,
+  `validate_output_path`.
 
 ```rust,ignore
 use std::sync::{Arc, Mutex};
@@ -57,17 +66,23 @@ let orch = BuildOrchestrator::new(
     pipeline,
 );
 
+// `BuildContext` is a legacy transition shim still accepted by `run()`.
+// New dev callers should construct `DevBuildContext` (which carries the
+// same fields) and convert via `DevBuildContext::into_build_context()`.
+// Production callers should use `ProdBuildContext` (dist_root +
+// render_pages only) instead.
 let ctx = BuildContext {
     dist_root: "/path/to/proj/dist".into(),
     render_pages: Arc::new(|pages| {
         // call into zfb-render here
         Ok(vec![/* RenderedPage { … } */])
     }),
-    run_css: None,     // wire to zfb-css when available
-    run_islands: None, // wire to zfb-islands when available
+    run_css: None,
+    run_islands: None,
+    reload_renderer: None,
 };
 
-orch.run(ctx, |outcome| {
+orch.run(ctx, None, |outcome| {
     println!("rebuilt: {} page(s)", outcome.pages_rendered);
 }).await?;
 ```
@@ -172,25 +187,23 @@ actually moved.
 
 ## Graph persistence between runs
 
-Issue #7 lists this as an open question:
+Issue #7 listed warm-start graph caching as an open question.
 
-> Cache the graph between `zfb dev` restarts (warm start); fall through
-> to full rebuild if cache is stale or version-mismatched.
+**Status: implemented.** `zfb_graph::persist` serialises the
+`DependencyGraph` to `<project>/.zfb/graph.bin` via bincode and reads
+it back on the next `zfb dev` cold start. The wiring lives in
+`crates/zfb/src/commands/dev.rs`.
 
-**Status: deferred.** The dependency graph today is rebuilt by the
-resolver on every `zfb dev` start. Adding a serialiser
-(`postcard`/`bincode`/`serde_json` of `DependencyGraph::snapshot()`) is
-straightforward but pulls in a non-trivial chunk of "is this cache
-valid?" logic — version bytes, source-file mtimes, resolver-version
-salt — that doesn't pay for itself on the small projects we expect
-during the early dev loop.
-
-When we revisit, the storage location is `<project>/.zfb/cache/graph.bin`
-and the validity rule is "if any source file's mtime is newer than
-`graph.bin`, throw the cache away and rebuild". `DependencyGraph`
-already exposes `snapshot()` (read) and `from_pages()` / `upsert()`
-(write), so wiring is mechanical; the design tax is in the
-invalidation rules.
+**Validity rule — ManifestDigest.** Each saved snapshot carries a
+`ManifestDigest`: a SHA-256 over (1) the full byte content of every
+config-like file (e.g. `zfb.config.ts`) and (2) a sorted listing of
+every watched source file as `(relative_path, mtime_nanos, len_bytes)`.
+On startup, a fresh digest is computed from the current project layout
+and compared against the on-disk digest byte-for-byte. Any mismatch —
+a changed config, an added/removed/modified source file — discards the
+cache and falls through to a full resolver scan. A wire-format version
+header provides an additional guard against stale files from older
+`zfb` installs.
 
 ## Tests
 
@@ -198,8 +211,9 @@ invalidation rules.
 cargo test -p zfb-build
 ```
 
-- `src/{atomic,plan,policy,pipeline,orchestrator}.rs` carry focused
-  unit tests for each module.
+- `src/{atomic,plan,policy,orchestrator}.rs` and
+  `src/pipeline/{mod,dev,prod,orchestrator}.rs` carry focused unit
+  tests for each module (`pipeline` is now a directory).
 - `tests/integration_dev_loop.rs` covers the four acceptance scenarios:
   - Touching a `.md` file triggers a single-page rebuild.
   - Editing a global CSS file triggers a CSS-only rebuild (no page
