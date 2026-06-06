@@ -8,8 +8,17 @@
 // against a non-executable (0644) binary. This avoids NODE_PATH tricks that
 // don't work with createRequire(import.meta.url).
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync, copyFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  chmodSync,
+  copyFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,4 +122,133 @@ describe("launcher EACCES surfacing (issue #447)", () => {
     // Must include the binary path so the user knows exactly which file to fix.
     expect(stderr).toContain(fakeBinPath);
   });
+});
+
+// Regression tests for issue #873:
+// spawnSync forwards no signals, so SIGTERM to the wrapper orphaned the
+// native binary (PPID 1) and left the dev-server port bound. The launcher
+// now uses async spawn + signal forwarding + exit/signal propagation.
+//
+// These tests replace the fake 0644 binary from the shared beforeEach with
+// an executable shell script, so they are POSIX-only (skipped on win32 —
+// shell scripts cannot be spawned there and signal semantics are emulated).
+describe("launcher signal forwarding and exit propagation (issue #873)", () => {
+  let tmpDir: string;
+  let fakeBinPath: string;
+  let launcherCopyPath: string;
+
+  const isPosix = process.platform !== "win32" && !!platformPkg;
+
+  beforeEach(() => {
+    if (!isPosix) {
+      return;
+    }
+
+    tmpDir = mkdtempSync(join(tmpdir(), "zfb-launcher-test-"));
+
+    const launcherDir = join(tmpDir, "node_modules", "@takazudo", "zfb", "bin");
+    mkdirSync(launcherDir, { recursive: true });
+    launcherCopyPath = join(launcherDir, "zfb.mjs");
+    copyFileSync(launcherPath, launcherCopyPath);
+
+    const pkgDir = join(tmpDir, "node_modules", platformPkg);
+    mkdirSync(pkgDir, { recursive: true });
+    fakeBinPath = join(pkgDir, "zfb");
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({ name: platformPkg, version: "0.0.0" }),
+    );
+  });
+
+  afterEach(() => {
+    if (tmpDir) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Write an executable fake platform binary that runs the given JS source
+   * under the current Node (absolute-path shebang — no /usr/bin/env or shell
+   * dependency, and no intermediate sh process between wrapper and "binary").
+   */
+  function writeFakeBin(jsSource: string): void {
+    writeFileSync(fakeBinPath, `#!${process.execPath}\n${jsSource}`);
+    chmodSync(fakeBinPath, 0o755);
+  }
+
+  /** Poll until `check` returns true or `timeoutMs` elapses. */
+  async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (check()) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return check();
+  }
+
+  function isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("propagates the child's exit code", () => {
+    if (!isPosix) {
+      console.warn(`[skip] POSIX-only test on platform: ${platformKey}`);
+      return;
+    }
+
+    writeFakeBin("process.exit(7);\n");
+
+    const result = spawnSync(process.execPath, [launcherCopyPath], { encoding: "utf8" });
+
+    expect(result.status).toBe(7);
+  });
+
+  it("forwards SIGTERM to the native child and dies by the same signal", async () => {
+    if (!isPosix) {
+      console.warn(`[skip] POSIX-only test on platform: ${platformKey}`);
+      return;
+    }
+
+    // The fake binary records its PID, then idles — mimicking the
+    // long-running `zfb dev` server.
+    const pidFile = join(tmpDir, "child.pid");
+    writeFakeBin(
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+
+    const wrapper = spawn(process.execPath, [launcherCopyPath], { stdio: "ignore" });
+    const wrapperExit = new Promise<{ code: number | null; signal: string | null }>((res) => {
+      wrapper.on("exit", (code, signal) => res({ code, signal }));
+    });
+
+    try {
+      // Wait for the native child to be up and registered.
+      expect(await waitFor(() => existsSync(pidFile), 5000)).toBe(true);
+      const childPid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
+      expect(isProcessAlive(childPid)).toBe(true);
+
+      // Signal ONLY the wrapper — the supervisor scenario from issue #873.
+      wrapper.kill("SIGTERM");
+
+      // The native child must be terminated too, not orphaned to PPID 1.
+      expect(await waitFor(() => !isProcessAlive(childPid), 5000)).toBe(true);
+
+      // The wrapper must die by the re-raised signal so callers see the
+      // real termination cause, not a plain exit code.
+      const { signal } = await wrapperExit;
+      expect(signal).toBe("SIGTERM");
+    } finally {
+      // Safety net: never leak the wrapper if an assertion above failed.
+      if (wrapper.exitCode === null && wrapper.signalCode === null) {
+        wrapper.kill("SIGKILL");
+      }
+    }
+  }, 15000);
 });
