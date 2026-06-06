@@ -66,14 +66,14 @@ Do NOT use h1 (`#`) in doc content — the page title from frontmatter is render
 
 ## Active Settings Flags
 
-The following boolean flags are set in `src/config/settings.ts` and are currently enabled (`true`):
+The following flags are set in `src/config/settings.ts` and are currently enabled:
 
-- **mermaid** — Renders Mermaid diagrams in MDX content
-- **sitemap** — Generates `sitemap.xml` via `@astrojs/sitemap`
-- **docMetainfo** — Shows document metadata (word count, reading time, etc.) below the title
-- **cjkFriendly** — Applies `remark-cjk-friendly` for better CJK line-breaking
-- **llmsTxt** — Generates `llms.txt` for LLM consumption
-- **docHistory** — Shows document edit history on each page
-- **sidebarResizer** — Draggable sidebar width
-- **sidebarToggle** — Show/hide desktop sidebar button
-- **claudeResources** — Auto-generated docs for Claude Code resources (skills, commands)
+- **mermaid** — Renders Mermaid diagrams in MDX content (`true`)
+- **sitemap** — Generates `sitemap.xml` via `@astrojs/sitemap` (`true`)
+- **docMetainfo** — Shows document metadata (word count, reading time, etc.) below the title (`true`)
+- **cjkFriendly** — Applies `remark-cjk-friendly` for better CJK line-breaking (`true`)
+- **llmsTxt** — Generates `llms.txt` for LLM consumption (`true`)
+- **docHistory** — Shows document edit history on each page (`true`)
+- **sidebarResizer** — Draggable sidebar width (`true`)
+- **sidebarToggle** — Show/hide desktop sidebar button (`true`)
+- **claudeResources** — Auto-generated docs for Claude Code resources (skills, commands); value is `{ claudeDir: ".claude" }` (object, not a plain boolean)
