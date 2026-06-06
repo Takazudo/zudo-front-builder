@@ -24,11 +24,12 @@ Read once at config-load time and threaded through the build. A one-line change 
 The contract lives in `crates/zfb-render/src/adapters/mod.rs`. Every adapter implements the same narrow trait:
 
 ```rust
+#[async_trait(?Send)]
 pub trait Adapter {
     fn name(&self) -> &'static str;
     fn jsx_import_source(&self) -> &'static str;
     fn render_to_string_module(&self) -> &'static str;
-    fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
+    async fn pre_render_setup(&self, host: &mut dyn RenderHost) -> Result<(), RenderError>;
     fn hydrate_shim_specifier(&self) -> &'static str;
     fn hydrate_shim_source(&self) -> &'static str;
 }
