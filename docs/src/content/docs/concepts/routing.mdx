@@ -17,15 +17,15 @@ zfb uses **file-system routing** under the `pages/` directory. The router scans 
 | `pages/about.html` | `/about` | SSG-only; static-asset copy |
 | `pages/blog/index.tsx` | `/blog` | |
 | `pages/blog/[slug].tsx` | `/blog/:slug` (dynamic) | |
-| `pages/docs/[...slug].tsx` | `/docs/:slug*` (catchall) | |
-| `pages/docs/[[...slug]].tsx` | `/docs/:slug*?` (optional catchall) | also matches the bare `/docs` |
+| `pages/docs/[...slug].tsx` | `/docs/:slug{.+}` (catchall) | |
+| `pages/docs/[[...slug]].tsx` | `/docs/:slug{.+}?` (optional catchall) | also matches the bare `/docs` |
 | `pages/[lang]/[slug].tsx` | `/:lang/:slug` | |
 
 A few rules worth knowing up front:
 
 - Files starting with `_` (for example `_app.tsx`) are ignored. Use this prefix for shared helpers that live next to your routes but should not be exposed.
-- Accepted page extensions are `.tsx`, `.md`, and `.html`. Files with any other extension in `pages/` are skipped (a warning is logged), so README files and ad-hoc notes are safe to drop there.
-- Two files that resolve to the same route raise `RouterError::AmbiguousRoute` at build time, so the router never silently picks a winner.
+- Accepted page extensions are `.tsx`, `.mdx`, `.md`, and `.html`. Files with any other extension in `pages/` are skipped (a warning is logged), so README files and ad-hoc notes are safe to drop there.
+- Two files that resolve to the same route raise `RouterError::AmbiguousRoute` at build time, so the router never silently picks a winner. The router also raises `RouterError::AmbiguousShape` when two routes differ only in parameter names but match the same URLs (e.g. `docs/[a].tsx` vs `docs/[b].tsx`), and `RouterError::OptionalCatchallConflict` when an optional catchall overlaps another route at the same position.
 
 See [Markdown and HTML Pages](/concepts/md-html-pages) for the full contract and v1 limitations of `.md` and `.html` page entries.
 
