@@ -11,7 +11,7 @@ modules so user TSX pages can import them as bare specifiers.
   `import { paginate } from "zfb";`.
 - `zfb-sdk.d.ts` — TypeScript declarations for the same module surface.
 - `__tests__/zfb-sdk.test.mjs` — unit tests, runnable with Node's built-in
-  test runner (Node 20+).
+  test runner (Node 22+).
 
 ## Public SDK surface
 
@@ -34,7 +34,7 @@ before any of the Rust crates have been scaffolded:
 node --test crates/zfb-render/runtime/__tests__/zfb-sdk.test.mjs
 ```
 
-Use Node 20+ (the project's engines pin a newer Node toolchain). The
+Use Node 22+ (the project's `engines` pin is `node >=22.0.0`). The
 production execution path runs the SDK through the embedded
 V8 host driven by `@takazudo/zfb-runtime`; the Node tests here stay as
 the fast feedback loop for SDK-only changes and do not exercise the host

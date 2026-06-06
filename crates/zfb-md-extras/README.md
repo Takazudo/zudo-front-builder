@@ -1,10 +1,9 @@
 # zfb-md-extras
 
-Remark/rehype plugin ports for the `zfb` markdown pipeline: GFM, footnotes,
-and more.
-
-> **Status:** crate skeleton — Wave 2 (#569) introduces the `Pipeline`
-> constructor and the first feature visitor.
+Remark/rehype plugin ports for the `zfb` markdown pipeline: github-alerts,
+github-autolinks, code enrichment, code tabs, heading-marker TOC, TOC export,
+transclusion, ruby annotations, mermaid, reading time, image dimensions, and
+link validation.
 
 ---
 
@@ -63,9 +62,9 @@ fn test_my_feature() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/my-feature"
     );
-    // Wave 2: replace the closure with a real Pipeline chain.
+    // Replace the closure body with the feature's pipeline call.
+    // See tests/github_alerts.rs for a real example.
     run_fixture(fixtures, |input| {
-        // placeholder: use the Pipeline once it exists
         markdown::to_html(input)
     });
 }
