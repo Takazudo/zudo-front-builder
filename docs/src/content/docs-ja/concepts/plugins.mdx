@@ -5,42 +5,294 @@ sidebar_position: 12
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブジェクトである素の ES モジュールです。zfb の build（および dev）ホストは、各プラグインモジュールを起動時に一度だけロードし、4 つのオプションなライフサイクルフックをそこにディスパッチします。プラグインは 4 つのうち任意の部分集合だけを宣言できます。省略したものは暗黙的に何もしません。
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Plugins](/concepts/plugins)
+このページはプラグイン作成者向けのコントラクトを説明します。対応する API リファレンスは [`defineConfig.plugins`](/api/define-config) にあります。
 
-</Info>
+## プラグインが本当に必要になるとき
 
-## 概要
+`setup` が提供する 4 つの機能のいずれかが必要になったときにプラグインを使ってください。以下のセクションで説明するのと同じ 4 つです。どれにも当てはまらない場合は、素のスクリプトのほうが適した道具です（後述の [必要ないとき — レシピを書く](#必要ないとき--レシピを書く) を参照）。エンジン対スクリプトという広い観点でのメンタルモデルについては [設計哲学](/concepts/design-philosophy) を参照してください。
 
-zfb プラグインは、`ZfbPlugin` オブジェクトをデフォルトエクスポートする ES モジュールです。zfb の build / dev ホストは各プラグインモジュールを起動時に一度ロードし、4 つのライフサイクルフックを順次ディスパッチします。
+- **合成データソースを裏付ける仮想モジュール。** ページがディスク上に実ファイルを持たない specifier から `import` する必要がある場合 — メタデータ DB、コンテンツインデックス、生成された設定ブロブなど — そのソースをモジュールグラフに注入する唯一の手段が `addVirtualModule` です。例: 全ページにわたる `import metadata from "virtual:metadata-db"`。
+- **すべてのバンドラに適用しなければならないエイリアス書き換え。** `addAlias` は完全一致のインポート書き換えを登録し、これは 3 つすべての利用者（組み込み V8 ホスト、メインのページ／レイアウトバンドラ、islands esbuild バンドラ）が尊重します。`tsconfig.json` の `paths` エントリは型チェッカにしか届きません。エイリアスを 3 つすべてのバンドラで実行時に効かせる必要があるなら、それはプラグインの領域です。
+- **`pages/` の外に存在する開発専用の注入ルート。** `injectRoute` は、dev サーバが認識する URL パターンの下に TSX/TS ファイルを登録します。これはディスク上の `pages/` ツリーに対応物を持たない合成ページで、`command === "dev"` でガードされるため、本番ビルドに漏れ出すことはありません。
+- **Dev ミドルウェアの HTTP ハンドラ。** `devMiddleware` は、そもそもページではない応答のためのものです。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなど。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
+
+## 4 つのフック
 
 ```ts
 import { definePlugin } from "@takazudo/zfb/plugins";
 
 export default definePlugin({
   name: "my-plugin",
-  setup?(ctx) {},        // #255 — ホスト起動時に一度、preBuild の前
-  preBuild?(ctx) {},     // バンドラ / レンダラ前のファイル生成
-  postBuild?(ctx) {},    // dist/ への書き出し後の仕上げ処理
-  devMiddleware?(ctx) {},// zfb dev でのリクエスト単位 HTTP ハンドラ
+  setup?(ctx) {},        // #255 — runs once at host boot, before preBuild
+  preBuild?(ctx) {},     // file-generation work before the bundler / renderer
+  postBuild?(ctx) {},    // finalisation after dist/ has been written
+  devMiddleware?(ctx) {},// per-request HTTP handlers in `zfb dev`
 });
 ```
 
-## 4 つのフック
+フックは、`zfb.config.ts` の `plugins` 配列にプラグインが現れる順序で逐次実行されます。いずれかのフックで throw されるとビルド（または dev の起動）が中断し、throw したフックとプラグイン名がエラーバナーに表示されます。
 
-- **`setup(ctx)`** — `addAlias` / `addVirtualModule` / `injectRoute` で仮想モジュール、インポートエイリアス、開発専用の合成ルートを登録します。`ctx.command` が `"build"` か `"dev"` かで分岐できます。
-- **`preBuild(ctx)`** — バンドル前にファイルを生成する用途。
-- **`postBuild(ctx)`** — `dist/` 書き出し後の仕上げ。`ctx.routes` にビルドが生成した全 URL のルートマニフェストが渡されます（`preBuild` では `undefined`）。
-- **`devMiddleware(ctx)`** — リクエストごとに `{ status, headers, body }` を返す HTTP ハンドラ。`injectRoute` がページレンダリングパイプラインを通すのに対し、こちらは JSX を介さない素の HTTP 応答です。
+## `setup` — 仮想モジュール、エイリアス、注入ルートの登録
 
-## 設計上の制約
+`zfb build` ごとに **一度**、`zfb dev` ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）に寄与し、開発専用の合成ルートを登録する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
 
-- `addAlias` のコントラクトは **完全一致のみ** ですが、現状 1 系統だけ振る舞いが異なります。SSR と `paths()` を実行する組み込み V8 ホストは完全一致を遵守します。一方、`"use client"` 島をバンドルする islands esbuild 経路は esbuild CLI の `--alias` フラグに依拠しており、これがプレフィックス + スラッシュ一致のため `@/foo` を登録すると `@/foo/bar` も書き換えてしまいます。両系統を完全一致に揃える作業は v1 フォローアップで追跡されます。当面は実際に import する specifier のみをエイリアス登録するのが安全です。
-- `addVirtualModule(specifier, loader)` の `loader` は **完全な ESM ソーステキスト** を返します。loader はビルドごと（および dev ホスト起動ごと）に最初の `import` のタイミングで **1 回だけ** 実行され、結果はキャッシュされます。
-- `injectRoute` は **dev 専用**。`zfb build` 中に呼ぶと `InjectRouteInBuildMode` で失敗します。なお v1 ではレジストリへの登録・衝突検出・パターンマッチングまでが対象で、マッチした entrypoint を実際にページレンダラで評価する処理は後続イシューで対応します（マッチ自体は `zfb_plugin` トレースに記録されます）。
-- 同じキー（エイリアスの `from` / 仮想モジュールの `specifier` / 注入ルートの `pattern`）を 2 つのプラグインが異なる値で登録すると衝突エラーで両方のプラグイン名を含めて中断します。
-- `SetupContext` には `addRemarkPlugin` などのマークダウン拡張面は **意図的に存在しません**。マークダウン関連は zfb 本体（Rust 側）に内包する方針です。
+```ts
+setup({ command, projectRoot, config, options, logger, addAlias, addVirtualModule, injectRoute }) {
+  // `command` is "build" or "dev". Gate dev-only registrations on it.
+  addAlias("@/components/foo", "./src/components/foo.tsx");
+  addVirtualModule("virtual:my-data", () =>
+    `export default ${JSON.stringify(myJson)}`,
+  );
+  if (command === "dev") {
+    injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+  }
+}
+```
 
-詳細は英語版を参照してください。
+### `addAlias(from, to)` — 完全一致のインポート書き換え
+
+**完全に**一致したときに `to` へ解決される、単一のインポート specifier を登録します。パスはプロジェクトルートを基準に結合されます。
+
+```ts
+addAlias("@/components/foo", "./src/components/foo.tsx");
+```
+
+これにより、`import Foo from "@/components/foo"` は `./src/components/foo.tsx` に解決されます。
+
+サブパスのインポートは一致しません。`import "@/components/foo/bar"` は書き換えられず、バンドル時に未解決インポートエラーとして現れます。3 つすべての利用者（SSR と `paths()` 評価を駆動する組み込み V8 ホスト、メインのページ／レイアウトバンドラ、クライアントサイドの `"use client"` バンドルを生成する islands esbuild バンドラ）は、同じ完全一致のコントラクトを尊重します。
+
+**衝突検出。** 2 つのプラグインが同じ `from` を異なる `to` で登録すると `AliasConflict` が発生し、両方の問題プラグインを名指ししてビルドを中断します。冪等な再登録（同じプラグイン、同じ `to`）は許可されます。
+
+### `addVirtualModule(specifier, loader)` — 合成モジュールソース
+
+ソーステキストが `loader` によってオンデマンドで生成される bare specifier を登録します。推奨されるプレフィックスは `virtual:` ですが強制ではありません。実モジュールの specifier と衝突しないものなら何でも使えます。
+
+```ts
+addVirtualModule("virtual:metadata-db", () =>
+  `export default ${JSON.stringify(buildMetadataIndex())}`,
+);
+```
+
+`loader` は **完全な ESM ソーステキスト** を文字列として返します。バンドラ／組み込み V8 ホストは、返された文字列をそのモジュールのソースとしてそのまま使います。loader は、その specifier が最初に import された瞬間に **ビルドごとに正確に 1 回** 呼び出されます。同じ specifier の以降の import はキャッシュされたソースを再利用します。
+
+loader のコントラクトは **1 つ** だけです。「loader が JSON を返し zfb がそれをラップする」という代替モードはありません。JSON を公開したいなら、自分で `() => "export default " + JSON.stringify(data)` としてください。
+
+**衝突検出。** 2 つのプラグインが同じ `specifier` を登録すると `VirtualModuleConflict` が発生し、ビルドを中断します。
+
+### `injectRoute(pattern, entrypoint)` — 開発専用の合成ページルート
+
+dev サーバが認識する URL パターンの下に TSX/TS ファイルを登録します。これは **概念的には** `pages/<...>.tsx` と同じページレンダリングパイプラインを通ってルーティングされます。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、`entrypoint` はプロジェクトルートを基準に解決されます。
+
+```ts
+injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+```
+
+<Warning title="レンダラ統合は後続対応">
+
+レジストリ、衝突検出、開発専用ガード、パターンマッチングの配線はすべて v1 で出荷されています。**マッチした entrypoint をページレンダラで完全に評価する処理は後続イシューです。** 現状、URL が注入されたパターンに一致すると dev サーバは `zfb_plugin` トレーシングターゲットに構造化されたマッチを記録するので、登録がエンドツーエンドで成立したことを確認できます。ただしリクエストはその後、既存の dist / public フォールバックに落ちます（他にその URL を主張するファイルがなければ 404 になります）。レンダラ側の配線は、ここで説明した公開 API を変えることなく導入されます。
+
+</Warning>
+
+**開発専用。** `command === "build"` のときに `injectRoute` を呼ぶと `InjectRouteInBuildMode` が発生し、ビルドを中断します。静的ビルドは SSR 形状のルートを表面化させるべきではありません。実 URL 上に開発専用の HTML が必要なら、`if (command === "dev")` で呼び出しをガードしてください。
+
+**衝突検出。** 2 つのプラグインが同じ `pattern` を登録すると `InjectRouteConflict` が発生し、dev の起動を中断します。
+
+### `injectRoute` vs `devMiddleware` — 正しいフックを選ぶ
+
+どちらも `zfb dev` 中にだけ存在する新しい URL を追加しますが、狙う問題が異なります。
+
+| Hook | Returns | Use when |
+| --- | --- | --- |
+| `injectRoute(pattern, entrypoint)` | ページレンダラが評価して HTML にラスタライズする TSX/TS モジュール | 開発専用の URL 上に実在する JSX 形状のページが欲しいとき（zmod の Astro `injectRoute` に対応）。 |
+| `devMiddleware(ctx)` → `ctx.register(path, handler)` | リクエストごとに `{ status, headers, body }` を返す JS 関数 | HTTP ハンドラが欲しいとき — JSON API、ホットリロードブリッジ、アップロードエンドポイントなど。ページパイプラインも JSX もなし。 |
+
+応答がページでないときは `devMiddleware` が正解、ディスク上の `pages/` ツリーの外に存在する合成的な `pages/foo.tsx` が欲しいときは `injectRoute` が正解です。
+
+### 閉じた面 — マークダウン拡張フックはなし
+
+`SetupContext` が公開する登録メソッドは正確に 3 つだけです: `addAlias`、`addVirtualModule`、`injectRoute`。意図的に省かれているもの:
+
+- `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` はなし、
+- `addModuleLoader` / `addModuleTransform` はなし、
+- `onConfigResolved` / `onModuleLoad` はなし。
+
+マークダウンの拡張性は zfb のツリー **内部** に in-tree な Rust ビジター（TOC、外部リンク、CJK 処理など）として存在します。将来のマークダウン機能は JS プラグインポイントとして公開されるのではなく、エンジンに追加されます。これにより v1 のコントラクトは狭く保たれ、ビルドパイプラインは監査可能になります。
+
+## `preBuild(ctx)` と `postBuild(ctx)`
+
+- `preBuild` は `setup` の後、バンドラ／レンダラ／CSS／islands の作業の前に実行されます。下流のステージが見るファイルを生成するのに使います。
+- `postBuild` は `dist/` が完全に書き出された後（アダプタによるラッピングを含む）に実行されます。ディスク上に完全なツリーを必要とする仕上げのステップに使います。
+
+どちらのフックも `{ projectRoot, outDir, config, options, logger }` を受け取ります。`postBuild` はさらに `ctx.routes` — ビルドの完全なルートマニフェスト — を受け取ります。完全な形については [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
+
+### `ctx.routes` — ルートマニフェスト（postBuild のみ）
+
+`postBuild` プラグインは、ビルドが生成したすべての URL を記述する `ctx.routes` オブジェクトを受け取ります。このフィールドは `preBuild` 中は **存在しません（`undefined`）** — マニフェストはレンダリングが完了するまで利用できません。
+
+```ts
+interface ZfbRouteManifest {
+  routes: ZfbRouteEntry[];
+}
+
+interface ZfbRouteEntry {
+  url: string;         // emitted URL path, e.g. "/blog/hello/"
+  output: string;      // path under outDir, e.g. "blog/hello/index.html"
+  extension: string;   // file extension: "html", "xml", "rss", "txt", "json", …
+  source: string;      // source page module, e.g. "pages/blog/[slug].tsx"
+  prerender: boolean;  // true = SSG (written to disk under outDir);
+                       // false = SSR (no on-disk artifact, served by the adapter)
+  params?: Record<string, string | string[]>; // absent for static routes;
+                       // dynamic params are strings, catchall params are string[]
+}
+```
+
+ルートは、実行をまたいでバイト単位で安定した出力にするため `url` でソートされます。HTML 以外のルート（`sitemap.xml.tsx`、`feed.rss.tsx`、`llms.txt.tsx`）は、実際の拡張子と出力パスで現れます。
+
+マニフェストには SSG ルート（`prerender: true`）と SSR ルート（`prerender: false`）の **両方** が含まれます。SSR ルートはアダプタが提供する有効な実行時 URL ですが、`outDir` の下にディスク上のアーティファクトを持ちません。「ビルドがディスクに書き出した URL」を列挙するインデックス（sitemap.xml、search-index.json など）は、それらを表面化させないために `r.prerender !== false` でフィルタすべきです。
+
+### ディスク上アクセス — `dist/__zfb/routes.json`
+
+同じマニフェストは、すべての `zfb build` の終わりに `<outDir>/__zfb/routes.json` にも書き出されます（#347）。ディスク上のファイルはメモリ内の `ctx.routes` の形を 1 対 1 で反映します — 同じフィールド、同じ url ソート順 — ので、`pnpm build` に組み込まれた任意のスクリプト（兄弟の sitemap ジェネレータ、OGP インデクサ、検索シャードビルダ）は、zfb プラグインを書かずにマニフェストを読めます。
+
+```json
+{
+  "routes": [
+    { "url": "/", "output": "index.html", "extension": "html",
+      "source": "pages/index.tsx", "prerender": true },
+    { "url": "/blog/hello/", "output": "blog/hello/index.html",
+      "extension": "html", "source": "pages/blog/[slug].tsx",
+      "prerender": true, "params": { "slug": "hello" } }
+  ]
+}
+```
+
+プラグインの `ctx.routes` とディスク上の `routes.json` は、同じデータに対する 2 つのアクセス形状であって、2 つのコントラクトではありません。deploy 前に `dist/` から出荷アセット以外をすべて剥ぎ取るプロジェクトでは、`zfb.config.ts` で `emitRoutesManifest: false` を設定してオプトアウトできます。
+
+### 実践例: `postBuild` で `sitemap.xml` を生成する
+
+ビルドが生成したすべての HTML ルートから `sitemap.xml` を書き出すプラグインです。フィルタは `extension === "html"`（`.xml` / `.rss` / `.txt` ルートをスキップ）と `prerender !== false`（ディスク上のアーティファクトを持たない SSR ルートをスキップ）を組み合わせています。
+
+```ts
+// plugins/sitemap.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "sitemap",
+  postBuild({ outDir, routes }) {
+    if (!routes) return; // guard: absent on preBuild
+    const siteUrl = "https://example.com";
+    const htmlRoutes = routes.routes.filter(
+      (r) => r.extension === "html" && r.prerender !== false,
+    );
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...htmlRoutes.map(
+        (r) => `  <url><loc>${siteUrl}${r.url}</loc></url>`,
+      ),
+      "</urlset>",
+    ].join("\n");
+    writeFileSync(join(outDir, "sitemap.xml"), xml, "utf-8");
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/sitemap.ts" }],
+});
+```
+
+このプラグインは `dist/` が完全に書き出された後に実行されます。生成された HTML ページの隣に作るファイルは、本番では静的アセットとして提供されます。
+
+## `devMiddleware(ctx)`
+
+v1 から変更ありません。`ctx.register(path, handler)` で 1 つ以上の HTTP ハンドラを登録します。ハンドラは `{ status, headers, body }` を返します（または `undefined` を返すと zfb 組み込みの dev ルートにフォールスルーします）。
+
+形については [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
+
+## 実践例: `virtual:metadata-db`
+
+メタデータインデックスを構築し、それを仮想モジュールとして公開するプラグインです。ページはこれにより、インデックスのフォーマットについて zfb が何も知らないまま `import metadata from "virtual:metadata-db"` できます。
+
+```ts
+// plugins/metadata-db.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "metadata-db",
+  setup({ projectRoot, addVirtualModule }) {
+    addVirtualModule("virtual:metadata-db", () => {
+      const dir = join(projectRoot, "src/content/docs");
+      const entries = readdirSync(dir, { recursive: true })
+        .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+        .map((relPath) => {
+          const body = readFileSync(join(dir, relPath as string), "utf-8");
+          // ... parse frontmatter, compute slug, etc.
+          return { slug: relPath, title: "...", description: "..." };
+        });
+      return `export default ${JSON.stringify(entries)}`;
+    });
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/metadata-db.ts" }],
+});
+```
+
+```tsx
+// pages/index.tsx
+import metadata from "virtual:metadata-db";
+export default function Home() {
+  return (
+    <ul>
+      {metadata.map((m) => (
+        <li key={m.slug}><a href={`/${m.slug}`}>{m.title}</a></li>
+      ))}
+    </ul>
+  );
+}
+```
+
+loader は `zfb build` の最初に一度実行されます。バンドラは結果をキャッシュし、`virtual:metadata-db` のすべての `import` が同じソースを見ます。次の `zfb build` では loader が再び実行されます — ビルド間のディスク上キャッシュはありません。
+
+## 衝突検出のまとめ
+
+2 つのプラグインが登録で衝突すると、zfb は両方の問題プラグインを名指しする 3 つのエラーのいずれかでビルド／dev を中断します。
+
+- `AliasConflict` — 同じ `from`、異なる `to`。
+- `VirtualModuleConflict` — 同じ specifier、異なるプラグイン。
+- `InjectRouteConflict` — 同じ URL パターン、異なるプラグイン。
+
+`InjectRouteInBuildMode` は、いずれかのプラグインが `zfb build` 中に `injectRoute` を呼んだとき（誰が先に登録したかに関わらず）に発生します。
+
+## 必要ないとき — レシピを書く
+
+ビルド時に動くものすべてがプラグインを必要とするわけではありません。タスクが `setup` レベルの機能を必要としない（仮想モジュールも、エイリアスも、注入ルートも、dev ミドルウェアも不要）なら、`scripts/` に置いて `pnpm build` に組み込む素の Node.js スクリプトのほうがシンプルで、単独でテストしやすく、zfb 内部への結合も小さくなります。より広い原則については [設計哲学](/concepts/design-philosophy) と [エンジンとフレームワーク](/concepts/engine-vs-framework) のページが説明します。
+
+プラグインを必要としない一般的な候補:
+
+- **Sitemap 生成。** `postBuild` は `ctx.routes` を与えますが、同じ `dist/` ツリーを単独のスクリプトから読むこともできます。モジュールグラフへのアクセスは不要です。`pnpm build` に組み込んでください。
+- **OGP 画像の生成。** ページメタデータから open-graph 画像をレンダリングするのは、純粋なデータ入力／画像出力の変換です。ビルド済みの HTML や JSON マニフェストを読んで canvas/puppeteer/satori パイプラインを呼ぶ単独スクリプトはプラグインフックを必要としません。`pnpm build` に組み込んでください。
+- **検索インデックスの構築。** Pagefind や Lunr のようなツールは完成した `dist/` ツリーをクロールします。zfb 内部へのアクセスは不要で、出力ディレクトリへのパスがあれば十分です。`pnpm build` に組み込んでください。
+- **ビルド終了時のマニフェスト。** 生成されたファイルから導く独自の JSON マニフェスト（アセット一覧、バージョンマップ、ルートカタログ）が必要なら、ビルド後に `dist/` を読むスクリプトで自己完結します。`pnpm build` に組み込んでください。
+
+## 関連項目
+
+- [`defineConfig`](/api/define-config) — `plugins: [{ name: "...", options: {...} }]` の配線。
+- [ビルドパイプライン](/concepts/build-pipeline) — 各フックが全体の流れのどこに位置するか。
