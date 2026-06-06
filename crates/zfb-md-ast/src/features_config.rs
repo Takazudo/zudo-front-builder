@@ -353,6 +353,50 @@ pub fn reading_time_enabled(toggle: &Option<ReadingTimeFeature>) -> bool {
     toggle.as_ref().is_some_and(ReadingTimeFeature::is_enabled)
 }
 
+/// Heading-ID strategy applied by the always-on `HeadingLinks` plugin.
+///
+/// Selected via `markdown.features.headingIds.strategy` in `zfb.config.ts`.
+/// `Flat` is the long-standing default (github-slugger slugs with a
+/// per-document `-1`, `-2`, … dedup counter shared across h2–h6).
+/// `Hierarchical` prefixes each heading's slug with its ancestor chain
+/// (`## Foo` / `### Moo` / `#### Mew` → `foo`, `foo-moo`, `foo-moo-mew`),
+/// which makes anchors reconstructible from the heading outline and far
+/// less collision-prone (requested by zudolab/zudo-doc#1938 via zfb#871).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HeadingIdStrategy {
+    /// Flat github-slugger slugs + global per-document dedup (default).
+    #[default]
+    Flat,
+    /// Ancestor-prefixed slugs (`foo-moo-mew`), deduped on the full path.
+    Hierarchical,
+}
+
+/// Options for the `headingIds` entry in `markdown.features`.
+///
+/// Configures the always-on `HeadingLinks` plugin rather than toggling an
+/// opt-in feature — absent means [`HeadingIdStrategy::Flat`], preserving the
+/// pre-#871 anchor scheme byte-for-byte.
+///
+/// `deny_unknown_fields` ensures `headingIds: { bogus: true }` is rejected
+/// rather than silently treated as defaults.
+///
+/// Mirrors `HeadingIdsConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeadingIdsConfig {
+    /// Heading-ID strategy. Default: [`HeadingIdStrategy::Flat`].
+    #[serde(default)]
+    pub strategy: HeadingIdStrategy,
+}
+
+/// Resolve the `headingIds` config to a concrete [`HeadingIdStrategy`].
+/// Absent → [`HeadingIdStrategy::Flat`] (pre-#871 behaviour unchanged).
+#[must_use]
+pub fn heading_id_strategy(cfg: &Option<HeadingIdsConfig>) -> HeadingIdStrategy {
+    cfg.as_ref().map(|c| c.strategy).unwrap_or_default()
+}
+
 /// Directive kind for user-defined directives.
 ///
 /// Maps to [`crate::directives::DirectiveKind`]. A separate serde DTO is
@@ -532,6 +576,12 @@ pub struct MarkdownFeaturesConfig {
     /// [`TocConfig`] options object — see [`HeadingMarkerTocFeature`].
     #[serde(default)]
     pub heading_marker_toc: Option<HeadingMarkerTocFeature>,
+
+    /// Heading-ID strategy for the always-on `HeadingLinks` plugin.
+    /// Absent → flat (pre-#871 behaviour). `{ strategy: "hierarchical" }`
+    /// opts into ancestor-prefixed anchor IDs — see [`HeadingIdsConfig`].
+    #[serde(default)]
+    pub heading_ids: Option<HeadingIdsConfig>,
 }
 
 #[cfg(test)]
@@ -589,6 +639,59 @@ mod tests {
         let cfg: MarkdownFeaturesConfig =
             serde_json::from_value(json).expect("empty directives deserialises");
         assert!(directives_enabled(&cfg.directives));
+    }
+
+    // `headingIds: { strategy: "hierarchical" }` parses to the enum variant.
+    #[test]
+    fn heading_ids_hierarchical_parses() {
+        let json = serde_json::json!({ "headingIds": { "strategy": "hierarchical" } });
+        let cfg: MarkdownFeaturesConfig =
+            serde_json::from_value(json).expect("headingIds hierarchical deserialises");
+        assert_eq!(
+            heading_id_strategy(&cfg.heading_ids),
+            HeadingIdStrategy::Hierarchical
+        );
+    }
+
+    // `headingIds: { strategy: "flat" }` is the explicit form of the default.
+    #[test]
+    fn heading_ids_flat_parses() {
+        let json = serde_json::json!({ "headingIds": { "strategy": "flat" } });
+        let cfg: MarkdownFeaturesConfig =
+            serde_json::from_value(json).expect("headingIds flat deserialises");
+        assert_eq!(heading_id_strategy(&cfg.heading_ids), HeadingIdStrategy::Flat);
+    }
+
+    // `headingIds: {}` and an absent key both resolve to Flat.
+    #[test]
+    fn heading_ids_defaults_to_flat() {
+        let json = serde_json::json!({ "headingIds": {} });
+        let cfg: MarkdownFeaturesConfig =
+            serde_json::from_value(json).expect("empty headingIds deserialises");
+        assert_eq!(heading_id_strategy(&cfg.heading_ids), HeadingIdStrategy::Flat);
+        assert_eq!(heading_id_strategy(&None), HeadingIdStrategy::Flat);
+    }
+
+    // Unknown fields inside `headingIds` are rejected (deny_unknown_fields).
+    #[test]
+    fn heading_ids_unknown_field_rejected() {
+        let json = serde_json::json!({ "headingIds": { "bogus": true } });
+        let result: Result<MarkdownFeaturesConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "headingIds.bogus must be rejected; got: {result:?}"
+        );
+    }
+
+    // An invalid strategy value is rejected rather than falling back to flat.
+    #[test]
+    fn heading_ids_invalid_strategy_rejected() {
+        let json = serde_json::json!({ "headingIds": { "strategy": "nested" } });
+        let result: Result<MarkdownFeaturesConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "headingIds.strategy must reject unknown variants; got: {result:?}"
+        );
     }
 
     // `admonitionsPreset` is a removed key. `deny_unknown_fields` on
