@@ -18,7 +18,7 @@ zfb is a Rust workspace. Each crate owns one slice of the build, and the data fl
 - **`zfb-build`** is the orchestrator. It consumes `Change` values, classifies them, asks the graph which pages need rebuilding, and runs the asset pipeline.
 - **`zfb-render`** compiles TSX through SWC, hands the resulting JS to a `RenderHost`, and writes the HTML.
 - **`zfb-css`** processes CSS modules and global styles.
-- **`zfb-islands`** scans for `client:*` directives, bundles the per-island JS, and emits the hydration entry.
+- **`zfb-islands`** scans for `"use client"` directives, bundles all islands into a single shared JS bundle, and emits the hydration entry.
 - **`zfb-content`** parses Markdown / MDX content collections and runs the unified plugin chain.
 - **`zfb-server`** is the dev-only HTTP server: a page cache, a static-file route, the live-reload SSE stream, and a request-time SSR dispatcher for `prerender = false` pages.
 
@@ -38,7 +38,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 
 | Tool | Role | Trait boundary |
 | --- | --- | --- |
-| **esbuild** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the per-island client bundles (`zfb-islands`). Fast, handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
+| **esbuild** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the shared islands client bundle (`zfb-islands`). Fast, handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
 | **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](/architecture/js-runtime) for the rationale. | `RenderHost` (in `zfb-render`) |
 | **SWC** | Compiles TSX source to JavaScript before handing it off to esbuild or the render host. Lives inside `zfb-render`. | Internal to `zfb-render`; swappable by replacing that crate's transform step |
 | **lol_html** | Streaming HTML rewriter used to inject hydration entry-point `<script>` tags and island mount markers into the rendered HTML without a full parse. | Used inside `zfb-build/head_inject.rs`; no public trait needed — it is a low-level utility |
@@ -47,7 +47,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 
 zfb owns orchestration, the dependency graph, and the per-page contract. The tools each appear in exactly one layer:
 
-- **esbuild** is called in two places: `zfb-build` (server worker bundle) and `zfb-islands` (per-island client bundles). Both use it for bundling TypeScript/JSX source trees; neither exposes it to the crates above.
+- **esbuild** is called in two places: `zfb-build` (server worker bundle) and `zfb-islands` (shared islands client bundle). Both use it for bundling TypeScript/JSX source trees; neither exposes it to the crates above.
 - **deno_core (V8)** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host (`EmbeddedV8RenderHost`) runs the bundle in an in-process V8 isolate. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
 - **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before esbuild sees the source. Either way it is invisible to the orchestrator.
 - **lol_html** runs after the render host returns HTML, inside `zfb-build/head_inject.rs`. The orchestrator sees plain strings in and plain strings out.

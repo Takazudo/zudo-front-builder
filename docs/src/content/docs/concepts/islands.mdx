@@ -63,18 +63,27 @@ export default function ThemeToggle() {
 
 ## What esbuild produces for N islands
 
-For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **four files**:
+For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **one shared bundle**:
 
 ```
-dist/islands/Counter.js
-dist/islands/ThemeToggle.js
-dist/islands/SearchBox.js
-dist/islands/islands-runtime.js
+dist/assets/islands.js
 ```
 
-Three per-island bundles — one per component — plus a single shared runtime bundle that drives hydration. Each per-island file is a self-contained ESM module: it imports the component and the framework-specific hydration glue (e.g. Preact's `hydrate`) and exports nothing. Sharing between islands happens at the esbuild level within each bundle; the runtime itself is a separate bundle.
+All islands are statically imported into a single esbuild entry point, so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
 
-**Filenames are stable** — no content hash in the name. The `ProductionAssetPipeline` is the single source of truth for hashing and handles URL rewrites in the emitted HTML; the bundler writes predictable paths so nothing downstream has to guess.
+```
+dist/assets/islands-<hash>.js
+```
+
+If any island uses a dynamic `import()` internally, esbuild may also emit code-split chunks alongside it:
+
+```
+dist/assets/islands-chunk-<hash>.js
+```
+
+The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module to hydrate every `[data-zfb-island]` element on the page.
+
+**The `ProductionAssetPipeline` is the single source of truth for hashing** — the bundler writes a stable `islands.js` first, and the pipeline performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
 
 ## How islands are loaded
 
@@ -82,30 +91,37 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 
 ```html
 <div data-zfb-island="ThemeToggle"
-     data-props="{}"
-     data-when="load">
+     data-props="{}">
   <!-- server-rendered island HTML -->
   <button type="button" aria-pressed="false">Dark mode</button>
 </div>
 ```
 
-On pages that have at least one island, **one `<script>` tag** is injected into `<head>`:
+The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. Only `"visible"` (hydrate when the element enters the viewport) and `"idle"` (hydrate during the browser's next idle period) emit a `data-when` attribute:
 
 ```html
-<script type="module" src="/islands/islands-runtime.js"></script>
+<!-- visible timing -->
+<div data-zfb-island="SearchBox" data-props="{}" data-when="visible">…</div>
+
+<!-- idle timing -->
+<div data-zfb-island="Counter" data-props="{}" data-when="idle">…</div>
 ```
 
-The runtime (`islands-runtime.js`) walks all `[data-zfb-island]` elements on the page. For each element it finds, it `dynamic-import()`s the matching per-island bundle — `/islands/ThemeToggle.js` for `data-zfb-island="ThemeToggle"` — reads the serialised `data-props`, and calls `hydrate()` on the existing server-rendered DOM.
+On builds that include at least one island, **one `<script>` tag** is injected project-wide into `<head>`:
 
-## Consequences of the dynamic-import design
+```html
+<script type="module" src="/assets/islands-<hash>.js"></script>
+```
 
-Because the runtime resolves islands lazily via `import()`:
+The shared islands bundle (`islands-<hash>.js`) contains all island components. It registers each one by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which walks every `[data-zfb-island]` element on the page, reads the serialised `data-props`, and calls `hydrate()` on the existing server-rendered DOM.
 
-- **Only the islands a page actually uses are fetched.** A page that uses `ThemeToggle` never downloads `Counter.js` or `SearchBox.js`.
-- **Pages with no islands get no runtime.** If a page's render tree contains no `"use client"` components, the build pipeline skips the `<script>` injection entirely. Zero bytes of JavaScript land on a fully static page.
-- **Adding a new island to one page does not affect other pages.** Because each page's HTML is independent and islands are fetched by name, adding `SearchBox` to the home page leaves every other page's HTML and network traffic unchanged.
+## Consequences of the shared-bundle model
 
-The stable filenames reinforce this: a CI deploy adds `SearchBox.js` to the `dist/islands/` directory; all existing `*.js` files stay byte-identical and remain cache-valid in the browser.
+Because all islands are bundled together into a single file:
+
+- **Every page with any island loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
+- **Pages with no islands get no script.** If a project's pages contain no `"use client"` components, the build pipeline skips the `<script>` injection entirely. Zero bytes of JavaScript land on a fully static page.
+- **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
 
 ## Framework choices
 
@@ -124,7 +140,7 @@ export default {
 };
 ```
 
-This is a **project-wide setting** — one framework per project. The bundler (`FrameworkKind` enum in `crates/zfb-islands`) threads the choice through JSX transform options (`--jsx-import-source`) and the hydration glue that wraps each per-island entry. You cannot mix Preact islands and React islands in the same project.
+This is a **project-wide setting** — one framework per project. The bundler (`FrameworkKind` enum in `crates/zfb-islands`) threads the choice through JSX transform options (`--jsx-import-source`) and the framework-specific hydration glue embedded in the shared bundle. You cannot mix Preact islands and React islands in the same project.
 
 zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentionally a two-variant enum, not a plugin point. If you need a different framework, the escape hatches below cover the common cases.
 
