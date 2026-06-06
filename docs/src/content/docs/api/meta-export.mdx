@@ -6,7 +6,7 @@ sidebar_position: 5
 
 ## The pattern
 
-Every page module may export a `meta` constant (or an async function returning the same record) describing the page's `<head>` data — title, description, and layout override. The renderer reads this export via `RenderHost::get_export` and merges it into the page layout's `<head>` block.
+Every page module may export a `meta` constant (or an async function returning the same record) describing per-page metadata — title, description, and layout override. The build reads this export, parses it into a typed record (`crates/zfb-render/src/meta.rs`), and resolves which layout module wraps the page. The renderer itself emits no `<head>` tags; the layout component owns `<head>` and decides what to render with the values it receives.
 
 ## Example
 
@@ -38,11 +38,11 @@ export async function meta() {
 `PageMeta` accepts exactly the following keys. Unknown keys are **rejected** at parse time (`deny_unknown_fields`) so that typos surface as build errors rather than being silently dropped.
 
 - `title?: string` — overrides the layout default for this page.
-- `description?: string` — used for the `<meta name="description">` tag.
+- `description?: string` — made available to the layout component, which decides whether to render a `<meta name="description">` tag. The bundled default layout currently does not emit one.
 - `layout?: string` — module specifier (relative path or bare specifier) for the page layout component. When absent, the project default layout is used.
 
 <Note>
 
-Support for canonical URL, Open Graph, and Twitter Card tags is not yet part of `PageMeta`. These are tracked as a follow-up. In the meantime, inject them directly in your layout component using the `title` and `description` values from the meta export, or use a plugin to emit `<head>` tags at build time.
+Canonical URL, Open Graph, and Twitter Card tags are not part of `PageMeta` — there is no meta→`<head>` emission pipeline to extend (the layout owns `<head>`). To add these tags, inject them directly in your layout component, or use a build-time plugin to emit `<head>` content.
 
 </Note>
