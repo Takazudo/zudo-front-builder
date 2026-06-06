@@ -292,6 +292,21 @@ impl Pipeline {
         self.heading_id_strategy
     }
 
+    /// Declare the heading-ID strategy of a manually wired
+    /// [`HeadingLinksPlugin`] so the JSX-emit path (`collect_headings`)
+    /// mirrors the rendered `<hN id="…">`.
+    ///
+    /// Only needed for custom pipelines that call
+    /// [`add_hast_visitor`](Pipeline::add_hast_visitor) with
+    /// `HeadingLinksPlugin::with_strategy(…)` themselves — without this,
+    /// the `headings` export stays on the flat default while the rendered
+    /// ids are hierarchical. [`Pipeline::with_defaults_and_full_config`]
+    /// sets it automatically from `features.headingIds`.
+    pub fn set_heading_id_strategy(&mut self, strategy: HeadingIdStrategy) -> &mut Self {
+        self.heading_id_strategy = strategy;
+        self
+    }
+
     /// Set the `add_trailing_slash` option. Affects subsequent
     /// `add_strip_md_ext()` calls. Defaults to `true`.
     pub fn set_add_trailing_slash(&mut self, value: bool) -> &mut Self {
@@ -746,7 +761,7 @@ impl Pipeline {
         // the resolved strategy is also stored on the pipeline so the
         // JSX-emit path (`collect_headings`) mirrors the same scheme.
         let strategy = zfb_md_extras::heading_id_strategy(&features.heading_ids);
-        p.heading_id_strategy = strategy;
+        p.set_heading_id_strategy(strategy);
         p.add_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
         p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in

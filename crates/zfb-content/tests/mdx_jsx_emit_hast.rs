@@ -897,3 +897,30 @@ fn default_features_keep_flat_heading_ids() {
         "hierarchical ids must NOT appear without opting in:\n{out}",
     );
 }
+
+/// Codex-review follow-up (zfb#871): a CUSTOM pipeline that hand-wires
+/// `HeadingLinksPlugin::with_strategy(Hierarchical)` must call
+/// `set_heading_id_strategy` so the `headings` export mirrors the
+/// rendered ids — this test pins the setter keeping the two in sync.
+#[test]
+fn manual_wiring_with_setter_keeps_headings_export_in_sync() {
+    use zfb_content::plugins::heading_links::{HeadingIdStrategy, HeadingLinksPlugin};
+
+    let mut p = Pipeline::with_mdx();
+    p.set_heading_id_strategy(HeadingIdStrategy::Hierarchical);
+    p.add_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(
+        HeadingIdStrategy::Hierarchical,
+    )));
+    let out =
+        mdx_to_jsx_module_with_pipeline("## Foo\n\n### Moo\n", MdxJsxOptions::default(), &mut p)
+            .expect("pipeline emit ok");
+
+    assert!(
+        out.contains("id=\"foo-moo\""),
+        "manually wired plugin must render hierarchical ids:\n{out}",
+    );
+    assert!(
+        out.contains("slug: \"foo-moo\""),
+        "headings export must follow the declared strategy:\n{out}",
+    );
+}
