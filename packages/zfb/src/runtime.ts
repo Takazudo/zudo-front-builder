@@ -245,6 +245,9 @@ export type IslandManifest = Readonly<Record<string, IslandManifestValue>>;
 // (or a noop if the bundle does not expose one). Used by unmountIslands()
 // to fire framework lifecycle cleanups before a body swap.
 const mounted = new WeakMap<Element, () => void>();
+// Elements for which the nested-island self-wrap warning has already been
+// emitted. Guards against repeated warn spam across re-walks (e.g. SPA swaps).
+const warnedNested = new WeakSet<Element>();
 // Elements with an in-flight dynamic import that has not yet resolved.
 // Two concurrent `mountIslands` invocations (or two `scheduleMount`
 // calls hitting the same element through different code paths) could
@@ -294,6 +297,7 @@ export function mountIslands(manifest: IslandManifest): void {
     // dispatch.
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
+    warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "hydrate");
   }
 
@@ -301,6 +305,7 @@ export function mountIslands(manifest: IslandManifest): void {
   for (const el of Array.from(skipSsrIslands)) {
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
+    warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "render");
   }
 }
@@ -326,6 +331,7 @@ export function mountNewIslands(): void {
   for (const el of Array.from(ssrIslands)) {
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
+    warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "hydrate");
   }
 
@@ -333,6 +339,7 @@ export function mountNewIslands(): void {
   for (const el of Array.from(skipSsrIslands)) {
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
+    warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "render");
   }
 }
@@ -351,6 +358,39 @@ export function cancelPendingIslands(): void {
     cancel();
     pendingCancels.delete(el);
   }
+}
+
+/**
+ * Warn (once per element, dev-only) when an island marker element is found
+ * nested inside another island marker. Self-wrapping an island — emitting a
+ * `data-zfb-island` or `data-zfb-island-skip-ssr` container *inside* another
+ * island component's render output — mis-hydrates because the runtime will
+ * try to mount both the outer and inner islands independently. The outer
+ * island's framework instance owns the inner DOM, so a second `hydrate()` /
+ * `render()` call against the inner element races with the outer render and
+ * produces undefined behaviour.
+ *
+ * The fix is to author the inner component bare (no `<Island>` in its own
+ * render output) and apply the `<Island when="...">` wrapper at the call site.
+ */
+function warnIfNestedIsland(el: Element, componentName: string): void {
+  if (typeof process === "undefined" || !process.env || process.env["NODE_ENV"] === "production") {
+    return;
+  }
+  if (warnedNested.has(el)) return;
+  const parent = el.parentElement;
+  if (!parent || typeof parent.closest !== "function") return;
+  const ancestor = parent.closest("[data-zfb-island],[data-zfb-island-skip-ssr]");
+  if (!ancestor) return;
+  warnedNested.add(el);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[zfb] Island "${componentName}" is nested inside another island marker. ` +
+      `Self-wrapping an island mis-hydrates: the outer framework instance owns ` +
+      `the inner DOM, causing a conflicting mount. ` +
+      `Fix: author "${componentName}" bare (remove <Island> from its own render output) ` +
+      `and apply <Island when="..."> at the call site instead.`,
+  );
 }
 
 function scheduleMount(
