@@ -293,6 +293,66 @@ pub fn heading_marker_toc_enabled(toggle: &Option<HeadingMarkerTocFeature>) -> b
     toggle.as_ref().is_some_and(HeadingMarkerTocFeature::is_enabled)
 }
 
+/// Options for the `readingTime` feature.
+///
+/// `deny_unknown_fields` ensures `readingTime: { bogus: true }` is rejected
+/// rather than silently accepted by the `serde(untagged)` enum.
+///
+/// Mirrors `ReadingTimeConfig` in `packages/zfb/src/config.ts`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadingTimeOptions {
+    /// Words-per-minute rate for the reading-time estimate.
+    /// Default: `200` when absent.
+    #[serde(default)]
+    pub wpm: Option<u32>,
+}
+
+/// `readingTime` feature value: either a `bool` shorthand
+/// (`true` = enable with default 200 WPM, `false` = disable) or a
+/// [`ReadingTimeOptions`] object that carries a custom `wpm`.
+///
+/// `serde(untagged)` with `Options` listed first ensures serde tries the
+/// object form before the bool — same pattern as [`HeadingMarkerTocFeature`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ReadingTimeFeature {
+    /// Per-feature options object (`{ wpm: N }`).
+    Options(ReadingTimeOptions),
+    /// Shorthand: `true` = enabled with defaults, `false` = disabled.
+    Bool(bool),
+}
+
+impl ReadingTimeFeature {
+    /// True when the feature should be wired into the pipeline. `Bool(false)`
+    /// is treated as disabled even though it deserialises to `Some(...)`.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            ReadingTimeFeature::Bool(b) => *b,
+            ReadingTimeFeature::Options(_) => true,
+        }
+    }
+
+    /// Resolve to the configured WPM value. `Bool(_)` falls back to `None`
+    /// (the plugin applies its own default of 200). The caller must gate on
+    /// [`Self::is_enabled`] first to know whether to wire the plugin.
+    #[must_use]
+    pub fn wpm(&self) -> Option<u32> {
+        match self {
+            ReadingTimeFeature::Options(opts) => opts.wpm,
+            ReadingTimeFeature::Bool(_) => None,
+        }
+    }
+}
+
+/// Same as [`feature_enabled`] but for the `readingTime` feature, which
+/// accepts the rich `ReadingTimeOptions` shape via [`ReadingTimeFeature`].
+#[must_use]
+pub fn reading_time_enabled(toggle: &Option<ReadingTimeFeature>) -> bool {
+    toggle.as_ref().is_some_and(ReadingTimeFeature::is_enabled)
+}
+
 /// Directive kind for user-defined directives.
 ///
 /// Maps to [`crate::directives::DirectiveKind`]. A separate serde DTO is
@@ -417,8 +477,9 @@ pub struct MarkdownFeaturesConfig {
     pub github_alerts: Option<FeatureToggle>,
 
     /// Reading-time estimate injected into the document frontmatter.
+    /// Accepts `true` / `false` shorthand or `{ wpm: N }` for a custom rate.
     #[serde(default)]
-    pub reading_time: Option<FeatureToggle>,
+    pub reading_time: Option<ReadingTimeFeature>,
 
     /// GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`.
     #[serde(default)]

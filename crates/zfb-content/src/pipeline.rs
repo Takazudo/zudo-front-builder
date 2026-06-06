@@ -959,7 +959,7 @@ pub fn register_features(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
-    use zfb_md_ast::{directives_enabled, feature_enabled, heading_marker_toc_enabled};
+    use zfb_md_ast::{directives_enabled, feature_enabled, heading_marker_toc_enabled, reading_time_enabled};
 
     // ── mdast phase ────────────────────────────────────────────────────────
     // transclude MUST run FIRST in the mdast phase — before code_tabs,
@@ -995,9 +995,14 @@ pub fn register_features(
         ));
     }
 
-    if feature_enabled(&features.reading_time) {
+    if reading_time_enabled(&features.reading_time) {
+        let wpm = features
+            .reading_time
+            .as_ref()
+            .and_then(zfb_md_ast::ReadingTimeFeature::wpm)
+            .unwrap_or(200);
         p.add_mdast_visitor(Box::new(
-            zfb_md_extras::reading_time::ReadingTimePlugin::new(),
+            zfb_md_extras::reading_time::ReadingTimePlugin::with_wpm(wpm),
         ));
     }
 

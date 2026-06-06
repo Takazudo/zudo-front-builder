@@ -675,6 +675,24 @@ export type TranscludeConfig = {
 };
 
 /**
+ * Options for the `readingTime` feature.
+ *
+ * Mirrors `ReadingTimeOptions` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type ReadingTimeConfig = {
+  /** Words-per-minute rate for the reading-time estimate. Default: 200. */
+  wpm?: number;
+};
+
+/**
+ * `readingTime` feature value: either a `boolean` shorthand or a
+ * {@link ReadingTimeConfig} options object.
+ *
+ * Mirrors `ReadingTimeFeature` in crates/zfb-md-ast/src/features_config.rs.
+ */
+export type ReadingTimeFeature = boolean | ReadingTimeConfig;
+
+/**
  * Per-feature markdown pipeline configuration.
  *
  * All fields are optional; absent = feature disabled, behaviour unchanged
@@ -687,8 +705,11 @@ export type MarkdownFeaturesConfig = {
   /** GitHub-style alert blocks (`> [!NOTE]`, `> [!WARNING]`, etc.). */
   githubAlerts?: FeatureToggle;
 
-  /** Reading-time estimate injected into the document frontmatter. */
-  readingTime?: FeatureToggle;
+  /**
+   * Reading-time estimate injected into the document frontmatter.
+   * Accepts `true` / `false` shorthand or `{ wpm: N }` for a custom rate.
+   */
+  readingTime?: ReadingTimeFeature;
 
   /** GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`. */
   githubAutolinks?: GithubAutolinksConfig;

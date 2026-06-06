@@ -8,15 +8,9 @@ The `readingTime` feature walks the parsed markdown AST, counts words, and injec
 `export const readingTimeMinutes = N;` into the compiled MDX module. Import the
 named export directly from the MDX file to use it in your page.
 
-<Note>
-
-The words-per-minute rate is fixed at **200 WPM** and cannot be customised via
-config. Passing `{ wpm: 250 }` is rejected at deserialization (unknown field) and
-will cause a config error.
-
-</Note>
-
 ## Enable
+
+Enable with the boolean shorthand (uses the default 200 WPM rate):
 
 ```ts
 // zfb.config.ts
@@ -28,6 +22,22 @@ export default defineConfig({
   },
 });
 ```
+
+Or pass `{ wpm: N }` to use a custom words-per-minute rate:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      readingTime: { wpm: 250 },
+    },
+  },
+});
+```
+
+`readingTime: true` keeps the default 200 WPM. Unknown fields (e.g.
+`{ bogus: true }`) are rejected at deserialization with a clear error.
 
 ## Usage in a TSX page
 
@@ -60,8 +70,9 @@ The plugin combines two passes:
    Source: [remark-reading-time](https://www.npmjs.com/package/remark-reading-time) —
    "It also uses CJK character count for languages that don't use spaces between words."
 
-The total word count (Latin tokens + CJK characters) is divided by 200 WPM,
-ceiling-rounded to the nearest whole minute, with a minimum of 1.
+The total word count (Latin tokens + CJK characters) is divided by the
+configured WPM rate (default 200), ceiling-rounded to the nearest whole minute,
+with a minimum of 1.
 
 ### Code blocks are excluded
 
@@ -70,8 +81,8 @@ contains hundreds of lines will not be over-estimated based on code content.
 
 ## Examples
 
-| Input | Result |
-|-------|--------|
+| Input | Result (at 200 WPM) |
+|-------|---------------------|
 | 200 Latin words | 1 minute |
 | 600 Latin words | 3 minutes |
 | 200 CJK characters | 1 minute |
@@ -80,6 +91,7 @@ contains hundreds of lines will not be over-estimated based on code content.
 ## Notes
 
 - The minimum returned value is always **1 minute**, regardless of article length.
+- The WPM rate is configurable (default 200); pass `{ wpm: N }` to override.
 - Reading time is computed against the **prose content only** — headings, paragraphs,
   lists, blockquotes, and emphasis all contribute; code blocks, raw HTML, and math
   blocks do not.
