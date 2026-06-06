@@ -14,23 +14,39 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 ## 設定の形状
 
-すべてのキーは camelCase で、`crates/zfb/src/config.rs` を反映しています。
+すべてのキーは camelCase です。形状は Rust の serde デシリアライザ（`crates/zfb/src/config.rs`）によって強制されます。`packages/zfb/src/config.ts` の TypeScript 型は、エディタの IntelliSense のためにそれを反映しています。
 
 - `outDir?: string` — 出力ディレクトリ。デフォルト: `"dist"`。
 - `publicDir?: string` — 静的アセットのディレクトリ。そのままコピーされます。デフォルト: `"public"`。
 - `host?: string` — dev / preview サーバーがバインドするホスト。
 - `port?: number` — dev / preview サーバーのポート。
 - `framework?: "preact" | "react"` — JSX フレームワークのランタイム。デフォルト: `"preact"`。
-- `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは `name`（`getCollection` 呼び出しで使う識別子）、`path`（プロジェクトルートからの相対ディレクトリ）、任意の `schema`（設定ロード時に検証され、フロントマターは `zfb check` とビルドによってスキーマと照合されます）を持ちます。
+- `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは以下を持ちます。
+  - `name: string` — `getCollection` 呼び出しで使う識別子。
+  - `path: string` — プロジェクトルートからの相対ディレクトリ。
+  - `schema?: Record<string, unknown>` — フロントマター検証用の任意の JSON Schema（`zfb check` とビルドによってチェックされます）。
+  - `include?: string[]` — glob パターン（globset 方言、`path` からの相対）。設定すると、マッチするエントリのみが保持されます。
+  - `exclude?: string[]` — glob パターン。マッチするエントリは除外されます（`include` の後に評価されます）。
+  - `idStripSuffix?: string` — 各エントリの slug とモジュール specifier から取り除かれるサフィックス（例: 多言語レイアウトでの `".en"`）。
 - `tailwind?: { enabled?: boolean }` — Tailwind オプション。
+- `prefetch?: { disabled?: boolean }` — プリフェッチオプション。`disabled: true` のとき、ランタイムのプリフェッチ配線はビルド時の meta タグを通じて完全にスキップされます。
+- `bundle?: { exclude?: string[]; mainFields?: string[]; external?: string[] }` — `--platform=neutral` のページ / SSR パスに対する esbuild のエスケープハッチ。`exclude` は esbuild のグラフから除外するソースファイルのプロジェクト相対 glob を列挙します。`mainFields` は `exports` マップを持たない依存に対する main-fields リストを上書きします。`external` はベア specifier を external としてマークし、esbuild がそれをバンドルせずに残すようにします。neutral プラットフォームで失敗する CJS 専用の依存に便利です（issue #680 / #676 を参照）。
 - `plugins?: PluginConfig[]` — ユーザー提供のプラグイン。各エントリは `name`（npm の specifier または `./` 相対パス）と任意の `options`（プラグインのフックに渡される任意の JSON オブジェクト）を持ちます。フックのコントラクト（`setup`、`preBuild`、`postBuild`、`devMiddleware`）の全体、および仮想モジュール・インポートエイリアス・開発専用の注入ルートについては [Plugins](/concepts/plugins) を参照してください。
 - `adapter?: string` — デプロイ先アダプタのパッケージ名。純粋な静的ビルドの場合は省略します。`"@takazudo/zfb-adapter-cloudflare"` のようなパッケージは SSR バンドルをデプロイ可能なエントリ（例: Cloudflare Pages 向けの `dist/_worker.js`）にラップします。
+- `output?: "static" | "hybrid" | "auto"` — プロジェクトの出力モード。`"static"` は、いずれかのルートが `prerender = false` をエクスポートしているとビルド開始時にエラーになります。`"hybrid"` は、現在 SSR ルートが存在しなくても常に V8 / SSR を有効にします。`"auto"`（デフォルト）はルートセットから検出します。
 - `site?: string` — 正規のオリジン URL（例: `"https://example.com"`）。設定すると `globalThis.__zfb.site` が公開され、レイアウトで正規の `<link>` タグ、OpenGraph メタ、サイトマップの絶対 href、hreflang の代替言語指定を構築できます。絶対 HTTP/HTTPS URL である必要があります。サーバーサイドでの正規 URL 構築が不要なビルドでは省略してください。`base` とは別物です（後述）。
 - `base?: string` — アセット URL 向けの公開 URL プレフィックス。サイトがサブパス配下にデプロイされる場合（例: `"/pj/my-site/"`）に使います。`site` とは別物です。`base` はアセット URL の前に付与され、`site` はメタデータで使う完全な正規オリジンです。
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
 - `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
+- `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](/markdown-features) のセクションを参照してください。
 - `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。
+- `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
+
+以下のキーは Rust の設定ローダーが受け付けますが、TypeScript 型では無視されます（これらは `zfb` が JS の dev ツールではなく Rust バイナリとして動作するときにのみ適用されます）。
+
+- `codeHighlight` — syntect の構文ハイライトテーマオプション。構文ハイライトのガイドを参照してください。
+- `pluginHookTimeoutSecs` — プラグインフック呼び出しのタイムアウト（秒）。
 
 ## プロジェクトルート外のパスを監視する
 

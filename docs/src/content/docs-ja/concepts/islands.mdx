@@ -7,7 +7,7 @@ category: Concepts
 
 zfb のページはデフォルトで静的 HTML にレンダリングされます。**Islands（島）** はその抜け道です。ブラウザに JavaScript を配信してクライアントでハイドレートする小さなコンポーネントで、ページの残りの部分はプレーンな HTML のままに保たれます。
 
-メンタルモデルは単純です。ページの大部分は静的なドキュメントです。いくつかのインタラクティブな要素（カウンター、検索ボックス、テーマ切り替え）は、そのドキュメントに埋め込まれた島であり、それぞれが独立してロードされハイドレートされます。
+メンタルモデルは単純です。ページの大部分は静的なドキュメントです。いくつかのインタラクティブな要素（カウンター、検索ボックス、テーマ切り替え）は、そのドキュメントに埋め込まれた島であり、単一の共有バンドルからブラウザでハイドレートされます。
 
 ## 島とは何か
 
@@ -63,18 +63,27 @@ export default function ThemeToggle() {
 
 ## N 個の島に対して esbuild が生成するもの
 
-3 つの島（`Counter`・`ThemeToggle`・`SearchBox`）を持つプロジェクトの場合、islands のビルドステップは **4 つのファイル** を出力します。
+3 つの島（`Counter`・`ThemeToggle`・`SearchBox`）を持つプロジェクトの場合、islands のビルドステップは **1 つの共有バンドル** を出力します。
 
 ```
-dist/islands/Counter.js
-dist/islands/ThemeToggle.js
-dist/islands/SearchBox.js
-dist/islands/islands-runtime.js
+dist/assets/islands.js
 ```
 
-島ごとのバンドルが 3 つ（コンポーネントごとに 1 つ）、それにハイドレーションを駆動する共有ランタイムバンドルが 1 つです。島ごとの各ファイルは自己完結した ESM モジュールです。コンポーネントとフレームワーク固有のハイドレーション接着コード（例: Preact の `hydrate`）をインポートし、何もエクスポートしません。島同士の共有は各バンドル内の esbuild レベルで行われ、ランタイム自体は別のバンドルです。
+すべての島は単一の esbuild エントリポイントへ静的にインポートされるため、共有バンドルにはすべての島コンポーネントが含まれます。その後 `ProductionAssetPipeline` が、最終出力を書き出す前にコンテンツハッシュ付きのファイル名へとリネームします。
 
-**ファイル名は安定しています** — 名前にコンテンツハッシュは含まれません。`ProductionAssetPipeline` がハッシュ化の単一の真実の源であり、出力された HTML 内の URL の書き換えを処理します。バンドラは予測可能なパスを書き出すため、下流の処理が推測する必要はありません。
+```
+dist/assets/islands-<hash>.js
+```
+
+いずれかの島が内部で動的な `import()` を使っている場合、esbuild はそれと並べてコード分割チャンクも出力することがあります。
+
+```
+dist/assets/islands-chunk-<hash>.js
+```
+
+バンドルは各島を静的なマーカー名で登録し、モジュールの末尾で `mountIslands()` を呼び出して、ページ上のすべての `[data-zfb-island]` 要素をハイドレートします。
+
+**`ProductionAssetPipeline` がハッシュ化の単一の真実の源です** — バンドラはまず安定した `islands.js` を書き出し、パイプラインがハッシュ付きへのリネームを行い、出力された HTML 内の注入されたスクリプト URL を書き換えます。下流の処理がファイル名を推測する必要はありません。
 
 ## 島がどうロードされるか
 
@@ -82,30 +91,37 @@ dist/islands/islands-runtime.js
 
 ```html
 <div data-zfb-island="ThemeToggle"
-     data-props="{}"
-     data-when="load">
+     data-props="{}">
   <!-- server-rendered island HTML -->
   <button type="button" aria-pressed="false">Dark mode</button>
 </div>
 ```
 
-少なくとも 1 つの島を持つページには、**1 つの `<script>` タグ** が `<head>` に注入されます。
+`data-when` 属性はハイドレーションのタイミングを制御し、デフォルト以外のタイミングを要求したときにのみ出力されます。`"load"` タイミング（即座にハイドレート）がデフォルトで、`data-when` 属性は生成されません。`"visible"`（要素がビューポートに入ったときにハイドレート）と `"idle"`（ブラウザの次のアイドル期間中にハイドレート）だけが `data-when` 属性を出力します。
 
 ```html
-<script type="module" src="/islands/islands-runtime.js"></script>
+<!-- visible timing -->
+<div data-zfb-island="SearchBox" data-props="{}" data-when="visible">…</div>
+
+<!-- idle timing -->
+<div data-zfb-island="Counter" data-props="{}" data-when="idle">…</div>
 ```
 
-ランタイム（`islands-runtime.js`）はページ上のすべての `[data-zfb-island]` 要素を走査します。見つけた各要素について、対応する島ごとのバンドル（`data-zfb-island="ThemeToggle"` に対しては `/islands/ThemeToggle.js`）を `dynamic-import()` し、シリアライズされた `data-props` を読み取り、既存のサーバーレンダリング済み DOM に対して `hydrate()` を呼び出します。
+少なくとも 1 つの島を含むビルドには、**1 つの `<script>` タグ** がプロジェクト全体で `<head>` に注入されます。
 
-## dynamic-import 設計の帰結
+```html
+<script type="module" src="/assets/islands-<hash>.js"></script>
+```
 
-ランタイムは `import()` を通じて島を遅延的に解決するため、次のことが言えます。
+共有 islands バンドル（`islands-<hash>.js`）はすべての島コンポーネントを含みます。スキャナが発見した静的なマーカー名（`data-zfb-island` 属性の値）で各島を登録し、その後 `mountIslands()` を呼び出します。これはページ上のすべての `[data-zfb-island]` 要素を走査し、シリアライズされた `data-props` を読み取り、既存のサーバーレンダリング済み DOM に対して `hydrate()` を呼び出します。
 
-- **ページが実際に使う島だけが取得されます。** `ThemeToggle` を使うページは `Counter.js` も `SearchBox.js` もダウンロードしません。
-- **島のないページにはランタイムが入りません。** ページのレンダリングツリーに `"use client"` コンポーネントが含まれない場合、ビルドパイプラインは `<script>` の注入を完全にスキップします。完全に静的なページには JavaScript が 1 バイトも届きません。
-- **1 つのページに新しい島を追加しても他のページには影響しません。** 各ページの HTML は独立しており、島は名前で取得されるため、ホームページに `SearchBox` を追加しても他のすべてのページの HTML やネットワークトラフィックは変わりません。
+## 共有バンドルモデルの帰結
 
-安定したファイル名がこれを補強します。CI デプロイが `dist/islands/` ディレクトリに `SearchBox.js` を追加しても、既存のすべての `*.js` ファイルはバイト単位で同一のまま保たれ、ブラウザのキャッシュは有効なままです。
+すべての島が単一のファイルにまとめてバンドルされるため、次のことが言えます。
+
+- **いずれかの島を持つすべてのページが、全島のコードを読み込みます。** 単一の `islands-<hash>.js` バンドルには、プロジェクト内のすべての島コンポーネントが含まれます。`ThemeToggle` しか使わないページでも、`Counter` と `SearchBox` のコードをダウンロードします。これは、ページ単位の読み込み粒度を、よりシンプルなビルドパイプラインとページをまたいだ優れたキャッシュ効率と引き換えにするものです。
+- **島のないページにはスクリプトが入りません。** プロジェクトのページに `"use client"` コンポーネントが含まれない場合、ビルドパイプラインは `<script>` の注入を完全にスキップします。完全に静的なページには JavaScript が 1 バイトも届きません。
+- **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
 
 ## フレームワークの選択
 
@@ -124,7 +140,7 @@ export default {
 };
 ```
 
-これは **プロジェクト全体の設定** です。プロジェクトごとに 1 つのフレームワークです。バンドラ（`crates/zfb-islands` の `FrameworkKind` enum）が、その選択を JSX 変換オプション（`--jsx-import-source`）と各島エントリをラップするハイドレーション接着コードに通します。同じプロジェクト内で Preact の島と React の島を混在させることはできません。
+これは **プロジェクト全体の設定** です。プロジェクトごとに 1 つのフレームワークです。バンドラ（`crates/zfb-islands` の `FrameworkKind` enum）が、その選択を JSX 変換オプション（`--jsx-import-source`）と共有バンドルに埋め込まれるフレームワーク固有のハイドレーション接着コードに通します。同じプロジェクト内で Preact の島と React の島を混在させることはできません。
 
 zfb は Vue・Svelte・Solid をサポートしていません。`FrameworkKind` enum は意図的に 2 バリアントの enum であり、プラグインポイントではありません。別のフレームワークが必要な場合は、以下の抜け道が一般的なケースをカバーします。
 
