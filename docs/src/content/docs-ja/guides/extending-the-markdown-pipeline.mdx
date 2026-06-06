@@ -1,27 +1,266 @@
 ---
 title: Markdown パイプラインの拡張
-description: zfb の Markdown / MDX パイプラインに新しい機能を追加する方法 — ディレクティブで足りるとき、Rust の visitor を書くとき、AST コンバーター自体に手を入れるとき
+description: zfb の Markdown / MDX パイプラインに新しい機能を追加する方法 — ディレクティブで足りるとき、Rust の visitor を書くとき、AST コンバーター自体に新しいアームが必要なとき
 sidebar_position: 3.5
 ---
 
-<Info title="翻訳予定">
+<Info title="このページで扱う内容">
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+`zfb-content` の Markdown パイプラインをエンジン側で拡張するための面（サーフェス）です。新しい構文レベルの機能 — admonition のバリエーション、見出しの書き換え、独自のコードブロック処理、リンクリゾルバなど — を追加したいとき、それをどこに置き、どう組み込むかをこのページで説明します。
 
 </Info>
 
-## 概要
+Markdown / MDX を HTML に変換するパイプラインは
+`crates/zfb-content` にあります。これはプラグイン的な構造になっています。すなわち、mdast にパースし、mdast visitor を実行し、hast に変換し、hast visitor を実行し、シリアライズする、という流れです。ランタイム / ユーザーランドのプラグインローダーは存在せず、すべての visitor はバイナリにコンパイルされます。ただし、新しい visitor を in-tree で追加するための面は小さく安定しており、「新しい Markdown 機能がほしい」という変更のほとんどはここに収まります。
 
-`zfb-content` クレートの Markdown パイプラインをエンジン側で拡張する方法について解説します。新しいディレクティブを追加するだけなら
-[Custom Directives](/concepts/custom-directives) で十分ですが、AST レベルの書き換え（見出しスラッグ、コードブロック装飾、画像変換、リンク解決など）が必要な場合は `MdastVisitor` または `HastVisitor` を実装して in-tree のプラグインとして追加します。
+機能が単に新しいディレクティブ名（`:::callout`、
+`::youtube`、`:badge`）であれば、このページは不要です。ディレクティブレジストリが処理してくれるため、一行の
+`register` 呼び出し以上に Rust へ手を入れる必要はありません。そのパスについては [Custom Directives](/concepts/custom-directives)
+を参照してください。
 
-主なトピック:
+## 判断: ディレクティブ、visitor、それとも AST アーム
 
-- 2 段階パイプライン（mdast → hast）と、どちらの段階で何をすべきか
-- visitor トレイトの形（`visit` メソッド一つ、再帰は呼び出し側責任、in-place 変更）
-- プラグインファイルの置き場所と `plugins.rs` への公開方法
-- `Pipeline::with_defaults` に組み込まれた依存順序のルール
-- markdown-rs がパースしているがコンバーターが捨てている構文（テーブル、脚注、定義、math など）を有効化するための `mdast_to_hast` 拡張手順
+| やりたいこと | パス | 置き場所 |
+|---|---|---|
+| JSX コンポーネントにコンパイルされる `:::name` / `::name` / `:name` 構文を追加する | ディレクティブを登録する | `Pipeline::with_defaults` + `DirectiveRegistry`（[Custom Directives](/concepts/custom-directives)） |
+| 既存の AST ノードを書き換える（見出しのスラッグ化、コードブロックのラップ、`<img>` の JSX マーカーへの置き換え、リンクの正規化） | visitor を書く | `crates/zfb-content/src/plugins/` 配下の新規ファイル |
+| markdown-rs はパースするが zfb が現状捨てている Markdown 構文を表面化する（テーブル、脚注、math、定義、参照スタイルのリンク） | AST コンバーターを拡張する | `crates/zfb-content/src/pipeline.rs` の `mdast_to_hast` |
+| markdown-rs がパースできない、まったく新しい Markdown 構文を追加する | 対象外 | `markdown` クレートへのアップストリーム変更、その後 zfb のコンバーターアーム |
 
-英語の最新ドキュメントは [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。
+ほとんどの貢献は 2 行目 — 新しい visitor — に収まります。
+
+## 2 段階パイプライン
+
+パイプラインは、2 つの異なる AST に対して 2 つの異なるパスを実行します。
+
+1. markdown-rs と MDX を意識したオプションを使って、入力を mdast（`markdown::mdast::Node`）に**パース**します。
+2. **mdast visitor** — `MdastVisitor` 実装が markdown
+   AST をその場で書き換えます。一部の変換は HTML 構造が存在する前にしか意味をなさないため、最初に実行されます。ディレクティブレジストリは
+   mdast visitor です。`:::name` / `:::` で区切られた段落の並びを単一の
+   MDX JSX 要素に畳み込みますが、これは `<p>` タグが現れた後よりも mdast 上のほうがはるかに扱いやすいからです。
+3. `mdast_to_hast` を介して mdast → hast に**変換**します。hast は zfb の最小限の
+   HTML AST（`HastNode`）です。
+4. **hast visitor** — `HastVisitor` 実装が HTML AST
+   をその場で書き換えます。HTML 要素構造を対象とする書き換え（見出しアンカー、`<figure>`
+   ラッパー、`<img>` → JSX マーカー、シンタックスハイライト）のほとんどはここにあります。
+5. `zfb_content::serializer` で hast を HTML 文字列に**シリアライズ**します。
+
+操作対象に合った段階を選んでください。経験則として、元の
+Markdown 構造（ディレクティブ、段落の並び、特定のリンク参照スタイル）を見る必要があるなら
+mdast を、HTML 要素構造（`<pre>`、見出しレベル、width 属性を持つ
+`<img>`）を見る必要があるなら hast を使います。
+
+## visitor トレイトの形
+
+両方の visitor トレイトは意図的に小さく作られており、メソッドは 1 つだけで、ノードに対して一度だけ呼ばれ、その場で変更を行います。
+
+```rust
+pub trait MdastVisitor {
+    fn visit(&mut self, node: &mut MdastNode);
+}
+
+pub trait HastVisitor {
+    fn visit(&mut self, node: &mut HastNode);
+}
+```
+
+パイプラインは `visit` をルートノードに対して厳密に一度だけ呼び出します。
+再帰は visitor の責任であり、自動的なウォークはありません。
+典型的な hast visitor は次のようになります。
+
+```rust
+use crate::pipeline::{HastNode, HastVisitor};
+
+pub struct MyPlugin;
+
+impl HastVisitor for MyPlugin {
+    fn visit(&mut self, node: &mut HastNode) {
+        match node {
+            HastNode::Root { children }
+            | HastNode::Element { children, .. } => {
+                for child in children {
+                    // mutate `child` here, then recurse
+                    self.visit(child);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+visitor は状態を持つことができます（ドキュメントごとのスラッグカウンタ、設定オプション、共有リソースへの参照など）。`HeadingLinksPlugin` は
+github-slugger 相当の重複排除のために `HashMap<String, usize>` を保持し、`SyntectPlugin`
+は `Arc<Highlighter>` を保持して、ビルド内のすべてのコードブロックでシンタックステーマを共有します。
+
+## Core にするか Opt-in 機能にするか
+
+どちらも Rust の visitor として存在しますが、どこに組み込むかは、何人の消費者がその機能を必要とするかによって決まります。
+
+**Core（`Pipeline::with_defaults` に組み込む）** にするのは、その動作が普遍的なとき
+です。つまり、すべてのコンテンツコレクション消費者が同じ形で必要とし、オプトアウトする正当な理由がないときです。例: `HeadingLinksPlugin`、`CodeTitlePlugin`、`SyntectPlugin`。
+
+**Opt-in（`Pipeline::with_defaults_and_features` に組み込む）** にするのは、その
+機能が価値はあるものの普遍的には必要とされないとき、あるいはプロジェクト固有の設定（ソースマップ、フィーチャーフラグ、独自オプション）を必要とするときです。例: `zfb-md-extras` の 12 個すべての機能。
+
+昇格のしきい値は [3 消費者ルール](/concepts/design-philosophy)に従います。
+すなわち、同じパターンが 3 つの異なる zfb 消費者プロジェクトで手書きされるまでは抽出しないということです。1 つのプロジェクトの利便性はレシピにすぎません。
+
+## ファイルの置き場所
+
+Core プラグインは `crates/zfb-content/src/plugins/` 配下に、Opt-in
+機能は `crates/zfb-md-extras/src/` 配下に置きます。慣例として、機能ごとに 1 ファイルです。
+
+```
+crates/zfb-content/src/plugins/
+├── cjk_friendly.rs
+├── code_title.rs
+├── directives.rs
+├── external_links.rs
+├── hard_breaks.rs
+├── heading_links.rs
+├── mermaid.rs
+├── resolve_links.rs
+├── strip_md_ext.rs
+├── syntect_plugin.rs
+├── toc.rs                  # heading-marker TOC (wired via features)
+└── util/
+
+crates/zfb-md-extras/src/
+├── code_enrichment.rs
+├── code_tabs.rs
+├── github_alerts.rs
+├── github_autolinks.rs
+├── heading_marker_toc.rs
+├── image_dimensions.rs
+├── link_validation.rs
+├── mermaid.rs
+├── reading_time.rs
+├── ruby.rs
+├── toc_export.rs
+└── transclude.rs
+```
+
+Core プラグインの場合は、ファイルを追加し、`crates/zfb-content/src/plugins.rs`
+から再エクスポートします。
+
+```rust
+// in plugins.rs
+pub mod my_plugin;
+pub use my_plugin::MyPlugin;
+```
+
+Opt-in 機能の場合は、ファイルを追加し、対応する
+`MarkdownConfig::features` フラグでゲートしたうえで、`crates/zfb-md-extras/src/lib.rs`
+からその機能を公開します。
+
+テストは通常、プラグインと同じファイル内の `#[cfg(test)] mod tests {}` ブロックに置き、プラグインをまたぐ統合ケースは
+`crates/zfb-content/tests/` に置きます。既存の
+`tests/integration_pipeline.rs` がリファレンスとなる形です。
+
+## デフォルトパイプラインへの組み込み
+
+`Pipeline::with_defaults()` はプロジェクト全体のデフォルトプラグインチェーンです。
+ここに visitor を追加すると、デフォルトを使うすべての呼び出し元が自動的にそれを取り込みます。正しい段階に追加してください。
+
+```rust
+// in crates/zfb-content/src/pipeline.rs, inside Pipeline::with_defaults()
+let mut p = Self::with_mdx();
+
+// mdast phase
+p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+
+// hast phase
+p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
+p.add_hast_visitor(Box::new(MyPlugin));     // <-- new
+p.add_hast_visitor(Box::new(MermaidPlugin::new()));
+p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+p
+```
+
+プラグインが opt-in の場合は、`with_defaults()` に**入れないで**ください。
+`Pipeline::with_defaults_and_features()` に組み込みます。これは `MarkdownFeatures`
+設定構造体を受け取り、フラグがセットされている visitor だけを追加します。`zfb-md-extras` の 12 個の機能はすべてこの方法で組み込まれています。
+`ResolveLinksPlugin` と `StripMdExtensionPlugin` は、単なるフィーチャーフラグではなくプロジェクト固有のソースマップを必要とするため、別途扱われます。
+
+## 順序が重要
+
+visitor の順序は**負荷を担う（load-bearing）**ものです。デフォルトの完全な根拠は
+`Pipeline::with_defaults_and_features` のドキュメントコメントに記載されていますが、最もよく問題になるルールは次のとおりです。
+
+- **`HeadingLinksPlugin` は hast フェーズで最初に実行されます。** 後で見出しを変更するものはすべて、スラッグ化された `id` 属性を見ることになります。
+  `TocPlugin` と `TocExportPlugin` はこれらの `id` 値に依存します。
+- **`CodeTitlePlugin` は `SyntectPlugin` より前に実行されます。** SyntectPlugin
+  は `<pre>` 要素全体を `HastNode::Raw` の HTML
+  フラグメントに置き換えます。これが起きると、`title="…"` を運ぶ `data-meta`
+  属性は構造化された AST としてはもう到達できなくなります。
+- **`MermaidPlugin` は `SyntectPlugin` より前に実行されます。** MermaidPlugin
+  は mermaid コードブロックに `data-mermaid="true"` のフラグを立て、SyntectPlugin
+  はそのフラグを使って、図のソースをシンタックスハイライトせずスキップします。
+- **`CodeEnrichmentPlugin` は `SyntectPlugin` の後に実行されます。** これは
+  syntect が出力する行ごとの `<span class="line">` 構造を後処理します。syntect がそれらの span を生成する前には実行できません。
+- **`ImageDimensionsPlugin`** は hast フェーズで `SyntectPlugin` より前に実行されます。
+  `<img>` 要素だけを扱い、見出し / コードブロックの visitor に対しては順序非依存です。
+- **`GithubAlertsPlugin` は mdast フェーズで実行されます**。mdast
+  → hast 変換より前です。blockquote ノードを書き換え、`AdmonitionsPlugin`
+  （これも mdast フェーズで実行される）はその結果を独立して読み取ります。
+- **`TranscludePlugin` は mdast フェーズで最初に実行されます。** 取り込まれた
+  コンテンツは、他のどの visitor が見るよりも前に AST にマージされなければなりません。
+
+新しいプラグインを挿入するときは、こう問いかけてください。後続のプラグインが消し去る要素の形を見る必要があるか? あるなら、そのプラグインより前に実行する。先行プラグインの書き換え結果（生成された `id`、合成された JSX 要素）が必要か? あるなら、その後に実行する。
+
+## 本当に新しい構文を追加する
+
+markdown-rs がパースする Markdown 構文の一部は、mdast → hast
+コンバーターによって現状**捨てられています**。`crates/zfb-content/src/pipeline.rs`
+の `mdast_to_hast` を見てください。
+
+```rust
+// Unhandled: degrade to empty Raw so we never crash on
+// unsupported input. Tables, footnotes, definitions, math,
+// reference links/images, ESM, frontmatter, etc. fall here.
+_ => HastNode::Raw(String::new()),
+```
+
+テーブル、脚注、定義、math、参照スタイルのリンク、その他キャッチオールに落ちているものを zfb で表面化したい場合は、2 つの変更が必要です。
+
+1. **match アーム**を `mdast_to_hast` に追加し、その mdast
+   バリアントを適切な `HastNode::Element`（パススルーの JSX/HTML なら
+   `Raw`）に変換します。既存のアームに倣い、子は
+   `convert_children` で処理し、属性は
+   `Vec<(String, String)>` として構築します。
+2. **`markdown::ParseOptions` の切り替えが必要な場合もあります**。その構文が拡張フラグを必要とするときです。現在の `Pipeline::with_mdx()` は
+   `markdown::ParseOptions::mdx()` を使っています。追加の `constructs.*`
+   フィールドを有効にしたカスタムの `ParseOptions` が必要になることがあります。
+   正確なフラグについては `markdown` クレートのドキュメントを確認してください。
+
+コンバーター変更のテストは、`pipeline.rs` 自身の
+`#[cfg(test)] mod tests {}` ブロック（このファイルはすでに見出し、コードブロック、リンク、画像、リスト、blockquote、MDX JSX をカバーしています）に加え、`crates/zfb-content/tests/` 内の対応するラウンドトリップケースに置きます。
+
+## ランタイム / ユーザーランドプラグインについては?
+
+Markdown パイプラインのプラグインローダーは存在しません。すべての visitor はバイナリにコンパイルされます。`zfb.config` の `plugins: []` フィールドは
+**ビルドオーケストレーション**用のプラグインシステム（`setup`、`preBuild`、`postBuild`、`devMiddleware`
+の 4 つのフック）であり、エイリアス登録、仮想モジュール、追加ファイルの出力、開発サーバーのルートを扱います。これは
+Markdown のパース＆visitor チェーンには手を出しません。そのチェーンは Rust エンジンの内部で完結して実行されます。
+
+実用的な Markdown パイプライン拡張モデルは、visitor を in-tree
+で追加することです。visitor トレイトはワークスペース全体で安定しているため、新しい `plugins/`
+ファイルとして書かれた機能は、コードベースの他の部分が動いても、追従的な変更が必要になることはめったにありません。
+
+## 関連項目
+
+- [Markdown Features](/markdown-features) — Core と
+  Opt-in 機能の完全なカタログ。機能ごとの順序に関する注記つき。
+- [Custom Directives](/concepts/custom-directives) — `:::name` / `::name` / `:name` 構文の作者向けの解説。Rust 不要。
+- [Customizing Markdown](/guides/customizing-markdown) — コンテンツコレクション消費者の視点から見た Markdown レンダリングパイプライン。
+- `crates/zfb-content/src/pipeline.rs` — `Pipeline`、`MdastVisitor`
+  / `HastVisitor` トレイト、および `Pipeline::with_defaults()`
+  の順序の根拠（ドキュメントコメント内）。
+- `crates/zfb-content/src/plugins/code_title.rs` — 小さくステートレスな
+  `HastVisitor` の例。
+- `crates/zfb-content/src/plugins/heading_links.rs` — ステートフルな
+  `HastVisitor`（ドキュメントごとのスラッグカウンタ）の例。
+- `crates/zfb-content/src/plugins/directives.rs` — `DirectiveRegistry`
+  とその `MdastVisitor` 実装。

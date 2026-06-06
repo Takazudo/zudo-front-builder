@@ -1,75 +1,57 @@
 ---
 title: Markdown のカスタマイズ
-description: zfb の Markdown レンダリングパイプライン、設定可能な範囲、拡張方法
+description: zfb が Markdown をどうレンダリングするか、そしてパイプラインを設定・拡張する方法
 sidebar_position: 3
 ---
 
-<Info title="翻訳予定">
+zfb の Markdown パイプラインは `zfb-content` という Rust クレートにあります。各ファイルをパースし、visitor のチェーン（常時オンの Core に加えて、有効化した Opt-in 機能）を実行し、コードブロックを syntect でサーバーサイドにハイライトし、各エントリを生の `body` 文字列とすぐにレンダリングできる `Content` コンポーネントの両方として返します。
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Customizing Markdown](/guides/customizing-markdown)
+パイプラインが提供するものの全リスト — 常時オンの Core 機能、`zfb.config.ts` で有効化する Opt-in 機能、そして独自の visitor を in-tree で追加する方法 — については、[Markdown Features](/markdown-features) カテゴリを参照してください。
 
-</Info>
+## ページ内で Markdown をレンダリングする
 
-## 概要
+標準的なパターンは、`paths()` を通じてコンテンツエントリを受け取り、その `Content` コンポーネントをレンダリングすることです。
 
-`zfb-content` クレートが Markdown / MDX をどう扱い、現時点で何をカスタマイズでき、何が今後の作業として残っているかをまとめたページです。コンテンツコレクションから受け取るエントリの `entry.body`（フロントマターを除いた生の Markdown 文字列）と `entry.Content`（コンパイル済みの JSX コンポーネント）を起点にした「消費側」の視点でまとめています。
+```tsx
+import { getCollection } from "zfb/content";
 
-エンジン側を Rust の visitor で拡張したい場合は
-[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
-を参照してください。ディレクティブ（`:::name` / `::name` / `:name`）を追加するだけなら
-[Custom Directives](/concepts/custom-directives) で十分です。
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post },
+  }));
+}
 
-英語の最新ドキュメントは [Customizing Markdown](/guides/customizing-markdown) を参照してください。
-
-## 目次（TOC）の自動生成
-
-zfb は `remark-toc` 相当の機能を opt-in の hast ビジターとして提供しています。有効にすると、設定したアンカー文字列（デフォルト `"TOC"`、大小文字を区別しない）と一致する見出しを検出し、後続の見出しを `<ul>/<li>` リストとして次の兄弟要素に挿入します。
-
-このビジターは **hast フェーズの `HeadingLinksPlugin` 後** に実行されるため、`id` 属性を再計算することなく、すでに付与された最終的な（重複排除済みの）`id` をそのまま参照します。
-
-詳細は英語版の [Customizing Markdown](/guides/customizing-markdown#table-of-contents-toc) を参照してください。
-
-## 外部リンク
-
-`markdown.externalLinks` オプションを使うと、サイト外へのリンクに `target` や `rel` 属性を自動付与できます。
-
-```ts
-// zfb.config.ts
-export default defineConfig({
-  markdown: {
-    externalLinks: {
-      target: "_blank",
-      rel: ["noopener", "noreferrer"],
-    },
-## CJK フレンドリーな強調
-
-CommonMark の強調フランキングルールは、CJK 文字（漢字・かな・ハングルなど）を空白でも句読点でもないとみなします。そのため `**テスト。**テスト` のように CJK テキストに隣接した `**` は CommonMark の仕様では右フランキングと判定されず、`<strong>` タグではなくリテラルのアスタリスクとして出力されます。
-
-zfb には組み込みの `CjkFriendlyPlugin` があり、パース後の Markdown AST を後処理してこのケースを再トークナイズします。**デフォルトで有効**になっているため、既存の CJK コンテンツサイトは設定変更なしでそのまま動作します。
-
-```ts title="zfb.config.ts"
-
-import { defineConfig } from "zfb/config";
-
-export default defineConfig({
-  markdown: {
-    // absent または true の場合、CJK フレンドリーは有効（デフォルト）。
-    cjkFriendly: true,
-
-    // 厳密な CommonMark 出力が必要で、かつ強調マーカーが隣接した
-    // CJK コンテンツがない場合のみ false に設定してください。
-    // cjkFriendly: false,
-  },
-});
-
+export default function PostPage({ post }) {
+  return (
+    <article className="prose">
+      <post.Content />
+    </article>
+  );
+}
 ```
 
-href が外部リンクと判定される条件: 絶対 URL（`http:` または `https:` スキーム）であり、かつ `site` 設定が指定されている場合はそのオリジンと異なる場合。`site` が未設定のときは、すべての絶対 HTTP/HTTPS URL が外部リンクとして扱われます。
+`entry.Content` は、zfb が Markdown からコンパイルする JSX コンポーネントです。syntect でハイライトされたコードブロックや、登録済みの独自ディレクティブを含む、MDX を意識した出力をレンダリングします。生の Markdown ソースだけが必要な場合（たとえば要約を計算したり RSS ジェネレーターに渡したりする場合）は、代わりに `entry.body` を使ってください。
 
-`mailto:`・`tel:` などの非 HTTP(S) スキームは常にそのまま出力されます。相対パス（`/internal/`・`./page.mdx`・`#anchor`）は常に内部リンクです。
+## 拡張ポイント
 
-詳細は英語版 [Customizing Markdown](/guides/customizing-markdown) を参照してください。
-**保守的なデフォルトの理由:** `cjkFriendly` をデフォルト `false` にすると、日本語の句読点やかなに隣接した `**bold**` を使用している既存のサイトがすべて壊れます。このフィールドは既存の動作を変えるためではなく、必要な場合にオプトアウトするために導入されました。
+`zfb.config` の `plugins: []` フィールドは、ビルドオーケストレーション用のプラグインシステムです。登録された各プラグインは 4 つのオプションフックを公開します — `setup`、`preBuild`、`postBuild`、`devMiddleware` — それぞれ、起動時のインポートエイリアスや仮想モジュールの登録（`setup`）、ビルドと並行した追加ファイルの出力（`preBuild`）、ビルド後の検証の実行（`postBuild`）、開発サーバーへのルート追加（`devMiddleware`）といったタスクのためのものです。これらのプラグインは Markdown のレンダリングには**関与しません**。パースと visitor チェーンは Rust エンジンの内部で実行され、npm でインストールされたプラグインへコールバックすることはありません。
 
-**GFM 取り消し線**（`~~foo~~`）は CJK 境界でも正常に動作します。markdown-rs の GFM トークナイザーが `~~` 区切りを CommonMark の強調フランキングルールとは独立して処理するため、このトグルの影響を受けません。
+Markdown パイプラインのカスタマイズは、エンジン側で `MdastVisitor` /
+`HastVisitor` 実装として in-tree に存在します。[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。
+
+<Tip>
+
+  迷ったら、body をレンダリングしてスタイルを当ててください。「Markdown をカスタマイズしたい」という要望のほとんどは、結局のところ CSS で解決できるスタイリングの問題です。
+
+</Tip>
+
+## 関連項目
+
+- [Markdown Features](/markdown-features) — Core と Opt-in
+  機能の完全なカタログ。
+- [Custom Directives](/concepts/custom-directives) — `DirectiveRegistry`
+  に新しいディレクティブ名を登録する。Rust 不要。
+- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) —
+  Rust の visitor を書いてエンジンに組み込む。
