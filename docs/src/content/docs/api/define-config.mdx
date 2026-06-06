@@ -24,7 +24,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `collections?: CollectionDef[]` — content collections. Each entry has:
   - `name: string` — identifier used in `getCollection` calls.
   - `path: string` — directory relative to the project root.
-  - `schema?: Record<string, unknown>` — optional JSON Schema for frontmatter validation (checked by `zfb check` and the build).
+  - `schema?: Record<string, unknown>` — optional JSON Schema for frontmatter validation (enforced by `zfb check`; the build does not validate frontmatter against it).
   - `include?: string[]` — glob patterns (globset dialect, relative to `path`); when set, only matching entries are kept.
   - `exclude?: string[]` — glob patterns; matching entries are dropped (evaluated after `include`).
   - `idStripSuffix?: string` — suffix stripped from each entry's slug and module specifier (e.g. `".en"` for multi-locale layouts).

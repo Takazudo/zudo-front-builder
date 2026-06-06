@@ -24,7 +24,7 @@ defineConfig(config: ZfbConfig): ZfbConfig
 - `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは以下を持ちます。
   - `name: string` — `getCollection` 呼び出しで使う識別子。
   - `path: string` — プロジェクトルートからの相対ディレクトリ。
-  - `schema?: Record<string, unknown>` — フロントマター検証用の任意の JSON Schema（`zfb check` とビルドによってチェックされます）。
+  - `schema?: Record<string, unknown>` — フロントマター検証用の任意の JSON Schema（`zfb check` で強制されます。ビルドではフロントマターの検証は行われません）。
   - `include?: string[]` — glob パターン（globset 方言、`path` からの相対）。設定すると、マッチするエントリのみが保持されます。
   - `exclude?: string[]` — glob パターン。マッチするエントリは除外されます（`include` の後に評価されます）。
   - `idStripSuffix?: string` — 各エントリの slug とモジュール specifier から取り除かれるサフィックス（例: 多言語レイアウトでの `".en"`）。
