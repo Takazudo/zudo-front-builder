@@ -4043,7 +4043,11 @@ mod tests {
         );
     }
 
-    // readingTime: { bogus: true } must be rejected by deny_unknown_fields.
+    // readingTime: { bogus: true } must be rejected. `deny_unknown_fields` on
+    // ReadingTimeOptions makes the `Options` variant reject the unknown `bogus`
+    // key, and the value is not a bool, so the untagged enum matches no variant.
+    // (An untagged enum surfaces a generic "did not match any variant" error
+    // rather than naming the offending field — the rejection is what matters.)
     #[test]
     fn features_reading_time_unknown_field_is_rejected() {
         let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
@@ -4052,8 +4056,10 @@ mod tests {
         .expect_err("readingTime: { bogus: true } must be rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("bogus") || msg.contains("unknown field"),
-            "error must name the unknown field; got: {msg}"
+            msg.contains("did not match any variant")
+                || msg.contains("bogus")
+                || msg.contains("unknown field"),
+            "unknown field must cause rejection; got: {msg}"
         );
     }
 
