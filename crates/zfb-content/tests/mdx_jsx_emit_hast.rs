@@ -785,3 +785,115 @@ fn toc_export_plugin_emits_at_column_0_on_jsx_path() {
             panic!("SWC rejected toc-export output (#599 regression): {e}\n--- src ---\n{out}")
         });
 }
+
+/// zfb#871 headline acceptance: `features.headingIds.strategy =
+/// "hierarchical"` must produce ancestor-prefixed ids in BOTH render
+/// paths — the rendered `<hN id="…">` + hash-link anchors (stamped by
+/// `HeadingLinksPlugin` on the hast detour) AND the `headings` export
+/// (computed by `collect_headings` via the shared `SlugAllocator`).
+#[test]
+fn hierarchical_strategy_ids_match_in_both_paths() {
+    use zfb_md_extras::{HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig};
+
+    let features = MarkdownFeaturesConfig {
+        heading_ids: Some(HeadingIdsConfig {
+            strategy: HeadingIdStrategy::Hierarchical,
+        }),
+        ..Default::default()
+    };
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let out = mdx_to_jsx_module_with_pipeline(
+        "## Foo\n\n### Moo\n\n#### Mew\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+
+    // Rendered hast path: ids + matching anchor hrefs.
+    for (id, href) in [
+        ("foo", "#foo"),
+        ("foo-moo", "#foo-moo"),
+        ("foo-moo-mew", "#foo-moo-mew"),
+    ] {
+        assert!(
+            out.contains(&format!("id=\"{id}\"")),
+            "rendered heading must carry hierarchical id {id:?}:\n{out}",
+        );
+        assert!(
+            out.contains(&format!("href=\"{href}\"")),
+            "hash-link must carry hierarchical href {href:?}:\n{out}",
+        );
+    }
+
+    // headings export path: same slugs, in document order.
+    for slug in ["\"foo\"", "\"foo-moo\"", "\"foo-moo-mew\""] {
+        assert!(
+            out.contains(&format!("slug: {slug}")),
+            "headings export must carry hierarchical slug {slug}:\n{out}",
+        );
+    }
+    // The flat slugs must NOT leak through for the nested levels.
+    assert!(
+        !out.contains("slug: \"moo\"") && !out.contains("id=\"moo\""),
+        "flat slug `moo` must not appear in hierarchical mode:\n{out}",
+    );
+}
+
+/// zfb#871: a JSX-nested heading gets its hierarchical id stamped by
+/// `jsx_render_child` (HeadingLinksPlugin never sees it), prefixed by
+/// the preceding top-level ancestor.
+#[test]
+fn hierarchical_strategy_jsx_nested_heading_prefixed() {
+    use zfb_md_extras::{HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig};
+
+    let features = MarkdownFeaturesConfig {
+        heading_ids: Some(HeadingIdsConfig {
+            strategy: HeadingIdStrategy::Hierarchical,
+        }),
+        ..Default::default()
+    };
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let out = mdx_to_jsx_module_with_pipeline(
+        "## Foo\n\n<Note>\n\n### Moo\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+
+    assert!(
+        out.contains("id=\"foo-moo\""),
+        "JSX-nested heading must get hierarchical id `foo-moo`:\n{out}",
+    );
+    assert!(
+        out.contains("slug: \"foo-moo\""),
+        "headings export must record the nested hierarchical slug:\n{out}",
+    );
+}
+
+/// zfb#871 byte-stability guardrail: an absent (or default) `headingIds`
+/// keeps the flat scheme — nested headings keep their unprefixed slugs
+/// and the cross-level dedup counter still applies.
+#[test]
+fn default_features_keep_flat_heading_ids() {
+    use zfb_md_extras::MarkdownFeaturesConfig;
+
+    let features = MarkdownFeaturesConfig::default();
+    let mut p = Pipeline::with_defaults_and_features(&features);
+    let out = mdx_to_jsx_module_with_pipeline(
+        "## Foo\n\n### Moo\n\n### Foo\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+
+    for id in ["id=\"foo\"", "id=\"moo\"", "id=\"foo-1\""] {
+        assert!(
+            out.contains(id),
+            "flat default must keep unprefixed + deduped ids ({id}):\n{out}",
+        );
+    }
+    assert!(
+        !out.contains("id=\"foo-moo\""),
+        "hierarchical ids must NOT appear without opting in:\n{out}",
+    );
+}

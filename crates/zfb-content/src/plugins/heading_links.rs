@@ -480,6 +480,202 @@ mod tests {
         assert_eq!(slugify("Café au lait"), "café-au-lait");
     }
 
+    fn all_ids(tree: &HastNode) -> Vec<Option<String>> {
+        let HastNode::Root { children } = tree else {
+            unreachable!("expected HastNode::Root")
+        };
+        children
+            .iter()
+            .map(|c| first_attr(c, "id").map(str::to_string))
+            .collect()
+    }
+
+    /// The issue's headline example (zfb#871): `## Foo / ### Moo / #### Mew`
+    /// → `foo`, `foo-moo`, `foo-moo-mew`.
+    #[test]
+    fn hierarchical_chain_prefixes_ancestors() {
+        let mut tree = root(vec![h(2, "Foo"), h(3, "Moo"), h(4, "Mew")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![
+                Some("foo".into()),
+                Some("foo-moo".into()),
+                Some("foo-moo-mew".into()),
+            ]
+        );
+    }
+
+    /// The hash-link anchor href must carry the hierarchical id, not the
+    /// base slug.
+    #[test]
+    fn hierarchical_anchor_href_matches_id() {
+        let mut tree = root(vec![h(2, "Foo"), h(3, "Moo")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        let HastNode::Root { children } = tree else {
+            unreachable!("expected HastNode::Root")
+        };
+        let HastNode::Element { children: hc, .. } = &children[1] else {
+            unreachable!("expected HastNode::Element")
+        };
+        let HastNode::Element { attrs, .. } = &hc[1] else {
+            unreachable!("expected anchor element")
+        };
+        assert!(attrs.contains(&("href".to_string(), "#foo-moo".to_string())));
+    }
+
+    /// A sibling at the same depth pops its predecessor off the stack;
+    /// a new h2 resets the chain entirely.
+    #[test]
+    fn hierarchical_siblings_pop_stack() {
+        let mut tree = root(vec![h(2, "A"), h(3, "B"), h(3, "C"), h(2, "D"), h(3, "E")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![
+                Some("a".into()),
+                Some("a-b".into()),
+                Some("a-c".into()),
+                Some("d".into()),
+                Some("d-e".into()),
+            ]
+        );
+    }
+
+    /// Depth jumps (h2 → h4 with no h3) prefix with the nearest real
+    /// ancestor.
+    #[test]
+    fn hierarchical_depth_jump_uses_nearest_ancestor() {
+        let mut tree = root(vec![h(2, "A"), h(4, "B"), h(3, "C")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        // h4 "B" nests under "A"; the following h3 "C" pops the h4 and
+        // also nests under "A".
+        assert_eq!(
+            all_ids(&tree),
+            vec![Some("a".into()), Some("a-b".into()), Some("a-c".into())]
+        );
+    }
+
+    /// Duplicate siblings under the same parent are deduped on the full
+    /// path, mirroring github-slugger numbering.
+    #[test]
+    fn hierarchical_duplicates_under_same_parent_numbered() {
+        let mut tree = root(vec![h(2, "A"), h(3, "B"), h(3, "B")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![Some("a".into()), Some("a-b".into()), Some("a-b-1".into())]
+        );
+    }
+
+    /// A deduped parent contributes its FINAL id to children: the second
+    /// `## Foo` becomes `foo-1`, so its `### Bar` becomes `foo-1-bar` —
+    /// the child anchor always extends the section it actually lives in.
+    #[test]
+    fn hierarchical_deduped_parent_prefixes_final_id() {
+        let mut tree = root(vec![h(2, "Foo"), h(2, "Foo"), h(3, "Bar")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![
+                Some("foo".into()),
+                Some("foo-1".into()),
+                Some("foo-1-bar".into()),
+            ]
+        );
+    }
+
+    /// Empty-text headings are skipped entirely (no id, not on the
+    /// ancestor stack) — a deeper heading after one nests under the
+    /// nearest REAL ancestor.
+    #[test]
+    fn hierarchical_empty_heading_skipped_entirely() {
+        let mut tree = root(vec![h(2, "A"), h(3, ""), h(4, "C")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![Some("a".into()), None, Some("a-c".into())]
+        );
+    }
+
+    /// h1 is untouched in hierarchical mode too — it never joins the
+    /// ancestor stack, so a following h2 starts an unprefixed chain.
+    #[test]
+    fn hierarchical_h1_left_alone() {
+        let mut tree = root(vec![h(1, "Title"), h(2, "A"), h(3, "B")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical).visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![None, Some("a".into()), Some("a-b".into())]
+        );
+    }
+
+    /// `reset()` clears the ancestor stack as well as the dedup counter —
+    /// reusing the plugin across documents must not leak a stale prefix
+    /// (zfb#187 analogue for the hierarchical stack).
+    #[test]
+    fn hierarchical_reset_clears_stack_between_documents() {
+        let mut plugin = HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical);
+        let mut doc_a = root(vec![h(2, "A"), h(3, "B")]);
+        plugin.visit(&mut doc_a);
+        assert_eq!(all_ids(&doc_a), vec![Some("a".into()), Some("a-b".into())]);
+        plugin.reset();
+        // Without reset, this h3 would have inherited the stale `a`
+        // ancestor (and `b` would dedup to `b`-with-prefix anyway).
+        let mut doc_b = root(vec![h(3, "B")]);
+        plugin.visit(&mut doc_b);
+        assert_eq!(all_ids(&doc_b), vec![Some("b".into())]);
+    }
+
+    /// The heading-ID registry (link validation, wave 6) records the
+    /// hierarchical ids, so `[x](#foo-moo)` validates and `[x](#moo)`
+    /// correctly fails once the strategy is on.
+    #[test]
+    fn hierarchical_ids_reach_heading_registry() {
+        use crate::heading_registry::HeadingRegistry;
+
+        let mut registry = HeadingRegistry::new();
+        let mut ctx = BuildContext::for_paths("/docs/a.md", "/docs", "/docs/public");
+        ctx.heading_registry = Some(&mut registry);
+
+        let mut tree = root(vec![h(2, "Foo"), h(3, "Moo")]);
+        HeadingLinksPlugin::with_strategy(HeadingIdStrategy::Hierarchical)
+            .visit_with_context(&mut tree, &mut ctx);
+
+        let entries = registry
+            .get(std::path::Path::new("/docs/a.md"))
+            .expect("registry entries recorded");
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["foo", "foo-moo"]);
+    }
+
+    /// Flat golden regression (byte-stability guardrail): duplicates,
+    /// h1, an empty heading, and cross-level repeats keep the exact
+    /// pre-#871 flat ids when no strategy is opted into.
+    #[test]
+    fn flat_golden_ids_unchanged() {
+        let mut tree = root(vec![
+            h(1, "Title"),
+            h(2, "Intro"),
+            h(3, "Intro"),
+            h(3, ""),
+            h(2, "Usage"),
+            h(4, "Intro"),
+        ]);
+        HeadingLinksPlugin::new().visit(&mut tree);
+        assert_eq!(
+            all_ids(&tree),
+            vec![
+                None,                   // h1 untouched
+                Some("intro".into()),   // first occurrence
+                Some("intro-1".into()), // cross-level dedup
+                None,                   // empty heading skipped
+                Some("usage".into()),
+                Some("intro-2".into()), // shared counter across levels
+            ]
+        );
+    }
+
     #[test]
     fn slugify_preserves_accented_latin_decomposed() {
         // Decomposed: e (U+0065) + combining acute accent (U+0301).
