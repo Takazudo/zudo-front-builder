@@ -6,7 +6,8 @@ modules) and answers: "given this file changed, which pages need to be
 re-rendered?"
 
 This crate is part of Epic 6 (build infrastructure) and is consumed by
-`zfb-build`. It is a pure in-memory data structure with no IO.
+`zfb-build`. `DependencyGraph` itself is a pure in-memory data structure; the
+`persist` module provides optional disk persistence for cold-start caching.
 
 ## Public API
 

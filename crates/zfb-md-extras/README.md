@@ -62,6 +62,8 @@ fn test_my_feature() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/my-feature"
     );
+    // Replace the closure body with the feature's pipeline call.
+    // See tests/github_alerts.rs for a real example.
     run_fixture(fixtures, |input| {
         markdown::to_html(input)
     });
