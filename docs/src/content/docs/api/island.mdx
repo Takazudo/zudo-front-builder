@@ -100,3 +100,35 @@ export default function Counter() {
 Import the island from a server component or page module. The build pipeline wires the hydration bootstrap automatically.
 
 For the broader story on islands architecture and when to reach for one, see [Islands](/concepts/islands).
+
+## Footgun: do not self-wrap an island
+
+<Warning title="Nested island markers mis-hydrate">
+
+Do **not** place an `<Island>` wrapper inside a component's own render output. The runtime discovers all island markers in the DOM and mounts each one — if a marker is nested inside another, two independent framework instances try to own the same DOM subtree, causing conflicts.
+
+**Wrong** — `<Island>` inside the component itself:
+
+```tsx
+// Counter.tsx — do NOT do this
+export default function Counter() {
+  return (
+    <Island when="idle">
+      <InnerWidget />
+    </Island>
+  );
+}
+```
+
+**Right** — apply `<Island>` at the call site:
+
+```tsx
+// Page.tsx
+<Island when="idle">
+  <Counter />
+</Island>
+```
+
+In development the runtime emits a `console.warn` naming the offending component when it detects this pattern.
+
+</Warning>

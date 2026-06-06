@@ -683,8 +683,15 @@ fn collect_collection_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Resu
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_collection_files(&path, out)?;
-        } else if file_type.is_file() && is_collection_entry(&path) {
-            out.push(path);
+        } else if file_type.is_file() {
+            if is_collection_entry(&path) {
+                out.push(path);
+            } else if is_unsupported_data_file(&path) {
+                eprintln!(
+                    "zfb warning: unsupported data-file extension in collection — file will be skipped: {}",
+                    path.display()
+                );
+            }
         }
     }
     Ok(())
@@ -694,6 +701,17 @@ fn is_collection_entry(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
         Some("md") | Some("mdx") | Some("tsx")
+    )
+}
+
+/// Returns `true` for data-file extensions that users commonly place in a
+/// collection directory but that the walker cannot yet parse. These files are
+/// skipped with a non-fatal build warning rather than silently, so authors
+/// learn immediately that their data files are not being picked up.
+fn is_unsupported_data_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("json") | Some("yaml") | Some("yml") | Some("toml")
     )
 }
 
@@ -1591,5 +1609,23 @@ declare module \"zfb/content\" {\n\
             maybe_strip_specifier_suffix("tsx://feeds/a.en#11111111", Some(".en")),
             "tsx://feeds/a#11111111",
         );
+    }
+
+    /// Data files (`.json`, `.yaml`, `.yml`, `.toml`) alongside a valid `.md`
+    /// must not be returned as collection entries — the walk succeeds and
+    /// yields exactly the one `.md` file. The warning is emitted to stderr
+    /// (non-fatal; not a `CollectionError`).
+    #[test]
+    fn walk_skips_data_files_and_yields_only_md_entries() {
+        let tmp = TmpDir::new("data-files");
+        tmp.write("entry.md", &valid_md("Entry"));
+        tmp.write("data.json", r#"{"key": "value"}"#);
+        tmp.write("data.yaml", "key: value\n");
+        tmp.write("data.yml", "key: value\n");
+        tmp.write("data.toml", "[section]\nkey = \"value\"\n");
+
+        let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert_eq!(out.len(), 1, "only entry.md should be returned; data files must be skipped");
+        assert_eq!(out[0].slug, "entry");
     }
 }

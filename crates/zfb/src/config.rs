@@ -942,9 +942,10 @@ pub struct MarkdownConfig {
 // like `zfb::config::{MarkdownFeaturesConfig, FeatureToggle, ...}` and
 // `zfb::config::TocConfig` continue to resolve.
 pub use zfb_md_ast::{
-    directives_enabled, into_directive_def, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec,
-    DirectiveSpecKind, FeatureOptions, FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature,
-    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig,
+    directives_enabled, into_directive_def, reading_time_enabled, CodeEnrichmentConfig,
+    DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle,
+    GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig,
     TranscludeConfig,
 };
 
@@ -4009,6 +4010,56 @@ mod tests {
         assert_eq!(
             features.github_alerts,
             Some(FeatureToggle::Options(FeatureOptions {}))
+        );
+    }
+
+    // readingTime: { wpm: 250 } → ReadingTimeFeature::Options(ReadingTimeOptions { wpm: Some(250) }).
+    #[test]
+    fn features_reading_time_object_form() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "readingTime": { "wpm": 250 } }
+        }))
+        .expect("readingTime: { wpm: 250 } deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.reading_time,
+            Some(ReadingTimeFeature::Options(ReadingTimeOptions {
+                wpm: Some(250)
+            }))
+        );
+    }
+
+    // readingTime: true → ReadingTimeFeature::Bool(true).
+    #[test]
+    fn features_reading_time_bool_true() {
+        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
+            "features": { "readingTime": true }
+        }))
+        .expect("readingTime: true deserialises");
+        let features = cfg.features.expect("features present");
+        assert_eq!(
+            features.reading_time,
+            Some(ReadingTimeFeature::Bool(true))
+        );
+    }
+
+    // readingTime: { bogus: true } must be rejected. `deny_unknown_fields` on
+    // ReadingTimeOptions makes the `Options` variant reject the unknown `bogus`
+    // key, and the value is not a bool, so the untagged enum matches no variant.
+    // (An untagged enum surfaces a generic "did not match any variant" error
+    // rather than naming the offending field — the rejection is what matters.)
+    #[test]
+    fn features_reading_time_unknown_field_is_rejected() {
+        let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
+            "features": { "readingTime": { "bogus": true } }
+        }))
+        .expect_err("readingTime: { bogus: true } must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("did not match any variant")
+                || msg.contains("bogus")
+                || msg.contains("unknown field"),
+            "unknown field must cause rejection; got: {msg}"
         );
     }
 

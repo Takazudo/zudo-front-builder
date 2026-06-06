@@ -64,15 +64,6 @@ so there's no I/O at call time and no `await` to thread through. The
 Rust↔JS bridge contract that backs this surface is stable and versioned
 with the `zfb` package.
 
-<Note title="getEntry is not available at runtime">
-
-`getEntry` appears in the generated `types.d.ts` (so it type-checks),
-but it is not exported from the `zfb/content` runtime module and will
-throw at runtime. Use `getCollection(name).find((e) => e.slug === slug)`
-instead.
-
-</Note>
-
 Each entry has three things you can rely on:
 
 - `data` — the parsed, validated frontmatter (typed against your schema).

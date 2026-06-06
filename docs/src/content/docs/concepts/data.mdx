@@ -60,8 +60,8 @@ This approach earns its keep when you want **per-entry schema validation, slug d
 <Note title="JSON / YAML / TOML data files not yet supported">
 
 The collection walker currently accepts only `.md`, `.mdx`, and `.tsx`
-files. JSON, YAML, and TOML data files are silently skipped (zero
-entries returned). For raw structured data without a Markdown wrapper,
+files. JSON, YAML, and TOML data files are skipped with a build
+warning (zero entries returned). For raw structured data without a Markdown wrapper,
 use a plain TS module (option 3 below) until data-file collection
 support ships.
 

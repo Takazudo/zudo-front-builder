@@ -1,21 +1,15 @@
 ---
 title: Content Collections
-description: Define typed collections of Markdown content in zfb.config and load them from pages.
+description: zfb.config で型付きの Markdown コンテンツコレクションを定義し、ページから読み込む。
 sidebar_position: 2
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+**コンテンツコレクション**とは、プロジェクト設定で宣言した Markdown（または MDX）ファイルのディレクトリです。zfb はビルド時にそのディレクトリをスキャンし、各ファイルのフロントマターをあなたが指定したスキーマに照らしてパースし、ページから呼び出せる `getCollection()` ヘルパーを通じてエントリを公開します。
 
-このページは内容更新が予定されています。最新の英語版は [Content Collections](/concepts/content-collections) を参照してください。
+## コレクションを宣言する
 
-</Info>
-
-A **content collection** is a directory of Markdown (or MDX) files declared in your project config. zfb scans the directory at build time, parses each file's frontmatter against a schema you supply, and exposes the entries through a `getCollection()` helper your pages can call.
-
-## Declaring a collection
-
-Collections are configured in `zfb.config.ts` (or `zfb.config.json`) under the `collections` key. Each entry has a `name` and a `path`:
+コレクションは `zfb.config.ts`（または `zfb.config.json`）の `collections` キーの下で設定します。各エントリは `name` と `path` を持ちます。
 
 ```ts
 export default {
@@ -28,13 +22,13 @@ export default {
 };
 ```
 
-The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
+`name` は `getCollection()` に渡す識別子です。`path` はエントリを格納するディレクトリ（プロジェクトルートからの相対パス）です。zfb はそのディレクトリを走査し、各ファイルをフロントマター付きの Markdown ドキュメントとして扱い、`getCollection("blog")` を通じてそのエントリを公開します。
 
-You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter at build time. The supported keywords (`type`, `properties`, `items`, `required`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
+加えて、任意の `schema` フィールドを指定できます。これは JSON Schema のサブセットで、`zfb check` を実行したときに各エントリのフロントマターを検証します（ビルド自体はこれを強制しません）。サポートされるキーワード（`type`、`properties`、`items`、`required`、`enum`）は [`defineConfig`](/api/define-config) のページに記載されています。フィールドごとの検証を必要としないプロジェクト向けに、`[{ name, path }]` の形式も引き続きサポートされます。
 
-## Loading entries from a page
+## ページからエントリを読み込む
 
-Pages use `getCollection()` to enumerate entries:
+ページは `getCollection()` を使ってすべてのエントリを列挙するか、結果を絞り込んで slug で 1 件を特定します。
 
 ```tsx
 import { getCollection } from "zfb/content";
@@ -53,16 +47,28 @@ export default function BlogIndex() {
 }
 ```
 
-Each entry has three things you can rely on:
+```tsx
+import { getCollection } from "zfb/content";
 
-- `data` — the parsed, validated frontmatter (typed against your schema).
-- `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](/concepts/mdx-components) for details and `defaultComponents` recipes.
-- `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
+export default function FeaturedPost() {
+  const featured = getCollection("blog").find((e) => e.slug === "hello-zfb");
+  if (!featured) return null;
+  return <featured.Content />;
+}
+```
 
-The function signature lives in [`getCollection`](/api/get-collection).
+`getCollection()` は**同期的**です。コンテンツのスナップショット全体は、いずれかの TSX モジュールが走る前に Rust 側で構築され、`globalThis.__zfb` に埋め込まれます。そのため呼び出し時に I/O は発生せず、引き回すべき `await` もありません。このサーフェスを支える Rust↔JS ブリッジの契約は安定しており、`zfb` パッケージとともにバージョン管理されています。
 
-## How parsing works
+各エントリには、信頼して利用できる 3 つの要素があります。
 
-Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
+- `data` — パース済みで検証済みのフロントマター（スキーマに照らして型付けされています）。
+- `Content` — 本文からコンパイルされたレンダリング可能な React/Preact コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](/concepts/mdx-components) を参照してください。
+- `slug` — ファイル名から導出されます（`my-first-post.md` → `my-first-post`）。ネストしたディレクトリはスラッシュ区切りの slug になります。
 
-The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side; the Rust↔JS bridge contract is an internal stable interface between the `zfb-content` crate and the page renderer.
+この関数のシグネチャは [`getCollection`](/api/get-collection) に記載されています。
+
+## パースの仕組み
+
+内部では `zfb-content` クレートが 3 つの仕事をこなします。設定されたディレクトリを走査し、各ファイルの YAML フロントマターをパースし、Markdown/MDX 本文を mdast → JSX ソースのエミッターを通してコンパイルします。コンパイル結果は既存の SWC TSX → JS パイプラインへ渡されます。その結果はエントリごとの JSX モジュールであり、安定した `mdx://<collection>/<slug>` 指定子でアドレス指定されます。ページレンダラーはそのモジュールを必要に応じて評価し、ページに対して `entry.Content` として公開します。
+
+コンパイルとサーフェスの契約は安定しています。レンダリング側については [MDX Components](/concepts/mdx-components) を参照してください。

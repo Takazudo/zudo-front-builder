@@ -4,6 +4,7 @@ import {
   __hasPendingCancelForTests,
   __setIslandImporterForTests,
   mountIslands,
+  mountNewIslands,
   scheduleHydrate,
   unmountIslands,
 } from "../runtime.js";
@@ -605,6 +606,147 @@ describe("scheduleHydrate", () => {
       // The scheduler fired synchronously, so there must be NO stale entry
       // in pendingCancels for this element. (#743)
       expect(__hasPendingCancelForTests(el)).toBe(false);
+    });
+
+    // -----------------------------------------------------------------------
+    // Nested-island self-wrap warnings (#859)
+    // -----------------------------------------------------------------------
+
+    describe("nested island self-wrap warnings", () => {
+      it("(a) warns once when a data-zfb-island element is nested inside another island marker", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Outer" data-props='{}' data-when="load">
+            <div data-zfb-island="Inner" data-props='{}' data-when="load"></div>
+          </div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "development";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Outer: { mount: vi.fn() }, Inner: { mount: vi.fn() } });
+          // Only the nested "Inner" island should trigger the warning.
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Inner"));
+          expect(warnSpy.mock.calls[0]![0] as string).toContain("call site");
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
+
+      it("(b) warns when a data-zfb-island-skip-ssr element is nested inside an island marker", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Outer" data-props='{}' data-when="load">
+            <div data-zfb-island-skip-ssr="InnerSkip" data-props='{}'></div>
+          </div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "development";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Outer: { mount: vi.fn() }, InnerSkip: { mount: vi.fn() } });
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("InnerSkip"));
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
+
+      it("(c) does NOT warn for a flat (non-nested) single island", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "development";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Counter: { mount: vi.fn() } });
+          expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
+
+      it("(d) does NOT warn for sibling (non-nested) islands", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Alpha" data-props='{}' data-when="load"></div>
+          <div data-zfb-island="Beta" data-props='{}' data-when="load"></div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "development";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Alpha: { mount: vi.fn() }, Beta: { mount: vi.fn() } });
+          expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
+
+      it("warns at most once per nested element across repeated mountIslands / mountNewIslands calls", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Outer" data-props='{}' data-when="load">
+            <div data-zfb-island="Inner" data-props='{}' data-when="load"></div>
+          </div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "development";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Outer: { mount: vi.fn() }, Inner: { mount: vi.fn() } });
+          // Second walk (e.g. SPA swap re-check) should not re-warn.
+          mountNewIslands();
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
+
+      it("does NOT warn in production (NODE_ENV=production)", () => {
+        document.body.innerHTML = `
+          <div data-zfb-island="Outer" data-props='{}' data-when="load">
+            <div data-zfb-island="Inner" data-props='{}' data-when="load"></div>
+          </div>
+        `;
+        const original = process.env["NODE_ENV"];
+        process.env["NODE_ENV"] = "production";
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          mountIslands({ Outer: { mount: vi.fn() }, Inner: { mount: vi.fn() } });
+          expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+          warnSpy.mockRestore();
+          if (original === undefined) {
+            delete process.env["NODE_ENV"];
+          } else {
+            process.env["NODE_ENV"] = original;
+          }
+        }
+      });
     });
   });
 
