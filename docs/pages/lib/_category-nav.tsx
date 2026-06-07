@@ -20,7 +20,7 @@ import { CategoryNav as CategoryNavV2 } from "@takazudo/zudo-doc/nav-indexing";
 import type { NavNode as V2NavNode } from "@takazudo/zudo-doc/nav-indexing/types";
 import { buildNavTree, findNode } from "@/utils/docs";
 import { defaultLocale, type Locale } from "@/config/i18n";
-import { docsUrl } from "@/utils/base";
+import { docsUrl, isDefaultLocaleOnlyPath } from "@/utils/base";
 import { resolveNavSource } from "./_nav-source-docs";
 
 export interface CategoryNavWrapperProps {
@@ -89,7 +89,17 @@ export function CategoryNavWrapper({
       .map((slug): V2NavNode | null => {
         const node = findNode(tree, slug);
         if (!node) return null;
-        const href = node.href ?? docsUrl(slug, locale);
+        // For defaultLocaleOnly sections (e.g. claude-md, claude-skills), always
+        // link to the default-locale URL even when rendering for a non-default locale.
+        // Those sections are not built under /ja/docs/..., so locale-prefixed hrefs
+        // would 404. isDefaultLocaleOnlyPath expects the /docs/<slug>/ shape.
+        // We rebuild the href with defaultLocale rather than using node.href (which
+        // was computed with the current locale by buildNavTree) to avoid the wrong
+        // locale prefix on the slug that IS the nav tree node's fullPath.
+        const isLocaleOnly = isDefaultLocaleOnlyPath(`/docs/${slug}/`);
+        const href = isLocaleOnly
+          ? docsUrl(slug, defaultLocale)
+          : (node.href ?? docsUrl(slug, locale));
         return {
           label: node.label,
           description: node.description,
