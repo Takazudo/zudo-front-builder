@@ -29,7 +29,7 @@
 // Tailwind scans it. Chained directly rather than via a pre/post lifecycle hook
 // so it runs regardless of the pnpm `enable-pre-post-scripts` setting.
 
-import { cpSync, rmSync, existsSync } from "node:fs";
+import { cpSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -42,6 +42,18 @@ const destDir = join(docsRoot, ".zudo-doc-tw");
 if (!existsSync(srcDist)) {
   console.error(
     `vendor-zudo-doc-dist: package dist not found at ${srcDist} — is @takazudo/zudo-doc installed?`,
+  );
+  process.exit(1);
+}
+
+// Fail loud on an empty/partial dist: an existing-but-empty dir would copy to an
+// empty .zudo-doc-tw/, silently regressing #883 (no package classes generated).
+const jsCount = readdirSync(srcDist, { recursive: true }).filter((f) =>
+  String(f).endsWith(".js"),
+).length;
+if (jsCount === 0) {
+  console.error(
+    `vendor-zudo-doc-dist: ${srcDist} contains no .js files — partial/corrupt install? Refusing to vendor an empty dist (would ship unstyled CSS). Reinstall @takazudo/zudo-doc.`,
   );
   process.exit(1);
 }
