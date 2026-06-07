@@ -402,6 +402,9 @@ jobs:
           name: binary-${{ matrix.settings.target }}
           path: packages/zfb-${{ matrix.settings.platform }}/${{ matrix.settings.binary }}
           if-no-files-found: error
+          # Consumed within this run by the npm-publish job; the real binaries
+          # ship as GitHub Release assets, so cap Actions storage at the 1-day floor.
+          retention-days: 1
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -410,6 +413,9 @@ jobs:
             zfb-*-${{ matrix.settings.target }}.${{ matrix.settings.archive_ext }}
             zfb-*-${{ matrix.settings.target }}.${{ matrix.settings.archive_ext }}.sha256
           if-no-files-found: error
+          # Consumed within this run by the release-assets job; the archives are
+          # promoted to GitHub Release assets, so cap Actions storage at the 1-day floor.
+          retention-days: 1
 
   release-assets:
     # Attaches all 5 archives + 5 sha256 files to the GitHub Release.
