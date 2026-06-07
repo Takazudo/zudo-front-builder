@@ -93,9 +93,6 @@ importers:
       shiki:
         specifier: ^4.0.2
         version: 4.2.0
-      unist-util-visit:
-        specifier: ^5.1.0
-        version: 5.1.0
       zod:
         specifier: ^4.0.0
         version: 4.4.3
@@ -103,12 +100,6 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.0
         version: 4.2.4(vite@7.3.5(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.22.4))
-      '@types/hast':
-        specifier: ^3.0.4
-        version: 3.0.4
-      '@types/mdast':
-        specifier: ^4.0.4
-        version: 4.0.4
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
