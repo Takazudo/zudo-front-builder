@@ -4,7 +4,8 @@
     "target/**",
     "worktrees/**",
     "docs/dist/**",
-    "docs/.astro/**",
+    "docs/.zfb/**",
+    "docs/.zfb-build/**",
     ".pnpm-store/**"
   ],
   "addEmptyLinesInBlockJsx": {
