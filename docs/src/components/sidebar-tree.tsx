@@ -328,7 +328,12 @@ export default function SidebarTree({
             type="text"
             placeholder={filterPlaceholder}
             value={query}
-            onChange={(e) => setQuery((e.target as HTMLInputElement).value)}
+            // onInput (not onChange): fire on every keystroke for incremental
+            // filtering, matching the canonical zudo-doc dogfood. In this
+            // island's Preact runtime onChange fires only on commit (Enter/blur),
+            // which made filtering Enter-only. onInput is incremental in both
+            // plain Preact and preact/compat. (#883 #6)
+            onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             className="bg-transparent text-small outline-none w-full text-fg placeholder:text-muted"
           />
         </div>
