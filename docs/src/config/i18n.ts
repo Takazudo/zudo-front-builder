@@ -1,5 +1,9 @@
-import type { CollectionKey } from "astro:content";
 import { settings } from "./settings";
+
+// Collection name string used by zfb's content engine (`getCollection(...)`).
+// Kept as a structural string-literal alias so callers don't have to redeclare
+// it; it's a structural type so the underlying engine is interchangeable.
+type CollectionKey = string;
 
 /** Default locale code, served from docsDir. */
 export const defaultLocale = settings.defaultLocale;
@@ -11,11 +15,9 @@ export const locales = [
 ] as const;
 export type Locale = (typeof locales)[number];
 
-type LocaleKey = keyof typeof settings.locales;
-
 /** Safely look up a locale in settings.locales. */
 function getLocaleConfig(locale: string) {
-  return (settings.locales as Record<string, (typeof settings.locales)[LocaleKey]>)[locale];
+  return settings.locales[locale];
 }
 
 /** Get the content directory for a locale. */
@@ -56,13 +58,10 @@ const translations: Record<string, Record<string, string>> = {
   en: {
     "nav.gettingStarted": "Getting Started",
     "nav.learn": "Learn",
-    "nav.concepts": "Concepts",
     "nav.guides": "Guides",
     "nav.components": "Components",
     "nav.reference": "Reference",
-    "nav.architecture": "Architecture",
     "nav.claude": "Claude",
-    "nav.markdownFeatures": "Markdown Features",
     "nav.changelog": "Changelog",
     "nav.develop": "Develop",
     "nav.previous": "Previous",
@@ -114,13 +113,10 @@ const translations: Record<string, Record<string, string>> = {
   ja: {
     "nav.gettingStarted": "はじめに",
     "nav.learn": "学ぶ",
-    "nav.concepts": "コンセプト",
     "nav.guides": "ガイド",
     "nav.components": "コンポーネント",
     "nav.reference": "リファレンス",
-    "nav.architecture": "アーキテクチャ",
     "nav.claude": "Claude",
-    "nav.markdownFeatures": "Markdownの機能",
     "nav.changelog": "変更履歴",
     "nav.develop": "開発",
     "nav.previous": "前へ",
@@ -170,11 +166,9 @@ const translations: Record<string, Record<string, string>> = {
   de: {
     "nav.gettingStarted": "Erste Schritte",
     "nav.learn": "Lernen",
-    "nav.concepts": "Konzepte",
     "nav.guides": "Anleitungen",
     "nav.components": "Komponenten",
     "nav.reference": "Referenz",
-    "nav.architecture": "Architektur",
     "nav.claude": "Claude",
     "nav.changelog": "Changelog",
     "nav.develop": "Entwicklung",

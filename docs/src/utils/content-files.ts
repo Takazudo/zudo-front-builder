@@ -16,7 +16,7 @@ export function stripMarkdown(md: string): string {
       .replace(/^#{1,6}\s+/gm, "")
       // Remove emphasis/bold markers
       .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
-      .replace(/(?<![A-Za-z0-9])_{1,3}([^_]+)_{1,3}(?![A-Za-z0-9])/g, "$1")
+      .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
       // Remove images (must run before link removal)
       .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
       // Remove links but keep text
@@ -52,10 +52,13 @@ export function collectMdFiles(dir: string): Array<{ filePath: string; slug: str
     for (const entry of entries) {
       const fullPath = join(currentDir, entry.name);
       if (entry.isDirectory()) {
+        // Skip `_`-prefixed dirs to match the Content Collections convention
+        // (and zfb's routing): docs under them are not built as pages, so
+        // indexing them would yield search results whose links 404.
+        if (entry.name.startsWith("_")) continue;
         walk(fullPath, baseDir);
       } else if (/\.mdx?$/.test(entry.name) && !entry.name.startsWith("_")) {
         const rel = relative(baseDir, fullPath)
-          .replace(/\\/g, "/")
           .replace(/\.mdx?$/, "")
           .replace(/\/index$/, "");
         results.push({ filePath: fullPath, slug: rel });

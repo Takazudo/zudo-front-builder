@@ -23,9 +23,7 @@ export function rehypeCodeTitle() {
       const meta =
         String(codeEl.properties?.meta ?? "") ||
         String((codeEl.data as Record<string, unknown> | undefined)?.meta ?? "");
-      // (?:^|\s) anchors to a token boundary so keys like "subtitle=" or
-      // "data-title=" are not mis-parsed as the title (parity with Rust fix).
-      const titleMatch = meta.match(/(?:^|\s)title="([^"]+)"/);
+      const titleMatch = meta.match(/title="([^"]+)"/);
       if (!titleMatch) return;
 
       const title = titleMatch[1];

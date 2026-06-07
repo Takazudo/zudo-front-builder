@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import matter from "gray-matter";
-import { format as mdxFormat } from "@takazudo/mdx-formatter";
 import { generateClaudeResourcesDocs } from "../generate";
 
 let tmpDir: string;
@@ -66,8 +65,8 @@ describe("generateClaudeResourcesDocs", () => {
   // ---------------------------------------------------------------------------
 
   describe("file structure", () => {
-    it("generates correct directory structure", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates correct directory structure", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -80,8 +79,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(fs.existsSync(path.join(docsDir, "claude-agents"))).toBe(true);
     });
 
-    it("generates _category_.json with noPage for sub-categories", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates _category_.json with noPage for sub-categories", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -100,8 +99,8 @@ describe("generateClaudeResourcesDocs", () => {
       }
     });
 
-    it("generates skill as flat .mdx file", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates skill as flat .mdx file", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -117,19 +116,19 @@ describe("generateClaudeResourcesDocs", () => {
   // ---------------------------------------------------------------------------
 
   describe("content", () => {
-    it("generates overview page with CategoryTreeNav", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates overview page with CategoryNav", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
       });
 
       const overview = fs.readFileSync(path.join(docsDir, "claude", "index.mdx"), "utf8");
-      expect(overview).toContain('<CategoryTreeNav category="claude" />');
+      expect(overview).toContain("<CategoryNav categories={");
     });
 
-    it("skill page has correct frontmatter", async () => {
-      await generateClaudeResourcesDocs({
+    it("skill page has correct frontmatter", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -146,8 +145,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(parsed.data.sidebar_label).toBe("test-skill");
     });
 
-    it("skill page has file tree", async () => {
-      await generateClaudeResourcesDocs({
+    it("skill page has file tree", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -165,8 +164,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(skillPage).toContain("SKILL.md");
     });
 
-    it("skill page has links to sub-files that resolve correctly from the page URL", async () => {
-      await generateClaudeResourcesDocs({
+    it("skill page has links to sub-files that resolve correctly from the page URL", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -200,8 +199,8 @@ describe("generateClaudeResourcesDocs", () => {
       }
     });
 
-    it("skill body references/scripts/assets links are rewritten to doc site format", async () => {
-      await generateClaudeResourcesDocs({
+    it("skill body references/scripts/assets links are rewritten to doc site format", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -217,8 +216,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(skillPage).not.toContain("](references/guide.md)");
     });
 
-    it("agent page has model badge", async () => {
-      await generateClaudeResourcesDocs({
+    it("agent page has model badge", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -237,8 +236,8 @@ describe("generateClaudeResourcesDocs", () => {
   // ---------------------------------------------------------------------------
 
   describe("sub-file pages", () => {
-    it("generates unlisted reference page", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates unlisted reference page", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -251,8 +250,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(parsed.data.unlisted).toBe(true);
     });
 
-    it("generates unlisted asset page for .md files", async () => {
-      await generateClaudeResourcesDocs({
+    it("generates unlisted asset page for .md files", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -265,8 +264,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(parsed.data.unlisted).toBe(true);
     });
 
-    it("does NOT generate page for non-.md scripts", async () => {
-      await generateClaudeResourcesDocs({
+    it("does NOT generate page for non-.md scripts", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -276,8 +275,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(fs.existsSync(scriptPage)).toBe(false);
     });
 
-    it("sub-pages have custom slug for nested breadcrumbs", async () => {
-      await generateClaudeResourcesDocs({
+    it("sub-pages have custom slug for nested breadcrumbs", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -291,8 +290,8 @@ describe("generateClaudeResourcesDocs", () => {
       expect(parsed.data.slug).toBe("claude-skills/test-skill/ref-guide");
     });
 
-    it("reference page content is correct", async () => {
-      await generateClaudeResourcesDocs({
+    it("reference page content is correct", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -314,8 +313,8 @@ describe("generateClaudeResourcesDocs", () => {
   // ---------------------------------------------------------------------------
 
   describe("category metadata", () => {
-    it("_category_.json positions are ordered correctly", async () => {
-      await generateClaudeResourcesDocs({
+    it("_category_.json positions are ordered correctly", () => {
+      generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -338,8 +337,8 @@ describe("generateClaudeResourcesDocs", () => {
   // ---------------------------------------------------------------------------
 
   describe("return value", () => {
-    it("returns correct counts", async () => {
-      const result = await generateClaudeResourcesDocs({
+    it("returns correct counts", () => {
+      const result = generateClaudeResourcesDocs({
         claudeDir,
         projectRoot: tmpDir,
         docsDir,
@@ -351,84 +350,6 @@ describe("generateClaudeResourcesDocs", () => {
         skills: 1,
         agents: 1,
       });
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Formatter stability tests
-  // ---------------------------------------------------------------------------
-
-  describe("formatter stability", () => {
-    it("all generated .mdx files are stable under mdx-formatter (no changes after re-format)", async () => {
-      await generateClaudeResourcesDocs({
-        claudeDir,
-        projectRoot: tmpDir,
-        docsDir,
-      });
-
-      // Collect all generated .mdx files
-      const generatedDirs = [
-        "claude",
-        "claude-md",
-        "claude-commands",
-        "claude-skills",
-        "claude-agents",
-      ];
-      const mdxFiles: string[] = [];
-      for (const dir of generatedDirs) {
-        const dirPath = path.join(docsDir, dir);
-        if (!fs.existsSync(dirPath)) continue;
-        for (const file of fs.readdirSync(dirPath)) {
-          if (file.endsWith(".mdx")) {
-            mdxFiles.push(path.join(dirPath, file));
-          }
-        }
-      }
-
-      expect(mdxFiles.length).toBeGreaterThan(0);
-
-      // Each file must be unchanged after running through mdx-formatter
-      for (const filePath of mdxFiles) {
-        const content = fs.readFileSync(filePath, "utf8");
-        const reformatted = await mdxFormat(content);
-        expect(reformatted, `${path.basename(filePath)} is not formatter-stable`).toBe(content);
-      }
-    });
-
-    it("generated frontmatter uses bare scalars for simple values and quoted for colon-space values", async () => {
-      // Add a skill with a description containing ': ' (colon-space), which requires quoting
-      const specialSkillDir = path.join(claudeDir, "skills", "colon-skill");
-      fs.mkdirSync(specialSkillDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(specialSkillDir, "SKILL.md"),
-        '---\nname: colon-skill\ndescription: "Use when: (1) foo (2) bar"\n---\n\nSkill body.',
-      );
-
-      await generateClaudeResourcesDocs({
-        claudeDir,
-        projectRoot: tmpDir,
-        docsDir,
-      });
-
-      const skillPage = fs.readFileSync(
-        path.join(docsDir, "claude-skills", "colon-skill.mdx"),
-        "utf8",
-      );
-      const parsed = matter(skillPage);
-
-      // Values are correctly preserved
-      expect(parsed.data.title).toBe("colon-skill");
-      expect(parsed.data.description).toBe("Use when: (1) foo (2) bar");
-
-      // The raw frontmatter line for a bare title should NOT be double-quoted
-      expect(skillPage).toContain("title: colon-skill");
-      // The description with ': ' must be quoted (either single or double) to be valid YAML
-      // mdx-formatter uses double quotes for this case
-      expect(skillPage).toContain('description: "Use when: (1) foo (2) bar"');
-
-      // Stability: re-formatting must be a no-op
-      const reformatted = await mdxFormat(skillPage);
-      expect(reformatted).toBe(skillPage);
     });
   });
 });
