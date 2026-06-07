@@ -47,7 +47,7 @@ my-site/
 - `pages/blog/[slug].tsx` → `/blog/:slug`（動的ルート — 解決された slug ごとに 1 つの HTML ファイル）
 - `pages/docs/[...slug].tsx` → キャッチオール、任意の深さにマッチ
 
-デフォルトテンプレートには index ページと 3 つの動的ルートが含まれます。`blog/[slug].tsx`（記事ごとに 1 つの HTML ファイル）、`blog/page/[page].tsx`（ページ分割された一覧）、`tags/[tag].tsx`（タグごとのアーカイブ）です。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して、パラメータを解決された値ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](/concepts/dynamic-routes) を参照してください。
+デフォルトテンプレートには index ページと 3 つの動的ルートが含まれます。`blog/[slug].tsx`（記事ごとに 1 つの HTML ファイル）、`blog/page/[page].tsx`（ページ分割された一覧）、`tags/[tag].tsx`（タグごとのアーカイブ）です。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して、パラメータを解決された値ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](../concepts/dynamic-routes.mdx) を参照してください。
 
 ## layouts/
 
@@ -55,7 +55,7 @@ my-site/
 
 ## components/
 
-素のコンポーネントと **島** です。テンプレートには `components/note.tsx`（サーバーレンダリングされる注意書き）と `components/theme-toggle.tsx`（ダークモードを切り替える `"use client"` 島）が含まれます。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされ、JavaScript をまったく出力しません。考え方の全体像は [islands ページ](/concepts/islands) にあります。
+素のコンポーネントと **島** です。テンプレートには `components/note.tsx`（サーバーレンダリングされる注意書き）と `components/theme-toggle.tsx`（ダークモードを切り替える `"use client"` 島）が含まれます。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされ、JavaScript をまったく出力しません。考え方の全体像は [islands ページ](../concepts/islands.mdx) にあります。
 
 ## content/
 
@@ -84,11 +84,11 @@ my-site/
 
 `zfb.config.ts` で `base` が設定されている場合（例: `base: "/pj/site/"`）、`public/` 内のファイルもそのプレフィックス配下で配信されます。`public/logo.svg` → `/pj/site/logo.svg` です。同じ前置がビルド時にも行われるため、プレフィックスは dev と prod で一貫します。
 
-`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[Static Assets](/concepts/static-assets) を参照してください。
+`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[Static Assets](../concepts/static-assets.mdx) を参照してください。
 
 ## zfb.config.json
 
-設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](/api/define-config) を参照してください。
+設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
 
 テンプレートは `zfb.config.json` をスキャフォールドします。これを `zfb.config.ts` にリネームすると、zfb は同梱の esbuild バイナリ経由でロードし、完全な TypeScript 型と IDE 補完が得られます。スキーマはどちらの形式でも同一です。
 

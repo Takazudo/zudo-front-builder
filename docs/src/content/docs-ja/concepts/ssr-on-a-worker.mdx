@@ -9,7 +9,7 @@ category: Concepts
 
 `prerender = false` の zfb ページがプロダクションで実際に何を動かすのかというメンタルモデル。2 層のワーカー出力、リクエストが正しいハンドラへどうディスパッチされるか、そして `getCloudflareContext()` が prop-drilling なしに任意のページコンポーネントへ Cloudflare のバインディングを届ける方法を扱います。
 
-このページはメンタルモデルです。実際のセットアップ（アダプターのインストール、`wrangler.toml` の配線、D1 へのクエリ、`compatibility_flags` の設定）については [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) を読んでください。
+このページはメンタルモデルです。実際のセットアップ（アダプターのインストール、`wrangler.toml` の配線、D1 へのクエリ、`compatibility_flags` の設定）については [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) を読んでください。
 また、このページは zfb が出力する `dist/_worker.js` に特化したものであり、wrangler で別途デプロイする外部の Worker についてではありません。
 
 </Info>
@@ -61,7 +61,7 @@ export default async function AccountPage(): Promise<Response> {
 
 この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、アドバンスドモードの `_worker.js` ディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 
-より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](/concepts/architecture-overview) を読んでください。
+より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](./architecture-overview.mdx) を読んでください。
 
 ## ディスパッチフロー
 
@@ -103,7 +103,7 @@ als.run({ env, ctx, request }, () => inner.fetch(request));
 compatibility_flags = ["nodejs_compat"]
 ```
 
-このフラグがないと、Worker は起動に失敗します。エラーメッセージは欠けているモジュールとして `node:async_hooks` を名指しします。完全な `wrangler.toml` 設定については [SSR and Cloudflare Bindings guide](/guides/ssr-and-cloudflare-bindings) を参照してください。
+このフラグがないと、Worker は起動に失敗します。エラーメッセージは欠けているモジュールとして `node:async_hooks` を名指しします。完全な `wrangler.toml` 設定については [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
 
 **なぜ prop-drilling ではなく AsyncLocalStorage なのか。** ページハンドラは共有のレイアウトや lib ヘルパーを自由に組み合わせます。`env` を明示的なパラメータとして引き回すと、すべてのコンポーネントとヘルパーがそれを受け取ることを強いられます。Cloudflare 固有のインフラと汎用的な UI コードの間の漏れのある結合です。ALS はフレームワークの境界をきれいに保ちます。アダプターがストレージを所有し、ユーザーコードはそれが必要な場所でだけ読みます。
 
@@ -127,12 +127,12 @@ compatibility_flags = ["nodejs_compat"]
 
 2 つのカテゴリの出力が、`dist/_worker.js` と `dist/_zfb_inner.mjs` から意図的に欠けています。
 
-**Islands** — `"use client"` でマークされたコンポーネントは、別の esbuild ステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](/concepts/islands) を参照してください。
+**Islands** — `"use client"` でマークされたコンポーネントは、別の esbuild ステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
 
 **プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、Cloudflare Pages が `.html` ファイルを `env.ASSETS` から直接配信するため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。ただし、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。`_worker.js` が静的な `import inner from "./_zfb_inner.mjs"` を行うため、最初のリクエストがどのルートに着地するかに関係なく、workerd は内側のモジュールグラフをメモリに引き込みます。この最適化は「静的ヒットは `inner.fetch()` をスキップする」であって、「静的のみのデプロイは内側のバンドルのロードをスキップする」ではありません。
 
 ## 関連
 
-- [Architecture overview](/concepts/architecture-overview) — 2 バンドルのモデルと、ワーカーバンドルの形がビルド時とプロダクションの間の安定したコントラクトであること。
-- [Islands](/concepts/islands) — `"use client"` がコンポーネントを Worker の外に存在するブラウザ配信バンドルへどう opt-in させるか。
-- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler pages dev` でのローカル開発。
+- [Architecture overview](./architecture-overview.mdx) — 2 バンドルのモデルと、ワーカーバンドルの形がビルド時とプロダクションの間の安定したコントラクトであること。
+- [Islands](./islands.mdx) — `"use client"` がコンポーネントを Worker の外に存在するブラウザ配信バンドルへどう opt-in させるか。
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler pages dev` でのローカル開発。

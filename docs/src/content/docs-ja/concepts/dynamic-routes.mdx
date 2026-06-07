@@ -10,7 +10,7 @@ category: Concepts
 `paths()` が、動的ページやキャッチオールページが出力すべき URL をどう
 列挙するか、それが返す `{ params, props }` の契約、そしてページ
 コンポーネントがそのデータをどう受け取るかを解説します。静的ルートの
-基礎については [Routing](/concepts/routing) を参照してください。
+基礎については [Routing](./routing.mdx) を参照してください。
 
 </Info>
 
@@ -135,7 +135,7 @@ export default function DocsPage({ params }) {
 2 つのパターンが同じ URL にマッチしうる場合は、より具体的なほうが
 勝ちます。**静的が動的に勝ち、動的がキャッチオールに勝ちます。**
 ルーターはルートテーブルを構築するときにこれを強制します。完全な
-ソート順については [Routing](/concepts/routing) を参照してください。
+ソート順については [Routing](./routing.mdx) を参照してください。
 
 ## ルールと落とし穴
 
@@ -162,7 +162,7 @@ export default function DocsPage({ params }) {
 
 ## 関連項目
 
-- [Routing](/concepts/routing) — 静的ルートの基礎。
-- [Content Collections](/concepts/content-collections) — ほとんどの
+- [Routing](./routing.mdx) — 静的ルートの基礎。
+- [Content Collections](./content-collections.mdx) — ほとんどの
   `paths()` 呼び出しがデータソースとして参照するもの。同期的な
   `getCollection` API についても解説しています。

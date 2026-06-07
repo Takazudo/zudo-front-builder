@@ -134,10 +134,10 @@ export default defineConfig({
 
 - **変換するソース画像**（リサイズ・最適化・AVIF/WebP への変換）。zfb には組み込みの画像パイプラインがありません。変換が必要なら帯域外で実行し（例: `prebuild` スクリプト経由）、最適化された出力を `public/` にチェックインするか、別のツールを使ってください。
 - **islands のコード依存**。`"use client"` 島がインポートする TSX / JSX / TS / CSS は、島の隣に置いてバンドルすべきです。コードを `public/` に置くとバンドラを完全にスキップしてしまい、ブラウザはランタイムが実行できない生のソースを取得することになります。
-- **拡張子が示すものと異なる `Content-Type` が必要なファイル**。zfb は Content-Type をファイル拡張子から導出します。オーバーライドが必要なら、代わりに TSX ページ経由でファイルをレンダリングしてください（[Non-HTML Pages](/concepts/non-html-pages) を参照）。
+- **拡張子が示すものと異なる `Content-Type` が必要なファイル**。zfb は Content-Type をファイル拡張子から導出します。オーバーライドが必要なら、代わりに TSX ページ経由でファイルをレンダリングしてください（[Non-HTML Pages](./non-html-pages.mdx) を参照）。
 
 ## 関連
 
-- [Project structure: `public/`](/getting-started/project-structure) — ディレクトリレイアウトの概観。
-- [Non-HTML Pages](/concepts/non-html-pages) — ヘッダーを制御したい場合や、ページをコレクションデータに依存させたい場合に、`.xml`・`.json`・`.txt` を TSX ページ経由でレンダリングする方法。
-- [Islands](/concepts/islands) — クライアントサイド JS の経路。ここで説明した静的アセットの経路とは別物です。
+- [Project structure: `public/`](../getting-started/project-structure.mdx) — ディレクトリレイアウトの概観。
+- [Non-HTML Pages](./non-html-pages.mdx) — ヘッダーを制御したい場合や、ページをコレクションデータに依存させたい場合に、`.xml`・`.json`・`.txt` を TSX ページ経由でレンダリングする方法。
+- [Islands](./islands.mdx) — クライアントサイド JS の経路。ここで説明した静的アセットの経路とは別物です。

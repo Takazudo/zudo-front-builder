@@ -27,7 +27,7 @@ zfb は `pages/` ディレクトリ配下で **ファイルシステムルーテ
 - ページとして受け付けられる拡張子は `.tsx`・`.mdx`・`.md`・`.html` です。`pages/` 内のそれ以外の拡張子のファイルはスキップされます（警告がログに出ます）。そのため README やメモを置いても問題ありません。
 - 同じルートに解決される 2 つのファイルがあると、ビルド時に `RouterError::AmbiguousRoute` が発生します。ルーターが暗黙のうちに勝者を選ぶことはありません。ルーターはまた、2 つのルートがパラメータ名だけ異なり同じ URL にマッチする場合（例: `docs/[a].tsx` と `docs/[b].tsx`）に `RouterError::AmbiguousShape` を、オプショナル catchall が同じ位置で別のルートと重なる場合に `RouterError::OptionalCatchallConflict` を発生させます。
 
-`.md` と `.html` のページエントリの完全なコントラクトと v1 の制限については [Markdown and HTML Pages](/concepts/md-html-pages) を参照してください。
+`.md` と `.html` のページエントリの完全なコントラクトと v1 の制限については [Markdown and HTML Pages](./md-html-pages.mdx) を参照してください。
 
 スキャンは `zfb-router` クレートの `Router::scan` が行います。結果は **静的ルートが動的ルートより優先され、動的ルートが catchall より優先される** ようにソートされます。より具体的なルートが先にマッチします。
 

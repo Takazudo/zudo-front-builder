@@ -6,7 +6,7 @@ sidebar_position: 3
 
 zfb の Markdown パイプラインは `zfb-content` という Rust クレートにあります。各ファイルをパースし、visitor のチェーン（常時オンの Core に加えて、有効化した Opt-in 機能）を実行し、コードブロックを syntect でサーバーサイドにハイライトし、各エントリを生の `body` 文字列とすぐにレンダリングできる `Content` コンポーネントの両方として返します。
 
-パイプラインが提供するものの全リスト — 常時オンの Core 機能、`zfb.config.ts` で有効化する Opt-in 機能、そして独自の visitor を in-tree で追加する方法 — については、[Markdown Features](/markdown-features) カテゴリを参照してください。
+パイプラインが提供するものの全リスト — 常時オンの Core 機能、`zfb.config.ts` で有効化する Opt-in 機能、そして独自の visitor を in-tree で追加する方法 — については、[Markdown Features](../markdown-features/index.mdx) カテゴリを参照してください。
 
 ## ページ内で Markdown をレンダリングする
 
@@ -39,7 +39,7 @@ export default function PostPage({ post }) {
 `zfb.config` の `plugins: []` フィールドは、ビルドオーケストレーション用のプラグインシステムです。登録された各プラグインは 4 つのオプションフックを公開します — `setup`、`preBuild`、`postBuild`、`devMiddleware` — それぞれ、起動時のインポートエイリアスや仮想モジュールの登録（`setup`）、ビルドと並行した追加ファイルの出力（`preBuild`）、ビルド後の検証の実行（`postBuild`）、開発サーバーへのルート追加（`devMiddleware`）といったタスクのためのものです。これらのプラグインは Markdown のレンダリングには**関与しません**。パースと visitor チェーンは Rust エンジンの内部で実行され、npm でインストールされたプラグインへコールバックすることはありません。
 
 Markdown パイプラインのカスタマイズは、エンジン側で `MdastVisitor` /
-`HastVisitor` 実装として in-tree に存在します。[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) を参照してください。
+`HastVisitor` 実装として in-tree に存在します。[Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) を参照してください。
 
 <Tip>
 
@@ -49,9 +49,9 @@ Markdown パイプラインのカスタマイズは、エンジン側で `MdastV
 
 ## 関連項目
 
-- [Markdown Features](/markdown-features) — Core と Opt-in
+- [Markdown Features](../markdown-features/index.mdx) — Core と Opt-in
   機能の完全なカタログ。
-- [Custom Directives](/concepts/custom-directives) — `DirectiveRegistry`
+- [Custom Directives](../concepts/custom-directives.mdx) — `DirectiveRegistry`
   に新しいディレクティブ名を登録する。Rust 不要。
-- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) —
+- [Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) —
   Rust の visitor を書いてエンジンに組み込む。
