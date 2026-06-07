@@ -47,7 +47,7 @@ File-system routing lives here. Every page file under `pages/` (`.tsx`, `.mdx`, 
 - `pages/blog/[slug].tsx` → `/blog/:slug` (dynamic route — one HTML file per resolved slug)
 - `pages/docs/[...slug].tsx` → catchall, matches any depth
 
-The default template ships an index page and three dynamic routes: `blog/[slug].tsx` (one HTML file per post), `blog/page/[page].tsx` (paginated listing), and `tags/[tag].tsx` (per-tag archive). A dynamic route file exports a `paths()` function; zfb calls it at build time to expand the parameter into one HTML file per resolved value. See [Dynamic routes](/concepts/dynamic-routes) for the full API.
+The default template ships an index page and three dynamic routes: `blog/[slug].tsx` (one HTML file per post), `blog/page/[page].tsx` (paginated listing), and `tags/[tag].tsx` (per-tag archive). A dynamic route file exports a `paths()` function; zfb calls it at build time to expand the parameter into one HTML file per resolved value. See [Dynamic routes](../concepts/dynamic-routes.mdx) for the full API.
 
 ## layouts/
 
@@ -55,7 +55,7 @@ Reusable page wrappers. `layouts/default.tsx` is the shell every page imports �
 
 ## components/
 
-Plain components and **islands**. The template ships `components/note.tsx` (a server-rendered callout) and `components/theme-toggle.tsx` (a `"use client"` island for toggling dark mode). The `"use client"` directive at the top of a file is what turns a component into a client-side island — components without it render only on the server and ship zero JavaScript. The full mental model is on the [islands page](/concepts/islands).
+Plain components and **islands**. The template ships `components/note.tsx` (a server-rendered callout) and `components/theme-toggle.tsx` (a `"use client"` island for toggling dark mode). The `"use client"` directive at the top of a file is what turns a component into a client-side island — components without it render only on the server and ship zero JavaScript. The full mental model is on the [islands page](../concepts/islands.mdx).
 
 ## content/
 
@@ -84,11 +84,11 @@ Do NOT use bundler-style imports (`import logo from "./logo.svg"`) for static as
 
 When `base` is set in `zfb.config.ts` (e.g. `base: "/pj/site/"`), files in `public/` are served under that prefix too — `public/logo.svg` → `/pj/site/logo.svg`. The same prepend happens at build time, so the prefix is consistent between dev and prod.
 
-See [Static Assets](/concepts/static-assets) for the full reference, including when to use `public/` vs a TSX import for islands.
+See [Static Assets](../concepts/static-assets.mdx) for the full reference, including when to use `public/` vs a TSX import for islands.
 
 ## zfb.config.json
 
-The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](/api/define-config) for the full schema reference.
+The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 
 The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, zfb loads it via the bundled esbuild binary and you get full TypeScript types and IDE completion — the schema is identical in both formats.
 

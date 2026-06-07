@@ -26,8 +26,9 @@ Strip the flag from the remaining argument to get the topic keyword.
 
 1. Find the relevant article(s) from the `docs/` directory based on the topic
 2. Read ONLY the specific article(s) you need — do NOT load all articles at once
-3. Apply the information from the article when answering the user's question
-4. Mention the source article path so the user can find it for further reading
+3. For architecture questions, look under `docs/architecture/` for the relevant page
+4. Apply the information from the article when answering the user's question
+5. Mention the source article path so the user can find it for further reading
 
 ## Update Mode (`-u` / `--update`)
 
@@ -68,6 +69,9 @@ The documentation is organized in MDX files under `docs/`:
 - concepts/
 - getting-started/
 - guides/
+- install/
+- markdown-features/
+- recipes/
 ```
 
 Browse the `docs/` directory to discover available articles. Each `.mdx` file

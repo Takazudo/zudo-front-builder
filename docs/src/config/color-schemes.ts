@@ -25,7 +25,6 @@ export interface ColorScheme {
     string,
     string,
   ];
-  shikiTheme: NonNullable<import("astro").ShikiConfig["theme"]>;
   /** Optional semantic overrides — when omitted, defaults are used:
    *  surface=p0, muted=p8, accent=p5, accentHover=p14
    *  codeBg=p10, codeFg=p11, success=p2, danger=p1, warning=p3, info=p4
@@ -106,7 +105,6 @@ export const colorSchemes: Record<string, ColorScheme> = {
       "#8590a0",
       "#654516", // p12-15: accent variant, decorative, hover, muted foreground
     ],
-    shikiTheme: "catppuccin-latte",
     semantic: {
       surface: 10,
       muted: 8,
@@ -148,7 +146,6 @@ export const colorSchemes: Record<string, ColorScheme> = {
       "#a7c0e3",
       "#b8b8b8", // p12-15: accent variant, decorative, hover, text secondary
     ],
-    shikiTheme: "vitesse-dark",
     semantic: {
       surface: 0,
       muted: 8,

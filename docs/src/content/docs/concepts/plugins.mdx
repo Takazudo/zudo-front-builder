@@ -7,11 +7,11 @@ category: Concepts
 
 zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. The zfb build (and dev) host loads each plugin module once at boot and dispatches four optional lifecycle hooks to it. A plugin may declare any subset of the four — anything it omits is a silent no-op.
 
-This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](/api/define-config).
+This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](../api/define-config.mdx).
 
 ## When you actually need a plugin
 
-Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-dont--write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](/concepts/design-philosophy).
+Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-dont--write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
 
 - **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
 - **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
@@ -283,7 +283,7 @@ When two plugins clash on a registration, zfb aborts the build/dev with one of t
 
 ## When you don't — write a recipe
 
-Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no dev middleware), a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](/concepts/design-philosophy) and [Engine vs Framework](/concepts/engine-vs-framework) pages explain the broader principle.
+Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no dev middleware), a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](./design-philosophy.mdx) and [Engine vs Framework](./engine-vs-framework.mdx) pages explain the broader principle.
 
 Common candidates that do not need a plugin:
 
@@ -294,5 +294,5 @@ Common candidates that do not need a plugin:
 
 ## See also
 
-- [`defineConfig`](/api/define-config) — wiring `plugins: [{ name: "...", options: {...} }]`.
-- [Build Pipeline](/concepts/build-pipeline) — where each hook lands in the overall sequence.
+- [`defineConfig`](../api/define-config.mdx) — wiring `plugins: [{ name: "...", options: {...} }]`.
+- [Build Pipeline](./build-pipeline.mdx) — where each hook lands in the overall sequence.

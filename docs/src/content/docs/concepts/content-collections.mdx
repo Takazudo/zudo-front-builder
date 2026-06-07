@@ -24,7 +24,7 @@ export default {
 
 The `name` is the identifier you pass to `getCollection()`. The `path` is the directory (relative to the project root) holding the entries. zfb walks that directory, treats each file as a Markdown document with frontmatter, and exposes its entries through `getCollection("blog")`.
 
-You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter when you run `zfb check` (the build itself does not enforce it). The supported keywords (`type`, `properties`, `items`, `required`, `enum`) are documented on the [`defineConfig`](/api/define-config) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
+You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter when you run `zfb check` (the build itself does not enforce it). The supported keywords (`type`, `properties`, `items`, `required`, `enum`) are documented on the [`defineConfig`](../api/define-config.mdx) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
 
 ## Loading entries from a page
 
@@ -67,13 +67,13 @@ with the `zfb` package.
 Each entry has three things you can rely on:
 
 - `data` — the parsed, validated frontmatter (typed against your schema).
-- `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](/concepts/mdx-components) for details and `defaultComponents` recipes.
+- `Content` — a renderable React/Preact component compiled from the body. Render it as `<post.Content components={...} />` and pass element-level overrides through the `components` prop. This is the same contract Astro's `@astrojs/mdx` exposes; see [MDX Components](./mdx-components.mdx) for details and `defaultComponents` recipes.
 - `slug` — derived from the file name (`my-first-post.md` → `my-first-post`). Nested directories become slash-separated slugs.
 
-The function signature is documented at [`getCollection`](/api/get-collection).
+The function signature is documented at [`getCollection`](../api/get-collection.mdx).
 
 ## How parsing works
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's YAML frontmatter, and compiles the Markdown/MDX body through an mdast → JSX-source emitter that is then handed to the existing SWC TSX → JS pipeline. The result is a JSX module per entry, addressed by a stable `mdx://<collection>/<slug>` specifier; the page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
-The compilation and surface contract are stable. See [MDX Components](/concepts/mdx-components) for the rendering side.
+The compilation and surface contract are stable. See [MDX Components](./mdx-components.mdx) for the rendering side.

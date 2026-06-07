@@ -7,13 +7,13 @@ category: Recipes
 
 <Info title="What this page covers">
 
-How to register an admonition vocabulary (`note`, `tip`, `info`, `warning`, `danger`, `caution`) and a collapsible `details` directive using the generic [`directives`](/markdown-features/directives) opt-in feature. Includes minimal component stubs and CSS patterns. [zudo-doc](https://github.com/zudolab/zudo-doc) is the fully-worked reference implementation.
+How to register an admonition vocabulary (`note`, `tip`, `info`, `warning`, `danger`, `caution`) and a collapsible `details` directive using the generic [`directives`](../markdown-features/directives.mdx) opt-in feature. Includes minimal component stubs and CSS patterns. [zudo-doc](https://github.com/zudolab/zudo-doc) is the fully-worked reference implementation.
 
 </Info>
 
 ## Background
 
-zfb is the **engine** — it provides the [Directives registry](/markdown-features/directives-registry) as a Core primitive and the [`directives`](/markdown-features/directives) opt-in feature to populate it from config. The engine ships **zero** named directives by default. The admonition vocabulary (`:::note`, `:::tip`, etc.) is a userland policy decision — this recipe shows one way to implement it.
+zfb is the **engine** — it provides the [Directives registry](../markdown-features/directives-registry.mdx) as a Core primitive and the [`directives`](../markdown-features/directives.mdx) opt-in feature to populate it from config. The engine ships **zero** named directives by default. The admonition vocabulary (`:::note`, `:::tip`, etc.) is a userland policy decision — this recipe shows one way to implement it.
 
 `:::details` (a collapsible section) is structurally similar to admonitions but semantically different, so it is registered separately and given its own component.
 
@@ -68,7 +68,7 @@ Hidden content that the reader reveals on demand.
 :::
 ```
 
-The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Click to expand">`, etc. You are responsible for making these identifiers available in scope — see [MDX Components](/concepts/mdx-components).
+The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Click to expand">`, etc. You are responsible for making these identifiers available in scope — see [MDX Components](../concepts/mdx-components.mdx).
 
 ## 2. Component stubs
 
@@ -117,7 +117,7 @@ export function Details({ title, children }: DetailsProps) {
 
 ## 3. Register with MDX
 
-Add the components to your [MDX components map](/concepts/mdx-components) so they are in scope at every page render.
+Add the components to your [MDX components map](../concepts/mdx-components.mdx) so they are in scope at every page render.
 
 ```tsx title="mdx-components.tsx"
 import { defaultComponents } from "zfb";
@@ -185,7 +185,7 @@ The `data-kind` attribute on each admonition wrapper gives you a single CSS hook
 
 ## See also
 
-- [`directives` feature reference](/markdown-features/directives) — the Opt-in feature this recipe uses.
-- [Directives registry](/markdown-features/directives-registry) — the Core primitive underneath.
-- [MDX Components](/concepts/mdx-components) — how to put the components in scope globally.
-- [Custom Directives](/concepts/custom-directives) — register directives via the Rust API for framework authors.
+- [`directives` feature reference](../markdown-features/directives.mdx) — the Opt-in feature this recipe uses.
+- [Directives registry](../markdown-features/directives-registry.mdx) — the Core primitive underneath.
+- [MDX Components](../concepts/mdx-components.mdx) — how to put the components in scope globally.
+- [Custom Directives](../concepts/custom-directives.mdx) — register directives via the Rust API for framework authors.

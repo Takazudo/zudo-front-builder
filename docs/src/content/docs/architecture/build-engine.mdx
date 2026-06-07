@@ -4,9 +4,9 @@ description: "How zfb's crates fit together, why the rebuild is per-page, and wh
 sidebar_position: 1
 ---
 
-This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](/concepts/build-pipeline); this page explains why the story is shaped this way.
+This page is about the *shape* of zfb's build engine. For a step-by-step walk of what happens when you save a file, read [Build pipeline](../concepts/build-pipeline.mdx); this page explains why the story is shaped this way.
 
-See also: [Architecture overview](/concepts/architecture-overview) · [Islands](/concepts/islands) · [Incremental rebuild](/concepts/incremental-rebuild)
+See also: [Architecture overview](../concepts/architecture-overview.mdx) · [Islands](../concepts/islands.mdx) · [Incremental rebuild](../concepts/incremental-rebuild.mdx)
 
 ## The crate split
 
@@ -39,7 +39,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 | Tool | Role | Trait boundary |
 | --- | --- | --- |
 | **esbuild** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the shared islands client bundle (`zfb-islands`). Fast, handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
-| **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](/architecture/js-runtime) for the rationale. | `RenderHost` (in `zfb-render`) |
+| **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](./js-runtime.mdx) for the rationale. | `RenderHost` (in `zfb-render`) |
 | **SWC** | Compiles TSX source to JavaScript before handing it off to esbuild or the render host. Lives inside `zfb-render`. | Internal to `zfb-render`; swappable by replacing that crate's transform step |
 | **lol_html** | Streaming HTML rewriter used to inject hydration entry-point `<script>` tags and island mount markers into the rendered HTML without a full parse. | Used inside `zfb-build/head_inject.rs`; no public trait needed — it is a low-level utility |
 
@@ -52,7 +52,7 @@ zfb owns orchestration, the dependency graph, and the per-page contract. The too
 - **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before esbuild sees the source. Either way it is invisible to the orchestrator.
 - **lol_html** runs after the render host returns HTML, inside `zfb-build/head_inject.rs`. The orchestrator sees plain strings in and plain strings out.
 
-This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](/concepts/islands) for the `ClientBundler` contract and [Incremental rebuild](/concepts/incremental-rebuild) for how the dependency graph feeds the per-page policy.
+This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](../concepts/islands.mdx) for the `ClientBundler` contract and [Incremental rebuild](../concepts/incremental-rebuild.mdx) for how the dependency graph feeds the per-page policy.
 
 ## V8-mode gate: `output` and auto-detection
 
@@ -136,4 +136,4 @@ Registered handlers slot into the dev router's precedence chain **between plugin
 6. on-disk fallback to `public/`,
 7. dev 404.
 
-The host handler wins over any same-path runtime-SSR page — that is the whole point of the seam. See the [Embed-as-library guide](/guides/embed-as-library) for the builder shape, the handler signature, and the precedence contract in code.
+The host handler wins over any same-path runtime-SSR page — that is the whole point of the seam. See the [Embed-as-library guide](../guides/embed-as-library.mdx) for the builder shape, the handler signature, and the precedence contract in code.

@@ -58,42 +58,42 @@ Omitting a key means the feature is off; no extra bytes are emitted.
 
 These always-on plugins ship as part of `zfb-content`'s default pipeline.
 
-- [CJK-friendly emphasis](/markdown-features/cjk-friendly) — re-tokenises bold/italic adjacent to CJK ideographs and kana.
-- [Heading links](/markdown-features/heading-links) — slugified `id` attributes and self-referencing anchor links on every heading.
-- [Code block title](/markdown-features/code-title) — renders a filename label above a fenced code block from `title="…"`.
-- [External links](/markdown-features/external-links) — adds `target` and `rel` attributes to outbound links (configurable).
-- [Resolve links](/markdown-features/resolve-links) — rewrites internal link targets using the content source map.
-- [Strip .md extension](/markdown-features/strip-md-ext) — removes `.md`/`.mdx` suffixes from internal link hrefs.
-- [Syntax highlighting](/markdown-features/syntax-highlighting) — server-side highlighting via syntect; always on, theme-configurable.
-- [Directives registry](/markdown-features/directives-registry) — maps `:::name`/`::name`/`:name` directive syntax to JSX components.
+- [CJK-friendly emphasis](./cjk-friendly.mdx) — re-tokenises bold/italic adjacent to CJK ideographs and kana.
+- [Heading links](./heading-links.mdx) — slugified `id` attributes and self-referencing anchor links on every heading.
+- [Code block title](./code-title.mdx) — renders a filename label above a fenced code block from `title="…"`.
+- [External links](./external-links.mdx) — adds `target` and `rel` attributes to outbound links (configurable).
+- [Resolve links](./resolve-links.mdx) — rewrites internal link targets using the content source map.
+- [Strip .md extension](./strip-md-ext.mdx) — removes `.md`/`.mdx` suffixes from internal link hrefs.
+- [Syntax highlighting](./syntax-highlighting.mdx) — server-side highlighting via syntect; always on, theme-configurable.
+- [Directives registry](./directives-registry.mdx) — maps `:::name`/`::name`/`:name` directive syntax to JSX components.
 
 ## Opt-in features
 
 Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
 
-- [Directives](/markdown-features/directives) — register `:::name` / `::name` / `:name` directive syntax that maps to your own JSX components (zero defaults — you supply the vocabulary).
-- [Mermaid diagrams](/markdown-features/mermaid) — renders Mermaid flowcharts from fenced code blocks.
-- [Heading-marker TOC](/markdown-features/heading-marker-toc) — auto-inserts a table of contents after a designated heading.
-- [GitHub alerts](/markdown-features/github-alerts) — renders `> [!NOTE]` / `> [!WARNING]` blockquotes as styled components.
-- [Reading time](/markdown-features/reading-time) — computes estimated reading time and injects it into frontmatter.
-- [GitHub autolinks](/markdown-features/github-autolinks) — links GitHub issue/PR/commit references (`#123`, `org/repo#456`, `abc1234`) automatically.
-- [Code-block enrichment](/markdown-features/code-enrichment) — adds diff markers and per-line highlighting to fenced code blocks.
-- [Code tabs](/markdown-features/code-tabs) — groups consecutive fenced code blocks into a tabbed switcher.
-- [Ruby annotation](/markdown-features/ruby) — renders `{これは}^{これ}` (caret, primary) or `{漢字|かんじ}` (pipe, legacy alias) syntax as HTML `<ruby>` elements.
-- [TOC export](/markdown-features/toc-export) — exports a structured heading tree into the compiled JSX module for framework-side rendering.
-- [Image dimensions](/markdown-features/image-dimensions) — injects `width` and `height` attributes on `<img>` elements from the actual file.
-- [Link validation](/markdown-features/link-validation) — warns on broken internal links by default; hard build errors with `failOnBroken: true`.
-- [Transclusion](/markdown-features/transclude) — inlines the content of another file using the `:::include` directive.
+- [Directives](./directives.mdx) — register `:::name` / `::name` / `:name` directive syntax that maps to your own JSX components (zero defaults — you supply the vocabulary).
+- [Mermaid diagrams](./mermaid.mdx) — renders Mermaid flowcharts from fenced code blocks.
+- [Heading-marker TOC](./heading-marker-toc.mdx) — auto-inserts a table of contents after a designated heading.
+- [GitHub alerts](./github-alerts.mdx) — renders `> [!NOTE]` / `> [!WARNING]` blockquotes as styled components.
+- [Reading time](./reading-time.mdx) — computes estimated reading time and injects it into frontmatter.
+- [GitHub autolinks](./github-autolinks.mdx) — links GitHub issue/PR/commit references (`#123`, `org/repo#456`, `abc1234`) automatically.
+- [Code-block enrichment](./code-enrichment.mdx) — adds diff markers and per-line highlighting to fenced code blocks.
+- [Code tabs](./code-tabs.mdx) — groups consecutive fenced code blocks into a tabbed switcher.
+- [Ruby annotation](./ruby.mdx) — renders `{これは}^{これ}` (caret, primary) or `{漢字|かんじ}` (pipe, legacy alias) syntax as HTML `<ruby>` elements.
+- [TOC export](./toc-export.mdx) — exports a structured heading tree into the compiled JSX module for framework-side rendering.
+- [Image dimensions](./image-dimensions.mdx) — injects `width` and `height` attributes on `<img>` elements from the actual file.
+- [Link validation](./link-validation.mdx) — warns on broken internal links by default; hard build errors with `failOnBroken: true`.
+- [Transclusion](./transclude.mdx) — inlines the content of another file using the `:::include` directive.
 
 ## See also
 
-- [Design Philosophy](/concepts/design-philosophy) — the three-consumer
+- [Design Philosophy](../concepts/design-philosophy.mdx) — the three-consumer
   threshold for promoting a recipe to an Opt-in feature.
-- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+- [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
   — write a Rust visitor and wire it into the engine.
-- [Custom Directives](/concepts/custom-directives) — register new directive
+- [Custom Directives](../concepts/custom-directives.mdx) — register new directive
   names without writing Rust.
-- [Recipe: Enlargeable Images](/recipes/enlargeable-images) — userland
+- [Recipe: Enlargeable Images](../recipes/enlargeable-images.mdx) — userland
   replacement for the removed `imageEnlarge` built-in, using the `img`
   component override.
-- [Recipe: Admonitions](/recipes/admonitions) — register `:::note`, `:::tip`, etc. via `directives` with component stubs and CSS hooks.
+- [Recipe: Admonitions](../recipes/admonitions.mdx) — register `:::note`, `:::tip`, etc. via `directives` with component stubs and CSS hooks.

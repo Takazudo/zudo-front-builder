@@ -10,7 +10,7 @@ category: Concepts
 2 バンドルモデル、ビルド時パイプライン全体の図、なぜワーカーバンドルが
 Cloudflare Workers モジュールの形をしているのか、そして esbuild と JS ランタイムを
 差し替え可能に保つレイヤリングの原則。ステップごとのビルドパイプラインについては
-[Build pipeline](/concepts/build-pipeline) を参照してください。
+[Build pipeline](./build-pipeline.mdx) を参照してください。
 
 </Info>
 
@@ -41,7 +41,7 @@ Rust オーケストレーターはこのバンドルを組み込み V8 アイ�
 オーケストレーターが静的出力を生成するために駆動する *ツール* です。（同じバンドルの形は、
 `prerender = false` のルート向けに変更なしで Cloudflare Workers にもデプロイされます。
 その本番経路についてはこのページの後半と
-[SSR guide](/guides/ssr-and-cloudflare-bindings) で扱います。）
+[SSR guide](../guides/ssr-and-cloudflare-bindings.mdx) で扱います。）
 
 **アイランドバンドル — ブラウザに配信されます。**
 
@@ -55,7 +55,7 @@ Rust オーケストレーターはこのバンドルを組み込み V8 アイ�
 この区別が重要なのは、2 つのバンドルがまったく異なるライフタイム、異なる実行環境、異なる
 最適化目標を持つからです。両者を混同することが、zfb の動作についての混乱のほとんどの原因です。
 
-`"use client"` でオプトインする方法については [Islands](/concepts/islands) を参照してください。
+`"use client"` でオプトインする方法については [Islands](./islands.mdx) を参照してください。
 
 ## 何がどこで動くのか
 
@@ -91,7 +91,7 @@ flowchart TD
 ありません。
 
 ビルドオーケストレーターがこれらのステップをどう調整するのかという、より踏み込んだ話は
-[Build engine](/architecture/build-engine) を参照してください。
+[Build engine](../architecture/build-engine.mdx) を参照してください。
 
 ## Hono / Cloudflare Workers への移植性という賭け
 
@@ -116,9 +116,9 @@ Cloudflare Workers デプロイが期待するのと同じコントラクトで�
 `zfb build --target=cloudflare` が生成したバンドルを受け取り、`wrangler deploy` が
 期待する薄いシェルで包みます。2 ファイル構成のワーカー出力と、ランタイムでリクエストが
 どうディスパッチされるのかを深掘りするには
-[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker) を参照してください。
+[SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx) を参照してください。
 
-この設計の完全な根拠は [JS Runtime](/architecture/js-runtime) にあります。組み込み V8
+この設計の完全な根拠は [JS Runtime](../architecture/js-runtime.mdx) にあります。組み込み V8
 ホストの設計と、なぜバンドルコントラクトがエンジン非依存なのか。SSG ファーストで
 Hono/Workers のバンドル形を選んだのは、ビルド時と本番の実行環境を互換に保つためであり、
 当初のインプロセス `deno_core` アプローチは、パフォーマンスと分離の要件が明確になった
@@ -142,6 +142,6 @@ zfb はコントラクトを所有します。どんな入力を受け付ける�
 
 コントラクトの下流:
 
-- [Islands](/concepts/islands) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるのか
-- [Build engine](/architecture/build-engine) — Rust クレートがどのようにパイプラインを調整するのか
-- [Incremental rebuild](/concepts/incremental-rebuild) — 依存グラフがどのように dev リビルドを高速に保つのか
+- [Islands](./islands.mdx) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるのか
+- [Build engine](../architecture/build-engine.mdx) — Rust クレートがどのようにパイプラインを調整するのか
+- [Incremental rebuild](./incremental-rebuild.mdx) — 依存グラフがどのように dev リビルドを高速に保つのか

@@ -16,7 +16,7 @@ Pick the embed-as-library path when the host needs to:
 - attach per-process context (an `AppHandle`, an FS capability set, an auth token) that handlers should read on every request,
 - short-circuit specific URL patterns with a Rust-owned response (a markdown lookup, a database read, a sidecar API bridge) without round-tripping through any JS runtime.
 
-See [Desktop Deployment](/guides/desktop-deployment) for the composition matrix that decides between this mode and shipping a child sidecar.
+See [Desktop Deployment](./desktop-deployment.mdx) for the composition matrix that decides between this mode and shipping a child sidecar.
 
 ## Builder shape
 

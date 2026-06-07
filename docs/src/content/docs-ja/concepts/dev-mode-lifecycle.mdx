@@ -10,9 +10,9 @@ category: Concepts
 `zfb dev` の「保存からピクセルまで」のループ。ウォッチャーがどのように変更を検出するか、
 オーケストレーターが何をリビルドするかをどう決めるか、そして 3 つの SSE イベント種別が
 どのように、不要なフルページリロードなしにブラウザを反応させるか。ビルドステップ全体の
-順序については [Build pipeline](/concepts/build-pipeline) を、依存グラフがどのように
+順序については [Build pipeline](./build-pipeline.mdx) を、依存グラフがどのように
 リビルドを影響を受けるページに限定するかについては
-[Incremental rebuild](/concepts/incremental-rebuild) を参照してください。
+[Incremental rebuild](./incremental-rebuild.mdx) を参照してください。
 
 `prerender = false` の SSR ルートについて: 各 EDIT ティックは新しい V8 ホストを再バンドルし、
 それを共有レンダラの mutex にスワップします（下記のステップ 1 を参照）。そのため SSR リクエストは、
@@ -20,7 +20,7 @@ category: Concepts
 SSR のみの編集は SSG の HTML 書き込みを生まないため、`Page` SSE イベントが発行されず、開いている
 ブラウザタブが自動リフレッシュされない点です。更新後の SSR 出力を見るには、タブを手動でリロード
 してください。dev 側の SSR 経路の背景については
-[SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false)
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender--false)
 を参照してください。
 
 </Info>
@@ -48,7 +48,7 @@ OS が分類できないイベント種別はすべて `Modified` に折りた�
 受け取ります。`All`（`zfb.config.ts` のようなグローバルファイル）か、変更されたファイルを
 実際にインポートしているページの `Specific(set_of_page_ids)` のどちらかです。ダーティセットの
 外のページは触られません。（依存追跡の完全なストーリーは
-[Incremental rebuild](/concepts/incremental-rebuild) にあります。）
+[Incremental rebuild](./incremental-rebuild.mdx) にあります。）
 
 オーケストレーターはダーティセットから `RebuildPlan` を組み立てます。変更されたパスが
 アイランドルート（例: `components/`）の中にあれば、プランの `rerun_islands` フラグが
@@ -159,7 +159,7 @@ CSS パイプラインが実行され、出力が変わっていれば `Css` イ
 
 ## 関連
 
-- [Build pipeline](/concepts/build-pipeline) — CLI から `dist/` までの完全なパイプラインと、dev モードがその上にどう乗るか
-- [Incremental rebuild](/concepts/incremental-rebuild) — リビルドを影響を受けるページに限定する依存グラフと `DirtySet`
-- [Islands](/concepts/islands) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるか
-- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — dev 側の SSR パリティ: `prerender = false` ルートが同じ V8 レンダラを通してどう配信されるか
+- [Build pipeline](./build-pipeline.mdx) — CLI から `dist/` までの完全なパイプラインと、dev モードがその上にどう乗るか
+- [Incremental rebuild](./incremental-rebuild.mdx) — リビルドを影響を受けるページに限定する依存グラフと `DirtySet`
+- [Islands](./islands.mdx) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるか
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — dev 側の SSR パリティ: `prerender = false` ルートが同じ V8 レンダラを通してどう配信されるか

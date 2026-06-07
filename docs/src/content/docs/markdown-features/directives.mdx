@@ -4,7 +4,7 @@ description: Register :::name / ::name / :name directive syntax that maps to you
 tier: Opt-in
 ---
 
-The `directives` feature populates the Core [Directives registry](/markdown-features/directives-registry) from your `zfb.config.ts`. It maps CommonMark Directives syntax — container (`:::name`), leaf (`::name`), and text (`:name`) — to JSX component calls in compiled MDX.
+The `directives` feature populates the Core [Directives registry](./directives-registry.mdx) from your `zfb.config.ts`. It maps CommonMark Directives syntax — container (`:::name`), leaf (`::name`), and text (`:name`) — to JSX component calls in compiled MDX.
 
 **Zero directive names are registered by default.** You choose the vocabulary; zfb emits the JSX.
 
@@ -116,7 +116,7 @@ Each fence line (`:::name` and the closing `:::`) **must** be separated from sur
 `directives` is framework-agnostic and ships no JSX components. Registering a directive only tells the pipeline to emit `<ComponentName>` in compiled MDX. You must:
 
 1. Author the component yourself.
-2. Add it to your project's [MDX components map](/concepts/mdx-components).
+2. Add it to your project's [MDX components map](../concepts/mdx-components.mdx).
 3. Style it with your own CSS.
 
 ## Casing and verbatim emit
@@ -127,6 +127,6 @@ The directive-name key follows the directive grammar `[A-Za-z_][A-Za-z0-9_-]*`. 
 
 ## See also
 
-- [Directives registry](/markdown-features/directives-registry) — the underlying Core primitive (always active, handles parsing).
-- [Recipe: Admonitions](/recipes/admonitions) — a worked example registering `note`, `tip`, `info`, `warning`, `danger`, `caution`, and `details` with minimal component stubs and CSS.
-- [Custom Directives](/concepts/custom-directives) — register directives via the Rust pipeline API.
+- [Directives registry](./directives-registry.mdx) — the underlying Core primitive (always active, handles parsing).
+- [Recipe: Admonitions](../recipes/admonitions.mdx) — a worked example registering `note`, `tip`, `info`, `warning`, `danger`, `caution`, and `details` with minimal component stubs and CSS.
+- [Custom Directives](../concepts/custom-directives.mdx) — register directives via the Rust pipeline API.

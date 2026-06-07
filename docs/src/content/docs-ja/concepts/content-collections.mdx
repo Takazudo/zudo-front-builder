@@ -24,7 +24,7 @@ export default {
 
 `name` は `getCollection()` に渡す識別子です。`path` はエントリを格納するディレクトリ（プロジェクトルートからの相対パス）です。zfb はそのディレクトリを走査し、各ファイルをフロントマター付きの Markdown ドキュメントとして扱い、`getCollection("blog")` を通じてそのエントリを公開します。
 
-加えて、任意の `schema` フィールドを指定できます。これは JSON Schema のサブセットで、`zfb check` を実行したときに各エントリのフロントマターを検証します（ビルド自体はこれを強制しません）。サポートされるキーワード（`type`、`properties`、`items`、`required`、`enum`）は [`defineConfig`](/api/define-config) のページに記載されています。フィールドごとの検証を必要としないプロジェクト向けに、`[{ name, path }]` の形式も引き続きサポートされます。
+加えて、任意の `schema` フィールドを指定できます。これは JSON Schema のサブセットで、`zfb check` を実行したときに各エントリのフロントマターを検証します（ビルド自体はこれを強制しません）。サポートされるキーワード（`type`、`properties`、`items`、`required`、`enum`）は [`defineConfig`](../api/define-config.mdx) のページに記載されています。フィールドごとの検証を必要としないプロジェクト向けに、`[{ name, path }]` の形式も引き続きサポートされます。
 
 ## ページからエントリを読み込む
 
@@ -62,13 +62,13 @@ export default function FeaturedPost() {
 各エントリには、信頼して利用できる 3 つの要素があります。
 
 - `data` — パース済みで検証済みのフロントマター（スキーマに照らして型付けされています）。
-- `Content` — 本文からコンパイルされたレンダリング可能な React/Preact コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](/concepts/mdx-components) を参照してください。
+- `Content` — 本文からコンパイルされたレンダリング可能な React/Preact コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](./mdx-components.mdx) を参照してください。
 - `slug` — ファイル名から導出されます（`my-first-post.md` → `my-first-post`）。ネストしたディレクトリはスラッシュ区切りの slug になります。
 
-この関数のシグネチャは [`getCollection`](/api/get-collection) に記載されています。
+この関数のシグネチャは [`getCollection`](../api/get-collection.mdx) に記載されています。
 
 ## パースの仕組み
 
 内部では `zfb-content` クレートが 3 つの仕事をこなします。設定されたディレクトリを走査し、各ファイルの YAML フロントマターをパースし、Markdown/MDX 本文を mdast → JSX ソースのエミッターを通してコンパイルします。コンパイル結果は既存の SWC TSX → JS パイプラインへ渡されます。その結果はエントリごとの JSX モジュールであり、安定した `mdx://<collection>/<slug>` 指定子でアドレス指定されます。ページレンダラーはそのモジュールを必要に応じて評価し、ページに対して `entry.Content` として公開します。
 
-コンパイルとサーフェスの契約は安定しています。レンダリング側については [MDX Components](/concepts/mdx-components) を参照してください。
+コンパイルとサーフェスの契約は安定しています。レンダリング側については [MDX Components](./mdx-components.mdx) を参照してください。

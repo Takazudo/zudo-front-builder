@@ -10,7 +10,7 @@ category: Concepts
 The two-bundle model, a diagram of the full build-time pipeline, why the worker
 bundle is shaped as a Cloudflare Workers module, and the layering principle that
 keeps esbuild and the JS runtime swappable. For the step-by-step build pipeline,
-read [Build pipeline](/concepts/build-pipeline).
+read [Build pipeline](./build-pipeline.mdx).
 
 </Info>
 
@@ -42,7 +42,7 @@ isolate is torn down. At build time the worker bundle never leaves your machine 
 *tool* the Rust orchestrator drives to produce the static output. (The
 same bundle shape also deploys unchanged to Cloudflare Workers for any
 `prerender = false` routes; that production path is covered later in
-this page and in the [SSR guide](/guides/ssr-and-cloudflare-bindings).)
+this page and in the [SSR guide](../guides/ssr-and-cloudflare-bindings.mdx).)
 
 **Island bundle — shipped to the browser.**
 
@@ -57,7 +57,7 @@ The distinction matters because the two bundles have completely different
 lifetimes, different execution environments, and different optimization targets.
 Conflating them is the source of most confusion about how zfb works.
 
-See [Islands](/concepts/islands) for how to opt in with `"use client"`.
+See [Islands](./islands.mdx) for how to opt in with `"use client"`.
 
 ## What runs where
 
@@ -93,7 +93,7 @@ exits when the build finishes. Nothing in that box runs on a server at request
 time for static deployments.
 
 For the deeper story on how the build orchestrator coordinates these steps, read
-[Build engine](/architecture/build-engine).
+[Build engine](../architecture/build-engine.mdx).
 
 ## The Hono / Cloudflare Workers portability bet
 
@@ -118,9 +118,9 @@ embedded V8 isolate. The production host is workerd. The contract —
 Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
 wraps it in the thin shell that `wrangler deploy` expects. For a deep dive into
 the two-file worker output and how requests are dispatched at runtime, see
-[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker).
+[SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx).
 
-The full rationale for this design is in [JS Runtime](/architecture/js-runtime):
+The full rationale for this design is in [JS Runtime](../architecture/js-runtime.mdx):
 the embedded V8 host design and why the bundle contract is engine-agnostic.
 The SSG-first, Hono/Workers bundle shape was chosen to keep the build-time
 and production execution environments interchangeable, and the original
@@ -146,6 +146,6 @@ The bundler is the cheap, fast saw. zfb is the carpenter.
 
 Downstream of the contract:
 
-- [Islands](/concepts/islands) — how `"use client"` opts a component into the island bundle
-- [Build engine](/architecture/build-engine) — how the Rust crates coordinate the pipeline
-- [Incremental rebuild](/concepts/incremental-rebuild) — how the dependency graph keeps dev rebuilds fast
+- [Islands](./islands.mdx) — how `"use client"` opts a component into the island bundle
+- [Build engine](../architecture/build-engine.mdx) — how the Rust crates coordinate the pipeline
+- [Incremental rebuild](./incremental-rebuild.mdx) — how the dependency graph keeps dev rebuilds fast

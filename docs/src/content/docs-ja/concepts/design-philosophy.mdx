@@ -24,7 +24,7 @@ zfb は esbuild の SSG + SSR 版です。コミットしたことだけを正�
 アプリケーションバンドラになることを意図的に避けているのと同じように、zfb はあらゆるサイト
 構築パターンをカバーするために分厚い API 表面を育てることを意図的に避けています。
 
-[6 つのエンジンプリミティブ](/concepts/engine-vs-framework) が zfb v1 の公開コントラクトの
+[6 つのエンジンプリミティブ](./engine-vs-framework.mdx) が zfb v1 の公開コントラクトの
 すべてです。7 つ目のプリミティブを追加することは — たとえそれが有用であっても — 設計し、
 ドキュメント化し、メンテナンスし、将来のリリースを通じてバージョン管理すべき新しい API が
 増えることを意味します。新しい表面上のエッジケースについて「これは可能か？」という問いに
@@ -78,7 +78,7 @@ LLM があらゆるワークフローの一部になる前は、レシピとプ�
 ではありません — それは LLM が処理します。正しい問いは「これは zfb 利用者の 100% が、
 逸脱する正当な理由なく、同じやり方で使うものか？」です。
 
-**zfb が今日出荷している狭いプラグイン API** — [Plugins](/concepts/plugins) に文書化された
+**zfb が今日出荷している狭いプラグイン API** — [Plugins](./plugins.mdx) に文書化された
 4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、開発専用の注入ルート — は、
 まさにその狭い例外です。`setup` フックの仮想モジュールとエイリアスの登録、`preBuild` /
 `postBuild` のファイル生成フック、そして `devMiddleware` ハンドラは、ビルドパイプラインと
@@ -110,13 +110,13 @@ GitHub スタイルのアラート、リンク検証、トランスクルージ�
 基準をクリアしない Markdown 機能を持っているなら、レシピ経路が正しい答えです。プロジェクトの
 ためにビジターをツリー内に書いてください。
 
-オプトインカタログの全体については [Markdown Features](/markdown-features) を、ツリー内
-ビジター経路については [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+オプトインカタログの全体については [Markdown Features](/ja/docs/markdown-features/) を、ツリー内
+ビジター経路については [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
 を参照してください。
 
 ## 次に行く先
 
-- [Engine vs Framework](/concepts/engine-vs-framework) — zfb がコミットする 6 つのプリミティブと、エンジンとフレームワークの関心事の境界線。
-- [Markdown Features](/markdown-features) — オプトインの拡張カタログ。
-- [Plugins](/concepts/plugins) — 狭い例外: 4 つのライフサイクルフックと、それらがカバーするもの・しないもの。
-- [Choosing zfb](/concepts/choosing-zfb) — 「意図的に狭く」というトレードオフがプロジェクトにとって正しい判断になるのはいつか、ならないのはいつか。
+- [Engine vs Framework](./engine-vs-framework.mdx) — zfb がコミットする 6 つのプリミティブと、エンジンとフレームワークの関心事の境界線。
+- [Markdown Features](/ja/docs/markdown-features/) — オプトインの拡張カタログ。
+- [Plugins](./plugins.mdx) — 狭い例外: 4 つのライフサイクルフックと、それらがカバーするもの・しないもの。
+- [Choosing zfb](./choosing-zfb.mdx) — 「意図的に狭く」というトレードオフがプロジェクトにとって正しい判断になるのはいつか、ならないのはいつか。

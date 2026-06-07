@@ -158,7 +158,7 @@ tauri::Builder::default()
 tokio runtime, so the Tauri synchronous `setup` callback works without changes.
 Read the bound port back from `ServerHandle::addr()` before opening the WebView.
 
-See the [Embed as Library](/guides/embed-as-library) guide for the full builder
+See the [Embed as Library](./embed-as-library.mdx) guide for the full builder
 API, request-extension injection, and the host-handler seam.
 
 **Tradeoff.** No sidecar plumbing, tighter IPC, cleaner packaging. The embed
@@ -230,11 +230,11 @@ use the `tauri://` protocol. If you use `file://` directly, you may need to set
 
 ## See also
 
-- [Embed as Library](/guides/embed-as-library) — full `Server` builder API,
+- [Embed as Library](./embed-as-library.mdx) — full `Server` builder API,
   request-extension injection, and host-handler seam for Mode D.
-- [Build pipeline](/concepts/build-pipeline) — how `zfb build` produces `dist/`
+- [Build pipeline](../concepts/build-pipeline.mdx) — how `zfb build` produces `dist/`
   and what each crate contributes to the output.
-- [Architecture: build engine](/architecture/build-engine) — the crate split and
+- [Architecture: build engine](../architecture/build-engine.mdx) — the crate split and
   why `dist/` writes are atomic.
-- [Installation](/getting-started/installation) — the Node.js requirement for
+- [Installation](../getting-started/installation.mdx) — the Node.js requirement for
   build and dev tooling is documented here.

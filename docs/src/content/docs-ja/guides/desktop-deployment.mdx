@@ -107,7 +107,7 @@ tauri::Builder::default()
 
 `serve_in_thread()` は自身の `current_thread` tokio ランタイムを持つ専用の OS スレッドを起動するため、Tauri の同期的な `setup` コールバックは変更なしで機能します。WebView を開く前に、バインドされたポートを `ServerHandle::addr()` から読み取ってください。
 
-ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目については、[Embed as Library](/guides/embed-as-library) ガイドを参照してください。
+ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目については、[Embed as Library](./embed-as-library.mdx) ガイドを参照してください。
 
 **トレードオフ。** サイドカーの配線なし、より緊密な IPC、よりクリーンなパッケージング。埋め込みビルダー API は意図的に小さく保たれているため（`Server` + `ServerBuilder` で 10 メソッド以下）、複雑なリクエストごとのルーティングは任意の axum ミドルウェアではなく、引き続き `with_ssr_handler` のパターンを通します。
 
@@ -147,7 +147,7 @@ Tauri 統合についての実践的なメモをいくつか。
 
 ## 関連項目
 
-- [Embed as Library](/guides/embed-as-library) — モード D 向けの `Server` ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目。
-- [Build pipeline](/concepts/build-pipeline) — `zfb build` がどのように `dist/` を生成し、各クレートが出力に何を寄与するか。
-- [Architecture: build engine](/architecture/build-engine) — クレートの分割と、`dist/` への書き込みがアトミックである理由。
-- [Installation](/getting-started/installation) — ビルドおよび開発ツールの Node.js 要件はここに記載されています。
+- [Embed as Library](./embed-as-library.mdx) — モード D 向けの `Server` ビルダー API の全体、リクエスト拡張の注入、そしてホストハンドラの継ぎ目。
+- [Build pipeline](../concepts/build-pipeline.mdx) — `zfb build` がどのように `dist/` を生成し、各クレートが出力に何を寄与するか。
+- [Architecture: build engine](../architecture/build-engine.mdx) — クレートの分割と、`dist/` への書き込みがアトミックである理由。
+- [Installation](../getting-started/installation.mdx) — ビルドおよび開発ツールの Node.js 要件はここに記載されています。

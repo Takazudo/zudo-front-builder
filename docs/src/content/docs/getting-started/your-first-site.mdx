@@ -20,13 +20,13 @@ This runs the `create-zfb` initializer, which calls `zfb new` under the hood and
 cd my-site
 ```
 
-If you already have the zfb CLI installed globally (see [Installation](/getting-started/installation)), you can invoke `zfb new` directly with the same result:
+If you already have the zfb CLI installed globally (see [Installation](./installation.mdx)), you can invoke `zfb new` directly with the same result:
 
 ```bash
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — see [Install without Node](/install/node-free) for details.
+`--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — see [Install without Node](../install/node-free.mdx) for details.
 
 ## Start the dev server
 
@@ -66,7 +66,7 @@ A fully built site using `basic-blog` is available at [https://github.com/Takazu
 
 ## What to read next
 
-- [Project structure](/getting-started/project-structure) — what every directory the template created actually does.
-- [Routing](/concepts/routing) — how `pages/` becomes URLs, including dynamic and catchall routes.
-- [Islands](/concepts/islands) — how to opt individual components into client-side hydration.
-- [Build engine](/architecture/build-engine) — how the Rust crates fit together under the hood.
+- [Project structure](./project-structure.mdx) — what every directory the template created actually does.
+- [Routing](../concepts/routing.mdx) — how `pages/` becomes URLs, including dynamic and catchall routes.
+- [Islands](../concepts/islands.mdx) — how to opt individual components into client-side hydration.
+- [Build engine](../architecture/build-engine.mdx) — how the Rust crates fit together under the hood.

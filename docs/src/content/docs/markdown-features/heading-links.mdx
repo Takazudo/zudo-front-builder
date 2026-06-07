@@ -72,8 +72,8 @@ Each heading's ID is prefixed with its ancestor chain, joined by `-`:
 
 Produces `id="foo"`, `id="foo-moo"`, `id="foo-moo-mew"` (instead of the
 flat `foo`, `moo`, `mew`). The in-heading hash-link anchors, the
-`headings` export, [TOC export](/markdown-features/toc-export), and
-[link validation](/markdown-features/link-validation) all follow the
+`headings` export, [TOC export](./toc-export.mdx), and
+[link validation](./link-validation.mdx) all follow the
 same IDs.
 
 Details:
@@ -95,13 +95,13 @@ nested headings (`#moo`) stop resolving once IDs become `#foo-moo`.
 
 `HeadingLinksPlugin` runs **first** in the hast phase. Plugins that depend
 on stable heading `id` values — such as `TocPlugin` (opt-in
-[heading-marker-toc](/markdown-features/heading-marker-toc)) and
-`TocExportPlugin` (opt-in [toc-export](/markdown-features/toc-export)) —
+[heading-marker-toc](./heading-marker-toc.mdx)) and
+`TocExportPlugin` (opt-in [toc-export](./toc-export.mdx)) —
 must run after it.
 
 ## See also
 
-- [Heading-marker TOC](/markdown-features/heading-marker-toc) — opt-in TOC
+- [Heading-marker TOC](./heading-marker-toc.mdx) — opt-in TOC
   insertion that reads the `id` attributes this plugin produces.
-- [TOC export](/markdown-features/toc-export) — opt-in structured TOC data
+- [TOC export](./toc-export.mdx) — opt-in structured TOC data
   export.

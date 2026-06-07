@@ -141,10 +141,10 @@ It is the wrong home for:
 
 - **Source images you transform** (resize, optimise, convert to AVIF/WebP). zfb has no built-in image pipeline; if you need transforms, run them out-of-band (e.g. via a `prebuild` script) and check the optimised outputs into `public/`, or reach for a separate tool entirely.
 - **Code dependencies of islands**. TSX / JSX / TS / CSS imported by a `"use client"` island should live alongside the island and be bundled. Putting code in `public/` skips the bundler entirely — the browser will fetch raw source the runtime cannot execute.
-- **Files that need a different `Content-Type` than the extension implies**. zfb derives the Content-Type from the file extension. If you need an override, render the file through a TSX page instead (see [Non-HTML Pages](/concepts/non-html-pages)).
+- **Files that need a different `Content-Type` than the extension implies**. zfb derives the Content-Type from the file extension. If you need an override, render the file through a TSX page instead (see [Non-HTML Pages](./non-html-pages.mdx)).
 
 ## See also
 
-- [Project structure: `public/`](/getting-started/project-structure) — the directory layout at a glance.
-- [Non-HTML Pages](/concepts/non-html-pages) — render `.xml`, `.json`, or `.txt` through a TSX page when you need control over headers or want the page to depend on collection data.
-- [Islands](/concepts/islands) — the path for client-side JS, distinct from the static-asset path described here.
+- [Project structure: `public/`](../getting-started/project-structure.mdx) — the directory layout at a glance.
+- [Non-HTML Pages](./non-html-pages.mdx) — render `.xml`, `.json`, or `.txt` through a TSX page when you need control over headers or want the page to depend on collection data.
+- [Islands](./islands.mdx) — the path for client-side JS, distinct from the static-asset path described here.

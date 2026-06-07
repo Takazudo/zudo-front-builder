@@ -8,8 +8,8 @@ category: Concepts
 <Info title="このページで扱う内容">
 
 zfb があなたのプロジェクトに適したツールかどうか — zfb が得意でないことについての
-率直な見解も含みます。[アーキテクチャ概要](/architecture/build-engine)、
-[getting-started ガイド](/getting-started)、そして
+率直な見解も含みます。[アーキテクチャ概要](../architecture/build-engine.mdx)、
+[getting-started ガイド](../getting-started/index.mdx)、そして
 [README](https://github.com/Takazudo/zudo-front-builder#limits) のスケールに関する
 注記と相互リンクしています。
 
@@ -68,7 +68,7 @@ zfb が誤った選択になるケースはいくつかあります。コミッ�
 **サイトのほとんど、またはすべてのページが動的。** zfb はデフォルトで SSG です。すべての
 ページはビルド時に静的 HTML へ計算されます。リクエスト時の振る舞いが必要なルートは
 `prerender = false` でオプトアウトでき、アダプタによって配信されます（[SSR and Cloudflare
-bindings](/guides/ssr-and-cloudflare-bindings) を参照）。これは、それ以外は静的なサイト上の
+bindings](../guides/ssr-and-cloudflare-bindings.mdx) を参照）。これは、それ以外は静的なサイト上の
 わずかな動的ルートをカバーします。もし *すべて* のページが動的（ユーザーごと、リクエスト
 ごと）なら、zfb は誤ったツールであり、フルの SSR フレームワークが正しい選択です。
 
@@ -122,7 +122,7 @@ content snapshot: 187 entries / 412 KB
 
 ## 次に行く先
 
-- [Getting started](/getting-started) — 最初のサイトをスキャフォールドします。
-- [Design philosophy](/concepts/design-philosophy) — 「意図的に狭く」というスタンスと、この一連のトレードオフを説明する「プラグインよりレシピ」というフレーミング。
-- [Architecture: Build engine](/architecture/build-engine) — Rust クレート、JS ホスト、スナップショットがどう組み合わさるのか。
-- [Engine vs Framework](/concepts/engine-vs-framework) — zfb がコミットする 6 つのプリミティブと、エンジンの外側にあるもの。
+- [Getting started](../getting-started/index.mdx) — 最初のサイトをスキャフォールドします。
+- [Design philosophy](./design-philosophy.mdx) — 「意図的に狭く」というスタンスと、この一連のトレードオフを説明する「プラグインよりレシピ」というフレーミング。
+- [Architecture: Build engine](../architecture/build-engine.mdx) — Rust クレート、JS ホスト、スナップショットがどう組み合わさるのか。
+- [Engine vs Framework](./engine-vs-framework.mdx) — zfb がコミットする 6 つのプリミティブと、エンジンの外側にあるもの。

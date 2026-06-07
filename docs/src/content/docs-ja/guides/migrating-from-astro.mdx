@@ -57,7 +57,7 @@ export default defineConfig({
 });
 ```
 
-Zod はありません。スキーマの検証には最小限の JSON-Schema 方言を使います。`schema` フィールドは `type` キーや `properties` キーを持つ JSON オブジェクトを受け付けます。`type` に指定できる値は `"string"`、`"number"`、`"integer"`、`"boolean"`、`"array"`、`"object"`、`"null"` です（`"date"` はなく、オプショナルを表す末尾の `?` もありません）。スキーマは設定読み込み時に構造が検証されますが、フロントマターのフィールドはビルド時にスキーマに対して現状では強制されません。完全な形状については [`defineConfig`](/api/define-config) を参照してください。
+Zod はありません。スキーマの検証には最小限の JSON-Schema 方言を使います。`schema` フィールドは `type` キーや `properties` キーを持つ JSON オブジェクトを受け付けます。`type` に指定できる値は `"string"`、`"number"`、`"integer"`、`"boolean"`、`"array"`、`"object"`、`"null"` です（`"date"` はなく、オプショナルを表す末尾の `?` もありません）。スキーマは設定読み込み時に構造が検証されますが、フロントマターのフィールドはビルド時にスキーマに対して現状では強制されません。完全な形状については [`defineConfig`](../api/define-config.mdx) を参照してください。
 
 ## アイランド
 
@@ -92,7 +92,7 @@ export default function DocsLayout({ children }) {
   （Astro の `<ClientRouter />` が提供するのと同じ、ビュートランジションアニメーション付きの
   SPA ルーターです）。
 - **アイランド / クライアントディレクティブ** — `"use client"` ファイルディレクティブに
-  置き換えられています（Next.js App Router のパターン）。[アイランド](/concepts/islands)を参照してください。
+  置き換えられています（Next.js App Router のパターン）。[アイランド](../concepts/islands.mdx)を参照してください。
 
 現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
 
@@ -111,7 +111,7 @@ export default defineConfig({
 });
 ```
 
-設定すると、レンダリング時に `globalThis.__zfb.site` が利用可能になり、レイアウトで正規 `<link>` タグや OpenGraph メタを構築できます。[`defineConfig`](/api/define-config) を参照してください。
+設定すると、レンダリング時に `globalThis.__zfb.site` が利用可能になり、レイアウトで正規 `<link>` タグや OpenGraph メタを構築できます。[`defineConfig`](../api/define-config.mdx) を参照してください。
 
 **プラグインライフサイクル: `setup`、`addAlias`、`addVirtualModule`、`injectRoute`**
 
@@ -134,7 +134,7 @@ export default definePlugin({
 });
 ```
 
-`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は指定子（specifier）によって合成 ESM モジュールを公開します。`injectRoute` は開発専用で、`zfb build` 中に呼び出すとエラーになります。完全な契約については [プラグイン](/concepts/plugins) を参照してください。
+`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は指定子（specifier）によって合成 ESM モジュールを公開します。`injectRoute` は開発専用で、`zfb build` 中に呼び出すとエラーになります。完全な契約については [プラグイン](../concepts/plugins.mdx) を参照してください。
 
 **`postBuild` でのルートマニフェスト（`ctx.routes`）**
 
@@ -147,7 +147,7 @@ postBuild({ outDir, routes }) {
 },
 ```
 
-`ZfbRouteManifest` の完全な形状と、サイトマップの実例については [プラグイン](/concepts/plugins) のページを参照してください。
+`ZfbRouteManifest` の完全な形状と、サイトマップの実例については [プラグイン](../concepts/plugins.mdx) のページを参照してください。
 
 **Markdown: 目次（Table of Contents）、外部リンク、CJK フレンドリーな強調**
 
@@ -164,7 +164,7 @@ export default defineConfig({
 });
 ```
 
-詳細は [Markdown のカスタマイズ](/guides/customizing-markdown) を参照してください。
+詳細は [Markdown のカスタマイズ](./customizing-markdown.mdx) を参照してください。
 
 **シンタックスハイライト用のカスタムテーマファイル（`codeHighlight.themesDir`）**
 
@@ -179,7 +179,7 @@ export default defineConfig({
 });
 ```
 
-[シンタックスハイライト](/guides/syntax-highlighting)を参照してください。
+[シンタックスハイライト](./syntax-highlighting.mdx)を参照してください。
 
 ## ユーザースペースに移行するパターン
 
@@ -377,4 +377,4 @@ Astro は `astro.config.mjs` の `remarkPlugins` / `rehypePlugins` を介して�
 
 zfb の Markdown パイプラインは Rust バックエンドです。remark や rehype 向けの npm レベルのプラグインローダーはありません。Markdown レベルのカスタマイズは、バイナリにコンパイルされる in-tree の Rust ビジター — `MdastVisitor` または `HastVisitor` の実装 — として提供します。
 
-ほとんどのサイトにとって、これは移行の妨げにはなりません。よく使われる組み込みの remark プラグイン（TOC、外部リンク、CJK 修正）は、すでに `zfb.config.ts` のファーストクラスのオプションとして利用可能です。より固有のことのためにカスタムプラグインに依存していた場合は、in-tree Rust ビジターの道筋について [Markdown パイプラインの拡張](/guides/extending-the-markdown-pipeline) を参照してください。
+ほとんどのサイトにとって、これは移行の妨げにはなりません。よく使われる組み込みの remark プラグイン（TOC、外部リンク、CJK 修正）は、すでに `zfb.config.ts` のファーストクラスのオプションとして利用可能です。より固有のことのためにカスタムプラグインに依存していた場合は、in-tree Rust ビジターの道筋について [Markdown パイプラインの拡張](./extending-the-markdown-pipeline.mdx) を参照してください。

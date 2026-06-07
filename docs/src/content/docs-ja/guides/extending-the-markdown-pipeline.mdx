@@ -15,14 +15,14 @@ Markdown / MDX を HTML に変換するパイプラインは
 
 機能が単に新しいディレクティブ名（`:::callout`、
 `::youtube`、`:badge`）であれば、このページは不要です。ディレクティブレジストリが処理してくれるため、一行の
-`register` 呼び出し以上に Rust へ手を入れる必要はありません。そのパスについては [Custom Directives](/concepts/custom-directives)
+`register` 呼び出し以上に Rust へ手を入れる必要はありません。そのパスについては [Custom Directives](../concepts/custom-directives.mdx)
 を参照してください。
 
 ## 判断: ディレクティブ、visitor、それとも AST アーム
 
 | やりたいこと | パス | 置き場所 |
 |---|---|---|
-| JSX コンポーネントにコンパイルされる `:::name` / `::name` / `:name` 構文を追加する | ディレクティブを登録する | `Pipeline::with_defaults` + `DirectiveRegistry`（[Custom Directives](/concepts/custom-directives)） |
+| JSX コンポーネントにコンパイルされる `:::name` / `::name` / `:name` 構文を追加する | ディレクティブを登録する | `Pipeline::with_defaults` + `DirectiveRegistry`（[Custom Directives](../concepts/custom-directives.mdx)） |
 | 既存の AST ノードを書き換える（見出しのスラッグ化、コードブロックのラップ、`<img>` の JSX マーカーへの置き換え、リンクの正規化） | visitor を書く | `crates/zfb-content/src/plugins/` 配下の新規ファイル |
 | markdown-rs はパースするが zfb が現状捨てている Markdown 構文を表面化する（テーブル、脚注、math、定義、参照スタイルのリンク） | AST コンバーターを拡張する | `crates/zfb-content/src/pipeline.rs` の `mdast_to_hast` |
 | markdown-rs がパースできない、まったく新しい Markdown 構文を追加する | 対象外 | `markdown` クレートへのアップストリーム変更、その後 zfb のコンバーターアーム |
@@ -103,7 +103,7 @@ github-slugger 相当の重複排除のために `HashMap<String, usize>` を保
 **Opt-in（`Pipeline::with_defaults_and_features` に組み込む）** にするのは、その
 機能が価値はあるものの普遍的には必要とされないとき、あるいはプロジェクト固有の設定（ソースマップ、フィーチャーフラグ、独自オプション）を必要とするときです。例: `zfb-md-extras` の 12 個すべての機能。
 
-昇格のしきい値は [3 消費者ルール](/concepts/design-philosophy)に従います。
+昇格のしきい値は [3 消費者ルール](../concepts/design-philosophy.mdx)に従います。
 すなわち、同じパターンが 3 つの異なる zfb 消費者プロジェクトで手書きされるまでは抽出しないということです。1 つのプロジェクトの利便性はレシピにすぎません。
 
 ## ファイルの置き場所
@@ -251,10 +251,10 @@ Markdown のパース＆visitor チェーンには手を出しません。その
 
 ## 関連項目
 
-- [Markdown Features](/markdown-features) — Core と
+- [Markdown Features](/ja/docs/markdown-features/) — Core と
   Opt-in 機能の完全なカタログ。機能ごとの順序に関する注記つき。
-- [Custom Directives](/concepts/custom-directives) — `:::name` / `::name` / `:name` 構文の作者向けの解説。Rust 不要。
-- [Customizing Markdown](/guides/customizing-markdown) — コンテンツコレクション消費者の視点から見た Markdown レンダリングパイプライン。
+- [Custom Directives](../concepts/custom-directives.mdx) — `:::name` / `::name` / `:name` 構文の作者向けの解説。Rust 不要。
+- [Customizing Markdown](./customizing-markdown.mdx) — コンテンツコレクション消費者の視点から見た Markdown レンダリングパイプライン。
 - `crates/zfb-content/src/pipeline.rs` — `Pipeline`、`MdastVisitor`
   / `HastVisitor` トレイト、および `Pipeline::with_defaults()`
   の順序の根拠（ドキュメントコメント内）。

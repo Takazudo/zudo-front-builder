@@ -20,13 +20,13 @@ npm create zfb@latest my-site
 cd my-site
 ```
 
-zfb CLI をすでにグローバルインストールしている場合（[Installation](/getting-started/installation) を参照）、`zfb new` を直接呼び出しても同じ結果が得られます。
+zfb CLI をすでにグローバルインストールしている場合（[Installation](./installation.mdx) を参照）、`zfb new` を直接呼び出しても同じ結果が得られます。
 
 ```bash
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。詳細は [Install without Node](/install/node-free) を参照してください。
+`--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。詳細は [Install without Node](../install/node-free.mdx) を参照してください。
 
 ## 開発サーバーを起動する
 
@@ -66,7 +66,7 @@ npx zfb preview
 
 ## 次に読むもの
 
-- [Project structure](/getting-started/project-structure) — テンプレートが作成した各ディレクトリが実際に何をするのか。
-- [Routing](/concepts/routing) — `pages/` がどのように URL になるか。動的ルートやキャッチオールルートも含みます。
-- [Islands](/concepts/islands) — 個々のコンポーネントをクライアントサイドのハイドレーションにオプトインする方法。
-- [Build engine](/architecture/build-engine) — Rust クレートが内部でどう組み合わさっているか。
+- [Project structure](./project-structure.mdx) — テンプレートが作成した各ディレクトリが実際に何をするのか。
+- [Routing](../concepts/routing.mdx) — `pages/` がどのように URL になるか。動的ルートやキャッチオールルートも含みます。
+- [Islands](../concepts/islands.mdx) — 個々のコンポーネントをクライアントサイドのハイドレーションにオプトインする方法。
+- [Build engine](../architecture/build-engine.mdx) — Rust クレートが内部でどう組み合わさっているか。
