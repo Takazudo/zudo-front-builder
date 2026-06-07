@@ -41,7 +41,7 @@ const destDir = join(docsRoot, ".zudo-doc-tw");
 
 if (!existsSync(srcDist)) {
   console.error(
-    `gen-zudo-doc-safelist: package dist not found at ${srcDist} — is @takazudo/zudo-doc installed?`,
+    `vendor-zudo-doc-dist: package dist not found at ${srcDist} — is @takazudo/zudo-doc installed?`,
   );
   process.exit(1);
 }
@@ -52,5 +52,5 @@ rmSync(destDir, { recursive: true, force: true });
 cpSync(srcDist, destDir, { recursive: true });
 
 console.log(
-  `gen-zudo-doc-safelist: vendored @takazudo/zudo-doc/dist -> ${destDir.replace(docsRoot + "/", "")} (Tailwind-scanned for package classes)`,
+  `vendor-zudo-doc-dist: vendored @takazudo/zudo-doc/dist -> ${destDir.replace(docsRoot + "/", "")} (Tailwind-scanned for package classes)`,
 );
