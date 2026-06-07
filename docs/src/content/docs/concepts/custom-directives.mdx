@@ -24,10 +24,10 @@ The shapes follow the
 [CommonMark Directives proposal](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444):
 container, leaf, and text. The registry is the only mechanism — no directive
 names are privileged or pre-registered. Userland registers everything, including
-admonition-style directives (see the [Admonitions recipe](/recipes/admonitions)).
+admonition-style directives (see the [Admonitions recipe](../recipes/admonitions.mdx)).
 
 If you only need to register directives from config without writing Rust, use
-the opt-in [`directives`](/markdown-features/directives) feature in
+the opt-in [`directives`](../markdown-features/directives.mdx) feature in
 `zfb.config.ts` instead of the Rust API below.
 
 ## The three directive shapes
@@ -295,21 +295,21 @@ identically.
   responsibility.
 - **Provide any default directive set.** No built-in `:::callout`, `:::card`,
   `:::note`, `::youtube`, etc. — every framework picks its own vocabulary via
-  the [`directives`](/markdown-features/directives) config feature or the Rust
+  the [`directives`](../markdown-features/directives.mdx) config feature or the Rust
   API.
 - **Auto-import the JSX components.** You're responsible for making
   the components in scope at the page module (a global components
   map, an MDX layout, an explicit import). See
-  [MDX Components](/concepts/mdx-components) for the
+  [MDX Components](./mdx-components.mdx) for the
   `defaultComponents` recipe.
 
 ## See also
 
-- [`directives` feature](/markdown-features/directives) — register directive names from `zfb.config.ts` without writing Rust.
-- [Recipe: Admonitions](/recipes/admonitions) — a worked example using the `directives` feature to register `:::note`, `:::tip`, etc.
-- [MDX Components](/concepts/mdx-components) — how compiled MDX
+- [`directives` feature](../markdown-features/directives.mdx) — register directive names from `zfb.config.ts` without writing Rust.
+- [Recipe: Admonitions](../recipes/admonitions.mdx) — a worked example using the `directives` feature to register `:::note`, `:::tip`, etc.
+- [MDX Components](./mdx-components.mdx) — how compiled MDX
   modules look up element-level overrides.
-- [Engine vs Framework](/concepts/engine-vs-framework) — why the
+- [Engine vs Framework](./engine-vs-framework.mdx) — why the
   registry is engine-shaped and the directive set is
   framework-shaped.
 - `crates/zfb-content/src/plugins/directives.rs` — the registry

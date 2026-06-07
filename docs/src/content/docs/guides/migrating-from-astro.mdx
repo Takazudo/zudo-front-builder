@@ -76,7 +76,7 @@ Valid `type` values are `"string"`, `"number"`, `"integer"`, `"boolean"`,
 `"array"`, `"object"`, and `"null"` (no `"date"`, no trailing `?` for
 optional). The schema is validated for structure at config load time but
 frontmatter fields are not currently enforced against it at build time.
-See [`defineConfig`](/api/define-config) for the full shape.
+See [`defineConfig`](../api/define-config.mdx) for the full shape.
 
 ## Islands
 
@@ -114,7 +114,7 @@ A few Astro features have direct zfb equivalents under a different name:
   (the same SPA router with view-transition animations that Astro's
   `<ClientRouter />` provides).
 - **Islands / client directives** — replaced by the `"use client"` file
-  directive (the Next.js App Router pattern); see [Islands](/concepts/islands).
+  directive (the Next.js App Router pattern); see [Islands](../concepts/islands.mdx).
 
 Some features have no current equivalent: an integrations marketplace, Astro
 DB, and server endpoints. If your site relies on these, evaluate whether
@@ -140,7 +140,7 @@ export default defineConfig({
 
 When set, `globalThis.__zfb.site` is available at render time so layouts can
 build canonical `<link>` tags and OpenGraph meta. See
-[`defineConfig`](/api/define-config).
+[`defineConfig`](../api/define-config.mdx).
 
 **Plugin lifecycle: `setup`, `addAlias`, `addVirtualModule`, `injectRoute`**
 
@@ -168,7 +168,7 @@ export default definePlugin({
 `addAlias` performs exact-match import rewrites (prefix matching is a future
 revision). `addVirtualModule` exposes a synthetic ESM module by specifier.
 `injectRoute` is dev-only; calling it during `zfb build` is an error.
-See [Plugins](/concepts/plugins) for the full contract.
+See [Plugins](../concepts/plugins.mdx) for the full contract.
 
 **Route manifest in `postBuild` (`ctx.routes`)**
 
@@ -183,7 +183,7 @@ postBuild({ outDir, routes }) {
 },
 ```
 
-See the [Plugins](/concepts/plugins) page for the full `ZfbRouteManifest`
+See the [Plugins](../concepts/plugins.mdx) page for the full `ZfbRouteManifest`
 shape and a worked sitemap example.
 
 **Markdown: Table of Contents, external links, CJK-friendly emphasis**
@@ -203,7 +203,7 @@ export default defineConfig({
 });
 ```
 
-See [Customizing Markdown](/guides/customizing-markdown) for full details.
+See [Customizing Markdown](./customizing-markdown.mdx) for full details.
 
 **Custom theme files for syntax highlighting (`codeHighlight.themesDir`)**
 
@@ -220,7 +220,7 @@ export default defineConfig({
 });
 ```
 
-See [Syntax Highlighting](/guides/syntax-highlighting).
+See [Syntax Highlighting](./syntax-highlighting.mdx).
 
 ## Patterns that move to user space
 
@@ -449,5 +449,5 @@ For most sites this is not a migration blocker: the common built-in remark
 plugins (TOC, external links, CJK fixing) are already available as first-class
 options in `zfb.config.ts`. If you relied on a custom plugin for something
 more specific, see
-[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) for
+[Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) for
 the in-tree Rust visitor path.

@@ -33,20 +33,20 @@ itself doesn't ship the answer.
 zfb v1 commits to exactly six primitives. Frameworks build on top of
 them; nothing else in zfb is part of the public surface contract.
 
-1. **[Frontmatter](/concepts/frontmatter)** — unified contract across
+1. **[Frontmatter](./frontmatter.mdx)** — unified contract across
    `.md`, `.mdx`, and `.tsx` sources. One JSON shape downstream.
-2. **[Content collections](/concepts/content-collections)** — typed
+2. **[Content collections](./content-collections.mdx)** — typed
    directories of markdown content, walked at build time.
 3. **Build-time content query bridge** — a deterministic Rust→JS
    snapshot that powers synchronous `getCollection` / `getEntry` calls
    from your pages. The contract is stable and documented in
-   [Content Collections](/concepts/content-collections).
-4. **[Dynamic routes](/concepts/dynamic-routes)** — `paths()` enumerates
+   [Content Collections](./content-collections.mdx).
+4. **[Dynamic routes](./dynamic-routes.mdx)** — `paths()` enumerates
    the concrete URLs to build for `[slug].tsx` / `[...slug].tsx` pages.
-5. **[Custom directives](/concepts/custom-directives)** — register
+5. **[Custom directives](./custom-directives.mdx)** — register
    container, leaf, and text MDX directives that map to your JSX
    components without writing any Rust.
-6. **[Non-HTML pages](/concepts/non-html-pages)** —
+6. **[Non-HTML pages](./non-html-pages.mdx)** —
    `pages/sitemap.xml.tsx`, `pages/llms.txt.tsx`, `pages/feed.rss.tsx`,
    etc. First-class outputs with their own extension and
    `Content-Type`.
@@ -130,11 +130,11 @@ than Core, zfb avoids baking one framework's opinion into the engine.
 The six engine primitives remain the full public contract; the extras
 catalog is additive and independently togglable.
 
-See [Markdown Features](/markdown-features) for the full list.
+See [Markdown Features](../markdown-features/index.mdx) for the full list.
 
 ## Where to look next
 
 - For each engine primitive, the linked concept page above.
-- For the Markdown extras catalog, [Markdown Features](/markdown-features).
-- For the head/meta surface specifically, [`meta` export](/api/meta-export)
+- For the Markdown extras catalog, [Markdown Features](../markdown-features/index.mdx).
+- For the head/meta surface specifically, [`meta` export](../api/meta-export.mdx)
   documents which fields are first-class and how `extra` carries the rest.

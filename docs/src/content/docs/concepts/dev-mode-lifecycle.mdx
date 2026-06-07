@@ -10,8 +10,8 @@ category: Concepts
 The save-to-pixel loop for `zfb dev`: how the watcher detects your change, how the
 orchestrator decides what to rebuild, and how three SSE event types let the browser
 react without an unnecessary full page reload. For the overall build step order read
-[Build pipeline](/concepts/build-pipeline); for how the dependency graph limits
-rebuilds to affected pages read [Incremental rebuild](/concepts/incremental-rebuild).
+[Build pipeline](./build-pipeline.mdx); for how the dependency graph limits
+rebuilds to affected pages read [Incremental rebuild](./incremental-rebuild.mdx).
 
 For `prerender = false` SSR routes: each EDIT tick re-bundles and swaps a fresh V8
 host into the shared renderer mutex (see step 1 below), so SSR requests serve the
@@ -19,7 +19,7 @@ updated code immediately after the tick completes — no restart needed. One
 limitation remains: an SSR-only edit produces no SSG HTML writes, so no `Page` SSE
 event is emitted and the open browser tab does not auto-refresh. Manually reload the
 tab to see the updated SSR output. For context on the dev-side SSR path, see
-[SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings#dev-prod-parity-for-prerender--false).
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender--false).
 
 </Info>
 
@@ -46,7 +46,7 @@ Once the burst settles and the debounce window closes, the build orchestrator
 changed path and gets back a `DirtySet` — either `All` (global files like
 `zfb.config.ts`) or `Specific(set_of_page_ids)` for the pages that actually import
 the changed file. Pages outside the dirty set are not touched. (The full dependency
-tracking story lives in [Incremental rebuild](/concepts/incremental-rebuild).)
+tracking story lives in [Incremental rebuild](./incremental-rebuild.mdx).)
 
 The orchestrator assembles a `RebuildPlan` from the dirty set. If the changed path
 is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag is
@@ -158,11 +158,11 @@ preserved.
 
 ## Related
 
-- [Build pipeline](/concepts/build-pipeline) — the full pipeline from CLI to
+- [Build pipeline](./build-pipeline.mdx) — the full pipeline from CLI to
   `dist/`, and how dev mode layers on top of it
-- [Incremental rebuild](/concepts/incremental-rebuild) — the dependency graph and
+- [Incremental rebuild](./incremental-rebuild.mdx) — the dependency graph and
   `DirtySet` that limit rebuilds to affected pages
-- [Islands](/concepts/islands) — how `"use client"` opts a component into the
+- [Islands](./islands.mdx) — how `"use client"` opts a component into the
   islands bundle
-- [SSR and Cloudflare Bindings](/guides/ssr-and-cloudflare-bindings) — dev-side SSR
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — dev-side SSR
   parity: how `prerender = false` routes are served through the same V8 renderer

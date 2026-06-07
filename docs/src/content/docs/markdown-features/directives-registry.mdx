@@ -11,10 +11,10 @@ syntax — container (`:::name`), leaf (`::name[label]`), and text
 
 It is always active. You interact with it in two ways:
 
-- **From config** — use the opt-in [`directives`](/markdown-features/directives)
+- **From config** — use the opt-in [`directives`](./directives.mdx)
   feature to register directive names without writing Rust.
 - **From Rust** — populate a `DirectiveRegistry` directly and insert it into
-  the pipeline. See [Custom Directives](/concepts/custom-directives).
+  the pipeline. See [Custom Directives](../concepts/custom-directives.mdx).
 
 ## Directive shapes
 
@@ -30,7 +30,7 @@ The registry handles three directive shapes:
 
 The registry ships with **no directive names pre-registered**. Every
 `:::name` you use must be explicitly registered — either via the
-[`directives`](/markdown-features/directives) feature in `zfb.config.ts` or
+[`directives`](./directives.mdx) feature in `zfb.config.ts` or
 by populating the registry in Rust. An unrecognised directive name emits a
 warning diagnostic and leaves the source paragraph unchanged.
 
@@ -54,14 +54,14 @@ registry.register(
 ## Custom directives
 
 To register additional directives or override built-ins, see
-[Custom Directives](/concepts/custom-directives) — the author-facing path
+[Custom Directives](../concepts/custom-directives.mdx) — the author-facing path
 that does not require writing Rust.
 
 ## See also
 
-- [`directives` feature](/markdown-features/directives) — opt-in config feature
+- [`directives` feature](./directives.mdx) — opt-in config feature
   that populates the registry from `zfb.config.ts`.
-- [Custom Directives](/concepts/custom-directives) — register new
+- [Custom Directives](../concepts/custom-directives.mdx) — register new
   `:::name` / `::name` / `:name` directive names via the Rust API.
-- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+- [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
   — engine-side extension surface.

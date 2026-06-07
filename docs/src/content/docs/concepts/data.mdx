@@ -9,7 +9,7 @@ zfb gives you three different routes for getting structured data into a page, an
 
 ## 1. Content collections
 
-When the data is **prose** — blog posts, docs articles, recipes — use a content collection. Each entry is a Markdown file with frontmatter, the frontmatter is validated against a schema, and the body is rendered to HTML for you. See [Content Collections](/concepts/content-collections) for the full story.
+When the data is **prose** — blog posts, docs articles, recipes — use a content collection. Each entry is a Markdown file with frontmatter, the frontmatter is validated against a schema, and the body is rendered to HTML for you. See [Content Collections](./content-collections.mdx) for the full story.
 
 This is the right choice whenever the body of each entry is meant to be read.
 
@@ -25,7 +25,7 @@ featured: true
 ---
 ```
 
-Declare the directory in `zfb.config.ts` with an optional `schema` for per-field validation (see [`defineConfig`](/api/define-config)):
+Declare the directory in `zfb.config.ts` with an optional `schema` for per-field validation (see [`defineConfig`](../api/define-config.mdx)):
 
 ```ts
 export default {

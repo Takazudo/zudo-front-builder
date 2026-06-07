@@ -25,7 +25,7 @@ Why this matters: AI agents and human readers often try to import shared layout 
 
 </Info>
 
-For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker).
+For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx).
 
 ## SSG vs SSR in zfb
 
@@ -106,7 +106,7 @@ export const prerender = flags.prerender;
 export const prerender = computeFlag();
 ```
 
-The same restriction applies to the `frontmatter` export — see [Frontmatter](/concepts/frontmatter) for the literal-only contract.
+The same restriction applies to the `frontmatter` export — see [Frontmatter](../concepts/frontmatter.mdx) for the literal-only contract.
 
 </Warning>
 
@@ -148,7 +148,7 @@ compatibility_flags = ["nodejs_compat"]
 
 Without this flag the Worker fails to boot with an error naming `node:async_hooks`
 as the missing module. See
-[SSR on a Worker (adapter mode)](/concepts/ssr-on-a-worker#the-getcloudflarecontext-trick)
+[SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#the-getcloudflarecontext-trick)
 for the deeper mechanism.
 
 </Warning>

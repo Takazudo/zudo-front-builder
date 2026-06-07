@@ -11,7 +11,7 @@ Released: 2026-05-28
 
 This release ships the complete **[Md Extras]** epic: 14 opt-in Markdown
 features, the `zfb-md-extras` and `zfb-md-ast` crates, a revised Core
-pipeline, and the [Markdown Features](/markdown-features) docs category.
+pipeline, and the [Markdown Features](../markdown-features/index.mdx) docs category.
 
 ### Migration required — 4 features moved from Core to Opt-in
 
@@ -61,43 +61,43 @@ Enable any combination via `markdown.features.*` in `zfb.config.ts`.
 
 - **`admonitionsPreset`** — the six built-in admonition directive types
   (`note`, `tip`, `warning`, `danger`, `info`, `details`). Doc:
-  [Admonitions preset](/markdown-features/admonitions-preset).
+  [Admonitions preset](../markdown-features/admonitions-preset.mdx).
 - **`mermaid`** — render Mermaid flowcharts from fenced code blocks at
-  build time. Doc: [Mermaid diagrams](/markdown-features/mermaid).
+  build time. Doc: [Mermaid diagrams](../markdown-features/mermaid.mdx).
 - **`imageEnlarge`** — wrap block-level images in an enlargeable figure
-  with a zoom button. Doc: [Image enlarge](/markdown-features/image-enlarge).
+  with a zoom button. Doc: [Image enlarge](../markdown-features/image-enlarge.mdx).
 - **`headingMarkerToc`** — auto-insert a `<ul>/<li>` TOC after a
   designated heading. Options: `heading`, `maxDepth`. Doc:
-  [Heading-marker TOC](/markdown-features/heading-marker-toc).
+  [Heading-marker TOC](../markdown-features/heading-marker-toc.mdx).
 - **`githubAlerts`** — render `> [!NOTE]` / `> [!TIP]` / `> [!WARNING]`
   / `> [!IMPORTANT]` / `> [!CAUTION]` blockquotes as styled JSX
-  components. Doc: [GitHub alerts](/markdown-features/github-alerts).
+  components. Doc: [GitHub alerts](../markdown-features/github-alerts.mdx).
 - **`readingTime`** — compute estimated reading time and inject it into
   the compiled frontmatter. Doc:
-  [Reading time](/markdown-features/reading-time).
+  [Reading time](../markdown-features/reading-time.mdx).
 - **`githubAutolinks`** — automatically link GitHub issue/PR/commit
   references (`#123`, `org/repo#456`, `abc1234`). Options: `repo`. Doc:
-  [GitHub autolinks](/markdown-features/github-autolinks).
+  [GitHub autolinks](../markdown-features/github-autolinks.mdx).
 - **`codeEnrichment`** — diff markers (`// [!code ++]` / `// [!code --]`)
   and per-line highlighting (`{1,3-5}` in fence info). Options:
   `diffMarkers`, `lineHighlight`. Doc:
-  [Code-block enrichment](/markdown-features/code-enrichment).
+  [Code-block enrichment](../markdown-features/code-enrichment.mdx).
 - **`codeTabs`** — group consecutive fenced code blocks into a tabbed
-  switcher. Doc: [Code tabs](/markdown-features/code-tabs).
+  switcher. Doc: [Code tabs](../markdown-features/code-tabs.mdx).
 - **`ruby`** — render `{漢字|かんじ}` syntax as HTML `<ruby>` elements.
-  Doc: [Ruby annotation](/markdown-features/ruby).
+  Doc: [Ruby annotation](../markdown-features/ruby.mdx).
 - **`tocExport`** — export a structured heading tree into the compiled JSX
   module for framework-side TOC rendering. Doc:
-  [TOC export](/markdown-features/toc-export).
+  [TOC export](../markdown-features/toc-export.mdx).
 - **`imageDimensions`** — inject `width` and `height` attributes on
   `<img>` elements from the actual source file at build time. Doc:
-  [Image dimensions](/markdown-features/image-dimensions).
+  [Image dimensions](../markdown-features/image-dimensions.mdx).
 - **`linkValidation`** — treat broken internal links as hard build errors
   (configurable). Doc:
-  [Link validation](/markdown-features/link-validation).
+  [Link validation](../markdown-features/link-validation.mdx).
 - **`transclude`** — inline the content of another file using the
   `:::include` directive, with cycle detection and depth limiting. Options:
-  `maxDepth`. Doc: [Transclusion](/markdown-features/transclude).
+  `maxDepth`. Doc: [Transclusion](../markdown-features/transclude.mdx).
 
 ### Math
 
@@ -134,14 +134,14 @@ backwards-compatible direct (library / test) callers.
 
 ### Docs
 
-- New [Markdown Features](/markdown-features) sidebar category with
+- New [Markdown Features](../markdown-features/index.mdx) sidebar category with
   one page per feature.
 - 8 Core feature pages documenting always-on plugins.
-- [Customizing Markdown](/guides/customizing-markdown) slimmed down to
+- [Customizing Markdown](../guides/customizing-markdown.mdx) slimmed down to
   a pipeline overview with a pointer to the new category.
-- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+- [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
   updated with Core-vs-Opt-in guidance and complete visitor ordering rules.
-- [Design Philosophy](/concepts/design-philosophy) — new section on the
+- [Design Philosophy](../concepts/design-philosophy.mdx) — new section on the
   opt-in extras catalog and the three-consumer threshold for future additions.
-- [Engine vs Framework](/concepts/engine-vs-framework) — notes that
+- [Engine vs Framework](../concepts/engine-vs-framework.mdx) — notes that
   framework-flavored Markdown features ship as opt-in extras.

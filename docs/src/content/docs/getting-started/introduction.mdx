@@ -10,7 +10,7 @@ If you can read a `pages/` directory tree and write a TSX component, you already
 
 ## What zfb provides
 
-For the "why this shape" answer — narrow scope, recipes-over-plugins, no middleware layer — see [Design philosophy](/concepts/design-philosophy).
+For the "why this shape" answer — narrow scope, recipes-over-plugins, no middleware layer — see [Design philosophy](../concepts/design-philosophy.mdx).
 
 - **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime. No separate Node process is required at build time.
 - **Atomic writes** — the build never leaves the output directory in a partially-written state. Each `zfb build` run either completes fully or leaves `dist/` unchanged.
@@ -48,7 +48,7 @@ What is different: zfb has no component syntax of its own — everything is TSX.
 | `public/` for static assets | `public/` — same semantics |
 | Layout components wrapping pages | Layout components wrapping pages — plain TSX composition |
 
-What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Pages via [`@takazudo/zfb-adapter-cloudflare`](/guides/ssr-and-cloudflare-bindings)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
+What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Pages via [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
 
 ## Client router and view transitions
 
@@ -56,9 +56,9 @@ The `@takazudo/zfb-runtime` package ships a `<ClientRouter />` component that in
 
 ## Migration guides
 
-- [Migrating from Astro](/guides/migrating-from-astro) — concept-by-concept map for moving an existing Astro static site to zfb.
+- [Migrating from Astro](../guides/migrating-from-astro.mdx) — concept-by-concept map for moving an existing Astro static site to zfb.
 
 ## What to read next
 
-[Installation](/getting-started/installation) covers building and installing the CLI.
-[Your first site](/getting-started/your-first-site) walks through scaffolding a project and running a build end to end.
+[Installation](./installation.mdx) covers building and installing the CLI.
+[Your first site](./your-first-site.mdx) walks through scaffolding a project and running a build end to end.

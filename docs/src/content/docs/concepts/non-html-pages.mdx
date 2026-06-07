@@ -23,7 +23,7 @@ file under `dist/` exactly like an HTML page — only the extension
 changes.
 
 This is one of the six engine primitives — see [Engine vs
-Framework](/concepts/engine-vs-framework) for the full list. Sitemap and
+Framework](./engine-vs-framework.mdx) for the full list. Sitemap and
 feed generation, `llms.txt`, JSON API endpoints rendered at build time —
 they all sit on this primitive.
 
@@ -66,7 +66,7 @@ Output: `/raw.txt`.
 
 Both `frontmatter` and `extension` are statically extracted by SWC
 without evaluating the module — see
-[Frontmatter](/concepts/frontmatter) for the literal-only contract.
+[Frontmatter](./frontmatter.mdx) for the literal-only contract.
 
 ## Precedence
 
@@ -133,7 +133,7 @@ extension changes, so `dist/` doesn't accumulate stale files
 (`/raw.html` left behind beside the new `/raw.txt`).
 
 The cleanup runs as part of the build orchestrator's atomic write
-phase — see [Build Pipeline](/concepts/build-pipeline) — and is
+phase — see [Build Pipeline](./build-pipeline.mdx) — and is
 keyed on the route's stable identity (the source path), not its
 output filename, so renames don't leak old files either.
 
@@ -208,12 +208,12 @@ Filename convention picks `txt`. Output:
 
 ## See also
 
-- [Frontmatter](/concepts/frontmatter) — the literal-only contract
+- [Frontmatter](./frontmatter.mdx) — the literal-only contract
   for `extension` and `contentType` exports.
-- [Routing](/concepts/routing) — the static-route side, including
+- [Routing](./routing.mdx) — the static-route side, including
   the filename convention table.
-- [Build Pipeline](/concepts/build-pipeline) — where stale-output
+- [Build Pipeline](./build-pipeline.mdx) — where stale-output
   cleanup runs in the build sequence.
-- [Engine vs Framework](/concepts/engine-vs-framework) — why
+- [Engine vs Framework](./engine-vs-framework.mdx) — why
   non-HTML emission is an engine primitive (not a framework
   add-on).

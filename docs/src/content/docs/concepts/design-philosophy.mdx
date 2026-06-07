@@ -26,7 +26,7 @@ avoids becoming a full application bundler with its own plugin ecosystem for
 every possible transformation, zfb deliberately avoids growing a thick API
 surface to cover every site-building pattern.
 
-The [six engine primitives](/concepts/engine-vs-framework) are the complete
+The [six engine primitives](./engine-vs-framework.mdx) are the complete
 public contract of zfb v1. Adding a seventh primitive — even a useful one —
 means a new API to design, document, maintain, and version across future
 releases. It means answering "is this possible?" questions about edge cases
@@ -89,7 +89,7 @@ with no legitimate reason to deviate?"
 
 **The narrow plugin API zfb ships today** — the four lifecycle hooks, virtual
 modules, import aliases, and dev-only injected routes documented in
-[Plugins](/concepts/plugins) — is exactly that narrow exception. The `setup`
+[Plugins](./plugins.mdx) — is exactly that narrow exception. The `setup`
 hook's virtual module and alias registrations, the `preBuild` / `postBuild`
 file-generation hooks, and the `devMiddleware` handler cover patterns that
 are structurally inseparable from the build pipeline: things a consumer
@@ -122,16 +122,16 @@ that inflate the engine's apparent surface without earning their maintenance cos
 If you have a Markdown feature that does not clear the bar, the recipe path
 is the right answer. Write the visitor in-tree for your project.
 
-See [Markdown Features](/markdown-features) for the full opt-in catalog
-and [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline)
+See [Markdown Features](../markdown-features/index.mdx) for the full opt-in catalog
+and [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
 for the in-tree visitor path.
 
 ## Where to go next
 
-- [Engine vs Framework](/concepts/engine-vs-framework) — the six primitives
+- [Engine vs Framework](./engine-vs-framework.mdx) — the six primitives
   zfb commits to, and the line between engine and framework concerns.
-- [Markdown Features](/markdown-features) — the opt-in extras catalog.
-- [Plugins](/concepts/plugins) — the narrow exception: the four lifecycle hooks
+- [Markdown Features](../markdown-features/index.mdx) — the opt-in extras catalog.
+- [Plugins](./plugins.mdx) — the narrow exception: the four lifecycle hooks
   and what they do and do not cover.
-- [Choosing zfb](/concepts/choosing-zfb) — when the narrow-on-purpose tradeoff
+- [Choosing zfb](./choosing-zfb.mdx) — when the narrow-on-purpose tradeoff
   is the right call for your project, and when it is not.

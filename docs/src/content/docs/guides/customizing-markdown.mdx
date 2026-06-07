@@ -13,7 +13,7 @@ ready-to-render `Content` component.
 For the full list of what the pipeline provides — Core features that are
 always on, Opt-in features you enable in `zfb.config.ts`, and how to add
 your own visitors in-tree — see the
-[Markdown Features](/markdown-features) category.
+[Markdown Features](../markdown-features/index.mdx) category.
 
 ## Rendering Markdown in a page
 
@@ -59,7 +59,7 @@ inside the Rust engine and never call back into npm-installed plugins.
 
 Markdown-pipeline customisation lives in-tree as `MdastVisitor` /
 `HastVisitor` implementations on the engine side. See
-[Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline).
+[Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx).
 
 <Tip>
 
@@ -70,9 +70,9 @@ Markdown-pipeline customisation lives in-tree as `MdastVisitor` /
 
 ## See also
 
-- [Markdown Features](/markdown-features) — full catalog of Core and Opt-in
+- [Markdown Features](../markdown-features/index.mdx) — full catalog of Core and Opt-in
   features.
-- [Custom Directives](/concepts/custom-directives) — register new
+- [Custom Directives](../concepts/custom-directives.mdx) — register new
   directive names against the `DirectiveRegistry`, no Rust required.
-- [Extending the Markdown Pipeline](/guides/extending-the-markdown-pipeline) —
+- [Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) —
   write a Rust visitor and wire it into the engine.
