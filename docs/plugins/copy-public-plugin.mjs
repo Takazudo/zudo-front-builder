@@ -7,13 +7,21 @@
 // postBuild — recursively copies `<projectRoot>/public/` directly into
 //             `<outDir>/` (FLAT, matching zfb's own dist/ convention —
 //             zfb emits dist/index.html, dist/assets/..., NOT
-//             dist/<base>/index.html). Under the Workers static assets
-//             deploy (base="/"), `dist/` is served at root directly by
-//             `wrangler deploy` — no deploy-pipeline relocation step is
-//             needed. The `base` option is intentionally unused here.
+//             dist/<base>/index.html).
 //
-//             Example: `public/img/logo.svg` becomes `dist/img/logo.svg`,
-//             served at `/img/logo.svg` by the Workers static asset layer.
+//             Deploy target is Cloudflare Pages under base
+//             `/pj/zudo-front-builder` (settings.base). The deploy
+//             workflow (.github/workflows/*-deploy.yml) relocates the
+//             flat build into the base path itself:
+//               cp -a docs/dist/. deploy-root/pj/zudo-front-builder/
+//             so `public/img/logo.svg` → `dist/img/logo.svg` lands at
+//             `deploy-root/pj/zudo-front-builder/img/logo.svg`, served at
+//             `/pj/zudo-front-builder/img/logo.svg` — i.e. the flat copy
+//             this plugin produces is the load-bearing artifact. zfb also
+//             emits a base-prefixed tree under `dist/pj/...`, but that
+//             would deploy to `.../pj/zudo-front-builder/pj/...` (double
+//             base) and is unused dead weight at deploy time — which is
+//             why this plugin copies flat and ignores `base`.
 //
 // Missing or empty `public/` is treated as a no-op (no error).
 //

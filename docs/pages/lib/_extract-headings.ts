@@ -163,7 +163,7 @@ class SlugAllocator {
 
 /**
  * Strip inline markdown markup from a heading line to obtain the plain visible
- * text that `rehype-heading-links` sees after MDX → HTML conversion.
+ * text that zfb's heading-anchor pass sees after MDX → HTML conversion.
  *
  * Strips (in order):
  *   - Inline links: `[text](url)` → `text`
