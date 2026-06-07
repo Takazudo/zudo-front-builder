@@ -316,7 +316,13 @@ export function HeaderWithDefaults(props: HeaderWithDefaultsProps): JSX.Element 
   return (
     <Header
       lang={lang}
-      currentPath={currentPath}
+      // Pass "" so the package Header computes no active nav path: the live
+      // canonical zudo-doc dogfood shows NO header-nav active-state highlight,
+      // and the published package (create-zudo-doc@0.2.0-next.7) renders one
+      // (`bg-fg text-bg` + aria-current) with no opt-out. The Header consumes
+      // currentPath ONLY for active-nav (verified in dist/header/header.js);
+      // the wrapper's own `currentPath` still drives locale-switcher links. (#883 #2)
+      currentPath=""
       currentVersion={currentVersion}
       sidebarToggle={sidebarToggle}
       themeToggle={themeToggle}
