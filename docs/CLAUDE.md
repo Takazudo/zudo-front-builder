@@ -12,7 +12,10 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 
 ## Setup
 
-- **zfb-wisdom Claude Code skill** — run `bash docs/scripts/setup-zfb-wisdom.sh` once to give AI agents lookup access to this documentation tree (see `src/content/docs/claude-skills/zfb-wisdom.mdx`)
+Two scripts in `docs/scripts/` each install a Claude Code skill that symlinks this docs tree (`src/content/docs` + `docs-ja`) into the user-scope skills dir (`~/.claude/skills/`) for AI lookup access. They produce **distinct** skills:
+
+- **zfb-wisdom skill** — run `bash docs/scripts/setup-zfb-wisdom.sh` once. Fixed skill name `zfb-wisdom` (see `src/content/docs/claude-skills/zfb-wisdom.mdx`).
+- **{project}-wisdom skill** — run `pnpm --filter docs setup:doc-skill` (wired to `bash scripts/setup-doc-skill.sh`). Interactive; default skill name is `<package.json name>-wisdom` (currently `docs-wisdom`).
 
 ## Commands
 
@@ -20,7 +23,7 @@ All commands run from the **repo root** with the `--filter docs` workspace flag,
 
 - `pnpm docs:dev` — zfb dev server (port 4321)
 - `pnpm docs:build` — static HTML export to `docs/dist/`
-- `pnpm docs:check` — zfb type checking (runs tsc --noEmit on collection schemas + pages)
+- `pnpm docs:check` — zfb type checking (`tsc --noEmit` over `zfb.config.ts`, collection schemas, and `src/`). Note: `pages/` is excluded in `tsconfig.json`, so page modules are NOT type-checked here — they are checked when `zfb build` bundles them.
 - `pnpm docs:preview` — serve the built `docs/dist/` locally
 
 ## Key Directories
