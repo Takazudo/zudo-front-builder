@@ -49,12 +49,13 @@ docs/
 - Required: `title` (string)
 - Optional: `description`, `sidebar_position` (number), `sidebar_label`, `category`, `tags`
 - Sidebar order is driven by `sidebar_position`
-- Sidebar category label comes from the `index.mdx` frontmatter in each directory (`_category_.json` files are ignored and emit a benign build warning)
+- Sidebar category label comes from the `index.mdx` frontmatter in each directory, or from a `_category_.json` file when there is no `index.mdx`
+- `_category_.json` files are NOT disposable: the zfb content-collection loader skips them as data files (emitting a benign build warning), but the docs app's nav layer (`loadCategoryMeta` via `resolveNavSource`) still reads them for category `label`, `position`, `description`, `sortOrder`, and `noPage`. Deleting them can regress sidebar/category nav (e.g. `api`, `architecture`, generated Claude sections).
 
 ### Links
 
-- Use **relative `.mdx` paths** for cross-doc links: `[label](../other-dir/page.mdx)` — zfb's `resolveMarkdownLinks` converts these to route URLs at build time.
-- For links to pages that don't exist in the current locale collection (e.g., JA docs pointing to EN-only sections), use bare relative paths without `.mdx` (e.g., `../markdown-features/`) or absolute paths (e.g., `/docs/recipes/admonitions`); zfb only rewrites `.md`/`.mdx` relative links.
+- Use **relative `.mdx` paths** for cross-doc links: `[label](../other-dir/page.mdx)` — zfb's `resolveMarkdownLinks` converts these to root-relative route URLs at build time (the only fully reliable form).
+- For links to pages that don't exist in the current locale collection (e.g., JA docs pointing to EN-only sections that `resolveMarkdownLinks` can't resolve), use **root-relative absolute paths** that the base rewriter prepends `base` to: `/ja/docs/markdown-features/` (keeps JA locale shell) or `/docs/recipes/admonitions` (EN). Do NOT use bare relative paths like `../markdown-features/`: zfb leaves them unrewritten, and under Cloudflare Pages' trailing-slash redirect (`/x` → `/x/`) the browser resolves them from the wrong base, producing 404s.
 
 ### Admonitions
 
