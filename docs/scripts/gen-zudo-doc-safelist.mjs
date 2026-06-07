@@ -56,8 +56,28 @@ function collectFiles(dir) {
 
 // Matches both compiled-JSX object literals (`class: "…"` / `className: "…"`)
 // and template/raw-HTML attributes (`class="…"` / `className="…"`). The class
-// payload is captured from the double-quoted value.
-const CLASS_LITERAL_RE = /\bclass(?:Name)?\s*[:=]\s*"([^"]*)"/g;
+// value may be a double-quoted, single-quoted, OR backtick (template-literal)
+// string. Backticks matter: several components compose classes as
+//   class: `border-l-[3px] border-muted pl-hsp-lg ${cond ? "…" : "…"}`
+// where STATIC utilities (`border-l-[3px]`, …) sit in the literal text and
+// MORE static utilities sit inside the `${ … ? "…" : "…" }` ternary branches as
+// nested double-quoted strings. Both must be harvested — a double-quote-only
+// scan silently drops the backtick-head tokens (the h2/h3 heading borders,
+// blockquote rule, viewport-toggle transition, etc.).
+const CLASS_LITERAL_RE = /\bclass(?:Name)?\s*[:=]\s*(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
+// A bare double/single-quoted string literal (used to mine the ternary branches
+// inside a backtick class expression).
+const NESTED_STRING_RE = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'/g;
+
+function addTokens(set, text) {
+  for (const tok of text.split(/\s+/)) {
+    const t = tok.trim();
+    // Skip empties and any token carrying a template-interpolation marker
+    // (`${…}`) or a stray brace — those are dynamic, not static utilities.
+    if (!t || t.includes("${") || t.includes("{") || t.includes("}")) continue;
+    set.add(t);
+  }
+}
 
 function extractTokens(files) {
   const tokens = new Set();
@@ -65,12 +85,36 @@ function extractTokens(files) {
     const src = readFileSync(file, "utf8");
     let m;
     while ((m = CLASS_LITERAL_RE.exec(src)) !== null) {
-      for (const tok of m[1].split(/\s+/)) {
-        const t = tok.trim();
-        // Skip empties and any token carrying a template-interpolation marker
-        // (`${…}`) or a brace — those are dynamic, not static utilities.
-        if (!t || t.includes("${") || t.includes("{")) continue;
-        tokens.add(t);
+      const quote = m[1];
+      const value = m[2];
+      if (quote === "`") {
+        // Backtick: split off the `${ … }` interpolations, keep the static text
+        // around them, and separately mine any quoted strings INSIDE the
+        // interpolations (the ternary branches hold real static utilities).
+        //
+        // Note: the CLASS_LITERAL_RE match for a backtick ends at the FIRST
+        // inner backtick (nested template literals — e.g.
+        // `…border-transparent${className ? ` ${className}` : ""}`), so the
+        // captured `value` can carry a DANGLING `${…` with no closing brace.
+        // We harvest complete `${…}` interpolations, then drop everything from
+        // the first remaining (incomplete) `${` onward so the last static token
+        // before it (e.g. `border-transparent`, `italic`) is still collected.
+        const interpolations = [];
+        let staticText = value.replace(/\$\{([\s\S]*?)\}/g, (_, inner) => {
+          interpolations.push(inner);
+          return " ";
+        });
+        const dangling = staticText.indexOf("${");
+        if (dangling !== -1) staticText = staticText.slice(0, dangling);
+        addTokens(tokens, staticText);
+        for (const inner of interpolations) {
+          let s;
+          while ((s = NESTED_STRING_RE.exec(inner)) !== null) {
+            addTokens(tokens, s[1] ?? s[2] ?? "");
+          }
+        }
+      } else {
+        addTokens(tokens, value);
       }
     }
   }

@@ -2,7 +2,7 @@
  * Source: docs/scripts/gen-zudo-doc-safelist.mjs
  * Regenerated on every build/dev (chained in package.json `build`/`predev`)
  * from node_modules/@takazudo/zudo-doc/dist — see that script for the WHY.
- * 225 class tokens extracted from the package dist. */
+ * 247 class tokens extracted from the package dist. */
 
 @source inline("[&::-webkit-details-marker]:hidden");
 @source inline("[&_nav]:mb-0");
@@ -11,23 +11,30 @@
 @source inline("antialiased");
 @source inline("backdrop:bg-bg/80");
 @source inline("bg-[#fff]");
+@source inline("bg-accent");
 @source inline("bg-bg");
 @source inline("bg-code-bg");
 @source inline("bg-info/10");
 @source inline("bg-muted");
 @source inline("bg-surface");
+@source inline("bg-transparent");
 @source inline("bg-warning/10");
 @source inline("bg-warning/5");
 @source inline("block");
 @source inline("border");
+@source inline("border-accent");
 @source inline("border-b");
 @source inline("border-b-2");
 @source inline("border-collapse");
 @source inline("border-fg");
 @source inline("border-l");
+@source inline("border-l-[3px]");
 @source inline("border-muted");
 @source inline("border-none");
 @source inline("border-t");
+@source inline("border-t-[2px]");
+@source inline("border-t-[3px]");
+@source inline("border-transparent");
 @source inline("border-warning/30");
 @source inline("break-words");
 @source inline("code-block-sr-announce");
@@ -42,6 +49,7 @@
 @source inline("cursor-not-allowed");
 @source inline("cursor-pointer");
 @source inline("decoration-muted");
+@source inline("duration-150");
 @source inline("duration-200");
 @source inline("flex");
 @source inline("flex-1");
@@ -56,6 +64,7 @@
 @source inline("font-medium");
 @source inline("font-mono");
 @source inline("font-semibold");
+@source inline("gap-[clamp(1.5rem,3vw,4rem)]");
 @source inline("gap-hsp-2xs");
 @source inline("gap-hsp-sm");
 @source inline("gap-hsp-xs");
@@ -85,8 +94,10 @@
 @source inline("h-icon-xs");
 @source inline("hidden");
 @source inline("hover:bg-[color-mix(in_srgb,var(--color-surface)_80%,var(--color-fg)_20%)]");
+@source inline("hover:bg-accent-hover");
 @source inline("hover:bg-accent/10");
 @source inline("hover:border-accent");
+@source inline("hover:border-accent-hover");
 @source inline("hover:border-fg");
 @source inline("hover:text-accent");
 @source inline("hover:text-accent-hover");
@@ -95,6 +106,7 @@
 @source inline("inline-block");
 @source inline("inline-flex");
 @source inline("inset-0");
+@source inline("italic");
 @source inline("items-center");
 @source inline("items-start");
 @source inline("justify-between");
@@ -102,6 +114,8 @@
 @source inline("justify-end");
 @source inline("last:border-b-0");
 @source inline("leading-relaxed");
+@source inline("leading-snug");
+@source inline("leading-tight");
 @source inline("left-0");
 @source inline("lg:block");
 @source inline("lg:flex");
@@ -113,6 +127,7 @@
 @source inline("m-0");
 @source inline("max-h-[80vh]");
 @source inline("max-w-[46rem]");
+@source inline("max-w-[80rem]");
 @source inline("max-w-[clamp(50rem,75vw,90rem)]");
 @source inline("max-w-full");
 @source inline("max-w-none");
@@ -160,6 +175,7 @@
 @source inline("pr-hsp-xl");
 @source inline("pt-vsp-3xs");
 @source inline("pt-vsp-md");
+@source inline("pt-vsp-sm");
 @source inline("pt-vsp-xs");
 @source inline("px-hsp-lg");
 @source inline("px-hsp-md");
@@ -167,6 +183,7 @@
 @source inline("px-hsp-xl");
 @source inline("px-hsp-xs");
 @source inline("py-0");
+@source inline("py-hsp-2xs");
 @source inline("py-hsp-sm");
 @source inline("py-hsp-xs");
 @source inline("py-vsp-2xs");
@@ -178,7 +195,9 @@
 @source inline("relative");
 @source inline("resize-x");
 @source inline("right-0");
+@source inline("rotate-90");
 @source inline("rounded");
+@source inline("rounded-full");
 @source inline("rounded-lg");
 @source inline("select-none");
 @source inline("shadow-[0_1px_3px_color-mix(in_srgb,var(--color-fg)_8%,transparent)]");
@@ -197,6 +216,8 @@
 @source inline("tabs-content");
 @source inline("tabs-nav");
 @source inline("text-accent");
+@source inline("text-bg");
+@source inline("text-body");
 @source inline("text-caption");
 @source inline("text-code-fg");
 @source inline("text-fg");
@@ -212,6 +233,7 @@
 @source inline("top-0");
 @source inline("top-full");
 @source inline("tracking-wider");
+@source inline("transition-[background,color,border-color]");
 @source inline("transition-colors");
 @source inline("transition-transform");
 @source inline("underline");
