@@ -90,3 +90,24 @@ The following flags are set in `src/config/settings.ts` and are currently enable
 - **sidebarToggle** — Show/hide desktop sidebar button
 - **claudeResources** — Auto-generated docs for Claude Code resources (skills, claude-md); value is `{ claudeDir: ".claude" }` (reads from `docs/.claude/`)
 - **headingIdStrategy** — Set to `"flat"` (github-slugger flat IDs) to preserve existing `#anchor` deep links from the pre-migration site
+
+## Package CSS generation (`@takazudo/zudo-doc` safelist)
+
+`@takazudo/zudo-doc` ships **no precompiled CSS** — its header/sidebar/doclayout/toc/footer
+components carry their styles as static Tailwind class literals (`class: "sticky top-0 z-50 …"`)
+baked into the compiled dist JS. As the **consumer**, this site is responsible for generating
+those utilities. The monorepo covers them with `@source "packages/zudo-doc/src"`; a consumer
+can't scan the monorepo source, and the bare `@source "node_modules/@takazudo/zudo-doc/dist/**"`
+directive is unreliable under Tailwind v4 (it drops plain utilities like `sticky`/`top-0`/`z-50`
+intermittently, and far more on a non-git CI build — see zudolab/zudo-doc#1971, #883).
+
+So instead of scanning the dist, `scripts/gen-zudo-doc-safelist.mjs` **extracts a complete
+safelist from it at build time**: it reads every `class: "…"` literal in the package dist and
+writes `src/styles/_zudo-doc-safelist.css` (a list of `@source inline("…")` lines), which
+`global.css` `@import`s. The generator runs automatically before every `zfb build`/`zfb dev`
+(chained with `&&` in the `build`/`dev` scripts in `package.json`), so the safelist is **complete
+and stays correct across dependency bumps** — it derives from the installed dist, not a frozen
+hand list. The
+generated file is committed (with a "DO NOT EDIT" header) so the tree shows what was extracted;
+a rebuild leaves it unchanged (deterministic, sorted). Do **not** re-add a bare node_modules
+`@source` to `global.css` — it reintroduces the dropped-utility bug.
