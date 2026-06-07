@@ -6,9 +6,8 @@
 //
 // Sync convention (ADR-004):
 //   getCollection() resolves from the pre-loaded ContentSnapshot without an
-//   async boundary. paths() exports call getDocs() without await. The Promise
-//   wrapper on the type is a v0 artefact — the synchronous snapshot path is
-//   the production contract.
+//   async boundary and is typed to return CollectionEntry[] directly, so
+//   paths() exports call getDocs() without await — no Promise unwrap or cast.
 
 import { getCollection } from "zfb/content";
 import type { CollectionEntry } from "zfb/content";
@@ -44,6 +43,10 @@ export type ZfbDocsData = {
   standalone?: boolean;
   slug?: string;
   generated?: boolean;
+  /** Feature tier badge on Markdown Features pages (issue #877 step 6).
+   *  Mirrors docsSchema in zfb.config.ts and DocsEntry in
+   *  src/types/docs-entry.ts. */
+  tier?: "Core" | "Opt-in";
   [key: string]: unknown;
 };
 
@@ -70,9 +73,9 @@ export type ZfbDocsEntry = CollectionEntry<ZfbDocsData> & {
 /**
  * Load docs from a named collection synchronously (ADR-004 sync contract).
  *
- * `getCollection` resolves from the ContentSnapshot when called inside a
- * paths() evaluation. The `as unknown as` cast converts the nominal Promise
- * wrapper to a plain array — safe because the snapshot path is synchronous.
+ * `getCollection<T>(name)` is typed to return `CollectionEntry<T>[]`
+ * directly and resolves synchronously from the ContentSnapshot during a
+ * paths() evaluation — so we map over the result with no cast.
  *
  * The returned entries include:
  *   - All CollectionEntry fields (slug, data, body, module_specifier, Content)
