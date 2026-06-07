@@ -976,6 +976,72 @@ pre[class^="syntect-"] .line .highlighted-word {
   }
 }
 
+/* Page-loading overlay CSS — hand-written (non-Tailwind) rules consumed by
+ * the package's PageLoadingOverlay island (@takazudo/zudo-doc/page-loading).
+ * The island emits `.page-loading-overlay` + `.page-loading-spinner` markup
+ * with NO inline <style> and the package ships no precompiled CSS, so the
+ * consumer must provide these rules. Without them the navigation loading
+ * overlay/spinner is invisible → page transitions show no loading feedback
+ * (#883 / #886 page-transition fix). Ported verbatim from the canonical
+ * zudo-doc dogfood global.css (zudolab/zudo-doc origin/main); tokens
+ * (--color-overlay, --color-accent, --color-fg) all exist in this consumer's
+ * @theme. The island's bootstrap script toggles `data-visible` on the overlay
+ * during navigation and sets `data-zd-nav-pending` on the clicked nav source
+ * element. */
+.page-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklch, var(--color-overlay) 60%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease-out;
+}
+
+.page-loading-overlay[data-visible] {
+  opacity: 1;
+}
+
+a[data-zd-nav-pending],
+button[data-zd-nav-pending] {
+  color: var(--color-accent);
+}
+
+.page-loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 5px solid var(--color-fg, #fff);
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+  animation: page-loading-spin 1s linear infinite;
+}
+
+@media (min-width: 1024px) {
+  .page-loading-spinner {
+    width: 64px;
+    height: 64px;
+    border-width: 6px;
+  }
+}
+
+@keyframes page-loading-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-loading-spinner {
+    animation: none;
+    border-bottom-color: var(--color-fg, #fff);
+    opacity: 0.5;
+  }
+}
+
 /* ========================================
  * Desktop sidebar toggle (W7A: unconditional — feature gates at runtime)
  * ======================================== */
