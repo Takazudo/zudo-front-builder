@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "gen:safelist": "node scripts/gen-zudo-doc-safelist.mjs",
-    "dev": "node scripts/gen-zudo-doc-safelist.mjs && zfb dev",
-    "build": "node scripts/gen-zudo-doc-safelist.mjs && zfb build",
+    "vendor:zudo-doc": "node scripts/vendor-zudo-doc-dist.mjs",
+    "dev": "node scripts/vendor-zudo-doc-dist.mjs && zfb dev",
+    "build": "node scripts/vendor-zudo-doc-dist.mjs && zfb build",
     "preview": "zfb preview",
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",

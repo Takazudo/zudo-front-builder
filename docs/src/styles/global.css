@@ -27,31 +27,29 @@
 @source "pages/**/*.{tsx,ts,jsx,js}";
 
 /* Consumed framework package: the header/sidebar/doclayout/toc/footer
- * components ship their utility classes (`sticky`, `lg:block`,
- * `top-[3.5rem]`, etc.) as STATIC class literals baked into the compiled dist
- * JS — the package ships NO precompiled CSS, so the CONSUMER must generate
- * those utilities. In the zudo-doc monorepo they are covered by
+ * components ship their utility classes (`sticky`, `lg:block`, `top-[3.5rem]`,
+ * etc.) as Tailwind class literals baked into the compiled dist JS — the
+ * package ships NO precompiled CSS, so the CONSUMER must generate those
+ * utilities. In the zudo-doc monorepo they are covered by
  * `@source "packages/zudo-doc/src"`; a consumer cannot scan the monorepo
- * source, so it derives the classes from the published dist instead.
+ * source, so it must derive the classes from the published dist instead.
  *
- * The bare `@source "node_modules/@takazudo/zudo-doc/dist/**"` directive is
- * NOT reliable under Tailwind v4 (its node_modules candidate scanning drops
- * plain utilities like `sticky`/`top-0`/`z-50` intermittently, and drops far
- * more on a non-git CI build). So instead of scanning the dist, we EXTRACT a
- * complete safelist from it at build time: `scripts/gen-zudo-doc-safelist.mjs`
- * reads every `class: "…"` literal in the dist and writes
- * `_zudo-doc-safelist.css` (a list of `@source inline("…")` lines). It runs on
- * every `build`/`dev` (wired into the `build` and `predev` scripts in
- * package.json), so the safelist is complete and stays correct across
- * dependency bumps. Replaces the old hand-maintained
- * 46-entry list that missed 83 of the package's classes (zudolab/zudo-doc#1971;
- * #883). DO NOT re-add a bare node_modules `@source` here — it reintroduces the
- * dropped-utility bug.
+ * Tailwind v4 deliberately EXCLUDES node_modules from class scanning — a bare
+ * `@source "node_modules/@takazudo/zudo-doc/dist/**"` emits ZERO package
+ * utilities (proven: `.sticky` etc. absent from the built CSS;
+ * zudolab/zudo-doc#1971, #883). So `scripts/vendor-zudo-doc-dist.mjs` COPIES the
+ * package dist to `docs/.zudo-doc-tw/` (a non-node_modules, gitignored build
+ * artifact) before every `build`/`dev` (chained in package.json), and the
+ * @source below points at the COPY. Tailwind's own scanner then extracts every
+ * class candidate from the dist — robust to every literal form (inline `class`,
+ * module consts, ternary/`&&` branches, backtick templates) that a hand-rolled
+ * token extractor kept missing. Complete and dep-bump-safe (the copy is
+ * regenerated from the installed dist each build).
  *
- * Path note: this @import is relative to docs/ (the project root), NOT to this
- * file's own dir — zfb's Tailwind CSS pipeline resolves CSS @import from the
- * project root. `./_zudo-doc-safelist.css` would fail to resolve. */
-@import "./src/styles/_zudo-doc-safelist.css";
+ * Path note: this @source is relative to docs/ (the project root). Do NOT point
+ * @source back at node_modules — Tailwind won't scan it and the package classes
+ * vanish. */
+@source "./.zudo-doc-tw/**/*.{js,mjs}";
 
 /* ========================================
  * Design Token System
