@@ -109,6 +109,15 @@ impl ResolveLinksPlugin {
         // the path part and stitch them back on.
         let (path_part, suffix) = split_suffix(url);
 
+        // Bare same-page references (`#fragment`, `?query`) have an empty
+        // path component — nothing to resolve. Without this guard the empty
+        // path falls through to extensionless probing, where the `/index.mdx`
+        // candidate joins to `{source_dir}/index.mdx` and rewrites `#anchor`
+        // to `/<parent-dir>/#anchor` (zudolab/zudo-doc#1948).
+        if path_part.is_empty() {
+            return Ok(None);
+        }
+
         if ends_with_md(path_part) {
             // Explicit .md/.mdx path: try direct and source_dir-relative lookups.
             return match self.lookup_path(path_part, suffix) {
@@ -464,6 +473,46 @@ mod tests {
         let mut root = root_with_link("./guide#section");
         plugin.visit(&mut root);
         assert_eq!(link_url(&root), "/docs/guide/#section");
+    }
+
+    #[test]
+    fn bare_fragment_left_alone() {
+        // Regression test for zudolab/zudo-doc#1948: a same-page `#anchor`
+        // link must not resolve against the page directory even when the
+        // parent category index is present in the source map.
+        let dir = PathBuf::from("/site/docs/guides");
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/guides/index.mdx"),
+            "/docs/guides/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("#per-page-visibility");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "#per-page-visibility");
+        assert!(plugin.take_broken_links().is_empty());
+    }
+
+    #[test]
+    fn bare_query_left_alone() {
+        // Query-only links also have an empty path component — same guard.
+        let dir = PathBuf::from("/site/docs/guides");
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/guides/index.mdx"),
+            "/docs/guides/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("?x=1");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "?x=1");
+        assert!(plugin.take_broken_links().is_empty());
     }
 
     #[test]
