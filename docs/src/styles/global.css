@@ -79,6 +79,28 @@
 @source inline("w-[280px]");
 @source inline("w-[var(--zd-sidebar-w)]");
 
+/* Safelist for the package's PLAIN RESPONSIVE utilities (sm:/lg:/xl: variants
+ * without bracketed values). The node_modules @source scan above is just as
+ * intermittent for these — a rebuild on this site shipped without `.lg:block`,
+ * which leaves the desktop sidebar (`hidden lg:block`) permanently hidden at
+ * >=1024px. Same generation rule as the bracketed list; regenerate when
+ * bumping @takazudo/zudo-doc:
+ *   grep -rhoE '\b(sm|md|lg|xl|2xl):[a-zA-Z0-9-]+' \
+ *     node_modules/@takazudo/zudo-doc/dist/ --include='*.js' --include='*.mjs' \
+ *     | sort -u | sed 's/^/@source inline("/; s/$/");/'                         */
+@source inline("lg:block");
+@source inline("lg:flex");
+@source inline("lg:hidden");
+@source inline("lg:pt-vsp-2xl");
+@source inline("lg:px-hsp-2xl");
+@source inline("lg:py-vsp-2xl");
+@source inline("sm:flex-row");
+@source inline("sm:grid-cols-2");
+@source inline("sm:items-center");
+@source inline("sm:justify-between");
+@source inline("xl:flex");
+@source inline("xl:hidden");
+
 /* ========================================
  * Design Token System
  *
