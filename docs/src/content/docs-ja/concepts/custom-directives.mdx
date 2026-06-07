@@ -26,11 +26,11 @@ zfb の MDX パイプラインは、mdast ビジターのひとつとして
 に従います。コンテナ、リーフ、テキストの 3 つです。レジストリが唯一の
 仕組みであり、特別扱いされたり事前登録されたりするディレクティブ名は
 ありません。アドモニション風のディレクティブも含め、すべてをユーザーランドが
-登録します（[Admonitions レシピ](../recipes/admonitions.mdx) を参照）。
+登録します（[Admonitions レシピ](../recipes/admonitions/) を参照）。
 
 Rust を書かずに設定からディレクティブを登録したいだけであれば、下記の
 Rust API の代わりに、`zfb.config.ts` のオプトイン機能
-[`directives`](../markdown-features/directives.mdx) を使ってください。
+[`directives`](../markdown-features/directives/) を使ってください。
 
 ## 3 つのディレクティブの形
 
@@ -295,7 +295,7 @@ warning: directive `callout`: unknown attribute `data-testid` (warning only — 
   あなたの責任です。
 - **デフォルトのディレクティブセットを提供すること。** 組み込みの
   `:::callout`、`:::card`、`:::note`、`::youtube` などはありません。
-  どのフレームワークも、[`directives`](../markdown-features/directives.mdx)
+  どのフレームワークも、[`directives`](../markdown-features/directives/)
   の設定機能か Rust API を通じて、自分の語彙を選びます。
 - **JSX コンポーネントを自動インポートすること。** コンポーネントを
   ページモジュールのスコープに置くのはあなたの責任です（グローバルな
@@ -305,8 +305,8 @@ warning: directive `callout`: unknown attribute `data-testid` (warning only — 
 
 ## 関連項目
 
-- [`directives` 機能](../markdown-features/directives.mdx) — Rust を書かずに `zfb.config.ts` からディレクティブ名を登録する。
-- [レシピ: Admonitions](../recipes/admonitions.mdx) — `directives` 機能を使って `:::note`、`:::tip` などを登録する実践例。
+- [`directives` 機能](../markdown-features/directives/) — Rust を書かずに `zfb.config.ts` からディレクティブ名を登録する。
+- [レシピ: Admonitions](../recipes/admonitions/) — `directives` 機能を使って `:::note`、`:::tip` などを登録する実践例。
 - [MDX Components](./mdx-components.mdx) — コンパイル済みの MDX
   モジュールが要素レベルのオーバーライドをどう参照するか。
 - [Engine vs Framework](./engine-vs-framework.mdx) — なぜ

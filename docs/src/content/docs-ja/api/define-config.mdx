@@ -38,7 +38,7 @@ defineConfig(config: ZfbConfig): ZfbConfig
 - `base?: string` — アセット URL 向けの公開 URL プレフィックス。サイトがサブパス配下にデプロイされる場合（例: `"/pj/my-site/"`）に使います。`site` とは別物です。`base` はアセット URL の前に付与され、`site` はメタデータで使う完全な正規オリジンです。
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
 - `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
-- `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](../markdown-features/index.mdx) のセクションを参照してください。
+- `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](../markdown-features/) のセクションを参照してください。
 - `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。
 - `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
