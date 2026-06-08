@@ -1,0 +1,52 @@
+---
+title: v0.1.0-next.36
+sidebar_position: 1036
+---
+
+# v0.1.0-next.36
+
+Released: 2026-06-08
+
+This release lands the documentation site's migration from Astro to the zfb scaffold (issue #877) and the subsequent `@takazudo/zudo-doc` parity work (CSS-class generation, links, and page transitions). The engine and SDK packages are unchanged; all entries are docs-site and release-tooling changes.
+
+## Features
+
+- Replace the Astro framework layer with the zfb scaffold (issue #877 step 1) (b499e77)
+- Port config and content-collection schema from Astro to zfb (issue #877 steps 3-6) (0cc8dcd)
+
+## Bug Fixes
+
+- Enable the SPA client-router so page transitions work (#883) (a23711e)
+- Fail loud when the vendored zudo-doc dist is empty (deep-review) (f1a7104)
+- Make the sidebar filter incremental on keyup, not Enter (#883 #6) (e8a87b8)
+- Remove header-nav active-state to match the canonical layout (#883 #2) (aee482a)
+- Add a page-loading overlay/spinner CSS for page-transition feedback (#886) (8d5353e)
+- Vendor the zudo-doc dist for Tailwind scanning instead of token extraction (#885) (12303c9)
+- Also extract static tokens from backtick class literals (#885 review) (9eadbf4)
+- Generate the complete `@takazudo/zudo-doc` CSS safelist at build time (#885) (c157000)
+- Sync the `tier` field into `ZfbDocsData` and correct stale cast comments (afec389)
+- Correct legacy image-enlarge redirect targets and cover real old URLs (9d2d7d8)
+- Safelist the package's plain responsive utilities in `global.css` (c893cfe)
+- Use root-relative absolute URLs for JA EN-fallback links (4e6599e)
+- Repair broken relative links in JA docs (c1cfee3)
+- `CategoryNavWrapper` uses the EN locale for `defaultLocaleOnly` slugs (4bb7635)
+- Add missing favicon files to `docs/public/` (eca477c)
+- Rewrite absolute `/slug` links to relative `.mdx` paths (JA, 39 files) (83bdd09)
+- Rewrite absolute `/slug` links to relative `.mdx` paths (EN, 53 files) (97ccb66)
+- Work around scaffold component/CSS bugs (zudo-doc issues 1971-1972) (0ba685a)
+
+## Other Changes
+
+- ci(release): cap `binary-*`/`archive-*` artifact retention at 1 day (3d179e2)
+- docs: correct CLAUDE.md on `docs:check` scope and setup-skill wiring (bd6a3e3)
+- docs: correct stale plugin/comment references to current setup (ffe336c)
+- docs: correct CLAUDE.md on `_category_.json` and link conventions (11c14f5)
+- docs: rewrite CLAUDE.md to reflect the zfb-based tech stack (6a2b64a)
+- chore: fix stale log prefix after the vendor script rename (#885) (368d47e)
+- chore: drop deps used only by deleted Astro-era code (22a03e3)
+- chore: remove the local claude-resources integration copy (6e14fce)
+- chore: remove orphaned Astro-era rehype plugins (82624a3)
+- chore: update zfb-wisdom SKILL.md with the full doc category list (b140936)
+- chore: update repo integration seams for zfb-based docs (847f2e7)
+- chore: refresh zudo-doc-\* Claude skills to latest versions (issue #877 step 2) (7e19671)
+- chore: update package.json and lockfile for the zfb scaffold (issue #877) (97d5bc3)
