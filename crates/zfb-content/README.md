@@ -103,7 +103,7 @@ preserved inside.
 | `TsxFrontmatter` | `tsx_frontmatter` | Static extraction result for `.tsx` files |
 | `ExternalLinksPlugin` | `plugins` | Hast plugin: open external links in new tab |
 | `TocConfig` | `plugins` | Table-of-contents plugin config |
-| `SnapshotPipelineConfig` | `content_bridge` | Full pipeline configuration |
+| `PipelineSpec` | `pipeline_spec` | Full pipeline configuration (single knob list shared by snapshot + bundler walks) |
 | `BridgeError` | `content_bridge` | Error type for snapshot building |
 | `MarkdownFeaturesConfig` | re-export (zfb-md-extras) | Feature toggles for the markdown pipeline |
 | `FeatureToggle` | re-export (zfb-md-extras) | Enable/disable individual features |
