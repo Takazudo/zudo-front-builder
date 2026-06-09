@@ -37,6 +37,10 @@ const prefetched = new Set<string>();
 // Map of in-flight prefetch promises for dedup (also used as the concurrent short-circuit guard).
 const inFlight = new Map<string, Promise<void>>();
 
+// How long to wait for a <link rel=prefetch>'s load/error before treating
+// the prefetch as settled anyway (see executePrefetch).
+const LINK_SETTLE_TIMEOUT_MS = 10_000;
+
 // The viewport observer — retained across post-swap re-scans so new elements
 // can be observed without recreating the observer.
 let viewportObserver: IntersectionObserver | null = null;
@@ -123,11 +127,28 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
         // Wait for load/error so we only mark success on actual load and allow
         // retry after error — inserting without waiting would mark success
         // immediately even on failure. (Bug: Takazudo/zudo-front-builder#896)
+        // Some browsers (e.g. Safari) never fire load/error on rel=prefetch
+        // links; without the settle timeout the href would sit in inFlight
+        // forever and block every future retry. Timing out counts as
+        // success — the resource was requested, which is all prefetch needs.
         await new Promise<void>((resolve, reject) => {
-          link.addEventListener("load", () => resolve(), { once: true });
-          link.addEventListener("error", () => reject(new Error(`prefetch link error: ${href}`)), {
-            once: true,
-          });
+          const timer = setTimeout(() => resolve(), LINK_SETTLE_TIMEOUT_MS);
+          link.addEventListener(
+            "load",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+          link.addEventListener(
+            "error",
+            () => {
+              clearTimeout(timer);
+              reject(new Error(`prefetch link error: ${href}`));
+            },
+            { once: true },
+          );
           document.head.appendChild(link);
         });
       } else {

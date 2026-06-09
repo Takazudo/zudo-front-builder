@@ -69,13 +69,13 @@
     // Dynamic import — valid in classic scripts in all evergreen browsers
     // (ES2020). No new Function wrapper needed; this file is served as-is
     // via include_str! with no bundler or parser pass that would reject it.
-    try {
-      import(swapUrl);
-    } catch (e) {
+    // import() failures arrive as a rejected promise, not a sync throw —
+    // a .catch() is required or the warning below would never fire.
+    import(swapUrl).catch(function (e) {
       if (typeof console !== "undefined" && console.warn) {
         console.warn("[zfb] livereload: dynamic import failed", e);
       }
-    }
+    });
   });
   src.addEventListener("error", function (ev) {
     // EventSource auto-reconnects; surface the event for visibility.

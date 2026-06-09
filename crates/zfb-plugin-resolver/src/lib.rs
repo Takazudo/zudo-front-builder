@@ -484,18 +484,18 @@ pub fn resolve_tsconfig_path_target(base_dir: &Path, target: &str) -> String {
 /// commas from a JSONC source so it parses with the strict `serde_json`
 /// reader.
 ///
-/// String-literal awareness is intentionally minimal but sufficient for
-/// the conventional shape of `tsconfig.json` files: escape sequences
-/// inside strings are honoured so a `//` inside a string value is not
-/// treated as a comment.
+/// Both passes are char-based (multi-byte UTF-8 content — e.g. CJK path
+/// targets or comments — passes through byte-identical) and
+/// string-aware: escape sequences inside strings are honoured so a `//`
+/// or a trailing-comma-lookalike inside a string value is never treated
+/// as syntax.
 pub fn strip_tsconfig_jsonc(input: &str) -> String {
+    // Pass 1: strip comments.
     let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
     let mut in_string = false;
     let mut escape = false;
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
+    while let Some(c) = chars.next() {
         if in_string {
             out.push(c);
             if escape {
@@ -505,41 +505,65 @@ pub fn strip_tsconfig_jsonc(input: &str) -> String {
             } else if c == '"' {
                 in_string = false;
             }
-            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            // Line comment — keep the terminating newline so line
+            // structure (and any line-sensitive diagnostics) survive.
+            '/' if chars.peek() == Some(&'/') => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            // Block comment.
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+
+    // Pass 2: strip trailing commas — `,` immediately preceding `}` or
+    // `]` (whitespace allowed in between), skipping string contents.
+    let chars: Vec<char> = out.chars().collect();
+    let mut stripped = String::with_capacity(out.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let mut j = 0;
+    while j < chars.len() {
+        let c = chars[j];
+        if in_string {
+            stripped.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            j += 1;
             continue;
         }
         if c == '"' {
             in_string = true;
-            out.push(c);
-            i += 1;
+            stripped.push(c);
+            j += 1;
             continue;
         }
-        // Line comment.
-        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
-            while i < bytes.len() && bytes[i] as char != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        // Block comment.
-        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(bytes.len());
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    // Strip trailing commas — minimal pass: `,` immediately preceding
-    // `}` or `]` (whitespace allowed in between).
-    let mut stripped = String::with_capacity(out.len());
-    let chars: Vec<char> = out.chars().collect();
-    let mut j = 0;
-    while j < chars.len() {
-        let c = chars[j];
         if c == ',' {
             let mut k = j + 1;
             while k < chars.len() && chars[k].is_whitespace() {
@@ -905,6 +929,38 @@ mod tests {
             result.contains_key("~/*"),
             "second key must survive; got {result:?}"
         );
+    }
+
+    /// Regression: multi-byte UTF-8 (CJK) content must pass through the
+    /// JSONC stripper byte-identical. The old byte-as-char loop re-encoded
+    /// every byte as Latin-1, mojibake-ing CJK path targets and comments.
+    #[test]
+    fn strip_tsconfig_jsonc_preserves_multibyte_utf8() {
+        let input = "{\n  // 日本語のコメント\n  \"compilerOptions\": {\n    \"paths\": { \"@/*\": [\"ソース/*\"] }\n  }\n}";
+        let cleaned = strip_tsconfig_jsonc(input);
+        assert!(
+            cleaned.contains("ソース/*"),
+            "CJK string content must survive untouched; got {cleaned}"
+        );
+        assert!(
+            !cleaned.contains("日本語"),
+            "comment must be stripped; got {cleaned}"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&cleaned).is_ok(),
+            "stripped output must parse; got {cleaned}"
+        );
+    }
+
+    /// Regression: a comma INSIDE a string value followed by whitespace
+    /// and a brace must not be eaten by the trailing-comma pass.
+    #[test]
+    fn strip_tsconfig_jsonc_trailing_comma_pass_is_string_aware() {
+        let input = r#"{ "a": "x, }", "b": "y" }"#;
+        let cleaned = strip_tsconfig_jsonc(input);
+        let v: serde_json::Value =
+            serde_json::from_str(&cleaned).expect("must still parse");
+        assert_eq!(v["a"], "x, }", "comma inside string must survive");
     }
 
     /// Regression for the `Path::with_extension` bug: when `extends` is

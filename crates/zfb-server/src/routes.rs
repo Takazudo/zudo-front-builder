@@ -1046,28 +1046,29 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
     Some(raw.to_string())
 }
 
-/// Check that `path` (after symlink resolution) still lives inside
-/// `root` (after symlink resolution). Returns `true` only when both
-/// canonicalize successfully and the canonical path starts with the
-/// canonical root.
+/// Resolve `path` (following symlinks) and require the result to live
+/// inside `root` (also symlink-resolved). Returns the canonical path on
+/// success — callers MUST read the returned canonical path, not the
+/// original: re-reading the original would reopen a check-then-use
+/// window where a symlink swapped between check and read escapes the
+/// root (TOCTOU).
 ///
-/// Returning `false` on any canonicalize error (e.g. the file does not
+/// Returning `None` on any canonicalize error (e.g. the file does not
 /// exist yet) is intentional: callers treat a failed containment check
 /// as not-found, so a missing symlink target is a safe 404.
 ///
 /// Async (#903): this runs on every request-path disk fallback, so the
 /// canonicalize syscalls go through `tokio::fs` (which offloads to the
 /// blocking pool) instead of blocking the request worker directly.
-async fn path_is_within_root(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let canonical_root = match tokio::fs::canonicalize(root).await {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let canonical_path = match tokio::fs::canonicalize(path).await {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    canonical_path.starts_with(&canonical_root)
+async fn resolve_within_root(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let canonical_root = tokio::fs::canonicalize(root).await.ok()?;
+    let canonical_path = tokio::fs::canonicalize(path).await.ok()?;
+    canonical_path
+        .starts_with(&canonical_root)
+        .then_some(canonical_path)
 }
 
 /// Try to read a page from the dist directory on disk.
@@ -1093,10 +1094,10 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
         dist_root.join(trimmed),
     ];
     for path in &candidates {
-        if !path_is_within_root(path, dist_root).await {
+        let Some(resolved) = resolve_within_root(path, dist_root).await else {
             continue;
-        }
-        if let Ok(bytes) = tokio::fs::read(path).await {
+        };
+        if let Ok(bytes) = tokio::fs::read(&resolved).await {
             return Some(bytes);
         }
     }
@@ -1124,23 +1125,19 @@ async fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Optio
         return None;
     }
     let path = public_root.join(trimmed);
+    let resolved = resolve_within_root(&path, public_root).await?;
     // Reject directory reads explicitly — reading a directory returns an
     // EISDIR error on Unix and would surface as a None here anyway, but
     // on Windows the behaviour is platform-dependent. Being explicit also
-    // documents the intent. A missing file yields `false` here (matching
-    // the old sync `Path::is_dir`) and is then rejected by the
-    // containment check below.
-    let is_dir = tokio::fs::metadata(&path)
+    // documents the intent. Checked on the canonical path the read uses.
+    let is_dir = tokio::fs::metadata(&resolved)
         .await
         .map(|m| m.is_dir())
         .unwrap_or(false);
     if is_dir {
         return None;
     }
-    if !path_is_within_root(&path, public_root).await {
-        return None;
-    }
-    tokio::fs::read(&path).await.ok()
+    tokio::fs::read(&resolved).await.ok()
 }
 
 /// Reject URL paths that would escape the dist root once joined.

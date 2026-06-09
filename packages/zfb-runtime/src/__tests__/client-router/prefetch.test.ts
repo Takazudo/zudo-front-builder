@@ -490,6 +490,45 @@ describe("link method retry after error", () => {
   });
 });
 
+describe("link method settle timeout", () => {
+  it("20. a link that never fires load/error settles via the timeout instead of hanging in-flight", async () => {
+    stubLinkPrefetchSupport(true);
+    vi.useFakeTimers();
+    init();
+    const url = sameOriginUrl("/link-silent");
+
+    // appendChild stub that fires NEITHER load NOR error — Safari-style
+    // rel=prefetch silence.
+    const origAppendChild = document.head.appendChild.bind(document.head);
+    let appendCount = 0;
+    vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
+      appendCount++;
+      return origAppendChild(node);
+    });
+
+    try {
+      prefetch(url);
+      expect(appendCount).toBe(1);
+
+      // Re-prefetch while still in flight: deduped, no second append.
+      prefetch(url);
+      expect(appendCount).toBe(1);
+
+      // Advance past the settle timeout — the promise resolves, the href
+      // leaves inFlight and is marked prefetched (counts as success).
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      // A later prefetch must not hang or re-append: href is settled.
+      prefetch(url);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(appendCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
 describe("viewport observer reset on SPA swap", () => {
   it("19. zfb:after-swap disconnects old observer and creates a fresh one for the new body", () => {
     // Create an old-body link and observe it.

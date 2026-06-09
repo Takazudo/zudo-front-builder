@@ -262,29 +262,26 @@ fn resolve_static(dist_root: &Path, url_path: &str) -> Resolution {
     Resolution::NotFound
 }
 
-/// Check that `path` (after symlink resolution) still lives inside
-/// `root` (after symlink resolution). Returns `true` only when both
-/// canonicalize successfully and the canonical path starts with the
-/// canonical root.
+/// Resolve `path` (following symlinks) and require the result to live
+/// inside `root` (also symlink-resolved). Returns the canonical path on
+/// success — callers MUST read the returned canonical path, not the
+/// original: re-reading the original would reopen a check-then-use
+/// window where a symlink swapped between check and read escapes the
+/// root (TOCTOU).
 ///
-/// Returning `false` on any canonicalize error (e.g. the file does not
+/// Returning `None` on any canonicalize error (e.g. the file does not
 /// exist yet) is intentional: callers treat a failed containment check
 /// as not-found, so a missing symlink target is a safe 404.
 ///
-/// This function is deliberately sync so it stays usable from both sync
-/// and async callers without spawning a blocking task — the syscall is
-/// cheap. Wave-2 (#903) will migrate callers to `tokio::fs::canonicalize`
-/// as part of the async conversion.
-fn path_is_within_root(path: &Path, root: &Path) -> bool {
-    let canonical_root = match std::fs::canonicalize(root) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let canonical_path = match std::fs::canonicalize(path) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    canonical_path.starts_with(&canonical_root)
+/// Deliberately sync (`std::fs`) — the preview server's request volume
+/// is tiny and the syscall is cheap; the dev server's async twin lives
+/// in `zfb-server::routes`.
+fn resolve_within_root(path: &Path, root: &Path) -> Option<std::path::PathBuf> {
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_path = std::fs::canonicalize(path).ok()?;
+    canonical_path
+        .starts_with(&canonical_root)
+        .then_some(canonical_path)
 }
 
 /// Reject path traversal and Windows-style absolute components.
@@ -329,16 +326,18 @@ fn is_safe_path(url_path: &str) -> bool {
 /// Before reading, we canonicalize `path` and verify it still lives
 /// inside `dist_root` — a symlink planted inside dist that points
 /// outside the root would otherwise be followed silently. Canonicalize
-/// errors (broken symlink, missing file) are treated as not-found.
+/// errors (broken symlink, missing file) are treated as not-found. The
+/// read and content-type derivation use the canonical path so a symlink
+/// swap between check and read cannot escape the root.
 async fn serve_file(path: &Path, dist_root: &Path) -> Response {
-    if !path_is_within_root(path, dist_root) {
+    let Some(resolved) = resolve_within_root(path, dist_root) else {
         return not_found_response(dist_root).await;
-    }
-    let bytes = match tokio::fs::read(path).await {
+    };
+    let bytes = match tokio::fs::read(&resolved).await {
         Ok(b) => b,
         Err(_) => return not_found_response(dist_root).await,
     };
-    let ct = content_type_for_path(path);
+    let ct = content_type_for_path(&resolved);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ct)

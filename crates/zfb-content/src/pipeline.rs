@@ -204,17 +204,43 @@ fn themes_dir_fingerprint_segment(themes_dir: Option<&Path>) -> Option<String> {
 
 /// Canonical descriptor segment for `markdown.features`.
 ///
-/// Routed through `serde_json::to_value` so the `directives` HashMap is
-/// re-keyed into serde_json's sorted `Map` — two configs with equal
-/// contents always produce byte-identical JSON regardless of HashMap
-/// iteration order. Returns `None` (pipeline uncacheable) on the
-/// never-expected serialization failure.
+/// `serde_json::to_value` alone is NOT order-stable here: the workspace
+/// enables serde_json's `preserve_order` feature transitively, so `Map`
+/// keeps insertion order and a `directives` HashMap's arbitrary
+/// iteration order would leak into the descriptor. The explicit
+/// recursive key sort makes two configs with equal contents produce
+/// byte-identical JSON regardless of build features or hasher seed.
+/// Returns `None` (pipeline uncacheable) on the never-expected
+/// serialization failure.
 fn features_fingerprint_segment(
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) -> Option<String> {
-    serde_json::to_value(features)
-        .ok()
-        .map(|v| format!("features={v}"))
+    let mut v = serde_json::to_value(features).ok()?;
+    sort_value_keys(&mut v);
+    Some(format!("features={v}"))
+}
+
+/// Recursively sort all object keys in `value` so its serialization is
+/// deterministic even when serde_json's `preserve_order` feature is on
+/// (a no-op when `Map` is already the sorted BTreeMap variant).
+fn sort_value_keys(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> =
+                std::mem::take(map).into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (_, v) in entries.iter_mut() {
+                sort_value_keys(v);
+            }
+            *map = entries.into_iter().collect();
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                sort_value_keys(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 
