@@ -1937,6 +1937,24 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
     (collection, slug)
 }
 
+/// Maximum number of entries the [`MdxModuleCache`] retains before
+/// evicting the entire map.
+///
+/// **Policy: clear-all on overflow.** When an insertion would push the
+/// entry count past this threshold the whole map is cleared first, then
+/// the new entry is inserted.  This is the mechanically-safest bounded
+/// policy: it is O(1) to decide, requires no ordering structure, and is
+/// trivially correct — after a clear the invariant `len ≤ CAP` holds
+/// again.  The trade-off is a one-time cold-compile burst when the cap
+/// is hit, which is preferable to unbounded memory growth in a long
+/// `zfb dev` session.
+///
+/// 4 096 entries: a compiled `CompiledMdx` is roughly 2–8 KiB of JSX
+/// source.  At the generous end that is ~32 MiB for the whole map —
+/// well within a normal dev-server budget — while still bounding
+/// worst-case accumulation from edit churn across a large content tree.
+const MDX_MODULE_CACHE_CAP: usize = 4_096;
+
 /// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
 /// raw input source plus the supplied pipeline's config fingerprint.
 ///
@@ -1977,10 +1995,11 @@ impl MdxModuleCache {
     /// walker all reuse this one instance, so a dev process that runs
     /// snapshot + bundle every tick compiles each unchanged
     /// `(input, pipeline-config)` pair exactly once and serves every
-    /// later tick from memory. Entries are never evicted — memory grows
-    /// with the number of distinct (body, config) pairs seen by the
-    /// process, which is bounded by edit churn in practice and resets
-    /// on process restart.
+    /// later tick from memory. The map is bounded at
+    /// [`MDX_MODULE_CACHE_CAP`] entries: when an insertion would exceed
+    /// the cap the entire map is cleared first (clear-on-overflow
+    /// policy), so memory is always bounded even across a long edit
+    /// session with high churn.
     ///
     /// Safe to share between configs because every entry is keyed by
     /// the pipeline config fingerprint (see the type-level docs);
@@ -2131,7 +2150,15 @@ pub fn compile_mdx_to_jsx_module_cached(
     };
 
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key) {
-        c.lock().insert(key, compiled.clone());
+        let mut guard = c.lock();
+        // Clear-on-overflow: if inserting this entry would push the map
+        // past the cap, evict everything first.  Simple and correct —
+        // the next hit on any previously-cached key will re-compile once,
+        // then re-populate.
+        if guard.len() >= MDX_MODULE_CACHE_CAP {
+            guard.clear();
+        }
+        guard.insert(key, compiled.clone());
     }
 
     Ok(compiled)
@@ -2700,6 +2727,41 @@ mod tests {
         assert!(
             out.starts_with("<span dangerouslySetInnerHTML"),
             "HTML comment raw node must use <span> wrapper, got: {out}"
+        );
+    }
+
+    // zfb#911: inserting more than MDX_MODULE_CACHE_CAP entries must
+    // trigger the clear-on-overflow policy so the map stays bounded.
+    //
+    // Uses a fresh `MdxModuleCache::new()` (not the process-global) so
+    // this test is hermetic and not affected by other tests' entries.
+    // Keys are distinct bodies — one per iteration — so no hits occur
+    // and each `compile_mdx_to_jsx_module_cached` call adds one entry.
+    #[test]
+    fn cache_clears_on_overflow_past_cap() {
+        let cache = MdxModuleCache::new();
+        let path = Path::new("/virtual/blog/overflow.mdx");
+
+        // Fill exactly up to the cap with distinct single-word bodies.
+        // We rely only on the returned len(), not on map iteration order.
+        for i in 0..MDX_MODULE_CACHE_CAP {
+            let src = format!("word{i}\n");
+            compile_mdx_to_jsx_module_cached(&src, path, Some(&cache), None)
+                .expect("compile fill");
+        }
+        assert_eq!(
+            cache.len(),
+            MDX_MODULE_CACHE_CAP,
+            "filling exactly to the cap must not trigger a clear"
+        );
+
+        // One more entry: this should trigger a clear then re-insert → len 1.
+        compile_mdx_to_jsx_module_cached("overflow_trigger\n", path, Some(&cache), None)
+            .expect("compile overflow");
+        assert_eq!(
+            cache.len(),
+            1,
+            "overflow past CAP must clear the map; only the triggering entry remains"
         );
     }
 }
