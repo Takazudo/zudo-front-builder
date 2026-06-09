@@ -47,6 +47,7 @@ use zfb_md_ast::{
     diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation},
     BuildContext, HastNode, HastVisitor, LinkValidationConfig,
 };
+use zfb_types::normalize_path_lexical;
 
 // ── External URL detection ────────────────────────────────────────────────────
 
@@ -118,69 +119,7 @@ fn parse_link(href: &str) -> ParsedLink {
 fn resolve_relative(source_path: &Path, file_ref: &str) -> Option<PathBuf> {
     let dir = source_path.parent()?;
     let joined = dir.join(file_ref);
-    Some(normalize_path(&joined))
-}
-
-/// Collapse `.` and `..` components in `path` without accessing the filesystem.
-///
-/// This is a lightweight lexical normalization — it does not resolve symlinks
-/// or require the path to exist. Sufficient for the project-root boundary check
-/// that guards against `../outside.md` traversal.
-///
-/// Algorithm: iterate components and maintain a stack; `..` pops the last
-/// component (unless the stack is empty or the last component is also `..`),
-/// `.` is dropped, and everything else is pushed.
-///
-/// `pub(crate)` so sibling modules (e.g. `image_dimensions`) can share it
-/// without duplicating logic or adding a new module.
-pub(crate) fn normalize_path(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut components: Vec<std::ffi::OsString> = Vec::new();
-    let mut has_root = false;
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(p) => {
-                components.clear();
-                components.push(p.as_os_str().to_os_string());
-            }
-            Component::RootDir => {
-                has_root = true;
-                components.clear();
-            }
-            Component::CurDir => {
-                // `.` — skip.
-            }
-            Component::ParentDir => {
-                // `..` — pop last component if possible; otherwise keep it
-                // (for relative paths that start with `../`).
-                if let Some(last) = components.last() {
-                    // Don't pop if the last component is already `..`.
-                    if last != ".." {
-                        components.pop();
-                        continue;
-                    }
-                }
-                if !has_root {
-                    // Preserve leading `../` for purely relative paths.
-                    components.push("..".into());
-                }
-                // For absolute paths, `..` above the root is silently dropped.
-            }
-            Component::Normal(n) => {
-                components.push(n.to_os_string());
-            }
-        }
-    }
-
-    let mut result = PathBuf::new();
-    if has_root {
-        result.push(std::path::MAIN_SEPARATOR_STR);
-    }
-    for c in components {
-        result.push(c);
-    }
-    result
+    Some(normalize_path_lexical(&joined))
 }
 
 // ── Visitor ───────────────────────────────────────────────────────────────────
@@ -421,8 +360,8 @@ fn validate_file_exists(
         None => return,
     };
     // Reject path traversal that escapes the project root. `resolved` is
-    // already lexically normalized by `resolve_relative` (no `..` components)
-    // so `starts_with` is a reliable boundary check.
+    // already lexically normalized by `resolve_relative`; any remaining `..`
+    // components would be past the root and `starts_with` reliably rejects them.
     if !resolved.starts_with(project_root) {
         emit_broken_link(raw_href, source_path, ctx, severity);
         return;
@@ -566,19 +505,19 @@ mod tests {
     #[test]
     fn normalize_path_collapses_dot_dot() {
         let p = PathBuf::from("/a/b/../c");
-        assert_eq!(normalize_path(&p), PathBuf::from("/a/c"));
+        assert_eq!(normalize_path_lexical(&p), PathBuf::from("/a/c"));
     }
 
     #[test]
     fn normalize_path_collapses_dot() {
         let p = PathBuf::from("/a/./b");
-        assert_eq!(normalize_path(&p), PathBuf::from("/a/b"));
+        assert_eq!(normalize_path_lexical(&p), PathBuf::from("/a/b"));
     }
 
     #[test]
     fn normalize_path_double_parent() {
         let p = PathBuf::from("/a/b/c/../../d");
-        assert_eq!(normalize_path(&p), PathBuf::from("/a/d"));
+        assert_eq!(normalize_path_lexical(&p), PathBuf::from("/a/d"));
     }
 
     // ── Fix #733: img-src fragment should not trigger heading-anchor check ────

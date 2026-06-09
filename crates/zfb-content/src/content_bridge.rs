@@ -420,12 +420,25 @@ pub fn build_snapshot_with_config(
             collection: cfg.name.clone(),
             source,
         })?;
-        let entries: Vec<Entry<UntypedFrontmatter>> =
-            walk_collection_with_cache_and_filter(&cfg.root, None, Some(&mut pipeline), &filter)
-                .map_err(|source| BridgeError::Walk {
-                    collection: cfg.name.clone(),
-                    source,
-                })?;
+        // Process-global compile cache (zfb#905): unchanged entries are
+        // served from memory on re-walks (dev ticks rebuild the snapshot
+        // every tick) AND shared with the bundler's `materialise_*`
+        // passes, which compile the same bodies through identically
+        // configured pipelines. The cache keys on
+        // (input, pipeline-config fingerprint) and re-derives the
+        // specifier per path, so cross-config or cross-file aliasing is
+        // impossible; uncacheable pipelines (resolve-links wired,
+        // filesystem-reading features) transparently bypass it.
+        let entries: Vec<Entry<UntypedFrontmatter>> = walk_collection_with_cache_and_filter(
+            &cfg.root,
+            Some(crate::mdx_jsx_emit::MdxModuleCache::process_global()),
+            Some(&mut pipeline),
+            &filter,
+        )
+        .map_err(|source| BridgeError::Walk {
+            collection: cfg.name.clone(),
+            source,
+        })?;
 
         let mut snapshots: Vec<EntrySnapshot> = entries
             .into_iter()

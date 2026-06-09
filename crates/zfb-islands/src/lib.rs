@@ -55,6 +55,8 @@ pub use hydration::{
 };
 pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
-    is_bare_specifier, normalize_path_lexical, scan_islands, scan_islands_with_meta, FsResolver,
+    is_bare_specifier, scan_islands, scan_islands_with_meta, FsResolver,
     InMemoryResolver, IslandsSet, Resolver, ScanError, ScanMeta, ScanResult,
 };
+// Re-export from zfb-types so downstream crates get a stable path.
+pub use zfb_types::normalize_path_lexical;

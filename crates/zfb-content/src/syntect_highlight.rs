@@ -7,14 +7,41 @@
 //!
 //! The class on the `<pre>` element lets users theme blocks via CSS while still
 //! getting syntect-coloured spans inside.
+//!
+//! ## Bundled-set caching
+//!
+//! Deserializing syntect's bundled `SyntaxSet` and `ThemeSet` is expensive
+//! (several milliseconds each). Both are loaded **once per process** via
+//! [`BUNDLED_SYNTAX_SET`] and [`BUNDLED_THEME_SET`] (`std::sync::LazyLock`),
+//! then shared — `Highlighter` borrows the syntax set via `Arc` and clones
+//! only the theme map when user-supplied `.tmTheme` files must be layered on
+//! top of the defaults.
 
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use zfb_types::escape_html;
+
+/// Bundled `SyntaxSet` loaded once per process.
+///
+/// `SyntaxSet::load_defaults_newlines()` deserializes a binary blob embedded
+/// in the syntect binary at compile time. The call is safe to make from any
+/// thread; `LazyLock` ensures it happens exactly once.
+static BUNDLED_SYNTAX_SET: LazyLock<Arc<SyntaxSet>> =
+    LazyLock::new(|| Arc::new(SyntaxSet::load_defaults_newlines()));
+
+/// Bundled `ThemeSet` loaded once per process.
+///
+/// `ThemeSet::load_defaults()` deserializes the bundled themes. Loaded once
+/// and shared via `Arc`; per-Pipeline user themes are layered on a clone of
+/// `theme_set` so the base is never mutated.
+static BUNDLED_THEME_SET: LazyLock<Arc<ThemeSet>> =
+    LazyLock::new(|| Arc::new(ThemeSet::load_defaults()));
 
 /// A single `.tmTheme` parse failure, carrying the file path.
 #[derive(Debug)]
@@ -30,8 +57,17 @@ impl std::fmt::Display for ThemeFileError {
 }
 
 /// Cached syntect resources.
+///
+/// The `syntax_set` is shared across all `Highlighter` instances via `Arc`
+/// (pointing at [`BUNDLED_SYNTAX_SET`]). The `theme_set` starts as a clone of
+/// [`BUNDLED_THEME_SET`] so that per-Pipeline user themes can be inserted
+/// without affecting the shared base.
 pub struct Highlighter {
-    syntax_set: SyntaxSet,
+    /// Shared reference to the process-wide bundled syntax set.
+    syntax_set: Arc<SyntaxSet>,
+    /// Per-instance theme map — starts as a clone of [`BUNDLED_THEME_SET`] so
+    /// user-supplied `.tmTheme` files can be layered on without mutating the
+    /// shared base.
     theme_set: ThemeSet,
     default_theme: String,
 }
@@ -43,10 +79,25 @@ impl Highlighter {
     /// Bundled defaults give us at minimum:
     /// `base16-ocean.dark`, `base16-ocean.light`, `InspiredGitHub`,
     /// `Solarized (dark)`, `Solarized (light)`.
+    ///
+    /// The bundled `SyntaxSet` is shared via [`BUNDLED_SYNTAX_SET`] (loaded once
+    /// per process). The `ThemeSet` is cloned from [`BUNDLED_THEME_SET`] so
+    /// per-instance user themes can be added without affecting the shared base.
     pub fn new() -> Self {
+        // Clone the theme map from the shared base so user-supplied themes can
+        // be inserted without affecting other Highlighter instances.
+        // `ThemeSet` itself doesn't implement `Clone`, but `Theme` does, so we
+        // manually copy the map.
+        let theme_set = ThemeSet {
+            themes: BUNDLED_THEME_SET
+                .themes
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        };
         Self {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
+            syntax_set: Arc::clone(&BUNDLED_SYNTAX_SET),
+            theme_set,
             default_theme: "base16-ocean.dark".to_string(),
         }
     }
@@ -283,27 +334,13 @@ fn theme_slug(name: &str) -> String {
 /// vector has the same granularity as the normal path.
 fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
     let lines: Vec<String> = LinesWithEndings::from(code)
-        .map(html_escape)
+        .map(escape_html)
         .collect();
     HighlightedLines {
         theme_slug: slug.to_string(),
         lines,
         fallback: true,
     }
-}
-
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Errors returned by the highlighter.
@@ -323,6 +360,31 @@ pub enum HighlightError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verify that [`BUNDLED_SYNTAX_SET`] and [`BUNDLED_THEME_SET`] are shared
+    /// across `Highlighter` instances rather than re-deserialized on every
+    /// construction. Two `Highlighter::new()` calls must return the same `Arc`
+    /// pointer for the syntax set, proving the `LazyLock` fires only once per
+    /// process.
+    #[test]
+    fn bundled_sets_are_shared_across_highlighter_instances() {
+        let h1 = Highlighter::new();
+        let h2 = Highlighter::new();
+        // Arc::ptr_eq compares the underlying data pointer — same address means
+        // the same allocation was reused, i.e. deserialization happened once.
+        assert!(
+            Arc::ptr_eq(&h1.syntax_set, &h2.syntax_set),
+            "BUNDLED_SYNTAX_SET must be shared across Highlighter instances (LazyLock fired twice)"
+        );
+        // ThemeSet is cloned per-instance (so user themes don't bleed across
+        // pipelines), but both must contain the same bundled theme names.
+        let names1 = h1.theme_names();
+        let names2 = h2.theme_names();
+        assert_eq!(
+            names1, names2,
+            "bundled theme names must be identical across Highlighter instances"
+        );
+    }
 
     #[test]
     fn theme_names_includes_builtins() {

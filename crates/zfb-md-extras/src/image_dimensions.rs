@@ -45,7 +45,7 @@ use std::time::SystemTime;
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
 use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
 
-use crate::link_validation::normalize_path;
+use zfb_types::normalize_path_lexical;
 
 /// Cached entry: `(mtime, width, height)`.
 type CacheEntry = (SystemTime, u32, u32);
@@ -188,7 +188,7 @@ fn try_inject_dimensions(
     } else {
         &ctx.project_root
     };
-    let normalized = normalize_path(&abs_path);
+    let normalized = normalize_path_lexical(&abs_path);
     if !normalized.starts_with(expected_root) {
         emit_warning(
             ctx,

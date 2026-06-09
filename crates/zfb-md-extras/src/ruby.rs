@@ -132,6 +132,7 @@ use markdown::mdast::{
     AttributeContent, MdxJsxTextElement, Node as MdastNode, Paragraph, Text,
 };
 use zfb_md_ast::MdastVisitor;
+use zfb_types::escape_html;
 
 // ── MdxTextExpression ruby parser ─────────────────────────────────────────────
 
@@ -192,32 +193,6 @@ fn parse_expression_as_ruby(value: &str) -> Option<(String, String)> {
 fn has_js_operator_chars(s: &str) -> bool {
     s.chars()
         .any(|c| matches!(c, '&' | '?' | ':' | '=' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '\\' | '.' | '!' | '+' | '*' | '/' | '%' | '~' | '^'))
-}
-
-// ── HTML escaping ────────────────────────────────────────────────────────────
-
-/// Escape HTML special characters in a text value so it is safe to inline
-/// inside an `MdxJsxTextElement` `Text` child that the HTML-path
-/// reconstruct-JSX serializer will concatenate verbatim.
-///
-/// Without this, base/ruby text containing `<`, `>`, `&`, `"` would break
-/// the surrounding HTML (or worse, allow markup injection through `<` and
-/// `>`). The mdast→hast `HtmlPath` strategy reconstructs `MdxJsxTextElement`
-/// via `reconstruct_jsx`, which clones the `Text.value` directly into the
-/// output string — there is no later escape pass.
-fn escape_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 // ── mdast node builders ──────────────────────────────────────────────────────

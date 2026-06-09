@@ -76,6 +76,8 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
+use zfb_plugin_resolver::{read_tsconfig_paths, TsConfigPaths, TsPathAlias};
+use zfb_types::normalize_path_lexical;
 
 use crate::bundler::Island;
 
@@ -195,41 +197,6 @@ pub trait Resolver {
     fn read(&self, path: &Path) -> std::result::Result<String, String>;
 }
 
-/// Lexically normalise a path by collapsing `.` and `..` components
-/// without consulting the filesystem.
-///
-/// `..` is only popped when the previous component is a normal name; a
-/// `..` after a root or after another preserved `..` is left in place
-/// (so we never escape above a relative root). Useful both for the
-/// in-memory test resolver — where `/proj/pages/../components/x` must
-/// match the same key as `/proj/components/x` — and as a public helper
-/// for downstream code that wants the same dedup behaviour.
-pub fn normalize_path_lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in p.components() {
-        match comp {
-            Component::Prefix(_) | Component::RootDir => {
-                out.push(comp.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let last_is_normal = out
-                    .components()
-                    .next_back()
-                    .map(|c| matches!(c, Component::Normal(_)))
-                    .unwrap_or(false);
-                if last_is_normal {
-                    out.pop();
-                } else {
-                    out.push(comp.as_os_str());
-                }
-            }
-            Component::Normal(name) => out.push(name),
-        }
-    }
-    out
-}
-
 /// Whether a specifier is bare (no `./`, `../`, or `/` prefix).
 ///
 /// Bare specifiers are runtime-provided by the framework adapter (see
@@ -283,31 +250,7 @@ pub struct FsResolver {
     tsconfig_cache: Arc<Mutex<HashMap<PathBuf, Option<TsConfigPaths>>>>,
 }
 
-/// Parsed `compilerOptions.paths` + `baseUrl` from a discovered
-/// `tsconfig.json`, normalised to absolute paths so wildcard
-/// substitution works without repeatedly re-resolving relative bits.
-#[derive(Debug, Clone)]
-struct TsConfigPaths {
-    /// Absolute base directory. `compilerOptions.baseUrl` is resolved
-    /// relative to the `tsconfig.json` directory; when `baseUrl` is
-    /// unset, this is the `tsconfig.json` directory itself (matching
-    /// TypeScript's documented default of "`.`").
-    base_dir: PathBuf,
-    /// Parsed alias entries, in `compilerOptions.paths` source order.
-    aliases: Vec<TsPathAlias>,
-}
-
-/// One entry from `compilerOptions.paths`.
-#[derive(Debug, Clone)]
-struct TsPathAlias {
-    /// Pattern as authored — e.g. `"@/*"` or `"~"`. The TypeScript
-    /// spec allows at most one `*` per pattern (the wildcard form).
-    pattern: String,
-    /// Substitution targets, in priority order. Each target is the
-    /// raw (post-baseUrl) string from `tsconfig.json`; substitution
-    /// joins it onto `base_dir` and probes the file system.
-    targets: Vec<String>,
-}
+// TsConfigPaths and TsPathAlias are imported from zfb_plugin_resolver above.
 
 impl Default for FsResolver {
     fn default() -> Self {
@@ -659,6 +602,11 @@ impl FsResolver {
     /// `tsconfig.json` at `tsconfig_dir`. Cached on the resolver so a
     /// project's tsconfig is read at most once per resolver instance,
     /// and shared across `Clone`s.
+    ///
+    /// Delegates to [`zfb_plugin_resolver::read_tsconfig_paths`], which adds
+    /// JSONC comment stripping (fixing a latent bug where a tsconfig with `//`
+    /// comments silently broke alias resolution) and file-based `extends`
+    /// resolution (supporting any tsconfig filename, e.g. `tsconfig.base.json`).
     fn load_tsconfig_paths(&self, tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         let key = tsconfig_dir.to_path_buf();
         // Check cache first.
@@ -675,8 +623,8 @@ impl FsResolver {
             }
         }
 
-        // Cache miss — parse from disk.
-        let parsed = parse_tsconfig_paths(&key);
+        // Cache miss — parse from disk via the shared helper.
+        let parsed = read_tsconfig_paths(&key);
         let mut cache = self.tsconfig_cache.lock().unwrap_or_else(|p| {
             tracing::warn!(
                 site = "FsResolver::tsconfig_cache",
@@ -687,188 +635,6 @@ impl FsResolver {
         cache.insert(key, parsed.clone());
         parsed
     }
-}
-
-/// Parse the `compilerOptions.paths` + `baseUrl` declared by the
-/// `tsconfig.json` at `tsconfig_dir`, walking through any `extends`
-/// chain. Returns `None` when the file cannot be read, the JSON cannot
-/// be parsed, or no usable `paths` entry survives the merge.
-///
-/// Notes on the parser:
-///
-/// - We use `serde_json` rather than a JSONC parser. `tsconfig.json`
-///   files in the wild often contain trailing commas or `// comments`
-///   — a future hardening pass could swap in a JSONC parser, but the
-///   common case (Astro / Next.js scaffolds, including the downstream
-///   zudo-doc consumer that motivated this fix) is plain JSON.
-/// - `extends` is a single string today (Node-style). Arrays-of-extends
-///   landed in TS 5.0 but we only follow the first entry as a
-///   conservative default; the rest is documented as "out of scope" in
-///   the issue body.
-/// - The `extends` chain is followed up to a depth of 8 to defend
-///   against hand-rolled cycles.
-fn parse_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
-    /// State threaded through the walk:
-    ///
-    /// - `base_dir` — the resolved `compilerOptions.baseUrl` from the
-    ///   leafiest config that declared one. `None` until we hit a
-    ///   `baseUrl`.
-    /// - `aliases` — the leafiest `compilerOptions.paths` table
-    ///   encountered. `None` until we hit one.
-    /// - `paths_anchor` — the directory of the tsconfig that *declared*
-    ///   `aliases`. When `base_dir` is never explicitly set anywhere
-    ///   in the chain, TypeScript anchors `paths` resolution to **that
-    ///   config's directory**, not to the deepest extends parent. This
-    ///   field captures it at the moment we adopt `aliases` so the
-    ///   fallback at the end of the walk picks the right anchor.
-    struct WalkState {
-        base_dir: Option<PathBuf>,
-        aliases: Option<Vec<TsPathAlias>>,
-        paths_anchor: Option<PathBuf>,
-    }
-
-    fn walk(dir: &Path, depth: usize, mut state: WalkState) -> Option<(PathBuf, Vec<TsPathAlias>)> {
-        if depth > 8 {
-            return None;
-        }
-        let path = dir.join("tsconfig.json");
-        let text = std::fs::read_to_string(&path).ok()?;
-        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-
-        let compiler_options = value.get("compilerOptions");
-
-        let local_base_dir = compiler_options
-            .and_then(|c| c.get("baseUrl"))
-            .and_then(|b| b.as_str())
-            .map(|raw| dir.join(raw));
-
-        let local_aliases = compiler_options
-            .and_then(|c| c.get("paths"))
-            .and_then(|p| p.as_object())
-            .map(|map| {
-                map.iter()
-                    .filter_map(|(pattern, targets_value)| {
-                        let targets = targets_value.as_array()?;
-                        let collected: Vec<String> = targets
-                            .iter()
-                            .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                            .collect();
-                        if collected.is_empty() {
-                            None
-                        } else {
-                            Some(TsPathAlias {
-                                pattern: pattern.clone(),
-                                targets: collected,
-                            })
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            });
-
-        // Leaf-wins merge: only adopt the local fields when the caller
-        // hasn't already supplied a closer (= leaf-ier) override.
-        if state.base_dir.is_none() {
-            state.base_dir = local_base_dir;
-        }
-        if state.aliases.is_none() {
-            if let Some(local) = local_aliases {
-                state.aliases = Some(local);
-                // Capture *this* config's directory as the implicit
-                // baseUrl anchor for `paths` — TypeScript resolves
-                // `paths` against the config that declared them when
-                // no `baseUrl` is specified anywhere in the chain.
-                state.paths_anchor = Some(dir.to_path_buf());
-            }
-        }
-
-        // If we have everything, stop here — no need to walk extends
-        // when the leaf already declared baseUrl + paths.
-        if let (Some(b), Some(a)) = (&state.base_dir, &state.aliases) {
-            return Some((b.clone(), a.clone()));
-        }
-
-        // Follow `extends` if present.
-        if let Some(extends) = value.get("extends").and_then(|e| e.as_str()) {
-            if let Some(parent_dir) = resolve_extends_target(dir, extends) {
-                let recurse_state = WalkState {
-                    base_dir: state.base_dir.clone(),
-                    aliases: state.aliases.clone(),
-                    paths_anchor: state.paths_anchor.clone(),
-                };
-                if let Some(found) = walk(&parent_dir, depth + 1, recurse_state) {
-                    return Some(found);
-                }
-            }
-        }
-
-        // No extends (or extends couldn't resolve): only return
-        // something if we ended up with a `paths` table — without
-        // patterns there is nothing to alias-match against.
-        let aliases = state.aliases?;
-        // Default `baseUrl` is the directory of the tsconfig that
-        // **declared** `paths` — captured in `paths_anchor` above.
-        // Falling back to whatever `dir` happens to be when the walker
-        // bottoms out (which can be a parent extends target) would
-        // anchor `paths` to the wrong directory in the common
-        // "leaf has paths, parent has neither" case (codex P2).
-        let base_dir = state
-            .base_dir
-            .or(state.paths_anchor)
-            .unwrap_or_else(|| dir.to_path_buf());
-        Some((base_dir, aliases))
-    }
-
-    let (base_dir, aliases) = walk(
-        tsconfig_dir,
-        0,
-        WalkState {
-            base_dir: None,
-            aliases: None,
-            paths_anchor: None,
-        },
-    )?;
-    if aliases.is_empty() {
-        return None;
-    }
-    Some(TsConfigPaths { base_dir, aliases })
-}
-
-/// Resolve a `tsconfig.json` `extends` value to the directory
-/// containing the extended config.
-///
-/// Two shapes are supported:
-///
-/// 1. Relative path: `"./base.json"` or `"../shared/tsconfig.base.json"`.
-///    The path is resolved relative to the extending tsconfig's
-///    directory. The trailing filename is stripped — callers expect a
-///    directory containing `tsconfig.json`. (This implies the extends
-///    target must literally be named `tsconfig.json`; configs that
-///    extend `tsconfig.base.json` next to a tsconfig.json fall back to
-///    "extends couldn't resolve" and the leaf's own paths are used. A
-///    follow-up could probe the literal `extends` filename instead.)
-/// 2. Bare `node_modules` package: `"@scope/configs/tsconfig.base"` or
-///    `"shared-tsconfig"` — out of scope. Returns `None`.
-fn resolve_extends_target(extending_dir: &Path, extends: &str) -> Option<PathBuf> {
-    let is_relative =
-        extends.starts_with("./") || extends.starts_with("../") || extends.starts_with('/');
-    if !is_relative {
-        return None;
-    }
-    let raw = extending_dir.join(extends);
-    // The extends value may point at the directory or at a literal
-    // file. We need the *directory* the recursive walker can join
-    // `tsconfig.json` onto.
-    if raw.is_dir() {
-        return Some(raw);
-    }
-    // A file path that ends in `tsconfig.json` is canonical: the
-    // parent is the directory.
-    if raw.is_file() && raw.file_name().and_then(|n| n.to_str()) == Some("tsconfig.json") {
-        return raw.parent().map(|p| p.to_path_buf());
-    }
-    // Either a non-tsconfig.json file (e.g. `tsconfig.base.json`),
-    // doesn't exist, or some other shape we don't support yet.
-    None
 }
 
 /// Score `pattern`'s specificity for the
@@ -4885,6 +4651,72 @@ mod tests {
             .expect("second load (cache hit)");
         assert_eq!(first.aliases.len(), second.aliases.len());
         assert_eq!(first.aliases[0].targets, second.aliases[0].targets);
+    }
+
+    // -------------------------------------------------------------------
+    // JSONC regression test (issue #901)
+    // -------------------------------------------------------------------
+    //
+    // The old `parse_tsconfig_paths` in scanner.rs used `serde_json`
+    // directly without stripping JSONC comments first. A tsconfig that
+    // contains `//` line comments or `/* */` block comments would fail to
+    // parse and silently produce no aliases, breaking island alias resolution.
+    // The shared helper in `zfb_plugin_resolver::read_tsconfig_paths` strips
+    // JSONC before parsing; this test is the regression guard.
+
+    /// A `tsconfig.json` with `//` line comments and a trailing comma
+    /// must still resolve island aliases correctly through the scanner.
+    ///
+    /// Before the #901 fix this test would fail because the scanner's
+    /// `parse_tsconfig_paths` did not strip JSONC artefacts.
+    #[test]
+    fn fs_resolver_handles_jsonc_annotated_tsconfig() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let pages = project.join("pages");
+        let components = project.join("src").join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+
+        // tsconfig.json with JSONC artefacts: line comments, block comment,
+        // and a trailing comma after the last paths entry.
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{
+              // JSONC-style comment that serde_json cannot parse as-is
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"], // trailing inline comment
+                  "~/*": ["lib/*"]  /* block comment */
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            r#"import { Counter } from "@/components/counter";
+            export default function Home() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            components.join("counter.tsx"),
+            r#""use client";
+            export function Counter() {}
+            "#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "JSONC-annotated tsconfig must resolve aliases; got {islands:?}"
+        );
+        assert_eq!(islands[0].component_name, "Counter");
     }
 
     // -------------------------------------------------------------------
