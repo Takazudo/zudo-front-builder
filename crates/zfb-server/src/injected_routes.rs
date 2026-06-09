@@ -3,12 +3,10 @@
 //! Plugins call `injectRoute(pattern, entrypoint)` from the new
 //! `setup` hook to register a synthetic page route the dev server
 //! evaluates through the page rendering pipeline. The build crate
-//! owns the canonical [`zfb_build::InjectedRoute`] / `InjectedRouteList`
-//! types; this module mirrors them as `zfb-server`-local structs so
-//! the dev-server doesn't take a dependency on `zfb-build`. The bin
-//! crate (`crates/zfb/src/commands/dev.rs`) translates between the
-//! two when it builds the [`InjectedRouteSet`] for the running
-//! server.
+//! owns the canonical [`zfb_build::InjectedRoute`] /
+//! [`zfb_build::InjectedRouteList`] types; `zfb-server` already
+//! depends on `zfb-build` (see `Cargo.toml`), so this module uses
+//! them directly — no local mirror needed.
 //!
 //! ## v1 scope (Wave 1, #255)
 //!
@@ -19,8 +17,8 @@
 //! renderer's `pages/`-walk machinery already wires through
 //! `zfb-render` and `zfb-router` and integrating a per-route synthetic
 //! entry requires touching both. Today the dev router matches the
-//! pattern and surfaces the matched [`InjectedRouteRecord`] so the
-//! caller can decide what to do (typically: fall through to the
+//! pattern and surfaces the matched [`zfb_build::InjectedRoute`] so
+//! the caller can decide what to do (typically: fall through to the
 //! existing page cache pipeline, which is the path Wave 1 leaves
 //! intact, while emitting a structured log so the user can see the
 //! injection landed).
@@ -32,34 +30,18 @@
 //! The wire shape and the lookup API here are stable so that work
 //! does not need to revisit this module.
 
-use std::path::PathBuf;
 use std::sync::Arc;
-
-/// One injected route — the dev-server-facing mirror of
-/// `zfb_build::plugin_registries::InjectedRoute`. Cloned cheaply.
-#[derive(Debug, Clone)]
-pub struct InjectedRouteRecord {
-    /// URL pattern using the `pages/`-style grammar (`/blog/[slug]`,
-    /// `/api/dev/x`, etc.). Stored verbatim from the plugin's
-    /// `injectRoute(pattern, ...)` call.
-    pub pattern: String,
-    /// Absolute filesystem path of the TSX/TS entrypoint. The build
-    /// crate joins the original `entrypoint` arg against the project
-    /// root before handing the record to the server.
-    pub entrypoint: PathBuf,
-    /// Display name of the registering plugin.
-    pub plugin: String,
-}
+use zfb_build::InjectedRoute;
 
 /// Bundle of injected-route records passed into the dev server.
 /// Cloned cheaply (the underlying `Arc<Vec<_>>` is shared).
 #[derive(Clone, Default)]
 pub struct InjectedRouteSet {
-    pub records: Arc<Vec<InjectedRouteRecord>>,
+    pub records: Arc<Vec<InjectedRoute>>,
 }
 
 impl InjectedRouteSet {
-    pub fn new(records: Vec<InjectedRouteRecord>) -> Self {
+    pub fn new(records: Vec<InjectedRoute>) -> Self {
         Self {
             records: Arc::new(records),
         }
@@ -73,7 +55,7 @@ impl InjectedRouteSet {
         self.records.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &InjectedRouteRecord> {
+    pub fn iter(&self) -> impl Iterator<Item = &InjectedRoute> {
         self.records.iter()
     }
 
@@ -83,7 +65,7 @@ impl InjectedRouteSet {
     /// wildcard, an unbracketed segment is a literal. This is a
     /// linear scan — registration counts are tiny (single-digit per
     /// project in practice) so the simple shape wins.
-    pub fn find_match(&self, url_path: &str) -> Option<&InjectedRouteRecord> {
+    pub fn find_match(&self, url_path: &str) -> Option<&InjectedRoute> {
         self.records
             .iter()
             .find(|rec| pattern_matches(&rec.pattern, url_path))
@@ -175,10 +157,12 @@ fn strip_brackets(seg: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
-    fn rec(pattern: &str) -> InjectedRouteRecord {
-        InjectedRouteRecord {
+    fn rec(pattern: &str) -> InjectedRoute {
+        InjectedRoute {
             pattern: pattern.into(),
             entrypoint: PathBuf::from("/tmp/x.ts"),
             plugin: "p".into(),

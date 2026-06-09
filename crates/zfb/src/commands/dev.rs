@@ -285,23 +285,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         None
     };
 
-    // Translate the build-side InjectedRouteList into the dev
-    // server's local mirror so zfb-server doesn't depend on
-    // zfb-build. Wave 2 (#260, #261) consume `setup_registries.aliases`
-    // and `setup_registries.virtual_modules` — kept named (not `_`)
-    // so the variable stays in scope as the wiring lands.
+    // Build the InjectedRouteSet directly from the build-side InjectedRouteList.
+    // zfb-server depends on zfb-build (see Cargo.toml), so no translation is
+    // needed — InjectedRoute is the same type on both sides. Wave 2 (#260,
+    // #261) consume `setup_registries.aliases` and
+    // `setup_registries.virtual_modules` — kept named (not `_`) so the
+    // variable stays in scope as the wiring lands.
     let injected_route_set = if setup_registries.injected_routes.is_empty() {
         None
     } else {
-        let records: Vec<zfb_server::InjectedRouteRecord> = setup_registries
-            .injected_routes
-            .iter()
-            .map(|r| zfb_server::InjectedRouteRecord {
-                pattern: r.pattern.clone(),
-                entrypoint: r.entrypoint.clone(),
-                plugin: r.plugin.clone(),
-            })
-            .collect();
+        let records: Vec<zfb_build::InjectedRoute> =
+            setup_registries.injected_routes.iter().cloned().collect();
         Some(zfb_server::InjectedRouteSet::new(records))
     };
     // #261 — build mode wires `aliases` + `virtual_modules` into the esbuild
