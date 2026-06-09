@@ -43,7 +43,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
@@ -1938,7 +1938,7 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
 }
 
 /// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
-/// raw input source.
+/// raw input source plus the supplied pipeline's config fingerprint.
 ///
 /// **Opt-in.** Callers that don't pass a `&MdxModuleCache` to
 /// [`compile_mdx_to_jsx_module_cached`] get a fresh compilation every
@@ -1947,19 +1947,48 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
 /// caching cost (memory + a hash lookup) a visible decision at the call
 /// site.
 ///
-/// The cache key is `sha256(input)` (full hex), NOT the 8-char content
-/// hash on the output. Two different MDX bodies that happen to produce
-/// JSX with a colliding 8-hex prefix are still distinct entries.
+/// The cache key is `sha256(input)` (full hex, NOT the 8-char content
+/// hash on the output — two different MDX bodies whose *output* shares
+/// an 8-hex prefix are still distinct entries) joined with the
+/// [`Pipeline::config_fingerprint`] of the supplied pipeline (or a
+/// fixed `no-pipeline` token), so identical inputs compiled under
+/// different pipeline configs never alias one entry. Pipelines without
+/// a fingerprint (manually mutated / per-file-stateful — see
+/// [`Pipeline::config_fingerprint`]) bypass the cache entirely.
 #[derive(Debug, Default)]
 pub struct MdxModuleCache {
     inner: Mutex<HashMap<String, CompiledMdx>>,
 }
+
+/// Process-wide cache instance backing [`MdxModuleCache::process_global`].
+static PROCESS_GLOBAL_MDX_MODULE_CACHE: LazyLock<MdxModuleCache> =
+    LazyLock::new(MdxModuleCache::default);
 
 impl MdxModuleCache {
     /// Construct an empty cache.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The process-wide shared cache.
+    ///
+    /// The bundler's three MDX compile sites and the content-snapshot
+    /// walker all reuse this one instance, so a dev process that runs
+    /// snapshot + bundle every tick compiles each unchanged
+    /// `(input, pipeline-config)` pair exactly once and serves every
+    /// later tick from memory. Entries are never evicted — memory grows
+    /// with the number of distinct (body, config) pairs seen by the
+    /// process, which is bounded by edit churn in practice and resets
+    /// on process restart.
+    ///
+    /// Safe to share between configs because every entry is keyed by
+    /// the pipeline config fingerprint (see the type-level docs);
+    /// per-path output (the `mdx://` specifier) is re-derived on every
+    /// hit by [`compile_mdx_to_jsx_module_cached`].
+    #[must_use]
+    pub fn process_global() -> &'static MdxModuleCache {
+        &PROCESS_GLOBAL_MDX_MODULE_CACHE
     }
 
     /// Number of cached entries (mainly useful from tests).
@@ -2004,26 +2033,44 @@ pub fn compile_mdx_to_jsx_module(
     compile_mdx_to_jsx_module_cached(input, file_path, None, None)
 }
 
-/// Compile MDX with optional in-memory caching keyed by `sha256(input)`,
-/// optionally running a [`Pipeline`]'s mdast visitors before JSX emission.
+/// Compile MDX with optional in-memory caching keyed by
+/// `sha256(input)` + the pipeline's config fingerprint, optionally
+/// running a [`Pipeline`]'s mdast + hast visitors before JSX emission.
 ///
-/// When `cache` is `Some(_)` and the input has been compiled before, the
-/// cached [`CompiledMdx`] is cloned out and returned without invoking the
-/// emitter. When `cache` is `None`, every call compiles fresh.
+/// When `cache` is `Some(_)` and the same `(input, pipeline config)`
+/// pair has been compiled before, the cached JSX is returned without
+/// invoking the emitter. When `cache` is `None`, every call compiles
+/// fresh.
+///
+/// # Cache keying (zfb#905)
+///
+/// The key is `"{sha256(input)};{fingerprint}"` where the fingerprint
+/// component is:
+///
+/// - the fixed token `no-pipeline` when `pipeline` is `None` (the
+///   no-pipeline emit path produces different JSX than any pipeline'd
+///   path, so the two must never alias);
+/// - [`Pipeline::config_fingerprint`] (64 hex chars — cannot collide
+///   with the token above) when the pipeline was built from config and
+///   not manually mutated.
+///
+/// Pipelines whose fingerprint is `None` — manually mutated via
+/// [`Pipeline::add_mdast_visitor`] / [`Pipeline::add_hast_visitor`],
+/// wired with `ResolveLinksPlugin`, or carrying a filesystem-reading
+/// feature plugin (see [`Pipeline::config_fingerprint`]) — **bypass the
+/// cache entirely**: every call compiles fresh, exactly as if `cache`
+/// were `None`.
+///
+/// The `mdx://<collection>/<slug>#<hash>` specifier is re-derived from
+/// THIS call's `file_path` even on a cache hit: two files with
+/// byte-identical bodies share the (expensive) compiled JSX but each
+/// receives a specifier matching its own path, so a hit can never leak
+/// another file's collection/slug.
 ///
 /// The on-miss insert is best-effort: if two threads race on the same
-/// input they may both compile (and the second insert simply overwrites
+/// key they may both compile (and the second insert simply overwrites
 /// the first identical value). We don't hold the cache lock across
 /// compilation to avoid serialising CPU work.
-///
-/// `pipeline` was added by Sub 46 (#46) so future callers can thread a
-/// configured pipeline (with directive-registry-driven mdast visitors,
-/// see Sub 4b #47) through the JSX path. Today's call sites all pass
-/// `None`; behaviour is byte-for-byte identical to pre-Sub-46. When a
-/// pipeline IS supplied, the cache is bypassed because the simple
-/// `sha256(input)` key cannot distinguish identical inputs run through
-/// different pipelines — Sub 4b will revisit cache keying alongside
-/// real pipeline usage.
 ///
 /// # Errors
 /// Forwards [`PipelineError::Parse`] from the underlying emitter. A parse
@@ -2034,32 +2081,41 @@ pub fn compile_mdx_to_jsx_module_cached(
     cache: Option<&MdxModuleCache>,
     pipeline: Option<&mut Pipeline>,
 ) -> Result<CompiledMdx, PipelineError> {
-    // Pipeline-driven transforms can change the JSX output for a given
-    // input, but the existing cache keys only on `sha256(input)`. To
-    // avoid aliasing, bypass the cache entirely when a pipeline is
-    // supplied. Sub 4b will revisit this once real pipelines start
-    // firing.
-    let cache_for_lookup = if pipeline.is_some() { None } else { cache };
+    let (collection, slug) = collection_and_slug(file_path);
 
-    // Cache lookup first — `sha256(input)` (full hex) is the key. Using
-    // the full digest here, not the 8-char prefix, so distinct sources
-    // that happen to share an 8-hex prefix on their *output* don't
-    // clobber each other in the cache.
-    let input_key = if cache_for_lookup.is_some() {
-        let mut h = Sha256::new();
-        h.update(input.as_bytes());
-        Some(hex::encode(h.finalize()))
-    } else {
-        None
+    // Fingerprint component of the cache key. `None` here means "this
+    // pipeline cannot be keyed" → bypass the cache entirely.
+    let fingerprint: Option<String> = match pipeline.as_deref() {
+        None => Some("no-pipeline".to_string()),
+        Some(p) => p.config_fingerprint(),
+    };
+    let cache_for_lookup = if fingerprint.is_some() { cache } else { None };
+
+    // `sha256(input)` (full hex) + fingerprint is the key. The full
+    // input digest, not the 8-char prefix, so distinct sources that
+    // happen to share an 8-hex prefix on their *output* don't clobber
+    // each other in the cache.
+    let cache_key = match (cache_for_lookup, fingerprint.as_deref()) {
+        (Some(_), Some(fp)) => {
+            let mut h = Sha256::new();
+            h.update(input.as_bytes());
+            Some(format!("{input_hash};{fp}", input_hash = hex::encode(h.finalize())))
+        }
+        _ => None,
     };
 
-    if let (Some(c), Some(key)) = (cache_for_lookup, input_key.as_ref()) {
+    if let (Some(c), Some(key)) = (cache_for_lookup, cache_key.as_ref()) {
         if let Some(hit) = c.lock().get(key) {
-            return Ok(hit.clone());
+            return Ok(CompiledMdx {
+                jsx_source: hit.jsx_source.clone(),
+                content_hash: hit.content_hash.clone(),
+                // Path-derived, so NOT taken from the cached entry: an
+                // identical body first compiled at another path must
+                // not hand this file the other file's collection/slug.
+                specifier: format!("mdx://{collection}/{slug}#{}", hit.content_hash),
+            });
         }
     }
-
-    let (collection, slug) = collection_and_slug(file_path);
 
     let opts = MdxJsxOptions::default().with_filename(file_path.display().to_string());
     let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline)?;
@@ -2072,7 +2128,7 @@ pub fn compile_mdx_to_jsx_module_cached(
         specifier,
     };
 
-    if let (Some(c), Some(key)) = (cache_for_lookup, input_key) {
+    if let (Some(c), Some(key)) = (cache_for_lookup, cache_key) {
         c.lock().insert(key, compiled.clone());
     }
 
@@ -2085,6 +2141,146 @@ mod tests {
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
+    }
+
+    /// Default feature-aware production pipeline (the shape the bundler,
+    /// snapshot walker, and dev loader build when `zfb.config.ts` carries
+    /// no markdown options).
+    fn full_config_pipeline(theme: Option<&str>) -> Pipeline {
+        Pipeline::with_defaults_and_full_config(
+            theme,
+            ResolvedGfmConstructs::CONSERVATIVE,
+            None,
+            true,
+            false,
+            None,
+        )
+        .expect("no themes_dir — cannot fail")
+    }
+
+    // zfb#905: a config-built pipeline must actually USE the cache. The
+    // sentinel poke makes a true hit observable — an accidental
+    // recompile would return real JSX, not the sentinel.
+    #[test]
+    fn cache_hit_serves_cached_entry_for_equal_pipeline_config() {
+        let cache = MdxModuleCache::new();
+        let src = "# heading\n\n```rs\nfn x() {}\n```\n";
+        let path = Path::new("/virtual/blog/post.mdx");
+
+        let mut p1 = full_config_pipeline(None);
+        let first = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert_eq!(cache.len(), 1, "pipeline'd compile must populate the cache");
+
+        for entry in cache.lock().values_mut() {
+            entry.jsx_source = "__SENTINEL__".to_string();
+        }
+
+        let mut p2 = full_config_pipeline(None);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "same config + same input must be served from the cache"
+        );
+        assert_eq!(second.content_hash, first.content_hash);
+
+        // A different config (highlight theme flipped) must MISS: fresh
+        // compile, second entry, sentinel never surfaces.
+        let mut p3 = full_config_pipeline(Some("InspiredGitHub"));
+        let third = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p3))
+            .expect("compile 3");
+        assert_ne!(
+            third.jsx_source, "__SENTINEL__",
+            "a different pipeline config must not alias the cached entry"
+        );
+        assert_eq!(cache.len(), 2, "different config must add its own entry");
+    }
+
+    // zfb#905: identical bodies at different paths share the compiled
+    // JSX but each call gets a specifier derived from ITS OWN path — a
+    // hit must never leak another file's collection/slug.
+    #[test]
+    fn cache_hit_rederives_specifier_from_current_path() {
+        let cache = MdxModuleCache::new();
+        let src = "shared body\n";
+
+        let mut p1 = full_config_pipeline(None);
+        let a = compile_mdx_to_jsx_module_cached(
+            src,
+            Path::new("/virtual/blog/a.mdx"),
+            Some(&cache),
+            Some(&mut p1),
+        )
+        .expect("compile a");
+        let mut p2 = full_config_pipeline(None);
+        let b = compile_mdx_to_jsx_module_cached(
+            src,
+            Path::new("/virtual/docs/b.mdx"),
+            Some(&cache),
+            Some(&mut p2),
+        )
+        .expect("compile b");
+
+        assert_eq!(
+            cache.len(),
+            1,
+            "identical bodies under one config share one cache entry"
+        );
+        assert_eq!(a.content_hash, b.content_hash);
+        assert_eq!(a.jsx_source, b.jsx_source);
+        assert_eq!(a.specifier, format!("mdx://blog/a#{}", a.content_hash));
+        assert_eq!(b.specifier, format!("mdx://docs/b#{}", b.content_hash));
+    }
+
+    // zfb#905: the no-pipeline path and a pipeline'd path emit different
+    // JSX for the same input (heading-links anchors etc.), so the two
+    // must occupy distinct cache entries.
+    #[test]
+    fn no_pipeline_and_pipeline_entries_do_not_alias() {
+        let cache = MdxModuleCache::new();
+        let src = "## Intro\n\nhi\n";
+        let path = Path::new("/virtual/blog/intro.mdx");
+
+        let plain = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), None)
+            .expect("compile plain");
+        let mut p = full_config_pipeline(None);
+        let piped = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
+            .expect("compile piped");
+
+        assert_eq!(cache.len(), 2, "no-pipeline and pipeline'd keys must differ");
+        assert_ne!(
+            plain.jsx_source, piped.jsx_source,
+            "sanity: the two paths emit different JSX for a heading"
+        );
+    }
+
+    // zfb#905: GFM construct flags are part of the fingerprint — the
+    // canonical stale-JSX hazard is `~~strike~~` compiled under ALL_ON
+    // being served to an ALL_OFF pipeline (or vice versa).
+    #[test]
+    fn gfm_config_split_compiles_distinct_entries() {
+        let cache = MdxModuleCache::new();
+        let src = "plain ~~gone~~ here\n";
+        let path = Path::new("/virtual/blog/strike.mdx");
+
+        let mut all_on = Pipeline::with_defaults_and_gfm(ResolvedGfmConstructs::ALL_ON);
+        let on = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut all_on))
+            .expect("compile gfm on");
+        let mut all_off = Pipeline::with_defaults_and_gfm(ResolvedGfmConstructs::ALL_OFF);
+        let off = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut all_off))
+            .expect("compile gfm off");
+
+        assert_eq!(cache.len(), 2, "ALL_ON and ALL_OFF must not share an entry");
+        assert_ne!(on.jsx_source, off.jsx_source);
+        assert!(
+            !on.jsx_source.contains("~~gone~~"),
+            "ALL_ON must consume the strikethrough tildes"
+        );
+        assert!(
+            off.jsx_source.contains("~~gone~~"),
+            "ALL_OFF must keep the literal tildes"
+        );
     }
 
     #[test]

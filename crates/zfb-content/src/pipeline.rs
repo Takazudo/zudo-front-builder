@@ -23,6 +23,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
+use sha2::{Digest, Sha256};
 use zfb_md_ast::HeadingIdStrategy;
 
 use crate::plugins::{
@@ -140,6 +141,82 @@ pub fn constructs_for_jsx_emit(
     }
 }
 
+/// Version prefix for the [`Pipeline::config_fingerprint`] descriptor.
+/// Bump when the descriptor schema changes so entries written by an
+/// older schema cannot collide with the new one (the compile cache is
+/// in-memory only, so this only matters for mixed-version paranoia,
+/// but it costs nothing).
+const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v1";
+
+/// Canonical descriptor segment for a [`ResolvedGfmConstructs`] set.
+fn gfm_fingerprint_segment(resolved: ResolvedGfmConstructs) -> String {
+    format!(
+        "gfm=strikethrough:{},table:{},autolink_literal:{},task_list_item:{},footnote_definition:{}",
+        resolved.strikethrough,
+        resolved.table,
+        resolved.autolink_literal,
+        resolved.task_list_item,
+        resolved.footnote_definition,
+    )
+}
+
+/// Canonical descriptor segment for the `codeHighlight.themesDir` knob.
+///
+/// `None` (no dir configured) is a fixed token. `Some(dir)` hashes the
+/// **bytes of every `.tmTheme` file** in the directory (same filter as
+/// `Highlighter::load_themes_from_dir`), in sorted file-name order, so a
+/// theme file edited between two pipeline constructions changes the
+/// fingerprint instead of silently serving stale highlighted JSX from
+/// the compile cache. Returns `None` (pipeline uncacheable) if the dir
+/// or a theme file is unreadable — the constructor's own
+/// `load_themes_from_dir` call has usually already failed loudly by
+/// then, but a racing delete must degrade to "no caching", never to a
+/// wrong fingerprint.
+fn themes_dir_fingerprint_segment(themes_dir: Option<&Path>) -> Option<String> {
+    let Some(dir) = themes_dir else {
+        return Some("themes_dir=none".to_string());
+    };
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut theme_files: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry.ok()?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("tmTheme") {
+            theme_files.push(path);
+        }
+    }
+    theme_files.sort();
+    let mut hasher = Sha256::new();
+    for path in &theme_files {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            hasher.update(name.as_bytes());
+        }
+        hasher.update([0u8]);
+        let bytes = std::fs::read(path).ok()?;
+        hasher.update(&bytes);
+        hasher.update([0u8]);
+    }
+    Some(format!(
+        "themes_dir={}#{}",
+        dir.display(),
+        hex::encode(hasher.finalize())
+    ))
+}
+
+/// Canonical descriptor segment for `markdown.features`.
+///
+/// Routed through `serde_json::to_value` so the `directives` HashMap is
+/// re-keyed into serde_json's sorted `Map` — two configs with equal
+/// contents always produce byte-identical JSON regardless of HashMap
+/// iteration order. Returns `None` (pipeline uncacheable) on the
+/// never-expected serialization failure.
+fn features_fingerprint_segment(
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) -> Option<String> {
+    serde_json::to_value(features)
+        .ok()
+        .map(|v| format!("features={v}"))
+}
+
 
 // HastNode, MdastVisitor, HastVisitor, and BuildContext live in
 // `zfb-md-ast` so downstream plugin crates (zfb-md-extras) can depend on
@@ -196,6 +273,24 @@ pub struct Pipeline {
     /// JSX-emit path so `collect_headings` mirrors the same scheme.
     /// Default: [`HeadingIdStrategy::Flat`].
     heading_id_strategy: HeadingIdStrategy,
+    /// Base descriptor of the config this pipeline was constructed from,
+    /// set by the constructors (see [`Pipeline::config_fingerprint`]).
+    ///
+    /// `None` means "uncacheable": the pipeline's visitor chain can no
+    /// longer be derived from config alone — a raw trait-object visitor
+    /// was appended via [`Pipeline::add_mdast_visitor`] /
+    /// [`Pipeline::add_hast_visitor`], or an output-affecting knob that
+    /// cannot be keyed (per-file `ResolveLinksPlugin` state,
+    /// filesystem-reading feature plugins) is in play.
+    config_fingerprint_base: Option<String>,
+    /// Descriptor segments appended by the named config-driven mutators
+    /// ([`Pipeline::add_toc`], [`Pipeline::add_strip_md_ext`],
+    /// [`Pipeline::add_external_links`],
+    /// [`Pipeline::set_heading_id_strategy`]). Sorted before hashing so
+    /// the bundler's and the snapshot walker's differing *call* order
+    /// (which produces the identical effective visitor chain — `add_toc`
+    /// inserts at a fixed position) yields the same fingerprint.
+    config_fingerprint_extras: Vec<String>,
 }
 
 impl Default for Pipeline {
@@ -264,6 +359,87 @@ impl Pipeline {
             add_trailing_slash: true,
             resolve_links: None,
             heading_id_strategy: HeadingIdStrategy::default(),
+            config_fingerprint_base: Some(format!(
+                "{FINGERPRINT_VERSION};bare;{}",
+                gfm_fingerprint_segment(resolved)
+            )),
+            config_fingerprint_extras: Vec::new(),
+        }
+    }
+
+    /// Config-derived fingerprint of this pipeline, or `None` when the
+    /// pipeline is **uncacheable**.
+    ///
+    /// The fingerprint is a SHA-256 hex digest over a canonical
+    /// descriptor of every config knob that can change the JSX a given
+    /// input emits: the constructor family (bare / legacy defaults /
+    /// feature-aware full config), resolved GFM construct flags, the
+    /// syntect highlight theme, `themesDir` (path **and** the bytes of
+    /// every `.tmTheme` file in it), the CJK-friendly and hard-breaks
+    /// toggles, the full `markdown.features` config (canonical JSON,
+    /// map keys sorted), plus any named config-driven mutators applied
+    /// after construction (`add_toc`, `add_strip_md_ext`,
+    /// `add_external_links`, `set_heading_id_strategy`).
+    ///
+    /// [`compile_mdx_to_jsx_module_cached`] combines this fingerprint
+    /// with `sha256(input)` to form its cache key, so two pipelines
+    /// built from different configs can never alias one cache entry.
+    ///
+    /// `None` (uncacheable — the compile cache is bypassed) when:
+    ///
+    /// - a raw trait-object visitor was appended via
+    ///   [`Pipeline::add_mdast_visitor`] / [`Pipeline::add_hast_visitor`]
+    ///   (including the public `register_features` /
+    ///   `register_post_syntect_features` helpers when called manually
+    ///   after construction) — an arbitrary `Box<dyn …Visitor>` cannot
+    ///   be fingerprinted reliably;
+    /// - [`Pipeline::add_resolve_links`] wired a `ResolveLinksPlugin` —
+    ///   its per-file `source_dir` makes output path-dependent and its
+    ///   broken-link diagnostics are a side channel a cache hit would
+    ///   silently skip;
+    /// - `markdown.features` enables a plugin that reads **other files**
+    ///   at compile time (`transclude`, `imageDimensions`,
+    ///   `linkValidation`) — their effect cannot be keyed on the input
+    ///   string, so a cached entry could go stale when the referenced
+    ///   file changes;
+    /// - a `themesDir` was configured but became unreadable while
+    ///   computing the fingerprint.
+    ///
+    /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
+    #[must_use]
+    pub fn config_fingerprint(&self) -> Option<String> {
+        let base = self.config_fingerprint_base.as_ref()?;
+        let mut hasher = Sha256::new();
+        hasher.update(base.as_bytes());
+        let mut extras = self.config_fingerprint_extras.clone();
+        extras.sort();
+        for segment in &extras {
+            // NUL separator: descriptor segments never contain NUL, so
+            // concatenation ambiguity ("ab"+"c" vs "a"+"bc") is impossible.
+            hasher.update([0u8]);
+            hasher.update(segment.as_bytes());
+        }
+        Some(hex::encode(hasher.finalize()))
+    }
+
+    /// Replace the fingerprint base descriptor (constructors only).
+    /// Clears any extras accumulated during internal wiring.
+    fn set_config_fingerprint_base(&mut self, descriptor: Option<String>) {
+        self.config_fingerprint_base = descriptor;
+        self.config_fingerprint_extras.clear();
+    }
+
+    /// Mark the pipeline uncacheable (see [`Pipeline::config_fingerprint`]).
+    fn invalidate_config_fingerprint(&mut self) {
+        self.config_fingerprint_base = None;
+        self.config_fingerprint_extras.clear();
+    }
+
+    /// Record a named config-driven mutation in the fingerprint. No-op
+    /// when the pipeline is already uncacheable.
+    fn extend_config_fingerprint(&mut self, segment: String) {
+        if self.config_fingerprint_base.is_some() {
+            self.config_fingerprint_extras.push(segment);
         }
     }
 
@@ -304,6 +480,12 @@ impl Pipeline {
     /// sets it automatically from `features.headingIds`.
     pub fn set_heading_id_strategy(&mut self, strategy: HeadingIdStrategy) -> &mut Self {
         self.heading_id_strategy = strategy;
+        // The strategy changes the emitted `headings` export, so it is a
+        // cache-key knob (see `config_fingerprint`). Inside
+        // `with_defaults_and_full_config` this extra is superseded by the
+        // final base descriptor, which captures the strategy via the
+        // canonical features JSON.
+        self.extend_config_fingerprint(format!("heading_id_strategy={strategy:?}"));
         self
     }
 
@@ -316,13 +498,22 @@ impl Pipeline {
 
     /// Append a [`StripMdExtensionPlugin`] configured by the pipeline's
     /// current `add_trailing_slash` setting (defaults to `true`).
+    ///
+    /// Config-driven and deterministic per input, so this **extends**
+    /// the config fingerprint instead of invalidating it (the visitor
+    /// is pushed directly, not via the fingerprint-invalidating
+    /// [`Pipeline::add_hast_visitor`]).
     pub fn add_strip_md_ext(&mut self) -> &mut Self {
         let plugin = if self.add_trailing_slash {
             StripMdExtensionPlugin::with_trailing_slash()
         } else {
             StripMdExtensionPlugin::new()
         };
-        self.add_hast_visitor(Box::new(plugin));
+        self.hast_visitors.push(Box::new(plugin));
+        self.extend_config_fingerprint(format!(
+            "strip_md_ext;trailing_slash={}",
+            self.add_trailing_slash
+        ));
         self
     }
 
@@ -335,12 +526,21 @@ impl Pipeline {
     /// Not in [`Pipeline::with_defaults`] because the feature is opt-in via
     /// `markdown.externalLinks` in `zfb.config.ts`. Absent config flag →
     /// visitor not registered, output identical to today.
+    ///
+    /// Config-driven and deterministic per input, so this **extends**
+    /// the config fingerprint instead of invalidating it.
     pub fn add_external_links(
         &mut self,
         config: ExternalLinksConfig,
         site: Option<&str>,
     ) -> &mut Self {
-        self.add_hast_visitor(Box::new(ExternalLinksPlugin::new(config, site)));
+        let segment = format!(
+            "external_links;rel={:?};target={:?};site={:?}",
+            config.rel, config.target, site
+        );
+        self.hast_visitors
+            .push(Box::new(ExternalLinksPlugin::new(config, site)));
+        self.extend_config_fingerprint(segment);
         self
     }
 
@@ -353,6 +553,13 @@ impl Pipeline {
     ///
     /// Call at most once per pipeline instance — a second call
     /// replaces the previous plugin.
+    ///
+    /// Wiring this plugin makes the pipeline **uncacheable**
+    /// ([`Pipeline::config_fingerprint`] → `None`): the per-file
+    /// `source_dir` makes the emitted JSX depend on the source file's
+    /// directory (not just its contents), and the broken-link
+    /// diagnostics drained via [`Pipeline::take_broken_links`] are a
+    /// side channel a compile-cache hit would silently skip.
     pub fn add_resolve_links(
         &mut self,
         source_map: std::collections::HashMap<std::path::PathBuf, String>,
@@ -361,6 +568,7 @@ impl Pipeline {
             source_map,
             source_dir: None,
         }));
+        self.invalidate_config_fingerprint();
         self
     }
 
@@ -390,6 +598,9 @@ impl Pipeline {
     /// `markdown.toc` in `zfb.config.ts` must leave the build byte-for-byte
     /// identical.
     pub fn add_toc(&mut self, cfg: TocConfig) -> &mut Self {
+        // Config-driven and deterministic per input → extends the config
+        // fingerprint (see `config_fingerprint`) rather than invalidating.
+        let segment = format!("toc;heading={:?};max_depth={}", cfg.heading, cfg.max_depth);
         // Insert at position 1 in the hast visitors list so TOC runs
         // immediately after HeadingLinksPlugin (index 0) and before all
         // subsequent hast visitors. This guarantees ids are already set.
@@ -402,6 +613,7 @@ impl Pipeline {
         } else {
             self.hast_visitors.insert(1, toc);
         }
+        self.extend_config_fingerprint(segment);
         self
     }
 
@@ -617,6 +829,20 @@ impl Pipeline {
             SyntectPlugin::new(highlighter)
         };
         p.add_hast_visitor(Box::new(syntect));
+        // Fingerprint the construction config LAST: the add_*_visitor
+        // calls above invalidated the bare-constructor fingerprint, and
+        // this final assignment replaces it with the legacy-defaults
+        // descriptor. `defaults` vs `full` prefix keeps this chain (which
+        // always wires the core MermaidPlugin) distinct from the
+        // feature-aware `with_defaults_and_full_config` chain even when
+        // the shared knobs coincide.
+        let base = themes_dir_fingerprint_segment(themes_dir).map(|themes_seg| {
+            format!(
+                "{FINGERPRINT_VERSION};defaults;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly}",
+                gfm = gfm_fingerprint_segment(resolved),
+            )
+        });
+        p.set_config_fingerprint_base(base);
         Ok(p)
     }
 
@@ -779,18 +1005,61 @@ impl Pipeline {
         // Post-syntect extras visitors operate on the per-line
         // <span class="line"> structure SyntectPlugin emits.
         register_post_syntect_features(&mut p, features);
+        // Fingerprint the construction config LAST — the wiring above
+        // went through the fingerprint-invalidating add_*_visitor
+        // methods; this final assignment replaces the interim `None`
+        // with the real descriptor (see `config_fingerprint`).
+        //
+        // Plugins that read OTHER files at compile time make the JSX
+        // output depend on filesystem state the cache key cannot see
+        // (`transclude` splices referenced file contents,
+        // `imageDimensions` reads image headers, `linkValidation`
+        // emits cross-file diagnostics) — a cached entry could go
+        // stale when a referenced file changes between dev ticks, so
+        // their presence marks the pipeline uncacheable.
+        let filesystem_dependent_feature = features.transclude.is_some()
+            || features.image_dimensions.is_some()
+            || features.link_validation.is_some();
+        let base = if filesystem_dependent_feature {
+            None
+        } else {
+            match (
+                themes_dir_fingerprint_segment(themes_dir),
+                features_fingerprint_segment(features),
+            ) {
+                (Some(themes_seg), Some(features_seg)) => Some(format!(
+                    "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
+                    gfm = gfm_fingerprint_segment(resolved),
+                )),
+                _ => None,
+            }
+        };
+        p.set_config_fingerprint_base(base);
         Ok(p)
     }
 
     /// Append an mdast visitor; visitors run in insertion order.
+    ///
+    /// Appending an arbitrary trait-object visitor makes the pipeline
+    /// **uncacheable** ([`Pipeline::config_fingerprint`] → `None`): a
+    /// `Box<dyn MdastVisitor>` cannot be fingerprinted from outside, so
+    /// the MDX compile cache could not tell two manually-wired
+    /// pipelines apart. Constructors that wire visitors internally set
+    /// the fingerprint *after* wiring, so config-built pipelines stay
+    /// cacheable.
     pub fn add_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) -> &mut Self {
         self.mdast_visitors.push(v);
+        self.invalidate_config_fingerprint();
         self
     }
 
     /// Append a hast visitor; visitors run in insertion order.
+    ///
+    /// Same cacheability contract as [`Pipeline::add_mdast_visitor`]:
+    /// the pipeline becomes uncacheable.
     pub fn add_hast_visitor(&mut self, v: Box<dyn HastVisitor>) -> &mut Self {
         self.hast_visitors.push(v);
+        self.invalidate_config_fingerprint();
         self
     }
 
