@@ -2049,37 +2049,20 @@ pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) 
             id_strip_suffix: c.id_strip_suffix.clone(),
         })
         .collect();
-    // Mirror the bundler's pipeline shape (theme, strip-md-ext,
-    // resolve-links). Every plugin the bundler appends to its
-    // `Pipeline::with_defaults_and_theme(...)` MUST also be appended
-    // here, otherwise the JSX content_hash diverges and
-    // `bridge.get(specifier)` misses on every collection page — dumping
-    // the rendered output into a `<pre data-zfb-content-fallback>`
-    // block. See zfb#188.
-    let snapshot_config = zfb_content::SnapshotPipelineConfig {
-        code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
-        code_highlight_themes_dir: config
-            .code_highlight
-            .as_ref()
-            .and_then(|c| c.themes_dir.as_ref())
-            .map(|td| project_root.join(td)),
-        strip_md_ext: config.strip_md_ext,
-        resolve_source_map: build_resolve_source_map_for_snapshot(project_root, config),
-        gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
-        toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
-        // Thread `markdown.externalLinks` into the snapshot pipeline.
-        // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
-        // classify same-origin absolute URLs as internal.
-        external_links: config
-            .markdown
-            .as_ref()
-            .and_then(|m| m.external_links.clone())
-            .map(|el| (el.into_content_config(), config.site.clone())),
-        cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
-        hard_breaks: crate::config::resolve_hard_breaks(config.markdown.as_ref()),
-        // #586 — MUST match `BundlerInput::markdown_features` so the snapshot's
-        // JSX `content_hash` stays byte-identical to the bundler's bridge key.
-        features: config.markdown.as_ref().and_then(|m| m.features.clone()),
+    // The pipeline shape comes from the SAME Config→spec assembly the
+    // bundler input uses (`pipeline_spec_from_config`, zfb#917), so the
+    // snapshot's JSX content_hash structurally cannot diverge from the
+    // bundler's bridge-map keys — divergence would make
+    // `bridge.get(specifier)` miss on every collection page, dumping the
+    // rendered output into a `<pre data-zfb-content-fallback>` block
+    // (zfb#188). Only `resolve_source_map` is filled per-surface: the
+    // snapshot builds it eagerly here, the bundler derives it inside
+    // `bundle()` from its route spec — same route helper, identical maps.
+    let snapshot_config = {
+        let mut spec =
+            crate::commands::bundler_input::pipeline_spec_from_config(project_root, config);
+        spec.resolve_source_map = build_resolve_source_map_for_snapshot(project_root, config);
+        spec
     };
     match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
         Ok(snap) => match serde_json::to_string(&snap) {

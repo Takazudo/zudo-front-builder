@@ -96,7 +96,7 @@ use std::path::PathBuf;
 use zfb_content::pipeline::Pipeline;
 use zfb_content::{
     build_snapshot_with_config, compile_mdx_to_jsx_module_cached, parse_mdx_specifier,
-    CollectionConfig, SnapshotPipelineConfig,
+    CollectionConfig, PipelineSpec,
 };
 
 // -----------------------------------------------------------------------------
@@ -372,7 +372,7 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
 
     // Snapshot side — mirror zudo-doc's actual pipeline shape so the
     // hashes computed match the production path.
-    let pipeline_config = SnapshotPipelineConfig {
+    let pipeline_config = PipelineSpec {
         code_highlight_theme: None,
         code_highlight_themes_dir: None,
         strip_md_ext: true,

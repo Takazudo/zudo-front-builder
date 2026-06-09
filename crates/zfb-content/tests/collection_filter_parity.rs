@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_content::collection::{maybe_strip_specifier_suffix, CollectionFilter};
-use zfb_content::{build_snapshot_with_config, CollectionConfig, SnapshotPipelineConfig};
+use zfb_content::{build_snapshot_with_config, CollectionConfig, PipelineSpec};
 use zfb_content::{compile_mdx_to_jsx_module_cached, MdxJsxOptions};
 
 fn tmp_root(label: &str) -> PathBuf {
@@ -77,7 +77,7 @@ fn snapshot_module_specifier_has_id_strip_suffix_applied() {
         exclude: None,
         id_strip_suffix: Some(".en".into()),
     };
-    let snap = build_snapshot_with_config(&[cfg], &SnapshotPipelineConfig::default())
+    let snap = build_snapshot_with_config(&[cfg], &PipelineSpec::default())
         .expect("snapshot build");
     let entries = snap.collections.get("notes-en").expect("collection");
 
@@ -152,7 +152,7 @@ fn snapshot_specifier_unchanged_when_id_strip_suffix_absent() {
     );
 
     let cfg = CollectionConfig::new("notes", col_dir.clone());
-    let snap = build_snapshot_with_config(&[cfg], &SnapshotPipelineConfig::default())
+    let snap = build_snapshot_with_config(&[cfg], &PipelineSpec::default())
         .expect("snapshot build");
     let entries = snap.collections.get("notes").expect("collection");
     assert_eq!(entries.len(), 1);

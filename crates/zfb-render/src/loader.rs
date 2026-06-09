@@ -192,7 +192,7 @@ impl ModuleLoader {
     /// Build a fresh loader, optionally appending
     /// [`Pipeline::add_strip_md_ext`] to the content pipeline.
     ///
-    /// Mirrors [`zfb_build::BundlerInput::strip_md_ext`] (zfb#127 /
+    /// Mirrors the bundler's `pipeline_spec.strip_md_ext` knob (zfb#127 /
     /// #129): when the bundler has the flag on, the dev loader must
     /// honour it too or `pnpm dev` and `zfb build` produce different
     /// href shapes for `[link](other.md)` style references.
@@ -259,7 +259,7 @@ impl ModuleLoader {
     ///
     /// Note: the `zfb dev` CLI does NOT render through this loader — it threads
     /// `markdown.features` via the V8 `RendererState` in `zfb-build`
-    /// (`BundlerInput::markdown_features`). This constructor is for library /
+    /// (`BundlerInput::pipeline_spec.features`). This constructor is for library /
     /// embedder callers of `zfb-render` who want feature-aware MDX loading; an
     /// embedder still calling [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk`]
     /// runs with the four framework features off.
