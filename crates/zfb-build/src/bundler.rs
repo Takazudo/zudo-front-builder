@@ -1645,6 +1645,59 @@ struct MaterialiseCtx<'a> {
     project_root: &'a Path,
 }
 
+impl MaterialiseCtx<'_> {
+    /// Construct the single feature-aware [`zfb_content::pipeline::Pipeline`]
+    /// shared by both walkers.
+    ///
+    /// Hoisted here so `materialise_shadow` and `materialise_collection` both
+    /// call the same construction path — this structurally guarantees that both
+    /// walks produce byte-identical MDX-cache fingerprints (see zfb#910).
+    ///
+    /// The caller receives a ready-to-use pipeline with all opt-in plugins
+    /// already wired (toc, strip-md-ext, resolve-links, external-links).
+    /// `source_dir` for `ResolveLinksPlugin` is still updated per-file inside
+    /// the walk loop; that per-file state lives on the borrowed `&mut Pipeline`,
+    /// not in the construction phase.
+    fn build_pipeline(&self) -> Result<zfb_content::pipeline::Pipeline> {
+        // Single feature-aware entry point — MUST match the snapshot walker's
+        // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
+        // `content_hash` stays byte-identical. `markdown_features = None` is an
+        // empty feature set: the former-Core framework features are off
+        // (the post-epic opt-in default).
+        let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
+            self.code_highlight_theme,
+            self.gfm_constructs,
+            self.code_highlight_themes_dir,
+            self.cjk_friendly,
+            self.hard_breaks,
+            self.markdown_features,
+        )
+        .with_context(|| {
+            // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
+            // so the `unwrap_or_default()` empty-string branch is unreachable.
+            format!(
+                "codeHighlight.themesDir: failed to load themes from {}",
+                self.code_highlight_themes_dir
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
+            )
+        })?;
+        if let Some(toc_cfg) = self.toc.clone() {
+            pipeline.add_toc(toc_cfg);
+        }
+        if self.strip_md_ext {
+            pipeline.add_strip_md_ext();
+        }
+        if let Some(map) = self.resolve_source_map {
+            pipeline.add_resolve_links(map.clone());
+        }
+        if let Some((cfg, site)) = self.external_links {
+            pipeline.add_external_links(cfg.clone(), site.as_deref());
+        }
+        Ok(pipeline)
+    }
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1712,41 +1765,7 @@ fn materialise_shadow(
     // also wired into the mdast phase after the directives step so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    // Single feature-aware entry point — MUST match the snapshot walker's
-    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the former-Core framework features are off
-    // (the post-epic opt-in default).
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
-        ctx.code_highlight_theme,
-        ctx.gfm_constructs,
-        ctx.code_highlight_themes_dir,
-        ctx.cjk_friendly,
-        ctx.hard_breaks,
-        ctx.markdown_features,
-    )
-    .with_context(|| {
-        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
-        // so the `unwrap_or_default()` empty-string branch is unreachable.
-        format!(
-            "codeHighlight.themesDir: failed to load themes from {}",
-            ctx.code_highlight_themes_dir
-                .map(|d| d.display().to_string())
-                .unwrap_or_default()
-        )
-    })?;
-    if let Some(toc_cfg) = ctx.toc.clone() {
-        pipeline.add_toc(toc_cfg);
-    }
-    if ctx.strip_md_ext {
-        pipeline.add_strip_md_ext();
-    }
-    if let Some(map) = ctx.resolve_source_map {
-        pipeline.add_resolve_links(map.clone());
-    }
-    if let Some((cfg, site)) = ctx.external_links {
-        pipeline.add_external_links(cfg.clone(), site.as_deref());
-    }
+    let mut pipeline = ctx.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
@@ -2311,41 +2330,7 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after the directives step in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    // Single feature-aware entry point — MUST match the snapshot walker's
-    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the three former-Core framework features are off
-    // (the post-epic opt-in default).
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
-        ctx.code_highlight_theme,
-        ctx.gfm_constructs,
-        ctx.code_highlight_themes_dir,
-        ctx.cjk_friendly,
-        ctx.hard_breaks,
-        ctx.markdown_features,
-    )
-    .with_context(|| {
-        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
-        // so the `unwrap_or_default()` empty-string branch is unreachable.
-        format!(
-            "codeHighlight.themesDir: failed to load themes from {}",
-            ctx.code_highlight_themes_dir
-                .map(|d| d.display().to_string())
-                .unwrap_or_default()
-        )
-    })?;
-    if let Some(toc_cfg) = ctx.toc.clone() {
-        pipeline.add_toc(toc_cfg);
-    }
-    if ctx.strip_md_ext {
-        pipeline.add_strip_md_ext();
-    }
-    if let Some(map) = ctx.resolve_source_map {
-        pipeline.add_resolve_links(map.clone());
-    }
-    if let Some((cfg, site)) = ctx.external_links {
-        pipeline.add_external_links(cfg.clone(), site.as_deref());
-    }
+    let mut pipeline = ctx.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
