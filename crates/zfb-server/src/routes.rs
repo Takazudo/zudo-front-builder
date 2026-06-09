@@ -81,10 +81,10 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
 use tokio::sync::RwLock;
-use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use zfb_types::escape_html;
 
+use crate::assets_containment::ContainedAssetsService;
 use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, ReloadTx};
 use crate::plugin_middleware::{
@@ -559,7 +559,10 @@ pub fn build_router(state: AppState) -> Router {
 /// captured wildcard / URI before forwarding into [`serve_page`].
 fn build_core_router(state: AppState, prefix: &str) -> Router {
     let assets_dir = state.dist_root.join("assets");
-    let assets_service = ServeDir::new(&assets_dir);
+    // Wrap ServeDir with symlink containment: any request whose resolved
+    // FS path escapes `assets_dir` (including via symlinks) is rejected
+    // with 404 before ServeDir sees it.  See `assets_containment` module.
+    let assets_service = ContainedAssetsService::new(assets_dir);
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
@@ -3392,6 +3395,218 @@ mod tests {
             StatusCode::OK,
             "out-of-root symlink in public must not be served (got {:?})",
             resp.status()
+        );
+    }
+
+    /// End-to-end router test: a symlink inside `dist/assets/` pointing
+    /// outside the dist root must produce a 404 for the `/assets/` route.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_server_rejects_out_of_root_symlink_in_assets() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let dist = tempfile::tempdir().expect("dist dir");
+        let assets_dir = dist.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).expect("mk assets dir");
+        // Symlink inside assets pointing to a file outside dist.
+        symlink(
+            outside.path().join("secret.txt"),
+            assets_dir.join("evil.txt"),
+        )
+        .unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/evil.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "out-of-root symlink in dist/assets must not be served (got {:?})",
+            resp.status()
+        );
+    }
+
+    /// End-to-end router test: a symlink inside `dist/assets/` pointing
+    /// to another file **inside** `dist/assets/` must still be served.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_server_serves_in_root_symlink_in_assets() {
+        use std::os::unix::fs::symlink;
+
+        let dist = tempfile::tempdir().expect("dist dir");
+        let assets_dir = dist.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).expect("mk assets dir");
+        std::fs::write(assets_dir.join("real.css"), b"body{}").unwrap();
+        // Symlink inside assets pointing to another file inside assets.
+        symlink(assets_dir.join("real.css"), assets_dir.join("alias.css")).unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/alias.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "in-root symlink in dist/assets must be served (got {:?})",
+            resp.status()
+        );
+    }
+
+    /// End-to-end router test: a normal (non-symlink) asset in `dist/assets/`
+    /// must be served with the correct content type.
+    #[tokio::test]
+    async fn dev_server_serves_normal_asset_with_correct_content_type() {
+        let dist = tempfile::tempdir().expect("dist dir");
+        let assets_dir = dist.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).expect("mk assets dir");
+        std::fs::write(assets_dir.join("main.js"), b"console.log(1)").unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/main.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("javascript") || ct.contains("application/js"),
+            "normal asset in dist/assets must have JS content-type, got: {ct}"
+        );
+    }
+
+    /// End-to-end router test: a HEAD request to an asset in `dist/assets/`
+    /// must be served (200) with an empty body.
+    #[tokio::test]
+    async fn dev_server_head_request_for_asset_is_ok() {
+        let dist = tempfile::tempdir().expect("dist dir");
+        let assets_dir = dist.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).expect("mk assets dir");
+        std::fs::write(assets_dir.join("style.css"), b"body{}").unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri("/assets/style.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "HEAD request for existing asset must return 200"
+        );
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024)
+            .await
+            .unwrap();
+        assert!(
+            body_bytes.is_empty(),
+            "HEAD response body must be empty (got {} bytes)",
+            body_bytes.len()
         );
     }
 }
