@@ -179,82 +179,71 @@ export function prefetch(url: string, opts: PrefetchOptions = {}): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shared enter/leave handler factory
+// ---------------------------------------------------------------------------
+
+type CancelHandleMap = Map<Element, ReturnType<typeof setTimeout> | number>;
+
+/**
+ * Returns a pair of [enterHandler, leaveHandler] that queue and cancel an idle
+ * prefetch callback, keyed on the supplied per-trigger cancel-handle map.
+ *
+ * Both the pointer (hover) and focus triggers use identical queue/cancel logic;
+ * the only difference between them is which map tracks their pending handles.
+ * Parameterising by the map eliminates that duplication.
+ */
+function makeEnterLeaveHandlers(
+  cancelHandles: CancelHandleMap,
+): [enterHandler: (e: Event) => void, leaveHandler: (e: Event) => void] {
+  function enterHandler(e: Event): void {
+    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    if (!link) return;
+    if (!shouldPrefetchLink(link, "hover")) return;
+
+    // Use requestIdleCallback if available, else a small timeout.
+    const fire = () => {
+      cancelHandles.delete(link);
+      prefetch(link.href);
+    };
+
+    if (typeof requestIdleCallback !== "undefined") {
+      const handle = requestIdleCallback(fire);
+      cancelHandles.set(link, handle);
+    } else {
+      const handle = setTimeout(fire, 100);
+      cancelHandles.set(link, handle);
+    }
+  }
+
+  function leaveHandler(e: Event): void {
+    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    if (!link) return;
+
+    const handle = cancelHandles.get(link);
+    if (handle === undefined) return;
+
+    if (typeof cancelIdleCallback !== "undefined") {
+      cancelIdleCallback(handle as number);
+    } else {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    }
+    cancelHandles.delete(link);
+  }
+
+  return [enterHandler, leaveHandler];
+}
+
+// ---------------------------------------------------------------------------
 // Trigger: hover (pointerenter / pointerleave)
 // ---------------------------------------------------------------------------
 
-function onPointerEnter(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
-  if (!shouldPrefetchLink(link, "hover")) return;
-
-  // Use requestIdleCallback if available, else a small timeout.
-  const fire = () => {
-    hoverCancelHandles.delete(link);
-    prefetch(link.href);
-  };
-
-  if (typeof requestIdleCallback !== "undefined") {
-    const handle = requestIdleCallback(fire);
-    hoverCancelHandles.set(link, handle);
-  } else {
-    const handle = setTimeout(fire, 100);
-    hoverCancelHandles.set(link, handle);
-  }
-}
-
-function onPointerLeave(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
-
-  const handle = hoverCancelHandles.get(link);
-  if (handle === undefined) return;
-
-  if (typeof cancelIdleCallback !== "undefined") {
-    cancelIdleCallback(handle as number);
-  } else {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
-  }
-  hoverCancelHandles.delete(link);
-}
+const [onPointerEnter, onPointerLeave] = makeEnterLeaveHandlers(hoverCancelHandles);
 
 // ---------------------------------------------------------------------------
 // Trigger: focus (focusin / focusout with cancel on focusout)
 // ---------------------------------------------------------------------------
 
-function onFocusIn(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
-  if (!shouldPrefetchLink(link, "hover")) return;
-
-  // Use requestIdleCallback if available, else a small timeout.
-  const fire = () => {
-    focusCancelHandles.delete(link);
-    prefetch(link.href);
-  };
-
-  if (typeof requestIdleCallback !== "undefined") {
-    const handle = requestIdleCallback(fire);
-    focusCancelHandles.set(link, handle);
-  } else {
-    const handle = setTimeout(fire, 100);
-    focusCancelHandles.set(link, handle);
-  }
-}
-
-function onFocusOut(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
-
-  const handle = focusCancelHandles.get(link);
-  if (handle === undefined) return;
-
-  if (typeof cancelIdleCallback !== "undefined") {
-    cancelIdleCallback(handle as number);
-  } else {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
-  }
-  focusCancelHandles.delete(link);
-}
+const [onFocusIn, onFocusOut] = makeEnterLeaveHandlers(focusCancelHandles);
 
 // ---------------------------------------------------------------------------
 // Trigger: tap (touchstart / mousedown)
