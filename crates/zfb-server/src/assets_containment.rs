@@ -29,6 +29,23 @@
 //! Only when the containment check passes does the request reach `ServeDir`,
 //! preserving all of its behaviour: HEAD, conditional-GET (`ETag`,
 //! `If-Modified-Since`), `Range`, MIME detection, directory redirects.
+//!
+//! ## TOCTOU narrowing — delegate the canonical path, not the original
+//!
+//! On pass, the request URI is rewritten to the **canonical** path
+//! relative to the canonical root (each segment re-percent-encoded so
+//! ServeDir's decode round-trips) before delegating.  ServeDir then
+//! opens the already-resolved file instead of re-traversing the original
+//! mutable path — without the rewrite, a symlink swap between our
+//! containment check and ServeDir's `open()` would bypass the guard.
+//! This matches the canonical-path-read narrowing used by
+//! `read_from_dist` / `read_from_public` in `routes.rs` (they read the
+//! path returned by `resolve_within_root`, not the joined input).
+//!
+//! Residual race: a *directory* component swapped for a symlink after
+//! the check can still redirect the open — the same posture as the
+//! other readers.  Full elimination needs openat-style component-wise
+//! opening (`O_NOFOLLOW` walk), tracked separately.
 
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
@@ -37,8 +54,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
-use percent_encoding::percent_decode;
+use axum::http::{Request, Response, StatusCode, Uri};
+use percent_encoding::{percent_decode, percent_encode, NON_ALPHANUMERIC};
 use tower_http::services::ServeDir;
 use tower_service::Service;
 
@@ -145,7 +162,7 @@ impl Service<Request<ReqBody>> for ContainedAssetsService {
         <InnerService as Service<Request<ReqBody>>>::poll_ready(&mut self.inner, cx)
     }
 
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let uri_path = req.uri().path().to_owned();
         let assets_dir = self.assets_dir.clone();
         let canonical_root = Arc::clone(&self.canonical_root);
@@ -181,6 +198,55 @@ impl Service<Request<ReqBody>> for ContainedAssetsService {
             // (or equal to) the canonical assets root.
             if !canonical_candidate.starts_with(&canon_root) {
                 return Ok(not_found());
+            }
+
+            // TOCTOU narrowing: rewrite the request URI to the CANONICAL
+            // path relative to the canonical root before delegating, so
+            // ServeDir opens the already-resolved file instead of
+            // re-traversing the original mutable path.  Without this, a
+            // symlink swap between the check above and ServeDir's open()
+            // would bypass the containment guard.  Each segment is
+            // percent-encoded so ServeDir's percent-decode round-trips.
+            // (Residual directory-swap race matches read_from_dist /
+            // read_from_public — see module docs.)
+            let relative = match canonical_candidate.strip_prefix(&canon_root) {
+                Ok(r) => r,
+                // Unreachable after the starts_with check above; stay
+                // graceful rather than panicking in the request path.
+                Err(_) => return Ok(not_found()),
+            };
+            let mut encoded = String::new();
+            for component in relative.components() {
+                let Some(segment) = component.as_os_str().to_str() else {
+                    // A canonical segment that is not valid UTF-8 cannot
+                    // round-trip through a URI.  Hashed asset names are
+                    // always ASCII, so this is effectively unreachable.
+                    return Ok(not_found());
+                };
+                encoded.push('/');
+                encoded.extend(percent_encode(segment.as_bytes(), NON_ALPHANUMERIC));
+            }
+            if encoded.is_empty() {
+                encoded.push('/');
+            }
+            // Preserve a trailing slash so ServeDir's directory handling
+            // (index.html append / redirect) sees the same URI shape as
+            // the original request.
+            if uri_path.ends_with('/') && !encoded.ends_with('/') {
+                encoded.push('/');
+            }
+            let new_path_and_query = match req.uri().query() {
+                Some(q) => format!("{encoded}?{q}"),
+                None => encoded,
+            };
+            let mut uri_parts = req.uri().clone().into_parts();
+            uri_parts.path_and_query = match new_path_and_query.parse() {
+                Ok(pq) => Some(pq),
+                Err(_) => return Ok(not_found()),
+            };
+            match Uri::from_parts(uri_parts) {
+                Ok(u) => *req.uri_mut() = u,
+                Err(_) => return Ok(not_found()),
             }
 
             // Poll readiness then delegate to ServeDir.  The cloned inner
@@ -403,6 +469,53 @@ mod tests {
             StatusCode::OK,
             "in-root symlink must be served (got {:?})",
             status
+        );
+    }
+
+    /// TOCTOU-narrowing regression: after the containment check passes,
+    /// the request URI is rewritten to the canonical path before reaching
+    /// ServeDir.  Requesting the symlink name must therefore serve the
+    /// canonical target's exact bytes (ServeDir opens `real.css`, not
+    /// the mutable `alias.css` link).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn in_root_symlink_serves_canonical_target_bytes() {
+        use std::os::unix::fs::symlink;
+
+        let (svc, _dir) = make_service(|assets| {
+            std::fs::write(assets.join("real.css"), b"body{color:red}").unwrap();
+            symlink(assets.join("real.css"), assets.join("alias.css")).unwrap();
+        });
+
+        let resp = svc
+            .oneshot(
+                Request::builder()
+                    .uri("/alias.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "in-root symlink must be served via the rewritten canonical URI"
+        );
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        assert!(
+            ct.contains("css"),
+            "canonical target must keep its CSS content-type, got: {ct}"
+        );
+        let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            &body[..],
+            b"body{color:red}",
+            "rewritten-URI delegation must serve the canonical target's bytes"
         );
     }
 
