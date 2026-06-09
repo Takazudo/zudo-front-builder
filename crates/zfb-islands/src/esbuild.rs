@@ -32,11 +32,11 @@ use crate::bundler::{
 
 /// The pinned esbuild CLI version this crate runs against.
 ///
-/// At subprocess startup we run `esbuild --version` and abort with a
-/// clear error if the reported version does not match. To bump, see
-/// the "External tool version pins" section in `CONTRIBUTING.md` at
-/// the workspace root.
-pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
+/// Re-exported from `zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION`, the
+/// single source of truth for all external tool version pins. To bump,
+/// update that constant and follow the "External tool version pins"
+/// procedure in `CONTRIBUTING.md` at the workspace root.
+pub use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 /// esbuild `--entry-names` template for the shared islands bundle.
 ///
@@ -198,10 +198,11 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
         .to_string();
     if reported != EXPECTED_ESBUILD_VERSION {
         return Err(anyhow!(
-            "esbuild version mismatch: expected `{}` (pinned in zfb-islands), got `{}` from {}. \
+            "esbuild version mismatch: expected `{}` (pinned in zfb-toolchain-pins), got `{}` from {}. \
              To resolve, follow the \"External tool version pins\" procedure in CONTRIBUTING.md \
-             at the workspace root: bump EXPECTED_ESBUILD_VERSION (and EXPECTED_ESBUILD_SHA256) \
-             in crates/zfb-islands/src/esbuild.rs in lock-step with the binary under \
+             at the workspace root: bump EXPECTED_ESBUILD_VERSION in \
+             crates/zfb-toolchain-pins/src/lib.rs (and EXPECTED_ESBUILD_SHA256 in \
+             crates/zfb-islands/src/esbuild.rs) in lock-step with the binary under \
              crates/zfb/binaries/esbuild/esbuild.",
             EXPECTED_ESBUILD_VERSION,
             reported,
@@ -224,8 +225,9 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
                  To resolve, follow the \"External tool version pins\" procedure in \
                  CONTRIBUTING.md at the workspace root: either replace the binary with \
                  one matching EXPECTED_ESBUILD_SHA256, or — when bumping intentionally — \
-                 update both the version and SHA256 constants in \
-                 crates/zfb-islands/src/esbuild.rs in lock-step with the new binary.",
+                 update EXPECTED_ESBUILD_VERSION in crates/zfb-toolchain-pins/src/lib.rs \
+                 and EXPECTED_ESBUILD_SHA256 in crates/zfb-islands/src/esbuild.rs \
+                 in lock-step with the new binary.",
                 binary_path.display(),
                 EXPECTED_ESBUILD_SHA256,
                 actual

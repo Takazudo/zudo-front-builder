@@ -10,20 +10,20 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 #
 # Release engineering populates `crates/zfb/binaries/esbuild/esbuild` with
 # the exact binary matching the version constant `EXPECTED_ESBUILD_VERSION`
-# in `src/esbuild.rs`. At subprocess startup we run `esbuild --version` and
-# refuse to launch if the reported version does not match. A SHA-256 of the
-# binary (`EXPECTED_ESBUILD_SHA256`, possibly empty during development) is
-# also verified when populated.
+# in `crates/zfb-toolchain-pins/src/lib.rs` (re-exported by `src/esbuild.rs`).
+# At subprocess startup we run `esbuild --version` and refuse to launch if
+# the reported version does not match. A SHA-256 of the binary
+# (`EXPECTED_ESBUILD_SHA256`, possibly empty during development) is also
+# verified when populated.
 #
 # To bump, follow the "External tool version pins" procedure in
 # CONTRIBUTING.md at the workspace root. Quick-reference:
-#   1. Edit EXPECTED_ESBUILD_VERSION in src/esbuild.rs.
+#   1. Edit EXPECTED_ESBUILD_VERSION in crates/zfb-toolchain-pins/src/lib.rs.
 #   2. Edit EXPECTED_ESBUILD_SHA256 in src/esbuild.rs (or set it to "" to
-#      keep the slot open until release engineering fills the new hash in).
+#      keep the slot open until release engineering fills the new hash in)
+#      and the SHA-256 table in crates/zfb/build.rs.
 #   3. Drop the new binary under crates/zfb/binaries/esbuild/esbuild in the
 #      release tarball.
-#
-#   pinned esbuild = 0.25.12
 # ---------------------------------------------------------------------------
 
 [lib]
@@ -34,6 +34,9 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no
 # coupling beyond the constants themselves.
 zfb-types = { path = "../zfb-types" }
+# Single source of truth for pinned external tool versions (esbuild,
+# wrangler, workerd). Consumed here for EXPECTED_ESBUILD_VERSION.
+zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Shared exact-match resolver helper used by both this islands
 # bundler and the main bundler in zfb-build. Replaces the
 # prefix-with-slash `--alias:<from>=<to>` flag emission with
