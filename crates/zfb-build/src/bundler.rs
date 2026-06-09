@@ -407,69 +407,44 @@ pub struct BundlerInput {
     ///    `0.1.0-next.2` when this flag was made unconditional.
     pub node_modules_preserve_symlinks: bool,
 
-    /// When `true`, append [`zfb_content::pipeline::Pipeline::add_strip_md_ext`]
-    /// to the hoisted MDX pre-compile pipeline at every call site so
-    /// internal `[link](other.md)` style hrefs are rewritten to
-    /// `other/` (with a trailing slash, matching the JS engine's
-    /// `rehypeStripMdExtension`). Mirrors [`zfb::config::Config::strip_md_ext`]
-    /// in `crates/zfb/src/config.rs` — the CLI threads the resolved
-    /// config flag here. Default: `false` (opt-in feature).
+    /// The shared markdown-pipeline knob set (zfb#917). This is the SAME
+    /// [`zfb_content::PipelineSpec`] type the snapshot walker
+    /// (`zfb_content::build_snapshot_with_config`) accepts, and both
+    /// surfaces build their pipelines through the single
+    /// [`zfb_content::PipelineSpec::build_pipeline`] path — which is what
+    /// keeps the JSX `content_hash` baked into compiled MDX modules
+    /// byte-identical to the snapshot's `module_specifier` hashes
+    /// (zfb#187 / #188).
+    ///
+    /// One field is special: `pipeline_spec.resolve_source_map` is
+    /// derivation-owned by [`bundle`] — it is ALWAYS overwritten from
+    /// [`Self::resolve_markdown_links`] (built when `Some`, cleared when
+    /// `None`), so callers cannot desync the map from the route spec.
+    /// Set every other knob here; leave the map alone.
     ///
     /// The dev loader at `crates/zfb-render/src/loader.rs` honours the
-    /// same flag via [`zfb_render::loader::ModuleLoader::with_strip_md_ext`]
-    /// so `zfb dev` and `zfb build` produce the same href shape.
-    pub strip_md_ext: bool,
-
-    /// Optional syntect highlight theme name.  When `Some`, the hoisted
-    /// MDX pre-compile pipeline uses
-    /// [`zfb_content::pipeline::Pipeline::with_defaults_and_theme`] so
-    /// every fenced code block is highlighted with the named built-in
-    /// syntect theme instead of the default `base16-ocean.dark`.
-    ///
-    /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
-    /// `"Solarized (light)"`, etc.). Custom themes are loaded via
-    /// `code_highlight_themes_dir`. Mirrors
-    /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
-    pub code_highlight_theme: Option<String>,
-
-    /// Optional absolute path to a directory of `.tmTheme` files.
-    ///
-    /// When `Some`, the hoisted MDX pre-compile pipeline loads every
-    /// `.tmTheme` file in the directory so custom themes (e.g. Dracula)
-    /// become addressable by name in `code_highlight_theme`.
-    ///
-    /// Mirrors `zfb::config::Config::code_highlight.themes_dir` (resolved
-    /// to an absolute path by the command layer before being stored here).
-    /// Default: `None` — bundled themes only.
-    ///
-    /// MUST be kept in sync with
-    /// `zfb_content::SnapshotPipelineConfig::code_highlight_themes_dir`
-    /// so the snapshot ↔ bundler `content_hash` stays byte-identical.
-    pub code_highlight_themes_dir: Option<PathBuf>,
+    /// same knobs via its own `with_*` builders so `zfb dev` and
+    /// `zfb build` produce the same output shape.
+    pub pipeline_spec: zfb_content::PipelineSpec,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
     /// source map from [`ResolveMarkdownLinksSpec::docs_dir`], appends
     /// [`zfb_content::plugins::ResolveLinksPlugin`] to the MDX pipeline,
     /// and handles broken links per [`ResolveMarkdownLinksSpec::on_broken_links`].
     ///
+    /// **Shape decision (zfb#917):** this stays a bundler-side INPUT —
+    /// separate from the pipeline-visible knob
+    /// (`pipeline_spec.resolve_source_map`) — because relative
+    /// [`ResolveMarkdownLinksSpec::docs_dir`] entries need the bundler's
+    /// [`PathResolver`] and `on_broken_links` is a build policy, not a
+    /// pipeline-shape knob. [`bundle`] derives the source-map knob from
+    /// this spec via the same `build_docs_source_map` helper the
+    /// snapshot path uses, so both surfaces resolve identical URL
+    /// strings.
+    ///
     /// Mirrors `zfb::config::Config::resolve_markdown_links`. Default: `None`
     /// (pass-through — links are not rewritten).
     pub resolve_markdown_links: Option<ResolveMarkdownLinksSpec>,
-
-    /// Resolved per-construct GFM flags. Threaded into the hoisted MDX
-    /// pre-compile pipeline at every `materialise_*` call site so the
-    /// JSX `content_hash` baked into each compiled module agrees with
-    /// what the snapshot walker (`zfb_content::build_snapshot_with_config`)
-    /// produces. Divergence here is the snapshot ↔ bundler hash
-    /// land mine documented at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
-    ///
-    /// Mirrors `zfb::config::resolve_gfm_constructs(config.markdown)`.
-    /// `Default` is [`ResolvedGfmConstructs::CONSERVATIVE`] so call
-    /// sites that don't construct this struct manually (the test
-    /// builders in `crates/zfb-build/tests/` etc.) keep the same
-    /// effective parser behaviour.
-    pub gfm_constructs: zfb_content::ResolvedGfmConstructs,
 
     /// Canonical origin URL for the site, threaded from
     /// `zfb::config::Config::site`. When `Some`, the bundler emits
@@ -489,72 +464,6 @@ pub struct BundlerInput {
     ///
     /// Mirrors `zfb::config::Config::prefetch.disabled`. Default: `false`.
     pub prefetch_disabled: bool,
-
-    /// Optional TOC config. When `Some`, a [`TocPlugin`] is appended to
-    /// the hast phase immediately after `HeadingLinksPlugin` so it reads
-    /// final deduplicated `id` attributes. `None` (the default) leaves
-    /// the build byte-for-byte identical to the pre-TOC build.
-    ///
-    /// Mirrors `zfb::config::Config::markdown.toc`. Threaded alongside
-    /// `gfm_constructs` so the snapshot walker and bundler agree on the
-    /// same pipeline shape and produce byte-identical JSX `content_hash`
-    /// values.
-    pub toc: Option<zfb_content::TocConfig>,
-    /// External-link rewriter config. When `Some`, the bundler's MDX
-    /// pre-compile pipeline appends [`ExternalLinksPlugin`] so external
-    /// `<a>` elements are annotated with `target` / `rel`. `None` (the
-    /// default) keeps prior behaviour unchanged.
-    ///
-    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`. MUST match
-    /// what [`zfb_content::SnapshotPipelineConfig::external_links`] is
-    /// set to — divergence shifts the JSX `content_hash` and breaks the
-    /// snapshot ↔ bundler bridge lookup (the land mine at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`).
-    pub external_links: Option<(zfb_content::ExternalLinksConfig, Option<String>)>,
-    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
-    /// Mirrors `zfb::config::resolve_cjk_friendly(config.markdown)`.
-    /// Default: `true` (plugin on). Set to `false` only when the user
-    /// wrote `markdown: { cjkFriendly: false }` in `zfb.config.ts`.
-    ///
-    /// Must match the `SnapshotPipelineConfig::cjk_friendly` value used
-    /// by the snapshot walker — otherwise the `content_hash` baked into
-    /// every compiled MDX module diverges and every
-    /// `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
-    pub cjk_friendly: bool,
-
-    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
-    /// Mirrors `zfb::config::resolve_hard_breaks(config.markdown)`.
-    /// Default: `false` (plugin off). Set to `true` only when the user
-    /// wrote `markdown: { hardBreaks: true }` in `zfb.config.ts`.
-    ///
-    /// Must match the `SnapshotPipelineConfig::hard_breaks` value used
-    /// by the snapshot walker — otherwise the `content_hash` baked into
-    /// every compiled MDX module diverges and every
-    /// `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`HardBreaksPlugin`]: zfb_content::plugins::HardBreaksPlugin
-    pub hard_breaks: bool,
-
-    /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
-    /// pipeline is built via the feature-aware
-    /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
-    /// (mermaid, directives, …) fire per the configured
-    /// toggles. When `None` (the default), it is treated as an empty feature
-    /// set: the former-Core framework features (mermaid,
-    /// directives, heading-marker TOC) are OFF — the post-epic opt-in
-    /// default (#583 / #586), NOT the pre-features always-on behaviour.
-    ///
-    /// Must match the `SnapshotPipelineConfig::features` value used by the
-    /// snapshot walker — otherwise the `content_hash` baked into every
-    /// compiled MDX module diverges and every `<Content />` lookup falls back
-    /// to `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`Pipeline::with_defaults_and_full_config`]: zfb_content::pipeline::Pipeline::with_defaults_and_full_config
-    pub markdown_features: Option<zfb_content::MarkdownFeaturesConfig>,
 
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
@@ -746,18 +655,10 @@ impl BundlerInput {
             content_snapshot_json,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -942,17 +843,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
     // The map is built once here (before the shadow walk) from every
-    // configured route and shared across all materialise calls via a
-    // reference. An empty map is used when the feature is disabled so
-    // the materialise helpers can always receive a reference without
-    // conditional logic at each call site.
+    // configured route, then stored into the effective `PipelineSpec`
+    // shared by all materialise calls (see the `mat_ctx` construction
+    // below). This derivation step is why `resolve_markdown_links` stays
+    // a separate bundler-side input rather than living on the spec: the
+    // route dirs may be relative (resolved against `project_root` here)
+    // and the spec only carries the pipeline-visible RESULT (zfb#917).
     //
     // Multi-route shape (sub #234) lets locale mirrors map to distinct
     // route prefixes — required for any project with EN+JA mirrors, or
     // any other multi-collection layout, so each mirror dir resolves
     // under its own route prefix (`/docs/` vs `/ja/docs/`).
-    let resolve_source_map: HashMap<std::path::PathBuf, String> =
-        if let Some(spec) = &input.resolve_markdown_links {
+    let resolve_source_map: Option<HashMap<std::path::PathBuf, String>> =
+        input.resolve_markdown_links.as_ref().map(|spec| {
             let collections: Vec<CollectionRoute> = spec
                 .routes
                 .iter()
@@ -964,10 +867,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 })
                 .collect();
             build_docs_source_map(DocsSourceMapOptions { collections })
-        } else {
-            HashMap::new()
-        };
-    let resolve_links_enabled = input.resolve_markdown_links.is_some();
+        });
 
     // Accumulated broken links across all materialise calls.
     // After the walk completes, handled according to `on_broken_links`.
@@ -983,21 +883,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
     // call in this bundle() invocation.
+    //
+    // The effective `PipelineSpec` is the input spec with its
+    // `resolve_source_map` knob ALWAYS rewritten from the derivation
+    // above (`Some(map)` when `resolve_markdown_links` is configured,
+    // `None` otherwise) — the bundler owns that knob, so a caller-set
+    // value on `input.pipeline_spec` can never desync from the route
+    // spec (zfb#917).
     let mat_ctx = MaterialiseCtx {
-        strip_md_ext: input.strip_md_ext,
-        code_highlight_theme: input.code_highlight_theme.as_deref(),
-        code_highlight_themes_dir: input.code_highlight_themes_dir.as_deref(),
-        resolve_source_map: if resolve_links_enabled {
-            Some(&resolve_source_map)
-        } else {
-            None
+        pipeline_spec: {
+            let mut spec = input.pipeline_spec.clone();
+            spec.resolve_source_map = resolve_source_map;
+            spec
         },
-        gfm_constructs: input.gfm_constructs,
-        toc: input.toc.clone(),
-        external_links: input.external_links.as_ref(),
-        cjk_friendly: input.cjk_friendly,
-        hard_breaks: input.hard_breaks,
-        markdown_features: input.markdown_features.as_ref(),
         copy_mode,
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
@@ -1617,22 +1515,17 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 ///
 /// Lifetime `'a` is the lifetime of the references borrowed from the
 /// [`bundle`] stack frame (i.e. `&BundlerInput` fields and the
-/// `resolve_source_map` / `bundle_exclude` locals).
+/// `bundle_exclude` local).
 struct MaterialiseCtx<'a> {
-    /// Pipeline configuration shared by all MDX compile calls.
-    strip_md_ext: bool,
-    code_highlight_theme: Option<&'a str>,
-    code_highlight_themes_dir: Option<&'a Path>,
-    /// `None` when `resolve_markdown_links` is disabled for this build.
-    resolve_source_map: Option<&'a HashMap<std::path::PathBuf, String>>,
-    gfm_constructs: zfb_content::ResolvedGfmConstructs,
-    /// Cloned per call because [`zfb_content::pipeline::Pipeline::add_toc`]
-    /// consumes a `TocConfig` by value.
-    toc: Option<zfb_content::TocConfig>,
-    external_links: Option<&'a (zfb_content::ExternalLinksConfig, Option<String>)>,
-    cjk_friendly: bool,
-    hard_breaks: bool,
-    markdown_features: Option<&'a zfb_content::MarkdownFeaturesConfig>,
+    /// Effective pipeline knob set shared by all MDX compile calls —
+    /// `input.pipeline_spec` with `resolve_source_map` rewritten from
+    /// `input.resolve_markdown_links` (see [`bundle`]). Both walkers
+    /// construct their pipelines via the single
+    /// [`zfb_content::PipelineSpec::build_pipeline`] path — the same one
+    /// the snapshot walker uses — which structurally guarantees
+    /// byte-identical MDX-cache fingerprints and `content_hash` values
+    /// across all surfaces (zfb#910 / #917).
+    pipeline_spec: zfb_content::PipelineSpec,
     /// Whether to materialise non-MDX source files as real copies rather
     /// than symlinks (required when esbuild runs without
     /// `--preserve-symlinks`).
@@ -1643,59 +1536,6 @@ struct MaterialiseCtx<'a> {
     /// Project root — used by `materialise_shadow` for the `bundle.exclude`
     /// relativisation step.
     project_root: &'a Path,
-}
-
-impl MaterialiseCtx<'_> {
-    /// Construct the single feature-aware [`zfb_content::pipeline::Pipeline`]
-    /// shared by both walkers.
-    ///
-    /// Hoisted here so `materialise_shadow` and `materialise_collection` both
-    /// call the same construction path — this structurally guarantees that both
-    /// walks produce byte-identical MDX-cache fingerprints (see zfb#910).
-    ///
-    /// The caller receives a ready-to-use pipeline with all opt-in plugins
-    /// already wired (toc, strip-md-ext, resolve-links, external-links).
-    /// `source_dir` for `ResolveLinksPlugin` is still updated per-file inside
-    /// the walk loop; that per-file state lives on the borrowed `&mut Pipeline`,
-    /// not in the construction phase.
-    fn build_pipeline(&self) -> Result<zfb_content::pipeline::Pipeline> {
-        // Single feature-aware entry point — MUST match the snapshot walker's
-        // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-        // `content_hash` stays byte-identical. `markdown_features = None` is an
-        // empty feature set: the former-Core framework features are off
-        // (the post-epic opt-in default).
-        let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
-            self.code_highlight_theme,
-            self.gfm_constructs,
-            self.code_highlight_themes_dir,
-            self.cjk_friendly,
-            self.hard_breaks,
-            self.markdown_features,
-        )
-        .with_context(|| {
-            // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
-            // so the `unwrap_or_default()` empty-string branch is unreachable.
-            format!(
-                "codeHighlight.themesDir: failed to load themes from {}",
-                self.code_highlight_themes_dir
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default()
-            )
-        })?;
-        if let Some(toc_cfg) = self.toc.clone() {
-            pipeline.add_toc(toc_cfg);
-        }
-        if self.strip_md_ext {
-            pipeline.add_strip_md_ext();
-        }
-        if let Some(map) = self.resolve_source_map {
-            pipeline.add_resolve_links(map.clone());
-        }
-        if let Some((cfg, site)) = self.external_links {
-            pipeline.add_external_links(cfg.clone(), site.as_deref());
-        }
-        Ok(pipeline)
-    }
 }
 
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
@@ -1765,7 +1605,7 @@ fn materialise_shadow(
     // also wired into the mdast phase after the directives step so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    let mut pipeline = ctx.build_pipeline()?;
+    let mut pipeline = ctx.pipeline_spec.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
@@ -1875,7 +1715,7 @@ fn materialise_shadow(
             pipeline.reset_per_entry();
             // Update per-file source_dir for ResolveLinksPlugin so
             // relative links like `./other.mdx` resolve correctly.
-            if ctx.resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -1908,7 +1748,7 @@ fn materialise_shadow(
             // original `.md` shadow path becomes the page module esbuild
             // bundles and the router serves.
             pipeline.reset_per_entry();
-            if ctx.resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -2330,7 +2170,7 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after the directives step in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    let mut pipeline = ctx.build_pipeline()?;
+    let mut pipeline = ctx.pipeline_spec.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
@@ -2404,7 +2244,7 @@ fn materialise_collection(
             // counter) before each new MDX file (zfb#187).
             pipeline.reset_per_entry();
             // Update per-file source_dir for ResolveLinksPlugin.
-            if ctx.resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -4375,18 +4215,10 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -5623,18 +5455,10 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: nm_dir,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -7103,16 +6927,7 @@ mod tests {
         exclude: &'a BundleExcludeMatcher,
     ) -> MaterialiseCtx<'a> {
         MaterialiseCtx {
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
-            resolve_source_map: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: false,
             bundle_exclude: exclude,
             project_root,

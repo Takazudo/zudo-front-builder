@@ -39,7 +39,7 @@ use serde_json::Value as JsonValue;
 use crate::collection::{
     walk_collection_with_cache_and_filter, CollectionError, CollectionFilter, Entry,
 };
-use crate::pipeline::Pipeline;
+use crate::pipeline_spec::PipelineSpec;
 
 /// A single content entry, in the shape the JS bridge sees.
 ///
@@ -161,167 +161,12 @@ pub enum BridgeError {
     PipelineConfig(String),
 }
 
-/// Pipeline-shape configuration for [`build_snapshot_with_config`].
-///
-/// The fields here mirror the knobs the bundler passes to
-/// `Pipeline::with_defaults_and_theme` + `add_strip_md_ext` +
-/// `add_resolve_links` in `crates/zfb-build/src/bundler.rs`. The
-/// snapshot walker MUST construct its pipelines with the same shape so
-/// the JSX `content_hash` it bakes into each `EntrySnapshot::module_specifier`
-/// matches the bundler's bridge-map key byte-for-byte. Any divergence
-/// here makes `bridge.get(specifier)` miss and dumps the page into a
-/// `<pre data-zfb-content-fallback>` block.
-///
-/// `Default` reproduces the pre-config-API behaviour (no theme override,
-/// no strip-md-ext, no resolve-links) so existing call sites that don't
-/// need any of these knobs can keep using [`build_snapshot`].
-#[derive(Debug, Clone)]
-pub struct SnapshotPipelineConfig {
-    /// Optional syntect theme name. Forwarded to
-    /// [`Pipeline::with_defaults_and_theme`]. `None` keeps the built-in
-    /// default theme.
-    pub code_highlight_theme: Option<String>,
-    /// Optional absolute path to a directory of `.tmTheme` files.
-    /// Forwarded to
-    /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`].
-    /// `None` keeps syntect's bundled themes only.
-    ///
-    /// MUST match `BundlerInput::code_highlight_themes_dir` so the
-    /// snapshot ↔ bundler `content_hash` values stay byte-identical.
-    pub code_highlight_themes_dir: Option<std::path::PathBuf>,
-    /// When true, append [`Pipeline::add_strip_md_ext`] to every
-    /// per-collection pipeline. Match the bundler's `strip_md_ext`
-    /// flag exactly.
-    pub strip_md_ext: bool,
-    /// When `Some`, wire [`Pipeline::add_resolve_links`] with this
-    /// `(absolute path → URL)` map and call
-    /// [`Pipeline::set_resolve_links_source_dir`] per file so internal
-    /// `[link](./other.mdx)` references resolve to URLs. `None` skips
-    /// the plugin entirely.
-    pub resolve_source_map:
-        Option<std::collections::HashMap<std::path::PathBuf, String>>,
-    /// Resolved GFM construct flags (output of
-    /// `zfb::config::resolve_gfm_constructs` / `MarkdownConfig::resolve_constructs`).
-    /// MUST match what the bundler threads into its own
-    /// `Pipeline::with_defaults_and_theme_and_gfm_and_cjk` call. Divergence
-    /// here is the snapshot ↔ bundler hash divergence land mine
-    /// documented above — flipping `gfm_strikethrough` on one side and
-    /// off on the other shifts every snapshot's JSX `content_hash`,
-    /// and every `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// `Default` is [`ResolvedGfmConstructs::CONSERVATIVE`] so existing
-    /// tests + fixtures that don't construct this struct manually keep
-    /// the same effective behaviour as before this field landed.
-    pub gfm_constructs: super::pipeline::ResolvedGfmConstructs,
-
-    /// When `Some`, wire [`TocPlugin`] into the hast phase immediately after
-    /// `HeadingLinksPlugin`. MUST match the bundler's `markdown.toc` setting
-    /// exactly — divergence shifts the JSX `content_hash` and every
-    /// `<Content />` lookup falls back to `<pre data-zfb-content-fallback>`.
-    ///
-    /// `Default` is `None` (visitor not wired) for byte-for-byte parity with
-    /// the pre-TOC build.
-    pub toc: Option<super::plugins::toc::TocConfig>,
-    /// When `Some`, append [`Pipeline::add_external_links`] with the given
-    /// config and optional site origin so external `<a>` elements are
-    /// annotated with `target` / `rel`. `None` (the default) skips the
-    /// plugin entirely — byte-for-byte identical to the pre-feature build.
-    ///
-    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`.
-    pub external_links: Option<(crate::plugins::ExternalLinksConfig, Option<String>)>,
-    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
-    /// MUST match the bundler's value (output of
-    /// `zfb::config::resolve_cjk_friendly(config.markdown.as_ref())`).
-    ///
-    /// `Default` is `true` (plugin on) so existing call sites and tests
-    /// that don't set this field keep the same effective behaviour as
-    /// before this field landed.
-    ///
-    /// [`CjkFriendlyPlugin`]: super::plugins::CjkFriendlyPlugin
-    pub cjk_friendly: bool,
-
-    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
-    /// MUST match the bundler's value (output of
-    /// `zfb::config::resolve_hard_breaks(config.markdown.as_ref())`).
-    ///
-    /// `Default` is `false` (plugin off) — the pre-feature default is no
-    /// hard-break conversion. A `true` on one side + `false` on the other
-    /// diverges the JSX `content_hash` and causes silent fallback to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`HardBreaksPlugin`]: super::plugins::HardBreaksPlugin
-    pub hard_breaks: bool,
-
-    /// `markdown.features` from `zfb.config.ts`. MUST match the bundler's
-    /// `BundlerInput::markdown_features` exactly — the feature-aware pipeline
-    /// changes which visitors fire, so any divergence shifts the JSX
-    /// `content_hash` and every `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// `Default` is `None` — no feature surface configured — which is treated
-    /// as an empty feature set: the former-Core framework features
-    /// (mermaid, directives, heading-marker TOC) are
-    /// OFF (the post-epic opt-in default, #583 / #586).
-    pub features: Option<zfb_md_extras::MarkdownFeaturesConfig>,
-}
-
-impl Default for SnapshotPipelineConfig {
-    fn default() -> Self {
-        Self {
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
-            strip_md_ext: false,
-            resolve_source_map: None,
-            gfm_constructs: super::pipeline::ResolvedGfmConstructs::default(),
-            cjk_friendly: true,
-            hard_breaks: false,
-            toc: None,
-            external_links: None,
-            features: None,
-        }
-    }
-}
-
-impl SnapshotPipelineConfig {
-    /// Construct a pipeline shaped by this config. Used by
-    /// [`build_snapshot_with_config`] once per collection.
-    fn build_pipeline(&self) -> Result<Pipeline, BridgeError> {
-        // Single feature-aware entry point — MUST match the bundler's dispatch
-        // (see `crates/zfb-build/src/bundler.rs`) so `content_hash` stays
-        // byte-identical. `features = None` is an empty feature set: the three
-        // former-Core framework features are off (the post-epic opt-in default).
-        let mut p = Pipeline::with_defaults_and_full_config(
-            self.code_highlight_theme.as_deref(),
-            self.gfm_constructs,
-            self.code_highlight_themes_dir.as_deref(),
-            self.cjk_friendly,
-            self.hard_breaks,
-            self.features.as_ref(),
-        )
-        .map_err(|e| BridgeError::PipelineConfig(format!("codeHighlight.themesDir: {e}")))?;
-        if self.strip_md_ext {
-            p.add_strip_md_ext();
-        }
-        if let Some(map) = self.resolve_source_map.as_ref() {
-            p.add_resolve_links(map.clone());
-        }
-        if let Some(toc_cfg) = self.toc.clone() {
-            p.add_toc(toc_cfg);
-        }
-        if let Some((cfg, site)) = self.external_links.as_ref() {
-            p.add_external_links(cfg.clone(), site.as_deref());
-        }
-        Ok(p)
-    }
-}
-
 /// Build a deterministic [`ContentSnapshot`] from the configured
 /// collections, using the **default** pipeline shape (no theme override,
 /// no strip-md-ext, no resolve-links).
 ///
 /// **Most callers should prefer [`build_snapshot_with_config`]**, which
-/// accepts a [`SnapshotPipelineConfig`] mirroring the bundler's
+/// accepts the shared [`PipelineSpec`] carrying the bundler's
 /// pipeline knobs. This zero-arg form exists for unit tests and
 /// fixture-based call sites that don't enable any of the optional
 /// pipeline plugins; it produces snapshot hashes that only match the
@@ -333,7 +178,7 @@ impl SnapshotPipelineConfig {
 ///
 /// Returns [`BridgeError::Walk`] if any underlying walker call fails.
 pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapshot, BridgeError> {
-    build_snapshot_with_config(collections, &SnapshotPipelineConfig::default())
+    build_snapshot_with_config(collections, &PipelineSpec::default())
 }
 
 /// Build a deterministic [`ContentSnapshot`] from the configured
@@ -350,10 +195,10 @@ pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapsho
 /// page renders the raw-markdown `<pre data-zfb-content-fallback>`
 /// fallback.
 ///
-/// The pipeline shape covered by [`SnapshotPipelineConfig`] must mirror
-/// the bundler's three knobs (theme, strip-md-ext, resolve-links). When
-/// any of them is enabled in the bundler but disabled here, the JSX
-/// content hash diverges and the bridge lookup misses (zfb#188).
+/// The pipeline shape is described by the shared [`PipelineSpec`] —
+/// the same type the bundler carries on its `BundlerInput` — and built
+/// through the single [`PipelineSpec::build_pipeline`] path, so the two
+/// surfaces structurally cannot diverge (zfb#188 / #917).
 ///
 /// Per-collection instantiation matters because some default plugins
 /// (notably `HeadingLinksPlugin`) carry per-document state (the
@@ -389,12 +234,14 @@ pub fn build_snapshot(collections: &[CollectionConfig]) -> Result<ContentSnapsho
 /// MDX compile error inside one of the configured roots).
 pub fn build_snapshot_with_config(
     collections: &[CollectionConfig],
-    pipeline_config: &SnapshotPipelineConfig,
+    pipeline_config: &PipelineSpec,
 ) -> Result<ContentSnapshot, BridgeError> {
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
-        let mut pipeline = pipeline_config.build_pipeline()?;
+        let mut pipeline = pipeline_config
+            .build_pipeline()
+            .map_err(|e| BridgeError::PipelineConfig(e.to_string()))?;
 
         // The bridge ships frontmatter as raw JSON, so we walk with the
         // no-op `UntypedFrontmatter` schema. See module-level docs for
@@ -564,6 +411,7 @@ fn rel_path_to_string(p: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::Pipeline;
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -670,10 +518,10 @@ mod tests {
         let collection = || CollectionConfig::new("docs", tmp.path.join("docs"));
 
         // Default (no features) → mermaid OFF.
-        let off = build_snapshot_with_config(&[collection()], &SnapshotPipelineConfig::default())
+        let off = build_snapshot_with_config(&[collection()], &PipelineSpec::default())
             .expect("snapshot (features off)");
         // `features.mermaid: true` → mermaid ON.
-        let on_cfg = SnapshotPipelineConfig {
+        let on_cfg = PipelineSpec {
             features: Some(zfb_md_extras::MarkdownFeaturesConfig {
                 mermaid: Some(zfb_md_extras::FeatureToggle::Bool(true)),
                 ..Default::default()
@@ -949,7 +797,7 @@ mod tests {
     }
 
     /// Sub-issue #61 land-mine guard: GFM resolved-constructs threaded
-    /// through `SnapshotPipelineConfig` must produce the same JSX
+    /// through `PipelineSpec` must produce the same JSX
     /// `content_hash` as an independent bundler-shaped compile that
     /// uses the same constructs. Diverging here is exactly the
     /// `<pre data-zfb-content-fallback>` failure mode the docstring at
@@ -978,7 +826,7 @@ mod tests {
             let cfg = CollectionConfig::new("docs", tmp.path.join("docs"));
             let snap = build_snapshot_with_config(
                 &[cfg],
-                &SnapshotPipelineConfig {
+                &PipelineSpec {
                     gfm_constructs: resolved,
                     ..Default::default()
                 },
@@ -1041,7 +889,7 @@ mod tests {
 
         let off = build_snapshot_with_config(
             &[cfg()],
-            &SnapshotPipelineConfig {
+            &PipelineSpec {
                 gfm_constructs: ResolvedGfmConstructs::ALL_OFF,
                 ..Default::default()
             },
@@ -1049,7 +897,7 @@ mod tests {
         .expect("snapshot off");
         let on = build_snapshot_with_config(
             &[cfg()],
-            &SnapshotPipelineConfig {
+            &PipelineSpec {
                 gfm_constructs: ResolvedGfmConstructs::ALL_ON,
                 ..Default::default()
             },

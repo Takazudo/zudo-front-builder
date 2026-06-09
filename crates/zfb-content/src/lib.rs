@@ -7,6 +7,7 @@ pub mod frontmatter;
 pub mod heading_registry;
 pub mod mdx_jsx_emit;
 pub mod pipeline;
+pub mod pipeline_spec;
 pub mod plugins;
 pub mod schema;
 pub mod serializer;
@@ -15,8 +16,9 @@ pub mod tsx_frontmatter;
 
 pub use content_bridge::{
     build_snapshot, build_snapshot_with_config, debug_snapshot_enabled, BridgeError,
-    CollectionConfig, ContentSnapshot, EntrySnapshot, SnapshotPipelineConfig,
+    CollectionConfig, ContentSnapshot, EntrySnapshot,
 };
+pub use pipeline_spec::{PipelineSpec, PipelineSpecError};
 
 pub use pipeline::{
     constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
