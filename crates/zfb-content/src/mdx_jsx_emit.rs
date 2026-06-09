@@ -2083,11 +2083,13 @@ pub fn compile_mdx_to_jsx_module_cached(
 ) -> Result<CompiledMdx, PipelineError> {
     let (collection, slug) = collection_and_slug(file_path);
 
-    // Fingerprint component of the cache key. `None` here means "this
-    // pipeline cannot be keyed" → bypass the cache entirely.
-    let fingerprint: Option<String> = match pipeline.as_deref() {
-        None => Some("no-pipeline".to_string()),
-        Some(p) => p.config_fingerprint(),
+    // Fingerprint component of the cache key. `None` here means "no key
+    // needed" (no cache supplied — skip the hashing work entirely) or
+    // "this pipeline cannot be keyed" → bypass the cache.
+    let fingerprint: Option<String> = match (cache, pipeline.as_deref()) {
+        (None, _) => None,
+        (Some(_), None) => Some("no-pipeline".to_string()),
+        (Some(_), Some(p)) => p.config_fingerprint(),
     };
     let cache_for_lookup = if fingerprint.is_some() { cache } else { None };
 
