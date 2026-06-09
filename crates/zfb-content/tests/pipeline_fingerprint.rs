@@ -256,6 +256,93 @@ fn manual_visitor_mutation_invalidates_the_fingerprint() {
 }
 
 #[test]
+fn config_derived_mutators_do_not_invalidate_the_fingerprint() {
+    // Invalidation rule (zfb#913): internal pushes that derive purely from
+    // already-fingerprinted config MUST NOT invalidate — the named config
+    // mutators extend the fingerprint with a segment instead, keeping the
+    // pipeline cacheable.
+    let mut p = baseline();
+    p.add_toc(TocConfig::default());
+    p.add_strip_md_ext();
+    p.add_external_links(ExternalLinksConfig::default(), None);
+    p.set_heading_id_strategy(HeadingIdStrategy::Hierarchical);
+    assert!(
+        p.config_fingerprint().is_some(),
+        "named config-driven mutators must keep the pipeline cacheable"
+    );
+}
+
+#[test]
+fn manual_feature_registration_invalidates_the_fingerprint() {
+    // Invalidation rule (zfb#913): manual external pushes MUST invalidate.
+    // The public registration helpers are external surface — a
+    // post-construction call wires visitors the construction-time
+    // descriptor knows nothing about, so even an empty feature set drops
+    // cacheability.
+    let empty = MarkdownFeaturesConfig::default();
+
+    let mut p = baseline();
+    assert!(p.config_fingerprint().is_some());
+    zfb_content::pipeline::register_features(&mut p, &empty);
+    assert!(
+        p.config_fingerprint().is_none(),
+        "manual register_features must invalidate, even with an empty feature set"
+    );
+
+    let mut p = baseline();
+    zfb_content::pipeline::register_post_syntect_features(&mut p, &empty);
+    assert!(
+        p.config_fingerprint().is_none(),
+        "manual register_post_syntect_features must invalidate, even with an empty feature set"
+    );
+}
+
+#[test]
+fn canonical_features_json_covers_every_field() {
+    // Companion to the compile-time drift guard
+    // (`assert_features_fingerprint_covers_every_field` in pipeline.rs).
+    // The guard forces a new `MarkdownFeaturesConfig` field to be bound at
+    // the fingerprint site; THIS test pins that every field actually
+    // reaches the canonical features JSON — a `#[serde(skip)]` /
+    // `skip_serializing_if` attribute would drop the field from the
+    // descriptor and silently alias configs that differ only in it.
+    let v = serde_json::to_value(MarkdownFeaturesConfig::default())
+        .expect("features config serializes");
+    let keys: std::collections::BTreeSet<String> = v
+        .as_object()
+        .expect("features config serializes to a JSON object")
+        .keys()
+        .cloned()
+        .collect();
+    let expected: std::collections::BTreeSet<String> = [
+        "codeEnrichment",
+        "codeTabs",
+        "directives",
+        "githubAlerts",
+        "githubAutolinks",
+        "headingIds",
+        "headingMarkerToc",
+        "imageDimensions",
+        "linkValidation",
+        "mermaid",
+        "readingTime",
+        "ruby",
+        "tocExport",
+        "transclude",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(
+        keys, expected,
+        "every MarkdownFeaturesConfig field must appear in the canonical \
+         features JSON (and in this list) — update the drift-guard \
+         destructure in pipeline.rs AND this list when adding a field; \
+         never serde-skip a field on these structs"
+    );
+}
+
+#[test]
 fn resolve_links_invalidates_the_fingerprint() {
     // ResolveLinksPlugin output depends on the per-file source_dir (set
     // between compiles) and drains broken-link diagnostics — both
