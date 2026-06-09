@@ -73,7 +73,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
+use zfb_build::bundler::{bundle, BundleMode, BundlerOutput};
 use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
@@ -94,8 +94,8 @@ use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map, build_route_universe, cfg_framework_to_render, check_runtime_installed,
-    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes, WorkerDispatch,
+    build_prerender_map, build_route_universe, check_runtime_installed,
+    eval_deferred_paths_via_worker, expand_dynamic_routes, WorkerDispatch,
 };
 #[cfg(feature = "embed_v8")]
 use zfb_render::paths::PathsCache;
@@ -246,25 +246,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // kills the subprocess.
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&cfg).await?;
 
-    // #255 — run the new `setup` hook once, before `preBuild`. The
-    // registries are owned by `zfb-build`; we extract the
-    // `injected_routes` view, translate it into the dev-server's
-    // local mirror, and plumb it through `ServeOpts.injected_routes`.
-    // The alias map / virtual-module registry feed Wave 2 (#260,
-    // #261) which is not yet wired — we keep `_setup_registries` in
-    // scope here so the registries stay live for the duration of the
-    // dev session (the embedded references count on it).
-    let setup_registries = if let Some(h) = plugin_host.as_ref() {
-        let cfg_json = serde_json::to_value(&cfg)
-            .context("plugin lifecycle: serialise config for setup ctx")?;
-        h.run_setup(&project_root, zfb_build::SetupCommand::Dev, &cfg_json)
-            .await
-            .map_err(zfb_build::annotate_with_plugin_error)
-            .context("setup lifecycle hook")?
-    } else {
-        zfb_build::SetupRegistries::empty()
-    };
+    // #255 / #260 / #261 / #268 — shared plugin setup phase:
+    // setup → virtual-module prefetch → alias/virtual-module derivation.
+    //
+    // `SetupCommand::Dev` is the per-command difference (build uses
+    // `SetupCommand::Build`).
+    let plugin_setup = crate::commands::plugins::run_plugin_setup(
+        &plugin_host,
+        &project_root,
+        &cfg,
+        zfb_build::SetupCommand::Dev,
+    )
+    .await?;
 
+    // preBuild runs before devMiddleware registration and the bundler.
+    // Dev-mode difference: out_dir is `dist_root` (the dev scratch dir),
+    // not the final `outdir` that build.rs uses.
     if let Some(h) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),
@@ -279,79 +276,35 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             .map_err(zfb_build::annotate_with_plugin_error)
             .context("preBuild lifecycle hook")?;
     }
+
+    // Dev-only: register devMiddleware hooks.
     let plugin_set = if let Some(h) = plugin_host.as_ref() {
         crate::commands::plugins::build_dev_middleware_set(h, &project_root, &cfg).await?
     } else {
         None
     };
 
-    // Build the InjectedRouteSet directly from the build-side InjectedRouteList.
+    // Dev-only: build the InjectedRouteSet from the setup registries.
     // zfb-server depends on zfb-build (see Cargo.toml), so no translation is
-    // needed — InjectedRoute is the same type on both sides. Wave 2 (#260,
-    // #261) consume `setup_registries.aliases` and
-    // `setup_registries.virtual_modules` — kept named (not `_`) so the
-    // variable stays in scope as the wiring lands.
-    let injected_route_set = if setup_registries.injected_routes.is_empty() {
+    // needed — InjectedRoute is the same type on both sides.
+    let injected_route_set = if plugin_setup.setup_registries.injected_routes.is_empty() {
         None
     } else {
-        let records: Vec<zfb_build::InjectedRoute> =
-            setup_registries.injected_routes.iter().cloned().collect();
+        let records: Vec<zfb_build::InjectedRoute> = plugin_setup
+            .setup_registries
+            .injected_routes
+            .iter()
+            .cloned()
+            .collect();
         Some(zfb_server::InjectedRouteSet::new(records))
     };
-    // #261 — build mode wires `aliases` + `virtual_modules` into the esbuild
-    // subprocess config (see `crates/zfb/src/commands/build.rs`). Dev mode
-    // (#377 wiring below) reuses the same setup_registries-derived alias /
-    // virtual-module lists to drive its own islands bundle so dev and build
-    // agree on plugin-registered resolution.
 
-    // #260 — pre-fetch all virtual-module sources once so the embedded V8 host
-    // can resolve plugin-registered virtual modules at runtime. Each
-    // `invoke_virtual_loader` runs exactly once per dev-session boot; the
-    // resolved sources are owned by the `PluginRegistryHooks` clone the
-    // factory closure captures.
-    let mut virtual_sources: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    if let Some(host) = plugin_host.as_ref() {
-        for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {
-            match host.invoke_virtual_loader(&vm_entry.loader_id).await {
-                Ok(source) => {
-                    virtual_sources.insert(specifier.clone(), source);
-                }
-                Err(e) => {
-                    return Err(zfb_build::annotate_with_plugin_error(e))
-                        .with_context(|| {
-                            format!(
-                                "plugin lifecycle: failed to load virtual module \
-                                 `{specifier}` (plugin: `{plugin}`)",
-                                plugin = vm_entry.plugin
-                            )
-                        });
-                }
-            }
-        }
-    }
-    let v8_plugin_hooks = crate::v8_host_adapter::translate_setup_registries_to_hooks(
-        &setup_registries,
-        &virtual_sources,
-    );
-    // #268 — derive alias / virtual-module lists for the main bundler from
-    // the same setup_registries the islands path already uses. These are
-    // cheap clones of data already on the heap; producing them here (before
-    // the rename below) keeps `boot_dev_renderer` API symmetrical with the
-    // build-command path.
-    let dev_plugin_alias_entries: Vec<(String, String)> = setup_registries
-        .aliases
-        .iter()
-        .map(|(from, entry)| (from.clone(), entry.target.to_string_lossy().into_owned()))
-        .collect();
-    let dev_plugin_virtual_modules: Vec<(String, String)> = virtual_sources
-        .iter()
-        .map(|(spec, src)| (spec.clone(), src.clone()))
-        .collect();
-    // Keep `setup_registries` in scope so the underlying registries stay live
-    // (the hook entries borrow nothing from it now, but the variable's role as
-    // the lifecycle owner is preserved).
-    let _setup_registries = setup_registries;
+    let v8_plugin_hooks = plugin_setup.v8_plugin_hooks;
+    let dev_plugin_alias_entries = plugin_setup.plugin_alias_entries;
+    let dev_plugin_virtual_modules = plugin_setup.plugin_virtual_modules;
+    // Keep setup_registries in scope for the lifetime of the dev session —
+    // the hook entries hold references into it.
+    let _setup_registries = plugin_setup.setup_registries;
 
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
@@ -1692,216 +1645,25 @@ fn assemble_and_bundle_dev(
     let content_snapshot_json =
         crate::commands::build::build_content_snapshot_json(project_root, cfg);
 
-    // The intermediate `.zfb-build/` directory lives at
-    // `<project_root>/.zfb-build/`, NOT under `<dist_root>/`. This
-    // mirrors the production path in `commands/build.rs` (see zfb#231).
-    // Dev mode's leak risk is lower (the dev server doesn't ship dist/
-    // anywhere), but keeping the path consistent with build means the
-    // intermediate is always at one well-known location regardless of
-    // mode, and any tooling pointing at it stays mode-agnostic.
-    let mut bundler_input = BundlerInput::for_project(
-        project_root.to_path_buf(),
-        cfg_framework_to_render(cfg.framework),
+    // The full ~25-field BundlerInput assembly is shared with `zfb build`
+    // via `commands::bundler_input::assemble_bundler_input`. The two
+    // per-command differences passed here:
+    //   • BundleMode::Development  (build uses Production)
+    //   • CssModuleFailMode::WarnAndEmpty  (build uses HardFail)
+    let crate::commands::bundler_input::AssembledBundlerInput {
+        bundler_input,
+        _node_modules_handle: _embedded_nm_handle,
+        _esbuild_handle: _embedded_esbuild_handle,
+    } = crate::commands::bundler_input::assemble_bundler_input(
+        project_root,
+        cfg,
         BundleMode::Development,
-        project_root.join(".zfb-build"),
+        crate::commands::bundler_input::CssModuleFailMode::WarnAndEmpty,
         content_snapshot_json,
-    );
-    // Discover the Next-style root `mdx-components.tsx` convention (#616),
-    // mirroring `commands/build.rs`. Re-runs every bundle (shadow is a fresh
-    // tempdir), so `zfb dev` / preview pick up edits to the file with no
-    // special-casing. `None` when absent ⇒ output identical to no-file.
-    bundler_input.mdx_components_file =
-        crate::commands::build::discover_mdx_components_file(project_root);
-    // Mirror the production build CLI: surface project-side
-    // `node_modules/` and `tsconfig.json#compilerOptions.paths` to the
-    // bundler so esbuild can resolve user-installed packages and TS
-    // path aliases. Helpers live in `commands/build.rs`; they are
-    // intentionally re-used so dev and prod stay in lockstep.
-    //
-    // When the project has no node_modules (cargo-install scenario), fall
-    // back to the binary-embedded @takazudo packages. The `_embedded_nm_handle`
-    // keeps the tempdir alive for the duration of the bundle step.
-    let _embedded_nm_handle: Option<tempfile::TempDir>;
-    if let Some(nm) = crate::commands::build::detect_project_node_modules(project_root) {
-        bundler_input.node_modules_dir = Some(nm);
-        _embedded_nm_handle = None;
-    } else {
-        match embedded_node_modules() {
-            Ok((handle, nm_path)) => {
-                bundler_input.node_modules_dir = Some(nm_path);
-                // Vendored / cargo-install mode: mirror
-                // `commands/build.rs` — see
-                // `BundlerInput::node_modules_preserve_symlinks` for
-                // the full rationale (issues #443 / #450).
-                bundler_input.node_modules_preserve_symlinks = true;
-                _embedded_nm_handle = Some(handle);
-            }
-            Err(e) => {
-                crate::output::warn(format!(
-                    "could not extract embedded @takazudo packages ({e}); \
-                     falling back to node_modules walk"
-                ));
-                _embedded_nm_handle = None;
-            }
-        }
-    }
-    bundler_input.tsconfig_paths = crate::commands::build::read_tsconfig_paths(project_root);
-    // Per-collection content materialisation so dev-mode SSR also
-    // installs `globalThis.__zfb.content` and renders MDX bodies as
-    // JSX (#506). Mirrors the production-build wiring in build.rs.
-    bundler_input.content_collections = cfg
-        .collections
-        .iter()
-        .map(|c| zfb_build::ContentCollectionSpec {
-            name: c.name.clone(),
-            root: c.path.clone(),
-            include: c.include.clone(),
-            exclude: c.exclude.clone(),
-            id_strip_suffix: c.id_strip_suffix.clone(),
-        })
-        .collect();
-    // CSS Modules — mirror the production-build wiring so dev preview
-    // resolves `import styles from "./x.module.css"` to the same scoped
-    // class names `zfb build` produces. The scoped names are
-    // deterministic (both sides go through `compute_css_module_class_maps`,
-    // which hashes the project-relative module path — issue #825), so
-    // the dev stylesheet and dev-rendered HTML agree. A failure here is
-    // non-fatal: log it and continue with empty maps (`.module.css`
-    // imports then degrade to `{}` rather than aborting the dev boot).
-    bundler_input.css_module_class_maps =
-        match crate::commands::build::compute_css_module_class_maps(project_root) {
-            Ok(maps) => maps,
-            Err(e) => {
-                crate::output::warn(format!(
-                    "CSS Modules class-map computation failed ({e}); \
-                     `.module.css` imports will resolve to empty maps in dev"
-                ));
-                std::collections::HashMap::new()
-            }
-        };
+        plugin_alias_entries,
+        plugin_virtual_modules,
+    )?;
 
-    // Thread the opt-in `stripMdExt` flag through so the dev-mode
-    // bundler (which feeds the embedded V8 host) honours the same setting as
-    // `zfb build`. The dev loader at `crates/zfb-render/src/loader.rs`
-    // also reads this flag for in-process MDX rendering, so dev preview
-    // matches built dist (zfb#127 / #129).
-    bundler_input.strip_md_ext = cfg.strip_md_ext;
-    // Mirror the `commands/build.rs` wiring for `resolveMarkdownLinks`
-    // so dev preview rewrites `.mdx` link targets to their final route
-    // URLs the same way the production build does (sub #234).
-    if let Some(routes) = crate::commands::build::resolve_links_routes_from_config(project_root, cfg) {
-        let on_broken_links = match cfg
-            .resolve_markdown_links
-            .as_ref()
-            .map(|r| r.on_broken_links)
-            .unwrap_or_default()
-        {
-            crate::config::OnBrokenLinks::Warn => zfb_build::bundler::OnBrokenLinks::Warn,
-            crate::config::OnBrokenLinks::Error => zfb_build::bundler::OnBrokenLinks::Error,
-            crate::config::OnBrokenLinks::Ignore => zfb_build::bundler::OnBrokenLinks::Ignore,
-        };
-        bundler_input.resolve_markdown_links = Some(zfb_build::bundler::ResolveMarkdownLinksSpec {
-            routes: routes
-                .into_iter()
-                .map(|r| zfb_build::bundler::ResolveMarkdownLinksRoute {
-                    docs_dir: r.dir,
-                    route_prefix: r.route_prefix,
-                })
-                .collect(),
-            on_broken_links,
-        });
-    }
-    // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
-    // so the hoisted MDX pre-compile pipeline uses the configured
-    // syntect theme. Mirrors the `commands/build.rs` wiring.
-    bundler_input.code_highlight_theme = cfg.code_highlight.as_ref().and_then(|c| c.theme.clone());
-    // Thread `markdown.gfm` and `markdown.cjkFriendly` through to the
-    // bundler so dev rendering and the build agree on the parser
-    // construct set. Mirrors the `commands/build.rs` wiring.
-    // Thread the optional `codeHighlight.themesDir` so dev rendering
-    // loads custom .tmTheme files just like the production build.
-    // Mirrors the `commands/build.rs` wiring.
-    bundler_input.code_highlight_themes_dir = cfg
-        .code_highlight
-        .as_ref()
-        .and_then(|c| c.themes_dir.as_ref())
-        .map(|td| project_root.join(td));
-    // Thread `markdown.gfm` through to the bundler so dev rendering
-    // and the build agree on the parser construct set. Mirrors the
-    // `commands/build.rs` wiring.
-    bundler_input.gfm_constructs =
-        crate::config::resolve_gfm_constructs(cfg.markdown.as_ref());
-    // Thread the optional `site` canonical-origin URL so `zfb dev` emits
-    // `globalThis.__zfb.site` the same way `zfb build` does. Mirrors the
-    // `commands/build.rs` wiring (sub #254).
-    bundler_input.site = cfg.site.clone();
-    // Thread `prefetch.disabled` so `zfb dev` emits
-    // `globalThis.__zfb.prefetchDisabled = true` the same way `zfb build`
-    // does. Mirrors the `commands/build.rs` wiring (sub #277).
-    bundler_input.prefetch_disabled = cfg
-        .prefetch
-        .as_ref()
-        .and_then(|p| p.disabled)
-        .unwrap_or(false);
-    bundler_input.toc = cfg.markdown.as_ref().and_then(|m| m.toc.clone());
-    // Thread `markdown.externalLinks` through to the bundler so dev
-    // rendering matches the production build. Mirrors `commands/build.rs`.
-    // `site` (top-level cfg.site, #254) lets `ExternalLinksPlugin`
-    // classify same-origin absolute URLs as internal.
-    bundler_input.external_links = cfg
-        .markdown
-        .as_ref()
-        .and_then(|m| m.external_links.clone())
-        .map(|el| (el.into_content_config(), cfg.site.clone()));
-    bundler_input.cjk_friendly =
-        crate::config::resolve_cjk_friendly(cfg.markdown.as_ref());
-    bundler_input.hard_breaks =
-        crate::config::resolve_hard_breaks(cfg.markdown.as_ref());
-    // #664 / #672 — thread `bundle.exclude` so `zfb dev` keeps the same
-    // project-relative globs out of the esbuild graph as the production build.
-    // Empty → skip nothing. Mirrors `commands/build.rs`.
-    bundler_input.bundle_exclude =
-        crate::config::resolve_bundle_exclude(cfg.bundle.as_ref());
-    // #676 -- mirror commands/build.rs: thread `bundle.mainFields` /
-    // `bundle.external` so dev's page/SSR bundle resolves (or externalizes)
-    // CJS-main-only deps identically to the production build.
-    bundler_input.main_fields =
-        crate::config::resolve_bundle_main_fields(cfg.bundle.as_ref());
-    bundler_input
-        .external
-        .extend(crate::config::resolve_bundle_external(cfg.bundle.as_ref()));
-    // #586 — thread `markdown.features` so dev rendering honours the opt-in
-    // feature plugins, matching the production build. Mirrors
-    // `commands/build.rs`. `None` keeps the legacy always-on chain.
-    bundler_input.markdown_features =
-        cfg.markdown.as_ref().and_then(|m| m.features.clone());
-    // #268 — thread plugin-registered aliases and virtual modules into the
-    // dev-mode bundler's esbuild invocation. Mirrors `commands/build.rs`
-    // wiring so `zfb dev` and `zfb build` produce identical alias resolution
-    // for pages / layouts / shared SSR-only modules.
-    bundler_input.plugin_alias_entries = plugin_alias_entries;
-    bundler_input.plugin_virtual_modules = plugin_virtual_modules;
-    // Sub #212 follow-up — same embedded-esbuild wiring as
-    // `commands/build.rs`. Without this, dev mode would also blow up on
-    // consumer projects without `crates/zfb/binaries/esbuild/`.
-    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
-    if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
-        match crate::render_pipeline::embedded_binary("esbuild") {
-            Ok((handle, path)) => {
-                bundler_input.esbuild_binary = Some(path);
-                _embedded_esbuild_handle = Some(handle);
-            }
-            Err(e) => {
-                crate::output::warn(format!(
-                    "could not extract embedded esbuild ({e}); \
-                     falling back to bundler resolver"
-                ));
-                _embedded_esbuild_handle = None;
-            }
-        }
-    } else {
-        _embedded_esbuild_handle = None;
-    }
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
     Ok(bundler_out)
 }
