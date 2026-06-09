@@ -9,6 +9,7 @@ description = "Shared exact-match resolver inputs for esbuild — turns plugin-r
 
 [dependencies]
 anyhow = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 zfb-types = { path = "../zfb-types" }
 

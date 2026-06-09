@@ -5563,6 +5563,7 @@ dependencies = [
  "zfb-graph",
  "zfb-islands",
  "zfb-md-ast",
+ "zfb-plugin-resolver",
  "zfb-render",
  "zfb-router",
  "zfb-server",
@@ -5714,6 +5715,7 @@ name = "zfb-plugin-resolver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "tempfile",
  "zfb-types",
 ]

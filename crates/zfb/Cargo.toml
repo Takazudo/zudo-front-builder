@@ -86,6 +86,10 @@ zfb-md-ast = { path = "../zfb-md-ast" }
 zfb-css = { path = "../zfb-css" }
 zfb-graph = { path = "../zfb-graph" }
 zfb-islands = { path = "../zfb-islands" }
+# Shared tsconfig compilerOptions.paths / extends-chain helper used by both
+# the build command (read_tsconfig_paths) and the islands scanner. Extracted
+# here to avoid duplicating JSONC-stripping logic across the two call sites.
+zfb-plugin-resolver = { path = "../zfb-plugin-resolver" }
 # See `default-features = false` note on `zfb-build` above — same
 # rationale (issue #371, sub-task 4.1a).
 zfb-render = { path = "../zfb-render", default-features = false }
