@@ -42,8 +42,8 @@ use zfb_server::{
     PluginRequest, PluginResponse, PluginResponseEncoding,
     // Embed handlers
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
-    // Injected routes
-    InjectedRouteRecord, InjectedRouteSet, pattern_matches,
+    // Injected routes (InjectedRoute is re-exported from zfb-build)
+    InjectedRoute, InjectedRouteSet, pattern_matches,
     // SSR
     SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
     // Inject helpers
