@@ -48,7 +48,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde_json;
 use tempfile::NamedTempFile;
 use zfb_types::path_to_posix_string;
 
