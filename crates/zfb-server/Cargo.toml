@@ -39,7 +39,9 @@ async-trait = "0.1"
 # with `bodyEncoding: "base64"` (binary plugin responses).
 base64 = "0.22"
 mime_guess = "2"
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal"] }
+# `fs` (#903): request-path disk fallbacks in `routes.rs` read pages /
+# public assets via `tokio::fs` so they don't block request workers.
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal", "fs"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
