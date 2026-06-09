@@ -264,8 +264,17 @@ fn probe_dimensions(
     let size = imagesize::size(path)
         .map_err(|e| format!("cannot probe dimensions of '{}': {e}", path.display()))?;
 
-    let w = size.width as u32;
-    let h = size.height as u32;
+    // `imagesize` reports `usize` dimensions straight from the (untrusted)
+    // file header — reject out-of-range values instead of truncating to
+    // silently wrong width/height attributes.
+    let (Ok(w), Ok(h)) = (u32::try_from(size.width), u32::try_from(size.height)) else {
+        return Err(format!(
+            "image dimensions of '{}' out of range: {}x{}",
+            path.display(),
+            size.width,
+            size.height
+        ));
+    };
 
     // Store in cache.
     {

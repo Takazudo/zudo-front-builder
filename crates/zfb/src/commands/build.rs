@@ -2798,7 +2798,15 @@ fn copy_public_dir(
 
     // Strip leading/trailing slashes from the base to get the segment,
     // e.g. "/pj/test/" → "pj/test", "/" → "", None → "".
-    let base_segment = base.map(|b| b.trim_matches('/')).unwrap_or("").to_string();
+    // Absolute-URL bases ("https://cdn.example.com/") mean assets live on
+    // another origin — there is no on-disk sub-path, so public files copy
+    // directly under `outdir` (same interpretation as
+    // `zfb_types::base_prefix::dev_mount_prefix`).
+    let base_segment = base
+        .filter(|b| !b.contains("://"))
+        .map(|b| b.trim_matches('/'))
+        .unwrap_or("")
+        .to_string();
 
     let dest_root = if base_segment.is_empty() {
         outdir.to_path_buf()
@@ -4506,6 +4514,32 @@ mod tests {
         )
         .expect("copy must succeed");
         assert!(outdir.join("pj/test/favicon.ico").is_file());
+    }
+
+    /// Absolute-URL base (CDN) has no on-disk sub-path — files copy
+    /// directly under outdir instead of a literal "https:/…" directory.
+    #[test]
+    fn copy_public_dir_absolute_url_base_copies_under_outdir() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/favicon.ico"), b"\x00").unwrap();
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("public"),
+            Some("https://cdn.example.com/"),
+        )
+        .expect("copy must succeed");
+        assert!(
+            outdir.join("favicon.ico").is_file(),
+            "absolute-URL base must not create an on-disk URL-shaped path"
+        );
+        assert!(
+            !outdir.join("https:").exists(),
+            "no literal 'https:' directory must be created"
+        );
     }
 
     /// Base = "/" is treated as no prefix.

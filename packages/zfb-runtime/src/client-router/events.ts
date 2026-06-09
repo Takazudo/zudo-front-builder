@@ -71,7 +71,8 @@ class BeforeEvent extends Event {
  */
 export const isTransitionBeforePreparationEvent = (
   value: any,
-): value is TransitionBeforePreparationEvent => value.type === TRANSITION_BEFORE_PREPARATION;
+): value is TransitionBeforePreparationEvent =>
+  typeof value === "object" && value !== null && value.type === TRANSITION_BEFORE_PREPARATION;
 export class TransitionBeforePreparationEvent extends BeforeEvent {
   formData: FormData | undefined;
   loader: () => Promise<void>;
@@ -112,7 +113,7 @@ export class TransitionBeforePreparationEvent extends BeforeEvent {
  * TransitionBeforeSwapEvent
  */
 export const isTransitionBeforeSwapEvent = (value: any): value is TransitionBeforeSwapEvent =>
-  value.type === TRANSITION_BEFORE_SWAP;
+  typeof value === "object" && value !== null && value.type === TRANSITION_BEFORE_SWAP;
 export class TransitionBeforeSwapEvent extends BeforeEvent {
   override readonly direction: Direction | string;
   readonly viewTransition: ViewTransition;

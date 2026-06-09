@@ -48,8 +48,9 @@ pub struct DocsSourceMapOptions {
 /// ignored.
 ///
 /// Missing directories are silently skipped (a collection with no
-/// content yet is not an error). I/O errors during traversal cause the
-/// directory to be skipped — this helper is best-effort.
+/// content yet is not an error). I/O errors during traversal skip only
+/// the unreadable entry and continue with the rest — this helper is
+/// best-effort.
 #[must_use]
 pub fn build_docs_source_map(options: DocsSourceMapOptions) -> HashMap<PathBuf, String> {
     let mut map = HashMap::new();
@@ -58,7 +59,7 @@ pub fn build_docs_source_map(options: DocsSourceMapOptions) -> HashMap<PathBuf, 
             continue;
         }
         let mut files: Vec<PathBuf> = Vec::new();
-        let _ = collect_md_files(&route.dir, &mut files);
+        collect_md_files(&route.dir, &mut files);
         for path in files {
             let Some(slug) = slug_for(&route.dir, &path) else {
                 continue;
@@ -103,9 +104,16 @@ fn slug_for(dir: &Path, path: &Path) -> Option<String> {
     Some(s)
 }
 
-fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        // Best-effort: an unreadable entry must not abort the walk and drop
+        // every file that would have followed it.
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         // Skip dot-named files/dirs (.DS_Store, editor swap files, .git /
         // .obsidian shadow dirs) so this walker agrees with the collection
@@ -117,14 +125,15 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         {
             continue;
         }
-        let file_type = entry.file_type()?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if file_type.is_dir() {
-            collect_md_files(&path, out)?;
+            collect_md_files(&path, out);
         } else if file_type.is_file() && is_md_or_mdx(&path) {
             out.push(path);
         }
     }
-    Ok(())
 }
 
 fn is_md_or_mdx(path: &Path) -> bool {

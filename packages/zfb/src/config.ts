@@ -377,6 +377,29 @@ export type ZfbConfig = {
   emitRoutesManifest?: boolean;
 
   /**
+   * Syntect code-highlight options; absent = default theme
+   * (`base16-ocean.dark`). See {@link CodeHighlightConfig} for accepted
+   * theme names and custom-theme loading.
+   *
+   * Mirrors `Config::code_highlight` in crates/zfb/src/config.rs.
+   */
+  codeHighlight?: CodeHighlightConfig;
+
+  /**
+   * Maximum seconds a single plugin lifecycle hook (preBuild, postBuild,
+   * setup, etc.) may run before the build fails with a diagnostic error
+   * and the plugin host is force-killed.
+   *
+   * Absent falls through to the `ZFB_PLUGIN_HOOK_TIMEOUT` env var, then
+   * the 120s built-in default. Set this when your plugins do long but
+   * bounded work (e.g. large sitemap generation) and you want a tighter
+   * or more explicit budget.
+   *
+   * Mirrors `Config::plugin_hook_timeout_secs` in crates/zfb/src/config.rs.
+   */
+  pluginHookTimeoutSecs?: number;
+
+  /**
    * Project output mode. Drives the V8-mode decision the build engine
    * makes right after the no-SSR-without-adapter precondition check
    * (sub-task 4.1b / issue #373):
@@ -415,6 +438,32 @@ export type ZfbConfig = {
  * Mirrors `OutputMode` in crates/zfb/src/config.rs.
  */
 export type OutputMode = "static" | "hybrid" | "auto";
+
+/**
+ * Syntect code-highlight options.
+ *
+ * Unknown theme names are rejected at build start with a clear error
+ * rather than silently falling back.
+ *
+ * Mirrors `CodeHighlightConfig` in crates/zfb/src/config.rs.
+ */
+export type CodeHighlightConfig = {
+  /**
+   * Syntect built-in or user-loaded theme name. When absent the
+   * pipeline defaults to `"base16-ocean.dark"`.
+   */
+  theme?: string;
+  /**
+   * Path to a directory of `.tmTheme` files, relative to the project
+   * root. Every `.tmTheme` file in the directory is loaded and becomes
+   * available by its declared `name` via {@link theme}. When absent
+   * only syntect's bundled themes are available.
+   *
+   * The path must be relative and must not escape the project root via
+   * `..`. A missing directory is reported as an error at build start.
+   */
+  themesDir?: string;
+};
 
 /**
  * Table-of-contents options. Wire via `markdown.toc` in `zfb.config.ts`.
@@ -650,7 +699,10 @@ export type LinkValidationConfig = {
   failOnBroken?: boolean;
   /**
    * When `true` (default), external URLs are silently skipped.
-   * Set to `false` to validate external links as well.
+   *
+   * Accepted for API completeness, but network validation of external
+   * links is not implemented yet — `false` currently behaves the same
+   * as `true` (external URLs are always skipped).
    */
   allowExternal?: boolean;
 };
