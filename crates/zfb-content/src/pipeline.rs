@@ -150,13 +150,20 @@ const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v1";
 
 /// Canonical descriptor segment for a [`ResolvedGfmConstructs`] set.
 fn gfm_fingerprint_segment(resolved: ResolvedGfmConstructs) -> String {
+    // Drift guard (zfb#913): exhaustive destructure — NO `..` rest pattern.
+    // Adding a construct flag to `ResolvedGfmConstructs` stops compiling
+    // here until the new flag joins the descriptor below, instead of
+    // silently aliasing compile-cache entries across configs that differ
+    // only in that flag.
+    let ResolvedGfmConstructs {
+        strikethrough,
+        table,
+        autolink_literal,
+        task_list_item,
+        footnote_definition,
+    } = resolved;
     format!(
-        "gfm=strikethrough:{},table:{},autolink_literal:{},task_list_item:{},footnote_definition:{}",
-        resolved.strikethrough,
-        resolved.table,
-        resolved.autolink_literal,
-        resolved.task_list_item,
-        resolved.footnote_definition,
+        "gfm=strikethrough:{strikethrough},table:{table},autolink_literal:{autolink_literal},task_list_item:{task_list_item},footnote_definition:{footnote_definition}"
     )
 }
 
@@ -215,9 +222,127 @@ fn themes_dir_fingerprint_segment(themes_dir: Option<&Path>) -> Option<String> {
 fn features_fingerprint_segment(
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) -> Option<String> {
+    assert_features_fingerprint_covers_every_field(features);
     let mut v = serde_json::to_value(features).ok()?;
     sort_value_keys(&mut v);
     Some(format!("features={v}"))
+}
+
+/// Drift guard for the `markdown.features` part of the fingerprint
+/// (zfb#913): exhaustively destructures [`MarkdownFeaturesConfig`] AND
+/// every nested per-feature option struct/enum — **no `..` rest pattern
+/// anywhere** — so adding a field to any of them is a compile error in
+/// this function until the author decides how the fingerprint covers the
+/// new knob:
+///
+/// - plain data fields are covered automatically by the canonical
+///   features JSON ([`features_fingerprint_segment`] serializes the WHOLE
+///   struct via serde) — bind the new field below and you are done. Do
+///   NOT add `#[serde(skip)]` / `#[serde(skip_serializing_if)]` to these
+///   structs: a skipped field silently vanishes from the descriptor (the
+///   `canonical_features_json_covers_every_field` test in
+///   `tests/pipeline_fingerprint.rs` pins the serialized key set as a
+///   second line of defense);
+/// - a feature whose plugin reads OTHER files at compile time must ALSO
+///   join the `filesystem_dependent_feature` gate in
+///   [`Pipeline::with_defaults_and_full_config`] so the pipeline becomes
+///   uncacheable — a cached entry cannot see the referenced files change.
+///
+/// All bindings are deliberately discarded; the function exists purely to
+/// break the build on config drift (the optimizer removes it entirely).
+///
+/// [`MarkdownFeaturesConfig`]: zfb_md_extras::MarkdownFeaturesConfig
+fn assert_features_fingerprint_covers_every_field(
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    use zfb_md_ast::{ReadingTimeFeature, ReadingTimeOptions};
+    use zfb_md_extras::{
+        CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, FeatureOptions, FeatureToggle,
+        GithubAutolinksConfig, HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
+        LinkValidationConfig, MarkdownFeaturesConfig, TocExportConfig, TranscludeConfig,
+    };
+
+    let MarkdownFeaturesConfig {
+        github_alerts,
+        reading_time,
+        github_autolinks,
+        code_enrichment,
+        code_tabs,
+        ruby,
+        toc_export,
+        image_dimensions,
+        link_validation,
+        transclude,
+        directives,
+        mermaid,
+        heading_marker_toc,
+        heading_ids,
+    } = features;
+
+    // Bool-or-empty-options toggles share the FeatureToggle shape.
+    for toggle in [github_alerts, code_tabs, ruby, mermaid] {
+        match toggle {
+            Some(FeatureToggle::Options(FeatureOptions {}) | FeatureToggle::Bool(_)) | None => {}
+        }
+    }
+    match reading_time {
+        Some(
+            ReadingTimeFeature::Options(ReadingTimeOptions { wpm: _ })
+            | ReadingTimeFeature::Bool(_),
+        )
+        | None => {}
+    }
+    match github_autolinks {
+        Some(GithubAutolinksConfig { repo: _ }) | None => {}
+    }
+    match code_enrichment {
+        Some(CodeEnrichmentConfig {
+            diff_markers: _,
+            line_highlight: _,
+        })
+        | None => {}
+    }
+    match toc_export {
+        Some(TocExportConfig { max_depth: _ }) | None => {}
+    }
+    match image_dimensions {
+        Some(ImageDimensionsConfig { skip_remote: _ }) | None => {}
+    }
+    match link_validation {
+        Some(LinkValidationConfig {
+            fail_on_broken: _,
+            allow_external: _,
+        })
+        | None => {}
+    }
+    match transclude {
+        Some(TranscludeConfig { max_depth: _ }) | None => {}
+    }
+    if let Some(map) = directives {
+        for spec in map.values() {
+            match spec {
+                DirectiveSpec::Full(DirectiveFullSpec {
+                    component: _,
+                    kind: _,
+                    title_from_label: _,
+                }) => {}
+                DirectiveSpec::Short(_) => {}
+            }
+        }
+    }
+    match heading_marker_toc {
+        Some(
+            HeadingMarkerTocFeature::Config(TocConfig {
+                heading: _,
+                max_depth: _,
+            })
+            | HeadingMarkerTocFeature::Bool(_),
+        )
+        | None => {}
+    }
+    match heading_ids {
+        Some(HeadingIdsConfig { strategy: _ }) | None => {}
+    }
 }
 
 /// Recursively sort all object keys in `value` so its serialization is
@@ -469,6 +594,43 @@ impl Pipeline {
         }
     }
 
+    /// Internal, non-invalidating visitor push.
+    ///
+    /// **Invalidation rule (zfb#913): internal pushes that derive purely
+    /// from already-fingerprinted config MUST NOT invalidate the
+    /// fingerprint; manual external pushes MUST.**
+    ///
+    /// Internal wiring — the constructors, the named config mutators
+    /// ([`Pipeline::add_toc`], [`Pipeline::add_strip_md_ext`],
+    /// [`Pipeline::add_external_links`]), and the `register_features*`
+    /// internals — builds the visitor chain from config the fingerprint
+    /// already (or finally) describes, so it pushes through these private
+    /// helpers. Two obligations come with the shortcut:
+    ///
+    /// - a **constructor** that wires visitors this way MUST finish with
+    ///   [`Pipeline::set_config_fingerprint_base`], passing a descriptor
+    ///   covering every knob it consumed (or `None` for uncacheable
+    ///   shapes) — leaving the interim bare-constructor descriptor in
+    ///   place would alias the bare pipeline's compile-cache entries;
+    /// - a **post-construction named mutator** MUST call
+    ///   [`Pipeline::extend_config_fingerprint`] with a segment capturing
+    ///   its full config.
+    ///
+    /// Everything reachable by consumers — [`Pipeline::add_mdast_visitor`],
+    /// [`Pipeline::add_hast_visitor`], [`register_features`],
+    /// [`register_post_syntect_features`] — MUST invalidate instead: an
+    /// arbitrary external mutation cannot be derived from config, so the
+    /// compile cache must never key it.
+    fn push_config_derived_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) {
+        self.mdast_visitors.push(v);
+    }
+
+    /// Hast twin of [`Pipeline::push_config_derived_mdast_visitor`] —
+    /// same invalidation rule.
+    fn push_config_derived_hast_visitor(&mut self, v: Box<dyn HastVisitor>) {
+        self.hast_visitors.push(v);
+    }
+
     /// Borrow the resolved GFM construct set this pipeline was built
     /// with.
     ///
@@ -526,16 +688,15 @@ impl Pipeline {
     /// current `add_trailing_slash` setting (defaults to `true`).
     ///
     /// Config-driven and deterministic per input, so this **extends**
-    /// the config fingerprint instead of invalidating it (the visitor
-    /// is pushed directly, not via the fingerprint-invalidating
-    /// [`Pipeline::add_hast_visitor`]).
+    /// the config fingerprint instead of invalidating it (invalidation
+    /// rule — see [`Pipeline::push_config_derived_hast_visitor`]).
     pub fn add_strip_md_ext(&mut self) -> &mut Self {
         let plugin = if self.add_trailing_slash {
             StripMdExtensionPlugin::with_trailing_slash()
         } else {
             StripMdExtensionPlugin::new()
         };
-        self.hast_visitors.push(Box::new(plugin));
+        self.push_config_derived_hast_visitor(Box::new(plugin));
         self.extend_config_fingerprint(format!(
             "strip_md_ext;trailing_slash={}",
             self.add_trailing_slash
@@ -554,7 +715,8 @@ impl Pipeline {
     /// visitor not registered, output identical to today.
     ///
     /// Config-driven and deterministic per input, so this **extends**
-    /// the config fingerprint instead of invalidating it.
+    /// the config fingerprint instead of invalidating it (invalidation
+    /// rule — see [`Pipeline::push_config_derived_hast_visitor`]).
     pub fn add_external_links(
         &mut self,
         config: ExternalLinksConfig,
@@ -564,8 +726,7 @@ impl Pipeline {
             "external_links;rel={:?};target={:?};site={:?}",
             config.rel, config.target, site
         );
-        self.hast_visitors
-            .push(Box::new(ExternalLinksPlugin::new(config, site)));
+        self.push_config_derived_hast_visitor(Box::new(ExternalLinksPlugin::new(config, site)));
         self.extend_config_fingerprint(segment);
         self
     }
@@ -625,11 +786,15 @@ impl Pipeline {
     /// identical.
     pub fn add_toc(&mut self, cfg: TocConfig) -> &mut Self {
         // Config-driven and deterministic per input → extends the config
-        // fingerprint (see `config_fingerprint`) rather than invalidating.
+        // fingerprint (see `config_fingerprint`) rather than invalidating
+        // (invalidation rule — see `push_config_derived_hast_visitor`).
         let segment = format!("toc;heading={:?};max_depth={}", cfg.heading, cfg.max_depth);
         // Insert at position 1 in the hast visitors list so TOC runs
         // immediately after HeadingLinksPlugin (index 0) and before all
         // subsequent hast visitors. This guarantees ids are already set.
+        // Inserted at a fixed position rather than pushed, so this site
+        // manipulates `hast_visitors` directly instead of going through
+        // the push helper — same non-invalidating contract.
         //
         // If the list is empty (e.g. in a bare pipeline built without
         // with_defaults), append normally so the visitor still runs.
@@ -838,27 +1003,31 @@ impl Pipeline {
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
-        // mdast phase.
+        // mdast phase. Config-derived wiring — pushed through the
+        // non-invalidating helpers (invalidation rule — see
+        // `push_config_derived_mdast_visitor`).
         if cjk_friendly {
-            p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+            p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         }
         // No directive registry here: core seeds zero directive names. Callers
         // that want `:::name` → `<Component>` go through
         // `with_defaults_and_full_config` with a `features.directives` map.
         // hast phase — ordering rationale lives in the doc comment above.
-        p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
-        p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-        p.add_hast_visitor(Box::new(MermaidPlugin::new()));
+        p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+        p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        p.push_config_derived_hast_visitor(Box::new(MermaidPlugin::new()));
         let syntect = if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
         } else {
             SyntectPlugin::new(highlighter)
         };
-        p.add_hast_visitor(Box::new(syntect));
-        // Fingerprint the construction config LAST: the add_*_visitor
-        // calls above invalidated the bare-constructor fingerprint, and
-        // this final assignment replaces it with the legacy-defaults
-        // descriptor. `defaults` vs `full` prefix keeps this chain (which
+        p.push_config_derived_hast_visitor(Box::new(syntect));
+        // Fingerprint the construction config LAST: the interim descriptor
+        // from `with_resolved_gfm_constructs` only covers the bare
+        // constructor; this final assignment replaces it with the
+        // legacy-defaults descriptor covering every knob this chain
+        // consumed (constructor obligation of the invalidation rule).
+        // `defaults` vs `full` prefix keeps this chain (which
         // always wires the core MermaidPlugin) distinct from the
         // feature-aware `with_defaults_and_full_config` chain even when
         // the shared knobs coincide.
@@ -999,14 +1168,17 @@ impl Pipeline {
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
+        // Config-derived wiring throughout this constructor is pushed via
+        // the non-invalidating helpers (invalidation rule — see
+        // `push_config_derived_mdast_visitor`).
         if cjk_friendly {
-            p.add_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+            p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         }
         // HardBreaksPlugin runs AFTER CjkFriendlyPlugin so CJK emphasis
         // re-tokenisation sees intact Text nodes first (emphasis markers are
         // resolved before soft line breaks are split). Default is false.
         if hard_breaks {
-            p.add_mdast_visitor(Box::new(HardBreaksPlugin::new()));
+            p.push_config_derived_mdast_visitor(Box::new(HardBreaksPlugin::new()));
         }
         // hast phase — HeadingLinksPlugin and CodeTitlePlugin are always on.
         // HeadingLinksPlugin honours `features.headingIds.strategy` (zfb#871);
@@ -1014,12 +1186,14 @@ impl Pipeline {
         // JSX-emit path (`collect_headings`) mirrors the same scheme.
         let strategy = zfb_md_extras::heading_id_strategy(&features.heading_ids);
         p.set_heading_id_strategy(strategy);
-        p.add_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
-        p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
+        p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
-        // mermaid; after for post-syntect).
-        register_features(&mut p, features);
+        // mermaid; after for post-syntect). The `_config_derived` variant
+        // does not invalidate — the final base descriptor below covers the
+        // whole `features` value.
+        register_features_config_derived(&mut p, features);
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
         // extras visitors (mermaid, …) run first.
         let syntect = if let Some(t) = theme {
@@ -1027,14 +1201,16 @@ impl Pipeline {
         } else {
             SyntectPlugin::new(highlighter)
         };
-        p.add_hast_visitor(Box::new(syntect));
+        p.push_config_derived_hast_visitor(Box::new(syntect));
         // Post-syntect extras visitors operate on the per-line
         // <span class="line"> structure SyntectPlugin emits.
-        register_post_syntect_features(&mut p, features);
-        // Fingerprint the construction config LAST — the wiring above
-        // went through the fingerprint-invalidating add_*_visitor
-        // methods; this final assignment replaces the interim `None`
-        // with the real descriptor (see `config_fingerprint`).
+        register_post_syntect_features_config_derived(&mut p, features);
+        // Fingerprint the construction config LAST — the interim
+        // descriptor from `with_resolved_gfm_constructs` only covers the
+        // bare constructor; this final assignment replaces it with the
+        // full-config descriptor covering every knob this chain consumed
+        // (constructor obligation of the invalidation rule — see
+        // `push_config_derived_mdast_visitor`).
         //
         // Plugins that read OTHER files at compile time make the JSX
         // output depend on filesystem state the cache key cannot see
@@ -1070,9 +1246,14 @@ impl Pipeline {
     /// **uncacheable** ([`Pipeline::config_fingerprint`] → `None`): a
     /// `Box<dyn MdastVisitor>` cannot be fingerprinted from outside, so
     /// the MDX compile cache could not tell two manually-wired
-    /// pipelines apart. Constructors that wire visitors internally set
-    /// the fingerprint *after* wiring, so config-built pipelines stay
-    /// cacheable.
+    /// pipelines apart.
+    ///
+    /// Invalidation rule (zfb#913): manual external pushes — this method,
+    /// [`Pipeline::add_hast_visitor`], and the public [`register_features`]
+    /// / [`register_post_syntect_features`] helpers — MUST invalidate;
+    /// internal pushes that derive purely from already-fingerprinted
+    /// config MUST NOT (they go through the private
+    /// `push_config_derived_*` helpers — see there for the full rule).
     pub fn add_mdast_visitor(&mut self, v: Box<dyn MdastVisitor>) -> &mut Self {
         self.mdast_visitors.push(v);
         self.invalidate_config_fingerprint();
@@ -1081,8 +1262,8 @@ impl Pipeline {
 
     /// Append a hast visitor; visitors run in insertion order.
     ///
-    /// Same cacheability contract as [`Pipeline::add_mdast_visitor`]:
-    /// the pipeline becomes uncacheable.
+    /// Same cacheability contract and invalidation rule as
+    /// [`Pipeline::add_mdast_visitor`]: the pipeline becomes uncacheable.
     pub fn add_hast_visitor(&mut self, v: Box<dyn HastVisitor>) -> &mut Self {
         self.hast_visitors.push(v);
         self.invalidate_config_fingerprint();
@@ -1275,7 +1456,30 @@ impl Pipeline {
 /// visitor must be inserted before `SyntectPlugin`, use
 /// `Pipeline::add_mdast_visitor` / `Pipeline::add_hast_visitor` with explicit
 /// ordering (document it in the feature module's sub-issue).
+///
+/// # Cacheability
+///
+/// Calling this helper manually after construction makes the pipeline
+/// **uncacheable** ([`Pipeline::config_fingerprint`] → `None`), even with an
+/// empty feature set: a post-construction registration wires visitors the
+/// construction-time descriptor knows nothing about (invalidation rule —
+/// manual external pushes MUST invalidate; see
+/// [`Pipeline::add_mdast_visitor`]). The feature-aware constructor routes
+/// through the non-invalidating internal variant instead and covers the
+/// whole `features` value in its final base descriptor.
 pub fn register_features(
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    register_features_config_derived(p, features);
+    p.invalidate_config_fingerprint();
+}
+
+/// Internal, non-invalidating implementation of [`register_features`] —
+/// called from [`Pipeline::with_defaults_and_full_config`], whose final base
+/// descriptor covers the whole `features` value (invalidation rule — see
+/// `Pipeline::push_config_derived_mdast_visitor`).
+fn register_features_config_derived(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
@@ -1305,7 +1509,7 @@ pub fn register_features(
     // (source_path + project_root) to resolve file paths. When the pipeline
     // is driven via `run_with_context`, the context is automatically threaded.
     if let Some(cfg) = &features.transclude {
-        p.add_mdast_visitor(Box::new(
+        p.push_config_derived_mdast_visitor(Box::new(
             zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone()),
         ));
     }
@@ -1316,7 +1520,7 @@ pub fn register_features(
     // the literal `:::code-group` opener and the closing `:::` separator so
     // it must see raw paragraph nodes, not already-rewritten JSX elements.
     if feature_enabled(&features.code_tabs) {
-        p.add_mdast_visitor(Box::new(
+        p.push_config_derived_mdast_visitor(Box::new(
             zfb_md_extras::code_tabs::CodeTabsPlugin::new(),
         ));
     }
@@ -1325,7 +1529,7 @@ pub fn register_features(
     // coexist: alert blockquotes are rewritten to MdxJsxFlowElement first,
     // then the directives pass handles `:::directive` syntax separately.
     if feature_enabled(&features.github_alerts) {
-        p.add_mdast_visitor(Box::new(
+        p.push_config_derived_mdast_visitor(Box::new(
             zfb_md_extras::github_alerts::GithubAlertsPlugin::new(),
         ));
     }
@@ -1336,7 +1540,7 @@ pub fn register_features(
             .as_ref()
             .and_then(zfb_md_ast::ReadingTimeFeature::wpm)
             .unwrap_or(200);
-        p.add_mdast_visitor(Box::new(
+        p.push_config_derived_mdast_visitor(Box::new(
             zfb_md_extras::reading_time::ReadingTimePlugin::with_wpm(wpm),
         ));
     }
@@ -1345,7 +1549,7 @@ pub fn register_features(
     // Order-independent relative to github_alerts and the directives step
     // (those operate on blockquote/directive shapes; ruby operates on Text).
     if feature_enabled(&features.ruby) {
-        p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
+        p.push_config_derived_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
     }
 
     // Build a DirectiveRegistry from the `directives` map only. Core seeds NO
@@ -1362,7 +1566,7 @@ pub fn register_features(
                 registry.register(into_directive_def(name, spec));
             }
         }
-        p.add_mdast_visitor(registry.into_visitor());
+        p.push_config_derived_mdast_visitor(registry.into_visitor());
     }
 
     // ── hast phase (all before SyntectPlugin) ──────────────────────────────
@@ -1376,12 +1580,12 @@ pub fn register_features(
             .as_ref()
             .map(zfb_md_ast::HeadingMarkerTocFeature::to_config)
             .unwrap_or_default();
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::heading_marker_toc::TocPlugin::new(cfg),
         ));
     }
     if feature_enabled(&features.mermaid) {
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::mermaid::MermaidPlugin::new(),
         ));
     }
@@ -1390,7 +1594,7 @@ pub fn register_features(
     // is_some() + required `repo` field extraction.
     if let Some(cfg) = features.github_autolinks.as_ref() {
         if let Some(repo) = cfg.repo.as_ref() {
-            p.add_hast_visitor(Box::new(
+            p.push_config_derived_hast_visitor(Box::new(
                 zfb_md_extras::github_autolinks::GithubAutolinksPlugin::new(repo.clone()),
             ));
         }
@@ -1403,7 +1607,7 @@ pub fn register_features(
     // export node lands at the front of the document root before code blocks
     // are transformed.
     if let Some(cfg) = &features.toc_export {
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::toc_export::TocExportPlugin::new(cfg.clone()),
         ));
     }
@@ -1411,7 +1615,7 @@ pub fn register_features(
     // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
     // Uses visit_with_context — pipeline must call run_with_context for this to fire.
     if let Some(cfg) = features.image_dimensions.clone() {
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg),
         ));
     }
@@ -1422,7 +1626,7 @@ pub fn register_features(
     // current file are already populated by HeadingLinksPlugin. Gated on
     // `is_some()` (uses a rich options struct, not a FeatureToggle).
     if let Some(cfg) = &features.link_validation {
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone()),
         ));
     }
@@ -1446,13 +1650,31 @@ pub fn register_features(
 /// All visitors registered here run AFTER SyntectPlugin.
 /// They MUST NOT rewrite the `<pre><code>` structure itself — only mutate
 /// existing `<span class="line">` children.
+///
+/// # Cacheability
+///
+/// Same contract as [`register_features`]: a manual post-construction call
+/// makes the pipeline uncacheable, even with an empty feature set.
 pub fn register_post_syntect_features(
+    p: &mut Pipeline,
+    features: &zfb_md_extras::MarkdownFeaturesConfig,
+) {
+    register_post_syntect_features_config_derived(p, features);
+    p.invalidate_config_fingerprint();
+}
+
+/// Internal, non-invalidating implementation of
+/// [`register_post_syntect_features`] — called from
+/// [`Pipeline::with_defaults_and_full_config`], whose final base descriptor
+/// covers the whole `features` value (invalidation rule — see
+/// `Pipeline::push_config_derived_mdast_visitor`).
+fn register_post_syntect_features_config_derived(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
     // Wave 5 (#575): code_enrichment — diff markers + line highlighting.
     if let Some(cfg) = &features.code_enrichment {
-        p.add_hast_visitor(Box::new(
+        p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::code_enrichment::CodeEnrichmentPlugin::new(cfg.clone()),
         ));
     }
