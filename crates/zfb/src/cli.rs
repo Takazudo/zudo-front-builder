@@ -65,8 +65,11 @@ pub struct DevArgs {
     pub port: Option<u16>,
 
     /// Host interface to bind the dev server to. Falls back to `host`
-    /// from `zfb.config.json`, then to `localhost`.
-    #[arg(long)]
+    /// from `zfb.config.json`, then to `localhost`. Bare `--host` (no value)
+    /// is a Vite-style shortcut for `0.0.0.0` (expose to the LAN); an absent
+    /// flag stays `None` so the "CLI > config > built-in default" layering
+    /// above is preserved.
+    #[arg(long, num_args = 0..=1, default_missing_value = "0.0.0.0")]
     pub host: Option<String>,
 }
 
@@ -94,8 +97,11 @@ pub struct PreviewArgs {
 
     /// Host interface to bind the preview server to. Falls back to `host`
     /// from `zfb.config.json`, then to `localhost`. Pass `0.0.0.0` to expose
-    /// the built site to other devices on the LAN.
-    #[arg(long)]
+    /// the built site to other devices on the LAN — or just bare `--host`
+    /// (no value), a Vite-style shortcut for the same `0.0.0.0`. An absent
+    /// flag stays `None` so the "CLI > config > built-in default" layering
+    /// is preserved.
+    #[arg(long, num_args = 0..=1, default_missing_value = "0.0.0.0")]
     pub host: Option<String>,
 
     /// Directory to serve the previously built artifacts from.
@@ -123,4 +129,65 @@ pub struct CheckArgs {
     /// yet but still wants schema enforcement in CI.
     #[arg(long)]
     pub skip_tsc: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev_host(argv: &[&str]) -> Option<String> {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Dev(args) => args.host,
+            other => panic!("expected dev subcommand, got {other:?}"),
+        }
+    }
+
+    fn preview_host(argv: &[&str]) -> Option<String> {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Preview(args) => args.host,
+            other => panic!("expected preview subcommand, got {other:?}"),
+        }
+    }
+
+    // Absent `--host` must stay `None` so the command body's
+    // "CLI > config > built-in default" layering still kicks in.
+    #[test]
+    fn dev_host_absent_is_none() {
+        assert_eq!(dev_host(&["zfb", "dev"]), None);
+    }
+
+    // Bare `--host` is the Vite-style LAN shortcut → `0.0.0.0`.
+    #[test]
+    fn dev_host_bare_defaults_to_all_interfaces() {
+        assert_eq!(dev_host(&["zfb", "dev", "--host"]), Some("0.0.0.0".into()));
+    }
+
+    #[test]
+    fn dev_host_explicit_value_is_preserved() {
+        assert_eq!(
+            dev_host(&["zfb", "dev", "--host", "1.2.3.4"]),
+            Some("1.2.3.4".into())
+        );
+    }
+
+    #[test]
+    fn preview_host_absent_is_none() {
+        assert_eq!(preview_host(&["zfb", "preview"]), None);
+    }
+
+    #[test]
+    fn preview_host_bare_defaults_to_all_interfaces() {
+        assert_eq!(
+            preview_host(&["zfb", "preview", "--host"]),
+            Some("0.0.0.0".into())
+        );
+    }
+
+    #[test]
+    fn preview_host_explicit_value_is_preserved() {
+        assert_eq!(
+            preview_host(&["zfb", "preview", "--host", "10.0.0.1"]),
+            Some("10.0.0.1".into())
+        );
+    }
 }
