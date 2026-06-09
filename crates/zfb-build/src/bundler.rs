@@ -89,17 +89,22 @@
 //!
 //! ## Esbuild binary resolution
 //!
-//! Same precedence as `zfb_islands::EsbuildSubprocessConfig`:
+//! Handled by the shared resolver [`resolve_esbuild_binary_with_env`], which
+//! is also used by `zfb::config` (the config-loader). The lookup order for
+//! this (bundler) call site is:
 //!
 //! 1. [`BundlerInput::esbuild_binary`] (explicit override).
 //! 2. `ZFB_ESBUILD_BIN` environment variable.
-//! 3. `crates/zfb/binaries/esbuild/esbuild` (release-tarball slot — see
-//!    that directory's README).
+//! 3. `crates/zfb/binaries/esbuild/esbuild` ([`DEFAULT_ESBUILD_SLOT`] —
+//!    release-tarball slot; see that directory's README).
+//!
+//! The config-loader call site additionally inserts an embedded-extraction
+//! tier (tier 3 of 4) between the env var and the slot; see
+//! [`resolve_esbuild_binary_with_env`] for the full superset documentation.
 //!
 //! If the resolved path does not exist, [`bundle`] returns a clear error
 //! instructing the operator to either set the env var or stage the
-//! binary in the slot. The release-engineering epic that downloads the
-//! binary into the slot has not landed yet (parent: issue #5).
+//! binary in the slot.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -895,7 +900,10 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
 /// sync deliberately, both crates resolve the same slot.
-const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
+///
+/// This is the canonical definition; `crates/zfb/src/config.rs` formerly
+/// kept a private duplicate that has been removed in favour of this one.
+pub const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
 
 /// Bundle the user's source tree into a single ESM file.
 ///
@@ -4163,28 +4171,54 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 }
 
 fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
-    resolve_esbuild_binary_with_env(explicit, |name| std::env::var_os(name), None)
+    let (_handle, path) = resolve_esbuild_binary_with_env(
+        explicit,
+        |name| std::env::var_os(name),
+        None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
+        None,
+    )?;
+    Ok(path)
 }
 
-/// Same as [`resolve_esbuild_binary`] but the env lookup is delegated to
-/// a getter closure and the default slot path is overridable. Tests use
-/// these escape hatches to drive the `ZFB_ESBUILD_BIN` resolution path
-/// without mutating the real process environment or chdir-ing
-/// (`std::env::set_var` is `unsafe` under Rust 2024 because it races
-/// other threads reading the env table, and our test suite is
-/// multi-threaded; chdir has the same problem).
+/// Shared esbuild binary resolver used by both the bundler and the config
+/// loader. Home crate: `zfb-build` (lowest crate that both consumers depend
+/// on; `zfb-types` is excluded because it is a zero-dep leaf).
 ///
-/// `slot_override` lets tests point the slot at a path inside a tempdir
-/// instead of relying on the real `DEFAULT_ESBUILD_SLOT` happening to
-/// be absent in CWD.
-fn resolve_esbuild_binary_with_env<F>(
+/// ## Lookup order (documented superset)
+///
+/// 1. **Explicit path** (`explicit`) — if `Some`, validated and returned
+///    immediately; an absent file is a hard error.
+/// 2. **`ZFB_ESBUILD_BIN` env var** — read via `env_getter("ZFB_ESBUILD_BIN")`.
+///    Injected as a closure so tests can drive this tier without mutating
+///    `std::env` (which is `unsafe` in a multi-threaded test runner under
+///    Rust 2024).
+/// 3. **Embedded extraction** (`embedded_getter`) — optional callback tried
+///    *before* the workspace slot. The config-loader caller (`zfb` crate)
+///    passes `Some(|| crate::render_pipeline::embedded_binary("esbuild"))` so
+///    a `cargo install`-ed binary (which has no workspace) still resolves.
+///    The bundler passes `None` here because it has no access to the
+///    `EMBEDDED_VENDOR` snapshot that lives in the `zfb` crate.
+/// 4. **Workspace slot** — `slot_override.unwrap_or(DEFAULT_ESBUILD_SLOT)`.
+///    `slot_override` is an escape hatch for unit tests that need to point the
+///    slot at a tempdir without chdir-ing.
+///
+/// ## Return value
+///
+/// `(Option<tempfile::TempDir>, PathBuf)` — the `TempDir` is `Some` only when
+/// the embedded extraction tier was taken. The caller **must** hold the handle
+/// alive for the lifetime of any subprocess that references the returned
+/// `PathBuf`; dropping the handle removes the tempdir and the binary.
+pub fn resolve_esbuild_binary_with_env<F, E>(
     explicit: Option<&Path>,
     env_getter: F,
+    embedded_getter: Option<E>,
     slot_override: Option<&Path>,
-) -> Result<PathBuf>
+) -> Result<(Option<tempfile::TempDir>, PathBuf)>
 where
     F: Fn(&str) -> Option<std::ffi::OsString>,
+    E: FnOnce() -> Option<(tempfile::TempDir, PathBuf)>,
 {
+    // Tier 1: explicit path override.
     if let Some(p) = explicit {
         if !p.exists() {
             bail!(
@@ -4192,8 +4226,9 @@ where
                 p.display()
             );
         }
-        return Ok(p.to_path_buf());
+        return Ok((None, p.to_path_buf()));
     }
+    // Tier 2: ZFB_ESBUILD_BIN env var.
     if let Some(env) = env_getter("ZFB_ESBUILD_BIN") {
         let p = PathBuf::from(env);
         if !p.exists() {
@@ -4202,8 +4237,16 @@ where
                 p.display()
             );
         }
-        return Ok(p);
+        return Ok((None, p));
     }
+    // Tier 3: embedded extraction (config-loader caller only; None for bundler).
+    if let Some(getter) = embedded_getter {
+        if let Some((handle, path)) = getter() {
+            return Ok((Some(handle), path));
+        }
+        // getter returned None → fall through to the workspace slot.
+    }
+    // Tier 4: workspace-relative staging slot.
     let slot = slot_override
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ESBUILD_SLOT));
@@ -4217,7 +4260,7 @@ where
             slot.display(),
         ));
     }
-    Ok(slot)
+    Ok((None, slot))
 }
 
 #[cfg(test)]
@@ -5791,7 +5834,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
 
-        let err = resolve_esbuild_binary_with_env(None, |_| None, Some(&missing_slot)).unwrap_err();
+        let err = resolve_esbuild_binary_with_env(
+            None,
+            |_| None,
+            None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
+            Some(&missing_slot),
+        )
+        .unwrap_err();
         let msg = format!("{err}");
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
