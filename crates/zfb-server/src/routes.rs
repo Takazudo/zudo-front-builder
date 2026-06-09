@@ -1046,6 +1046,33 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
     Some(raw.to_string())
 }
 
+/// Check that `path` (after symlink resolution) still lives inside
+/// `root` (after symlink resolution). Returns `true` only when both
+/// canonicalize successfully and the canonical path starts with the
+/// canonical root.
+///
+/// Returning `false` on any canonicalize error (e.g. the file does not
+/// exist yet) is intentional: callers treat a failed containment check
+/// as not-found, so a missing symlink target is a safe 404.
+///
+/// This function is deliberately sync so it can be called from both
+/// synchronous helpers (like `read_from_dist` / `read_from_public`) and
+/// from async handlers without needing a task-blocking spawn — the
+/// syscall is cheap (a few kernel lookups) and wave-2 (#903) will
+/// migrate callers to `tokio::fs::canonicalize` as part of the async
+/// conversion.
+fn path_is_within_root(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let canonical_root = match std::fs::canonicalize(root) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let canonical_path = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    canonical_path.starts_with(&canonical_root)
+}
+
 /// Try to read a page from the dist directory on disk.
 ///
 /// Probes `<dist_root>/<trimmed>/index.html` and then
@@ -1056,6 +1083,10 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
 /// that contains `..`, NUL, backslash, or absolute components before
 /// joining onto `dist_root`. Without this gate, a request like
 /// `/%2e%2e/...` would let a local browser tab read files outside dist.
+///
+/// After joining, we also canonicalize the resolved path and verify it
+/// still lives inside `dist_root` — a symlink planted inside dist that
+/// points outside would otherwise be followed silently.
 fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
     if !is_safe_url_path(trimmed) {
         return None;
@@ -1065,6 +1096,9 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
         dist_root.join(trimmed),
     ];
     for path in &candidates {
+        if !path_is_within_root(path, dist_root) {
+            continue;
+        }
         if let Ok(bytes) = std::fs::read(path) {
             return Some(bytes);
         }
@@ -1084,6 +1118,10 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
 /// joining onto `public_root` — same threat model as [`read_from_dist`].
 /// Empty `trimmed` (a bare `/` request) is also rejected because we
 /// never want to serve the directory itself.
+///
+/// After joining, we also canonicalize the resolved path and verify it
+/// still lives inside `public_root` — a symlink planted inside public/
+/// that points outside would otherwise be followed silently.
 fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
     if trimmed.is_empty() || !is_safe_url_path(trimmed) {
         return None;
@@ -1094,6 +1132,9 @@ fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<
     // anyway, but on Windows the behaviour is platform-dependent. Being
     // explicit also documents the intent.
     if path.is_dir() {
+        return None;
+    }
+    if !path_is_within_root(&path, public_root) {
         return None;
     }
     std::fs::read(&path).ok()
@@ -3125,6 +3166,232 @@ mod tests {
             resp.status(),
             StatusCode::NOT_FOUND,
             "bare unprefixed asset URL must not bypass the base prefix"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #899 — symlink-containment: symlinks pointing outside the
+    // served root must be blocked; legitimate in-root symlinks must work.
+    // -------------------------------------------------------------------
+
+    /// A symlink inside `dist/` pointing OUTSIDE it must yield a 404,
+    /// not silently serve the out-of-root target.
+    #[cfg(unix)]
+    #[test]
+    fn read_from_dist_rejects_out_of_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let dist = tempfile::tempdir().expect("dist dir");
+        // Plant a symlink inside dist pointing at the outside file.
+        symlink(
+            outside.path().join("secret.txt"),
+            dist.path().join("escape.txt"),
+        )
+        .unwrap();
+
+        let result = read_from_dist(dist.path(), "escape.txt");
+        assert!(
+            result.is_none(),
+            "out-of-root symlink in dist must not be served"
+        );
+    }
+
+    /// A real file inside `dist/` is still served normally — the
+    /// containment check must not break legitimate files.
+    #[test]
+    fn read_from_dist_serves_real_in_root_file() {
+        let dist = tempfile::tempdir().expect("dist dir");
+        std::fs::write(dist.path().join("page.html"), b"<h1>hello</h1>").unwrap();
+
+        let result = read_from_dist(dist.path(), "page.html");
+        assert_eq!(result.as_deref(), Some(b"<h1>hello</h1>".as_ref()));
+    }
+
+    /// A symlink inside `dist/` that points to another file WITHIN `dist/`
+    /// must still be served — in-root symlinks are legitimate.
+    #[cfg(unix)]
+    #[test]
+    fn read_from_dist_serves_in_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dist = tempfile::tempdir().expect("dist dir");
+        std::fs::write(dist.path().join("real.html"), b"<h1>real</h1>").unwrap();
+        // Symlink inside dist pointing at another file inside dist.
+        symlink(dist.path().join("real.html"), dist.path().join("alias.html")).unwrap();
+
+        let result = read_from_dist(dist.path(), "alias.html");
+        assert_eq!(
+            result.as_deref(),
+            Some(b"<h1>real</h1>".as_ref()),
+            "in-root symlink must be served"
+        );
+    }
+
+    /// A symlink inside `public/` pointing OUTSIDE it must yield None.
+    #[cfg(unix)]
+    #[test]
+    fn read_from_public_rejects_out_of_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let public = tempfile::tempdir().expect("public dir");
+        symlink(
+            outside.path().join("secret.txt"),
+            public.path().join("escape.txt"),
+        )
+        .unwrap();
+
+        let result = read_from_public(public.path(), "escape.txt");
+        assert!(
+            result.is_none(),
+            "out-of-root symlink in public must not be served"
+        );
+    }
+
+    /// A real file inside `public/` is still served normally.
+    #[test]
+    fn read_from_public_serves_real_in_root_file() {
+        let public = tempfile::tempdir().expect("public dir");
+        std::fs::write(public.path().join("logo.svg"), b"<svg/>").unwrap();
+
+        let result = read_from_public(public.path(), "logo.svg");
+        assert_eq!(result.as_deref(), Some(b"<svg/>".as_ref()));
+    }
+
+    /// A symlink inside `public/` that points to another file WITHIN
+    /// `public/` must still be served.
+    #[cfg(unix)]
+    #[test]
+    fn read_from_public_serves_in_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let public = tempfile::tempdir().expect("public dir");
+        std::fs::write(public.path().join("real.svg"), b"<svg/>").unwrap();
+        symlink(
+            public.path().join("real.svg"),
+            public.path().join("alias.svg"),
+        )
+        .unwrap();
+
+        let result = read_from_public(public.path(), "alias.svg");
+        assert_eq!(
+            result.as_deref(),
+            Some(b"<svg/>".as_ref()),
+            "in-root symlink in public must be served"
+        );
+    }
+
+    /// End-to-end router test: a symlink inside dist pointing outside
+    /// the root must produce a 404 response via the dev server.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_server_rejects_out_of_root_symlink_in_dist() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let dist = tempfile::tempdir().expect("dist dir");
+        symlink(
+            outside.path().join("secret.txt"),
+            dist.path().join("escape.txt"),
+        )
+        .unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/escape.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "out-of-root symlink in dist must not be served (got {:?})",
+            resp.status()
+        );
+    }
+
+    /// End-to-end router test: a symlink inside public pointing outside
+    /// the root must produce a 404 response via the dev server.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_server_rejects_out_of_root_symlink_in_public() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let public = tempfile::tempdir().expect("public dir");
+        symlink(
+            outside.path().join("secret.txt"),
+            public.path().join("escape.txt"),
+        )
+        .unwrap();
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = tempfile::tempdir().expect("dist dir");
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.path().to_path_buf(),
+            html_root: dist.path().to_path_buf(),
+            public_root: public.path().to_path_buf(),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+        };
+        let router = build_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/escape.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "out-of-root symlink in public must not be served (got {:?})",
+            resp.status()
         );
     }
 }
