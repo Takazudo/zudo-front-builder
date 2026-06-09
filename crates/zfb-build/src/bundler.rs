@@ -115,8 +115,8 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
-use zfb_content::compile_mdx_to_jsx_module_cached;
 use zfb_content::frontmatter as zfb_frontmatter;
+use zfb_content::{compile_mdx_to_jsx_module_cached, MdxModuleCache};
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
@@ -1910,8 +1910,18 @@ fn materialise_shadow(
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
-            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
-                .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Process-global compile cache (zfb#905): unchanged files
+            // recompile for free on later dev ticks / sibling walks. The
+            // cache keys on (input, pipeline-config fingerprint), so a
+            // manually-extended or per-file-stateful pipeline (e.g. with
+            // resolveMarkdownLinks wired) transparently bypasses it.
+            let compiled = compile_mdx_to_jsx_module_cached(
+                body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile mdx {}", from.display()))?;
             // Drain broken-link diagnostics and record them with the file path.
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
@@ -1954,9 +1964,15 @@ fn materialise_shadow(
                     )
                 }
             };
-            let compiled =
-                compile_mdx_to_jsx_module_cached(&md_body, from, None, Some(&mut pipeline))
-                    .with_context(|| format!("compile md page {}", from.display()))?;
+            // Same process-global compile cache as the `.mdx` branch
+            // above (zfb#905).
+            let compiled = compile_mdx_to_jsx_module_cached(
+                &md_body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile md page {}", from.display()))?;
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
             }
@@ -2504,8 +2520,18 @@ fn materialise_collection(
             // the bridge map. Mismatch here would make every bridge
             // lookup miss and silently fall back to the
             // raw-markdown <pre> block.
-            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, Some(&mut pipeline))
-                .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Process-global compile cache (zfb#905) — see the matching
+            // comment in `materialise_shadow`. Safe to share with the
+            // snapshot walker: the key includes the pipeline-config
+            // fingerprint and the specifier below is re-derived from
+            // THIS file's path on every hit.
+            let compiled = compile_mdx_to_jsx_module_cached(
+                &body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile mdx {}", from.display()))?;
             // Drain broken-link diagnostics and record them with the file path.
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
