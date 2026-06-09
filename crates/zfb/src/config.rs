@@ -55,8 +55,9 @@ use std::ffi::OsString;
 use tokio::process::Command;
 
 // Canonical default slot path — defined once in zfb-build, imported here so
-// tests can reference it without repeating the string literal.
-#[cfg(test)]
+// tests can reference it without repeating the string literal. Only the
+// no-embed_v8 test items use it, so the import is gated the same way.
+#[cfg(all(test, not(feature = "embed_v8")))]
 use zfb_build::DEFAULT_ESBUILD_SLOT;
 
 // --- JsonSchema newtype --------------------------------------------------------
