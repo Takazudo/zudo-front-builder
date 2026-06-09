@@ -2259,6 +2259,7 @@ struct ContentImport {
 /// A missing source root is non-fatal — the caller may have a stale
 /// config entry pointing at a deleted directory; the build should
 /// proceed with zero entries from that collection rather than aborting.
+#[allow(clippy::too_many_arguments)]
 fn materialise_collection(
     src: &Path,
     dest: &Path,
