@@ -271,11 +271,10 @@ fn resolve_static(dist_root: &Path, url_path: &str) -> Resolution {
 /// exist yet) is intentional: callers treat a failed containment check
 /// as not-found, so a missing symlink target is a safe 404.
 ///
-/// This function is deliberately sync so it can be called from both the
-/// current sync helper (`resolve_static`) and from the async `serve_file`
-/// without spawning a blocking task — the syscall is cheap. Wave-2 (#903)
-/// will migrate callers to `tokio::fs::canonicalize` as part of the async
-/// conversion.
+/// This function is deliberately sync so it stays usable from both sync
+/// and async callers without spawning a blocking task — the syscall is
+/// cheap. Wave-2 (#903) will migrate callers to `tokio::fs::canonicalize`
+/// as part of the async conversion.
 fn path_is_within_root(path: &Path, root: &Path) -> bool {
     let canonical_root = match std::fs::canonicalize(root) {
         Ok(p) => p,
