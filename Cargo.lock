@@ -5681,6 +5681,7 @@ dependencies = [
  "walkdir",
  "zfb-plugin-resolver",
  "zfb-test-utils",
+ "zfb-toolchain-pins",
  "zfb-types",
 ]
 

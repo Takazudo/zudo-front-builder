@@ -110,6 +110,10 @@ oxc_resolver = "11.19.1"
 local-ip-address = "0.6"
 
 [build-dependencies]
+# Single source of truth for EXPECTED_ESBUILD_VERSION (and other tool pins).
+# build.rs reads zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION to construct
+# the npm registry download URL for the pinned esbuild binary.
+zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Binary download and SHA-256 verification in build.rs.
 # reqwest blocking + rustls-tls avoids a system OpenSSL dependency.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

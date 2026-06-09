@@ -34,6 +34,9 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no
 # coupling beyond the constants themselves.
 zfb-types = { path = "../zfb-types" }
+# Single source of truth for pinned external tool versions (esbuild,
+# wrangler, workerd). Consumed here for EXPECTED_ESBUILD_VERSION.
+zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Shared exact-match resolver helper used by both this islands
 # bundler and the main bundler in zfb-build. Replaces the
 # prefix-with-slash `--alias:<from>=<to>` flag emission with
