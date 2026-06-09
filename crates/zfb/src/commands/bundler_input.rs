@@ -338,8 +338,8 @@ pub(crate) fn assemble_bundler_input(
 
     Ok(AssembledBundlerInput {
         bundler_input,
-        _node_modules_handle: _node_modules_handle,
-        _esbuild_handle: _esbuild_handle,
+        _node_modules_handle,
+        _esbuild_handle,
     })
 }
 

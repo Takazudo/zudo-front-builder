@@ -1706,11 +1706,7 @@ fn resolve_esbuild_binary_with_handle(
     zfb_build::resolve_esbuild_binary_with_env(
         opts.esbuild_binary.as_deref(),
         |name| std::env::var_os(name),
-        Some(|| {
-            crate::render_pipeline::embedded_binary("esbuild")
-                .ok()
-                .map(|(handle, path)| (handle, path))
-        }),
+        Some(|| crate::render_pipeline::embedded_binary("esbuild").ok()),
         None,
     )
 }
