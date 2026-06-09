@@ -435,8 +435,14 @@ pub fn resolve_tsconfig_extends_file(extending_dir: &Path, extends: &str) -> Opt
     if raw.is_file() {
         return Some(raw);
     }
-    // The extends value may omit the `.json` extension.
-    let with_ext = raw.with_extension("json");
+    // The extends value may omit the `.json` extension — TypeScript accepts
+    // `"./tsconfig.base"` to mean `"./tsconfig.base.json"`. We must APPEND
+    // `.json` to the path string, not use `Path::with_extension("json")`:
+    // the latter *replaces* the existing extension, so `tsconfig.base` →
+    // `tsconfig.json` instead of `tsconfig.base.json`.
+    let mut appended = raw.into_os_string();
+    appended.push(".json");
+    let with_ext = PathBuf::from(appended);
     if with_ext.is_file() {
         return Some(with_ext);
     }
@@ -899,6 +905,47 @@ mod tests {
         assert!(
             result.contains_key("~/*"),
             "second key must survive; got {result:?}"
+        );
+    }
+
+    /// Regression for the `Path::with_extension` bug: when `extends` is
+    /// `"./tsconfig.base"` (no `.json` suffix), we must resolve it to
+    /// `tsconfig.base.json`, NOT `tsconfig.json`.
+    ///
+    /// `Path::with_extension("json")` *replaces* the existing extension, so
+    /// `tsconfig.base` → `tsconfig.json`.  The fix appends `.json` to the
+    /// raw path string instead.
+    #[test]
+    fn extends_without_json_suffix_resolves_to_dotted_name() {
+        use std::fs;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Base config is named `tsconfig.base.json` — a common pattern.
+        fs::write(
+            root.join("tsconfig.base.json"),
+            r#"{
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        // Leaf omits the `.json` suffix in extends — TypeScript accepts this.
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              "extends": "./tsconfig.base"
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths_into_map(root);
+        assert!(
+            result.contains_key("@/*"),
+            "extends without .json suffix must resolve to tsconfig.base.json; got {result:?}"
         );
     }
 }
