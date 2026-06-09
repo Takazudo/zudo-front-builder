@@ -48,6 +48,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
+use zfb_types::path_to_posix_string;
 
 /// Output of [`build_resolver_inputs`].
 ///
@@ -101,7 +102,7 @@ pub fn build_resolver_inputs(
     // the project root by `PluginSetupAccumulator::resolve_against_root`).
     // Normalize to POSIX so the JSON output is platform-stable.
     for (from, to) in aliases {
-        paths_entries.push((from.clone(), to_posix(Path::new(to))));
+        paths_entries.push((from.clone(), path_to_posix_string(Path::new(to))));
     }
 
     // Plugin virtual modules. Each source is written to a `.mjs` temp
@@ -141,7 +142,7 @@ pub fn build_resolver_inputs(
                 tmp.path().display()
             )
         })?;
-        paths_entries.push((specifier.clone(), to_posix(tmp.path())));
+        paths_entries.push((specifier.clone(), path_to_posix_string(tmp.path())));
         temp_files.push(tmp);
     }
 
@@ -174,20 +175,6 @@ pub fn merge_into_tsconfig_paths(
             .entry(specifier.clone())
             .or_insert_with(|| vec![target.clone()]);
     }
-}
-
-/// Convert a `Path` to a POSIX forward-slash string.
-///
-/// Path-separator handling note: on Windows, `Path::to_string_lossy()`
-/// yields backslashes; esbuild + TypeScript both accept either
-/// separator in `compilerOptions.paths` values, but the JSON we emit
-/// should be platform-stable so test snapshots and hash-stable outputs
-/// don't drift between OSes. We unconditionally replace `\` with `/`.
-/// On Unix this is a no-op (the input has no backslashes); on Windows
-/// the resulting string is still an absolute path esbuild accepts.
-fn to_posix(path: &Path) -> String {
-    let s = path.to_string_lossy().into_owned();
-    s.replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -248,7 +235,7 @@ mod tests {
         // Suffix is `.mjs`.
         assert_eq!(tmp_path.extension().and_then(|s| s.to_str()), Some("mjs"));
         // The path entry's target matches the temp file path (POSIX).
-        assert_eq!(r.paths_entries[0].1, to_posix(&tmp_path));
+        assert_eq!(r.paths_entries[0].1, path_to_posix_string(&tmp_path));
         // The source was written to disk.
         let contents = std::fs::read_to_string(&tmp_path).unwrap();
         assert_eq!(contents, "export default { ok: true };");
@@ -332,13 +319,13 @@ mod tests {
     /// slashes.
     #[test]
     fn to_posix_replaces_backslashes() {
-        assert_eq!(to_posix(Path::new("/abs/foo.tsx")), "/abs/foo.tsx");
+        assert_eq!(path_to_posix_string(Path::new("/abs/foo.tsx")), "/abs/foo.tsx");
         // Simulate a Windows-style path string. On Unix `Path` does not
         // recognize `\` as a separator, but `to_string_lossy()` still
         // returns the literal characters, which our replace then maps
         // to forward slashes.
         assert_eq!(
-            to_posix(Path::new(r"C:\abs\foo.tsx")),
+            path_to_posix_string(Path::new(r"C:\abs\foo.tsx")),
             "C:/abs/foo.tsx",
             "to_posix must replace backslashes with forward slashes"
         );

@@ -15,6 +15,7 @@ use syntect::highlighting::{Theme, ThemeSet};
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use zfb_types::escape_html;
 
 /// A single `.tmTheme` parse failure, carrying the file path.
 #[derive(Debug)]
@@ -283,27 +284,13 @@ fn theme_slug(name: &str) -> String {
 /// vector has the same granularity as the normal path.
 fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
     let lines: Vec<String> = LinesWithEndings::from(code)
-        .map(html_escape)
+        .map(escape_html)
         .collect();
     HighlightedLines {
         theme_slug: slug.to_string(),
         lines,
         fallback: true,
     }
-}
-
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Errors returned by the highlighter.

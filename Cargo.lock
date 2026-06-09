@@ -5625,6 +5625,7 @@ dependencies = [
  "zfb-md-ast",
  "zfb-md-extras",
  "zfb-render",
+ "zfb-types",
 ]
 
 [[package]]
@@ -5704,6 +5705,7 @@ dependencies = [
  "zfb-content",
  "zfb-md-ast",
  "zfb-test-utils",
+ "zfb-types",
 ]
 
 [[package]]
@@ -5712,6 +5714,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "tempfile",
+ "zfb-types",
 ]
 
 [[package]]

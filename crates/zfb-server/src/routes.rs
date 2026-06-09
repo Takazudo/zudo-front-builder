@@ -83,6 +83,7 @@ use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
+use zfb_types::escape_html;
 
 use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, ReloadTx};
@@ -639,10 +640,10 @@ fn current_css_bundle_url(handle: &Option<crate::CssBundleUrl>) -> Option<String
 fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
-        html_escape(prefix),
-        html_escape(path),
-        html_escape(prefix),
-        html_escape(prefix),
+        escape_html(prefix),
+        escape_html(path),
+        escape_html(prefix),
+        escape_html(prefix),
     );
     page_response_bytes(
         StatusCode::NOT_FOUND,
@@ -1392,7 +1393,7 @@ async fn dispatch_embed_handler(
 fn embed_handler_error_response(message: &str) -> Response {
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} handler error</title></head><body><h1>Handler dispatch error</h1><pre>{}</pre></body></html>",
-        html_escape(message),
+        escape_html(message),
     );
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1414,8 +1415,8 @@ fn embed_handler_error_response(message: &str) -> Response {
 fn ssr_error_response(url_path: &str, message: &str) -> Response {
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} ssr error</title></head><body><h1>SSR error at <code>{}</code></h1><pre>{}</pre></body></html>",
-        html_escape(url_path),
-        html_escape(message),
+        escape_html(url_path),
+        escape_html(message),
     );
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1477,7 +1478,7 @@ fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
 fn plugin_error_response(message: &str) -> Response {
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
-        html_escape(message),
+        escape_html(message),
     );
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1491,12 +1492,6 @@ fn plugin_error_response(message: &str) -> Response {
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Generate the lookup-key candidates for a given URL path.

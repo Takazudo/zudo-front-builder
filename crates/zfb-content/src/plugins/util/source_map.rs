@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use zfb_types::path_to_posix_string;
+
 /// One collection in the source map.
 ///
 /// `dir` is the on-disk directory holding the `.md` / `.mdx` files.
@@ -89,7 +91,7 @@ pub fn build_docs_source_map(options: DocsSourceMapOptions) -> HashMap<PathBuf, 
 /// (caller skips such entries).
 fn slug_for(dir: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(dir).ok()?;
-    let mut s = rel.to_string_lossy().replace('\\', "/");
+    let mut s = path_to_posix_string(rel);
     if let Some(stripped) = s.strip_suffix(".mdx") {
         s = stripped.to_string();
     } else if let Some(stripped) = s.strip_suffix(".md") {

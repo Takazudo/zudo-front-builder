@@ -47,6 +47,7 @@
 //! so users can enable data-export without the in-body heading-marker insertion.
 
 use zfb_md_ast::{HastNode, HastVisitor, TocExportConfig};
+use zfb_types::json_string;
 
 use crate::toc_common::{heading_level, heading_text_without_hash_link};
 
@@ -196,32 +197,6 @@ fn render_entry(entry: &TocEntry) -> String {
         json_string(&entry.text),
         children_json,
     )
-}
-
-/// Minimal JSON string escaping: `"`, `\`, and control characters.
-///
-/// This is safe for heading text and slugified IDs; we don't need full
-/// Unicode escape support because heading text is UTF-8 and IDs are
-/// ASCII slugs from `HeadingLinksPlugin`.
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                // Escape other control characters as \uXXXX.
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

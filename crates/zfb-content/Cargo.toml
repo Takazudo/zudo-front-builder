@@ -10,6 +10,7 @@ description = "zfb content engine: markdown/MDX pipeline, frontmatter, syntect, 
 [dependencies]
 zfb-md-ast = { path = "../zfb-md-ast" }
 zfb-md-extras = { path = "../zfb-md-extras" }
+zfb-types = { path = "../zfb-types" }
 markdown = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

@@ -116,6 +116,7 @@ use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
 use zfb_render::adapters::{make_adapter, Framework};
+use zfb_types::{json_string as json_str, path_to_posix_string};
 
 use crate::adapter::run_capturing;
 
@@ -3148,20 +3149,6 @@ fn glob_match_relative(
     Ok(out)
 }
 
-/// Convert a relative `Path` to a forward-slash-separated string. We
-/// emit Posix separators unconditionally so the resulting `import`
-/// statements are valid on every platform — esbuild on Windows would
-/// otherwise reject backslash-bearing module specifiers.
-fn path_to_posix_string(p: &Path) -> String {
-    p.components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str().map(str::to_owned),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 /// Compiled matcher for `BundlerInput::bundle_exclude`.
 ///
 /// Patterns are project-relative gitignore-style globs (e.g.
@@ -3743,10 +3730,6 @@ fn route_path_under_pages(source_path: &Path) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-fn json_str(s: &str) -> String {
-    serde_json::Value::String(s.to_string()).to_string()
 }
 
 /// Render the TSX shell module for a `.md` page.

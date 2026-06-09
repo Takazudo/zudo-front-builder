@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use lightningcss::css_modules::{Config as LcssConfig, Pattern};
+use zfb_types::path_to_posix_string;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 
 /// Configuration for [`CssModulesProcessor`].
@@ -214,13 +215,8 @@ impl CssModulesProcessor {
 pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String {
     let rel = project_root.and_then(|root| path.strip_prefix(root).ok());
     let chosen = rel.unwrap_or(path);
-    let lossy = chosen.to_string_lossy();
     // Normalise Windows separators so the hash matches across OSes.
-    if lossy.contains('\\') {
-        lossy.replace('\\', "/")
-    } else {
-        lossy.into_owned()
-    }
+    path_to_posix_string(chosen)
 }
 
 #[cfg(test)]

@@ -61,6 +61,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use zfb_types::normalize_path_lexical;
 
 /// Per-source-file record of CSS Modules usage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,39 +243,10 @@ fn resolve_specifier(importer: &Path, specifier: &str) -> PathBuf {
     if specifier.starts_with("./") || specifier.starts_with("../") {
         let parent = importer.parent().unwrap_or_else(|| Path::new(""));
         let joined = parent.join(specifier);
-        normalise_path(&joined)
+        normalize_path_lexical(&joined)
     } else {
         PathBuf::from(specifier)
     }
-}
-
-/// Lexically normalise a path: collapse `.` and `..` segments without
-/// touching the filesystem. `..` past the start is dropped silently —
-/// the alternative is making the function fallible just to match a
-/// shape the rest of the pipeline doesn't handle either.
-fn normalise_path(p: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out: Vec<Component> = Vec::new();
-    for comp in p.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(out.last(), Some(Component::Normal(_))) {
-                    out.pop();
-                } else {
-                    // RootDir / Prefix / nothing — leave it as-is so
-                    // we don't escape /.
-                    out.push(comp);
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    let mut buf = PathBuf::new();
-    for c in out {
-        buf.push(c.as_os_str());
-    }
-    buf
 }
 
 #[cfg(test)]

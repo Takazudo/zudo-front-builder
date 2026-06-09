@@ -76,6 +76,7 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
+use zfb_types::normalize_path_lexical;
 
 use crate::bundler::Island;
 
@@ -193,41 +194,6 @@ pub trait Resolver {
     /// trait-specific type) so test resolvers and FS resolvers can both
     /// produce the same shape without lossy conversions.
     fn read(&self, path: &Path) -> std::result::Result<String, String>;
-}
-
-/// Lexically normalise a path by collapsing `.` and `..` components
-/// without consulting the filesystem.
-///
-/// `..` is only popped when the previous component is a normal name; a
-/// `..` after a root or after another preserved `..` is left in place
-/// (so we never escape above a relative root). Useful both for the
-/// in-memory test resolver — where `/proj/pages/../components/x` must
-/// match the same key as `/proj/components/x` — and as a public helper
-/// for downstream code that wants the same dedup behaviour.
-pub fn normalize_path_lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in p.components() {
-        match comp {
-            Component::Prefix(_) | Component::RootDir => {
-                out.push(comp.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let last_is_normal = out
-                    .components()
-                    .next_back()
-                    .map(|c| matches!(c, Component::Normal(_)))
-                    .unwrap_or(false);
-                if last_is_normal {
-                    out.pop();
-                } else {
-                    out.push(comp.as_os_str());
-                }
-            }
-            Component::Normal(name) => out.push(name),
-        }
-    }
-    out
 }
 
 /// Whether a specifier is bare (no `./`, `../`, or `/` prefix).

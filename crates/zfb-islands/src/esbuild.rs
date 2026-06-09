@@ -23,6 +23,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
+use zfb_types::json_string;
 
 use crate::bundler::{
     bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, ClientBundler,
@@ -1555,30 +1556,6 @@ fn serialize_manifest(entries: &[(String, String)]) -> String {
     }
     s.push('}');
     s
-}
-
-/// Encode `s` as a JSON string literal (with surrounding double
-/// quotes). Used to splice user-supplied paths and component names
-/// into generated entry sources without risking syntax errors from
-/// stray quotes / backslashes / control chars.
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 impl ClientBundler for EsbuildSubprocessBundler {
