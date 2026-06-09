@@ -45,6 +45,10 @@ let viewportObserver: IntersectionObserver | null = null;
 // pointerleave before the callback executes.
 const hoverCancelHandles = new Map<Element, ReturnType<typeof setTimeout> | number>();
 
+// Focus cancel handle — set when a focusin idle-callback fires, cleared on
+// focusout before the callback executes.
+const focusCancelHandles = new Map<Element, ReturnType<typeof setTimeout> | number>();
+
 /**
  * Reset all module-level state. Exported for test isolation only — not part of
  * the public API and not re-exported from any barrel.
@@ -60,6 +64,7 @@ export function __resetForTests(): void {
     viewportObserver = null;
   }
   hoverCancelHandles.clear();
+  focusCancelHandles.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +120,16 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
         const link = document.createElement("link");
         link.rel = "prefetch";
         link.href = href;
-        document.head.appendChild(link);
+        // Wait for load/error so we only mark success on actual load and allow
+        // retry after error — inserting without waiting would mark success
+        // immediately even on failure. (Bug: Takazudo/zudo-front-builder#896)
+        await new Promise<void>((resolve, reject) => {
+          link.addEventListener("load", () => resolve(), { once: true });
+          link.addEventListener("error", () => reject(new Error(`prefetch link error: ${href}`)), {
+            once: true,
+          });
+          document.head.appendChild(link);
+        });
       } else {
         await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
       }
@@ -144,7 +158,7 @@ export function prefetch(url: string, opts: PrefetchOptions = {}): void {
 }
 
 // ---------------------------------------------------------------------------
-// Trigger: hover (pointerenter / focusin with cancel on pointerleave)
+// Trigger: hover (pointerenter / pointerleave)
 // ---------------------------------------------------------------------------
 
 function onPointerEnter(e: Event): void {
@@ -180,6 +194,45 @@ function onPointerLeave(e: Event): void {
     clearTimeout(handle as ReturnType<typeof setTimeout>);
   }
   hoverCancelHandles.delete(link);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: focus (focusin / focusout with cancel on focusout)
+// ---------------------------------------------------------------------------
+
+function onFocusIn(e: Event): void {
+  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+  if (!shouldPrefetchLink(link, "hover")) return;
+
+  // Use requestIdleCallback if available, else a small timeout.
+  const fire = () => {
+    focusCancelHandles.delete(link);
+    prefetch(link.href);
+  };
+
+  if (typeof requestIdleCallback !== "undefined") {
+    const handle = requestIdleCallback(fire);
+    focusCancelHandles.set(link, handle);
+  } else {
+    const handle = setTimeout(fire, 100);
+    focusCancelHandles.set(link, handle);
+  }
+}
+
+function onFocusOut(e: Event): void {
+  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+  if (!link) return;
+
+  const handle = focusCancelHandles.get(link);
+  if (handle === undefined) return;
+
+  if (typeof cancelIdleCallback !== "undefined") {
+    cancelIdleCallback(handle as number);
+  } else {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  }
+  focusCancelHandles.delete(link);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +339,13 @@ function shouldPrefetchLink(link: HTMLAnchorElement, triggerStrategy: PrefetchSt
 // ---------------------------------------------------------------------------
 
 function onAfterSwap(): void {
+  // Disconnect the existing observer before re-scanning so detached anchors from
+  // the old body are unobserved and don't accumulate across SPA swaps.
+  // (Bug: Takazudo/zudo-front-builder#896 — observer leak across SPA swaps)
+  if (viewportObserver) {
+    viewportObserver.disconnect();
+    viewportObserver = null;
+  }
   observeViewportLinks();
   prefetchLoadLinks();
 }
@@ -317,8 +377,10 @@ export function init(options?: PrefetchInitOptions): void {
 
   // Hover + tap — document delegation, picks up SPA-inserted links automatically.
   document.addEventListener("pointerenter", onPointerEnter, { capture: true });
-  document.addEventListener("focusin", onPointerEnter, { capture: true });
   document.addEventListener("pointerleave", onPointerLeave, { capture: true });
+  // Focus — separate cancel map so hover and focus don't share handles.
+  document.addEventListener("focusin", onFocusIn, { capture: true });
+  document.addEventListener("focusout", onFocusOut, { capture: true });
   document.addEventListener("touchstart", onTap, { capture: true, passive: true });
   document.addEventListener("mousedown", onTap, { capture: true });
 
