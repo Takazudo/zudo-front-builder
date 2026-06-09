@@ -145,6 +145,9 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
             "error",
             () => {
               clearTimeout(timer);
+              // Remove the failed element so retries don't accumulate
+              // dead <link> nodes in <head>.
+              link.remove();
               reject(new Error(`prefetch link error: ${href}`));
             },
             { once: true },

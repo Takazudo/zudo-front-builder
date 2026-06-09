@@ -2094,6 +2094,13 @@ pub fn compile_mdx_to_jsx_module(
 /// # Errors
 /// Forwards [`PipelineError::Parse`] from the underlying emitter. A parse
 /// failure is never cached — the next call will retry.
+///
+/// # Precondition
+/// When a `pipeline` carries per-document state (accumulated diagnostics,
+/// heading registries, …), the caller must reset it (`reset_per_entry()`
+/// or equivalent) before each call — the cache key covers input + config
+/// fingerprint only, not visitor state. All production call sites do
+/// this today.
 pub fn compile_mdx_to_jsx_module_cached(
     input: &str,
     file_path: &Path,
