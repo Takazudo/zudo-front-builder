@@ -4,6 +4,7 @@
 //! anyhow::Result<()>` entrypoint that `main.rs` dispatches to.
 
 pub mod build;
+pub mod bundler_input;
 pub mod check;
 pub mod dev;
 pub mod link_base_rewrite;
