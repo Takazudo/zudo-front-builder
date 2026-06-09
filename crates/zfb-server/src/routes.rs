@@ -932,7 +932,7 @@ async fn serve_page(
     // production output. For preview / embed callers `html_root` and
     // `dist_root` point at the same directory, so behaviour is
     // unchanged there.
-    if let Some(bytes) = read_from_dist(&state.html_root, trimmed) {
+    if let Some(bytes) = read_from_dist(&state.html_root, trimmed).await {
         // Mirror the cached-path content-type derivation. Hardcoding
         // `text/html` here used to splice a livereload `<script>` tag
         // into XML feeds (`/sitemap.xml`, `/atom.xml`) and serve them
@@ -969,7 +969,7 @@ async fn serve_page(
     // (above), so a same-named `pages/foo.tsx` route always wins over
     // `public/foo`.
     if !trimmed.is_empty() {
-        if let Some(bytes) = read_from_public(&state.public_root, trimmed) {
+        if let Some(bytes) = read_from_public(&state.public_root, trimmed).await {
             let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
             let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
             let content_type = if ext.is_empty() {
@@ -1055,18 +1055,15 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
 /// exist yet) is intentional: callers treat a failed containment check
 /// as not-found, so a missing symlink target is a safe 404.
 ///
-/// This function is deliberately sync so it can be called from both
-/// synchronous helpers (like `read_from_dist` / `read_from_public`) and
-/// from async handlers without needing a task-blocking spawn — the
-/// syscall is cheap (a few kernel lookups) and wave-2 (#903) will
-/// migrate callers to `tokio::fs::canonicalize` as part of the async
-/// conversion.
-fn path_is_within_root(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let canonical_root = match std::fs::canonicalize(root) {
+/// Async (#903): this runs on every request-path disk fallback, so the
+/// canonicalize syscalls go through `tokio::fs` (which offloads to the
+/// blocking pool) instead of blocking the request worker directly.
+async fn path_is_within_root(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let canonical_root = match tokio::fs::canonicalize(root).await {
         Ok(p) => p,
         Err(_) => return false,
     };
-    let canonical_path = match std::fs::canonicalize(path) {
+    let canonical_path = match tokio::fs::canonicalize(path).await {
         Ok(p) => p,
         Err(_) => return false,
     };
@@ -1087,7 +1084,7 @@ fn path_is_within_root(path: &std::path::Path, root: &std::path::Path) -> bool {
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `dist_root` — a symlink planted inside dist that
 /// points outside would otherwise be followed silently.
-fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
     if !is_safe_url_path(trimmed) {
         return None;
     }
@@ -1096,10 +1093,10 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
         dist_root.join(trimmed),
     ];
     for path in &candidates {
-        if !path_is_within_root(path, dist_root) {
+        if !path_is_within_root(path, dist_root).await {
             continue;
         }
-        if let Ok(bytes) = std::fs::read(path) {
+        if let Ok(bytes) = tokio::fs::read(path).await {
             return Some(bytes);
         }
     }
@@ -1122,22 +1119,28 @@ fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>>
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `public_root` — a symlink planted inside public/
 /// that points outside would otherwise be followed silently.
-fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
     if trimmed.is_empty() || !is_safe_url_path(trimmed) {
         return None;
     }
     let path = public_root.join(trimmed);
-    // Reject directory reads explicitly — `std::fs::read` on a directory
-    // returns an EISDIR error on Unix and would surface as a None here
-    // anyway, but on Windows the behaviour is platform-dependent. Being
-    // explicit also documents the intent.
-    if path.is_dir() {
+    // Reject directory reads explicitly — reading a directory returns an
+    // EISDIR error on Unix and would surface as a None here anyway, but
+    // on Windows the behaviour is platform-dependent. Being explicit also
+    // documents the intent. A missing file yields `false` here (matching
+    // the old sync `Path::is_dir`) and is then rejected by the
+    // containment check below.
+    let is_dir = tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if is_dir {
         return None;
     }
-    if !path_is_within_root(&path, public_root) {
+    if !path_is_within_root(&path, public_root).await {
         return None;
     }
-    std::fs::read(&path).ok()
+    tokio::fs::read(&path).await.ok()
 }
 
 /// Reject URL paths that would escape the dist root once joined.
@@ -3177,8 +3180,8 @@ mod tests {
     /// A symlink inside `dist/` pointing OUTSIDE it must yield a 404,
     /// not silently serve the out-of-root target.
     #[cfg(unix)]
-    #[test]
-    fn read_from_dist_rejects_out_of_root_symlink() {
+    #[tokio::test]
+    async fn read_from_dist_rejects_out_of_root_symlink() {
         use std::os::unix::fs::symlink;
 
         let outside = tempfile::tempdir().expect("outside dir");
@@ -3192,7 +3195,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_dist(dist.path(), "escape.txt");
+        let result = read_from_dist(dist.path(), "escape.txt").await;
         assert!(
             result.is_none(),
             "out-of-root symlink in dist must not be served"
@@ -3201,20 +3204,20 @@ mod tests {
 
     /// A real file inside `dist/` is still served normally — the
     /// containment check must not break legitimate files.
-    #[test]
-    fn read_from_dist_serves_real_in_root_file() {
+    #[tokio::test]
+    async fn read_from_dist_serves_real_in_root_file() {
         let dist = tempfile::tempdir().expect("dist dir");
         std::fs::write(dist.path().join("page.html"), b"<h1>hello</h1>").unwrap();
 
-        let result = read_from_dist(dist.path(), "page.html");
+        let result = read_from_dist(dist.path(), "page.html").await;
         assert_eq!(result.as_deref(), Some(b"<h1>hello</h1>".as_ref()));
     }
 
     /// A symlink inside `dist/` that points to another file WITHIN `dist/`
     /// must still be served — in-root symlinks are legitimate.
     #[cfg(unix)]
-    #[test]
-    fn read_from_dist_serves_in_root_symlink() {
+    #[tokio::test]
+    async fn read_from_dist_serves_in_root_symlink() {
         use std::os::unix::fs::symlink;
 
         let dist = tempfile::tempdir().expect("dist dir");
@@ -3222,7 +3225,7 @@ mod tests {
         // Symlink inside dist pointing at another file inside dist.
         symlink(dist.path().join("real.html"), dist.path().join("alias.html")).unwrap();
 
-        let result = read_from_dist(dist.path(), "alias.html");
+        let result = read_from_dist(dist.path(), "alias.html").await;
         assert_eq!(
             result.as_deref(),
             Some(b"<h1>real</h1>".as_ref()),
@@ -3232,8 +3235,8 @@ mod tests {
 
     /// A symlink inside `public/` pointing OUTSIDE it must yield None.
     #[cfg(unix)]
-    #[test]
-    fn read_from_public_rejects_out_of_root_symlink() {
+    #[tokio::test]
+    async fn read_from_public_rejects_out_of_root_symlink() {
         use std::os::unix::fs::symlink;
 
         let outside = tempfile::tempdir().expect("outside dir");
@@ -3246,7 +3249,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "escape.txt");
+        let result = read_from_public(public.path(), "escape.txt").await;
         assert!(
             result.is_none(),
             "out-of-root symlink in public must not be served"
@@ -3254,20 +3257,20 @@ mod tests {
     }
 
     /// A real file inside `public/` is still served normally.
-    #[test]
-    fn read_from_public_serves_real_in_root_file() {
+    #[tokio::test]
+    async fn read_from_public_serves_real_in_root_file() {
         let public = tempfile::tempdir().expect("public dir");
         std::fs::write(public.path().join("logo.svg"), b"<svg/>").unwrap();
 
-        let result = read_from_public(public.path(), "logo.svg");
+        let result = read_from_public(public.path(), "logo.svg").await;
         assert_eq!(result.as_deref(), Some(b"<svg/>".as_ref()));
     }
 
     /// A symlink inside `public/` that points to another file WITHIN
     /// `public/` must still be served.
     #[cfg(unix)]
-    #[test]
-    fn read_from_public_serves_in_root_symlink() {
+    #[tokio::test]
+    async fn read_from_public_serves_in_root_symlink() {
         use std::os::unix::fs::symlink;
 
         let public = tempfile::tempdir().expect("public dir");
@@ -3278,7 +3281,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "alias.svg");
+        let result = read_from_public(public.path(), "alias.svg").await;
         assert_eq!(
             result.as_deref(),
             Some(b"<svg/>".as_ref()),

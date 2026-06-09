@@ -638,6 +638,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     ) -> Result<()>
     where
         F: FnMut(&BuildOutcome) + Send + 'static,
+        P: 'static,
     {
         let debounce = self
             .config
@@ -658,6 +659,26 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
         // into one tick.
+        //
+        // Each tick runs seconds of blocking work — esbuild bundling, V8
+        // rendering, file IO (issue #903). Running it inline would pin a
+        // tokio worker thread for the whole tick, starving the dev
+        // server's request handling. `spawn_blocking` moves the tick onto
+        // tokio's dedicated blocking pool instead.
+        //
+        // `spawn_blocking` was chosen over `block_in_place` because
+        // (a) `block_in_place` panics on a current-thread runtime, and
+        // while `zfb dev` runs on the default multi-thread `#[tokio::main]`
+        // runtime, library tests drive this loop from plain
+        // `#[tokio::test]` (current-thread flavor); and (b) it leaves the
+        // calling worker free to keep polling other tasks. The blocking
+        // closure must be `'static`, so it cannot borrow loop state — the
+        // orchestrator, build context, and discovery hook are moved into
+        // the closure and handed back alongside the tick result every
+        // iteration (hence the `P: 'static` bound on this method).
+        let mut this = self;
+        let mut ctx = ctx;
+        let mut discover = discover;
         while let Some(first) = rx.recv().await {
             let mut batch: Vec<Change> = vec![first];
             while let Ok(c) = rx.try_recv() {
@@ -666,7 +687,35 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
 
             let changes: Vec<(PathBuf, ChangeKind)> =
                 batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
-            match self.tick_with_kinds(changes, &ctx, discover.as_ref()) {
+            let tick = tokio::task::spawn_blocking(move || {
+                let result = this.tick_with_kinds(changes, &ctx, discover.as_ref());
+                (result, this, ctx, discover)
+            })
+            .await;
+            let result = match tick {
+                Ok((result, this_back, ctx_back, discover_back)) => {
+                    this = this_back;
+                    ctx = ctx_back;
+                    discover = discover_back;
+                    result
+                }
+                // Before #903 a panic inside the tick unwound straight
+                // through `run` on the same thread; resume the panic so
+                // caller-observable behaviour is unchanged. The non-panic
+                // arm (task cancelled) cannot happen in practice — we
+                // never abort the blocking task — but losing the
+                // orchestrator state means the loop cannot continue, so
+                // surface it as a hard error.
+                Err(join_err) => match join_err.try_into_panic() {
+                    Ok(payload) => std::panic::resume_unwind(payload),
+                    Err(join_err) => {
+                        return Err(anyhow::anyhow!(
+                            "rebuild tick task failed to rejoin: {join_err}"
+                        ));
+                    }
+                },
+            };
+            match result {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
                     debug!("rebuild tick was a no-op");
