@@ -11,7 +11,7 @@ This page documents the contract for plugin authors. The companion API reference
 
 ## When you actually need a plugin
 
-Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-dont--write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
+Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-don-t-—-write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
 
 - **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
 - **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
