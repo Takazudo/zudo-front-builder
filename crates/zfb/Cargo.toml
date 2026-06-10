@@ -101,6 +101,10 @@ zfb-server = { path = "../zfb-server" }
 # because the dev server cannot serve assets on a different origin).
 zfb-types = { path = "../zfb-types" }
 zfb-watcher = { path = "../zfb-watcher" }
+# SHA-256 for the Phase-B bundle-skip key (issue #940). The same version is
+# already used as a build-dependency (binary verification in build.rs) and by
+# zfb-graph for its ManifestDigest; adding it here avoids pulling a new crate.
+sha2 = "0.10"
 # Node ESM bare-specifier resolver — replaces `createRequire().resolve` /
 # `import.meta.resolve` in config-loader.mjs with a pure-Rust helper
 # (issue #416 / epic #414).  Handles conditional exports, scoped packages,
