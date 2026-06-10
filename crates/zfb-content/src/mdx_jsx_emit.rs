@@ -2129,6 +2129,14 @@ pub fn compile_mdx_to_jsx_module(
 /// validate). Pipelines without a recorder store an empty manifest —
 /// validation is then a no-op and behaviour is unchanged.
 ///
+/// Recorder-armed pipelines additionally key the source file's parent
+/// directory (`;recorder_source_dir=…`, normalised like every other
+/// path segment): plugins may resolve reads relative to the file being
+/// compiled, so identical bodies in different directories must not
+/// alias one entry — the first file's manifest would still validate
+/// for the second file and hand it JSX built from the wrong reads.
+/// Identical bodies in the same directory keep sharing one entry.
+///
 /// # Broken-link diagnostics replay (zfb#939)
 ///
 /// A pipeline wired with `ResolveLinksPlugin` accumulates
@@ -2187,12 +2195,35 @@ pub fn compile_mdx_to_jsx_module_cached(
             // construction-time config fingerprint — today the
             // resolve-links `source_dir`. Absent context keeps the
             // pre-#939 two-part key shape byte-for-byte.
-            Some(
-                match pipeline.as_deref().and_then(Pipeline::cache_key_context) {
-                    Some(ctx) => format!("{input_hash};{fp};{ctx}"),
-                    None => format!("{input_hash};{fp}"),
-                },
-            )
+            let mut key = match pipeline.as_deref().and_then(Pipeline::cache_key_context) {
+                Some(ctx) => format!("{input_hash};{fp};{ctx}"),
+                None => format!("{input_hash};{fp}"),
+            };
+            // Recorder source-dir segment (zfb#942): a recorder-armed
+            // pipeline may carry plugins that resolve reads RELATIVE
+            // to the file being compiled (transclude's `./include.md`),
+            // so identical bodies in different directories can read
+            // different files and emit different JSX. Manifest
+            // validation alone cannot catch that aliasing — the first
+            // file's deps still validate when the second file looks
+            // up — so the resolution basis (the source file's parent
+            // dir) joins the key whenever a recorder is attached.
+            // Identical bodies in the SAME directory keep sharing one
+            // entry (their relative reads resolve identically); the
+            // pre-#942 key shape is untouched for every
+            // recorder-less pipeline.
+            if pipeline
+                .as_deref()
+                .is_some_and(|p| p.read_recorder().is_some())
+            {
+                let source_dir = file_path
+                    .parent()
+                    .map(crate::path_norm::normalize_path_lexically)
+                    .unwrap_or_default();
+                key.push_str(";recorder_source_dir=");
+                key.push_str(&source_dir);
+            }
+            Some(key)
         }
         _ => None,
     };
@@ -2597,6 +2628,59 @@ mod tests {
         assert_eq!(
             first.jsx_source, second.jsx_source,
             "sanity: both fresh compiles emit identical JSX"
+        );
+    }
+
+    // zfb#942 (review fix): recorder-armed pipelines must NOT share an
+    // entry across source directories — a path-relative reader
+    // (transclude's `./include.md`) reads different files for identical
+    // bodies in different dirs, and manifest validation alone cannot
+    // catch that aliasing. Same-directory bodies keep deduping.
+    #[test]
+    fn recorder_pipelines_key_entries_per_source_dir() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep = dir.path().join("include.md");
+        std::fs::write(&dep, "v1").expect("write dep");
+        let src = "shared body\n";
+        let deps = vec![dep.clone()];
+
+        let (mut p1, _) = recording_pipeline(&deps, &[]);
+        compile_mdx_to_jsx_module_cached(
+            src,
+            Path::new("/content/docs/a.mdx"),
+            Some(&cache),
+            Some(&mut p1),
+        )
+        .expect("compile a");
+        let (mut p2, _) = recording_pipeline(&deps, &[]);
+        compile_mdx_to_jsx_module_cached(
+            src,
+            Path::new("/content/blog/b.mdx"),
+            Some(&cache),
+            Some(&mut p2),
+        )
+        .expect("compile b");
+        assert_eq!(
+            cache.len(),
+            2,
+            "identical bodies in DIFFERENT dirs must occupy distinct entries"
+        );
+
+        // Same dir as a.mdx → same resolution basis → true hit, no new entry.
+        poke_sentinel(&cache);
+        let (mut p3, _) = recording_pipeline(&deps, &[]);
+        let third = compile_mdx_to_jsx_module_cached(
+            src,
+            Path::new("/content/docs/c.mdx"),
+            Some(&cache),
+            Some(&mut p3),
+        )
+        .expect("compile c");
+        assert_eq!(cache.len(), 2, "same-dir identical body must not add an entry");
+        assert_eq!(
+            third.jsx_source, "__SENTINEL__",
+            "same-dir identical body must be served from the shared entry"
         );
     }
 

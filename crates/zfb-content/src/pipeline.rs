@@ -948,6 +948,14 @@ impl Pipeline {
     /// gate in [`Pipeline::with_defaults_and_full_config`] still marks
     /// such pipelines uncacheable; flipping that gate once the plugins
     /// actually record is zfb#944.)
+    ///
+    /// **Cache-key effect.** Because recording plugins may resolve
+    /// reads relative to the file being compiled, a recorder-armed
+    /// pipeline makes `compile_mdx_to_jsx_module_cached` append the
+    /// source file's parent directory to the cache key — identical
+    /// bodies in different directories stop sharing an entry (their
+    /// relative reads can differ), while same-directory bodies still
+    /// dedupe. See the key-shape docs on that function.
     pub fn set_read_recorder(&mut self, recorder: Arc<ReadRecorder>) -> &mut Self {
         self.read_recorder = Some(recorder);
         self
