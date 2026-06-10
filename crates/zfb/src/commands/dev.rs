@@ -1667,6 +1667,18 @@ impl DevRenderSession {
             }
         }
 
+        // Phase B (issue #940, review fix) — the live renderer just
+        // diverged from whatever the stored skip key described. Invalidate
+        // it NOW, before the fallible route-table rebuild below: if that
+        // rebuild fails, the error `?`-returns without committing, and a
+        // stale key from the pre-swap bundle could otherwise match a later
+        // tick (e.g. the user undoing the edit) and skip — freezing the
+        // failed tick's host in place. Note this is distinct from a
+        // host-START failure, which `?`-returns ABOVE the swap and
+        // correctly keeps the previous key (the live renderer was never
+        // touched, so the old key still describes it).
+        self.inner.commit_skip_key(None);
+
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let (new_routes_by_source, new_ssr_routes) =
@@ -3024,8 +3036,12 @@ mod tests {
     }
 
     // ── Phase B skip-key tests (issue #940) ─────────────────────────────────
+    //
+    // All `embed_v8`-gated: `compute_bundle_skip_key` and the
+    // `last_successful_skip_key` seams only exist on the V8 path.
 
     /// Helper: write `bytes` to a temp file and return its path.
+    #[cfg(feature = "embed_v8")]
     fn write_temp_bundle(dir: &tempfile::TempDir, bytes: &[u8]) -> PathBuf {
         let p = dir.path().join("bundle.js");
         std::fs::write(&p, bytes).unwrap();
@@ -3033,6 +3049,7 @@ mod tests {
     }
 
     /// Build a minimal `BundlerOutput` pointing at an existing file.
+    #[cfg(feature = "embed_v8")]
     fn make_bundler_out(bundle_path: PathBuf) -> BundlerOutput {
         use zfb_build::bundler::BundleManifest;
         BundlerOutput {
@@ -3049,6 +3066,7 @@ mod tests {
     }
 
     /// `compute_bundle_skip_key` returns `Some` for a valid bundle file.
+    #[cfg(feature = "embed_v8")]
     #[test]
     fn bundle_skip_key_returns_some_for_readable_bundle() {
         let dir = tempfile::tempdir().unwrap();
@@ -3059,6 +3077,7 @@ mod tests {
 
     /// `compute_bundle_skip_key` returns `None` when the bundle path does not
     /// exist — the caller must treat this as a forced full refresh.
+    #[cfg(feature = "embed_v8")]
     #[test]
     fn bundle_skip_key_returns_none_for_missing_bundle() {
         let dir = tempfile::tempdir().unwrap();
@@ -3068,6 +3087,7 @@ mod tests {
     }
 
     /// Same bundle bytes + same routes → identical keys.
+    #[cfg(feature = "embed_v8")]
     #[test]
     fn bundle_skip_key_identical_for_same_bundle_and_routes() {
         let dir = tempfile::tempdir().unwrap();
@@ -3078,6 +3098,7 @@ mod tests {
     }
 
     /// Different bundle bytes → different keys (real edit defeats skip).
+    #[cfg(feature = "embed_v8")]
     #[test]
     fn bundle_skip_key_changes_on_different_bundle_bytes() {
         let dir = tempfile::tempdir().unwrap();
@@ -3094,6 +3115,7 @@ mod tests {
 
     /// A `pages/` route change (different source paths) defeats the skip even
     /// when bundle bytes are identical — satisfies Inv 2 (issue #935 §3).
+    #[cfg(feature = "embed_v8")]
     #[test]
     fn bundle_skip_key_changes_on_route_universe_change() {
         use zfb_router::Route;
@@ -3210,6 +3232,42 @@ mod tests {
         assert!(
             inner.should_skip_refresh(Some(key_k)),
             "after the retry tick succeeds, the skip key is live again"
+        );
+    }
+
+    /// Phase B (codex review fix) — a refresh that swapped the live host
+    /// but then failed the route-table rebuild must invalidate the stored
+    /// key at swap time. Otherwise a later tick that restores the OLD
+    /// bundle (e.g. the user undoing the edit) would match the stale key
+    /// and skip — freezing the failed tick's host in place.
+    ///
+    /// Drives the same seam sequence `refresh_bundle_and_routes` executes:
+    /// `commit_skip_key(None)` immediately after the swap, final
+    /// `commit_skip_key(Some(...))` never reached on the failure path.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn route_rebuild_failure_after_swap_invalidates_skip_key() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        let key_old = [0x11u8; 32]; // tick N's bundle
+        let key_new = [0x22u8; 32]; // tick N+1's edited bundle
+
+        // Tick N: full refresh succeeds → commit old key.
+        inner.commit_skip_key(Some(key_old));
+
+        // Tick N+1: edit → new key, no skip → host start OK → SWAP →
+        // invalidate-at-swap → route-table rebuild FAILS (final commit
+        // never reached).
+        assert!(!inner.should_skip_refresh(Some(key_new)));
+        inner.commit_skip_key(None); // the swap-time invalidation
+                                     // (route rebuild fails here — no final commit)
+
+        // Tick N+2: user undoes the edit → old bundle bytes → old key.
+        // MUST NOT skip: the live host is tick N+1's renderer, not the
+        // one key_old describes.
+        assert!(
+            !inner.should_skip_refresh(Some(key_old)),
+            "a post-swap failure must invalidate the stored key so a \
+             restored old bundle cannot skip against the wrong live host"
         );
     }
 
