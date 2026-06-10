@@ -1005,10 +1005,10 @@ pub(crate) fn compute_css_module_class_maps(
 ///   page paths).
 ///
 /// On `Ok(Some(_))` the orchestrator hashes the bytes and writes
-/// `dist/assets/islands-<hash>.js`. The bundler also wrote the
-/// stable-named `dist/assets/islands.js` as a side effect; the
-/// renderer's HTML never references that stable file directly
-/// because the rewrite step swaps it for the hashed URL.
+/// `dist/assets/islands-<hash>.js`. The renderer's HTML references
+/// the stable URL (`/assets/islands.js`) which the rewrite step
+/// replaces with the hashed form; no stable `islands.js` is written
+/// to disk in production (the bundler carries bytes in memory only).
 pub(crate) fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
@@ -1066,7 +1066,7 @@ pub(crate) fn build_default_islands_payload(
         if scan_meta.near_miss_candidates == 0 {
             output::info(
                 "no \"use client\" islands found; skipping islands bundle \
-                 (dist/assets/islands.js will not be emitted)",
+                 (no islands asset will be emitted)",
             );
         } else {
             // Issue #122 / #117: this branch used to be silent, which made
@@ -1077,7 +1077,7 @@ pub(crate) fn build_default_islands_payload(
             // path the scanner can't follow) become discoverable.
             output::warn(format!(
                 "scanned {} page entr{} but found no \"use client\" islands; \
-                 dist/assets/islands.js will not be emitted. \
+                 no islands asset will be emitted. \
                  Verify each island module starts with the literal directive \
                  \"use client\" and is reachable from a page in pages/.",
                 entries.len(),

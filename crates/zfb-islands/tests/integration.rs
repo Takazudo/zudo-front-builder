@@ -47,14 +47,16 @@ fn subprocess_bundler_mock_short_circuits_command() {
     let out: BundleOutput = bundler
         .bundle(&[island("Counter", "components/counter.tsx")], &bundle_cfg)
         .expect("mock bundler should succeed");
+    // Bundler carries bytes in memory — asset_path is the canonical
+    // write target but the bundler itself does NOT write to disk.
     assert!(
         out.asset_path.starts_with(tmp.path()),
-        "asset must land under outdir: {}",
+        "asset_path must be rooted under outdir: {}",
         out.asset_path.display()
     );
-    assert!(out.asset_path.exists(), "asset must be written to disk");
-    let on_disk = std::fs::read_to_string(&out.asset_path).expect("read asset");
-    assert!(on_disk.contains("Counter"));
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    let bytes = String::from_utf8(out.bytes.clone()).expect("bytes are valid UTF-8");
+    assert!(bytes.contains("Counter"));
     assert_eq!(out.module_ids, vec!["Counter".to_string()]);
     // S0 contract: stable filename + URL, no hash. Production hashing
     // happens in `ProductionAssetPipeline`.
@@ -76,10 +78,10 @@ fn subprocess_bundler_reports_missing_binary_clearly() {
 
 #[test]
 fn bundle_filename_is_stable_regardless_of_payload() {
-    // Under the S0 contract the bundler emits the stable filename
-    // `assets/islands.js` — the bytes vary with input, but the
-    // filename and public URL never do. Hashing is the
-    // `ProductionAssetPipeline`'s job.
+    // Under the S0 contract the bundler returns a stable `asset_path`
+    // canonical form — the bytes vary with input, but the filename and
+    // public URL never do. Hashing is the `ProductionAssetPipeline`'s
+    // job. The bundler carries bytes in memory; no disk write occurs.
     let make = |payload: &str, root: &Path| {
         let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
         let bundler = EsbuildSubprocessBundler::new(cfg);
@@ -97,10 +99,9 @@ fn bundle_filename_is_stable_regardless_of_payload() {
     assert_eq!(a.asset_url, b.asset_url);
     assert_eq!(a.asset_url, "/assets/islands.js");
 
-    // Bytes-on-disk still differ even though the names match.
-    let bytes_a = std::fs::read(&a.asset_path).unwrap();
-    let bytes_b = std::fs::read(&b.asset_path).unwrap();
-    assert_ne!(bytes_a, bytes_b);
+    // In-memory bytes still differ even though the asset paths share the
+    // same filename shape.
+    assert_ne!(a.bytes, b.bytes);
 }
 
 #[test]
@@ -113,8 +114,9 @@ fn bundle_output_layout_is_stable_assets_islands_js() {
         .bundle(&[island("X", "x.tsx")], &bundle_cfg)
         .expect("bundle");
 
-    // Path layout: {outdir}/assets/islands.js (stable; hashing is
-    // performed downstream by `ProductionAssetPipeline`).
+    // Canonical path layout: {outdir}/assets/islands.js (stable; the
+    // bundler does NOT write to disk — the caller owns the write).
+    // Hashing is performed downstream by `ProductionAssetPipeline`.
     let parent = out
         .asset_path
         .parent()
@@ -128,6 +130,8 @@ fn bundle_output_layout_is_stable_assets_islands_js() {
         .to_string_lossy()
         .into_owned();
     assert_eq!(filename, "islands.js");
+    // No disk write — file must not exist.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
 }
 
 #[test]
@@ -183,6 +187,33 @@ fn asset_url_uses_configured_base_url() {
 }
 
 #[test]
+fn bundle_output_bytes_carries_js_in_memory() {
+    // Acceptance criterion for zudolab/zzmod#497: the bundler returns the
+    // entry JS in `BundleOutput::bytes` and does NOT write to disk.
+    // The duplicate `islands.js` + `islands-<hash>.js` pair in production
+    // was caused by the old `bundle()` writing to the stable path as a
+    // side effect; Option A removes that write entirely.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let payload = "// bundled islands JS\nexport const x = 1;\n";
+    let cfg = EsbuildSubprocessConfig::default().with_mock_output(payload);
+    let bundler = EsbuildSubprocessBundler::new(cfg);
+    let bundle_cfg = BundleConfig::default().with_outdir(tmp.path());
+    let out = bundler
+        .bundle(&[island("X", "x.tsx")], &bundle_cfg)
+        .expect("bundle");
+
+    // Bytes land in memory.
+    assert_eq!(out.bytes, payload.as_bytes());
+    // Nothing written to disk — the caller (dev server / prod pipeline)
+    // owns all disk writes.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(
+        !tmp.path().join("assets").exists(),
+        "dist/assets/ must not be created by the bundler"
+    );
+}
+
+#[test]
 #[ignore = "Requires the real esbuild binary at crates/zfb/binaries/esbuild/esbuild. \
             Will be enabled in a release-engineering follow-up."]
 fn subprocess_bundler_against_real_binary() {
@@ -198,7 +229,9 @@ fn subprocess_bundler_against_real_binary() {
     let out = bundler
         .bundle(&[Island::new("Counter", entry)], &bundle_cfg)
         .expect("real esbuild binary should produce a bundle");
-    assert!(out.asset_path.exists());
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "bundled bytes must be non-empty");
 }
 
 /// Regression for issue #144 (zudolab/zudo-doc#1355 Wave 5).
@@ -282,9 +315,10 @@ export default function NoEffectFn() { return null; }
             &bundle_cfg,
         )
         .expect("real esbuild bundle");
-    assert!(out.asset_path.exists());
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
 
-    let bundled = std::fs::read_to_string(&out.asset_path).expect("read bundle");
+    let bundled = String::from_utf8(out.bytes).expect("bundled bytes are valid UTF-8");
     assert!(
         bundled.contains("WithEffectInner"),
         "v2-shape island lost from bundle (pre-existing regression?): {bundled}"
@@ -371,9 +405,9 @@ fn splitting_emits_chunk_for_dynamic_import() {
         .bundle(&[Island::new("Island", island_src)], &cfg)
         .expect("real esbuild splitting bundle");
 
-    // Entry exists and is the stable name.
-    assert!(out.asset_path.exists());
-    let entry = std::fs::read_to_string(&out.asset_path).expect("read entry");
+    // Entry JS arrives in memory — the bundler does not write to disk.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    let entry = String::from_utf8(out.bytes.clone()).expect("entry bytes are valid UTF-8");
 
     // At least one chunk emitted.
     assert!(
@@ -473,7 +507,9 @@ fn no_dynamic_import_yields_single_file() {
         .bundle(&[Island::new("Island", island_src)], &cfg)
         .expect("real esbuild bundle");
 
-    assert!(out.asset_path.exists());
+    // Entry JS arrives in memory — the bundler does not write to disk.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
     assert!(
         out.chunks.is_empty(),
         "a zero-dynamic-import project must emit exactly the entry, no chunks: {:?}",

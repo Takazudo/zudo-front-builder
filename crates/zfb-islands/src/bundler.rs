@@ -21,12 +21,13 @@
 //!   must produce the same asset bytes and module-id list. Downstream
 //!   hashing in [`zfb_build::pipeline::prod::ProductionAssetPipeline`]
 //!   assumes byte-stable bundle output.
-//! - The output asset filename is the **stable** name
-//!   `{outdir}/assets/islands.js` (per `zfb_types::STABLE_ISLANDS_FILENAME`)
-//!   — `ProductionAssetPipeline` is the single source of truth for
-//!   content hashing, so emitters under this crate no longer bake
-//!   `-<hash>` into the on-disk name. Mirror of `zfb-css`'s
-//!   `styles.css` stable-name layout.
+//! - The bundler returns the entry JS **in memory** via
+//!   [`BundleOutput::bytes`] — it does NOT write `islands.js` to disk.
+//!   Downstream consumers own all disk writes: the prod pipeline
+//!   content-hashes and writes `islands-<hash>.js`; the dev server
+//!   explicitly writes the stable `islands.js` for `ServeDir` to serve.
+//!   This eliminates the duplicate `islands.js` + `islands-<hash>.js`
+//!   pair that production builds previously emitted (zudolab/zzmod#497).
 //! - `module_ids` returns the bundled module identifiers (typically the
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
@@ -281,8 +282,8 @@ impl BundleConfig {
 /// Downstream consumers (the prod pipeline, the dev server) MUST write
 /// each chunk to the same directory as the entry under its `filename`
 /// verbatim and MUST NOT rename it: the entry's `import("./<filename>")`
-/// references are relative and resolve only when entry and chunk share a
-/// directory under the un-renamed chunk name.
+/// references are relative and resolve only when entry and chunk share
+/// a directory under the un-renamed chunk name.
 #[derive(Debug, Clone)]
 pub struct BundleChunk {
     /// Flat, self-hashed chunk basename (e.g. `islands-chunk-WOEGGERP.js`).
@@ -297,13 +298,22 @@ pub struct BundleChunk {
 /// Result of a successful [`ClientBundler::bundle`] call.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
-    /// Output file path on disk — the stable form
-    /// `dist/assets/islands.js`. `ProductionAssetPipeline` reads these
-    /// bytes and renames to `dist/assets/islands-<hash>.js` at deploy
-    /// time; the name handed to callers here stays unhashed so the
-    /// pipeline can drive HTML rewrites against
-    /// `STABLE_ISLANDS_URL` without coordinating an extra string
-    /// channel.
+    /// Bundled JS bytes, ready for hashing and shipping. The bundler
+    /// carries these **in memory** — it does NOT write `islands.js` to
+    /// disk. Downstream consumers own all disk writes:
+    ///
+    /// - Production: `ProductionAssetPipeline` hashes these bytes,
+    ///   writes `dist/assets/islands-<hash>.js`, and rewrites HTML
+    ///   references from `STABLE_ISLANDS_URL` to the hashed form in one
+    ///   pass.
+    /// - Dev server: the caller explicitly writes
+    ///   `dist/assets/islands.js` from these bytes (matching the CSS
+    ///   pipeline pattern) so `ServeDir` can serve the stable URL.
+    pub bytes: Vec<u8>,
+
+    /// Canonical on-disk path the caller should write the bytes to —
+    /// the stable form `{outdir}/assets/islands.js`. Not written by the
+    /// bundler; the caller uses this to know where to place the bytes.
     pub asset_path: PathBuf,
 
     /// Public URL the renderer should reference — the stable form
@@ -577,24 +587,23 @@ pub struct ProductionIslandsAsset {
 /// **Empty input is a no-op** (with one exception). When `islands` is
 /// empty (project carries no `"use client"` components) *and*
 /// `config.client_router` is `false`, this returns `Ok(None)` *without*
-/// invoking the bundler — so esbuild is never asked to write a
-/// zero-entry-points bundle, no empty `dist/assets/islands.js` lands on
-/// disk, and the rendered HTML stays free of a `<script>` tag pointing
-/// at a non-existent asset (S3 acceptance criterion: islands emitter is
-/// a no-op when the project has no islands).
+/// invoking the bundler — so no empty asset is produced and the rendered
+/// HTML stays free of a `<script>` tag pointing at a non-existent asset
+/// (S3 acceptance criterion: islands emitter is a no-op when the project
+/// has no islands).
 ///
 /// The exception: when `config.client_router` is `true` the bundler runs
 /// even on an empty `islands` slice, because the synthetic entry still
 /// has to carry the `<ClientRouter />` runtime's side-effect import
 /// (issue #289).
 ///
-/// On a non-empty `islands` slice the bundler writes the stable
-/// `<outdir>/assets/islands.js` file as part of its normal contract;
-/// this adapter then reads those bytes back into memory and packages
-/// them with the canonical relative path + stable URL constants from
-/// `zfb-types`. The stable filename / URL match exactly what
-/// `STABLE_ISLANDS_FILENAME` / `STABLE_ISLANDS_URL` declare so S1's head
-/// injection and S4's pipeline rewrite agree on the same key.
+/// The bundler returns the entry JS bytes **in memory** via
+/// [`BundleOutput::bytes`] — it does NOT write `islands.js` to disk.
+/// This function packages those bytes with the canonical relative path +
+/// stable URL constants from `zfb-types`. The stable filename / URL
+/// match exactly what `STABLE_ISLANDS_FILENAME` / `STABLE_ISLANDS_URL`
+/// declare so S1's head injection and S4's pipeline rewrite agree on
+/// the same key.
 pub fn build_production_islands_asset(
     bundler: &dyn ClientBundler,
     islands: &[Island],
@@ -613,12 +622,7 @@ pub fn build_production_islands_asset(
         .bundle(islands, config)
         .context("islands production emitter: bundler.bundle() failed")?;
 
-    let bytes = std::fs::read(&output.asset_path).with_context(|| {
-        format!(
-            "islands production emitter: failed to read bundled asset bytes from {}",
-            output.asset_path.display()
-        )
-    })?;
+    let bytes = output.bytes;
 
     let relative_path = PathBuf::from(DIST_ASSETS_DIR).join(STABLE_ISLANDS_FILENAME);
 
@@ -759,9 +763,9 @@ mod tests {
     /// Test double for the S3 production-emitter adapter.
     ///
     /// Records every `bundle()` invocation so the no-islands no-op test
-    /// can assert the bundler was never called, and writes a configured
-    /// payload to the stable `<outdir>/assets/islands.js` path so the
-    /// happy-path test can read deterministic bytes back.
+    /// can assert the bundler was never called. Returns a configured
+    /// payload as in-memory bytes — the bundler does NOT write to disk
+    /// (the caller owns disk writes per the new contract).
     struct RecordingBundler {
         payload: Vec<u8>,
         calls: std::cell::Cell<usize>,
@@ -788,14 +792,10 @@ mod tests {
                 .outdir
                 .join(zfb_types::DIST_ASSETS_DIR)
                 .join(zfb_types::STABLE_ISLANDS_FILENAME);
-            if let Some(parent) = asset_path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&asset_path, &self.payload).unwrap();
-
             let asset_url = bundle_link_href(&config.base_url, &asset_path);
             let module_ids = islands.iter().map(|i| i.component_name.clone()).collect();
             Ok(BundleOutput {
+                bytes: self.payload.clone(),
                 asset_path,
                 asset_url,
                 module_ids,
@@ -912,6 +912,34 @@ mod tests {
         assert!(
             chain.contains("synthetic bundler failure"),
             "underlying error must be in the chain: {chain}"
+        );
+    }
+
+    #[test]
+    fn build_production_islands_asset_does_not_write_to_disk() {
+        // Acceptance criterion for zudolab/zzmod#497: the bundler returns
+        // bytes in memory — `build_production_islands_asset` must NOT write
+        // `dist/assets/islands.js` to disk. The duplicate stable + hashed
+        // file pair was produced because the old `bundle()` implementation
+        // wrote the stable file as a side effect; the new contract carries
+        // bytes in `BundleOutput::bytes` only.
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"export const x = 1;\n".to_vec();
+        let bundler = RecordingBundler::new(payload.clone());
+        let cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
+        let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
+
+        let asset = build_production_islands_asset(&bundler, &islands, &cfg)
+            .unwrap()
+            .expect("non-empty islands → adapter returns Some(_)");
+
+        // The bytes arrive in memory.
+        assert_eq!(asset.bytes, payload);
+        // Nothing was written to dist/assets/ — no islands.js on disk.
+        assert!(
+            !dir.path().join(zfb_types::DIST_ASSETS_DIR).exists(),
+            "build_production_islands_asset must not write to disk; \
+             dist/assets/ must not exist after a production bundle pass"
         );
     }
 }
