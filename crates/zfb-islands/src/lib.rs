@@ -29,6 +29,7 @@
 //! Epic 7.
 
 pub mod bundler;
+pub mod client_scripts;
 pub mod esbuild;
 pub mod future_rust_native;
 pub mod html_tree;
@@ -40,6 +41,11 @@ pub use bundler::{
     build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
     BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk, ModuleId,
     PerIslandBundleOutput, ProductionIslandsAsset,
+};
+pub use client_scripts::{
+    build_production_client_scripts, client_script_entry_name, discover_client_scripts,
+    is_client_script_file, ClientScriptCollision, ClientScriptEntry, ProductionClientScriptAsset,
+    CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use esbuild::{
     hash_8, render_island_entry_source, render_runtime_entry_source,
