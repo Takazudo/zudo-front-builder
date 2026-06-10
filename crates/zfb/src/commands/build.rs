@@ -4375,7 +4375,7 @@ mod tests {
             islands_plugin_config: IslandsPluginConfig::default(),
             v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
         };
-        let inputs = runner
+        let (inputs, _marker_names) = runner
             .emit_prod_assets(project_root, &outdir, &cfg)
             .expect("emit_prod_assets must succeed");
         let css = inputs
