@@ -82,7 +82,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      # Fmt gate (issue #988): near-free fail-fast check before the expensive
+      # rust-cache restore + V8 build. Note: cargo fmt --check on the stable
+      # toolchain can change behaviour on a future toolchain bump — accepted
+      # cost; same posture as `clippy -D warnings` (a future stable rustfmt
+      # can change defaults and turn CI red with zero code changes).
+      - run: cargo fmt --all --check
 
       # Cache compiled Rust artifacts across runs. The cache key encodes the
       # OS, Rust toolchain, and a hash of every Cargo.toml/Cargo.lock in the
