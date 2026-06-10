@@ -305,7 +305,9 @@ impl Default for Backend {
     /// is provided so builders / test harnesses can use `..Default::default()`
     /// in struct literals without specifying every field.
     fn default() -> Self {
-        Backend::Existing { base_url: String::new() }
+        Backend::Existing {
+            base_url: String::new(),
+        }
     }
 }
 
@@ -338,9 +340,7 @@ enum BackendHandle {
     ///
     /// Gated behind `embed_v8` (issue #371, sub-task 4.1a).
     #[cfg(feature = "embed_v8")]
-    EmbeddedV8 {
-        guard: EmbeddedV8Guard,
-    },
+    EmbeddedV8 { guard: EmbeddedV8Guard },
     /// Unit-test stub: answers requests with a closure.
     Stub {
         handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
@@ -352,13 +352,10 @@ impl BackendHandle {
         match self {
             BackendHandle::Http { base_url, client } => {
                 let url = join_url(base_url, url_path);
-                let resp = client
-                    .get(&url)
-                    .send()
-                    .map_err(|e| RendererError::Http {
-                        url: url.clone(),
-                        source: e,
-                    })?;
+                let resp = client.get(&url).send().map_err(|e| RendererError::Http {
+                    url: url.clone(),
+                    source: e,
+                })?;
                 let status = resp.status().as_u16();
                 let content_type = resp
                     .headers()
@@ -386,18 +383,22 @@ impl BackendHandle {
                         source: e,
                     })?
                     .to_vec();
-                Ok(HttpResponseLike { status, content_type, headers, body })
+                Ok(HttpResponseLike {
+                    status,
+                    content_type,
+                    headers,
+                    body,
+                })
             }
             #[cfg(feature = "embed_v8")]
             BackendHandle::EmbeddedV8 { guard } => {
-                let host = guard.host.as_mut().expect(
-                    "EmbeddedV8 host has been terminated; dispatch called after shutdown"
-                );
+                let host = guard
+                    .host
+                    .as_mut()
+                    .expect("EmbeddedV8 host has been terminated; dispatch called after shutdown");
                 host.dispatch_fetch(url_path)
             }
-            BackendHandle::Stub { handler } => {
-                Ok(handler(url_path))
-            }
+            BackendHandle::Stub { handler } => Ok(handler(url_path)),
         }
     }
 
@@ -629,10 +630,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     let mut ssg_routes: Vec<RouteUniverseEntry> = Vec::new();
     let mut ssr_routes: Vec<SsrRouteEntry> = Vec::new();
     for entry in route_universe {
-        let prerender = prerender_map
-            .get(&entry.route_key)
-            .copied()
-            .unwrap_or(true);
+        let prerender = prerender_map.get(&entry.route_key).copied().unwrap_or(true);
         if prerender {
             ssg_routes.push(entry);
         } else {
@@ -762,9 +760,10 @@ impl RendererState {
     #[cfg(feature = "embed_v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
-            BackendHandle::EmbeddedV8 { guard } => {
-                guard.host.as_deref_mut().map(|h| h as &mut dyn EmbeddedV8Host)
-            }
+            BackendHandle::EmbeddedV8 { guard } => guard
+                .host
+                .as_deref_mut()
+                .map(|h| h as &mut dyn EmbeddedV8Host),
             _ => None,
         }
     }
@@ -781,10 +780,7 @@ pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> 
     let timeout = request_timeout.unwrap_or(Duration::from_secs(30));
     let handle = launch(&backend, &bundle_path, timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
-    Ok(RendererState {
-        sourcemap,
-        handle,
-    })
+    Ok(RendererState { sourcemap, handle })
 }
 
 /// Drive one route against an existing dev-mode state and write it to
@@ -1309,9 +1305,7 @@ mod tests {
 
     /// Build a [`Backend::Stub`] from a closure that maps URL path → response.
     /// The closure signature mirrors the public [`HttpResponseLike`] shape.
-    fn stub_backend(
-        f: impl Fn(&str) -> HttpResponseLike + Send + Sync + 'static,
-    ) -> Backend {
+    fn stub_backend(f: impl Fn(&str) -> HttpResponseLike + Send + Sync + 'static) -> Backend {
         Backend::Stub {
             handler: Arc::new(f),
         }
@@ -1460,9 +1454,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
         let out = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1487,9 +1481,9 @@ mod tests {
             url_path: "/error".into(),
             output_path: PathBuf::from("error/index.html"),
             route_key: "/error".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
         let err = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1673,9 +1667,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
         render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
             sourcemap_path: PathBuf::from("/dev/null"),
@@ -1709,9 +1703,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
         let assets = crate::head_inject::ProdHeadAssets {
             css_url: Some("/assets/styles.css".into()),
             island_module_urls: vec!["/assets/islands.js".into()],
@@ -1807,9 +1801,9 @@ mod tests {
             url_path: "/feed.xml".into(),
             output_path: PathBuf::from("feed.xml"),
             route_key: "/feed.xml".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
         let assets = crate::head_inject::ProdHeadAssets {
             css_url: Some("/assets/styles.css".into()),
             island_module_urls: vec![],
@@ -1846,7 +1840,10 @@ mod tests {
         // builder API.
         let mut builder = sourcemap::SourceMapBuilder::new(None);
         let src_id = builder.add_source("pages/error.tsx");
-        builder.set_source_contents(src_id, Some("export function boom() { throw new Error('x'); }"));
+        builder.set_source_contents(
+            src_id,
+            Some("export function boom() { throw new Error('x'); }"),
+        );
         // dst (generated) line 0 col 0 maps to src (original) line 4
         // col 2 (both 0-based in the builder). That corresponds to
         // user-visible line 5 col 3.
@@ -1895,7 +1892,10 @@ mod tests {
 
         let mut builder = sourcemap::SourceMapBuilder::new(None);
         let src_id = builder.add_source("pages/error.tsx");
-        builder.set_source_contents(src_id, Some("export function boom() { throw new Error('x'); }"));
+        builder.set_source_contents(
+            src_id,
+            Some("export function boom() { throw new Error('x'); }"),
+        );
         builder.add_raw(0, 0, 4, 2, Some(src_id), None, false);
         let mut buf = Vec::new();
         builder.into_sourcemap().to_writer(&mut buf).unwrap();
@@ -1910,9 +1910,9 @@ mod tests {
             url_path: "/".into(),
             output_path: PathBuf::from("index.html"),
             route_key: "/".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
 
         let err = render_all(RendererInput {
             bundle_path,
@@ -1934,7 +1934,11 @@ mod tests {
         .unwrap_err();
 
         match err {
-            RendererError::RenderFailed { user_location, body, .. } => {
+            RendererError::RenderFailed {
+                user_location,
+                body,
+                ..
+            } => {
                 let loc = user_location.expect("expected user_location to be projected");
                 assert!(
                     loc.starts_with("pages/error.tsx:5:"),
@@ -1970,9 +1974,9 @@ mod tests {
             url_path: "/foo".into(),
             output_path: PathBuf::from("foo/index.html"),
             route_key: "/foo".into(),
-        static_html: false,
-        source_path: None,
-}];
+            static_html: false,
+            source_path: None,
+        }];
 
         let err = render_all(RendererInput {
             bundle_path: PathBuf::from("/dev/null"),
@@ -2045,7 +2049,8 @@ mod tests {
             static_html: false,
             source_path: None,
         };
-        let written = render_one(&mut reloaded, &entry, dist.path(), dist.path()).expect("render_one");
+        let written =
+            render_one(&mut reloaded, &entry, dist.path(), dist.path()).expect("render_one");
         let body = fs::read_to_string(written).unwrap();
         assert!(body.contains("after"), "expected 'after' body, got: {body}");
 
@@ -2171,8 +2176,14 @@ mod tests {
 
         let written = fs::read_to_string(dist.path().join("about/index.html")).unwrap();
         // Frontmatter should be stripped; body should be verbatim.
-        assert!(!written.contains("title: About"), "frontmatter must be stripped");
-        assert!(written.contains("<!doctype html>"), "body must start with <!doctype html>");
+        assert!(
+            !written.contains("title: About"),
+            "frontmatter must be stripped"
+        );
+        assert!(
+            written.contains("<!doctype html>"),
+            "body must start with <!doctype html>"
+        );
         assert!(written.contains("About"), "body content must be preserved");
     }
 
@@ -2215,5 +2226,4 @@ mod tests {
         let written = fs::read_to_string(dist.path().join("index.html")).unwrap();
         assert!(written.contains("Home"), "body content must be preserved");
     }
-
 }

@@ -69,8 +69,7 @@ fn heading_links_plugin_fires_on_jsx_path() {
 
 #[test]
 fn code_title_plugin_fires_on_jsx_path() {
-    let out =
-        emit_with_defaults("```rust title=\"main.rs\"\nfn main() {}\n```\n");
+    let out = emit_with_defaults("```rust title=\"main.rs\"\nfn main() {}\n```\n");
     assert!(
         out.contains("class=\"code-block-container\""),
         "code-title plugin should wrap titled <pre> in a container:\n{out}",
@@ -168,12 +167,8 @@ fn bare_pipeline_runs_no_plugins_on_jsx_path() {
     // visitor mutated it — so heading-links / code-title / etc. must
     // NOT fire.
     let mut p = Pipeline::with_mdx();
-    let out = mdx_to_jsx_module_with_pipeline(
-        "## Hello\n",
-        MdxJsxOptions::default(),
-        &mut p,
-    )
-    .expect("emit ok");
+    let out = mdx_to_jsx_module_with_pipeline("## Hello\n", MdxJsxOptions::default(), &mut p)
+        .expect("emit ok");
     assert!(
         !out.contains("id=\"hello\""),
         "bare pipeline must NOT add heading-links id:\n{out}",
@@ -189,9 +184,7 @@ fn defaults_compose_for_titled_rust_block() {
     // code-title MUST run before syntect: the title wrapper survives
     // and the inner <pre> becomes syntect HTML inside dangerously-set
     // inner HTML.
-    let out = emit_with_defaults(
-        "```rust title=\"main.rs\"\nfn main() {}\n```\n",
-    );
+    let out = emit_with_defaults("```rust title=\"main.rs\"\nfn main() {}\n```\n");
     assert!(
         out.contains("class=\"code-block-container\""),
         "container must survive composition:\n{out}",
@@ -239,8 +232,7 @@ fn jsx_with_hast_detour_compiles_via_swc() {
           A-->B;\n\
         ```\n";
     let out = emit_with_defaults(src);
-    let opts =
-        CompileOptions::default().with_filename("hast-detour.tsx".to_string());
+    let opts = CompileOptions::default().with_filename("hast-detour.tsx".to_string());
     let compiled = pipeline_compile
         .compile(&out, &opts)
         .unwrap_or_else(|e| panic!("SWC rejected hast-detour output: {e}\n--- src ---\n{out}"));
@@ -391,7 +383,9 @@ fn lowercase_mdx_jsx_tags_route_through_components() {
 /// its attributes intact.
 #[test]
 fn lowercase_mdx_jsx_with_attrs_routes_through_components() {
-    let out = emit_with_defaults("<table className=\"x\"><tbody><tr><td>cell</td></tr></tbody></table>\n");
+    let out = emit_with_defaults(
+        "<table className=\"x\"><tbody><tr><td>cell</td></tr></tbody></table>\n",
+    );
     assert!(
         out.contains("<_components.table"),
         "<table> must route through `_components.table`:\n{out}",
@@ -471,7 +465,9 @@ fn nested_markdown_in_mdx_jsx_routes_through_components() {
     }
     // Bare HTML tags must NOT leak through alongside the routed forms —
     // this negative assertion is what catches a future regression.
-    for bare in ["<h2>", "<h2 ", "<p>", "<ul>", "<li>", "</h2>", "</p>", "</ul>", "</li>"] {
+    for bare in [
+        "<h2>", "<h2 ", "<p>", "<ul>", "<li>", "</h2>", "</p>", "</ul>", "</li>",
+    ] {
         assert!(
             !out.contains(bare),
             "bare `{bare}` must not leak alongside the `_components` route:\n{out}",
@@ -609,7 +605,10 @@ fn multiple_and_deeply_nested_headings_in_one_jsx_pop_correct_slugs() {
     let a = out.find("slug: \"alpha\"").unwrap();
     let b = out.find("slug: \"beta\"").unwrap();
     let g = out.find("slug: \"gamma\"").unwrap();
-    assert!(a < b && b < g, "TOC headings must be in document order:\n{out}");
+    assert!(
+        a < b && b < g,
+        "TOC headings must be in document order:\n{out}"
+    );
 
     let opts = CompileOptions::default().with_filename("multi-nested.tsx".to_string());
     SwcPipeline::new()
@@ -640,14 +639,15 @@ fn ruby_caret_and_toc_export_together_on_jsx_compile_path() {
     // converts mdast → hast. `with_defaults()` ships no mdast visitors so
     // this registration is safe to do right after construction.
     p.add_mdast_visitor(Box::new(zfb_md_extras::ruby::RubyPlugin::new()));
-    p.add_hast_visitor(Box::new(
-        zfb_md_extras::toc_export::TocExportPlugin::new(TocExportConfig::default()),
-    ));
+    p.add_hast_visitor(Box::new(zfb_md_extras::toc_export::TocExportPlugin::new(
+        TocExportConfig::default(),
+    )));
 
     // The document contains both repro inputs:
     // - `これは^{これ}` — caret ruby syntax from #600 (Sub B repro, bare-base form)
     // - two headings so TocExportPlugin produces a non-empty toc array
-    let src = "## Introduction\n\nこれは^{これ} is ruby annotation.\n\n## Conclusion\n\nMore text.\n";
+    let src =
+        "## Introduction\n\nこれは^{これ} is ruby annotation.\n\n## Conclusion\n\nMore text.\n";
     let out = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
         .expect("pipeline emit with ruby + toc_export ok");
 
@@ -733,9 +733,9 @@ fn toc_export_plugin_emits_at_column_0_on_jsx_path() {
     // dedicated `add_toc_export` method — generic wiring is all the fix
     // requires, and it avoids touching files outside the scope of #602.
     let mut p = Pipeline::with_defaults();
-    p.add_hast_visitor(Box::new(
-        zfb_md_extras::toc_export::TocExportPlugin::new(TocExportConfig::default()),
-    ));
+    p.add_hast_visitor(Box::new(zfb_md_extras::toc_export::TocExportPlugin::new(
+        TocExportConfig::default(),
+    )));
     let src = "## Introduction\n\nSome body text.\n\n## Conclusion\n\nMore text.\n";
     let out = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
         .expect("pipeline emit with toc_export ok");
@@ -779,11 +779,9 @@ fn toc_export_plugin_emits_at_column_0_on_jsx_path() {
     // same class of error esbuild reported in #599:
     // `Expected "}" but found ":"` on the first colon in the JSON literal.
     let opts = CompileOptions::default().with_filename("toc-export.tsx".to_string());
-    SwcPipeline::new()
-        .compile(&out, &opts)
-        .unwrap_or_else(|e| {
-            panic!("SWC rejected toc-export output (#599 regression): {e}\n--- src ---\n{out}")
-        });
+    SwcPipeline::new().compile(&out, &opts).unwrap_or_else(|e| {
+        panic!("SWC rejected toc-export output (#599 regression): {e}\n--- src ---\n{out}")
+    });
 }
 
 /// zfb#871 headline acceptance: `features.headingIds.strategy =

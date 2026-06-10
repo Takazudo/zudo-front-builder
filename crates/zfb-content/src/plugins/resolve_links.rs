@@ -205,9 +205,8 @@ impl MdastVisitor for ResolveLinksPlugin {
                 Ok(Some(rewritten)) => l.url = rewritten,
                 Err(()) => {
                     // .md/.mdx link that is not in the source map → broken.
-                    self.broken_links.push(BrokenLinkDiagnostic {
-                        url: l.url.clone(),
-                    });
+                    self.broken_links
+                        .push(BrokenLinkDiagnostic { url: l.url.clone() });
                 }
                 Ok(None) => {}
             }

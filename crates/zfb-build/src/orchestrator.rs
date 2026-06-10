@@ -928,8 +928,8 @@ mod tests {
     /// every assertion below.
     #[test]
     fn initial_build_renders_all_seeded_pages_with_no_file_events() {
-        use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
         use crate::pipeline::dev::DevAssetPipeline;
+        use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tempfile::tempdir;
 

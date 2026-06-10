@@ -32,7 +32,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -271,12 +271,8 @@ mod tests {
     #[test]
     fn validate_output_path_rejects_traversal() {
         let root = Path::new("/dist");
-        assert!(
-            validate_output_path(root, Path::new("../etc/passwd")).is_err()
-        );
-        assert!(
-            validate_output_path(root, Path::new("blog/../../etc/passwd")).is_err()
-        );
+        assert!(validate_output_path(root, Path::new("../etc/passwd")).is_err());
+        assert!(validate_output_path(root, Path::new("blog/../../etc/passwd")).is_err());
     }
 
     #[test]
@@ -369,11 +365,8 @@ mod tests {
         // would otherwise materialise outside dist_root.
         symlink(&outside_root, dist_root.join("escape")).unwrap();
 
-        let err = validate_output_path(
-            &dist_root,
-            Path::new("escape/newdir/file.html"),
-        )
-        .expect_err("symlink with partial parent must be rejected");
+        let err = validate_output_path(&dist_root, Path::new("escape/newdir/file.html"))
+            .expect_err("symlink with partial parent must be rejected");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("outside dist_root"),

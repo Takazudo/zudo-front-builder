@@ -153,21 +153,15 @@ impl DirectiveRegistry {
                 if let Some(def) = self.defs.get(&parsed.name).cloned() {
                     if def.kind == DirectiveKind::Container {
                         // Find matching `:::` close.
-                        if let Some(close_idx) = (i + 1..children.len())
-                            .find(|j| is_container_close(&children[*j]))
+                        if let Some(close_idx) =
+                            (i + 1..children.len()).find(|j| is_container_close(&children[*j]))
                         {
                             let (line, column) = paragraph_line_col(&children[i]);
-                            let validated_opt =
-                                self.run_validation(&def, &parsed, line, column);
+                            let validated_opt = self.run_validation(&def, &parsed, line, column);
                             let body: Vec<MdastNode> = children.drain(i..=close_idx).collect();
                             // Strip open + close paragraphs.
                             let inner = body[1..body.len() - 1].to_vec();
-                            let jsx = build_flow_jsx(
-                                &def,
-                                &parsed,
-                                inner,
-                                validated_opt.as_ref(),
-                            );
+                            let jsx = build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
                             children.insert(i, jsx);
                             i += 1;
                             continue;
@@ -210,14 +204,8 @@ impl DirectiveRegistry {
                     if def.kind == DirectiveKind::Leaf {
                         let position = paragraph_position(&children[i]);
                         let (line, column) = paragraph_line_col(&children[i]);
-                        let validated_opt =
-                            self.run_validation(&def, &parsed, line, column);
-                        let jsx = build_leaf_jsx(
-                            &def,
-                            &parsed,
-                            position,
-                            validated_opt.as_ref(),
-                        );
+                        let validated_opt = self.run_validation(&def, &parsed, line, column);
+                        let jsx = build_leaf_jsx(&def, &parsed, position, validated_opt.as_ref());
                         children[i] = jsx;
                         i += 1;
                         continue;
@@ -292,8 +280,7 @@ impl DirectiveRegistry {
                             }
                             // Inline text directives have no source position
                             // from the text scanner — pass None for both.
-                            let validated_opt =
-                                self.run_validation(&def, &parsed, None, None);
+                            let validated_opt = self.run_validation(&def, &parsed, None, None);
                             out.push(build_text_jsx(&def, &parsed, validated_opt.as_ref()));
                             i = end;
                             last_emit = end;
@@ -502,10 +489,7 @@ fn parse_text_directive(source: &str, start: usize) -> Option<(ParsedDirective, 
         return None;
     }
 
-    Some((
-        ParsedDirective { name, label, attrs },
-        i,
-    ))
+    Some((ParsedDirective { name, label, attrs }, i))
 }
 
 /// Find the index of the matching `}` in `s`, treating `"…"` runs as
@@ -996,10 +980,7 @@ mod tests {
     fn leaf_with_label_and_attrs() {
         let mut r = DirectiveRegistry::new();
         r.register(DirectiveDef::leaf("badge", "Badge"));
-        let out = run_with_registry(
-            &mut r,
-            vec![text_para("::badge[Label]{variant=success}")],
-        );
+        let out = run_with_registry(&mut r, vec![text_para("::badge[Label]{variant=success}")]);
         assert_eq!(out.len(), 1);
         let j = flow(&out[0]);
         assert_eq!(j.name.as_deref(), Some("Badge"));
@@ -1080,11 +1061,7 @@ mod tests {
         // No registrations.
         let out = run_with_registry(
             &mut r,
-            vec![
-                text_para(":::nope"),
-                text_para("body"),
-                text_para(":::"),
-            ],
+            vec![text_para(":::nope"), text_para("body"), text_para(":::")],
         );
         // Source preserved.
         assert_eq!(out.len(), 3);
@@ -1182,10 +1159,7 @@ mod tests {
     #[test]
     fn missing_close_left_alone() {
         let mut r = registry_with_admonitions();
-        let out = run_with_registry(
-            &mut r,
-            vec![text_para(":::note"), text_para("body")],
-        );
+        let out = run_with_registry(&mut r, vec![text_para(":::note"), text_para("body")]);
         assert_eq!(out.len(), 2);
         // First is still a paragraph.
         assert!(matches!(out[0], MdastNode::Paragraph(_)));
@@ -1196,11 +1170,7 @@ mod tests {
         let mut r = registry_with_admonitions();
         // Build a blockquote that contains the admonition paragraphs.
         let bq = MdastNode::Blockquote(markdown::mdast::Blockquote {
-            children: vec![
-                text_para(":::note"),
-                text_para("inner"),
-                text_para(":::"),
-            ],
+            children: vec![text_para(":::note"), text_para("inner"), text_para(":::")],
             position: None,
         });
         let out = run_with_registry(&mut r, vec![bq]);
@@ -1346,7 +1316,11 @@ mod tests {
         assert!(matches!(out[0], MdastNode::Paragraph(_)));
         // A diagnostic must be emitted.
         let diags = r.take_diagnostics();
-        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic, got {diags:?}"
+        );
         assert!(
             diags[0].message.contains("blank lines"),
             "diagnostic should mention blank lines, got: {:?}",
@@ -1423,11 +1397,7 @@ mod tests {
         // `:::note` is NOT registered — left untransformed (zero defaults).
         let out2 = run_with_registry(
             &mut r,
-            vec![
-                text_para(":::note"),
-                text_para("body"),
-                text_para(":::"),
-            ],
+            vec![text_para(":::note"), text_para("body"), text_para(":::")],
         );
         // Should still be 3 paragraphs (no transformation).
         assert_eq!(out2.len(), 3, ":::note must stay as-is when not registered");

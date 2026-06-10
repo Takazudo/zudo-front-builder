@@ -1128,50 +1128,16 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         }
     }
 
-    // 2c. Handle broken links collected across all materialise calls.
-    //
-    // All calls ran to completion first so the full set of broken links is
-    // reported in one pass (consistent with the `onBrokenLinks: 'error'`
-    // contract in the issue spec). Warnings are emitted to stderr so they
-    // are visible to both the CLI user and CI log scanners.
-    if !all_broken_links.is_empty() {
-        let on_broken = input
-            .resolve_markdown_links
-            .as_ref()
-            .map(|s| s.on_broken_links)
-            .unwrap_or(OnBrokenLinks::Warn);
-        match on_broken {
-            OnBrokenLinks::Ignore => {}
-            OnBrokenLinks::Warn => {
-                for (file, url) in &all_broken_links {
-                    eprintln!(
-                        "zfb warn: broken markdown link in {file}: \
-                         {url} could not be resolved to a known doc URL"
-                    );
-                }
-            }
-            OnBrokenLinks::Error => {
-                let mut msg = format!(
-                    "bundler: {} broken markdown link(s) found:\n",
-                    all_broken_links.len()
-                );
-                for (file, url) in &all_broken_links {
-                    msg.push_str(&format!("  {file}: {url}\n"));
-                }
-                msg.push_str(
-                    "Fix the links or set onBrokenLinks: 'warn' / 'ignore' \
-                     in resolveMarkdownLinks config to suppress this error.",
-                );
-                bail!("{}", msg);
-            }
-        }
-    }
-
-    // 2c-md. Handle markdown diagnostics (transclude errors, imageDimensions
+    // 2c. Handle markdown diagnostics (transclude errors, imageDimensions
     // warnings, linkValidation findings) collected across all materialise calls.
     //
     // All walks ran to completion first so the full set is reported in one
-    // pass — same contract as the broken-links gate above.
+    // pass — same contract as the broken-links gate below.
+    //
+    // Ordering note: this block intentionally runs BEFORE the broken-links
+    // gate (2d) so that markdown-diagnostic errors (e.g. transclude failures)
+    // are always surfaced even when `onBrokenLinks: error` would bail first.
+    // Both gates collect after all walks, so neither skips any findings.
     //
     // Severity routing:
     //   Info / Warning  → stderr warn lines with path(:line) prefix; build succeeds.
@@ -1254,7 +1220,50 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         }
     }
 
-    // 2d. CSS Modules — rewrite every `.module.css` file in the shadow
+    // 2d. Handle broken links collected across all materialise calls.
+    //
+    // All calls ran to completion first so the full set of broken links is
+    // reported in one pass (consistent with the `onBrokenLinks: 'error'`
+    // contract in the issue spec). Warnings are emitted to stderr so they
+    // are visible to both the CLI user and CI log scanners.
+    //
+    // Ordering note: placed AFTER the markdown-diagnostics gate (2c) so that
+    // transclude/imageDimensions errors are surfaced even when this gate would
+    // bail first (both gates run after all walks, so no findings are missed).
+    if !all_broken_links.is_empty() {
+        let on_broken = input
+            .resolve_markdown_links
+            .as_ref()
+            .map(|s| s.on_broken_links)
+            .unwrap_or(OnBrokenLinks::Warn);
+        match on_broken {
+            OnBrokenLinks::Ignore => {}
+            OnBrokenLinks::Warn => {
+                for (file, url) in &all_broken_links {
+                    eprintln!(
+                        "zfb warn: broken markdown link in {file}: \
+                         {url} could not be resolved to a known doc URL"
+                    );
+                }
+            }
+            OnBrokenLinks::Error => {
+                let mut msg = format!(
+                    "bundler: {} broken markdown link(s) found:\n",
+                    all_broken_links.len()
+                );
+                for (file, url) in &all_broken_links {
+                    msg.push_str(&format!("  {file}: {url}\n"));
+                }
+                msg.push_str(
+                    "Fix the links or set onBrokenLinks: 'warn' / 'ignore' \
+                     in resolveMarkdownLinks config to suppress this error.",
+                );
+                bail!("{}", msg);
+            }
+        }
+    }
+
+    // 2e. CSS Modules — rewrite every `.module.css` file in the shadow
     //     tree to a JS module that re-exports its scoped class-name
     //     map as the default export. Paired with the
     //     `--loader:.module.css=js` esbuild flag, this makes a user's
@@ -1264,7 +1273,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     rewrite_css_modules_in_shadow(shadow, &input.project_root, &input.css_module_class_maps)
         .context("bundler: failed rewriting CSS Modules in shadow tree")?;
 
-    // 2e. Project-root `mdx-components.tsx` global override map (#616).
+    // 2f. Project-root `mdx-components.tsx` global override map (#616).
     //     A root-level FILE is not materialised by any pass above, so copy
     //     it into the shadow root here. The returned spec is threaded into
     //     `write_entry_module`, which emits the `import` + the

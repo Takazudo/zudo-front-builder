@@ -115,7 +115,10 @@ fn touching_a_md_file_only_rerenders_its_page() {
     // The post.html exists on disk.
     let post_html = project.join("dist/post.html");
     assert!(post_html.exists(), "post.html should exist");
-    assert_eq!(std::fs::read_to_string(&post_html).unwrap(), "<h1>post</h1>");
+    assert_eq!(
+        std::fs::read_to_string(&post_html).unwrap(),
+        "<h1>post</h1>"
+    );
 }
 
 #[test]
@@ -130,10 +133,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
 
     // Graph has one page that does NOT depend on the CSS file directly.
     let mut g = DependencyGraph::new();
-    g.upsert(PageDeps::new(
-        pid(project.join("pages/index.tsx")),
-        vec![],
-    ));
+    g.upsert(PageDeps::new(pid(project.join("pages/index.tsx")), vec![]));
     let graph = Arc::new(Mutex::new(g));
 
     let css_runs = Arc::new(AtomicUsize::new(0));
@@ -273,7 +273,11 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
     assert!(rendered_pages.contains(&pid(project.join("pages/a.tsx"))));
     assert!(!rendered_pages.contains(&pid(project.join("pages/b.tsx"))));
 
-    assert_eq!(css_runs.load(Ordering::SeqCst), 0, "css callback not called");
+    assert_eq!(
+        css_runs.load(Ordering::SeqCst),
+        0,
+        "css callback not called"
+    );
     assert_eq!(islands_runs.load(Ordering::SeqCst), 1);
 }
 
@@ -682,7 +686,11 @@ fn created_content_file_with_discovery_emits_new_url() {
 
     // The discovery hook saw exactly the created path, once.
     let invs = hook_invocations.lock().unwrap();
-    assert_eq!(invs.len(), 1, "discovery hook called once for the Created tick");
+    assert_eq!(
+        invs.len(),
+        1,
+        "discovery hook called once for the Created tick"
+    );
     assert_eq!(invs[0], vec![new_post]);
 }
 
@@ -865,7 +873,11 @@ fn route_deletion_prunes_stale_html() {
         .tick(vec![md_path.clone()], &ctx)
         .expect("tick ok")
         .expect("non-noop");
-    assert_eq!(outcome1.pages_written.len(), 1, "initial render wrote post.html");
+    assert_eq!(
+        outcome1.pages_written.len(),
+        1,
+        "initial render wrote post.html"
+    );
     assert!(
         project.join("dist/post.html").exists(),
         "post.html must exist after initial render",
@@ -874,7 +886,10 @@ fn route_deletion_prunes_stale_html() {
     // Simulate content file deletion: clear the route table (as
     // `refresh_bundle_and_routes` would do) and set the vanished path so
     // reload_renderer reports it.
-    routes.lock().unwrap().remove(&project.join("pages/post.tsx"));
+    routes
+        .lock()
+        .unwrap()
+        .remove(&project.join("pages/post.tsx"));
     vanished.lock().unwrap().push(PathBuf::from("post.html"));
 
     // Tick 2: content file Removed.
@@ -885,11 +900,7 @@ fn route_deletion_prunes_stale_html() {
     // returning [dist/post.html]. The route table is empty so the render
     // produces nothing. The prune loop then deletes dist/post.html.
     let outcome2 = orch
-        .tick_with_kinds(
-            vec![(md_path, ChangeKind::Removed)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path, ChangeKind::Removed)], &ctx, None)
         .expect("tick ok")
         .expect("Removed tick must be non-noop — former consumer is in the plan");
 
@@ -899,7 +910,9 @@ fn route_deletion_prunes_stale_html() {
         outcome2.pages_pruned,
     );
     assert!(
-        outcome2.pages_pruned.contains(&project.join("dist/post.html")),
+        outcome2
+            .pages_pruned
+            .contains(&project.join("dist/post.html")),
         "pages_pruned must contain dist/post.html; got {:?}",
         outcome2.pages_pruned,
     );
@@ -926,10 +939,7 @@ fn route_rename_prunes_old_and_writes_new() {
 
     // Initial: slug.tsx → old.html
     let mut t = std::collections::HashMap::new();
-    t.insert(
-        project.join("pages/slug.tsx"),
-        vec!["old.html".to_string()],
-    );
+    t.insert(project.join("pages/slug.tsx"), vec!["old.html".to_string()]);
     let routes = Arc::new(Mutex::new(t));
     let vanished: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -946,15 +956,15 @@ fn route_rename_prunes_old_and_writes_new() {
         .expect("tick ok")
         .expect("non-noop");
     assert_eq!(outcome1.pages_written.len(), 1);
-    assert!(project.join("dist/old.html").exists(), "old.html must exist");
+    assert!(
+        project.join("dist/old.html").exists(),
+        "old.html must exist"
+    );
 
     // Rename: route table changes to new.html; old.html is vanished.
     {
         let mut t = routes.lock().unwrap();
-        t.insert(
-            project.join("pages/slug.tsx"),
-            vec!["new.html".to_string()],
-        );
+        t.insert(project.join("pages/slug.tsx"), vec!["new.html".to_string()]);
     }
     vanished.lock().unwrap().push(PathBuf::from("old.html"));
 
@@ -979,7 +989,9 @@ fn route_rename_prunes_old_and_writes_new() {
         "new.html must exist after rename",
     );
     assert!(
-        outcome2.pages_pruned.contains(&project.join("dist/old.html")),
+        outcome2
+            .pages_pruned
+            .contains(&project.join("dist/old.html")),
         "pages_pruned must contain old.html",
     );
 }
@@ -1011,10 +1023,7 @@ fn lose_gain_same_path_keeps_html_alive() {
 
     // Initial state: A → shared.html; B → b.html
     let mut t = std::collections::HashMap::new();
-    t.insert(
-        project.join("pages/a.tsx"),
-        vec!["shared.html".to_string()],
-    );
+    t.insert(project.join("pages/a.tsx"), vec!["shared.html".to_string()]);
     t.insert(project.join("pages/b.tsx"), vec!["b.html".to_string()]);
     let routes = Arc::new(Mutex::new(t));
     let vanished: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1041,10 +1050,7 @@ fn lose_gain_same_path_keeps_html_alive() {
     {
         let mut t = routes.lock().unwrap();
         t.insert(project.join("pages/a.tsx"), vec!["a.html".to_string()]);
-        t.insert(
-            project.join("pages/b.tsx"),
-            vec!["shared.html".to_string()],
-        );
+        t.insert(project.join("pages/b.tsx"), vec!["shared.html".to_string()]);
     }
     vanished.lock().unwrap().push(PathBuf::from("shared.html"));
 
@@ -1120,13 +1126,9 @@ fn removed_content_file_drops_graph_edge() {
     let md_path = project.join("content/post.md");
 
     // Tick 1: Modified → consumer page re-renders.
-    orch.tick_with_kinds(
-        vec![(md_path.clone(), ChangeKind::Modified)],
-        &ctx,
-        None,
-    )
-    .expect("tick ok")
-    .expect("non-noop");
+    orch.tick_with_kinds(vec![(md_path.clone(), ChangeKind::Modified)], &ctx, None)
+        .expect("tick ok")
+        .expect("non-noop");
     assert_eq!(
         render_calls.lock().unwrap().len(),
         1,
@@ -1139,11 +1141,7 @@ fn removed_content_file_drops_graph_edge() {
     // consumer, but future ticks that modify the removed content file will
     // no longer dirty the consumer (the edge is gone).
     let outcome2 = orch
-        .tick_with_kinds(
-            vec![(md_path.clone(), ChangeKind::Removed)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path.clone(), ChangeKind::Removed)], &ctx, None)
         .expect("tick ok");
     // The tick is non-noop because the former consumer is in the plan.
     assert!(
@@ -1160,11 +1158,7 @@ fn removed_content_file_drops_graph_edge() {
     // After remove_node, the deleted content path is no longer in the graph.
     // A later edit of the same path must NOT dirty the consumer.
     let outcome3 = orch
-        .tick_with_kinds(
-            vec![(md_path, ChangeKind::Modified)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path, ChangeKind::Modified)], &ctx, None)
         .expect("tick ok");
     // The path is now an unknown in the graph, so plan_for_changes falls
     // back to All (conservative policy for unknowns). This is acceptable —
@@ -1559,7 +1553,11 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         "CSS-only change must NOT reload the renderer; got {:?}",
         reload_events.lock().unwrap()
     );
-    assert_eq!(css_runs.load(Ordering::SeqCst), 1, "CSS callback must run once");
+    assert_eq!(
+        css_runs.load(Ordering::SeqCst),
+        1,
+        "CSS callback must run once"
+    );
 }
 
 /// Global change on an SSR-only project: `full_rebuild` sets `ssr_reload_needed`,

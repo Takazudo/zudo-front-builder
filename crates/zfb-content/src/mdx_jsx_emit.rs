@@ -359,7 +359,12 @@ fn mdx_to_jsx_module_inner(
         }
         let mut bridge = HastJsxBridge::new();
         let body = bridge.emit_root(&hast);
-        (body, bridge.html_tags, bridge.component_names, bridge.hoisted_esm)
+        (
+            body,
+            bridge.html_tags,
+            bridge.component_names,
+            bridge.hoisted_esm,
+        )
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
@@ -956,11 +961,7 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 /// ```
 ///
 /// Matches the canonical shape from zfb#136 / issue #193.
-fn emit_table_jsx(
-    emitter: &mut JsxEmitter,
-    rows: &[MdastNode],
-    align: &[AlignKind],
-) -> String {
+fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
     // Build a style attr string for column index `col`.
@@ -1271,16 +1272,52 @@ fn starts_with_block_level_tag(s: &str) -> bool {
     // Block-level elements per HTML5 content model. Conservative list
     // — anything not on it falls through to <span> (the inline default).
     const BLOCK_TAGS: &[&str] = &[
-        "address", "article", "aside", "blockquote", "details", "dialog",
-        "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure",
-        "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
-        "hgroup", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-        "summary", "table", "thead", "tbody", "tfoot", "tr", "td", "th",
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "details",
+        "dialog",
+        "div",
+        "dl",
+        "dt",
+        "dd",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hgroup",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "summary",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "td",
+        "th",
         "ul",
     ];
     let trimmed = s.trim_start();
     let bytes = trimmed.as_bytes();
-    if bytes.first() != Some(&b'<') { return false; }
+    if bytes.first() != Some(&b'<') {
+        return false;
+    }
     let after_lt = &trimmed[1..];
     let tag_end = after_lt
         .find(|c: char| [' ', '>', '/', '\t', '\n', '\r'].contains(&c))
@@ -1661,7 +1698,11 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
                 continue;
             };
             let style = style_attr(col);
-            let inner: String = tc.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+            let inner: String = tc
+                .children
+                .iter()
+                .map(|c| jsx_render_child(c, ctx))
+                .collect();
             out.push_str(&format!(
                 "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
             ));
@@ -1695,7 +1736,10 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
 fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
     format!(
         "<_components.{tag}{attrs}>{}</_components.{tag}>",
-        children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+        children
+            .iter()
+            .map(|c| jsx_render_child(c, ctx))
+            .collect::<String>(),
     )
 }
 
@@ -2631,7 +2675,11 @@ mod tests {
             third.jsx_source, "__SENTINEL__",
             "edited dep must be a cache miss (recompile)"
         );
-        assert_eq!(cache.len(), 1, "recompile overwrites the stale entry in place");
+        assert_eq!(
+            cache.len(),
+            1,
+            "recompile overwrites the stale entry in place"
+        );
 
         // The recompile re-recorded the manifest against v2: with the
         // dep untouched since, the entry must hit again.
@@ -2796,7 +2844,11 @@ mod tests {
             Some(&mut p3),
         )
         .expect("compile c");
-        assert_eq!(cache.len(), 2, "same-dir identical body must not add an entry");
+        assert_eq!(
+            cache.len(),
+            2,
+            "same-dir identical body must not add an entry"
+        );
         assert_eq!(
             third.jsx_source, "__SENTINEL__",
             "same-dir identical body must be served from the shared entry"
@@ -2818,8 +2870,7 @@ mod tests {
             Path::new("/stale/leftover.md"),
             zfb_md_ast::ReadOutcome::Error,
         );
-        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
-            .expect("compile");
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p)).expect("compile");
         assert_eq!(
             cache.len(),
             1,
@@ -2838,10 +2889,7 @@ mod tests {
     /// Feature-config pipeline with context roots armed at `project_root`
     /// (public dir at `<root>/public`). Fresh per compile, mirroring the
     /// dev-tick shape (same config ⇒ same fingerprint).
-    fn fs_features_pipeline(
-        features_json: serde_json::Value,
-        project_root: &Path,
-    ) -> Pipeline {
+    fn fs_features_pipeline(features_json: serde_json::Value, project_root: &Path) -> Pipeline {
         let feats: zfb_md_extras::MarkdownFeaturesConfig =
             serde_json::from_value(features_json).expect("valid features config");
         let mut p = Pipeline::with_defaults_and_full_config(
@@ -2890,9 +2938,8 @@ mod tests {
         let feats = serde_json::json!({ "transclude": {} });
 
         let mut p = fs_features_pipeline(feats.clone(), root);
-        let first_a =
-            compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
-                .expect("compile a");
+        let first_a = compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
+            .expect("compile a");
         assert!(
             first_a.jsx_source.contains("Shared snippet v1."),
             "the transclude plugin must fire on the cached compile path; got: {}",
@@ -2917,9 +2964,8 @@ mod tests {
         // new content); the unrelated file stays a hit (sentinel).
         std::fs::write(root.join("snippet.md"), "Shared snippet v2.\n").expect("edit snippet");
         let mut p = fs_features_pipeline(feats.clone(), root);
-        let fresh_a =
-            compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
-                .expect("recompile a");
+        let fresh_a = compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
+            .expect("recompile a");
         assert!(
             fresh_a.jsx_source.contains("Shared snippet v2."),
             "editing the snippet must recompile its dependent; got: {}",
@@ -3196,13 +3242,17 @@ mod tests {
         let src = "## Intro\n\nhi\n";
         let path = Path::new("/virtual/blog/intro.mdx");
 
-        let plain = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), None)
-            .expect("compile plain");
+        let plain =
+            compile_mdx_to_jsx_module_cached(src, path, Some(&cache), None).expect("compile plain");
         let mut p = full_config_pipeline(None);
         let piped = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
             .expect("compile piped");
 
-        assert_eq!(cache.len(), 2, "no-pipeline and pipeline'd keys must differ");
+        assert_eq!(
+            cache.len(),
+            2,
+            "no-pipeline and pipeline'd keys must differ"
+        );
         assert_ne!(
             plain.jsx_source, piped.jsx_source,
             "sanity: the two paths emit different JSX for a heading"
@@ -3500,9 +3550,18 @@ mod tests {
         let out = emit(src);
 
         // All table-related tags registered in _components map.
-        assert!(out.contains("table: \"table\","), "table tag missing: {out}");
-        assert!(out.contains("thead: \"thead\","), "thead tag missing: {out}");
-        assert!(out.contains("tbody: \"tbody\","), "tbody tag missing: {out}");
+        assert!(
+            out.contains("table: \"table\","),
+            "table tag missing: {out}"
+        );
+        assert!(
+            out.contains("thead: \"thead\","),
+            "thead tag missing: {out}"
+        );
+        assert!(
+            out.contains("tbody: \"tbody\","),
+            "tbody tag missing: {out}"
+        );
         assert!(out.contains("tr: \"tr\","), "tr tag missing: {out}");
         assert!(out.contains("th: \"th\","), "th tag missing: {out}");
         assert!(out.contains("td: \"td\","), "td tag missing: {out}");
@@ -3518,10 +3577,7 @@ mod tests {
             out.contains("<_components.thead>"),
             "missing <thead>: {out}"
         );
-        assert!(
-            out.contains("<_components.th>"),
-            "missing <th>: {out}"
-        );
+        assert!(out.contains("<_components.th>"), "missing <th>: {out}");
         assert!(
             out.contains("{\"Key\"}"),
             "header cell 'Key' missing: {out}"
@@ -3536,10 +3592,7 @@ mod tests {
             out.contains("<_components.tbody>"),
             "missing <tbody>: {out}"
         );
-        assert!(
-            out.contains("<_components.td>"),
-            "missing <td>: {out}"
-        );
+        assert!(out.contains("<_components.td>"), "missing <td>: {out}");
         assert!(
             out.contains("{\"docs\"}"),
             "body cell 'docs' missing: {out}"
@@ -3578,7 +3631,10 @@ mod tests {
         let style_count = out.matches("style=\"text-align:").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
-        assert_eq!(style_count, 6, "expected 6 style attrs (3 cols × 2 rows): {out}");
+        assert_eq!(
+            style_count, 6,
+            "expected 6 style attrs (3 cols × 2 rows): {out}"
+        );
     }
 
     // ─── HastNode::Raw block-aware wrapper tests (#1490) ────────────────────
@@ -3589,9 +3645,7 @@ mod tests {
     #[test]
     fn raw_pre_emits_div_wrapper() {
         let mut bridge = HastJsxBridge::new();
-        let node = HastNode::Raw(
-            r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string(),
-        );
+        let node = HastNode::Raw(r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string());
         let out = bridge.emit_node(&node);
         assert!(
             out.starts_with("<div dangerouslySetInnerHTML"),
@@ -3671,8 +3725,7 @@ mod tests {
         // We rely only on the returned len(), not on map iteration order.
         for i in 0..MDX_MODULE_CACHE_CAP {
             let src = format!("word{i}\n");
-            compile_mdx_to_jsx_module_cached(&src, path, Some(&cache), None)
-                .expect("compile fill");
+            compile_mdx_to_jsx_module_cached(&src, path, Some(&cache), None).expect("compile fill");
         }
         assert_eq!(
             cache.len(),

@@ -109,7 +109,12 @@ fn md_page_bundles_successfully() {
     assert!(!body.is_empty(), "bundle should be non-empty");
 
     // Route manifest includes /about.
-    let routes: Vec<&str> = out.manifest.routes.iter().map(|r| r.route.as_str()).collect();
+    let routes: Vec<&str> = out
+        .manifest
+        .routes
+        .iter()
+        .map(|r| r.route.as_str())
+        .collect();
     assert!(
         routes.contains(&"/about"),
         "manifest must include /about; got {routes:?}"
@@ -238,7 +243,12 @@ fn mdx_pages_still_work_after_md_change() {
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
 
     // Route manifest includes /post.
-    let routes: Vec<&str> = out.manifest.routes.iter().map(|r| r.route.as_str()).collect();
+    let routes: Vec<&str> = out
+        .manifest
+        .routes
+        .iter()
+        .map(|r| r.route.as_str())
+        .collect();
     assert!(
         routes.contains(&"/post"),
         "manifest must include /post; got {routes:?}"
