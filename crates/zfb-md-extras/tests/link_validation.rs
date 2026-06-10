@@ -19,9 +19,9 @@ use std::path::PathBuf;
 
 use zfb_content::pipeline::{BuildContext, Pipeline};
 use zfb_md_ast::{
-    LinkValidationConfig, MarkdownFeaturesConfig,
     diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
     heading_registry::{HeadingEntry, HeadingRegistry},
+    LinkValidationConfig, MarkdownFeaturesConfig,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -259,17 +259,22 @@ fn missing_file_emits_warning() {
 fn fail_on_broken_true_emits_error() {
     let source = PathBuf::from("/project/docs/page.md");
     let mut registry = HeadingRegistry::new();
+    // Pre-populate an entry for the source file so entry-presence gating
+    // allows the fragment check to fire (the fragment "no-such-heading"
+    // is intentionally absent to trigger the broken-link report).
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "other-heading".to_string(),
+            text: "Other Heading".to_string(),
+            depth: 2,
+        },
+    );
     let md = "[foo](#no-such-heading)\n";
     let cfg = LinkValidationConfig {
         fail_on_broken: Some(true),
     };
-    let diags = run(
-        md,
-        source,
-        PathBuf::from("/project"),
-        &mut registry,
-        cfg,
-    );
+    let diags = run(md, source, PathBuf::from("/project"), &mut registry, cfg);
     assert_eq!(diags.len(), 1, "expected one diagnostic: {diags:?}");
     assert_eq!(
         diags[0].severity(),
@@ -314,6 +319,17 @@ fn feature_disabled_no_diagnostics() {
 fn multiple_broken_links_all_emitted() {
     let source = PathBuf::from("/project/docs/page.md");
     let mut registry = HeadingRegistry::new();
+    // Pre-populate an entry for the source file so entry-presence gating
+    // allows fragment checks to fire. The tested hrefs (#missing-a, #missing-b)
+    // are intentionally absent so both produce a diagnostic.
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "some-heading".to_string(),
+            text: "Some Heading".to_string(),
+            depth: 2,
+        },
+    );
     let md = "[a](#missing-a)\n\n[b](#missing-b)\n";
     let diags = run(
         md,
@@ -390,5 +406,166 @@ fn path_traversal_outside_project_root_emits_diagnostic() {
         matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. }
             if url == "../outside.md"),
         "url must be the raw href: {diags:?}"
+    );
+}
+
+// ── Fixture 12: site-absolute hrefs are skipped (URL-space) ──────────────────
+
+/// `[x](/docs/intro/)` and `[x](/docs/intro/#section)` → no diagnostics.
+#[test]
+fn site_absolute_href_skipped() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    let md = "[x](/docs/intro/)\n\n[y](/docs/intro/#section)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "site-absolute hrefs must not emit diagnostics: {diags:?}"
+    );
+}
+
+// ── Fixture 13: cross-file fragment degrades to existence-only when no entry ──
+
+/// Registry has entries for OTHER files only; `[x](./other.md#whatever)` with
+/// `other.md` on disk → no diagnostic (existence-only); with `other.md`
+/// absent → one BrokenLink.
+#[test]
+fn cross_file_fragment_without_target_entry_degrades_to_existence_only() {
+    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
+    let source_path = tmpdir.path().join("page.md");
+    let other_path = tmpdir.path().join("other.md");
+    std::fs::write(&source_path, "").expect("write page.md");
+    std::fs::write(&other_path, "# Other\n").expect("write other.md");
+
+    let unrelated_path = tmpdir.path().join("unrelated.md");
+    let mut registry = HeadingRegistry::new();
+    // Registry has entries for a DIFFERENT file, not for `other.md`.
+    registry.insert(
+        unrelated_path,
+        HeadingEntry {
+            id: "something".to_string(),
+            text: "Something".to_string(),
+            depth: 2,
+        },
+    );
+
+    // other.md on disk, no entry for it → existence-only → no diagnostic.
+    let diags = run(
+        "[x](./other.md#whatever)\n",
+        source_path.clone(),
+        project_root.clone(),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "existing target without registry entry must not emit diagnostic: {diags:?}"
+    );
+
+    // Remove other.md → BrokenLink (file missing).
+    std::fs::remove_file(&other_path).expect("remove other.md");
+    let diags2 = run(
+        "[x](./other.md#whatever)\n",
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags2.len(),
+        1,
+        "missing target must emit BrokenLink: {diags2:?}"
+    );
+    assert!(
+        matches!(&diags2[0], MarkdownDiagnostic::BrokenLink { url, .. }
+            if url == "./other.md#whatever"),
+        "url must be raw href: {diags2:?}"
+    );
+}
+
+// ── Fixture 14: bare fragment skipped when source has no registry entry ───────
+
+/// Registry `Some` but no entry for the source file; `[x](#anything)` → no
+/// diagnostic.
+#[test]
+fn bare_fragment_without_source_entry_skipped() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    // No entry for source — entry-presence gating must skip.
+    let md = "[x](#anything)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "bare fragment with no source entry must not emit diagnostic: {diags:?}"
+    );
+}
+
+// ── Fixture 15: empty and percent-encoded fragments skipped ──────────────────
+
+/// `[x](#)` and `[x](#a%20b)` (entry for source present) → no diagnostics.
+#[test]
+fn empty_and_percent_encoded_fragments_skipped() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    // Pre-populate an entry so entry-presence gating fires.
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "existing".to_string(),
+            text: "Existing".to_string(),
+            depth: 2,
+        },
+    );
+    let md = "[x](#)\n\n[y](#a%20b)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "empty and percent-encoded fragments must be skipped: {diags:?}"
+    );
+}
+
+// ── Fixture 16: query string file link validates path only ────────────────────
+
+/// `[x](./other.md?x=1)`, target on disk → no diagnostic (query stripped).
+#[test]
+fn query_string_file_link_validates_path_only() {
+    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
+    let source_path = tmpdir.path().join("page.md");
+    let other_path = tmpdir.path().join("other.md");
+    std::fs::write(&source_path, "").expect("write page.md");
+    std::fs::write(&other_path, "# Other\n").expect("write other.md");
+
+    let mut registry = HeadingRegistry::new();
+    let md = "[x](./other.md?x=1)\n";
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "query-string file link with existing target must not emit diagnostic: {diags:?}"
     );
 }

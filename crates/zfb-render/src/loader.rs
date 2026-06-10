@@ -104,23 +104,19 @@ pub enum ResolverError {
 impl From<ResolverError> for RenderError {
     fn from(e: ResolverError) -> Self {
         match e {
-            ResolverError::NotFound { path } => {
-                RenderError::Resolve {
-                    specifier: path.to_string_lossy().into_owned(),
-                    importer: String::new(),
-                    line: None,
-                    col: None,
-                    tried: vec![path.to_string_lossy().into_owned()],
-                }
+            ResolverError::NotFound { path } => RenderError::Resolve {
+                specifier: path.to_string_lossy().into_owned(),
+                importer: String::new(),
+                line: None,
+                col: None,
+                tried: vec![path.to_string_lossy().into_owned()],
+            },
+            ResolverError::Io { path, source } => {
+                RenderError::Other(format!("i/o error reading {}: {source}", path.display()))
             }
-            ResolverError::Io { path, source } => RenderError::Other(format!(
-                "i/o error reading {}: {source}",
-                path.display()
-            )),
-            ResolverError::BadEncoding { path } => RenderError::Other(format!(
-                "file is not valid UTF-8: {}",
-                path.display()
-            )),
+            ResolverError::BadEncoding { path } => {
+                RenderError::Other(format!("file is not valid UTF-8: {}", path.display()))
+            }
         }
     }
 }
@@ -135,9 +131,9 @@ pub fn read_to_string(path: &Path) -> std::result::Result<String, ResolverError>
         Ok(bytes) => String::from_utf8(bytes).map_err(|_| ResolverError::BadEncoding {
             path: path.to_owned(),
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(ResolverError::NotFound { path: path.to_owned() })
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ResolverError::NotFound {
+            path: path.to_owned(),
+        }),
         Err(e) => Err(ResolverError::Io {
             path: path.to_owned(),
             source: e,
@@ -257,12 +253,18 @@ impl ModuleLoader {
     /// fire. `features = None` is an empty feature set: the three former-Core
     /// framework features are off (the opt-in default).
     ///
-    /// Note: the `zfb dev` CLI does NOT render through this loader — it threads
-    /// `markdown.features` via the V8 `RendererState` in `zfb-build`
-    /// (`BundlerInput::pipeline_spec.features`). This constructor is for library /
-    /// embedder callers of `zfb-render` who want feature-aware MDX loading; an
-    /// embedder still calling [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk`]
-    /// runs with the four framework features off.
+    /// Note: the `zfb dev` CLI does NOT render through this loader — `zfb dev`
+    /// is the bundler in Development mode and goes through the `zfb-build`
+    /// pipeline path (`BundlerInput::pipeline_spec`). This constructor is for
+    /// library / embedder callers of `zfb-render` who want feature-aware MDX
+    /// loading; an embedder still calling
+    /// [`ModuleLoader::with_strip_md_ext_and_gfm_and_cjk`] runs with the
+    /// former-Core framework features off.
+    ///
+    /// `build_context_roots` is intentionally NOT armed here — embedder callers
+    /// do not have a `project_root` + `public_dir` pair at hand, and the
+    /// context-aware plugins (transclude, imageDimensions, linkValidation)
+    /// remain inert by design in this path (zfb#952).
     pub fn with_strip_md_ext_and_gfm_and_cjk_and_features(
         jsx_runtime: JsxRuntime,
         strip_md_ext: bool,
@@ -369,7 +371,11 @@ impl ModuleLoader {
         let specifier_has_probe_ext = Path::new(specifier)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| self.probe_exts.iter().any(|p| p.trim_start_matches('.') == e));
+            .is_some_and(|e| {
+                self.probe_exts
+                    .iter()
+                    .any(|p| p.trim_start_matches('.') == e)
+            });
         if !specifier_has_probe_ext {
             for ext in &self.probe_exts {
                 let mut probe = candidate.clone();

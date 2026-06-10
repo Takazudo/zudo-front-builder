@@ -107,7 +107,11 @@ fn validate_string_attr_passes_through() {
 fn validate_enum_attr_valid_value() {
     let def = DirectiveDef::container("callout", "Callout").with_attrs(vec![schema(
         "tone",
-        AttrType::Enum(vec!["info".to_string(), "warn".to_string(), "tip".to_string()]),
+        AttrType::Enum(vec![
+            "info".to_string(),
+            "warn".to_string(),
+            "tip".to_string(),
+        ]),
         None,
         true,
     )]);
@@ -133,8 +137,14 @@ fn validate_enum_attr_invalid_value_emits_error() {
     let (result, _warnings) = def.validate_attrs(&raw);
     let errors = result.expect_err("invalid enum value should produce error");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message.contains("oops"), "error mentions bad value");
-    assert!(errors[0].message.contains("tone"), "error mentions attr name");
+    assert!(
+        errors[0].message.contains("oops"),
+        "error mentions bad value"
+    );
+    assert!(
+        errors[0].message.contains("tone"),
+        "error mentions attr name"
+    );
 }
 
 #[test]
@@ -277,10 +287,7 @@ fn validate_optional_attr_missing_no_default_absent_from_map() {
     let (result, warnings) = def.validate_attrs(&raw);
     assert!(warnings.is_empty());
     let map = result.expect("optional missing attr should not error");
-    assert!(
-        !map.contains_key("subtitle"),
-        "absent optional not in map"
-    );
+    assert!(!map.contains_key("subtitle"), "absent optional not in map");
 }
 
 #[test]
@@ -332,12 +339,7 @@ fn validate_unknown_attr_emits_warning_not_error() {
 fn validate_multiple_errors_all_collected() {
     let def = DirectiveDef::container("widget", "Widget").with_attrs(vec![
         schema("id", AttrType::String, None, true), // required, missing
-        schema(
-            "count",
-            AttrType::Number,
-            None,
-            false,
-        ), // present, but bad value
+        schema("count", AttrType::Number, None, false), // present, but bad value
     ]);
     let raw = vec![("count".to_string(), "notanumber".to_string())];
     let (result, _) = def.validate_attrs(&raw);
@@ -476,19 +478,14 @@ fn container_validation_error_falls_back_to_raw_attrs_and_emits_diagnostic() {
 #[test]
 fn leaf_with_boolean_attr_emits_normalised_string() {
     let mut reg = DirectiveRegistry::new();
-    reg.register(
-        DirectiveDef::leaf("badge", "Badge").with_attrs(vec![schema(
-            "outline",
-            AttrType::Boolean,
-            None,
-            false,
-        )]),
-    );
+    reg.register(DirectiveDef::leaf("badge", "Badge").with_attrs(vec![schema(
+        "outline",
+        AttrType::Boolean,
+        None,
+        false,
+    )]));
 
-    let out = run_registry(
-        &mut reg,
-        vec![text_para("::badge[Label]{outline=true}")],
-    );
+    let out = run_registry(&mut reg, vec![text_para("::badge[Label]{outline=true}")]);
     assert_eq!(out.len(), 1);
     let j = flow(&out[0]);
     assert_eq!(attr_value(j, "outline").as_deref(), Some("true"));
@@ -507,10 +504,7 @@ fn number_type_coercion_failure_emits_diagnostic_and_fallback() {
         )]),
     );
 
-    let out = run_registry(
-        &mut reg,
-        vec![text_para("::progress{value=notanumber}")],
-    );
+    let out = run_registry(&mut reg, vec![text_para("::progress{value=notanumber}")]);
     // Fallback: raw attr still emitted.
     assert_eq!(out.len(), 1);
     let j = flow(&out[0]);
@@ -691,10 +685,7 @@ fn defaults_applied_for_all_four_types_when_absent() {
         map.get("size"),
         Some(&ValidatedAttrValue::Enum("sm".to_string()))
     );
-    assert_eq!(
-        map.get("visible"),
-        Some(&ValidatedAttrValue::Boolean(true))
-    );
+    assert_eq!(map.get("visible"), Some(&ValidatedAttrValue::Boolean(true)));
     assert_eq!(
         map.get("count"),
         Some(&ValidatedAttrValue::Number("0".to_string()))
@@ -706,12 +697,10 @@ fn jsx_attr_order_schema_attrs_first_then_unknown() {
     // When validation succeeds: schema-declared attrs appear first (in
     // schema declaration order), then unknown/pass-through attrs.
     let mut reg = DirectiveRegistry::new();
-    reg.register(
-        DirectiveDef::container("box", "Box").with_attrs(vec![
-            schema("id", AttrType::String, None, false),
-            schema("class", AttrType::String, None, false),
-        ]),
-    );
+    reg.register(DirectiveDef::container("box", "Box").with_attrs(vec![
+        schema("id", AttrType::String, None, false),
+        schema("class", AttrType::String, None, false),
+    ]));
 
     let out = run_registry(
         &mut reg,

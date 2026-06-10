@@ -12,7 +12,7 @@
 
 use zfb_content::pipeline::Pipeline;
 use zfb_content::serializer::serialize;
-use zfb_md_extras::{MarkdownFeaturesConfig, TocExportConfig, test_harness::run_fixture};
+use zfb_md_extras::{test_harness::run_fixture, MarkdownFeaturesConfig, TocExportConfig};
 
 /// Build a pipeline with `tocExport` enabled using the given config.
 fn pipeline_with_toc_export(cfg: TocExportConfig) -> Pipeline {
@@ -30,12 +30,7 @@ fn run(name: &str) {
 
 /// Run a fixture directory with an explicit `TocExportConfig`.
 fn run_with_cfg(name: &str, cfg: TocExportConfig) {
-    let dir = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/toc_export/"
-    )
-    .to_string()
-        + name;
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/toc_export/").to_string() + name;
     run_fixture(&dir, |input| {
         let mut p = pipeline_with_toc_export(cfg.clone());
         let hast = p.run(input).expect("pipeline failed");

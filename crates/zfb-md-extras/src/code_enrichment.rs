@@ -170,18 +170,17 @@ fn detect_and_strip_marker(raw_html: &str) -> Option<(LineDiff, String)> {
     // syntect tokenised the whole comment into one span. Fallback path
     // removes `PREFIX MARKER` text (preserving surrounding markup) so
     // languages with coarser tokenisation also strip cleanly.
-    let stripped = try_strip_whole_span(raw_html, marker, &comment_prefixes)
-        .unwrap_or_else(|| {
-            let mut out = raw_html.to_string();
-            for &prefix in &comment_prefixes {
-                let combined = format!("{prefix}{marker}");
-                if out.contains(&combined) {
-                    out = out.replace(&combined, "");
-                    return out.trim_end().to_string();
-                }
+    let stripped = try_strip_whole_span(raw_html, marker, &comment_prefixes).unwrap_or_else(|| {
+        let mut out = raw_html.to_string();
+        for &prefix in &comment_prefixes {
+            let combined = format!("{prefix}{marker}");
+            if out.contains(&combined) {
+                out = out.replace(&combined, "");
+                return out.trim_end().to_string();
             }
-            out
-        });
+        }
+        out
+    });
 
     // Trim trailing whitespace so that a line like `  x  ` after stripping
     // the trailing ` // [!code ++]` does not leave a dangling space run.
@@ -410,9 +409,7 @@ fn enrich_line_span(
         return;
     }
     // Only process elements that have class="line".
-    let is_line_span = attrs
-        .iter()
-        .any(|(k, v)| k == "class" && v == "line");
+    let is_line_span = attrs.iter().any(|(k, v)| k == "class" && v == "line");
     if !is_line_span {
         return;
     }
@@ -526,7 +523,10 @@ mod tests {
         let html = "const x = 1; // [!code ++]";
         let (diff, stripped) = detect_and_strip_marker(html).unwrap();
         assert_eq!(diff, LineDiff::Added);
-        assert!(!stripped.contains("[!code ++]"), "marker should be stripped");
+        assert!(
+            !stripped.contains("[!code ++]"),
+            "marker should be stripped"
+        );
     }
 
     #[test]
@@ -548,7 +548,10 @@ mod tests {
         let html = r#"<span style="color:#65737e">// [!code ++]</span>"#;
         let (diff, stripped) = detect_and_strip_marker(html).unwrap();
         assert_eq!(diff, LineDiff::Added);
-        assert!(!stripped.contains("[!code ++]"), "marker should be stripped: {stripped}");
+        assert!(
+            !stripped.contains("[!code ++]"),
+            "marker should be stripped: {stripped}"
+        );
     }
 
     #[test]
@@ -593,7 +596,10 @@ mod tests {
         let (diff, stripped) = detect_and_strip_marker(html).unwrap();
         assert_eq!(diff, LineDiff::Added);
         assert!(!stripped.contains("[!code ++]"));
-        assert!(!stripped.contains("# "), "comment prefix must be stripped: {stripped}");
+        assert!(
+            !stripped.contains("# "),
+            "comment prefix must be stripped: {stripped}"
+        );
     }
 
     /// Double-dash comment prefix (`-- `) is recognised — covers SQL, Lua.
@@ -603,7 +609,10 @@ mod tests {
         let (diff, stripped) = detect_and_strip_marker(html).unwrap();
         assert_eq!(diff, LineDiff::Removed);
         assert!(!stripped.contains("[!code --]"));
-        assert!(!stripped.contains("-- "), "comment prefix must be stripped: {stripped}");
+        assert!(
+            !stripped.contains("-- "),
+            "comment prefix must be stripped: {stripped}"
+        );
     }
 
     /// Fallback path (no whole-span match): the comment prefix is removed
@@ -616,7 +625,10 @@ mod tests {
         let html = "x = 1; // [!code ++]";
         let (_diff, stripped) = detect_and_strip_marker(html).unwrap();
         assert!(!stripped.contains("[!code ++]"));
-        assert!(!stripped.contains("// "), "fallback must strip prefix: {stripped}");
+        assert!(
+            !stripped.contains("// "),
+            "fallback must strip prefix: {stripped}"
+        );
     }
 
     // ── enrich_line_span ──────────────────────────────────────────────────────
@@ -634,9 +646,13 @@ mod tests {
     fn enrich_highlight_adds_attribute() {
         let mut span = make_line_span("const x = 1;");
         enrich_line_span(&mut span, 1, &[1, 3, 5], false);
-        let HastNode::Element { attrs, .. } = &span else { panic!() };
+        let HastNode::Element { attrs, .. } = &span else {
+            panic!()
+        };
         assert!(
-            attrs.iter().any(|(k, v)| k == "data-line-highlight" && v == "true"),
+            attrs
+                .iter()
+                .any(|(k, v)| k == "data-line-highlight" && v == "true"),
             "line 1 should be highlighted: {attrs:?}"
         );
     }
@@ -645,7 +661,9 @@ mod tests {
     fn enrich_no_highlight_when_not_in_set() {
         let mut span = make_line_span("const x = 1;");
         enrich_line_span(&mut span, 2, &[1, 3, 5], false);
-        let HastNode::Element { attrs, .. } = &span else { panic!() };
+        let HastNode::Element { attrs, .. } = &span else {
+            panic!()
+        };
         assert!(
             !attrs.iter().any(|(k, _)| k == "data-line-highlight"),
             "line 2 should NOT be highlighted"
@@ -656,26 +674,48 @@ mod tests {
     fn enrich_diff_marker_adds_attribute_and_strips() {
         let mut span = make_line_span("x = 1 // [!code ++]");
         enrich_line_span(&mut span, 1, &[], true);
-        let HastNode::Element { attrs, children, .. } = &span else { panic!() };
+        let HastNode::Element {
+            attrs, children, ..
+        } = &span
+        else {
+            panic!()
+        };
         assert!(
-            attrs.iter().any(|(k, v)| k == "data-line-diff" && v == "added"),
+            attrs
+                .iter()
+                .any(|(k, v)| k == "data-line-diff" && v == "added"),
             "should have data-line-diff=added: {attrs:?}"
         );
         // Marker must be stripped from children.
         let raw_content: String = children
             .iter()
-            .filter_map(|c| if let HastNode::Raw(s) = c { Some(s.as_str()) } else { None })
+            .filter_map(|c| {
+                if let HastNode::Raw(s) = c {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
-        assert!(!raw_content.contains("[!code ++]"), "marker must be stripped: {raw_content}");
+        assert!(
+            !raw_content.contains("[!code ++]"),
+            "marker must be stripped: {raw_content}"
+        );
     }
 
     #[test]
     fn both_diff_and_highlight_can_apply_to_same_line() {
         let mut span = make_line_span("x = 1 // [!code ++]");
         enrich_line_span(&mut span, 1, &[1], true);
-        let HastNode::Element { attrs, .. } = &span else { panic!() };
-        assert!(attrs.iter().any(|(k, v)| k == "data-line-diff" && v == "added"));
-        assert!(attrs.iter().any(|(k, v)| k == "data-line-highlight" && v == "true"));
+        let HastNode::Element { attrs, .. } = &span else {
+            panic!()
+        };
+        assert!(attrs
+            .iter()
+            .any(|(k, v)| k == "data-line-diff" && v == "added"));
+        assert!(attrs
+            .iter()
+            .any(|(k, v)| k == "data-line-highlight" && v == "true"));
     }
 
     #[test]
@@ -690,8 +730,12 @@ mod tests {
         };
         plugin.visit(&mut root);
         // The line span should have no extra attributes.
-        let HastNode::Root { children } = &root else { panic!() };
-        let HastNode::Element { attrs, .. } = &children[0] else { panic!() };
+        let HastNode::Root { children } = &root else {
+            panic!()
+        };
+        let HastNode::Element { attrs, .. } = &children[0] else {
+            panic!()
+        };
         assert_eq!(attrs.len(), 1, "only class attribute expected: {attrs:?}");
     }
 }

@@ -581,7 +581,10 @@ mod tests {
     #[test]
     fn mixed_script_unchanged() {
         let h = run("日本語 mixed with English **bold** text 日本語");
-        assert_eq!(dump(&h), "日本語 mixed with English [STRONG:bold] text 日本語");
+        assert_eq!(
+            dump(&h),
+            "日本語 mixed with English [STRONG:bold] text 日本語"
+        );
     }
 
     #[test]
@@ -898,7 +901,9 @@ mod tests {
     #[test]
     fn cjk_punct_close_inside_heading() {
         let h = run_root("# **テスト。**テスト\n");
-        let MdastNode::Root(r) = &h else { unreachable!() };
+        let MdastNode::Root(r) = &h else {
+            unreachable!()
+        };
         let MdastNode::Heading(head) = &r.children[0] else {
             unreachable!("expected Heading, got {:?}", r.children[0])
         };
@@ -916,7 +921,9 @@ mod tests {
     fn cjk_punct_close_inside_list_item() {
         let h = run_root("- **テスト。**テスト\n");
         // Walk to the list item paragraph.
-        let MdastNode::Root(r) = &h else { unreachable!() };
+        let MdastNode::Root(r) = &h else {
+            unreachable!()
+        };
         let MdastNode::List(l) = &r.children[0] else {
             unreachable!()
         };
@@ -938,7 +945,9 @@ mod tests {
     #[test]
     fn cjk_punct_close_inside_blockquote() {
         let h = run_root("> **テスト。**テスト\n");
-        let MdastNode::Root(r) = &h else { unreachable!() };
+        let MdastNode::Root(r) = &h else {
+            unreachable!()
+        };
         let MdastNode::Blockquote(b) = &r.children[0] else {
             unreachable!()
         };
@@ -971,8 +980,8 @@ mod tests {
     }
 
     fn run_root(input: &str) -> MdastNode {
-        let mut mdast = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
-            .expect("markdown-rs parse");
+        let mut mdast =
+            markdown::to_mdast(input, &markdown::ParseOptions::mdx()).expect("markdown-rs parse");
         CjkFriendlyPlugin::new().visit(&mut mdast);
         mdast
     }

@@ -69,8 +69,7 @@ fn no_lang_fallback() {
 /// The opener paragraph remains as a plain paragraph in the output.
 #[test]
 fn disabled_leaves_code_group_unchanged() {
-    let input =
-        ":::code-group\n\n```ts\nconst x = 1;\n```\n\n:::\n";
+    let input = ":::code-group\n\n```ts\nconst x = 1;\n```\n\n:::\n";
     let mut p = pipeline_with_code_tabs(false);
     let hast = p.run(input).expect("pipeline failed");
     let html = serialize(&hast);

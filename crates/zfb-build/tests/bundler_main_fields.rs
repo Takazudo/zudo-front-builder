@@ -134,7 +134,12 @@ fn main_fields_knob_resolves_cjs_main_only_dep_fails_without_passes_with() {
     let tmp_fail = tempfile::tempdir().expect("tempdir");
     scaffold_project_importing(tmp_fail.path(), "badcjs");
     write_cjs_only_package(tmp_fail.path(), "badcjs");
-    let fail = bundle(make_input(tmp_fail.path(), esbuild.clone(), Vec::new(), Vec::new()));
+    let fail = bundle(make_input(
+        tmp_fail.path(),
+        esbuild.clone(),
+        Vec::new(),
+        Vec::new(),
+    ));
     assert!(
         fail.is_err(),
         "WITHOUT bundle.mainFields the Preact/neutral pass has an empty \
@@ -183,8 +188,16 @@ fn external_knob_lets_build_skip_cjs_main_only_dep() {
     let tmp_fail = tempfile::tempdir().expect("tempdir");
     scaffold_project_importing(tmp_fail.path(), "badcjs");
     write_cjs_only_package(tmp_fail.path(), "badcjs");
-    let fail = bundle(make_input(tmp_fail.path(), esbuild.clone(), Vec::new(), Vec::new()));
-    assert!(fail.is_err(), "negative control: must fail without any knob");
+    let fail = bundle(make_input(
+        tmp_fail.path(),
+        esbuild.clone(),
+        Vec::new(),
+        Vec::new(),
+    ));
+    assert!(
+        fail.is_err(),
+        "negative control: must fail without any knob"
+    );
 
     // --- With external = [badcjs] → must PASS, dep left unresolved. ---
     let tmp_pass = tempfile::tempdir().expect("tempdir");

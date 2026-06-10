@@ -120,9 +120,7 @@ fn make_input(
 #[test]
 fn plugin_alias_does_not_match_prefix_with_slash() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 
@@ -162,9 +160,7 @@ fn plugin_alias_does_not_match_prefix_with_slash() {
 #[test]
 fn plugin_alias_matches_exact_specifier() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 
@@ -208,9 +204,7 @@ fn plugin_alias_matches_exact_specifier() {
 #[test]
 fn plugin_virtual_module_does_not_match_prefix_with_slash() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 
@@ -250,9 +244,7 @@ fn plugin_virtual_module_does_not_match_prefix_with_slash() {
 #[test]
 fn plugin_virtual_module_matches_exact_specifier() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 
@@ -294,9 +286,7 @@ fn plugin_virtual_module_matches_exact_specifier() {
 #[test]
 fn user_tsconfig_paths_coexist_with_plugin_aliases() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 
@@ -304,7 +294,14 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
     let root = tmp.path().to_path_buf();
     // Build a project tree with TWO aliased targets — one resolved
     // via the user's tsconfig paths entry, one via a plugin alias.
-    for d in ["pages", "content", "components", "layouts", "src", "src/components"] {
+    for d in [
+        "pages",
+        "content",
+        "components",
+        "layouts",
+        "src",
+        "src/components",
+    ] {
         fs::create_dir_all(root.join(d)).unwrap();
     }
     fs::write(
@@ -319,11 +316,7 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
     )
     .unwrap();
     // Plugin-alias target: `@/data` → `<root>/src/data.ts` (absolute).
-    fs::write(
-        root.join("src/data.ts"),
-        "export default { ok: true };\n",
-    )
-    .unwrap();
+    fs::write(root.join("src/data.ts"), "export default { ok: true };\n").unwrap();
     fs::write(
         root.join("pages/index.tsx"),
         "import Widget from \"@/components/widget\";\n\
@@ -383,9 +376,7 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
 #[test]
 fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_exact_match_resolution] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
     };
 

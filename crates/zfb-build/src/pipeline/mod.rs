@@ -65,7 +65,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use zfb_graph::PageId;
 
 use crate::plan::RebuildPlan;
@@ -245,8 +245,21 @@ pub struct RenderedPage {
 /// the renderer can decide to render them serially (cheap, dev) or in
 /// parallel (production). Errors abort the tick — the watcher stays
 /// alive but the rebuild is reported as failed.
-pub type PageRenderer =
-    Arc<dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static>;
+///
+/// The second argument is the tick's optional content-narrowing hint
+/// (issue #958, see [`crate::ContentNarrowing`]): when `Some`, the
+/// renderer MAY narrow each dynamic source's route fan-out to the routes
+/// derived from the changed entries — but narrowing only ever removes
+/// routes from the selected render set, never adds. `None` means "render
+/// every selected page fully" (today's behaviour); implementations that
+/// don't narrow simply ignore the argument. The production pipeline
+/// always passes `None`.
+pub type PageRenderer = Arc<
+    dyn Fn(&[PageId], Option<&crate::ContentNarrowing>) -> Result<Vec<RenderedPage>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Function that runs the CSS pipeline once and returns whether the
 /// emitted asset is new (i.e. whether the asset URL changed).
@@ -294,8 +307,44 @@ pub struct IslandsBundleInfo {
 /// shape when the bundler ran but the output was byte-identical to the
 /// previous run; the orchestrator records the rerun in
 /// [`BuildOutcome::islands_rerun`] but emits no SSE event.
-pub type IslandsRunner =
-    Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
+pub type IslandsRunner = Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
+
+/// Outcome of one [`RendererReloader`] invocation (issue #956).
+///
+/// An explicit three-state result — deliberately not a bare
+/// `bool + Vec` — so "skipped", "refreshed, nothing vanished", and
+/// "refreshed with vanished routes" stay unambiguous at every call
+/// site (`renderer_fresh` handling, discovery refreshes, and
+/// plan-carried prune paths all read differently against these
+/// states).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshOutcome {
+    /// The reloader determined nothing observable changed (e.g. the
+    /// Phase-B byte-identical-bundle check, issue #940) and left the
+    /// live renderer and route tables untouched. The dev pipeline
+    /// bypasses the render fan-out for the tick: re-rendering against
+    /// an identical bundle would re-emit identical HTML — the same
+    /// determinism assumption [`dev::DevAssetPipeline`]'s byte-dedup
+    /// cache already makes.
+    Skipped,
+    /// The renderer bundle was rebuilt and the route tables refreshed.
+    /// `vanished` carries the **absolute** dist paths whose output
+    /// routes vanished globally after the route-table rebuild — i.e.
+    /// paths that existed before the refresh but are absent from every
+    /// source's new entry set. The dev pipeline prunes those files from
+    /// disk and evicts them from the in-memory page cache. An empty
+    /// `vanished` means refreshed-no-vanish.
+    Refreshed {
+        vanished: Vec<std::path::PathBuf>,
+        /// Source [`PageId`]s whose route-entry set changed in this
+        /// tick's route-table rebuild (issue #958). Non-empty means the
+        /// route structure moved — a body edit CAN change `paths()`
+        /// output — so the dev pipeline must disable content narrowing
+        /// for the tick (fallback G5): narrowing against a moved route
+        /// table could orphan a brand-new URL.
+        changed_sources: Vec<PageId>,
+    },
+}
 
 /// Function the dev pipeline calls before re-rendering pages, when
 /// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
@@ -310,12 +359,11 @@ pub type IslandsRunner =
 /// is non-empty; the pipeline does not call it for CSS-only or
 /// islands-only ticks (those don't move the SSR bundle).
 ///
-/// Returns the set of **absolute** dist paths whose output routes vanished
-/// globally after this tick's route-table rebuild — i.e. paths that existed
-/// before the refresh but are absent from every source's new entry set.
-/// The dev pipeline prunes those files from disk and evicts them from the
-/// in-memory page cache. An empty `Vec` means no routes were lost this tick.
-pub type RendererReloader = Arc<dyn Fn() -> Result<Vec<std::path::PathBuf>> + Send + Sync + 'static>;
+/// Returns a [`RefreshOutcome`]: `Refreshed { vanished }` after a real
+/// refresh (see the variant docs for the vanished-paths contract), or
+/// `Skipped` when the implementation proved nothing observable changed
+/// and the pipeline may bypass the render fan-out (issue #956).
+pub type RendererReloader = Arc<dyn Fn() -> Result<RefreshOutcome> + Send + Sync + 'static>;
 
 /// Per-build-tick context handed to [`AssetPipeline::apply`].
 ///

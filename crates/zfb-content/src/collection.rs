@@ -319,6 +319,53 @@ pub fn maybe_strip_specifier_suffix(specifier: &str, suffix: Option<&str>) -> St
     format!("{scheme}://{col}/{stripped_slug}#{hash}")
 }
 
+/// Derive the slug the collection walker would assign to `file` under the
+/// collection root `root`, or `None` when the walker would not pick the
+/// file up at all: outside `root`, not a recognised entry extension
+/// (`.md` / `.mdx` / `.tsx`), inside a dot-directory or itself a dotfile
+/// (mirroring `collect_collection_files`'s skip), or rejected by the
+/// filter's include / exclude globs.
+///
+/// Mirrors `parse_entry`'s derivation exactly — POSIX-normalised relative
+/// path, one trailing `.md` / `.mdx` / `.tsx` stripped in that order, then
+/// [`maybe_strip_slug_suffix`]. Issue #958's content-edit narrowing maps
+/// a changed file back to its route params through this helper; routing
+/// the candidate derivation through here keeps it drift-free against the
+/// walker's semantics.
+#[must_use]
+pub fn derive_slug_for_file(root: &Path, file: &Path, filter: &CollectionFilter) -> Option<String> {
+    let rel_path = file.strip_prefix(root).ok()?;
+    // The walker skips dotfiles and never recurses into dot-directories
+    // (`collect_collection_files`); a dot-component anywhere below the
+    // root means the file is not a collection member.
+    if rel_path
+        .components()
+        .any(|c| c.as_os_str().to_str().is_none_or(|s| s.starts_with('.')))
+    {
+        return None;
+    }
+    if !is_collection_entry(file) {
+        return None;
+    }
+    let lossy = rel_path.to_string_lossy();
+    let posix = if std::path::MAIN_SEPARATOR == '/' {
+        lossy.into_owned()
+    } else {
+        lossy.replace(std::path::MAIN_SEPARATOR, "/")
+    };
+    if !filter.matches(&posix) {
+        return None;
+    }
+    let stripped = ["md", "mdx", "tsx"]
+        .iter()
+        .find_map(|ext| {
+            let needle = format!(".{ext}");
+            posix.strip_suffix(&needle).map(str::to_owned)
+        })
+        .unwrap_or(posix);
+    Some(maybe_strip_slug_suffix(&stripped, filter.id_strip_suffix()).to_string())
+}
+
 /// Walk a collection directory, parsing + validating each `.md`, `.mdx`,
 /// or `.tsx` file.
 ///
@@ -521,10 +568,7 @@ where
 pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), CollectionError> {
     let collections: Vec<CollectionTypeInfo<'_>> = collection_names
         .iter()
-        .map(|name| CollectionTypeInfo {
-            name,
-            schema: None,
-        })
+        .map(|name| CollectionTypeInfo { name, schema: None })
         .collect();
     emit_types_dts_with_schemas(out_path, &collections)
 }
@@ -720,18 +764,18 @@ where
 
     // Dispatch to the unified frontmatter API. YAML for .md/.mdx,
     // `export const frontmatter` for .tsx — both normalised to JSON.
-    let uf = frontmatter::extract(path, &raw).map_err(|e| frontmatter_to_collection_error(path, e))?;
+    let uf =
+        frontmatter::extract(path, &raw).map_err(|e| frontmatter_to_collection_error(path, e))?;
 
     // serde_json::from_value clones the JSON into the typed schema. We
     // route through JSON instead of bypassing it (e.g. via untyped
     // YAML) so schema validation downstream sees the exact same value
     // shape regardless of source kind.
-    let data: T = serde_json::from_value(uf.value.clone()).map_err(|e| {
-        CollectionError::Frontmatter {
+    let data: T =
+        serde_json::from_value(uf.value.clone()).map_err(|e| CollectionError::Frontmatter {
             path: path.to_path_buf(),
             message: e.to_string(),
-        }
-    })?;
+        })?;
 
     data.validate().map_err(|report| CollectionError::Schema {
         path: path.to_path_buf(),
@@ -797,12 +841,10 @@ where
             // emitter entirely. #46 plumbs an optional
             // [`Pipeline`] through; today's callers pass `None`.
             let compiled = compile_mdx_to_jsx_module_cached(&md_body, path, cache, pipeline)
-                .map_err(|e| {
-                CollectionError::Mdx {
+                .map_err(|e| CollectionError::Mdx {
                     path: path.to_path_buf(),
                     message: e.to_string(),
-                }
-            })?;
+                })?;
             // Derive the specifier from THIS entry's file path + the
             // JSX hash rather than reusing `compiled.specifier`
             // directly. The compile cache keys on `sha256(body)` and
@@ -1340,7 +1382,10 @@ declare module \"zfb/content\" {\n\
             s.contains("sidebar_position?: number;"),
             "docs schema (optional number): {s}",
         );
-        assert!(s.contains("draft?: boolean;"), "docs schema (optional boolean): {s}");
+        assert!(
+            s.contains("draft?: boolean;"),
+            "docs schema (optional boolean): {s}"
+        );
         assert!(s.contains("tags?: string[];"), "docs schema (array): {s}");
 
         // blog: no schema → falls back to Record<string, unknown>.
@@ -1571,10 +1616,8 @@ declare module \"zfb/content\" {\n\
     /// scheme + collection + hash bytes untouched.
     #[test]
     fn maybe_strip_specifier_suffix_rewrites_slug_only() {
-        let stripped = maybe_strip_specifier_suffix(
-            "mdx://notes-en/col003-mixers.en#deadbeef",
-            Some(".en"),
-        );
+        let stripped =
+            maybe_strip_specifier_suffix("mdx://notes-en/col003-mixers.en#deadbeef", Some(".en"));
         assert_eq!(stripped, "mdx://notes-en/col003-mixers#deadbeef");
 
         // Non-matching suffix → returned unchanged.
@@ -1613,7 +1656,72 @@ declare module \"zfb/content\" {\n\
         tmp.write("data.toml", "[section]\nkey = \"value\"\n");
 
         let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
-        assert_eq!(out.len(), 1, "only entry.md should be returned; data files must be skipped");
+        assert_eq!(
+            out.len(),
+            1,
+            "only entry.md should be returned; data files must be skipped"
+        );
         assert_eq!(out[0].slug, "entry");
+    }
+
+    /// `derive_slug_for_file` (issue #958) must mirror the walker's slug
+    /// derivation: posix relative path, one trailing `.md|.mdx|.tsx`
+    /// stripped, `idStripSuffix` applied — and reject everything the
+    /// walker would not pick up.
+    #[test]
+    fn derive_slug_for_file_mirrors_walker_semantics() {
+        let root = Path::new("/proj/content/blog");
+        let none = CollectionFilter::none();
+
+        // Plain entries, nested entries, all three extensions.
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/hello.mdx"), &none),
+            Some("hello".to_string()),
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/a/b/index.md"), &none),
+            Some("a/b/index".to_string()),
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/widget.tsx"), &none),
+            Some("widget".to_string()),
+        );
+
+        // Outside the root / wrong extension / dotfile or dot-dir → None.
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/pages/index.tsx"), &none),
+            None,
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/data.yaml"), &none),
+            None,
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/.draft.mdx"), &none),
+            None,
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/.git/x.mdx"), &none),
+            None,
+        );
+
+        // idStripSuffix applies exactly like the walker's parse_entry.
+        let strip = CollectionFilter::new(None, None, Some(".en")).unwrap();
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/post.en.mdx"), &strip),
+            Some("post".to_string()),
+        );
+
+        // include / exclude globs gate membership.
+        let only_en =
+            CollectionFilter::new(Some(&["**/*.en.mdx".to_string()]), None, Some(".en")).unwrap();
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/post.en.mdx"), &only_en),
+            Some("post".to_string()),
+        );
+        assert_eq!(
+            derive_slug_for_file(root, Path::new("/proj/content/blog/post.mdx"), &only_en),
+            None,
+        );
     }
 }

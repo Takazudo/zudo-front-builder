@@ -45,11 +45,11 @@ use zfb_content::pipeline::Pipeline;
 use zfb_content::plugins::DirectiveRegistry;
 use zfb_content::serializer::serialize;
 use zfb_md_ast::{
+    diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
+    heading_registry::HeadingRegistry,
     BuildContext, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
     LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
-    diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
-    heading_registry::HeadingRegistry,
 };
 
 // ── Case 1: transclude + link_validation ────────────────────────────────────
@@ -71,11 +71,7 @@ fn transclude_link_validation_broken_link_in_snippet() {
 
     // Write the main document that includes the snippet.
     let input_path = tmpdir.path().join("input.md");
-    std::fs::write(
-        &input_path,
-        ":::include{file=\"./snippet.md\"}\n",
-    )
-    .expect("write input.md");
+    std::fs::write(&input_path, ":::include{file=\"./snippet.md\"}\n").expect("write input.md");
 
     let input = std::fs::read_to_string(&input_path).expect("read input.md");
 
@@ -96,7 +92,9 @@ fn transclude_link_validation_broken_link_in_snippet() {
         diagnostics: Some(&mut sink),
     };
 
-    let _hast = pipeline.run_with_context(&input, &mut ctx).expect("pipeline must not fail");
+    let _hast = pipeline
+        .run_with_context(&input, &mut ctx)
+        .expect("pipeline must not fail");
     let diags = sink.take();
 
     // At least one BrokenLink diagnostic must be present for the anchor from the snippet.
@@ -180,7 +178,10 @@ fn heading_marker_toc_and_toc_export_share_deduped_ids() {
 #[test]
 fn image_dimensions_injects_width_and_height() {
     // Use the fixture image from the image_dimensions fixtures directory.
-    let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/image_dimensions");
+    let fixtures_dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/image_dimensions"
+    );
 
     let features = MarkdownFeaturesConfig {
         image_dimensions: Some(ImageDimensionsConfig::default()),
@@ -199,7 +200,9 @@ fn image_dimensions_injects_width_and_height() {
         diagnostics: None,
     };
 
-    let hast = pipeline.run_with_context(input, &mut ctx).expect("pipeline must not fail");
+    let hast = pipeline
+        .run_with_context(input, &mut ctx)
+        .expect("pipeline must not fail");
     let html = serialize(&hast);
 
     // image_dimensions must have injected width and height.
@@ -340,10 +343,8 @@ fn transclude_cycle_produces_generic_not_broken_link() {
     // A and B include each other — classic cycle.
     let a_path = tmpdir.path().join("a.md");
     let b_path = tmpdir.path().join("b.md");
-    std::fs::write(&a_path, "A includes B.\n\n:::include{file=\"./b.md\"}\n")
-        .expect("write a.md");
-    std::fs::write(&b_path, "B includes A.\n\n:::include{file=\"./a.md\"}\n")
-        .expect("write b.md");
+    std::fs::write(&a_path, "A includes B.\n\n:::include{file=\"./b.md\"}\n").expect("write a.md");
+    std::fs::write(&b_path, "B includes A.\n\n:::include{file=\"./a.md\"}\n").expect("write b.md");
 
     // The main document includes a.md.
     let input_path = tmpdir.path().join("input.md");
@@ -371,7 +372,10 @@ fn transclude_cycle_produces_generic_not_broken_link() {
     let diags = sink.take();
 
     // Must have at least one diagnostic.
-    assert!(!diags.is_empty(), "cycle must produce at least one diagnostic");
+    assert!(
+        !diags.is_empty(),
+        "cycle must produce at least one diagnostic"
+    );
 
     // The cycle diagnostic must be a Generic variant with "cycle" in the message.
     let cycle_diags: Vec<_> = diags
@@ -533,11 +537,16 @@ fn all_features_on_does_not_crash() {
         diagnostics: Some(&mut sink),
     };
 
-    let hast = pipeline.run_with_context(input, &mut ctx).expect("all-features pipeline must not crash");
+    let hast = pipeline
+        .run_with_context(input, &mut ctx)
+        .expect("all-features pipeline must not crash");
     let html = serialize(&hast);
 
     // Must produce non-empty output.
-    assert!(!html.is_empty(), "all-features pipeline must produce output");
+    assert!(
+        !html.is_empty(),
+        "all-features pipeline must produce output"
+    );
 
     // The transcluded heading must appear.
     assert!(
@@ -546,10 +555,7 @@ fn all_features_on_does_not_crash() {
     );
 
     // ruby annotation must be processed.
-    assert!(
-        html.contains("<ruby>"),
-        "ruby must be processed: {html}"
-    );
+    assert!(html.contains("<ruby>"), "ruby must be processed: {html}");
 
     // heading elements must be present.
     assert!(
@@ -816,7 +822,10 @@ fn directives_feature_emits_components_and_unknown_diagnostic() {
         ("details", "Details"),
         ("caution", "Caution"),
     ] {
-        directives.insert(name.to_string(), DirectiveSpec::Short(component.to_string()));
+        directives.insert(
+            name.to_string(),
+            DirectiveSpec::Short(component.to_string()),
+        );
     }
 
     let input = concat!(
@@ -837,7 +846,9 @@ fn directives_feature_emits_components_and_unknown_diagnostic() {
     let hast = pipeline.run(input).expect("pipeline must not fail");
     let html = serialize(&hast);
 
-    for component in ["Note", "Tip", "Warning", "Danger", "Info", "Details", "Caution"] {
+    for component in [
+        "Note", "Tip", "Warning", "Danger", "Info", "Details", "Caution",
+    ] {
         assert!(
             html.contains(component),
             "directives map must emit <{component}>: {html}"
@@ -850,12 +861,14 @@ fn directives_feature_emits_components_and_unknown_diagnostic() {
     // not surfaced via `Pipeline::run`. We verify this at the registry level
     // directly, which is the canonical API for diagnostic inspection.
     let mut registry = DirectiveRegistry::new();
-    registry.register(zfb_content::plugins::DirectiveDef::container("note", "Note"));
+    registry.register(zfb_content::plugins::DirectiveDef::container(
+        "note", "Note",
+    ));
     // Use markdown-rs to parse the nope directive, then run the registry visit.
     let nope_input = ":::nope\n\nUnknown body.\n\n:::\n";
     let parse_opts = markdown::ParseOptions::mdx();
-    let mut mdast = markdown::to_mdast(nope_input, &parse_opts)
-        .expect("markdown parse must not fail");
+    let mut mdast =
+        markdown::to_mdast(nope_input, &parse_opts).expect("markdown parse must not fail");
     use zfb_content::pipeline::MdastVisitor;
     registry.visit(&mut mdast);
 

@@ -54,8 +54,9 @@ pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(50);
 ///
 /// Collapses notify's many `EventKind` variants into the three things
 /// downstream rebuild logic actually cares about. Anything we cannot
-/// classify is treated as `Modified` — we'd rather rebuild
-/// unnecessarily than miss a real change.
+/// classify is treated as `Modified` — we'd rather rebuild unnecessarily
+/// than miss a real change. Pure-read [`notify::event::EventKind::Access`]
+/// variants (open, close-after-read) are dropped entirely; see `classify`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     Created,
@@ -274,13 +275,28 @@ impl Drop for Watcher {
 
 /// Map a notify `EventKind` to our small enum. Unknown / "Any" / "Other"
 /// kinds collapse to `Modified` so we never silently drop a real change.
-fn classify(kind: &EventKind) -> ChangeKind {
+///
+/// Returns `None` for pure-read access events (open, close-after-read) that
+/// carry no mutation signal. On Linux inotify the [`notify`] crate maps
+/// `IN_OPEN` and `IN_CLOSE_NOWRITE` to [`EventKind::Access`] variants; if we
+/// treated those as `Modified`, every file read inside a tick would schedule
+/// another tick — an infinite churn loop that also poisons B3 content-edit
+/// narrowing by flooding `changed_content` with unrelated files (issue #B4).
+///
+/// `Access(Close(Write))` (inotify `IN_CLOSE_WRITE`) IS a write-completion
+/// event and is therefore kept as `Modified`.  Every other `Access` variant
+/// (Open, Close(Read), Read, Any, Other) is a pure-read; we drop them.
+fn classify(kind: &EventKind) -> Option<ChangeKind> {
+    use notify::event::{AccessKind, AccessMode};
     match kind {
-        EventKind::Create(_) => ChangeKind::Created,
-        EventKind::Remove(_) => ChangeKind::Removed,
-        EventKind::Modify(_) | EventKind::Access(_) | EventKind::Any | EventKind::Other => {
-            ChangeKind::Modified
-        }
+        EventKind::Create(_) => Some(ChangeKind::Created),
+        EventKind::Remove(_) => Some(ChangeKind::Removed),
+        EventKind::Modify(_) | EventKind::Any | EventKind::Other => Some(ChangeKind::Modified),
+        // Write-close = a mutation completed; treat like Modify.
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => Some(ChangeKind::Modified),
+        // Pure-read accesses: open, close-after-read, raw read, etc.
+        // Drop them to prevent the inotify Access→tick churn loop.
+        EventKind::Access(_) => None,
     }
 }
 
@@ -422,7 +438,11 @@ async fn debouncer_task(
                 };
                 match res {
                     Ok(evt) => {
-                        let kind = classify(&evt.kind);
+                        let Some(kind) = classify(&evt.kind) else {
+                            // Pure-read access event (e.g. IN_OPEN, IN_CLOSE_NOWRITE on
+                            // Linux inotify): drop silently to avoid the churn loop.
+                            continue;
+                        };
                         let now = Instant::now();
                         for path in evt.paths {
                             // Coalesce the incoming kind with any already-pending
@@ -481,20 +501,51 @@ mod tests {
     #[test]
     fn classify_create_is_created() {
         use notify::event::{CreateKind, EventKind};
-        assert_eq!(classify(&EventKind::Create(CreateKind::File)), ChangeKind::Created);
+        assert_eq!(classify(&EventKind::Create(CreateKind::File)), Some(ChangeKind::Created));
     }
 
     #[test]
     fn classify_remove_is_removed() {
         use notify::event::{EventKind, RemoveKind};
-        assert_eq!(classify(&EventKind::Remove(RemoveKind::File)), ChangeKind::Removed);
+        assert_eq!(classify(&EventKind::Remove(RemoveKind::File)), Some(ChangeKind::Removed));
     }
 
     #[test]
     fn classify_unknown_is_modified() {
         use notify::event::EventKind;
-        assert_eq!(classify(&EventKind::Any), ChangeKind::Modified);
-        assert_eq!(classify(&EventKind::Other), ChangeKind::Modified);
+        assert_eq!(classify(&EventKind::Any), Some(ChangeKind::Modified));
+        assert_eq!(classify(&EventKind::Other), Some(ChangeKind::Modified));
+    }
+
+    #[test]
+    fn classify_access_close_write_is_modified() {
+        use notify::event::{AccessKind, AccessMode, EventKind};
+        // IN_CLOSE_WRITE: a file was written and closed — treat as Modified.
+        assert_eq!(
+            classify(&EventKind::Access(AccessKind::Close(AccessMode::Write))),
+            Some(ChangeKind::Modified),
+            "IN_CLOSE_WRITE must surface as Modified",
+        );
+    }
+
+    #[test]
+    fn classify_pure_read_access_is_none() {
+        use notify::event::{AccessKind, AccessMode, EventKind};
+        // IN_OPEN: file opened for reading — must be dropped to prevent churn loop.
+        assert_eq!(
+            classify(&EventKind::Access(AccessKind::Open(AccessMode::Any))),
+            None,
+            "IN_OPEN must be dropped (pure read)",
+        );
+        // IN_CLOSE_NOWRITE: file closed after read-only access — must be dropped.
+        assert_eq!(
+            classify(&EventKind::Access(AccessKind::Close(AccessMode::Read))),
+            None,
+            "IN_CLOSE_NOWRITE must be dropped (pure read)",
+        );
+        // AccessKind::Read, Any, Other — pure read variants; also dropped.
+        assert_eq!(classify(&EventKind::Access(AccessKind::Any)), None);
+        assert_eq!(classify(&EventKind::Access(AccessKind::Other)), None);
     }
 
     // ---------------------------------------------------------------------------

@@ -9,9 +9,9 @@
 
 pub mod cjk_friendly;
 pub mod code_title;
-pub mod hard_breaks;
 pub mod directives;
 pub mod external_links;
+pub mod hard_breaks;
 pub mod heading_links;
 pub mod mermaid;
 pub mod resolve_links;
@@ -21,13 +21,13 @@ pub mod toc;
 pub mod util;
 
 pub use cjk_friendly::CjkFriendlyPlugin;
-pub use hard_breaks::HardBreaksPlugin;
 pub use code_title::CodeTitlePlugin;
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
     DirectiveRegistry, ValidatedAttrValue,
 };
 pub use external_links::{ExternalLinksConfig, ExternalLinksPlugin};
+pub use hard_breaks::HardBreaksPlugin;
 pub use heading_links::HeadingLinksPlugin;
 pub use mermaid::MermaidPlugin;
 pub use resolve_links::{BrokenLinkDiagnostic, ResolveLinksPlugin, ResolveMarkdownLinksOptions};

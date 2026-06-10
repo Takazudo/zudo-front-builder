@@ -44,7 +44,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 
-use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec};
+use zfb_build::{
+    bundle, BundleMode, BundlerInput, ContentCollectionSpec, OnBrokenLinks,
+    ResolveMarkdownLinksRoute, ResolveMarkdownLinksSpec,
+};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -92,9 +95,7 @@ fn write_cjs_only_pkg_for_confirm(root: &std::path::Path, name: &str) {
     fs::create_dir_all(pkg.join("dist")).unwrap();
     fs::write(
         pkg.join("package.json"),
-        format!(
-            r#"{{ "name": "{name}", "version": "6.3.0", "main": "dist/index.js" }}"#
-        ),
+        format!(r#"{{ "name": "{name}", "version": "6.3.0", "main": "dist/index.js" }}"#),
     )
     .unwrap();
     // CJS body — top-level module.exports, no ESM fallback.
@@ -424,10 +425,7 @@ fn write_full_fixture(root: &std::path::Path) {
 }
 
 /// Build the bundler input for the full integration fixture.
-fn make_full_fixture_input(
-    root: &std::path::Path,
-    esbuild: &std::path::Path,
-) -> BundlerInput {
+fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
         project_root: root.to_path_buf(),
@@ -533,9 +531,7 @@ fn full_fixture_bundles_without_error() {
 #[test]
 fn full_fixture_bundle_contains_inspiredgithub_class() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_fixes_integration_confirm] no esbuild binary; skipping."
-        );
+        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
         return;
     };
 
@@ -564,9 +560,7 @@ fn full_fixture_bundle_contains_inspiredgithub_class() {
 #[test]
 fn full_fixture_bundle_rewrites_good_mdx_link() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_fixes_integration_confirm] no esbuild binary; skipping."
-        );
+        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
         return;
     };
 
@@ -602,9 +596,7 @@ fn full_fixture_bundle_rewrites_good_mdx_link() {
 #[test]
 fn full_fixture_bundle_contains_admonition_title() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_fixes_integration_confirm] no esbuild binary; skipping."
-        );
+        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
         return;
     };
 
@@ -632,9 +624,7 @@ fn full_fixture_bundle_contains_admonition_title() {
 #[test]
 fn full_fixture_bundle_contains_gfm_table_components() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[migration_fixes_integration_confirm] no esbuild binary; skipping."
-        );
+        eprintln!("[migration_fixes_integration_confirm] no esbuild binary; skipping.");
         return;
     };
 
@@ -720,12 +710,11 @@ fn zzmod_all_five_migration_fixes_compose() {
             };
         "#;
 
-        let val = ThreadedConfigEvaluator::eval_bundle(config_js)
-            .expect(
-                "#663 regression: new URL(...) must be available in the config-eval isolate — \
+        let val = ThreadedConfigEvaluator::eval_bundle(config_js).expect(
+            "#663 regression: new URL(...) must be available in the config-eval isolate — \
                  the WEB_POLYFILLS bootstrap in ThreadedConfigEvaluator must install URL before \
-                 the user's config bundle runs"
-            );
+                 the user's config bundle runs",
+        );
 
         assert_eq!(
             val["_urlPathnameCheck"], "/docs/",

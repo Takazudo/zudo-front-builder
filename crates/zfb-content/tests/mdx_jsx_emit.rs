@@ -504,11 +504,8 @@ fn real_world_fixtures_round_trip_through_emitter() {
             .body
             .unwrap_or_else(|| panic!("md/mdx fixture must have a body: {path:?}"));
         let label = path.file_name().unwrap().to_string_lossy().into_owned();
-        let jsx = mdx_to_jsx_module(
-            &body,
-            MdxJsxOptions::default().with_filename(label.clone()),
-        )
-        .unwrap_or_else(|e| panic!("emit {label}: {e}"));
+        let jsx = mdx_to_jsx_module(&body, MdxJsxOptions::default().with_filename(label.clone()))
+            .unwrap_or_else(|e| panic!("emit {label}: {e}"));
         assert!(
             jsx.contains("export default function MDXContent"),
             "{label}: missing default export"

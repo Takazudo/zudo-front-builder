@@ -57,12 +57,21 @@ fn get_attr<'a>(node: &'a HastNode, name: &str) -> Option<&'a str> {
     let HastNode::Element { attrs, .. } = node else {
         return None;
     };
-    attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    attrs
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
 }
 
 fn first_img(root: &HastNode) -> &HastNode {
-    let HastNode::Root { children } = root else { panic!("expected root") };
-    let HastNode::Element { children: p_children, .. } = &children[0] else {
+    let HastNode::Root { children } = root else {
+        panic!("expected root")
+    };
+    let HastNode::Element {
+        children: p_children,
+        ..
+    } = &children[0]
+    else {
         panic!("expected p");
     };
     &p_children[0]
@@ -103,7 +112,11 @@ fn injects_dimensions_jpg_via_public_dir() {
 
     let img = first_img(&tree);
     assert_eq!(get_attr(img, "width"), Some("60"), "JPEG width must be 60");
-    assert_eq!(get_attr(img, "height"), Some("40"), "JPEG height must be 40");
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("40"),
+        "JPEG height must be 40"
+    );
 }
 
 /// Third format: GIF (80x30).
@@ -138,8 +151,16 @@ fn injects_dimensions_webp_via_public_dir() {
     plugin.visit_with_context(&mut tree, &mut ctx);
 
     let img = first_img(&tree);
-    assert_eq!(get_attr(img, "width"), Some("120"), "WebP width must be 120");
-    assert_eq!(get_attr(img, "height"), Some("90"), "WebP height must be 90");
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("120"),
+        "WebP width must be 120"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("90"),
+        "WebP height must be 90"
+    );
 }
 
 /// Relative src resolved against the source file's directory.
@@ -175,8 +196,16 @@ fn injects_dimensions_wide_png() {
     plugin.visit_with_context(&mut tree, &mut ctx);
 
     let img = first_img(&tree);
-    assert_eq!(get_attr(img, "width"), Some("200"), "wide PNG width must be 200");
-    assert_eq!(get_attr(img, "height"), Some("150"), "wide PNG height must be 150");
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("200"),
+        "wide PNG width must be 200"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("150"),
+        "wide PNG height must be 150"
+    );
 }
 
 /// Tiny 1x1 PNG.
@@ -193,8 +222,16 @@ fn injects_dimensions_tiny_png() {
     plugin.visit_with_context(&mut tree, &mut ctx);
 
     let img = first_img(&tree);
-    assert_eq!(get_attr(img, "width"), Some("1"), "tiny PNG width must be 1");
-    assert_eq!(get_attr(img, "height"), Some("1"), "tiny PNG height must be 1");
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("1"),
+        "tiny PNG width must be 1"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("1"),
+        "tiny PNG height must be 1"
+    );
 }
 
 // ── acceptance: skip remote and data URLs ────────────────────────────────────
@@ -213,8 +250,16 @@ fn skips_https_url() {
     plugin.visit_with_context(&mut tree, &mut ctx);
 
     let img = first_img(&tree);
-    assert_eq!(get_attr(img, "width"), None, "remote img must not get width");
-    assert_eq!(get_attr(img, "height"), None, "remote img must not get height");
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "remote img must not get width"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        None,
+        "remote img must not get height"
+    );
 }
 
 /// `<img src="http://example.com/foo.png">` must be left unchanged.
@@ -276,15 +321,25 @@ fn leaves_explicit_width_unchanged() {
     );
     plugin.visit_with_context(&mut tree, &mut ctx);
 
-    let HastNode::Root { children } = &tree else { panic!() };
+    let HastNode::Root { children } = &tree else {
+        panic!()
+    };
     let img = &children[0];
     let width_count = match img {
         HastNode::Element { attrs, .. } => attrs.iter().filter(|(k, _)| k == "width").count(),
         _ => panic!("expected element"),
     };
     assert_eq!(width_count, 1, "must not duplicate width attr");
-    assert_eq!(get_attr(img, "width"), Some("999"), "original width must be preserved");
-    assert_eq!(get_attr(img, "height"), None, "height must not be injected when width present");
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("999"),
+        "original width must be preserved"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        None,
+        "height must not be injected when width present"
+    );
 }
 
 /// `<img height="...">` must not get width or additional height attribute.
@@ -310,10 +365,20 @@ fn leaves_explicit_height_unchanged() {
     );
     plugin.visit_with_context(&mut tree, &mut ctx);
 
-    let HastNode::Root { children } = &tree else { panic!() };
+    let HastNode::Root { children } = &tree else {
+        panic!()
+    };
     let img = &children[0];
-    assert_eq!(get_attr(img, "width"), None, "width must not be injected when height present");
-    assert_eq!(get_attr(img, "height"), Some("999"), "original height must be preserved");
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "width must not be injected when height present"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("999"),
+        "original height must be preserved"
+    );
 }
 
 // ── acceptance: diagnostic on missing file ────────────────────────────────────
@@ -340,7 +405,11 @@ fn emits_warning_for_missing_file() {
     assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
 
     let img = first_img(&tree);
-    assert_eq!(get_attr(img, "width"), None, "width must not be added for missing file");
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "width must not be added for missing file"
+    );
 }
 
 /// A non-image file (text) must emit a Warning diagnostic.
@@ -394,7 +463,9 @@ fn cache_hit_on_second_reference() {
     );
 
     // Both images must have dimensions injected.
-    let HastNode::Root { children } = &tree else { panic!() };
+    let HastNode::Root { children } = &tree else {
+        panic!()
+    };
     for (i, child) in children.iter().enumerate() {
         assert_eq!(
             get_attr(child, "width"),

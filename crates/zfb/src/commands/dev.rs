@@ -79,8 +79,8 @@ use zfb_build::renderer::{
 };
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, DiscoveryOutcome,
-    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
-    RendererReloader,
+    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
+    RelDistPath, RenderedPage, RendererReloader,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -396,7 +396,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // `dist_root`, so per-route dev renders do not overwrite the
         // production HTML files that `pnpm preview` serves.
         Some(session) => make_render_callback(session.clone(), dev_html_root.clone()),
-        None => Arc::new(|_pages: &[PageId]| Ok(Vec::new())),
+        None => Arc::new(|_pages: &[PageId], _narrowing| Ok(Vec::new())),
     };
 
     // Issue #377 — dev-mode initial-load islands bundling.
@@ -784,9 +784,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the renderer is disabled (no SSR in this project).
         let ssr_handle_for_reload = ssr_route_set.clone();
         Arc::new(move || {
-            let (changed, vanished_rel) = session
+            let (changed, vanished_rel) = match session
                 .refresh_bundle_and_routes()
-                .context("edit-tick bundle refresh failed")?;
+                .context("edit-tick bundle refresh failed")?
+            {
+                // Phase-B skip (issue #940): the live host, route tables,
+                // and SSR route set were all left untouched — report
+                // `Skipped` so DevAssetPipeline bypasses the render
+                // fan-out for the tick (issue #956).
+                BundleRefresh::Skipped => return Ok(RefreshOutcome::Skipped),
+                BundleRefresh::Refreshed { changed, vanished } => (changed, vanished),
+            };
             if !changed.is_empty() {
                 tracing::debug!(
                     count = changed.len(),
@@ -811,7 +819,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     "edit-tick refresh found globally-vanished routes"
                 );
             }
-            Ok(vanished_abs)
+            // Issue #958 — propagate the refresh's changed-source set
+            // instead of dropping it: a non-empty set means the route
+            // structure moved this tick, so the dev pipeline must
+            // disable content narrowing (fallback G5).
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vanished_abs,
+                changed_sources: changed,
+            })
         }) as RendererReloader
     });
 
@@ -1206,6 +1221,22 @@ struct DevRenderSession {
     inner: Arc<DevRenderInner>,
 }
 
+/// One expanded route plus its `paths()` provenance (issue #958).
+///
+/// The provenance is what lets a content edit narrow a dynamic source's
+/// render fan-out to the routes whose params match the edited entry's
+/// slug candidates — see [`compute_tick_narrowing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevRouteEntry {
+    entry: RouteUniverseEntry,
+    /// Per-URL params retained from `DynamicExpansion::resolved_with_params`
+    /// (issue #958). `None` for static routes and for any expansion whose
+    /// parallel `resolved` / `resolved_with_params` vectors disagreed in
+    /// length (fallback S1 — the whole source then always renders in
+    /// full).
+    params: Option<crate::render_pipeline::ResolvedRouteParams>,
+}
+
 /// The dev session's source→route + SSR route tables.
 ///
 /// Issue #659 — wrapped in a single [`RwLock`] inside [`DevRenderInner`]
@@ -1230,7 +1261,10 @@ struct DevRouteTables {
     /// resolves to one entry per `paths()` URL. `render_one` emits one
     /// `RenderedPage` per entry on each tick so every fanned-out URL
     /// reaches `dist/` (and thus the dev server's disk fallback).
-    routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
+    ///
+    /// Issue #958: each entry carries its optional `paths()` params
+    /// provenance (see [`DevRouteEntry`]).
+    routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
     /// URL patterns for `prerender = false` pages (issue #367 /
     /// Gap 1). Empty when every page in the project SSGs. The dev
     /// server reads this list (via [`DevRenderSession::ssr_patterns`])
@@ -1277,17 +1311,64 @@ struct DevRenderInner {
 
     /// Skip key from the last SUCCESSFUL `refresh_bundle_and_routes` call
     /// (issue #940 — Phase B). Hashes bundle bytes + the router scan's
-    /// sorted source paths + route templates so a no-op tick (identical
-    /// bundle, identical route universe) skips V8 host boot + swap and
-    /// the `paths()` re-expansion. Stored only after ALL of: host boot,
-    /// swap, AND route-table rebuild succeed — a failed refresh must NOT
-    /// poison this field so the next byte-identical tick can retry.
+    /// sorted source paths + route templates + static `pages/**.html`
+    /// bodies (issue #956) so a no-op tick (identical bundle, identical
+    /// route universe) skips V8 host boot + swap and the `paths()`
+    /// re-expansion. Stored only after ALL of: host boot, swap, AND
+    /// route-table rebuild succeed — a failed refresh must NOT poison
+    /// this field so the next byte-identical tick can retry.
     ///
     /// `None` on first tick (cold start) — forces a full refresh.
     /// Wrapped in a `Mutex` so `&self.refresh_bundle_and_routes` can
     /// update it without `&mut self`.
     #[cfg(feature = "embed_v8")]
     last_successful_skip_key: Mutex<Option<[u8; 32]>>,
+
+    /// Frontmatter gate cache for content-edit narrowing (issue #958,
+    /// fallback G4): SHA-256 of the canonical JSON of each collection
+    /// file's parsed frontmatter, keyed by the file's absolute path
+    /// exactly as the watcher delivers it. Seeded at boot
+    /// ([`seed_frontmatter_hashes`]) and updated on every narrowing-
+    /// candidate Content tick. A missing or differing entry means the
+    /// frontmatter may feed cross-page props (sidebar titles, prev/next
+    /// labels) — no narrowing that tick.
+    #[cfg(feature = "embed_v8")]
+    fm_hashes: Mutex<HashMap<PathBuf, [u8; 32]>>,
+}
+
+/// Per-source route filter for one narrowed tick (issue #958): which of a
+/// source's expanded routes [`DevRenderSession::render_one`] should fan
+/// out to this invocation.
+#[cfg_attr(not(feature = "embed_v8"), allow(dead_code))]
+#[derive(Debug)]
+enum RouteFilter {
+    /// Render every entry of the source — today's full behaviour.
+    All,
+    /// Render only the entries whose `output_path` is in the set.
+    Only(HashSet<PathBuf>),
+}
+
+impl RouteFilter {
+    fn allows(&self, output_path: &Path) -> bool {
+        match self {
+            RouteFilter::All => true,
+            RouteFilter::Only(set) => set.contains(output_path),
+        }
+    }
+}
+
+/// The whole tick's narrowing decision, computed once per render-callback
+/// invocation by [`compute_tick_narrowing`] (issue #958).
+#[cfg_attr(not(feature = "embed_v8"), allow(dead_code))]
+#[derive(Debug)]
+enum TickNarrowing {
+    /// No narrowing — every selected page renders its full fan-out.
+    Off,
+    /// Per-source filters. The map contains ONLY narrowed sources; a
+    /// source absent from the map renders in full ([`RouteFilter::All`]) —
+    /// that absence IS the always-rendered set (statics, single-entry
+    /// sources, aggregate dynamic consumers that fell back via S1/S2).
+    PerSource(HashMap<PathBuf, RouteFilter>),
 }
 
 #[cfg(feature = "embed_v8")]
@@ -1337,7 +1418,19 @@ impl DevRenderSession {
     /// its `paths()` resolved to (issue #502/#507). Returns an empty Vec
     /// when the source path is unknown to the renderer (dynamic route
     /// deferred to SSR, or a page never seen by the router scan).
-    fn render_one(&self, page: &PageId, dist_dir: &Path) -> Result<Vec<RenderedPage>> {
+    ///
+    /// `filter` (issue #958) narrows the fan-out to a subset of the
+    /// source's entries on a narrowed content-edit tick; pass
+    /// [`RouteFilter::All`] for the full fan-out. Filtering happens on
+    /// the per-tick clone, strictly BEFORE the render loop — the shared
+    /// tables are never mutated and `render_one_with`'s synthetic
+    /// output-path `PageId` keying (#507 Guardrail 1) is untouched.
+    fn render_one(
+        &self,
+        page: &PageId,
+        dist_dir: &Path,
+        filter: &RouteFilter,
+    ) -> Result<Vec<RenderedPage>> {
         // Read the (possibly watch-ADD-rebuilt, #659) route table. Clone
         // the entries out so the lock is released before the V8 render —
         // the reload path takes the write lock, and `render_one` may run
@@ -1350,7 +1443,7 @@ impl DevRenderSession {
             .routes_by_source
             .get(page.path())
         {
-            Some(es) => es.clone(),
+            Some(es) => Self::filter_entries(es, filter),
             None => return Ok(Vec::new()),
         };
         let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
@@ -1367,6 +1460,18 @@ impl DevRenderSession {
         Self::render_one_with(page, &entries, |entry| {
             render_one(state, entry, dist_dir, &project_root).map_err(anyhow::Error::from)
         })
+    }
+
+    /// Apply a tick's per-source [`RouteFilter`] to a source's entries,
+    /// cloning out the [`RouteUniverseEntry`] payloads that survive
+    /// (issue #958). Extracted from [`Self::render_one`] so the narrowing
+    /// seam is testable without a live V8 renderer.
+    fn filter_entries(entries: &[DevRouteEntry], filter: &RouteFilter) -> Vec<RouteUniverseEntry> {
+        entries
+            .iter()
+            .filter(|de| filter.allows(&de.entry.output_path))
+            .map(|de| de.entry.clone())
+            .collect()
     }
 
     /// Fan-out loop: for each `RouteUniverseEntry` in `entries`, call
@@ -1415,15 +1520,15 @@ impl DevRenderSession {
             // prune (DevAssetPipeline.last_output_path) was designed around a
             // *stable source id* whose output_path can flip across ticks (e.g.
             // sitemap.xml → sitemap.rss); output-path keying makes such a flip
-            // produce two distinct keys, so the old artifact would orphan in
-            // dist/. Still unreachable after #659 (which added live table
-            // rebuilding in `discover_created`): that function's diff gate
-            // (lines ~1289-1301) only re-renders sources whose entry COUNT
-            // changed (`prev.len() != entries.len()`), so an output_path flip
-            // on a stable-count source is never re-rendered/pruned and the
-            // orphan path is never triggered. If entry-count-stable output_path
-            // flips must be handled, restore source-path keying for static
-            // routes (or key dynamic entries on (source_path, output_path)).
+            // produce two distinct keys, so that per-page prune mechanism can
+            // never fire for it. Since #958 strengthened `diff_route_tables`
+            // to full entry-set comparison, a stable-count output_path flip IS
+            // re-rendered — but the old artifact is deleted by the GLOBAL
+            // vanished-output diff (#804: the old path drops out of the live
+            // route set and `route_vanished` prunes it from disk + cache), so
+            // no orphan accumulates. If that global diff is ever weakened,
+            // restore source-path keying for static routes (or key dynamic
+            // entries on (source_path, output_path)).
             out.push(RenderedPage {
                 page: PageId::new(entry.output_path.clone()),
                 output_path,
@@ -1515,6 +1620,11 @@ impl DevRenderSession {
     /// that vanished from the global live route set. The caller is
     /// responsible for joining the relative paths with the appropriate dist
     /// root before propagating them (issue #804 P2).
+    ///
+    /// A Phase-B skip during discovery is folded back into the empty
+    /// change/vanish tuple here (pre-#956 behaviour): the discovery hook
+    /// still reports `renderer_reloaded = true`, so the tick behaves as a
+    /// completed refresh (issue #940 Inv 3).
     #[cfg(feature = "embed_v8")]
     fn discover_created(
         &self,
@@ -1523,7 +1633,10 @@ impl DevRenderSession {
         if created.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        self.refresh_bundle_and_routes()
+        match self.refresh_bundle_and_routes()? {
+            BundleRefresh::Skipped => Ok((Vec::new(), Vec::new())),
+            BundleRefresh::Refreshed { changed, vanished } => Ok((changed, vanished)),
+        }
     }
 
     /// Re-bundle the SSR worker, swap in a freshly-started embedded V8
@@ -1564,10 +1677,12 @@ impl DevRenderSession {
     ///    change a dynamic route's `paths()` output surface without a
     ///    restart.
     ///
-    /// Returns `(changed_sources, vanished_output_paths)` where:
-    /// - `changed_sources`: source [`PageId`]s whose route set changed
+    /// Returns [`BundleRefresh::Skipped`] when the Phase-B check (issue
+    /// #940) proved nothing observable changed, otherwise
+    /// [`BundleRefresh::Refreshed`] with:
+    /// - `changed`: source [`PageId`]s whose route set changed
     ///   (empty for a plain content edit).
-    /// - `vanished_output_paths`: relative output paths (under dist) that
+    /// - `vanished`: relative output paths (under dist) that
     ///   existed in the old live route set but are absent from the new one,
     ///   globally across all sources. Used by the caller to prune stale
     ///   HTML files and invalidate PageCache entries (issue #804).
@@ -1575,7 +1690,7 @@ impl DevRenderSession {
     /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "embed_v8")]
-    fn refresh_bundle_and_routes(&self) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
+    fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -1602,14 +1717,18 @@ impl DevRenderSession {
         // Phase B (issue #940) — skip key check.
         //
         // Compute a digest over bundle bytes + the router-scan signature
-        // (sorted source paths + route templates). If the new key matches
-        // the previous SUCCESSFUL tick's key, nothing observable changed:
+        // (sorted source paths + route templates) + static pages/**.html
+        // bodies (issue #956 gate (a)). If the new key matches the previous
+        // SUCCESSFUL tick's key, nothing observable changed:
         // - bundle bytes ≡ snapshot unchanged ≡ V8 host would observe
         //   identical globals,
-        // - router signature unchanged ≡ pages/ universe identical.
-        // Return early with empty (changed, vanished) — the caller treats
-        // this as a completed refresh (Inv 3: renderer_reloaded=true via
-        // the DiscoveryOutcome path above us).
+        // - router signature unchanged ≡ pages/ universe identical,
+        // - static-HTML bodies unchanged ≡ verbatim-copied routes identical.
+        // Return `Skipped` — the discovery caller treats this as a
+        // completed refresh (Inv 3: renderer_reloaded=true via the
+        // DiscoveryOutcome path above us), while the per-tick reloader
+        // propagates it so DevAssetPipeline bypasses the render fan-out
+        // (issue #956).
         //
         // Key is stored only AFTER the full success path below (host swap +
         // route rebuild). A failed refresh — e.g. host start error — must
@@ -1622,10 +1741,10 @@ impl DevRenderSession {
                 "bundle skip: byte-identical bundle + unchanged route universe; \
                  skipping V8 host boot and paths() re-expansion"
             );
-            // Early return — behaves as a completed refresh with empty
-            // change/vanish sets (Inv 3).  The skip key is already
-            // stored from the last successful tick; no update needed.
-            return Ok((Vec::new(), Vec::new()));
+            // Early return — the live host and route tables were left
+            // untouched. The skip key is already stored from the last
+            // successful tick; no update needed.
+            return Ok(BundleRefresh::Skipped);
         }
 
         // 2. Start a NEW embedded V8 host against the rebuilt bundle,
@@ -1685,44 +1804,13 @@ impl DevRenderSession {
             build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
                 .context("dev refresh: route-table rebuild failed")?;
 
-        // 4. Diff against the frozen table to find:
-        //    (a) which source pages gained/changed entries, and
-        //    (b) which output paths vanished globally (were live before
-        //        but are absent from every source in the new table).
-        //    The global diff is critical: if route A loses /x while route B
-        //    simultaneously gains /x, /x must NOT be considered vanished.
+        // 4. Diff against the frozen table — see [`diff_route_tables`]
+        //    for the exact semantics (issue #958: the `changed` set is
+        //    the G5 narrowing gate, so it compares full entry SETS, not
+        //    just counts).
         let (changed, vanished_output_paths) = {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
-
-            let changed: Vec<PageId> = new_routes_by_source
-                .iter()
-                .filter(|(src, entries)| {
-                    old.routes_by_source
-                        .get(*src)
-                        .map(|prev| prev.len() != entries.len())
-                        .unwrap_or(true)
-                })
-                .map(|(src, _)| PageId::new(src.clone()))
-                .collect();
-
-            // Collect the globally-live output_path sets for old and new.
-            // Use HashSet for O(1) membership checks.
-            let old_live: std::collections::HashSet<std::path::PathBuf> = old
-                .routes_by_source
-                .values()
-                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
-                .collect();
-            let new_live: std::collections::HashSet<std::path::PathBuf> = new_routes_by_source
-                .values()
-                .flat_map(|entries| entries.iter().map(|e| e.output_path.clone()))
-                .collect();
-
-            let vanished: Vec<std::path::PathBuf> = old_live
-                .difference(&new_live)
-                .cloned()
-                .collect();
-
-            (changed, vanished)
+            diff_route_tables(&old.routes_by_source, &new_routes_by_source)
         };
         {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
@@ -1740,8 +1828,76 @@ impl DevRenderSession {
         // `None`-clears-the-key rationale.
         self.inner.commit_skip_key(new_skip_key);
 
-        Ok((changed, vanished_output_paths))
+        Ok(BundleRefresh::Refreshed {
+            changed,
+            vanished: vanished_output_paths,
+        })
     }
+}
+
+/// Result of one [`DevRenderSession::refresh_bundle_and_routes`] call —
+/// the dev session's internal counterpart of
+/// [`zfb_build::RefreshOutcome`] (issue #956), carrying the extra
+/// `changed` source set the discovery path needs.
+#[cfg(feature = "embed_v8")]
+enum BundleRefresh {
+    /// Phase-B skip (issue #940): byte-identical bundle + unchanged route
+    /// universe (including static `pages/**.html` bodies). The live V8
+    /// host and route tables were left untouched.
+    Skipped,
+    /// Full refresh completed (host swap + route-table rebuild).
+    Refreshed {
+        /// Source [`PageId`]s whose route-entry set changed (see
+        /// [`diff_route_tables`]).
+        changed: Vec<PageId>,
+        /// Relative output paths (under dist) that vanished from the
+        /// global live route set.
+        vanished: Vec<std::path::PathBuf>,
+    },
+}
+
+/// Diff a freshly-rebuilt `routes_by_source` map against the frozen one:
+///
+/// - `changed`: sources whose route-entry SET changed — new sources, and
+///   sources whose entries differ in any way (URL, output path, params).
+///   NOT a count-only comparison: issue #958's narrowing gate (fallback
+///   G5) rides on this set, and a `paths()` refresh can replace routes
+///   without changing their count (e.g. a two-page URL swap), which a
+///   count diff reports as unchanged — a narrowed render would then skip
+///   the brand-new route (silent under-render; review finding on #958).
+///   The full-set comparison also feeds the watch-ADD discovery path,
+///   where firing more often only re-renders more (safe direction).
+/// - `vanished`: output paths that were live before but are absent from
+///   every source in the new table. The diff is GLOBAL on purpose: if
+///   route A loses /x while route B simultaneously gains /x, /x must NOT
+///   be considered vanished (#727 two-page swap).
+#[cfg(feature = "embed_v8")]
+fn diff_route_tables(
+    old: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+    new: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+) -> (Vec<PageId>, Vec<std::path::PathBuf>) {
+    let changed: Vec<PageId> = new
+        .iter()
+        .filter(|(src, entries)| old.get(*src).map(|prev| prev != *entries).unwrap_or(true))
+        .map(|(src, _)| PageId::new(src.clone()))
+        .collect();
+
+    // Collect the globally-live output_path sets for old and new. Use
+    // HashSet for O(1) membership checks.
+    let old_live: HashSet<&PathBuf> = old
+        .values()
+        .flat_map(|entries| entries.iter().map(|e| &e.entry.output_path))
+        .collect();
+    let new_live: HashSet<&PathBuf> = new
+        .values()
+        .flat_map(|entries| entries.iter().map(|e| &e.entry.output_path))
+        .collect();
+    let vanished: Vec<std::path::PathBuf> = old_live
+        .difference(&new_live)
+        .map(|p| (*p).clone())
+        .collect();
+
+    (changed, vanished)
 }
 
 impl Drop for DevRenderInner {
@@ -1832,9 +1988,17 @@ fn assemble_and_bundle_dev(
 ///    (e.g. a `.tsx` page added with no JS-visible impact on the snapshot),
 ///    satisfying Inv 2 (§3 of the roadmap, issue #935).
 ///
-/// Returns `None` if the bundle file cannot be read — the caller treats
-/// that as a forced full refresh (safe direction: false-invalidate, never
-/// false-reuse).
+/// 3. **Static `pages/**.html` bodies** (issue #956 gate (a)) — routes
+///    with `static_html = true` bypass the JS bundle entirely: the
+///    renderer copies the source file from disk at render time
+///    (`zfb-build/src/renderer.rs`), so neither the bundle bytes nor the
+///    route signature reflect an edit to such a file's CONTENT. Hashing
+///    the bodies here keeps a static-HTML edit from being swallowed by
+///    the skip.
+///
+/// Returns `None` if the bundle file or any static-HTML source cannot be
+/// read — the caller treats that as a forced full refresh (safe
+/// direction: false-invalidate, never false-reuse).
 #[cfg(feature = "embed_v8")]
 fn compute_bundle_skip_key(
     bundler_out: &BundlerOutput,
@@ -1885,13 +2049,48 @@ fn compute_bundle_skip_key(
         hasher.update(b"\n");
     }
 
+    // Part 3: static pages/**.html bodies (issue #956 gate (a)). Sorted by
+    // source_path for a deterministic order; the paths come straight from
+    // the router's WalkDir over `<project_root>/pages`, so reading them
+    // here sees exactly the files the renderer would copy at render time.
+    let mut static_html_routes: Vec<&zfb_router::Route> =
+        routes.iter().filter(|r| r.static_html).collect();
+    static_html_routes.sort_unstable_by(|a, b| a.source_path.cmp(&b.source_path));
+    hasher.update(b"static-html:");
+    hasher.update((static_html_routes.len() as u64).to_le_bytes());
+    hasher.update(b":");
+    for route in static_html_routes {
+        let body = match std::fs::read(&route.source_path) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(
+                    site = "compute_bundle_skip_key",
+                    path = %route.source_path.display(),
+                    error = %err,
+                    "could not read static .html page for skip-key; \
+                     will perform full refresh"
+                );
+                return None;
+            }
+        };
+        hasher.update(route.source_path.to_string_lossy().as_bytes());
+        hasher.update(b"=");
+        hasher.update((body.len() as u64).to_le_bytes());
+        hasher.update(b":");
+        hasher.update(&body);
+        hasher.update(b"\n");
+    }
+
     Some(hasher.finalize().into())
 }
 
 /// `(routes_by_source, ssr_routes)` — the pair [`build_dev_route_tables`]
 /// produces and [`DevRouteTables`] stores.
 #[cfg(feature = "embed_v8")]
-type BuiltRouteTables = (HashMap<PathBuf, Vec<RouteUniverseEntry>>, Vec<RouteUniverseEntry>);
+type BuiltRouteTables = (
+    HashMap<PathBuf, Vec<DevRouteEntry>>,
+    Vec<RouteUniverseEntry>,
+);
 
 /// Build the dev session's source→route + SSR route tables from the router
 /// scan + the live V8 host (issue #659 — extracted from `boot_dev_renderer`
@@ -1915,7 +2114,7 @@ fn build_dev_route_tables(
     // tracks pages by their source path). Each value is a Vec so a dynamic
     // SSG source can hold its N `paths()`-expanded entries (#502/#507);
     // static routes contribute a single-element vec.
-    let mut routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
+    let mut routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
     let mut ssr_routes: Vec<RouteUniverseEntry> = Vec::new();
     for route in router.routes() {
         if let Some(entry) = plan
@@ -1929,10 +2128,15 @@ fn build_dev_route_tables(
             if crate::render_pipeline::is_ssr_route(&prerender_map, &route.template()) {
                 ssr_routes.push(entry.clone());
             } else {
+                // Static routes carry no `paths()` provenance (#958) —
+                // their sources always render in full (fallback S1).
                 routes_by_source
                     .entry(route.source_path.clone())
                     .or_default()
-                    .push(entry.clone());
+                    .push(DevRouteEntry {
+                        entry: entry.clone(),
+                        params: None,
+                    });
             }
         }
     }
@@ -2052,24 +2256,48 @@ fn build_dev_route_tables(
         // File every resolved concrete-URL entry under its dynamic source's
         // `PageId`. A single `[slug].tsx` source thus accumulates N entries,
         // which `render_one` fans out into N `RenderedPage`s per tick.
-        for entry in static_expansion
-            .resolved
-            .into_iter()
-            .chain(runtime_expansion.resolved)
-        {
-            if let Some(source) = template_to_source.get(&entry.route_key) {
-                routes_by_source
-                    .entry(source.clone())
-                    .or_default()
-                    .push(entry);
-            } else {
-                // Should not happen: every resolved entry's route_key came
-                // from one of the ssg_deferred routes. Warn rather than drop
-                // silently if the invariant is ever violated.
+        //
+        // Issue #958 — retain each URL's `paths()` params provenance by
+        // zipping `resolved` with the parallel-ordered
+        // `resolved_with_params` (documented invariant of
+        // `DynamicExpansion`; both are built together in
+        // `push_resolved_paths`). A length mismatch means the provenance
+        // cannot be trusted: warn and file `params: None` for that whole
+        // expansion, which downstream forces the affected sources to
+        // always render in full (fallback S1) — degraded performance,
+        // never under-rendering.
+        for expansion in [static_expansion, runtime_expansion] {
+            let params_aligned = expansion.resolved.len() == expansion.resolved_with_params.len();
+            if !params_aligned {
                 crate::output::warn(format!(
-                    "resolved dynamic URL {} has no matching source route ({}); skipping",
-                    entry.url_path, entry.route_key
+                    "dynamic route expansion: resolved/params length mismatch \
+                     ({} vs {}); content-edit narrowing disabled for the \
+                     affected source(s)",
+                    expansion.resolved.len(),
+                    expansion.resolved_with_params.len(),
                 ));
+            }
+            let mut params_iter = expansion.resolved_with_params.into_iter();
+            for entry in expansion.resolved {
+                let params = if params_aligned {
+                    params_iter.next().map(|p| p.params)
+                } else {
+                    None
+                };
+                if let Some(source) = template_to_source.get(&entry.route_key) {
+                    routes_by_source
+                        .entry(source.clone())
+                        .or_default()
+                        .push(DevRouteEntry { entry, params });
+                } else {
+                    // Should not happen: every resolved entry's route_key came
+                    // from one of the ssg_deferred routes. Warn rather than drop
+                    // silently if the invariant is ever violated.
+                    crate::output::warn(format!(
+                        "resolved dynamic URL {} has no matching source route ({}); skipping",
+                        entry.url_path, entry.route_key
+                    ));
+                }
             }
         }
     }
@@ -2180,6 +2408,12 @@ fn boot_dev_renderer(
     let (routes_by_source, ssr_routes) =
         build_dev_route_tables(&router, &plan, project_root, &renderer)?;
 
+    // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
+    // edit of a pre-existing collection file can already narrow (G4 only
+    // fires for genuinely missing/changed frontmatter). ~1 read + parse +
+    // hash per collection file; trivial against the bundle step above.
+    let fm_hashes = seed_frontmatter_hashes(project_root, cfg);
+
     Ok(DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
@@ -2191,8 +2425,66 @@ fn boot_dev_renderer(
             rebuild_inputs,
             // No successful refresh yet — first tick always runs fully.
             last_successful_skip_key: Mutex::new(None),
+            fm_hashes: Mutex::new(fm_hashes),
         }),
     })
+}
+
+/// SHA-256 over the canonical JSON of a file's parsed frontmatter
+/// (issue #958, fallback-G4 gate). `serde_json`'s default BTreeMap-backed
+/// objects serialize with sorted keys, so the string is canonical: a YAML
+/// reformat that parses to the same value hashes identically and does not
+/// trip the gate. `None` when the file is unreadable or unparseable.
+#[cfg(feature = "embed_v8")]
+fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
+    let source = std::fs::read_to_string(path).ok()?;
+    let uf = zfb_content::frontmatter::extract(path, &source).ok()?;
+    let json = serde_json::to_string(&uf.value).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(json.as_bytes());
+    Some(hasher.finalize().into())
+}
+
+/// Boot-seed the frontmatter gate cache (issue #958): hash every
+/// configured collection file's frontmatter, keyed by absolute path.
+/// Membership routes through `derive_slug_for_file` so the seeded set is
+/// exactly the walker's. Unreadable / unparseable files (and collections
+/// with uncompilable filter globs) are simply not seeded — their first
+/// edit falls back to a full render (G4) and seeds the hash then.
+#[cfg(feature = "embed_v8")]
+fn seed_frontmatter_hashes(
+    project_root: &Path,
+    cfg: &config::Config,
+) -> HashMap<PathBuf, [u8; 32]> {
+    let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+    for collection in &cfg.collections {
+        let root = project_root.join(normalize_relative(&collection.path));
+        let filter = match zfb_content::collection::CollectionFilter::new(
+            collection.include.as_deref(),
+            collection.exclude.as_deref(),
+            collection.id_strip_suffix.as_deref(),
+        ) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        for entry in walkdir::WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if zfb_content::collection::derive_slug_for_file(&root, path, &filter).is_none() {
+                continue;
+            }
+            if let Some(hash) = frontmatter_hash(path) {
+                hashes.insert(path.to_path_buf(), hash);
+            }
+        }
+    }
+    hashes
 }
 
 /// Per-route HTML output directory for the dev pipeline (issue #534).
@@ -2214,13 +2506,221 @@ fn dev_html_root_for(project_root: &Path) -> PathBuf {
     project_root.join(".zfb-build").join("dev-pages")
 }
 
+/// `true` when one of the edited entry's slug candidates appears among a
+/// route's resolved params (issue #958, spec §4). ANY-param semantics:
+/// scalars match by value, catchall arrays match by their `/`-join (an
+/// empty catchall joins to `""`, matching the bare-root-index candidate);
+/// a locale scalar never blocks a slug-array match. Exact byte equality —
+/// no case folding, no percent-decoding.
+#[cfg(feature = "embed_v8")]
+fn params_match(
+    p: &crate::render_pipeline::ResolvedRouteParams,
+    candidates: &std::collections::BTreeSet<String>,
+) -> bool {
+    p.scalars.values().any(|v| candidates.contains(v))
+        || p.arrays.values().any(|a| candidates.contains(&a.join("/")))
+}
+
+/// Compute the tick's narrowing decision from the plan's content-
+/// narrowing hint (issue #958, spec §4). Runs once per render-callback
+/// invocation. Every failure mode degrades to [`TickNarrowing::Off`] —
+/// i.e. today's full fan-out — never to silent under-rendering:
+///
+/// - G2: a changed file outside every configured collection (or failing
+///   its include/exclude globs, or an uncompilable filter glob),
+/// - G3: file read / frontmatter parse error,
+/// - G4: frontmatter hash missing or changed (frontmatter feeds
+///   cross-page props — titles in sidebars/prev-next — so a frontmatter
+///   delta re-renders the full selected set). The new hash is ALWAYS
+///   stored, including on the Off path, so the next body-only edit
+///   narrows.
+///
+/// Per-source fallbacks (source simply absent from the returned map ⇒
+/// [`RouteFilter::All`]):
+///
+/// - S1: any entry lacks params provenance (static routes; zip-length
+///   mismatch at table build time),
+/// - S2: zero entries matched the candidate set (aggregate dynamic
+///   consumers — tags/pagination — whose params are not slug-shaped).
+#[cfg(feature = "embed_v8")]
+fn compute_tick_narrowing(
+    session: &DevRenderSession,
+    hint: Option<&zfb_build::ContentNarrowing>,
+) -> TickNarrowing {
+    use std::collections::BTreeSet;
+
+    let Some(hint) = hint else {
+        return TickNarrowing::Off;
+    };
+    if hint.changed_content.is_empty() {
+        return TickNarrowing::Off;
+    }
+    let inner = &session.inner;
+
+    // Compile each collection's (root, filter) pair once for the tick. A
+    // bad glob means membership cannot be evaluated reliably — fall back.
+    let mut compiled: Vec<(PathBuf, zfb_content::collection::CollectionFilter)> =
+        Vec::with_capacity(inner.rebuild_inputs.cfg.collections.len());
+    for collection in &inner.rebuild_inputs.cfg.collections {
+        match zfb_content::collection::CollectionFilter::new(
+            collection.include.as_deref(),
+            collection.exclude.as_deref(),
+            collection.id_strip_suffix.as_deref(),
+        ) {
+            Ok(filter) => compiled.push((
+                inner
+                    .project_root
+                    .join(normalize_relative(&collection.path)),
+                filter,
+            )),
+            Err(err) => {
+                tracing::warn!(
+                    site = "compute_tick_narrowing",
+                    error = %err,
+                    "collection filter failed to compile; narrowing disabled for tick"
+                );
+                return TickNarrowing::Off;
+            }
+        }
+    }
+
+    let mut off = false;
+    let mut candidates: BTreeSet<String> = BTreeSet::new();
+    {
+        let mut fm_hashes = inner.fm_hashes.lock().unwrap_or_else(|p| p.into_inner());
+        for file in &hint.changed_content {
+            // Step 1 — collection resolution. A file may belong to
+            // multiple collections; candidates are unioned. Zero
+            // memberships ⇒ G2 (whole tick falls back), but keep
+            // processing the other files so their gate hashes update.
+            let slugs: Vec<String> = compiled
+                .iter()
+                .filter_map(|(root, filter)| {
+                    zfb_content::collection::derive_slug_for_file(root, file, filter)
+                })
+                .collect();
+            if slugs.is_empty() {
+                off = true; // G2
+                continue;
+            }
+
+            // Step 2 — frontmatter gate (G3/G4).
+            let fm_value = match std::fs::read_to_string(file)
+                .map_err(anyhow::Error::from)
+                .and_then(|source| {
+                    zfb_content::frontmatter::extract(file, &source)
+                        .map(|uf| uf.value)
+                        .map_err(anyhow::Error::from)
+                }) {
+                Ok(value) => value,
+                Err(_) => {
+                    // G3 — and the stored hash no longer describes the
+                    // file: drop it so the edit that FIXES the parse
+                    // error re-seeds via the G4 miss path.
+                    off = true;
+                    fm_hashes.remove(file);
+                    continue;
+                }
+            };
+            let hash: [u8; 32] = match serde_json::to_string(&fm_value) {
+                Ok(json) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(json.as_bytes());
+                    hasher.finalize().into()
+                }
+                Err(_) => {
+                    off = true;
+                    fm_hashes.remove(file);
+                    continue;
+                }
+            };
+            // Store-then-compare: the new hash must land even when the
+            // gate trips (G4), so the NEXT body-only edit narrows.
+            let prev = fm_hashes.insert(file.clone(), hash);
+            if prev != Some(hash) {
+                off = true; // G4 — missing or changed frontmatter.
+                continue;
+            }
+
+            // Step 3 — slug candidate set.
+            for slug in slugs {
+                if slug == "index" {
+                    candidates.insert(String::new());
+                }
+                if let Some(stripped) = slug.strip_suffix("/index") {
+                    candidates.insert(stripped.to_string());
+                }
+                candidates.insert(slug);
+            }
+            // Frontmatter `slug:` override candidate (Docusaurus-style):
+            // verbatim AND with one leading `/` stripped.
+            if let Some(fm_slug) = fm_value.get("slug").and_then(|v| v.as_str()) {
+                if let Some(stripped) = fm_slug.strip_prefix('/') {
+                    candidates.insert(stripped.to_string());
+                }
+                candidates.insert(fm_slug.to_string());
+            }
+        }
+    }
+    if off || candidates.is_empty() {
+        return TickNarrowing::Off;
+    }
+
+    // Steps 4+5 — per-source selection against the POST-refresh route
+    // tables (the reloader ran before the render callback, so params are
+    // fresh). Only narrowed sources enter the map; everything else — the
+    // always-rendered set — renders in full by absence.
+    let tables = inner.routes.read().unwrap_or_else(|p| p.into_inner());
+    let mut per_source: HashMap<PathBuf, RouteFilter> = HashMap::new();
+    for (source, entries) in &tables.routes_by_source {
+        if entries.iter().any(|de| de.params.is_none()) {
+            continue; // S1
+        }
+        let matched: HashSet<PathBuf> = entries
+            .iter()
+            .filter(|de| {
+                de.params
+                    .as_ref()
+                    .is_some_and(|p| params_match(p, &candidates))
+            })
+            .map(|de| de.entry.output_path.clone())
+            .collect();
+        if matched.is_empty() {
+            continue; // S2
+        }
+        per_source.insert(source.clone(), RouteFilter::Only(matched));
+    }
+    if per_source.is_empty() {
+        return TickNarrowing::Off;
+    }
+    tracing::debug!(
+        narrowed_sources = per_source.len(),
+        "content-edit narrowing active for tick (issue #958)"
+    );
+    TickNarrowing::PerSource(per_source)
+}
+
 /// Build the [`PageRenderer`] callback that the orchestrator hands to
 /// [`DevAssetPipeline`].
 fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
-    Arc::new(move |pages: &[PageId]| {
+    Arc::new(move |pages: &[PageId], narrowing| {
+        // Issue #958 — one narrowing decision per tick; per-page filters
+        // fall out of the per-source map. The V8-off path has no
+        // collection configs to match against, so it never narrows.
+        #[cfg(feature = "embed_v8")]
+        let tick_narrowing = compute_tick_narrowing(&session, narrowing);
+        #[cfg(not(feature = "embed_v8"))]
+        let tick_narrowing = {
+            let _ = narrowing;
+            TickNarrowing::Off
+        };
         let mut out = Vec::with_capacity(pages.len());
         for page in pages {
-            match session.render_one(page, &dist_dir) {
+            let filter = match &tick_narrowing {
+                TickNarrowing::Off => &RouteFilter::All,
+                TickNarrowing::PerSource(map) => map.get(page.path()).unwrap_or(&RouteFilter::All),
+            };
+            match session.render_one(page, &dist_dir, filter) {
                 Ok(rendered) => {
                     // A static route yields one page; a dynamic SSG route
                     // yields one page per `paths()`-resolved URL (#502/#507).
@@ -2487,12 +2987,43 @@ mod tests {
     // `resolve_host` / `resolve_addr` live in `crate::commands::resolve` (shared
     // with `preview`); their precedence and binding tests live there too.
 
+    /// Wrap bare [`RouteUniverseEntry`]s in provenance-free
+    /// [`DevRouteEntry`]s (issue #958) for tests that don't exercise
+    /// narrowing.
+    fn no_params(entries: Vec<RouteUniverseEntry>) -> Vec<DevRouteEntry> {
+        entries
+            .into_iter()
+            .map(|entry| DevRouteEntry {
+                entry,
+                params: None,
+            })
+            .collect()
+    }
+
     /// Build a stub [`DevRenderInner`] for the route-plumbing seam tests
     /// (no live V8 host). The discovery (#659) `rebuild_inputs` are filled
     /// with defaults — these tests never call `discover_created`.
     #[cfg(feature = "embed_v8")]
     fn stub_dev_inner(
-        routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
+        routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
+        ssr_routes: Vec<RouteUniverseEntry>,
+    ) -> DevRenderInner {
+        stub_dev_inner_at(
+            PathBuf::new(),
+            config::Config::default(),
+            routes_by_source,
+            ssr_routes,
+        )
+    }
+
+    /// [`stub_dev_inner`] with an explicit project root + config, for the
+    /// content-narrowing tests (issue #958) that need real collection
+    /// files on disk.
+    #[cfg(feature = "embed_v8")]
+    fn stub_dev_inner_at(
+        project_root: PathBuf,
+        cfg: config::Config,
+        routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
         DevRenderInner {
@@ -2501,14 +3032,15 @@ mod tests {
                 ssr_routes,
             }),
             renderer: Arc::new(Mutex::new(None)),
-            project_root: PathBuf::new(),
+            project_root,
             rebuild_inputs: DevRebuildInputs {
-                cfg: config::Config::default(),
+                cfg,
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
             },
             last_successful_skip_key: Mutex::new(None),
+            fm_hashes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2516,7 +3048,7 @@ mod tests {
     /// field exists when `embed_v8` is disabled.
     #[cfg(not(feature = "embed_v8"))]
     fn stub_dev_inner(
-        routes_by_source: HashMap<PathBuf, Vec<RouteUniverseEntry>>,
+        routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
         DevRenderInner {
@@ -2659,7 +3191,7 @@ mod tests {
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
         // A source path not present in routes_by_source is still dropped.
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
-        let out = cb(&pages).unwrap();
+        let out = cb(&pages, None).unwrap();
         assert!(out.is_empty());
     }
 
@@ -2748,24 +3280,574 @@ mod tests {
     /// watcher must keep going.
     #[test]
     fn render_callback_keeps_watcher_alive_on_render_error() {
-        let mut routes: HashMap<PathBuf, Vec<RouteUniverseEntry>> = HashMap::new();
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
         routes.insert(
             PathBuf::from("pages/index.tsx"),
-            vec![RouteUniverseEntry {
+            no_params(vec![RouteUniverseEntry {
                 url_path: "/".into(),
                 output_path: PathBuf::from("index.html"),
                 route_key: "/".into(),
                 static_html: false,
                 source_path: None,
-            }],
+            }]),
         );
         let session = DevRenderSession {
             inner: Arc::new(stub_dev_inner(routes, Vec::new())),
         };
         let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
-        let out = cb(&pages).unwrap();
+        let out = cb(&pages, None).unwrap();
         assert!(out.is_empty(), "errors must yield empty list, not panic");
+    }
+
+    /// Content-edit narrowing seam tests (issue #958, locked-spec §11).
+    ///
+    /// These drive `compute_tick_narrowing` + `filter_entries` — the two
+    /// seams a narrowed tick traverses before the (untouched)
+    /// `render_one_with` fan-out — against real collection files in a
+    /// tempdir, exactly as the dev render callback composes them.
+    #[cfg(feature = "embed_v8")]
+    mod narrowing {
+        use super::*;
+        use crate::render_pipeline::ResolvedRouteParams;
+        use std::collections::BTreeMap;
+
+        fn route_entry(url: &str, out: &str, key: &str) -> RouteUniverseEntry {
+            RouteUniverseEntry {
+                url_path: url.into(),
+                output_path: PathBuf::from(out),
+                route_key: key.into(),
+                static_html: false,
+                source_path: None,
+            }
+        }
+
+        fn scalar_params(pairs: &[(&str, &str)]) -> ResolvedRouteParams {
+            ResolvedRouteParams {
+                scalars: pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                arrays: BTreeMap::new(),
+            }
+        }
+
+        fn array_params(key: &str, parts: &[&str]) -> ResolvedRouteParams {
+            ResolvedRouteParams {
+                scalars: BTreeMap::new(),
+                arrays: BTreeMap::from([(
+                    key.to_string(),
+                    parts.iter().map(|s| s.to_string()).collect(),
+                )]),
+            }
+        }
+
+        fn with_params(entry: RouteUniverseEntry, params: ResolvedRouteParams) -> DevRouteEntry {
+            DevRouteEntry {
+                entry,
+                params: Some(params),
+            }
+        }
+
+        /// Project scaffold: tempdir root + one `blog` collection under
+        /// `content/blog` with the given `(relative name, frontmatter)`
+        /// entry files.
+        fn scaffold(files: &[(&str, &str)]) -> (tempfile::TempDir, config::Config) {
+            let tmp = tempfile::tempdir().unwrap();
+            for (name, fm) in files {
+                write_entry(tmp.path(), name, fm, "body");
+            }
+            let cfg = config::Config {
+                collections: vec![config::CollectionDef {
+                    name: "blog".into(),
+                    path: PathBuf::from("content/blog"),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                }],
+                ..config::Config::default()
+            };
+            (tmp, cfg)
+        }
+
+        fn write_entry(project_root: &Path, name: &str, fm: &str, body: &str) -> PathBuf {
+            let path = project_root.join("content/blog").join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("---\n{fm}\n---\n\n{body}\n")).unwrap();
+            path
+        }
+
+        /// Stub session with boot-seeded frontmatter hashes, like
+        /// `boot_dev_renderer` produces.
+        fn session_at(
+            tmp: &tempfile::TempDir,
+            cfg: config::Config,
+            routes: HashMap<PathBuf, Vec<DevRouteEntry>>,
+        ) -> DevRenderSession {
+            let seeded = seed_frontmatter_hashes(tmp.path(), &cfg);
+            let inner = stub_dev_inner_at(tmp.path().to_path_buf(), cfg, routes, Vec::new());
+            *inner.fm_hashes.lock().unwrap() = seeded;
+            DevRenderSession {
+                inner: Arc::new(inner),
+            }
+        }
+
+        fn hint_for(paths: &[PathBuf]) -> zfb_build::ContentNarrowing {
+            zfb_build::ContentNarrowing {
+                changed_content: paths.to_vec(),
+            }
+        }
+
+        /// Run the narrowed filter for `source` against the session's
+        /// tables and return the surviving output paths — the set
+        /// `render_one` would fan out (its `render_one_with` loop is
+        /// byte-identical pre- and post-#958).
+        fn surviving_outputs(
+            session: &DevRenderSession,
+            narrowing: &TickNarrowing,
+            source: &Path,
+        ) -> Vec<PathBuf> {
+            let filter = match narrowing {
+                TickNarrowing::Off => &RouteFilter::All,
+                TickNarrowing::PerSource(map) => map.get(source).unwrap_or(&RouteFilter::All),
+            };
+            let tables = session.inner.routes.read().unwrap();
+            DevRenderSession::filter_entries(&tables.routes_by_source[source], filter)
+                .into_iter()
+                .map(|e| e.output_path)
+                .collect()
+        }
+
+        /// Epic acceptance test 1: a body edit of entry A renders A's
+        /// route plus the static (always-rendered) source — NOT sibling
+        /// B's route.
+        #[test]
+        fn narrowed_content_edit_renders_only_matching_routes_plus_statics() {
+            let (tmp, cfg) = scaffold(&[("a.mdx", "title: A"), ("b.mdx", "title: B")]);
+            let dynamic_source = PathBuf::from("pages/blog/[slug].tsx");
+            let static_source = PathBuf::from("pages/index.tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                dynamic_source.clone(),
+                vec![
+                    with_params(
+                        route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                        scalar_params(&[("slug", "a")]),
+                    ),
+                    with_params(
+                        route_entry("/blog/b", "blog/b/index.html", "/blog/:slug"),
+                        scalar_params(&[("slug", "b")]),
+                    ),
+                ],
+            );
+            routes.insert(
+                static_source.clone(),
+                no_params(vec![route_entry("/", "index.html", "/")]),
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            // Body-only edit of A (frontmatter byte-identical).
+            let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
+
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert!(
+                matches!(narrowing, TickNarrowing::PerSource(_)),
+                "a seeded body-only edit must narrow; got {narrowing:?}"
+            );
+
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &dynamic_source),
+                vec![PathBuf::from("blog/a/index.html")],
+                "dynamic source must render exactly the edited entry's route"
+            );
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &static_source),
+                vec![PathBuf::from("index.html")],
+                "the static source must stay in the render set in full (S1)"
+            );
+            if let TickNarrowing::PerSource(map) = &narrowing {
+                assert!(
+                    !map.contains_key(&static_source),
+                    "always-rendered sources are expressed by ABSENCE from the map"
+                );
+            }
+        }
+
+        /// Epic acceptance test 2 / S2: a dynamic source whose params are
+        /// not slug-shaped (tag pages) never matches the edited entry's
+        /// candidates and must fall back to its FULL fan-out — that is
+        /// the aggregate-page freshness mechanism.
+        #[test]
+        fn zero_match_dynamic_source_falls_back_to_full_fanout() {
+            let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+            let blog_source = PathBuf::from("pages/blog/[slug].tsx");
+            let tags_source = PathBuf::from("pages/tags/[tag].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                blog_source.clone(),
+                vec![with_params(
+                    route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                    scalar_params(&[("slug", "a")]),
+                )],
+            );
+            routes.insert(
+                tags_source.clone(),
+                vec![
+                    with_params(
+                        route_entry("/tags/rust", "tags/rust/index.html", "/tags/:tag"),
+                        scalar_params(&[("tag", "rust")]),
+                    ),
+                    with_params(
+                        route_entry("/tags/cli", "tags/cli/index.html", "/tags/:tag"),
+                        scalar_params(&[("tag", "cli")]),
+                    ),
+                ],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated");
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+
+            let mut tag_outputs = surviving_outputs(&session, &narrowing, &tags_source);
+            tag_outputs.sort();
+            assert_eq!(
+                tag_outputs,
+                vec![
+                    PathBuf::from("tags/cli/index.html"),
+                    PathBuf::from("tags/rust/index.html"),
+                ],
+                "zero-match source must keep its full fan-out (S2)"
+            );
+            // The slug-shaped source still narrows on the same tick.
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &blog_source),
+                vec![PathBuf::from("blog/a/index.html")],
+            );
+        }
+
+        /// S1: a source where ANY entry lacks params provenance (zip-
+        /// length mismatch at table-build time files `params: None`)
+        /// must render in full even when another entry would match.
+        #[test]
+        fn missing_params_provenance_forces_source_full_fanout() {
+            let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![
+                    with_params(
+                        route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                        scalar_params(&[("slug", "a")]),
+                    ),
+                    DevRouteEntry {
+                        entry: route_entry("/blog/b", "blog/b/index.html", "/blog/:slug"),
+                        params: None,
+                    },
+                ],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated");
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+
+            let mut outputs = surviving_outputs(&session, &narrowing, &source);
+            outputs.sort();
+            assert_eq!(
+                outputs,
+                vec![
+                    PathBuf::from("blog/a/index.html"),
+                    PathBuf::from("blog/b/index.html"),
+                ],
+                "missing provenance on any entry must force the source's full fan-out (S1)"
+            );
+        }
+
+        /// G4, changed direction: a frontmatter delta disables narrowing
+        /// for the tick (frontmatter feeds cross-page props) — but the
+        /// new hash is stored on the Off path, so the NEXT body-only
+        /// edit narrows.
+        #[test]
+        fn frontmatter_change_disables_narrowing_for_tick() {
+            let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![with_params(
+                    route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                    scalar_params(&[("slug", "a")]),
+                )],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(tmp.path(), "a.mdx", "title: A (renamed)", "body");
+            let first =
+                compute_tick_narrowing(&session, Some(&hint_for(std::slice::from_ref(&edited))));
+            assert!(
+                matches!(first, TickNarrowing::Off),
+                "a frontmatter change must disable narrowing for the tick (G4); got {first:?}"
+            );
+
+            // Same file, body-only follow-up: the hash stored on the Off
+            // path makes this tick narrow.
+            let edited = write_entry(tmp.path(), "a.mdx", "title: A (renamed)", "body v2");
+            let second = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert!(
+                matches!(second, TickNarrowing::PerSource(_)),
+                "the hash must be stored on the Off path so the next body edit narrows"
+            );
+        }
+
+        /// G4, missing direction: a file with no seeded hash (boot
+        /// seeding failed / session-created file) renders in full on its
+        /// first edit and narrows from the second on.
+        #[test]
+        fn first_edit_without_seeded_hash_renders_full_then_narrows() {
+            let (tmp, cfg) = scaffold(&[]);
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![with_params(
+                    route_entry("/blog/new", "blog/new/index.html", "/blog/:slug"),
+                    scalar_params(&[("slug", "new")]),
+                )],
+            );
+            // Session seeded BEFORE the file exists — like a file created
+            // mid-session through the discovery path.
+            let session = session_at(&tmp, cfg, routes);
+            let created = write_entry(tmp.path(), "new.mdx", "title: New", "body");
+
+            let first =
+                compute_tick_narrowing(&session, Some(&hint_for(std::slice::from_ref(&created))));
+            assert!(
+                matches!(first, TickNarrowing::Off),
+                "first edit without a seeded hash must render in full (G4); got {first:?}"
+            );
+
+            let created = write_entry(tmp.path(), "new.mdx", "title: New", "body v2");
+            let second = compute_tick_narrowing(&session, Some(&hint_for(&[created])));
+            assert!(
+                matches!(second, TickNarrowing::PerSource(_)),
+                "second (body-only) edit must narrow once the hash is seeded"
+            );
+        }
+
+        /// Spec §10: `x/index.mdx` must match catchall params `["x"]`
+        /// via the `/index`-stripped candidate, and a root `index.mdx`
+        /// must match the bare root-index `[]` (joins to `""`).
+        #[test]
+        fn index_entry_slug_variants_match_catchall_params() {
+            let (tmp, cfg) = scaffold(&[("x/index.mdx", "title: X"), ("index.mdx", "title: Root")]);
+            let source = PathBuf::from("pages/docs/[[...slug]].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![
+                    with_params(
+                        route_entry("/docs/x", "docs/x/index.html", "/docs/:slug{.+}?"),
+                        array_params("slug", &["x"]),
+                    ),
+                    with_params(
+                        route_entry("/docs", "docs/index.html", "/docs/:slug{.+}?"),
+                        array_params("slug", &[]),
+                    ),
+                ],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(tmp.path(), "x/index.mdx", "title: X", "v2");
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &source),
+                vec![PathBuf::from("docs/x/index.html")],
+                "x/index.mdx must match the [\"x\"] catchall route"
+            );
+
+            let edited = write_entry(tmp.path(), "index.mdx", "title: Root", "v2");
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &source),
+                vec![PathBuf::from("docs/index.html")],
+                "root index.mdx must match the empty-catchall route"
+            );
+        }
+
+        /// Spec §10: `idStripSuffix` applies inside the slug derivation,
+        /// so `post.en.mdx` (suffix `.en`) matches params slug `post`.
+        #[test]
+        fn id_strip_suffix_slug_matches_params() {
+            let (tmp, mut cfg) = scaffold(&[("post.en.mdx", "title: Post")]);
+            cfg.collections[0].id_strip_suffix = Some(".en".into());
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![
+                    with_params(
+                        route_entry("/blog/post", "blog/post/index.html", "/blog/:slug"),
+                        scalar_params(&[("slug", "post")]),
+                    ),
+                    with_params(
+                        route_entry("/blog/other", "blog/other/index.html", "/blog/:slug"),
+                        scalar_params(&[("slug", "other")]),
+                    ),
+                ],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(tmp.path(), "post.en.mdx", "title: Post", "v2");
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &source),
+                vec![PathBuf::from("blog/post/index.html")],
+                "the idStripSuffix-stripped slug must match the route params"
+            );
+        }
+
+        /// Spec §4 step 3: a frontmatter `slug:` override contributes a
+        /// candidate (verbatim + leading-`/`-stripped), so a body edit of
+        /// a file whose route URL comes from frontmatter still narrows.
+        #[test]
+        fn frontmatter_slug_override_body_edit_narrows_via_fm_candidate() {
+            let (tmp, cfg) = scaffold(&[("weird-file-name.mdx", "title: C\nslug: /custom/path")]);
+            let source = PathBuf::from("pages/docs/[[...slug]].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![
+                    with_params(
+                        route_entry(
+                            "/docs/custom/path",
+                            "docs/custom/path/index.html",
+                            "/docs/:slug{.+}?",
+                        ),
+                        array_params("slug", &["custom", "path"]),
+                    ),
+                    with_params(
+                        route_entry("/docs/other", "docs/other/index.html", "/docs/:slug{.+}?"),
+                        array_params("slug", &["other"]),
+                    ),
+                ],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let edited = write_entry(
+                tmp.path(),
+                "weird-file-name.mdx",
+                "title: C\nslug: /custom/path",
+                "v2",
+            );
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[edited])));
+            assert_eq!(
+                surviving_outputs(&session, &narrowing, &source),
+                vec![PathBuf::from("docs/custom/path/index.html")],
+                "the frontmatter slug candidate must match the override route"
+            );
+        }
+
+        /// Review finding on #958 (G5 gate integrity): the refresh diff's
+        /// `changed` set must compare full route-entry SETS, not entry
+        /// counts — a `paths()` refresh that replaces a route with a new
+        /// URL at the same cardinality must mark the source changed, or
+        /// a narrowed tick could skip the brand-new route.
+        #[test]
+        fn diff_route_tables_flags_same_count_route_replacement() {
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let old_entries = vec![with_params(
+                route_entry("/blog/x", "blog/x/index.html", "/blog/:slug"),
+                scalar_params(&[("slug", "x")]),
+            )];
+            let new_entries = vec![with_params(
+                route_entry("/blog/y", "blog/y/index.html", "/blog/:slug"),
+                scalar_params(&[("slug", "y")]),
+            )];
+            let old = HashMap::from([(source.clone(), old_entries)]);
+            let new = HashMap::from([(source.clone(), new_entries)]);
+
+            let (changed, vanished) = diff_route_tables(&old, &new);
+            assert_eq!(
+                changed,
+                vec![PageId::new(source)],
+                "a same-count URL replacement must mark the source changed (G5)"
+            );
+            assert_eq!(
+                vanished,
+                vec![PathBuf::from("blog/x/index.html")],
+                "the replaced output path globally vanished"
+            );
+        }
+
+        /// `diff_route_tables` reports identical tables as unchanged, and
+        /// the vanished diff stays GLOBAL: a route moving between sources
+        /// (#727 two-page swap) flags both sources changed but vanishes
+        /// nothing.
+        #[test]
+        fn diff_route_tables_identity_and_cross_source_swap() {
+            let src_a = PathBuf::from("pages/a/[slug].tsx");
+            let src_b = PathBuf::from("pages/b/[slug].tsx");
+            let entry_x = with_params(
+                route_entry("/x", "x/index.html", "/a/:slug"),
+                scalar_params(&[("slug", "x")]),
+            );
+            let entry_y = with_params(
+                route_entry("/y", "y/index.html", "/b/:slug"),
+                scalar_params(&[("slug", "y")]),
+            );
+
+            let old = HashMap::from([
+                (src_a.clone(), vec![entry_x.clone()]),
+                (src_b.clone(), vec![entry_y.clone()]),
+            ]);
+
+            // Identity: nothing changed, nothing vanished.
+            let (changed, vanished) = diff_route_tables(&old, &old.clone());
+            assert!(changed.is_empty(), "identical tables must diff empty");
+            assert!(vanished.is_empty());
+
+            // Swap: A now serves /y, B now serves /x.
+            let new = HashMap::from([
+                (src_a.clone(), vec![entry_y]),
+                (src_b.clone(), vec![entry_x]),
+            ]);
+            let (mut changed, vanished) = diff_route_tables(&old, &new);
+            changed.sort_by(|a, b| a.path().cmp(b.path()));
+            assert_eq!(changed, vec![PageId::new(src_a), PageId::new(src_b)]);
+            assert!(
+                vanished.is_empty(),
+                "globally-live paths swapped between sources must not vanish"
+            );
+        }
+
+        /// G2: a Content-classified file outside every configured
+        /// collection (e.g. a bare `content/`-segment file with no
+        /// matching collection) must disable narrowing for the tick.
+        #[test]
+        fn file_outside_every_collection_disables_narrowing() {
+            let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let mut routes = HashMap::new();
+            routes.insert(
+                source.clone(),
+                vec![with_params(
+                    route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                    scalar_params(&[("slug", "a")]),
+                )],
+            );
+            let session = session_at(&tmp, cfg, routes);
+
+            let outside = tmp.path().join("content/notes/x.md");
+            std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+            std::fs::write(&outside, "---\ntitle: X\n---\n\nbody\n").unwrap();
+
+            let narrowing = compute_tick_narrowing(&session, Some(&hint_for(&[outside])));
+            assert!(
+                matches!(narrowing, TickNarrowing::Off),
+                "a file outside every collection must fall back to full fan-out (G2)"
+            );
+        }
     }
 
     /// Deep-review regression (PR #376): `Route::template()` emits
@@ -3295,6 +4377,88 @@ mod tests {
             !inner.should_skip_refresh(Some(key_k)),
             "committing None must clear the stored key so a later tick \
              with the old key cannot skip against the wrong host state"
+        );
+    }
+
+    // ── Static pages/**.html skip-key coverage (issue #956 gate (a)) ────────
+    //
+    // Static `.html` page routes bypass the JS bundle entirely (the
+    // renderer copies the source body from disk at render time), so their
+    // CONTENT is invisible to bundle bytes and to the route signature.
+    // `compute_bundle_skip_key` must fold their bodies into the key.
+
+    /// Build a `static_html` route pointing at `src`.
+    #[cfg(feature = "embed_v8")]
+    fn make_static_html_route(src: PathBuf) -> zfb_router::Route {
+        zfb_router::Route {
+            source_path: src,
+            segments: vec![zfb_router::Segment::Static("about".into())],
+            kind: zfb_router::RouteKind::Static,
+            specificity: 100,
+            output_extension: None,
+            static_html: true,
+        }
+    }
+
+    /// Editing a static `.html` page's bytes must change the skip key even
+    /// when bundle bytes and the route signature are identical — otherwise
+    /// the edit would be silently swallowed by the Phase-B skip.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_changes_on_static_html_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"identical-bundle"));
+
+        let html_path = dir.path().join("about.html");
+        std::fs::write(&html_path, "<h1>v1</h1>").unwrap();
+        let routes = vec![make_static_html_route(html_path.clone())];
+
+        let k1 = compute_bundle_skip_key(&out, &routes);
+        // Edit ONLY the static html body — same path, same route
+        // signature, same bundle bytes.
+        std::fs::write(&html_path, "<h1>v2</h1>").unwrap();
+        let k2 = compute_bundle_skip_key(&out, &routes);
+
+        assert!(k1.is_some());
+        assert!(k2.is_some());
+        assert_ne!(
+            k1, k2,
+            "a static pages/*.html content edit must defeat the skip \
+             even when bundle bytes and route signature are unchanged"
+        );
+    }
+
+    /// Unchanged static `.html` bodies keep the key stable — the skip
+    /// still fires for genuine no-op ticks on projects with static pages.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_stable_when_static_html_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"identical-bundle"));
+
+        let html_path = dir.path().join("about.html");
+        std::fs::write(&html_path, "<h1>same</h1>").unwrap();
+        let routes = vec![make_static_html_route(html_path)];
+
+        let k1 = compute_bundle_skip_key(&out, &routes);
+        let k2 = compute_bundle_skip_key(&out, &routes);
+        assert!(k1.is_some());
+        assert_eq!(k1, k2, "identical static html bodies → identical keys");
+    }
+
+    /// An unreadable static `.html` source forces `None` (full refresh) —
+    /// the safe direction, mirroring the unreadable-bundle case.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_returns_none_for_unreadable_static_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"bundle"));
+
+        let routes = vec![make_static_html_route(dir.path().join("missing.html"))];
+        let key = compute_bundle_skip_key(&out, &routes);
+        assert!(
+            key.is_none(),
+            "an unreadable static html source must force a full refresh"
         );
     }
 }

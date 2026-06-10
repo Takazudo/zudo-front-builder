@@ -566,6 +566,44 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             plan.add_prune_paths(discovered.vanished_output_paths);
         }
 
+        // Content-narrowing hint (issue #958). Produced iff this tick
+        // consists EXCLUSIVELY of in-place edits (`ChangeKind::Modified`)
+        // to content-collection files (`PathClass::Content`) and the
+        // assembled plan selects at least one page. Everything else —
+        // mixed ticks, Created (discovery regime), Removed (prune
+        // regime), Global, External, Data — never narrows (fallback G1).
+        // The classifier runs with the same config `plan_for_changes`
+        // uses, so the hint can never disagree with the plan fold.
+        // Purely advisory: the dev pipeline narrows each dynamic source's
+        // render fan-out to the changed entries' routes, with mandatory
+        // full-fan-out fallbacks downstream.
+        let modified_only_content = !changes.is_empty()
+            && changes
+                .iter()
+                .all(|(_, kind)| *kind == ChangeKind::Modified)
+            && {
+                let graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::content_narrowing",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                changes.iter().all(|(path, _)| {
+                    classify_change_with_content_roots(
+                        path,
+                        &self.config.project_root,
+                        &self.config.policy.content_roots,
+                        |p| graph.is_global(p),
+                    ) == PathClass::Content
+                })
+            };
+        if modified_only_content && !plan.pages.is_empty() {
+            plan.content_narrowing = Some(crate::plan::ContentNarrowing {
+                changed_content: changes.iter().map(|(p, _)| p.clone()).collect(),
+            });
+        }
+
         if plan.is_noop() {
             return Ok(None);
         }
@@ -907,6 +945,117 @@ mod tests {
         assert!(plan.pages.is_all());
     }
 
+    // ── Content-narrowing hint production (issue #958, §3) ──────────────
+
+    /// Build a no-op `BuildContext` for driving `tick_with_kinds` against
+    /// the recording [`CountingPipeline`].
+    fn noop_ctx(dist: &std::path::Path) -> BuildContext {
+        BuildContext {
+            dist_root: dist.to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        }
+    }
+
+    /// A tick made exclusively of Modified content files produces the
+    /// narrowing hint, carrying the changed paths verbatim.
+    #[test]
+    fn modified_only_content_tick_produces_hint() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        let changed = PathBuf::from("/proj/content/post.md");
+        orch.tick_with_kinds(
+            vec![(changed.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                changed_content: vec![changed],
+            }),
+            "a Modified-only Content tick must carry the narrowing hint"
+        );
+    }
+
+    /// §3: a tick mixing a content edit with a module edit must NOT
+    /// produce the hint — module changes can affect every page's output.
+    #[test]
+    fn mixed_tick_with_module_trigger_produces_no_hint() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![
+                (PathBuf::from("/proj/content/post.md"), ChangeKind::Modified),
+                (
+                    PathBuf::from("/proj/components/Header.tsx"),
+                    ChangeKind::Modified,
+                ),
+            ],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].content_narrowing, None,
+            "a mixed content+module tick must not narrow (G1)"
+        );
+    }
+
+    /// §3: Created and Removed ticks never produce the hint — they run
+    /// the discovery / prune regimes, not the in-place-edit fast path.
+    #[test]
+    fn created_or_removed_tick_produces_no_hint() {
+        use zfb_watcher::ChangeKind;
+
+        for kind in [ChangeKind::Created, ChangeKind::Removed] {
+            let pipeline = CountingPipeline::default();
+            let applies = pipeline.applies.clone();
+            let orch = make_orch(pipeline);
+            let dist = tempfile::tempdir().unwrap();
+
+            orch.tick_with_kinds(
+                vec![
+                    (PathBuf::from("/proj/content/post.md"), kind),
+                    // A Modified sibling keeps the tick non-noop even for
+                    // the Removed case (post.md's consumer is re-planned),
+                    // and proves one non-Modified change poisons the hint.
+                    (
+                        PathBuf::from("/proj/content/other.md"),
+                        ChangeKind::Modified,
+                    ),
+                ],
+                &noop_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+
+            let plans = applies.lock().unwrap();
+            assert_eq!(plans.len(), 1, "tick must apply for kind {kind:?}");
+            assert_eq!(
+                plans[0].content_narrowing, None,
+                "a tick containing a {kind:?} change must not narrow (G1)"
+            );
+        }
+    }
+
     /// Regression for zfb#642 / #644 — `zfb dev` 404'd every route on a
     /// fresh boot because nothing rendered pages into the dev cache until
     /// the user edited a file: `run()` is watcher-driven and there was no
@@ -928,8 +1077,8 @@ mod tests {
     /// every assertion below.
     #[test]
     fn initial_build_renders_all_seeded_pages_with_no_file_events() {
-        use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
         use crate::pipeline::dev::DevAssetPipeline;
+        use crate::pipeline::{BuildContext, RelDistPath, RenderedPage};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tempfile::tempdir;
 
@@ -962,7 +1111,7 @@ mod tests {
         let render_calls_cb = render_calls.clone();
         let ctx = BuildContext {
             dist_root: dist.path().to_path_buf(),
-            render_pages: Arc::new(move |pages: &[PageId]| {
+            render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
                 render_calls_cb.fetch_add(pages.len(), Ordering::SeqCst);
                 Ok(pages
                     .iter()
@@ -1032,7 +1181,7 @@ mod tests {
         );
         let ctx = BuildContext {
             dist_root: dist.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
             reload_renderer: None,

@@ -142,9 +142,7 @@ pub fn ensure_no_ssr_without_adapter(
     if ssr_routes.is_empty() {
         return Ok(());
     }
-    let first = ssr_routes
-        .first()
-        .expect("checked non-empty above");
+    let first = ssr_routes.first().expect("checked non-empty above");
     let extra = if ssr_routes.len() > 1 {
         format!(" (and {} more)", ssr_routes.len() - 1)
     } else {
@@ -213,22 +211,14 @@ pub fn run_adapter_bundle(
 /// Indirection seam over `pnpm exec` so unit tests can verify the
 /// dispatch shape without spawning a real subprocess.
 pub trait AdapterRunner {
-    fn run(
-        &self,
-        package: &str,
-        input: &AdapterBundleInput,
-    ) -> Result<AdapterBundleOutput>;
+    fn run(&self, package: &str, input: &AdapterBundleInput) -> Result<AdapterBundleOutput>;
 }
 
 /// Production runner — shells out to `pnpm exec <bin>`.
 pub struct DefaultAdapterRunner;
 
 impl AdapterRunner for DefaultAdapterRunner {
-    fn run(
-        &self,
-        package: &str,
-        input: &AdapterBundleInput,
-    ) -> Result<AdapterBundleOutput> {
+    fn run(&self, package: &str, input: &AdapterBundleInput) -> Result<AdapterBundleOutput> {
         // The bin name follows the convention `<package>` for a non-
         // scoped name and `<short-name>` for a scoped one (the npm
         // standard: `@scope/zfb-adapter-cloudflare` ships
@@ -252,9 +242,7 @@ impl AdapterRunner for DefaultAdapterRunner {
         cmd.arg(&input.outdir);
 
         let output = run_capturing(&mut cmd).with_context(|| {
-            format!(
-                "spawning `pnpm exec {bin_name} bundle ...` for adapter {package}"
-            )
+            format!("spawning `pnpm exec {bin_name} bundle ...` for adapter {package}")
         })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -296,10 +284,14 @@ pub(crate) fn run_capturing(cmd: &mut Command) -> Result<Output> {
 
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::from(
-        stdout_file.try_clone().context("cloning stdout temp file")?,
+        stdout_file
+            .try_clone()
+            .context("cloning stdout temp file")?,
     ));
     cmd.stderr(Stdio::from(
-        stderr_file.try_clone().context("cloning stderr temp file")?,
+        stderr_file
+            .try_clone()
+            .context("cloning stderr temp file")?,
     ));
 
     let mut child = cmd.spawn().context("spawning subprocess")?;
@@ -503,10 +495,8 @@ mod tests {
             route_key: "/api/foo",
             url_path: "/api/foo",
         };
-        let res = ensure_no_ssr_without_adapter(
-            &AdapterChoice::Package("anything".into()),
-            &[route],
-        );
+        let res =
+            ensure_no_ssr_without_adapter(&AdapterChoice::Package("anything".into()), &[route]);
         assert!(res.is_ok());
     }
 
@@ -608,11 +598,7 @@ mod tests {
         }
     }
     impl AdapterRunner for FakeRunner {
-        fn run(
-            &self,
-            package: &str,
-            input: &AdapterBundleInput,
-        ) -> Result<AdapterBundleOutput> {
+        fn run(&self, package: &str, input: &AdapterBundleInput) -> Result<AdapterBundleOutput> {
             self.calls
                 .borrow_mut()
                 .push((package.to_string(), input.clone()));
@@ -671,12 +657,9 @@ mod tests {
             outdir: tmp.path().join("dist"),
         };
         let runner = FakeRunner::new();
-        let err = run_adapter_bundle_with(
-            &AdapterChoice::Package("anything".into()),
-            input,
-            &runner,
-        )
-        .unwrap_err();
+        let err =
+            run_adapter_bundle_with(&AdapterChoice::Package("anything".into()), input, &runner)
+                .unwrap_err();
         assert!(format!("{err}").contains("does not exist"));
     }
 
@@ -713,6 +696,10 @@ mod tests {
             .expect("run_capturing did not return within 5 s — pipe-EOF hang regression");
 
         let output = result.expect("run_capturing returned an error");
-        assert!(output.status.success(), "sh exited non-zero: {}", output.status);
+        assert!(
+            output.status.success(),
+            "sh exited non-zero: {}",
+            output.status
+        );
     }
 }

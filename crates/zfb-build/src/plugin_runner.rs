@@ -383,10 +383,7 @@ impl PluginHost {
     ///
     /// `hook_timeout` is the maximum time any single hook reply is awaited.
     /// Pass `None` to auto-resolve from `ZFB_PLUGIN_HOOK_TIMEOUT` / 120s default.
-    pub async fn spawn(
-        plugins: Vec<PluginSpec>,
-        node_binary: Option<OsString>,
-    ) -> Result<Self> {
+    pub async fn spawn(plugins: Vec<PluginSpec>, node_binary: Option<OsString>) -> Result<Self> {
         Self::spawn_with_timeout(plugins, node_binary, None).await
     }
 
@@ -512,10 +509,7 @@ impl PluginHost {
     /// Run every plugin's `preBuild` hook (in declaration order).
     pub async fn run_pre_build(&self, ctx: &BuildHookContext) -> Result<()> {
         let _ = self
-            .request_typed::<serde_json::Value>(
-                "preBuild",
-                serde_json::json!({ "ctx": ctx }),
-            )
+            .request_typed::<serde_json::Value>("preBuild", serde_json::json!({ "ctx": ctx }))
             .await?;
         Ok(())
     }
@@ -527,10 +521,7 @@ impl PluginHost {
     /// emitted route table (#262).
     pub async fn run_post_build(&self, ctx: &BuildHookContext) -> Result<()> {
         let _ = self
-            .request_typed::<serde_json::Value>(
-                "postBuild",
-                serde_json::json!({ "ctx": ctx }),
-            )
+            .request_typed::<serde_json::Value>("postBuild", serde_json::json!({ "ctx": ctx }))
             .await?;
         Ok(())
     }
@@ -574,10 +565,7 @@ impl PluginHost {
                 loader_id: String,
             },
             #[serde(rename = "injectRoute")]
-            InjectRoute {
-                pattern: String,
-                entrypoint: String,
-            },
+            InjectRoute { pattern: String, entrypoint: String },
         }
 
         #[derive(Deserialize)]
@@ -641,10 +629,7 @@ impl PluginHost {
     /// resolver) call this from their respective module-resolution
     /// paths when an import specifier matches a registered
     /// virtual-module entry.
-    pub async fn invoke_virtual_loader(
-        &self,
-        loader_id: &VirtualLoaderId,
-    ) -> Result<String> {
+    pub async fn invoke_virtual_loader(&self, loader_id: &VirtualLoaderId) -> Result<String> {
         #[derive(Deserialize)]
         struct Reply {
             source: String,
@@ -669,10 +654,7 @@ impl PluginHost {
             registrations: Vec<DevRegistration>,
         }
         let reply: Reply = self
-            .request_typed(
-                "devRegister",
-                serde_json::json!({ "ctx": ctx }),
-            )
+            .request_typed("devRegister", serde_json::json!({ "ctx": ctx }))
             .await?;
         Ok(reply.registrations)
     }
@@ -764,8 +746,8 @@ impl PluginHost {
                 }
             }
         }
-        let mut line = serde_json::to_string(&envelope)
-            .context("plugin host: serialise request")?;
+        let mut line =
+            serde_json::to_string(&envelope).context("plugin host: serialise request")?;
         line.push('\n');
         let write_outcome: Result<()> = {
             let mut stdin = self.inner.stdin.lock().await;
@@ -841,19 +823,17 @@ impl PluginHost {
             }
         };
         match parsed {
-            HostLine::Log(LogLine { log }) => {
-                match log.level.as_str() {
-                    "warn" => {
-                        warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    }
-                    "error" => {
-                        error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    }
-                    _ => {
-                        info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
-                    }
+            HostLine::Log(LogLine { log }) => match log.level.as_str() {
+                "warn" => {
+                    warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
                 }
-            }
+                "error" => {
+                    error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                }
+                _ => {
+                    info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                }
+            },
             HostLine::Reply(reply) => {
                 let id = reply.id;
                 let mut pend = inner.pending.lock().await;
@@ -1028,7 +1008,11 @@ mod tests {
         let pe = extract_plugin_error(&err).expect("PluginError carried in chain");
         assert_eq!(pe.plugin, "thrower");
         assert_eq!(pe.hook, "preBuild");
-        assert!(pe.message.contains("boom from preBuild"), "msg: {}", pe.message);
+        assert!(
+            pe.message.contains("boom from preBuild"),
+            "msg: {}",
+            pe.message
+        );
         host.shutdown().await.ok();
     }
 
@@ -1178,7 +1162,10 @@ mod tests {
             .expect("invoke ok");
         assert!(!resp.passthrough);
         assert_eq!(resp.status, 200);
-        assert_eq!(resp.headers.get("x-method").map(|s| s.as_str()), Some("GET"));
+        assert_eq!(
+            resp.headers.get("x-method").map(|s| s.as_str()),
+            Some("GET")
+        );
         assert_eq!(resp.body, "hello /echo?x=1");
 
         host.shutdown().await.ok();
@@ -1360,7 +1347,13 @@ mod tests {
             .await
             .expect_err("conflicting alias must error");
         let msg = format!("{err:#}");
-        assert!(msg.contains("alias") && msg.contains("@/x") && msg.contains("`a`") && msg.contains("`b`"), "got: {msg}");
+        assert!(
+            msg.contains("alias")
+                && msg.contains("@/x")
+                && msg.contains("`a`")
+                && msg.contains("`b`"),
+            "got: {msg}"
+        );
         host.shutdown().await.ok();
     }
 
@@ -1558,8 +1551,11 @@ mod tests {
         assert_eq!(routes[0]["extension"], "html");
         assert_eq!(routes[0]["source"], "pages/index.tsx");
         // params must be absent for a static route.
-        assert!(routes[0].get("params").is_none() || routes[0]["params"].is_null(),
-            "static route must not carry params, got: {}", routes[0]);
+        assert!(
+            routes[0].get("params").is_none() || routes[0]["params"].is_null(),
+            "static route must not carry params, got: {}",
+            routes[0]
+        );
     }
 
     /// Dynamic route params surface as string scalars; catchall params
@@ -1599,10 +1595,16 @@ mod tests {
         .expect("host spawns");
 
         let mut dyn_params = std::collections::BTreeMap::new();
-        dyn_params.insert("slug".to_string(), PostBuildParamValue::Scalar("hello-world".to_string()));
+        dyn_params.insert(
+            "slug".to_string(),
+            PostBuildParamValue::Scalar("hello-world".to_string()),
+        );
 
         let mut catchall_params = std::collections::BTreeMap::new();
-        catchall_params.insert("rest".to_string(), PostBuildParamValue::Array(vec!["a".to_string(), "b".to_string()]));
+        catchall_params.insert(
+            "rest".to_string(),
+            PostBuildParamValue::Array(vec!["a".to_string(), "b".to_string()]),
+        );
 
         let manifest = PostBuildRouteManifest {
             routes: vec![
@@ -1647,12 +1649,18 @@ mod tests {
         assert_eq!(routes.len(), 3);
 
         // Dynamic route: slug is a string scalar.
-        let dyn_r = routes.iter().find(|r| r["url"] == "/blog/hello-world").unwrap();
+        let dyn_r = routes
+            .iter()
+            .find(|r| r["url"] == "/blog/hello-world")
+            .unwrap();
         assert_eq!(dyn_r["params"]["slug"], "hello-world");
 
         // Catchall route: rest is a string array.
         let ca_r = routes.iter().find(|r| r["url"] == "/docs/a/b").unwrap();
-        assert!(ca_r["params"]["rest"].is_array(), "catchall param must be array");
+        assert!(
+            ca_r["params"]["rest"].is_array(),
+            "catchall param must be array"
+        );
         let rest = ca_r["params"]["rest"].as_array().unwrap();
         assert_eq!(rest, &[serde_json::json!("a"), serde_json::json!("b")]);
 
@@ -1660,14 +1668,20 @@ mod tests {
         let xml_r = routes.iter().find(|r| r["url"] == "/sitemap.xml").unwrap();
         assert_eq!(xml_r["extension"], "xml");
         assert_eq!(xml_r["output"], "sitemap.xml");
-        assert!(xml_r.get("params").is_none() || xml_r["params"].is_null(),
-            "non-HTML static route must not carry params, got: {}", xml_r);
+        assert!(
+            xml_r.get("params").is_none() || xml_r["params"].is_null(),
+            "non-HTML static route must not carry params, got: {}",
+            xml_r
+        );
 
         // prerender field is present on all routes and serialises as a
         // boolean (not omitted, not null).
         for r in routes {
-            assert!(r["prerender"].is_boolean(),
-                "prerender must be a boolean, got: {}", r);
+            assert!(
+                r["prerender"].is_boolean(),
+                "prerender must be a boolean, got: {}",
+                r
+            );
         }
     }
 
@@ -1745,12 +1759,20 @@ mod tests {
         assert_eq!(routes.len(), 2);
 
         let ssg = routes.iter().find(|r| r["url"] == "/").unwrap();
-        assert_eq!(ssg["prerender"], serde_json::json!(true),
-            "SSG route must have prerender=true, got: {}", ssg);
+        assert_eq!(
+            ssg["prerender"],
+            serde_json::json!(true),
+            "SSG route must have prerender=true, got: {}",
+            ssg
+        );
 
         let ssr = routes.iter().find(|r| r["url"] == "/api/search").unwrap();
-        assert_eq!(ssr["prerender"], serde_json::json!(false),
-            "SSR route must have prerender=false, got: {}", ssr);
+        assert_eq!(
+            ssr["prerender"],
+            serde_json::json!(false),
+            "SSR route must have prerender=false, got: {}",
+            ssr
+        );
     }
 
     // --- Timeout tests (no node required) -----------------------------------

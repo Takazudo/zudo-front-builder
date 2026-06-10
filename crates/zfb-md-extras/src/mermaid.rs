@@ -15,7 +15,7 @@
 //! Moved from `zfb-content::plugins::mermaid` in Wave 3 (#570).
 //! Wire via `features.mermaid = true` in `zfb.config.ts`.
 
-use zfb_md_ast::{HastNode, HastVisitor, extract_text};
+use zfb_md_ast::{extract_text, HastNode, HastVisitor};
 
 /// Visitor that swaps mermaid `<pre>` blocks for `<div class="mermaid">`.
 #[derive(Debug, Default, Clone, Copy)]

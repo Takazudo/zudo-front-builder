@@ -196,7 +196,12 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
 
     // 3. Manifest reports the single route.
     assert_eq!(out.manifest.framework, "preact");
-    assert_eq!(out.manifest.routes.len(), 1, "manifest routes: {:?}", out.manifest.routes);
+    assert_eq!(
+        out.manifest.routes.len(),
+        1,
+        "manifest routes: {:?}",
+        out.manifest.routes
+    );
     assert_eq!(out.manifest.routes[0].route, "/");
     assert_eq!(
         out.manifest.routes[0].source_path,

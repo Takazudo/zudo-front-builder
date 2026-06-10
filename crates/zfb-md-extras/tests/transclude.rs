@@ -51,12 +51,10 @@ fn run_success_fixture(name: &str) {
     let source_path = input_path.clone();
     let project_root = dir.to_path_buf();
 
-    let input = std::fs::read_to_string(&input_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", input_path.display())
-    });
-    let expected_raw = std::fs::read_to_string(&expected_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", expected_path.display())
-    });
+    let input = std::fs::read_to_string(&input_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", input_path.display()));
+    let expected_raw = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", expected_path.display()));
 
     let mut sink = CollectingSink::new();
     let mut ctx = BuildContext {
@@ -75,10 +73,7 @@ fn run_success_fixture(name: &str) {
 
     let diags = sink.take();
     if !diags.is_empty() {
-        panic!(
-            "fixture '{}': unexpected diagnostics: {diags:?}",
-            name
-        );
+        panic!("fixture '{}': unexpected diagnostics: {diags:?}", name);
     }
 
     let actual = normalize_html(&actual_raw);
@@ -106,12 +101,10 @@ fn run_error_fixture(name: &str, config: TranscludeConfig) {
     let source_path = input_path.clone();
     let project_root = dir.to_path_buf();
 
-    let input = std::fs::read_to_string(&input_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", input_path.display())
-    });
-    let expected_error = std::fs::read_to_string(&expected_error_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", expected_error_path.display())
-    });
+    let input = std::fs::read_to_string(&input_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", input_path.display()));
+    let expected_error = std::fs::read_to_string(&expected_error_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", expected_error_path.display()));
     let expected_fragment = expected_error.trim();
 
     let mut sink = CollectingSink::new();
@@ -191,7 +184,9 @@ fn code_block_wraps_in_pre() {
     };
 
     let mut pipeline = pipeline_with_transclude(TranscludeConfig::default());
-    let hast = pipeline.run_with_context(&input, &mut ctx).expect("pipeline ok");
+    let hast = pipeline
+        .run_with_context(&input, &mut ctx)
+        .expect("pipeline ok");
     let html = serialize(&hast);
 
     // The pipeline runs syntect, so the code block appears as highlighted HTML
@@ -232,16 +227,27 @@ fn lines_range_slices_content() {
     };
 
     let mut pipeline = pipeline_with_transclude(TranscludeConfig::default());
-    let hast = pipeline.run_with_context(&input, &mut ctx).expect("pipeline ok");
+    let hast = pipeline
+        .run_with_context(&input, &mut ctx)
+        .expect("pipeline ok");
     let html = serialize(&hast);
 
     // Lines 2-3 of data.rs: "fn second() {}" and "fn third() {}"
     // Syntect adds spans so we check just the identifiers, not the full pattern.
-    assert!(html.contains("second"), "expected line 2 identifier 'second': {html}");
-    assert!(html.contains("third"), "expected line 3 identifier 'third': {html}");
+    assert!(
+        html.contains("second"),
+        "expected line 2 identifier 'second': {html}"
+    );
+    assert!(
+        html.contains("third"),
+        "expected line 3 identifier 'third': {html}"
+    );
     // Line 1 and 4 should NOT appear
     assert!(!html.contains("first"), "line 1 should be excluded: {html}");
-    assert!(!html.contains("fourth"), "line 4 should be excluded: {html}");
+    assert!(
+        !html.contains("fourth"),
+        "line 4 should be excluded: {html}"
+    );
 
     let diags = sink.take();
     assert!(diags.is_empty(), "no diagnostics expected: {diags:?}");

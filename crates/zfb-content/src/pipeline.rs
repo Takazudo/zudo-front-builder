@@ -112,9 +112,7 @@ impl Default for ResolvedGfmConstructs {
 /// output. The JSX-emit path enables `math_flow` / `math_text`
 /// separately, where the JSX emitter has dedicated arms for them.
 #[must_use]
-pub fn constructs_for_pipeline(
-    resolved: ResolvedGfmConstructs,
-) -> markdown::Constructs {
+pub fn constructs_for_pipeline(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
     markdown::Constructs {
         gfm_strikethrough: resolved.strikethrough,
         gfm_table: resolved.table,
@@ -134,9 +132,7 @@ pub fn constructs_for_pipeline(
 /// and `$…$` parse into dedicated `Math` / `InlineMath` mdast nodes
 /// (zfb#93).
 #[must_use]
-pub fn constructs_for_jsx_emit(
-    resolved: ResolvedGfmConstructs,
-) -> markdown::Constructs {
+pub fn constructs_for_jsx_emit(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
     markdown::Constructs {
         math_flow: true,
         math_text: true,
@@ -370,7 +366,6 @@ fn sort_value_keys(value: &mut serde_json::Value) {
     }
 }
 
-
 // HastNode, MdastVisitor, HastVisitor, and BuildContext live in
 // `zfb-md-ast` so downstream plugin crates (zfb-md-extras) can depend on
 // the visitor contract without depending on zfb-content. The
@@ -517,9 +512,7 @@ impl Pipeline {
     /// label-start means the parser sees `[^a]: body` but never the
     /// `[^a]` reference at the use site.
     #[must_use]
-    pub fn with_resolved_gfm_constructs(
-        resolved: ResolvedGfmConstructs,
-    ) -> Self {
+    pub fn with_resolved_gfm_constructs(resolved: ResolvedGfmConstructs) -> Self {
         let constructs = constructs_for_pipeline(resolved);
         Self {
             mdast_visitors: Vec::new(),
@@ -1038,17 +1031,23 @@ impl Pipeline {
     /// produce different output/diagnostics per file. See the key-shape
     /// docs on `compile_mdx_to_jsx_module_cached`.
     ///
-    /// The heading registry is deliberately NOT threaded here — it is
-    /// per-build orchestration state; cross-file anchor validation
-    /// through the cache is follow-up work. The per-compile context
-    /// carries `heading_registry: None`.
+    /// The per-compile context carries a compile-local `HeadingRegistry`
+    /// seeded from `collect_headings` (same-file anchor validation, zfb#954).
+    /// BUILD-scoped cross-file registry (validating `./other.md#frag` across
+    /// files) remains deferred to #960 — structurally incompatible with
+    /// cache-hit replay today (HeadingLinksPlugin never runs on a hit).
     ///
-    /// Production pipelines (`PipelineSpec::build_pipeline` — bundler,
-    /// snapshot walker, dev loader) do NOT arm this yet: the plugins
-    /// were already inert on the context-free production emit path
-    /// before zfb#944, and wiring real roots through the config surface
-    /// (plus draining `take_markdown_diagnostics` and the
-    /// heading-registry decision) is tracked in zfb#948.
+    /// Production pipelines (`PipelineSpec::build_pipeline` — bundler and
+    /// snapshot walker; `zfb dev` is the bundler in Development mode) arm
+    /// this when a filesystem-dependent feature is enabled in the config
+    /// (transclude / imageDimensions / linkValidation).  Unarmed pipelines
+    /// leave the plugins inert and the fingerprint byte-identical to the
+    /// pre-arming shape (zfb#952).
+    ///
+    /// The `zfb-render ModuleLoader` (`crates/zfb-render/src/loader.rs`) is
+    /// a library/embedder path that does NOT go through `PipelineSpec`; it
+    /// stays unarmed by design — embedder callers do not have a
+    /// `project_root` at hand.
     pub fn set_build_context_roots(
         &mut self,
         project_root: PathBuf,
@@ -1398,9 +1397,7 @@ impl Pipeline {
     ///    AFTER `SyntectPlugin` on the per-line `<span class="line">`
     ///    structure — e.g. wave-5 diff markers and line-highlighting)*
     #[must_use]
-    pub fn with_defaults_and_features(
-        features: &zfb_md_extras::MarkdownFeaturesConfig,
-    ) -> Self {
+    pub fn with_defaults_and_features(features: &zfb_md_extras::MarkdownFeaturesConfig) -> Self {
         // Default theme, conservative GFM, no themes_dir, CJK on — the shape
         // Wave 2/3 hard-coded here. The chain itself now lives in
         // [`Pipeline::with_defaults_and_full_config`] so the bundler, snapshot
@@ -1794,10 +1791,7 @@ impl Pipeline {
 /// [`Pipeline::add_mdast_visitor`]). The feature-aware constructor routes
 /// through the non-invalidating internal variant instead and covers the
 /// whole `features` value in its final base descriptor.
-pub fn register_features(
-    p: &mut Pipeline,
-    features: &zfb_md_extras::MarkdownFeaturesConfig,
-) {
+pub fn register_features(p: &mut Pipeline, features: &zfb_md_extras::MarkdownFeaturesConfig) {
     // No read-recorder on this path: the manual registration makes the
     // pipeline uncacheable anyway, so there is no dependency manifest to
     // feed (the compile cache never stores entries for it).
@@ -1835,7 +1829,9 @@ fn register_features_config_derived(
     //   HeadingLinksPlugin. Since HeadingLinksPlugin was added first in the
     //   caller's hast chain, any hast visitor appended here runs after it.
 
-    use zfb_md_ast::{directives_enabled, feature_enabled, heading_marker_toc_enabled, reading_time_enabled};
+    use zfb_md_ast::{
+        directives_enabled, feature_enabled, heading_marker_toc_enabled, reading_time_enabled,
+    };
 
     // ── mdast phase ────────────────────────────────────────────────────────
     // transclude MUST run FIRST in the mdast phase — before code_tabs,
@@ -1924,9 +1920,7 @@ fn register_features_config_derived(
         ));
     }
     if feature_enabled(&features.mermaid) {
-        p.push_config_derived_hast_visitor(Box::new(
-            zfb_md_extras::mermaid::MermaidPlugin::new(),
-        ));
+        p.push_config_derived_hast_visitor(Box::new(zfb_md_extras::mermaid::MermaidPlugin::new()));
     }
     // Wave 5 (#574): GitHub-style autolinks — #NNN, user/repo#NNN, SHA.
     // Uses Option<GithubAutolinksConfig> (not FeatureToggle), so gated with
@@ -2101,9 +2095,11 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
         MdastNode::Emphasis(e) => {
             element("em", vec![], convert_children_with(&e.children, strategy))
         }
-        MdastNode::Strong(s) => {
-            element("strong", vec![], convert_children_with(&s.children, strategy))
-        }
+        MdastNode::Strong(s) => element(
+            "strong",
+            vec![],
+            convert_children_with(&s.children, strategy),
+        ),
         MdastNode::Delete(d) => {
             element("del", vec![], convert_children_with(&d.children, strategy))
         }
@@ -2222,10 +2218,7 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
         // an added `language-math math-inline` class.
         MdastNode::InlineMath(m) => HastNode::Element {
             tag: "code".to_string(),
-            attrs: vec![(
-                "class".to_string(),
-                "language-math math-inline".to_string(),
-            )],
+            attrs: vec![("class".to_string(), "language-math math-inline".to_string())],
             children: vec![HastNode::Text(m.value.clone())],
             void: false,
         },
@@ -2235,7 +2228,10 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
         MdastNode::Table(t) => {
             let align = &t.align;
             let style_attr = |col: usize| -> Option<(String, String)> {
-                let kind = align.get(col).copied().unwrap_or(markdown::mdast::AlignKind::None);
+                let kind = align
+                    .get(col)
+                    .copied()
+                    .unwrap_or(markdown::mdast::AlignKind::None);
                 let s = match kind {
                     markdown::mdast::AlignKind::Left => Some("left"),
                     markdown::mdast::AlignKind::Right => Some("right"),
@@ -2246,13 +2242,27 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             };
 
             let row_to_cells = |row: &MdastNode, tag: &str| -> Vec<HastNode> {
-                let MdastNode::TableRow(tr) = row else { return Vec::new(); };
-                tr.children.iter().enumerate().filter_map(|(col, cell)| {
-                    let MdastNode::TableCell(tc) = cell else { return None; };
-                    let mut attrs: Vec<(String, String)> = Vec::new();
-                    if let Some(s) = style_attr(col) { attrs.push(s); }
-                    Some(element(tag, attrs, convert_children_with(&tc.children, strategy)))
-                }).collect()
+                let MdastNode::TableRow(tr) = row else {
+                    return Vec::new();
+                };
+                tr.children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(col, cell)| {
+                        let MdastNode::TableCell(tc) = cell else {
+                            return None;
+                        };
+                        let mut attrs: Vec<(String, String)> = Vec::new();
+                        if let Some(s) = style_attr(col) {
+                            attrs.push(s);
+                        }
+                        Some(element(
+                            tag,
+                            attrs,
+                            convert_children_with(&tc.children, strategy),
+                        ))
+                    })
+                    .collect()
             };
 
             let mut thead_children: Vec<HastNode> = Vec::new();
@@ -2288,10 +2298,7 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
 
 /// Convert a slice of mdast children into a vec of hast children
 /// using the given strategy for the JSX-shaped arms.
-fn convert_children_with(
-    children: &[MdastNode],
-    strategy: &JsxEmitStrategy<'_>,
-) -> Vec<HastNode> {
+fn convert_children_with(children: &[MdastNode], strategy: &JsxEmitStrategy<'_>) -> Vec<HastNode> {
     children
         .iter()
         .map(|c| mdast_to_hast_inner(c, strategy))
@@ -2538,9 +2545,7 @@ mod tests {
     // parser leaves `~~text~~` as bare text — no `Delete` node.
     #[test]
     fn strikethrough_disabled_emits_no_delete_node() {
-        let mut p = Pipeline::with_resolved_gfm_constructs(
-            ResolvedGfmConstructs::ALL_OFF,
-        );
+        let mut p = Pipeline::with_resolved_gfm_constructs(ResolvedGfmConstructs::ALL_OFF);
         let h = p.run("a ~~b~~ c").expect("parse ok");
         // Walk the tree and assert there is no `<del>` anywhere — the
         // raw `~~` characters live inside a Text node instead.
@@ -2757,9 +2762,7 @@ mod tests {
     #[test]
     fn with_defaults_seeds_no_directive_vocabulary() {
         let mut p = Pipeline::with_defaults();
-        let h = p
-            .run(":::note\n\nbody\n\n:::\n")
-            .expect("pipeline runs ok");
+        let h = p.run(":::note\n\nbody\n\n:::\n").expect("pipeline runs ok");
         let mut raws = Vec::new();
         collect_raw(&h, &mut raws);
         assert!(
@@ -2776,9 +2779,7 @@ mod tests {
         // caller picks the no-plugins constructor — the paragraph runs
         // through to hast as plain `<p>:::note</p>` etc.
         for mut p in [Pipeline::new(), Pipeline::with_mdx()] {
-            let h = p
-                .run(":::note\n\nbody\n\n:::\n")
-                .expect("pipeline runs ok");
+            let h = p.run(":::note\n\nbody\n\n:::\n").expect("pipeline runs ok");
             let mut raws = Vec::new();
             collect_raw(&h, &mut raws);
             assert!(
@@ -2855,8 +2856,7 @@ mod tests {
         let default_html = crate::serializer::serialize(&default_hast);
 
         // Non-default theme pipeline — InspiredGitHub.
-        let mut themed_pipeline =
-            Pipeline::with_defaults_and_theme(Some("InspiredGitHub"));
+        let mut themed_pipeline = Pipeline::with_defaults_and_theme(Some("InspiredGitHub"));
         let themed_hast = themed_pipeline.run(mdx).expect("themed pipeline ok");
         let themed_html = crate::serializer::serialize(&themed_hast);
 

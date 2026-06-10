@@ -110,7 +110,10 @@ fn blank_line_paragraph_separation_unaffected_when_on() {
     assert_lacks(&html, "<br/>", input);
     // Two separate <p> elements.
     let p_count = html.matches("<p>").count();
-    assert_eq!(p_count, 2, "expected 2 paragraphs; got {p_count} in {html:?}");
+    assert_eq!(
+        p_count, 2,
+        "expected 2 paragraphs; got {p_count} in {html:?}"
+    );
 }
 
 /// Blank-line paragraph separation also unaffected when off.
@@ -122,7 +125,10 @@ fn blank_line_paragraph_separation_unaffected_when_off() {
     // Structural output (paragraphs) should be the same regardless of hardBreaks.
     let on_p = on.matches("<p>").count();
     let off_p = off.matches("<p>").count();
-    assert_eq!(on_p, off_p, "paragraph count must match; on={on:?} off={off:?}");
+    assert_eq!(
+        on_p, off_p,
+        "paragraph count must match; on={on:?} off={off:?}"
+    );
 }
 
 /// `\n` inside fenced code block must NOT become `<br/>`.

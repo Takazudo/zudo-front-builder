@@ -241,6 +241,22 @@ mod tests {
         assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
     }
 
+    /// Issue #958 — a NARROWED content-edit tick writes only the edited
+    /// entry's route (plus the always-rendered set); `pages_written`
+    /// holding just that page must still yield `ReloadEvent::Page` so
+    /// the browser livereloads the edited page exactly as on a full
+    /// fan-out tick.
+    #[test]
+    fn livereload_page_event_fires_for_narrowed_edit() {
+        let outcome = BuildOutcome {
+            // The narrowed tick's shape: one route rendered + written.
+            pages_rendered: 1,
+            pages_written: vec![pid("blog/a/index.html")],
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
     #[test]
     fn css_changed_emits_css_only() {
         let outcome = BuildOutcome {

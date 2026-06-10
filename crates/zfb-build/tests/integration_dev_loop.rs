@@ -18,7 +18,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 use zfb_build::{
     AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook,
-    DiscoveryOutcome, OrchestratorConfig, PageSelection, RebuildPlan, RelDistPath, RenderedPage,
+    DiscoveryOutcome, OrchestratorConfig, PageSelection, RebuildPlan, RefreshOutcome, RelDistPath,
+    RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_watcher::{ChangeKind, Watcher};
@@ -67,7 +68,7 @@ fn touching_a_md_file_only_rerenders_its_page() {
     let project_path = project.to_path_buf();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_for_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -115,7 +116,10 @@ fn touching_a_md_file_only_rerenders_its_page() {
     // The post.html exists on disk.
     let post_html = project.join("dist/post.html");
     assert!(post_html.exists(), "post.html should exist");
-    assert_eq!(std::fs::read_to_string(&post_html).unwrap(), "<h1>post</h1>");
+    assert_eq!(
+        std::fs::read_to_string(&post_html).unwrap(),
+        "<h1>post</h1>"
+    );
 }
 
 #[test]
@@ -130,10 +134,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
 
     // Graph has one page that does NOT depend on the CSS file directly.
     let mut g = DependencyGraph::new();
-    g.upsert(PageDeps::new(
-        pid(project.join("pages/index.tsx")),
-        vec![],
-    ));
+    g.upsert(PageDeps::new(pid(project.join("pages/index.tsx")), vec![]));
     let graph = Arc::new(Mutex::new(g));
 
     let css_runs = Arc::new(AtomicUsize::new(0));
@@ -152,7 +153,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |_| {
+        render_pages: Arc::new(move |_, _| {
             render_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(vec![])
         }),
@@ -227,7 +228,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -273,7 +274,11 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
     assert!(rendered_pages.contains(&pid(project.join("pages/a.tsx"))));
     assert!(!rendered_pages.contains(&pid(project.join("pages/b.tsx"))));
 
-    assert_eq!(css_runs.load(Ordering::SeqCst), 0, "css callback not called");
+    assert_eq!(
+        css_runs.load(Ordering::SeqCst),
+        0,
+        "css callback not called"
+    );
     assert_eq!(islands_runs.load(Ordering::SeqCst), 1);
 }
 
@@ -328,7 +333,7 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -510,7 +515,7 @@ fn fanout_ctx(
 ) -> BuildContext {
     BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls.lock().unwrap().push(pages.to_vec());
             let table = routes.lock().unwrap();
             let mut out = Vec::new();
@@ -682,7 +687,11 @@ fn created_content_file_with_discovery_emits_new_url() {
 
     // The discovery hook saw exactly the created path, once.
     let invs = hook_invocations.lock().unwrap();
-    assert_eq!(invs.len(), 1, "discovery hook called once for the Created tick");
+    assert_eq!(
+        invs.len(),
+        1,
+        "discovery hook called once for the Created tick"
+    );
     assert_eq!(invs[0], vec![new_post]);
 }
 
@@ -800,7 +809,7 @@ fn ctx_with_route_prune(
     let vanished_for_reload = vanished.clone();
     BuildContext {
         dist_root: dist,
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             let table = routes_for_render.lock().unwrap();
             let mut out = Vec::new();
             for p in pages {
@@ -827,7 +836,10 @@ fn ctx_with_route_prune(
                 .drain(..)
                 .map(|rel| dist_for_reload.join(rel))
                 .collect();
-            Ok(paths)
+            Ok(RefreshOutcome::Refreshed {
+                vanished: paths,
+                changed_sources: vec![],
+            })
         })),
     }
 }
@@ -865,7 +877,11 @@ fn route_deletion_prunes_stale_html() {
         .tick(vec![md_path.clone()], &ctx)
         .expect("tick ok")
         .expect("non-noop");
-    assert_eq!(outcome1.pages_written.len(), 1, "initial render wrote post.html");
+    assert_eq!(
+        outcome1.pages_written.len(),
+        1,
+        "initial render wrote post.html"
+    );
     assert!(
         project.join("dist/post.html").exists(),
         "post.html must exist after initial render",
@@ -874,7 +890,10 @@ fn route_deletion_prunes_stale_html() {
     // Simulate content file deletion: clear the route table (as
     // `refresh_bundle_and_routes` would do) and set the vanished path so
     // reload_renderer reports it.
-    routes.lock().unwrap().remove(&project.join("pages/post.tsx"));
+    routes
+        .lock()
+        .unwrap()
+        .remove(&project.join("pages/post.tsx"));
     vanished.lock().unwrap().push(PathBuf::from("post.html"));
 
     // Tick 2: content file Removed.
@@ -885,11 +904,7 @@ fn route_deletion_prunes_stale_html() {
     // returning [dist/post.html]. The route table is empty so the render
     // produces nothing. The prune loop then deletes dist/post.html.
     let outcome2 = orch
-        .tick_with_kinds(
-            vec![(md_path, ChangeKind::Removed)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path, ChangeKind::Removed)], &ctx, None)
         .expect("tick ok")
         .expect("Removed tick must be non-noop — former consumer is in the plan");
 
@@ -899,7 +914,9 @@ fn route_deletion_prunes_stale_html() {
         outcome2.pages_pruned,
     );
     assert!(
-        outcome2.pages_pruned.contains(&project.join("dist/post.html")),
+        outcome2
+            .pages_pruned
+            .contains(&project.join("dist/post.html")),
         "pages_pruned must contain dist/post.html; got {:?}",
         outcome2.pages_pruned,
     );
@@ -926,10 +943,7 @@ fn route_rename_prunes_old_and_writes_new() {
 
     // Initial: slug.tsx → old.html
     let mut t = std::collections::HashMap::new();
-    t.insert(
-        project.join("pages/slug.tsx"),
-        vec!["old.html".to_string()],
-    );
+    t.insert(project.join("pages/slug.tsx"), vec!["old.html".to_string()]);
     let routes = Arc::new(Mutex::new(t));
     let vanished: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -946,15 +960,15 @@ fn route_rename_prunes_old_and_writes_new() {
         .expect("tick ok")
         .expect("non-noop");
     assert_eq!(outcome1.pages_written.len(), 1);
-    assert!(project.join("dist/old.html").exists(), "old.html must exist");
+    assert!(
+        project.join("dist/old.html").exists(),
+        "old.html must exist"
+    );
 
     // Rename: route table changes to new.html; old.html is vanished.
     {
         let mut t = routes.lock().unwrap();
-        t.insert(
-            project.join("pages/slug.tsx"),
-            vec!["new.html".to_string()],
-        );
+        t.insert(project.join("pages/slug.tsx"), vec!["new.html".to_string()]);
     }
     vanished.lock().unwrap().push(PathBuf::from("old.html"));
 
@@ -979,7 +993,9 @@ fn route_rename_prunes_old_and_writes_new() {
         "new.html must exist after rename",
     );
     assert!(
-        outcome2.pages_pruned.contains(&project.join("dist/old.html")),
+        outcome2
+            .pages_pruned
+            .contains(&project.join("dist/old.html")),
         "pages_pruned must contain old.html",
     );
 }
@@ -1011,10 +1027,7 @@ fn lose_gain_same_path_keeps_html_alive() {
 
     // Initial state: A → shared.html; B → b.html
     let mut t = std::collections::HashMap::new();
-    t.insert(
-        project.join("pages/a.tsx"),
-        vec!["shared.html".to_string()],
-    );
+    t.insert(project.join("pages/a.tsx"), vec!["shared.html".to_string()]);
     t.insert(project.join("pages/b.tsx"), vec!["b.html".to_string()]);
     let routes = Arc::new(Mutex::new(t));
     let vanished: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1041,10 +1054,7 @@ fn lose_gain_same_path_keeps_html_alive() {
     {
         let mut t = routes.lock().unwrap();
         t.insert(project.join("pages/a.tsx"), vec!["a.html".to_string()]);
-        t.insert(
-            project.join("pages/b.tsx"),
-            vec!["shared.html".to_string()],
-        );
+        t.insert(project.join("pages/b.tsx"), vec!["shared.html".to_string()]);
     }
     vanished.lock().unwrap().push(PathBuf::from("shared.html"));
 
@@ -1100,7 +1110,7 @@ fn removed_content_file_drops_graph_edge() {
     let render_calls_cb = render_calls.clone();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -1120,13 +1130,9 @@ fn removed_content_file_drops_graph_edge() {
     let md_path = project.join("content/post.md");
 
     // Tick 1: Modified → consumer page re-renders.
-    orch.tick_with_kinds(
-        vec![(md_path.clone(), ChangeKind::Modified)],
-        &ctx,
-        None,
-    )
-    .expect("tick ok")
-    .expect("non-noop");
+    orch.tick_with_kinds(vec![(md_path.clone(), ChangeKind::Modified)], &ctx, None)
+        .expect("tick ok")
+        .expect("non-noop");
     assert_eq!(
         render_calls.lock().unwrap().len(),
         1,
@@ -1139,11 +1145,7 @@ fn removed_content_file_drops_graph_edge() {
     // consumer, but future ticks that modify the removed content file will
     // no longer dirty the consumer (the edge is gone).
     let outcome2 = orch
-        .tick_with_kinds(
-            vec![(md_path.clone(), ChangeKind::Removed)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path.clone(), ChangeKind::Removed)], &ctx, None)
         .expect("tick ok");
     // The tick is non-noop because the former consumer is in the plan.
     assert!(
@@ -1160,11 +1162,7 @@ fn removed_content_file_drops_graph_edge() {
     // After remove_node, the deleted content path is no longer in the graph.
     // A later edit of the same path must NOT dirty the consumer.
     let outcome3 = orch
-        .tick_with_kinds(
-            vec![(md_path, ChangeKind::Modified)],
-            &ctx,
-            None,
-        )
+        .tick_with_kinds(vec![(md_path, ChangeKind::Modified)], &ctx, None)
         .expect("tick ok");
     // The path is now an unknown in the graph, so plan_for_changes falls
     // back to All (conservative policy for unknowns). This is acceptable —
@@ -1213,7 +1211,7 @@ impl ReloadProbe {
         let reload_events = self.events.clone();
         BuildContext {
             dist_root: project.join("dist"),
-            render_pages: Arc::new(move |pages: &[PageId]| {
+            render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
                 render_events.lock().unwrap().push("render");
                 Ok(pages
                     .iter()
@@ -1233,7 +1231,10 @@ impl ReloadProbe {
             run_islands: None,
             reload_renderer: Some(Arc::new(move || {
                 reload_events.lock().unwrap().push("reload");
-                Ok(vec![])
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![],
+                })
             })),
         }
     }
@@ -1476,12 +1477,15 @@ fn ssr_only_project_edit_tick_reloads_renderer() {
     let ctx = BuildContext {
         dist_root: project.join("dist"),
         // SSR-only: render_pages returns nothing (no SSG pages).
-        render_pages: Arc::new(|_pages| Ok(vec![])),
+        render_pages: Arc::new(|_pages, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1532,7 +1536,7 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
     let css_runs_cb = css_runs.clone();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: Some(Arc::new(move || {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
@@ -1540,7 +1544,10 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1559,7 +1566,11 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         "CSS-only change must NOT reload the renderer; got {:?}",
         reload_events.lock().unwrap()
     );
-    assert_eq!(css_runs.load(Ordering::SeqCst), 1, "CSS callback must run once");
+    assert_eq!(
+        css_runs.load(Ordering::SeqCst),
+        1,
+        "CSS callback must run once"
+    );
 }
 
 /// Global change on an SSR-only project: `full_rebuild` sets `ssr_reload_needed`,
@@ -1586,12 +1597,15 @@ fn ssr_only_project_global_change_reloads_renderer() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1652,7 +1666,7 @@ fn removed_stylesheet_only_tick_reruns_css() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: Some(Arc::new(move || {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
@@ -1660,7 +1674,10 @@ fn removed_stylesheet_only_tick_reruns_css() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1708,13 +1725,18 @@ fn removed_islands_module_only_tick_reruns_islands() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: Some(Arc::new(move || {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         })),
-        reload_renderer: Some(Arc::new(|| Ok(vec![]))),
+        reload_renderer: Some(Arc::new(|| {
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
+        })),
     };
 
     let outcome = orch
@@ -1761,12 +1783,15 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 

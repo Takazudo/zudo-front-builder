@@ -333,9 +333,7 @@ fn theme_slug(name: &str) -> String {
 /// tokenization error). Splits `code` on `LinesWithEndings` so the per-line
 /// vector has the same granularity as the normal path.
 fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
-    let lines: Vec<String> = LinesWithEndings::from(code)
-        .map(escape_html)
-        .collect();
+    let lines: Vec<String> = LinesWithEndings::from(code).map(escape_html).collect();
     HighlightedLines {
         theme_slug: slug.to_string(),
         lines,

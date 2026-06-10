@@ -68,13 +68,11 @@ where
     let input_path = dir.join("input.md");
     let expected_path = dir.join("expected.html");
 
-    let input = std::fs::read_to_string(&input_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", input_path.display())
-    });
+    let input = std::fs::read_to_string(&input_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", input_path.display()));
 
-    let expected_raw = std::fs::read_to_string(&expected_path).unwrap_or_else(|e| {
-        panic!("failed to read {}: {e}", expected_path.display())
-    });
+    let expected_raw = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", expected_path.display()));
 
     let verbatim = is_verbatim(dir);
 
@@ -84,7 +82,8 @@ where
         // trailing whitespace that callers may rely on.
         let actual_raw = transform(&input);
         assert_eq!(
-            actual_raw, expected_raw,
+            actual_raw,
+            expected_raw,
             "fixture {}: verbatim output mismatch",
             dir.display()
         );
@@ -99,7 +98,8 @@ where
         let actual = normalize_html(&actual_raw);
         let expected = normalize_html(&expected_raw);
         assert_eq!(
-            actual, expected,
+            actual,
+            expected,
             "fixture {}: normalized HTML mismatch\n  actual:   {actual}\n  expected: {expected}",
             dir.display()
         );
@@ -124,9 +124,7 @@ fn is_verbatim(dir: &Path) -> bool {
 mod tests {
     use super::*;
     /// Helper: create a temporary fixture directory with given files.
-    fn make_fixture_dir(
-        files: &[(&str, &str)],
-    ) -> tempdir::TempDir {
+    fn make_fixture_dir(files: &[(&str, &str)]) -> tempdir::TempDir {
         let dir = tempdir::TempDir::new("zfb_fixture_test").expect("tempdir");
         for (name, content) in files {
             let path = dir.path().join(name);
@@ -141,10 +139,7 @@ mod tests {
     fn test_run_fixture_pass_on_match() {
         // A trivial transform: just pass through the input unchanged.
         // Input and expected are identical so the test must pass.
-        let dir = make_fixture_dir(&[
-            ("input.md", "hello"),
-            ("expected.html", "<p>hello</p>"),
-        ]);
+        let dir = make_fixture_dir(&[("input.md", "hello"), ("expected.html", "<p>hello</p>")]);
         // Use markdown::to_html as the transform — produces <p>hello</p>.
         run_fixture(dir.path(), markdown::to_html);
     }
@@ -192,17 +187,17 @@ mod tests {
             // Verbatim mode: raw strings are compared, so this must fail.
             run_fixture(dir.path(), |_| "different output".to_string());
         });
-        assert!(result.is_err(), "verbatim mode must panic on string mismatch");
+        assert!(
+            result.is_err(),
+            "verbatim mode must panic on string mismatch"
+        );
     }
 
     #[test]
     fn test_no_normalize_txt_uses_normalization() {
         // Without normalize.txt the comparison goes through normalize_html.
         // `<br>` and `<br />` are distinct raw strings but equal after normalization.
-        let dir = make_fixture_dir(&[
-            ("input.md", "test"),
-            ("expected.html", "<p>a<br>b</p>"),
-        ]);
+        let dir = make_fixture_dir(&[("input.md", "test"), ("expected.html", "<p>a<br>b</p>")]);
         // Transform returns the XHTML form; normalize_html makes them equal.
         run_fixture(dir.path(), |_| "<p>a<br />b</p>".to_string());
     }

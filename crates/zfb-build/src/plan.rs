@@ -13,6 +13,21 @@ use std::path::PathBuf;
 
 use zfb_graph::{DirtySet, PageId};
 
+/// Hint that this tick was caused exclusively by in-place edits
+/// (`ChangeKind::Modified`) to content-collection files
+/// (`PathClass::Content`). Carries the changed paths so the dev render
+/// callback can narrow each dynamic source's fan-out to the routes
+/// derived from these entries (issue #958). `None` = no narrowing
+/// (render every selected page fully — today's behaviour). Purely
+/// advisory: must not affect `is_noop()`/merge logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentNarrowing {
+    /// Paths of the Modified content files exactly as the watcher
+    /// delivered them (absolute; same representation recorded in
+    /// [`RebuildPlan::triggers`]).
+    pub changed_content: Vec<PathBuf>,
+}
+
 /// What the orchestrator wants the asset pipeline to do for the next
 /// rebuild tick.
 ///
@@ -56,6 +71,10 @@ pub struct RebuildPlan {
     /// The raw paths that triggered this plan, kept around purely for
     /// diagnostics. Not consumed by the pipeline.
     pub triggers: Vec<PathBuf>,
+
+    /// See [`ContentNarrowing`]. [`RebuildPlan::empty`] and
+    /// [`RebuildPlan::full_rebuild`] set `None`.
+    pub content_narrowing: Option<ContentNarrowing>,
 }
 
 /// Which pages to re-render this tick.
@@ -120,6 +139,7 @@ impl RebuildPlan {
             ssr_reload_needed: false,
             prune_paths: Vec::new(),
             triggers: Vec::new(),
+            content_narrowing: None,
         }
     }
 
@@ -133,6 +153,7 @@ impl RebuildPlan {
             ssr_reload_needed: true,
             prune_paths: Vec::new(),
             triggers: Vec::new(),
+            content_narrowing: None,
         }
     }
 
@@ -200,6 +221,17 @@ mod tests {
     #[test]
     fn empty_plan_is_noop() {
         assert!(RebuildPlan::empty().is_noop());
+    }
+
+    /// The content-narrowing hint is purely advisory (issue #958): a plan
+    /// that carries one but selects nothing must stay a no-op.
+    #[test]
+    fn content_narrowing_hint_does_not_affect_is_noop() {
+        let mut plan = RebuildPlan::empty();
+        plan.content_narrowing = Some(ContentNarrowing {
+            changed_content: vec![PathBuf::from("/proj/content/post.md")],
+        });
+        assert!(plan.is_noop());
     }
 
     #[test]

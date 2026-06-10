@@ -128,9 +128,7 @@
 //! (text-syntax parsing happens in the mdast phase so the visitor can scan
 //! raw text before it is converted to hast elements).
 
-use markdown::mdast::{
-    AttributeContent, MdxJsxTextElement, Node as MdastNode, Paragraph, Text,
-};
+use markdown::mdast::{AttributeContent, MdxJsxTextElement, Node as MdastNode, Paragraph, Text};
 use zfb_md_ast::MdastVisitor;
 use zfb_types::escape_html;
 
@@ -191,8 +189,33 @@ fn parse_expression_as_ruby(value: &str) -> Option<(String, String)> {
 /// syntax rather than plain ruby text. Used to filter MDX expressions that
 /// happen to have a pipe but are not ruby annotations.
 fn has_js_operator_chars(s: &str) -> bool {
-    s.chars()
-        .any(|c| matches!(c, '&' | '?' | ':' | '=' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '\\' | '.' | '!' | '+' | '*' | '/' | '%' | '~' | '^'))
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '&' | '?'
+                | ':'
+                | '='
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | ';'
+                | ','
+                | '\\'
+                | '.'
+                | '!'
+                | '+'
+                | '*'
+                | '/'
+                | '%'
+                | '~'
+                | '^'
+        )
+    })
 }
 
 // ── mdast node builders ──────────────────────────────────────────────────────
@@ -420,12 +443,19 @@ fn split_text_node(value: &str) -> Option<Vec<MdastNode>> {
 
     while !rest.is_empty() {
         match next_token(rest) {
-            ParseResult::Ruby { base, ruby, rest: tail } => {
+            ParseResult::Ruby {
+                base,
+                ruby,
+                rest: tail,
+            } => {
                 found_any = true;
                 nodes.push(make_ruby_node(&base, &ruby));
                 rest = tail;
             }
-            ParseResult::Literal { consumed, rest: tail } => {
+            ParseResult::Literal {
+                consumed,
+                rest: tail,
+            } => {
                 if !consumed.is_empty() {
                     nodes.push(MdastNode::Text(Text {
                         value: consumed,
@@ -434,7 +464,10 @@ fn split_text_node(value: &str) -> Option<Vec<MdastNode>> {
                 }
                 rest = tail;
             }
-            ParseResult::Invalid { consumed, rest: tail } => {
+            ParseResult::Invalid {
+                consumed,
+                rest: tail,
+            } => {
                 nodes.push(MdastNode::Text(Text {
                     value: consumed,
                     position: None,
@@ -588,7 +621,9 @@ fn rewrite_inline_children(children: &mut Vec<MdastNode>) -> bool {
         // ── Caret syntax: `{base}^{ruby}` or `base^{ruby}` ────────────────
         // The pipe path above already declined this Expr (no `|`); now try the
         // caret look-behind. On success `i` is advanced past the inserted ruby.
-        if matches!(&children[i], MdastNode::MdxTextExpression(_)) && try_caret_rewrite(children, &mut i) {
+        if matches!(&children[i], MdastNode::MdxTextExpression(_))
+            && try_caret_rewrite(children, &mut i)
+        {
             changed = true;
             i += 1;
             continue;
@@ -881,8 +916,12 @@ mod tests {
             expr("これ"),
         ])]);
         RubyPlugin::new().visit(&mut tree);
-        let MdastNode::Root(root) = &tree else { panic!() };
-        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        let MdastNode::Root(root) = &tree else {
+            panic!()
+        };
+        let MdastNode::Paragraph(p) = &root.children[0] else {
+            panic!()
+        };
         assert_eq!(p.children.len(), 1);
         assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
     }
@@ -896,8 +935,12 @@ mod tests {
             expr("これ"),
         ])]);
         RubyPlugin::new().visit(&mut tree);
-        let MdastNode::Root(root) = &tree else { panic!() };
-        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        let MdastNode::Root(root) = &tree else {
+            panic!()
+        };
+        let MdastNode::Paragraph(p) = &root.children[0] else {
+            panic!()
+        };
         assert_eq!(p.children.len(), 1);
         assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
     }
@@ -917,7 +960,11 @@ mod tests {
         let mut tree = make_root(vec![make_para_children(vec![text("^"), expr("jsExpr")])]);
         let before = format!("{tree:?}");
         RubyPlugin::new().visit(&mut tree);
-        assert_eq!(format!("{tree:?}"), before, "^{{jsExpr}} must stay untouched");
+        assert_eq!(
+            format!("{tree:?}"),
+            before,
+            "^{{jsExpr}} must stay untouched"
+        );
     }
 
     #[test]
@@ -930,7 +977,11 @@ mod tests {
         ])]);
         let before = format!("{tree:?}");
         RubyPlugin::new().visit(&mut tree);
-        assert_eq!(format!("{tree:?}"), before, "{{a || b}}^{{c}} must stay untouched");
+        assert_eq!(
+            format!("{tree:?}"),
+            before,
+            "{{a || b}}^{{c}} must stay untouched"
+        );
     }
 
     #[test]
@@ -942,8 +993,12 @@ mod tests {
             text("と書く"),
         ])]);
         RubyPlugin::new().visit(&mut tree);
-        let MdastNode::Root(root) = &tree else { panic!() };
-        let MdastNode::Paragraph(p) = &root.children[0] else { panic!() };
+        let MdastNode::Root(root) = &tree else {
+            panic!()
+        };
+        let MdastNode::Paragraph(p) = &root.children[0] else {
+            panic!()
+        };
         assert_eq!(p.children.len(), 2);
         assert!(matches!(p.children[0], MdastNode::MdxJsxTextElement(_)));
         assert!(matches!(p.children[1], MdastNode::Text(_)));
@@ -1150,9 +1205,7 @@ mod tests {
 
     #[test]
     fn visitor_rewrites_multiple_text_annotations() {
-        let mut tree = make_root(vec![make_para_text(
-            "{東京|とうきょう}は{首都|しゅと}です",
-        )]);
+        let mut tree = make_root(vec![make_para_text("{東京|とうきょう}は{首都|しゅと}です")]);
         RubyPlugin::new().visit(&mut tree);
         let MdastNode::Root(root) = &tree else {
             panic!("expected Root");
@@ -1224,7 +1277,11 @@ mod tests {
         let mut tree = make_root(vec![make_para_expr("someJsExpr")]);
         let before = format!("{tree:?}");
         RubyPlugin::new().visit(&mut tree);
-        assert_eq!(format!("{tree:?}"), before, "non-ruby expression must not change");
+        assert_eq!(
+            format!("{tree:?}"),
+            before,
+            "non-ruby expression must not change"
+        );
     }
 
     // ── MdxFlowExpression (block-level) ───────────────────────────────────
@@ -1264,7 +1321,11 @@ mod tests {
         let mut tree = make_root(vec![make_flow_expr("someJsExpr")]);
         let before = format!("{tree:?}");
         RubyPlugin::new().visit(&mut tree);
-        assert_eq!(format!("{tree:?}"), before, "non-ruby flow expression must not change");
+        assert_eq!(
+            format!("{tree:?}"),
+            before,
+            "non-ruby flow expression must not change"
+        );
     }
 
     // ── escape_html ───────────────────────────────────────────────────────

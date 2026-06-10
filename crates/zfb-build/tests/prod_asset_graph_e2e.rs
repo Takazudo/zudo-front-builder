@@ -167,7 +167,10 @@ fn discover_css_source_files(project_root: &Path) -> Vec<PathBuf> {
         if !dir.is_dir() {
             continue;
         }
-        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|r| r.ok()) {
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|r| r.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -701,7 +704,11 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(fixture.project_root.path().to_path_buf())
         .with_content_globs(content_globs);
-    let global_css = fixture.project_root.path().join("styles").join("global.css");
+    let global_css = fixture
+        .project_root
+        .path()
+        .join("styles")
+        .join("global.css");
     if global_css.is_file() {
         tw_cfg = tw_cfg.with_input_css(global_css);
     }
@@ -851,7 +858,12 @@ fn prod_asset_graph_ships_dynamic_import_chunks_verbatim() {
         .unwrap_or_else(|| panic!("no hashed CSS file in {entries:?}"));
     let islands_entry_name = entries
         .iter()
-        .find(|n| n.starts_with("islands-") && n.ends_with(".js") && n.contains('-') && !n.contains("chunk"))
+        .find(|n| {
+            n.starts_with("islands-")
+                && n.ends_with(".js")
+                && n.contains('-')
+                && !n.contains("chunk")
+        })
         .unwrap_or_else(|| panic!("no hashed islands entry in {entries:?}"));
     let chunk_on_disk = entries
         .iter()
@@ -873,7 +885,10 @@ fn prod_asset_graph_ships_dynamic_import_chunks_verbatim() {
 
     // The hashed entry exists and is non-empty.
     let entry_bytes_on_disk = fs::read(assets_dir.join(islands_entry_name)).unwrap();
-    assert!(!entry_bytes_on_disk.is_empty(), "hashed islands entry must be non-empty");
+    assert!(
+        !entry_bytes_on_disk.is_empty(),
+        "hashed islands entry must be non-empty"
+    );
 
     // HTML references only the HASHED ENTRY — never a chunk filename.
     let hashed_islands_url = format!("/assets/{islands_entry_name}");

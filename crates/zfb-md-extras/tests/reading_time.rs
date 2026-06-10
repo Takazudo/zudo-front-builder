@@ -19,8 +19,8 @@
 //! - Code blocks are excluded from the word count.
 //! - Short articles below 1 minute minimum return 1.
 
-use zfb_md_extras::test_harness::run_fixture;
 use zfb_md_extras::reading_time::compute_reading_time_minutes;
+use zfb_md_extras::test_harness::run_fixture;
 
 /// Default WPM used by all fixtures (matches `ReadingTimePlugin::new()`).
 const DEFAULT_WPM: u32 = 200;
@@ -28,12 +28,8 @@ const DEFAULT_WPM: u32 = 200;
 /// Run a fixture directory. The transform parses the markdown, computes
 /// reading-time minutes, and returns the result as `"N\n"`.
 fn run(name: &str) {
-    let dir = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/reading_time/"
-    )
-    .to_string()
-        + name;
+    let dir =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/reading_time/").to_string() + name;
     run_fixture(&dir, |input| {
         let node = markdown::to_mdast(input, &markdown::ParseOptions::default())
             .expect("markdown parse failed");
@@ -109,10 +105,10 @@ fn disabled_does_not_append_esm_node() {
 /// time export is injected into the mdast tree.
 #[test]
 fn enabled_injects_export_in_mdast() {
-    use markdown::to_mdast;
     use markdown::mdast::Node as MdastNode;
-    use zfb_md_extras::reading_time::ReadingTimePlugin;
+    use markdown::to_mdast;
     use zfb_md_ast::MdastVisitor;
+    use zfb_md_extras::reading_time::ReadingTimePlugin;
 
     let words: String = std::iter::repeat("word ").take(200).collect();
     let mut node = to_mdast(&words, &markdown::ParseOptions::default()).unwrap();
@@ -127,7 +123,9 @@ fn enabled_injects_export_in_mdast() {
         "ReadingTimePlugin must append MdxjsEsm node, got: {:?}",
         last
     );
-    let MdastNode::MdxjsEsm(esm) = last else { unreachable!() };
+    let MdastNode::MdxjsEsm(esm) = last else {
+        unreachable!()
+    };
     assert!(
         esm.value.contains("readingTimeMinutes = 1"),
         "injected export must contain readingTimeMinutes = 1: {}",
@@ -150,12 +148,8 @@ fn jsx_module_contains_reading_time_export() {
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
-    let jsx = mdx_to_jsx_module_with_pipeline(
-        &words,
-        MdxJsxOptions::default(),
-        &mut pipeline,
-    )
-    .expect("mdx_to_jsx_module failed");
+    let jsx = mdx_to_jsx_module_with_pipeline(&words, MdxJsxOptions::default(), &mut pipeline)
+        .expect("mdx_to_jsx_module failed");
 
     assert!(
         jsx.contains("export const readingTimeMinutes = 1;"),

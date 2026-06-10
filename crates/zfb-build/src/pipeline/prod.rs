@@ -256,7 +256,9 @@ impl AssetPipeline for ProductionAssetPipeline {
         let rendered = if pages.is_empty() {
             Vec::new()
         } else {
-            (ctx.render_pages)(&pages)?
+            // Production never narrows (issue #958): every selected
+            // page renders in full.
+            (ctx.render_pages)(&pages, None)?
         };
         outcome.pages_rendered = rendered.len();
 
@@ -364,7 +366,11 @@ fn boundary_replace(haystack: &str, from: &str, to: &str) -> String {
     let mut last_copied = 0usize;
     while i < bytes.len() {
         if i + from_bytes.len() <= bytes.len() && &bytes[i..i + from_bytes.len()] == from_bytes {
-            let before = if i == 0 { None } else { bytes.get(i - 1).copied() };
+            let before = if i == 0 {
+                None
+            } else {
+                bytes.get(i - 1).copied()
+            };
             let after = bytes.get(i + from_bytes.len()).copied();
             let is_leading_boundary = is_url_boundary_byte(before);
             let is_trailing_boundary = is_url_boundary_byte(after);
@@ -458,7 +464,10 @@ fn ship_asset(
     // `validate_output_path` the entry used, so a planted symlink inside
     // dist cannot redirect the write outside dist_root.
     if !asset.companions.is_empty() {
-        let entry_rel_dir = hashed_relative.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let entry_rel_dir = hashed_relative
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
         for companion in &asset.companions {
             if companion.filename.is_empty()
                 || companion.filename.contains('/')
@@ -472,8 +481,8 @@ fn ship_asset(
                 ));
             }
             let companion_rel = entry_rel_dir.join(&companion.filename);
-            let companion_dest =
-                validate_output_path(&ctx.dist_root, &companion_rel).with_context(|| {
+            let companion_dest = validate_output_path(&ctx.dist_root, &companion_rel)
+                .with_context(|| {
                     format!(
                         "production: refused to write companion relative path {}",
                         companion_rel.display()
@@ -506,10 +515,7 @@ fn ship_asset(
 /// + `deadbeef` → `assets/styles-deadbeef.css`. Paths without an
 ///   extension get `-<hash>` appended to the file stem.
 fn insert_hash_before_extension(path: &std::path::Path, hash: &str) -> PathBuf {
-    let mut out = path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+    let mut out = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -531,7 +537,11 @@ fn insert_hash_before_extension(path: &std::path::Path, hash: &str) -> PathBuf {
 /// layout (e.g. `/cdn/` mounted onto `dist/assets/`). The unhashed
 /// filename is always present in `stable_url` by definition (the emitter
 /// declared it), so we replace just that suffix.
-fn rewrite_url(stable_url: &str, relative: &std::path::Path, hashed_relative: &std::path::Path) -> String {
+fn rewrite_url(
+    stable_url: &str,
+    relative: &std::path::Path,
+    hashed_relative: &std::path::Path,
+) -> String {
     let unhashed_filename = relative
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -660,10 +670,7 @@ mod tests {
         let html = r#"<img srcset="/img/a.png 1x,/img/b.png 2x">"#;
         let out_a = boundary_replace(html, "/img/a.png", "/img/a-1.png");
         let out_b = boundary_replace(&out_a, "/img/b.png", "/img/b-2.png");
-        assert_eq!(
-            out_b,
-            r#"<img srcset="/img/a-1.png 1x,/img/b-2.png 2x">"#
-        );
+        assert_eq!(out_b, r#"<img srcset="/img/a-1.png 1x,/img/b-2.png 2x">"#);
     }
 
     #[test]
@@ -673,7 +680,6 @@ mod tests {
         let out = boundary_replace(css, "/foo.css", "/foo-abc.css");
         assert_eq!(out, "background:url(/foo-abc.css);");
     }
-
 
     fn pid(s: &str) -> PageId {
         PageId::new(PathBuf::from(s))
@@ -691,7 +697,9 @@ mod tests {
     fn ctx_with_pages(dist_root: PathBuf, pages: Vec<RenderedPage>) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId]| Ok(pages.clone())),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| Ok(pages.clone()),
+            ),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -711,6 +719,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         }
     }
 
@@ -748,7 +757,9 @@ mod tests {
         let (kind, url) = &outcome.hashed_asset_urls[0];
         assert_eq!(*kind, AssetKind::Css);
         assert!(
-            url.starts_with("/assets/styles-") && url.ends_with(".css") && url.len() == "/assets/styles-12345678.css".len(),
+            url.starts_with("/assets/styles-")
+                && url.ends_with(".css")
+                && url.len() == "/assets/styles-12345678.css".len(),
             "expected /assets/styles-<8hex>.css; got {url}",
         );
 
@@ -817,7 +828,10 @@ mod tests {
             let outcome = pipeline.apply(&plan, &ctx).unwrap();
             outcome.hashed_asset_urls[0].1.clone()
         };
-        assert_eq!(url_a, url_a2, "byte-identical assets must produce the same URL");
+        assert_eq!(
+            url_a, url_a2,
+            "byte-identical assets must produce the same URL"
+        );
 
         // Differing bytes → differing URL.
         let url_b = {
@@ -878,21 +892,21 @@ mod tests {
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
 
         assert_eq!(outcome.hashed_asset_urls.len(), 2);
-        let kinds: Vec<AssetKind> = outcome
-            .hashed_asset_urls
-            .iter()
-            .map(|(k, _)| *k)
-            .collect();
+        let kinds: Vec<AssetKind> = outcome.hashed_asset_urls.iter().map(|(k, _)| *k).collect();
         assert!(kinds.contains(&AssetKind::Css));
         assert!(kinds.contains(&AssetKind::Islands));
 
         let dist_html = std::fs::read_to_string(dir.path().join("index.html")).unwrap();
         assert!(
-            !dist_html.contains("/assets/styles.css\"") && !dist_html.contains("/assets/islands.js\""),
+            !dist_html.contains("/assets/styles.css\"")
+                && !dist_html.contains("/assets/islands.js\""),
             "stable URLs leaked: {dist_html}",
         );
         for (_, url) in &outcome.hashed_asset_urls {
-            assert!(dist_html.contains(url), "hashed url {url} missing from HTML: {dist_html}");
+            assert!(
+                dist_html.contains(url),
+                "hashed url {url} missing from HTML: {dist_html}"
+            );
         }
 
         // Both hashed files exist on disk with no stable copies left
@@ -902,8 +916,12 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(assets.len(), 2);
-        assert!(assets.iter().any(|n| n.starts_with("styles-") && n.ends_with(".css")));
-        assert!(assets.iter().any(|n| n.starts_with("islands-") && n.ends_with(".js")));
+        assert!(assets
+            .iter()
+            .any(|n| n.starts_with("styles-") && n.ends_with(".css")));
+        assert!(assets
+            .iter()
+            .any(|n| n.starts_with("islands-") && n.ends_with(".js")));
     }
 
     /// Companion files are written verbatim beside the hashed entry —
@@ -941,9 +959,15 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         // Hashed entry + verbatim chunk.
-        assert_eq!(assets.len(), 2, "expected hashed entry + chunk; got {assets:?}");
+        assert_eq!(
+            assets.len(),
+            2,
+            "expected hashed entry + chunk; got {assets:?}"
+        );
         assert!(
-            assets.iter().any(|n| n.starts_with("islands-") && n.ends_with(".js") && !n.contains("chunk")),
+            assets
+                .iter()
+                .any(|n| n.starts_with("islands-") && n.ends_with(".js") && !n.contains("chunk")),
             "hashed entry missing: {assets:?}",
         );
         assert!(
@@ -951,7 +975,8 @@ mod tests {
             "verbatim chunk missing: {assets:?}",
         );
         // Chunk bytes are byte-identical to the input — never rewritten.
-        let on_disk = std::fs::read(dir.path().join("assets").join("islands-chunk-AAAA1111.js")).unwrap();
+        let on_disk =
+            std::fs::read(dir.path().join("assets").join("islands-chunk-AAAA1111.js")).unwrap();
         assert_eq!(on_disk, chunk_bytes);
     }
 
@@ -1000,7 +1025,7 @@ mod tests {
         let calls_cb = bool_runner_calls.clone();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: Some(Arc::new(move || {
                 calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
@@ -1043,7 +1068,7 @@ mod tests {
         let pipeline = ProductionAssetPipeline::empty();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -1056,6 +1081,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
     }
@@ -1083,7 +1109,10 @@ mod tests {
         let from = "/assets/styles.css";
         let rel = std::path::Path::new("assets/styles.css");
         let hashed = std::path::Path::new("assets/styles-deadbeef.css");
-        assert_eq!(rewrite_url(from, rel, hashed), "/assets/styles-deadbeef.css");
+        assert_eq!(
+            rewrite_url(from, rel, hashed),
+            "/assets/styles-deadbeef.css"
+        );
 
         // Stable URL on a CDN prefix decoupled from the on-disk path.
         let cdn = "https://cdn.example.test/v1/styles.css";

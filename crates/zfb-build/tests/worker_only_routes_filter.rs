@@ -134,8 +134,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
         .find(|r| r.route == "/api/admin/[...adminPath]")
         .expect("catch-all route should be in the manifest");
     assert_eq!(
-        catchall_entry.entry_key,
-        "/api/admin/:adminPath{.+}",
+        catchall_entry.entry_key, "/api/admin/:adminPath{.+}",
         "entry_key must be Hono-form so worker_only_routes filter can match catch-alls"
     );
 
@@ -145,10 +144,7 @@ fn ssr_catchall_survives_worker_only_routes_filter() {
     //    this string would be absent from the bundle body.
     assert!(out.bundle_path.exists(), "bundle.mjs should exist");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
-    assert!(
-        !body.is_empty(),
-        "bundle body should be non-empty"
-    );
+    assert!(!body.is_empty(), "bundle body should be non-empty");
     assert!(
         body.contains(":adminPath{.+}"),
         "bundle must contain the catch-all Hono route template `:adminPath{{.+}}` — \

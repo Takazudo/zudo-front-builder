@@ -157,8 +157,7 @@ fn parse_segments(text: &str) -> Vec<Segment> {
         // ── Bare issue reference: `#NNN` ─────────────────────────────────────
         // `#` preceded by a non-word, non-`/` char (or SOT), followed by digits.
         if c == '#' {
-            let left_ok = i == 0
-                || (!is_word_char(chars[i - 1]) && chars[i - 1] != '/');
+            let left_ok = i == 0 || (!is_word_char(chars[i - 1]) && chars[i - 1] != '/');
             if left_ok {
                 let num_start = i + 1;
                 let mut j = num_start;
@@ -228,9 +227,7 @@ fn segments_to_hast(segments: Vec<Segment>, repo: &str) -> Vec<HastNode> {
                 number,
                 raw,
             } => {
-                let href = format!(
-                    "https://github.com/{owner}/{repo_name}/issues/{number}"
-                );
+                let href = format!("https://github.com/{owner}/{repo_name}/issues/{number}");
                 HastNode::Element {
                     tag: "a".to_string(),
                     attrs: vec![("href".to_string(), href)],
@@ -282,10 +279,7 @@ fn rewrite_node(node: &mut HastNode, repo: &str) {
         }
         // Text nodes are handled by the parent's rewrite_children call.
         // Leaf nodes with no children need no action.
-        HastNode::Text(_)
-        | HastNode::Raw(_)
-        | HastNode::JsxRaw(_)
-        | HastNode::Comment(_) => {}
+        HastNode::Text(_) | HastNode::Raw(_) | HastNode::JsxRaw(_) | HastNode::Comment(_) => {}
     }
 }
 
@@ -298,8 +292,8 @@ fn rewrite_children(children: Vec<HastNode>, repo: &str) -> Vec<HastNode> {
             HastNode::Text(text) => {
                 let segments = parse_segments(&text);
                 // Fast path: single plain segment — no rewrite needed.
-                let only_plain = segments.len() == 1
-                    && matches!(segments.first(), Some(Segment::Plain(_)));
+                let only_plain =
+                    segments.len() == 1 && matches!(segments.first(), Some(Segment::Plain(_)));
                 if only_plain {
                     result.push(HastNode::Text(text));
                     continue;
@@ -485,7 +479,9 @@ mod tests {
     fn hash_not_preceded_by_slash_is_bare_issue() {
         // When `#` is preceded by a space (not a `/`), it must be a bare issue.
         let segs = parse_segments("see #5");
-        assert!(segs.iter().any(|s| matches!(s, Segment::BareIssue { number: 5, .. })));
+        assert!(segs
+            .iter()
+            .any(|s| matches!(s, Segment::BareIssue { number: 5, .. })));
     }
 
     // ── segments_to_hast ──────────────────────────────────────────────────
@@ -498,12 +494,19 @@ mod tests {
         }];
         let nodes = segments_to_hast(segs, "owner/myrepo");
         assert_eq!(nodes.len(), 1);
-        let HastNode::Element { tag, attrs, children, .. } = &nodes[0] else {
+        let HastNode::Element {
+            tag,
+            attrs,
+            children,
+            ..
+        } = &nodes[0]
+        else {
             panic!("expected Element");
         };
         assert_eq!(tag, "a");
-        assert!(attrs.iter().any(|(k, v)| k == "href"
-            && v == "https://github.com/owner/myrepo/issues/123"));
+        assert!(attrs
+            .iter()
+            .any(|(k, v)| k == "href" && v == "https://github.com/owner/myrepo/issues/123"));
         assert_eq!(children, &vec![HastNode::Text("#123".to_string())]);
     }
 
@@ -516,7 +519,9 @@ mod tests {
             raw: "user/other#7".to_string(),
         }];
         let nodes = segments_to_hast(segs, "owner/myrepo");
-        let HastNode::Element { attrs, .. } = &nodes[0] else { panic!() };
+        let HastNode::Element { attrs, .. } = &nodes[0] else {
+            panic!()
+        };
         let href = attrs.iter().find(|(k, _)| k == "href").unwrap().1.clone();
         assert_eq!(href, "https://github.com/user/other/issues/7");
     }
@@ -527,7 +532,9 @@ mod tests {
             sha: "abc1234".to_string(),
         }];
         let nodes = segments_to_hast(segs, "owner/myrepo");
-        let HastNode::Element { attrs, .. } = &nodes[0] else { panic!() };
+        let HastNode::Element { attrs, .. } = &nodes[0] else {
+            panic!()
+        };
         let href = attrs.iter().find(|(k, _)| k == "href").unwrap().1.clone();
         assert_eq!(href, "https://github.com/owner/myrepo/commit/abc1234");
     }
@@ -544,7 +551,9 @@ mod tests {
         };
         rewrite_node(&mut node, "owner/myrepo");
         // Children must be unchanged.
-        let HastNode::Element { children, .. } = &node else { panic!() };
+        let HastNode::Element { children, .. } = &node else {
+            panic!()
+        };
         assert_eq!(children, &vec![HastNode::Text("#123".to_string())]);
     }
 
@@ -562,8 +571,16 @@ mod tests {
             void: false,
         };
         rewrite_node(&mut node, "owner/myrepo");
-        let HastNode::Element { children, .. } = &node else { panic!() };
-        let HastNode::Element { children: code_children, .. } = &children[0] else { panic!() };
+        let HastNode::Element { children, .. } = &node else {
+            panic!()
+        };
+        let HastNode::Element {
+            children: code_children,
+            ..
+        } = &children[0]
+        else {
+            panic!()
+        };
         assert_eq!(
             code_children,
             &vec![HastNode::Text("abc1234567def".to_string())]
@@ -579,7 +596,9 @@ mod tests {
             void: false,
         };
         rewrite_node(&mut node, "owner/myrepo");
-        let HastNode::Element { children, .. } = &node else { panic!() };
+        let HastNode::Element { children, .. } = &node else {
+            panic!()
+        };
         // Must remain a plain text child — not wrapped in another <a>.
         assert_eq!(children, &vec![HastNode::Text("#123".to_string())]);
     }
@@ -597,8 +616,16 @@ mod tests {
             }],
         };
         GithubAutolinksPlugin::new("owner/repo").visit(&mut root);
-        let HastNode::Root { children } = &root else { panic!() };
-        let HastNode::Element { children: p_children, .. } = &children[0] else { panic!() };
+        let HastNode::Root { children } = &root else {
+            panic!()
+        };
+        let HastNode::Element {
+            children: p_children,
+            ..
+        } = &children[0]
+        else {
+            panic!()
+        };
         // Should contain plain "see " + anchor for #42.
         assert_eq!(p_children.len(), 2);
         assert!(matches!(&p_children[0], HastNode::Text(t) if t == "see "));

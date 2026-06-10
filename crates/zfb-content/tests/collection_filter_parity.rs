@@ -77,8 +77,8 @@ fn snapshot_module_specifier_has_id_strip_suffix_applied() {
         exclude: None,
         id_strip_suffix: Some(".en".into()),
     };
-    let snap = build_snapshot_with_config(&[cfg], &PipelineSpec::default())
-        .expect("snapshot build");
+    let snap =
+        build_snapshot_with_config(&[cfg], &PipelineSpec::default()).expect("snapshot build");
     let entries = snap.collections.get("notes-en").expect("collection");
 
     // Two EN entries survive (JA sibling excluded). Snapshot is sorted
@@ -152,8 +152,8 @@ fn snapshot_specifier_unchanged_when_id_strip_suffix_absent() {
     );
 
     let cfg = CollectionConfig::new("notes", col_dir.clone());
-    let snap = build_snapshot_with_config(&[cfg], &PipelineSpec::default())
-        .expect("snapshot build");
+    let snap =
+        build_snapshot_with_config(&[cfg], &PipelineSpec::default()).expect("snapshot build");
     let entries = snap.collections.get("notes").expect("collection");
     assert_eq!(entries.len(), 1);
     assert!(

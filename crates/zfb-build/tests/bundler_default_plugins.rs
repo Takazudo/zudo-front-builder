@@ -227,8 +227,7 @@ fn bundler_threads_default_plugins_through_mdx_compile() {
     // default emit itself, not a cache-path check.
     let second_input = make_input(&root, &esbuild, "dist2");
     let second_out = bundle(second_input).expect("second bundle should succeed");
-    let second_body =
-        fs::read_to_string(&second_out.bundle_path).expect("read second bundle");
+    let second_body = fs::read_to_string(&second_out.bundle_path).expect("read second bundle");
     // Compare with the inherently-random shadow tempdir collapsed out (see
     // `normalize_shadow_paths`): esbuild embeds the bundler's per-run
     // `zfb-bundler-<rand>` shadow path in module-boundary comments, the only

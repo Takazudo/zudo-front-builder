@@ -165,9 +165,15 @@ mod tests {
         let h = run("first\nsecond\n");
         let p = first_paragraph_children(&h);
         assert_eq!(p.len(), 3, "expected Text+Break+Text, got {p:?}");
-        assert!(matches!(&p[0], MdastNode::Text(t) if t.value == "first"), "p[0]: {p:?}");
+        assert!(
+            matches!(&p[0], MdastNode::Text(t) if t.value == "first"),
+            "p[0]: {p:?}"
+        );
         assert!(matches!(&p[1], MdastNode::Break(_)), "p[1]: {p:?}");
-        assert!(matches!(&p[2], MdastNode::Text(t) if t.value == "second"), "p[2]: {p:?}");
+        assert!(
+            matches!(&p[2], MdastNode::Text(t) if t.value == "second"),
+            "p[2]: {p:?}"
+        );
     }
 
     #[test]
@@ -196,15 +202,21 @@ mod tests {
     fn blank_line_separation_unaffected() {
         // Blank-line paragraph separation → still two Paragraph nodes; no Break added.
         let h = run("para one\n\npara two\n");
-        let MdastNode::Root(r) = &h else { unreachable!() };
+        let MdastNode::Root(r) = &h else {
+            unreachable!()
+        };
         assert_eq!(
             r.children.len(),
             2,
             "expected 2 paragraphs, got {:?}",
             r.children
         );
-        let MdastNode::Paragraph(p1) = &r.children[0] else { unreachable!() };
-        let MdastNode::Paragraph(p2) = &r.children[1] else { unreachable!() };
+        let MdastNode::Paragraph(p1) = &r.children[0] else {
+            unreachable!()
+        };
+        let MdastNode::Paragraph(p2) = &r.children[1] else {
+            unreachable!()
+        };
         // Neither paragraph should contain a Break.
         for node in p1.children.iter().chain(p2.children.iter()) {
             assert!(
@@ -242,13 +254,13 @@ mod tests {
 
     #[test]
     fn fenced_code_not_split() {
-        let mut mdast = markdown::to_mdast(
-            "```\nfirst\nsecond\n```\n",
-            &markdown::ParseOptions::mdx(),
-        )
-        .unwrap();
+        let mut mdast =
+            markdown::to_mdast("```\nfirst\nsecond\n```\n", &markdown::ParseOptions::mdx())
+                .unwrap();
         HardBreaksPlugin::new().visit(&mut mdast);
-        let MdastNode::Root(r) = &mdast else { unreachable!() };
+        let MdastNode::Root(r) = &mdast else {
+            unreachable!()
+        };
         let MdastNode::Code(c) = &r.children[0] else {
             unreachable!("expected Code, got {:?}", r.children[0])
         };
