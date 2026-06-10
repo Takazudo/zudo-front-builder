@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
-use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
+use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig, ReadRecorder};
 
 use zfb_types::normalize_path_lexical;
 
@@ -62,6 +62,11 @@ pub struct ImageDimensionsPlugin {
     /// Tracks how many actual disk reads were performed (not cache hits).
     /// Exposed via [`read_count`](Self::read_count) for test instrumentation.
     read_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Optional read-recorder (zfb#944): when present, every image file
+    /// whose dimensions shape the output — including missing/unprobeable
+    /// files — is reported so the MDX compile cache can validate a
+    /// dependency manifest. `None` keeps the pre-#944 behaviour exactly.
+    recorder: Option<Arc<ReadRecorder>>,
 }
 
 impl ImageDimensionsPlugin {
@@ -72,7 +77,18 @@ impl ImageDimensionsPlugin {
             config,
             cache: Arc::new(Mutex::new(HashMap::new())),
             read_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            recorder: None,
         }
+    }
+
+    /// Attach the read-recorder this plugin reports image reads through
+    /// (zfb#944). The SAME `Arc` must also be set on the pipeline via
+    /// `Pipeline::set_read_recorder` so the compile-cache choke point can
+    /// scope the recording per compile.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: Arc<ReadRecorder>) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// How many times the plugin read image metadata from disk (not cache).
@@ -93,7 +109,14 @@ impl HastVisitor for ImageDimensionsPlugin {
 
     /// Context-aware visit: resolves and injects dimensions.
     fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
-        walk_node(node, ctx, &self.config, &self.cache, &self.read_count);
+        walk_node(
+            node,
+            ctx,
+            &self.config,
+            &self.cache,
+            &self.read_count,
+            self.recorder.as_deref(),
+        );
     }
 }
 
@@ -112,12 +135,13 @@ fn walk_node(
     config: &ImageDimensionsConfig,
     cache: &Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
     read_count: &Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<&ReadRecorder>,
 ) {
     match node {
         HastNode::Root { children } | HastNode::Element { children, .. } => {
             for child in children.iter_mut() {
-                try_inject_dimensions(child, ctx, config, cache, read_count);
-                walk_node(child, ctx, config, cache, read_count);
+                try_inject_dimensions(child, ctx, config, cache, read_count, recorder);
+                walk_node(child, ctx, config, cache, read_count, recorder);
             }
         }
         _ => {}
@@ -132,6 +156,7 @@ fn try_inject_dimensions(
     config: &ImageDimensionsConfig,
     cache: &Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
     read_count: &Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<&ReadRecorder>,
 ) {
     let HastNode::Element { tag, attrs, .. } = node else {
         return;
@@ -198,6 +223,18 @@ fn try_inject_dimensions(
             ),
         );
         return;
+    }
+
+    // Record the dependency read (zfb#944) BEFORE probing, regardless of
+    // the mtime cache below: the emitted width/height (or the warning
+    // diagnostic) depends on this file's on-disk state every compile.
+    // `record_file` hashes the COMPLETE file — the header sniff below
+    // consumes only a prefix, but the recorded hash must cover the whole
+    // file per the read-recorder contract. A missing file records
+    // `Missing` (so creating it later invalidates a cached entry); an
+    // unreadable one records `Error` (never cached).
+    if let Some(r) = recorder {
+        let _ = r.record_file(&abs_path);
     }
 
     // Probe dimensions (from cache or disk).
@@ -448,7 +485,7 @@ mod tests {
             heading_registry: None,
             diagnostics: Some(&mut sink),
         };
-        try_inject_dimensions(&mut node, &mut ctx, &config, &cache, &read_count);
+        try_inject_dimensions(&mut node, &mut ctx, &config, &cache, &read_count, None);
         sink.take()
             .into_iter()
             .filter_map(|d| match d {
@@ -502,6 +539,119 @@ mod tests {
             warnings[0].contains("resolves outside the expected root"),
             "warning should mention containment: {:?}",
             warnings[0]
+        );
+    }
+
+    // ── Read recording (zfb#944) ──────────────────────────────────────────
+
+    /// Run the plugin (with a recorder) over `<img src=…>` rooted at a
+    /// tempdir and return the recorded reads.
+    fn record_reads_for_src(
+        src: &str,
+        dir: &std::path::Path,
+        source_path: &std::path::Path,
+    ) -> std::collections::BTreeMap<PathBuf, zfb_md_ast::ReadOutcome> {
+        let recorder = Arc::new(ReadRecorder::new());
+        let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default())
+            .with_recorder(Arc::clone(&recorder));
+        let mut node = HastNode::Root {
+            children: vec![img(&[("src", src)])],
+        };
+        let mut ctx = BuildContext {
+            source_path: Some(source_path.to_path_buf()),
+            project_root: dir.to_path_buf(),
+            public_dir: dir.join("public"),
+            heading_registry: None,
+            diagnostics: None,
+        };
+        plugin.visit_with_context(&mut node, &mut ctx);
+        recorder.take_reads()
+    }
+
+    #[test]
+    fn probed_image_records_full_content_hash() {
+        let dir = tempdir::TempDir::new("imgdim_rec_ok").unwrap();
+        // Not a real image — the probe fails with a warning, but the READ
+        // is still recorded with the full-content hash: the warning
+        // outcome depends on these bytes too.
+        let bytes = b"not really a png";
+        std::fs::write(dir.path().join("pic.png"), bytes).unwrap();
+        let source = dir.path().join("page.mdx");
+
+        let reads = record_reads_for_src("./pic.png", dir.path(), &source);
+        assert_eq!(
+            reads.get(&dir.path().join("pic.png")),
+            Some(&zfb_md_ast::ReadOutcome::of_bytes(bytes)),
+            "the image read must record the FULL file hash: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn missing_image_records_missing_outcome() {
+        let dir = tempdir::TempDir::new("imgdim_rec_missing").unwrap();
+        let source = dir.path().join("page.mdx");
+        let reads = record_reads_for_src("./absent.png", dir.path(), &source);
+        assert_eq!(
+            reads.get(&dir.path().join("absent.png")),
+            Some(&zfb_md_ast::ReadOutcome::Missing),
+            "a missing image must record Missing so creating it later \
+             invalidates a cached entry: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn remote_and_data_srcs_record_nothing() {
+        let dir = tempdir::TempDir::new("imgdim_rec_remote").unwrap();
+        let source = dir.path().join("page.mdx");
+        for src in [
+            "https://example.com/x.png",
+            "http://example.com/x.png",
+            "data:image/png;base64,abc",
+        ] {
+            let reads = record_reads_for_src(src, dir.path(), &source);
+            assert!(
+                reads.is_empty(),
+                "non-filesystem src {src:?} must not record reads: {reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mtime_cache_hit_still_records_the_read() {
+        // The per-plugin mtime cache may skip the header sniff, but the
+        // compile-cache manifest still needs the dependency recorded on
+        // every compile — the OUTPUT depends on the file each time.
+        let dir = tempdir::TempDir::new("imgdim_rec_cachehit").unwrap();
+        let bytes = b"bytes";
+        std::fs::write(dir.path().join("pic.png"), bytes).unwrap();
+        let source = dir.path().join("page.mdx");
+
+        let recorder = Arc::new(ReadRecorder::new());
+        let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default())
+            .with_recorder(Arc::clone(&recorder));
+        let mut ctx_holder = |recorder: &Arc<ReadRecorder>| {
+            let mut node = HastNode::Root {
+                children: vec![img(&[("src", "./pic.png")])],
+            };
+            let mut ctx = BuildContext {
+                source_path: Some(source.clone()),
+                project_root: dir.path().to_path_buf(),
+                public_dir: dir.path().join("public"),
+                heading_registry: None,
+                diagnostics: None,
+            };
+            plugin.visit_with_context(&mut node, &mut ctx);
+            recorder.take_reads()
+        };
+
+        let first = ctx_holder(&recorder);
+        assert!(first.contains_key(&dir.path().join("pic.png")));
+        // Second visit on the SAME plugin (mtime cache warm) — the drain
+        // above emptied the recorder, so a fresh record must appear.
+        let second = ctx_holder(&recorder);
+        assert!(
+            second.contains_key(&dir.path().join("pic.png")),
+            "a warm mtime cache must not skip read recording: {second:?}"
         );
     }
 }

@@ -60,13 +60,26 @@
 //! in `zfb.config.ts`. Phase: **mdast** (runs early so included content is
 //! processed by subsequent mdast visitors).
 //!
+//! # Read recording (zfb#944)
+//!
+//! When constructed with a [`ReadRecorder`]
+//! ([`TranscludePlugin::with_recorder`]), EVERY attempted include read —
+//! successful reads, missing files, and read errors — is reported to the
+//! recorder so the MDX compile cache can store a dependency manifest and
+//! invalidate cached entries when an included file changes (or a
+//! previously-missing include is created). Without a recorder the plugin
+//! behaves exactly as before.
+//!
 //! # Wave 6 (#581)
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
-use zfb_md_ast::{AttrSchema, AttrType, BuildContext, DirectiveDef, MdastVisitor};
+use zfb_md_ast::{
+    AttrSchema, AttrType, BuildContext, DirectiveDef, MdastVisitor, ReadOutcome, ReadRecorder,
+};
 
 use crate::TranscludeConfig;
 
@@ -118,13 +131,31 @@ pub fn include_directive_def() -> DirectiveDef {
 #[derive(Debug)]
 pub struct TranscludePlugin {
     config: TranscludeConfig,
+    /// Optional read-recorder (zfb#944): when present, every attempted
+    /// include read — including failures — is reported so the MDX
+    /// compile cache can validate a dependency manifest before serving
+    /// a cached entry. `None` keeps the pre-#944 behaviour exactly.
+    recorder: Option<Arc<ReadRecorder>>,
 }
 
 impl TranscludePlugin {
     /// Create a new plugin from the given config.
     #[must_use]
     pub fn new(config: TranscludeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            recorder: None,
+        }
+    }
+
+    /// Attach the read-recorder this plugin reports include reads
+    /// through (zfb#944). The SAME `Arc` must also be set on the
+    /// pipeline via `Pipeline::set_read_recorder` so the compile-cache
+    /// choke point can scope the recording per compile.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: Arc<ReadRecorder>) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 }
 
@@ -151,7 +182,6 @@ impl MdastVisitor for TranscludePlugin {
             None => PathBuf::from("."),
         };
         let project_root = ctx.project_root.clone();
-        let max_depth = self.config.max_depth;
 
         let mut visited: HashSet<PathBuf> = HashSet::new();
         // Mark the current file as "in the stack" to detect direct cycles.
@@ -159,19 +189,27 @@ impl MdastVisitor for TranscludePlugin {
             visited.insert(canonical_self);
         }
 
-        expand_includes_in_node(
-            node,
-            &source_dir,
-            &project_root,
-            &mut visited,
-            0,
-            max_depth,
-            ctx,
-        );
+        let env = ExpandEnv {
+            project_root: &project_root,
+            max_depth: self.config.max_depth,
+            recorder: self.recorder.as_deref(),
+        };
+        expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
     }
 }
 
 // ── Recursive expansion ─────────────────────────────────────────────────────
+
+/// Knobs that stay constant across the whole recursive include walk of
+/// one visit (per-level state — `source_dir`, `visited`, `depth` —
+/// travels as separate arguments).
+struct ExpandEnv<'a> {
+    project_root: &'a Path,
+    max_depth: u8,
+    /// Read-recorder for the compile-cache dependency manifest
+    /// (zfb#944); `None` when the plugin was built without one.
+    recorder: Option<&'a ReadRecorder>,
+}
 
 /// Recursively scan `node`'s children for `:::include` paragraphs and
 /// replace each one with the parsed nodes from the referenced file.
@@ -181,10 +219,9 @@ impl MdastVisitor for TranscludePlugin {
 fn expand_includes_in_node(
     node: &mut MdastNode,
     source_dir: &Path,
-    project_root: &Path,
+    env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
-    max_depth: u8,
     ctx: &mut BuildContext<'_>,
 ) {
     let children = match node {
@@ -194,7 +231,7 @@ fn expand_includes_in_node(
         MdastNode::MdxJsxFlowElement(j) => &mut j.children,
         _ => return,
     };
-    expand_includes_in_children(children, source_dir, project_root, visited, depth, max_depth, ctx);
+    expand_includes_in_children(children, source_dir, env, visited, depth, ctx);
 }
 
 /// Scan a `Vec<MdastNode>` (the children of a container) for `:::include`
@@ -203,29 +240,21 @@ fn expand_includes_in_node(
 /// Also recurses into nested container nodes so includes nested inside
 /// blockquotes, list items, etc. are found.
 ///
-/// `depth` is the current nesting level; `max_depth` is the configured bound.
+/// `depth` is the current nesting level; `env.max_depth` is the configured
+/// bound.
 fn expand_includes_in_children(
     children: &mut Vec<MdastNode>,
     source_dir: &Path,
-    project_root: &Path,
+    env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
-    max_depth: u8,
     ctx: &mut BuildContext<'_>,
 ) {
     let mut i = 0;
     while i < children.len() {
         if let Some(attrs) = extract_include_attrs(&children[i]) {
             // Found an `:::include` paragraph at `i`.
-            let replacement = resolve_and_expand(
-                &attrs,
-                source_dir,
-                project_root,
-                visited,
-                depth,
-                max_depth,
-                ctx,
-            );
+            let replacement = resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
 
             // Remove the directive paragraph.
             children.remove(i);
@@ -238,15 +267,7 @@ fn expand_includes_in_children(
             i += insert_count;
         } else {
             // Not an include directive — recurse into container children.
-            expand_includes_in_node(
-                &mut children[i],
-                source_dir,
-                project_root,
-                visited,
-                depth,
-                max_depth,
-                ctx,
-            );
+            expand_includes_in_node(&mut children[i], source_dir, env, visited, depth, ctx);
             i += 1;
         }
     }
@@ -257,15 +278,24 @@ fn expand_includes_in_children(
 /// On error (path escape, cycle, read failure, depth exceeded), emits a
 /// diagnostic and returns an empty vec (the directive paragraph is removed,
 /// leaving nothing in its place).
+///
+/// Read recording (zfb#944): every branch that observes on-disk state
+/// reports it through `env.recorder` — the successful read, the
+/// missing/unreadable include (so creating it later invalidates the
+/// cached entry), and the existing-but-rejected include (so deleting it
+/// later invalidates the rejection diagnostic). Branches that never
+/// touch the filesystem (depth bound, absolute-path reject, cycle
+/// detection on an already-visited — and therefore already-recorded —
+/// path) record nothing.
 fn resolve_and_expand(
     attrs: &IncludeAttrs,
     source_dir: &Path,
-    project_root: &Path,
+    env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
-    max_depth: u8,
     ctx: &mut BuildContext<'_>,
 ) -> Vec<MdastNode> {
+    let max_depth = env.max_depth;
     // ── Depth check ────────────────────────────────────────────────────────
     if depth >= max_depth {
         emit_error(
@@ -298,6 +328,15 @@ fn resolve_and_expand(
     let canonical = match resolved.canonicalize() {
         Ok(c) => c,
         Err(e) => {
+            // Record the failed observation (zfb#944): NotFound → Missing,
+            // which is what makes a cached entry invalidate the moment a
+            // previously-missing include is created. Recorded under the
+            // resolved (pre-canonicalization) spelling — the file does not
+            // exist, so no canonical spelling is available, and re-probing
+            // the resolved path observes the same state.
+            if let Some(r) = env.recorder {
+                r.record_outcome(&resolved, ReadOutcome::of_io_error(&e));
+            }
             emit_error(
                 ctx,
                 format!(
@@ -309,8 +348,18 @@ fn resolve_and_expand(
         }
     };
 
-    let canonical_root = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
+    let canonical_root = env
+        .project_root
+        .canonicalize()
+        .unwrap_or_else(|_| env.project_root.to_path_buf());
     if !canonical.starts_with(&canonical_root) {
+        // The escape diagnostic depends on the target's on-disk state
+        // (deleting it changes the outcome to "cannot read"), so the
+        // observation is recorded even though the content is never
+        // spliced (zfb#944).
+        if let Some(r) = env.recorder {
+            let _ = r.record_file(&canonical);
+        }
         emit_error(
             ctx,
             format!(
@@ -336,8 +385,21 @@ fn resolve_and_expand(
 
     // ── Read file ─────────────────────────────────────────────────────────
     let raw_content = match std::fs::read_to_string(&canonical) {
-        Ok(c) => c,
+        Ok(c) => {
+            // The caller holds the COMPLETE contents (read_to_string
+            // preserves the exact bytes of valid-UTF-8 files), so record
+            // the hash without a second filesystem read (zfb#944).
+            if let Some(r) = env.recorder {
+                r.record_bytes(&canonical, c.as_bytes());
+            }
+            c
+        }
         Err(e) => {
+            // NotFound → Missing (re-validatable); anything else — including
+            // invalid UTF-8 — → Error (terminal: never cached). zfb#944.
+            if let Some(r) = env.recorder {
+                r.record_outcome(&canonical, ReadOutcome::of_io_error(&e));
+            }
             emit_error(
                 ctx,
                 format!(
@@ -410,15 +472,7 @@ fn resolve_and_expand(
     let included_source_dir = canonical.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     visited.insert(canonical.clone());
 
-    expand_includes_in_children(
-        &mut nodes,
-        &included_source_dir,
-        project_root,
-        visited,
-        depth + 1,
-        max_depth,
-        ctx,
-    );
+    expand_includes_in_children(&mut nodes, &included_source_dir, env, visited, depth + 1, ctx);
 
     visited.remove(&canonical);
 
@@ -1003,5 +1057,104 @@ mod tests {
         let MdastNode::Root(root) = &tree else { panic!("expected Root") };
         // a.md inlines b.md which is "From B." → a paragraph
         assert!(!root.children.is_empty(), "expected inlined content");
+    }
+
+    // ── Read recording (zfb#944) ──────────────────────────────────────────
+
+    /// Like [`run_transclude`] but with a recorder attached; returns the
+    /// recorded reads alongside the tree and diagnostics.
+    fn run_transclude_recorded(
+        input_md: &str,
+        source_path: PathBuf,
+        project_root: PathBuf,
+    ) -> (
+        MdastNode,
+        Vec<zfb_md_ast::diagnostics::MarkdownDiagnostic>,
+        std::collections::BTreeMap<PathBuf, ReadOutcome>,
+    ) {
+        let recorder = Arc::new(ReadRecorder::new());
+        let opts = markdown::ParseOptions::mdx();
+        let mut tree = markdown::to_mdast(input_md, &opts).expect("parse ok");
+        let mut sink = zfb_md_ast::diagnostics::CollectingSink::new();
+        let mut ctx = BuildContext {
+            source_path: Some(source_path),
+            project_root,
+            public_dir: PathBuf::from("/tmp"),
+            heading_registry: None,
+            diagnostics: Some(&mut sink),
+        };
+        let mut plugin =
+            TranscludePlugin::new(TranscludeConfig::default()).with_recorder(Arc::clone(&recorder));
+        plugin.visit_with_context(&mut tree, &mut ctx);
+        (tree, sink.take(), recorder.take_reads())
+    }
+
+    #[test]
+    fn successful_include_records_full_content_hash() {
+        let dir = TempDir::new("transclude_rec_ok").unwrap();
+        let snippet = dir.path().join("snippet.md");
+        std::fs::write(&snippet, "shared text\n").unwrap();
+        let source = dir.path().join("input.md");
+        let input = r#":::include{file="./snippet.md"}"#;
+        std::fs::write(&source, input).unwrap();
+
+        let (_, diags, reads) =
+            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        assert!(diags.is_empty(), "no diagnostics: {diags:?}");
+        let canonical = snippet.canonicalize().expect("canonicalize snippet");
+        assert_eq!(
+            reads.get(&canonical),
+            Some(&ReadOutcome::of_bytes(b"shared text\n")),
+            "the include read must record the FULL file contents hash: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn missing_include_records_missing_outcome() {
+        let dir = TempDir::new("transclude_rec_missing").unwrap();
+        let source = dir.path().join("input.md");
+        let input = r#":::include{file="./not-yet.md"}"#;
+        std::fs::write(&source, input).unwrap();
+
+        let (_, diags, reads) =
+            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        assert!(
+            !diags.is_empty(),
+            "a missing include must emit a diagnostic"
+        );
+        let resolved = dir.path().join("not-yet.md");
+        assert_eq!(
+            reads.get(&resolved),
+            Some(&ReadOutcome::Missing),
+            "the FAILED read must be recorded as Missing so creating the \
+             file later invalidates a cached entry: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn nested_chain_records_every_level() {
+        let dir = TempDir::new("transclude_rec_chain").unwrap();
+        std::fs::write(dir.path().join("c.md"), "leaf\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), r#":::include{file="./c.md"}"#).unwrap();
+        let source = dir.path().join("a.md");
+        let input = r#":::include{file="./b.md"}"#;
+        std::fs::write(&source, input).unwrap();
+
+        let (_, diags, reads) =
+            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        assert!(diags.is_empty(), "no diagnostics: {diags:?}");
+        let b = dir.path().join("b.md").canonicalize().unwrap();
+        let c = dir.path().join("c.md").canonicalize().unwrap();
+        assert!(reads.contains_key(&b), "level-1 include must record: {reads:?}");
+        assert!(reads.contains_key(&c), "level-2 include must record: {reads:?}");
+    }
+
+    #[test]
+    fn no_recorder_means_no_recording_and_same_output() {
+        // Plugins without a recorder behave exactly as before — pinned by
+        // the unchanged legacy tests above; this just confirms the default
+        // constructor carries no recorder.
+        let plugin = TranscludePlugin::new(TranscludeConfig::default());
+        assert!(plugin.recorder.is_none());
     }
 }

@@ -32,6 +32,22 @@
 //! (bare `visit` call), the plugin is a no-op — matching the backwards-compat
 //! contract of all wave-6 context-aware visitors.
 //!
+//! # Read recording (zfb#944) — filesystem-read audit
+//!
+//! The plugin touches the filesystem in exactly TWO places, both probing
+//! the **directly linked file**: the existence checks in
+//! [`validate_file_exists`] and [`validate_file_with_fragment`]. Anchor /
+//! heading extraction performs **no filesystem reads** — fragments are
+//! validated against the in-memory `ctx.heading_registry` only (whose
+//! contents derive from the target files; the full-content hash recorded
+//! for each linked file is what invalidates a cached entry when a target
+//! file's headings change). When a [`ReadRecorder`] is attached
+//! ([`LinkValidationPlugin::with_recorder`]), both probe sites record the
+//! linked file's full-content state — `Missing` for absent targets (so a
+//! later-created target invalidates), `Error` for unreadable ones
+//! (including directory targets, which therefore never cache — see the
+//! note in [`validate_file_exists`]).
+//!
 //! Wire via `markdown.features.linkValidation` in `zfb.config.ts`:
 //!
 //! ```json
@@ -42,10 +58,11 @@
 //! Ported in Wave 6 (#580). Reference: [`remark-validate-links`](https://www.npmjs.com/package/remark-validate-links).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use zfb_md_ast::{
     diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation},
-    BuildContext, HastNode, HastVisitor, LinkValidationConfig,
+    BuildContext, HastNode, HastVisitor, LinkValidationConfig, ReadRecorder,
 };
 use zfb_types::normalize_path_lexical;
 
@@ -132,13 +149,31 @@ fn resolve_relative(source_path: &Path, file_ref: &str) -> Option<PathBuf> {
 /// visitors).
 pub struct LinkValidationPlugin {
     config: LinkValidationConfig,
+    /// Optional read-recorder (zfb#944): when present, every linked-file
+    /// existence probe — including missing targets — is reported so the
+    /// MDX compile cache can validate a dependency manifest. `None`
+    /// keeps the pre-#944 behaviour exactly.
+    recorder: Option<Arc<ReadRecorder>>,
 }
 
 impl LinkValidationPlugin {
     /// Create a new plugin with the given configuration.
     #[must_use]
     pub fn new(config: LinkValidationConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            recorder: None,
+        }
+    }
+
+    /// Attach the read-recorder this plugin reports linked-file probes
+    /// through (zfb#944). The SAME `Arc` must also be set on the
+    /// pipeline via `Pipeline::set_read_recorder` so the compile-cache
+    /// choke point can scope the recording per compile.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: Arc<ReadRecorder>) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// Determine the diagnostic severity based on the `failOnBroken` flag.
@@ -162,29 +197,31 @@ impl HastVisitor for LinkValidationPlugin {
             Some(p) => p,
             None => return, // no source path → cannot resolve relative links
         };
-        // Walk the tree collecting (href, severity) diagnostics.
-        let severity = self.severity();
         let project_root = ctx.project_root.clone();
-        collect_diagnostics(
-            node,
-            &source_path,
-            &project_root,
-            ctx,
-            severity,
-        );
+        let env = ValidationEnv {
+            source_path: &source_path,
+            project_root: &project_root,
+            severity: self.severity(),
+            recorder: self.recorder.as_deref(),
+        };
+        collect_diagnostics(node, &env, ctx);
     }
 }
 
 // ── Tree walk ─────────────────────────────────────────────────────────────────
 
-/// Recursively walk the hast tree and emit diagnostics for broken links.
-fn collect_diagnostics(
-    node: &HastNode,
-    source_path: &Path,
-    project_root: &Path,
-    ctx: &mut BuildContext<'_>,
+/// Per-visit immutable validation environment, shared by the whole walk.
+struct ValidationEnv<'a> {
+    source_path: &'a Path,
+    project_root: &'a Path,
     severity: DiagnosticSeverity,
-) {
+    /// Read-recorder for the compile-cache dependency manifest
+    /// (zfb#944); `None` when the plugin was built without one.
+    recorder: Option<&'a ReadRecorder>,
+}
+
+/// Recursively walk the hast tree and emit diagnostics for broken links.
+fn collect_diagnostics(node: &HastNode, env: &ValidationEnv<'_>, ctx: &mut BuildContext<'_>) {
     match node {
         HastNode::Element {
             tag,
@@ -217,36 +254,17 @@ fn collect_diagnostics(
             };
 
             if let Some(href) = href_opt {
-                validate_link(
-                    &href,
-                    source_path,
-                    project_root,
-                    ctx,
-                    severity,
-                    is_img,
-                );
+                validate_link(&href, env, ctx, is_img);
             }
 
             // Recurse into children.
             for child in children {
-                collect_diagnostics(
-                    child,
-                    source_path,
-                    project_root,
-                    ctx,
-                    severity,
-                );
+                collect_diagnostics(child, env, ctx);
             }
         }
         HastNode::Root { children } => {
             for child in children {
-                collect_diagnostics(
-                    child,
-                    source_path,
-                    project_root,
-                    ctx,
-                    severity,
-                );
+                collect_diagnostics(child, env, ctx);
             }
         }
         // Leaf nodes.
@@ -260,14 +278,7 @@ fn collect_diagnostics(
 /// Images support fragment syntax for SVG sprites (e.g. `sprite.svg#icon-x`),
 /// so `FileWithFragment` and `BareFragment` skip heading-anchor validation and
 /// only confirm file existence (or skip bare fragments entirely).
-fn validate_link(
-    href: &str,
-    source_path: &Path,
-    project_root: &Path,
-    ctx: &mut BuildContext<'_>,
-    severity: DiagnosticSeverity,
-    is_img: bool,
-) {
+fn validate_link(href: &str, env: &ValidationEnv<'_>, ctx: &mut BuildContext<'_>, is_img: bool) {
     let parsed = parse_link(href);
     match parsed {
         ParsedLink::External => {
@@ -280,109 +291,123 @@ fn validate_link(
                 let _ = fragment;
             } else {
                 // Check fragment against the current file's heading entries.
-                validate_fragment_in_file(href, &fragment, source_path, ctx, severity);
+                validate_fragment_in_file(href, &fragment, env, ctx);
             }
         }
         ParsedLink::FilePath(path) => {
             // Check that the file exists on disk relative to source_path,
             // and that the resolved path stays within project_root.
-            validate_file_exists(href, &path, source_path, project_root, ctx, severity);
+            validate_file_exists(href, &path, env, ctx);
         }
         ParsedLink::FileWithFragment { path, fragment } => {
             if is_img {
                 // For <img>, fragments are SVG sprite IDs — not heading anchors.
                 // Only validate file existence; ignore the fragment part.
-                validate_file_exists(href, &path, source_path, project_root, ctx, severity);
+                validate_file_exists(href, &path, env, ctx);
             } else {
                 // Resolve the target file, then check the fragment in that file.
-                validate_file_with_fragment(
-                    href,
-                    &path,
-                    &fragment,
-                    source_path,
-                    project_root,
-                    ctx,
-                    severity,
-                );
+                validate_file_with_fragment(href, &path, &fragment, env, ctx);
             }
         }
     }
 }
 
 /// Validate a bare `#fragment` against the current file's heading registry.
+///
+/// No filesystem read happens here (zfb#944 audit): the fragment is
+/// checked against the in-memory registry, whose entries for the CURRENT
+/// file derive from the compile input itself — already covered by the
+/// compile cache's input hash — so there is nothing to record.
 fn validate_fragment_in_file(
     raw_href: &str,
     fragment: &str,
-    source_path: &Path,
+    env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
-    severity: DiagnosticSeverity,
 ) {
     let registry = match ctx.heading_registry.as_ref() {
         Some(r) => r,
         None => return, // no registry → skip validation
     };
     let known = registry
-        .get(source_path)
+        .get(env.source_path)
         .map(|entries| entries.iter().any(|e| e.id == fragment))
         .unwrap_or(false);
 
     if !known {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+        emit_broken_link(raw_href, env, ctx);
     }
 }
 
 /// Validate that a file-only reference (`./other.md`) exists on disk and
 /// does not escape the project root via path traversal (`../outside.md`).
+///
+/// Read recording (zfb#944): the linked file's full-content state is
+/// recorded before the existence check — `Content` keeps the cached
+/// entry valid until the target changes, `Missing` invalidates it the
+/// moment the target appears. A directory target records `Error`
+/// (directories cannot be content-hashed), which makes the source file
+/// permanently uncacheable — conservative and correct, and rare enough
+/// for markdown link targets not to special-case.
 fn validate_file_exists(
     raw_href: &str,
     file_ref: &str,
-    source_path: &Path,
-    project_root: &Path,
+    env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
-    severity: DiagnosticSeverity,
 ) {
-    let resolved = match resolve_relative(source_path, file_ref) {
+    let resolved = match resolve_relative(env.source_path, file_ref) {
         Some(p) => p,
         None => return,
     };
     // Reject path traversal that escapes the project root. `resolved` is
     // already lexically normalized by `resolve_relative`; any remaining `..`
     // components would be past the root and `starts_with` reliably rejects them.
-    if !resolved.starts_with(project_root) {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+    // No filesystem access has happened for escaping refs — nothing to record.
+    if !resolved.starts_with(env.project_root) {
+        emit_broken_link(raw_href, env, ctx);
         return;
+    }
+    if let Some(r) = env.recorder {
+        let _ = r.record_file(&resolved);
     }
     // Check filesystem existence.
     if !resolved.exists() {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+        emit_broken_link(raw_href, env, ctx);
     }
 }
 
 /// Validate a `./other.md#fragment` link: file must exist within the project
 /// root and the fragment must be in the target file's heading registry.
+///
+/// Read recording (zfb#944): same contract as [`validate_file_exists`].
+/// The fragment check itself reads no files — it consults the in-memory
+/// registry — but the recorded full-content hash of the TARGET file is
+/// exactly what invalidates a cached entry when the target's headings
+/// (and therefore the registry-derived verdict) change.
 fn validate_file_with_fragment(
     raw_href: &str,
     file_ref: &str,
     fragment: &str,
-    source_path: &Path,
-    project_root: &Path,
+    env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
-    severity: DiagnosticSeverity,
 ) {
-    let resolved = match resolve_relative(source_path, file_ref) {
+    let resolved = match resolve_relative(env.source_path, file_ref) {
         Some(p) => p,
         None => return,
     };
 
     // Reject path traversal that escapes the project root.
-    if !resolved.starts_with(project_root) {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+    if !resolved.starts_with(env.project_root) {
+        emit_broken_link(raw_href, env, ctx);
         return;
+    }
+
+    if let Some(r) = env.recorder {
+        let _ = r.record_file(&resolved);
     }
 
     // Check filesystem existence first.
     if !resolved.exists() {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+        emit_broken_link(raw_href, env, ctx);
         return;
     }
 
@@ -395,22 +420,17 @@ fn validate_file_with_fragment(
         .unwrap_or(false);
 
     if !known {
-        emit_broken_link(raw_href, source_path, ctx, severity);
+        emit_broken_link(raw_href, env, ctx);
     }
 }
 
 /// Emit a `BrokenLink` diagnostic through `ctx.diagnostics`.
-fn emit_broken_link(
-    url: &str,
-    source_path: &Path,
-    ctx: &mut BuildContext<'_>,
-    severity: DiagnosticSeverity,
-) {
+fn emit_broken_link(url: &str, env: &ValidationEnv<'_>, ctx: &mut BuildContext<'_>) {
     if let Some(sink) = ctx.diagnostics.as_deref_mut() {
         sink.emit(MarkdownDiagnostic::BrokenLink {
-            severity,
+            severity: env.severity,
             url: url.to_string(),
-            location: Some(SourceLocation::from_path(source_path.to_path_buf())),
+            location: Some(SourceLocation::from_path(env.source_path.to_path_buf())),
         });
     }
 }
@@ -549,5 +569,103 @@ mod tests {
             diags.is_empty(),
             "img src with svg sprite fragment must not emit BrokenLink: {diags:?}"
         );
+    }
+
+    // ── Read recording (zfb#944) ──────────────────────────────────────────
+
+    /// Run the plugin (with a recorder) over a single `<a href>` and
+    /// return the recorded reads.
+    fn record_reads_for_href(
+        href: &str,
+        dir: &Path,
+        source_path: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, zfb_md_ast::ReadOutcome> {
+        use zfb_md_ast::HastVisitor;
+
+        let recorder = Arc::new(ReadRecorder::new());
+        let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default())
+            .with_recorder(Arc::clone(&recorder));
+        let mut root = HastNode::Root {
+            children: vec![HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), href.to_string())],
+                children: vec![],
+                void: false,
+            }],
+        };
+        let mut ctx = BuildContext {
+            source_path: Some(source_path.to_path_buf()),
+            project_root: dir.to_path_buf(),
+            public_dir: dir.to_path_buf(),
+            heading_registry: None,
+            diagnostics: None,
+        };
+        plugin.visit_with_context(&mut root, &mut ctx);
+        recorder.take_reads()
+    }
+
+    #[test]
+    fn linked_file_probe_records_full_content_hash() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("linkval_rec_ok").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"# Other\n").unwrap();
+        let source = dir.path().join("page.md");
+
+        let reads = record_reads_for_href("./other.md", dir.path(), &source);
+        assert_eq!(
+            reads.get(&dir.path().join("other.md")),
+            Some(&zfb_md_ast::ReadOutcome::of_bytes(b"# Other\n")),
+            "the existence probe must record the linked file's FULL hash: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn missing_link_target_records_missing_outcome() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("linkval_rec_missing").unwrap();
+        let source = dir.path().join("page.md");
+
+        let reads = record_reads_for_href("./absent.md", dir.path(), &source);
+        assert_eq!(
+            reads.get(&dir.path().join("absent.md")),
+            Some(&zfb_md_ast::ReadOutcome::Missing),
+            "a missing link target must record Missing so creating it later \
+             invalidates a cached entry: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn file_with_fragment_records_the_target_file() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("linkval_rec_frag").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"# Heading\n").unwrap();
+        let source = dir.path().join("page.md");
+
+        let reads = record_reads_for_href("./other.md#heading", dir.path(), &source);
+        assert!(
+            reads.contains_key(&dir.path().join("other.md")),
+            "a file#fragment link must record the TARGET file (its content \
+             carries the headings the fragment is validated against): {reads:?}"
+        );
+    }
+
+    #[test]
+    fn non_filesystem_hrefs_record_nothing() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("linkval_rec_none").unwrap();
+        let source = dir.path().join("page.md");
+
+        for href in [
+            "https://example.com/x",
+            "mailto:a@b.com",
+            "#fragment-only",
+            "../escape.md", // project-root escape rejected before any fs access
+        ] {
+            let reads = record_reads_for_href(href, dir.path(), &source);
+            assert!(
+                reads.is_empty(),
+                "href {href:?} performs no filesystem read — nothing to record: {reads:?}"
+            );
+        }
     }
 }
