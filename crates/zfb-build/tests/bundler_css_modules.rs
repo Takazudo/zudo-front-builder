@@ -67,6 +67,7 @@ fn make_input(
         css_module_class_maps: class_maps,
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     }
 }
 

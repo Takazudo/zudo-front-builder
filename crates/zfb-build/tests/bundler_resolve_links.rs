@@ -137,6 +137,7 @@ fn make_input_with_resolve(
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     }
 }
 
@@ -184,6 +185,7 @@ fn make_input_without_resolve(
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     }
 }
 

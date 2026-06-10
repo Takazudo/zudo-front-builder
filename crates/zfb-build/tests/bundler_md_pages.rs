@@ -57,6 +57,7 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         css_module_class_maps: HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     }
 }
 

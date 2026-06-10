@@ -108,6 +108,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     }
 }
 
@@ -657,6 +658,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     };
 
     let out = bundle(input).expect("bundle should succeed for fixture project");
@@ -829,6 +831,7 @@ async fn embedded_v8_md_page_renders_to_html() {
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     };
 
     let out = bundle(input).expect("bundle with pages/about.md should succeed");
@@ -1288,6 +1291,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     };
 
     let out = bundle(input).expect("bundle should succeed for paths-dual fixture");

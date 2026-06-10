@@ -613,6 +613,38 @@ pub struct BundlerInput {
     /// Empty (the default) → no files are skipped; the build output is
     /// byte-for-byte identical to a build without this knob.
     pub bundle_exclude: Vec<String>,
+
+    /// Base prefix for client-script assets, emitted as
+    /// `globalThis.__zfb.base = "<prefix>"` in the synthetic `entry.mjs` so
+    /// `clientScript(name)` can build the correct base-prefixed stable URL
+    /// at SSR time.
+    ///
+    /// ## Conditional emission rule
+    ///
+    /// `Some(prefix)` is set by the caller ONLY when at least one
+    /// `*.client.{ts,tsx,js,jsx}` entry was discovered in the project.
+    /// When `None`, zero bytes are emitted so builds without client scripts
+    /// remain byte-for-byte identical to pre-#978 builds (#261 zero-
+    /// registration parity, #940 byte-identical dev bundle skip).
+    ///
+    /// ## Value semantics
+    ///
+    /// The prefix is the normalised base string from
+    /// `zfb::config::asset_url_base_prefix(config.base)` for production
+    /// builds, and `zfb_types::dev_mount_prefix(config.base).unwrap_or_default()`
+    /// for dev builds.
+    ///
+    /// - Root-mounted or no-base sites → `Some("")` (empty string; the
+    ///   JS side reads `globalThis.__zfb?.base ?? ""` and gets `""`, so
+    ///   `clientScript("x")` returns `"/assets/client/x.js"` as expected).
+    /// - Sub-path deploy (`base="/foo/"`) → `Some("/foo")`.
+    /// - Absolute-URL base (CDN, `https://cdn.example.com/`) under
+    ///   `zfb dev` → `Some("")` (dev server cannot serve a different origin;
+    ///   `dev_mount_prefix` collapses absolute-URL bases to `None`, which
+    ///   the caller converts to `""` so the dev bundle still emits the slot).
+    ///
+    /// Default: `None`.
+    pub base_prefix: Option<String>,
 }
 
 impl BundlerInput {
@@ -667,6 +699,7 @@ impl BundlerInput {
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
+            base_prefix: None,
         }
     }
 }
@@ -1374,6 +1407,9 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             // Emitted independently of `content_imports` / `worker_only_routes`:
             // a project may define overrides with zero content entries (#616).
             mdx_components_import_spec: mdx_components_import_spec.as_deref(),
+            // Emitted only when at least one client-script entry was discovered
+            // (#978). `None` keeps zero-script builds byte-identical.
+            base_prefix: input.base_prefix.as_deref(),
         },
     )
     .context("bundler: failed writing entry.mjs")?;
@@ -3328,6 +3364,12 @@ struct EntryModuleInputs<'a> {
     /// (sub-issue #616). When `Some`, emit a default `import` of the file
     /// plus the `globalThis.__zfb.mdxComponents` installer. `None` => omit.
     mdx_components_import_spec: Option<&'a str>,
+    /// Base prefix for the `clientScript()` SSR helper (#978).
+    ///
+    /// `Some(prefix)` → emit `globalThis.__zfb.base = <json-prefix>` so
+    /// `clientScript(name)` can build base-prefixed stable URLs at SSR time.
+    /// `None` → omit entirely (builds without client scripts stay byte-identical).
+    base_prefix: Option<&'a str>,
 }
 
 /// Generate the `entry.mjs` module that re-exports `routes`,
@@ -3382,6 +3424,7 @@ fn write_entry_module(
     let site = inputs.site;
     let prefetch_disabled = inputs.prefetch_disabled;
     let mdx_components_import_spec = inputs.mdx_components_import_spec;
+    let base_prefix = inputs.base_prefix;
     use std::fmt::Write as _;
 
     // Static-HTML routes are emitted verbatim by the renderer and must
@@ -3568,6 +3611,27 @@ fn write_entry_module(
     if prefetch_disabled {
         src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
         src.push_str("globalThis.__zfb.prefetchDisabled = true;\n\n");
+    }
+
+    // ---------------------------------------------------------------
+    // Client-script base prefix (#978).
+    //
+    // Emitted IFF at least one `*.client.*` entry was discovered
+    // (signalled by `base_prefix` being `Some`). The value is the
+    // resolved base prefix — `""` for root-mounted / no-base builds,
+    // `"/foo"` for `base="/foo/"` sub-path builds. `clientScript(name)`
+    // reads `globalThis.__zfb?.base ?? ""` so it gets the right prefix
+    // whether or not this setter ran.
+    //
+    // Zero-script builds stay byte-for-byte identical to before (#261
+    // zero-registration parity, #940 byte-identical dev bundle skip).
+    // ---------------------------------------------------------------
+    if let Some(prefix) = base_prefix {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str(&format!(
+            "globalThis.__zfb.base = {};\n\n",
+            json_str(prefix)
+        ));
     }
 
     // ---------------------------------------------------------------
@@ -4376,6 +4440,7 @@ mod tests {
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
+            base_prefix: None,
         }
     }
 
@@ -4442,6 +4507,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4527,6 +4593,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4603,6 +4670,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4638,6 +4706,7 @@ mod tests {
                 site: Some("https://example.com"),
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4685,6 +4754,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4715,6 +4785,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: true,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4762,6 +4833,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4770,6 +4842,114 @@ mod tests {
         assert!(
             !body.contains("globalThis.__zfb.prefetchDisabled"),
             "prefetch_disabled=false → no prefetch setter; got:\n{body}"
+        );
+    }
+
+    // --- base_prefix / globalThis.__zfb.base (#978) ---------------------------
+
+    #[test]
+    fn entry_module_emits_base_prefix_when_some() {
+        // When `base_prefix` is `Some`, the entry module must emit
+        // `globalThis.__zfb.base = <json-value>` before `createPageRouter` so
+        // `clientScript(name)` can build the correct base-prefixed stable URL.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+                base_prefix: Some("/foo"),
+            },
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "base_prefix branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.base = \"/foo\";"),
+            "base setter must contain the JSON-encoded prefix; got:\n{body}"
+        );
+
+        // The setter must precede createPageRouter so clientScript() calls
+        // inside any SSR route already see the value from the first request.
+        let base_idx = body
+            .find("globalThis.__zfb.base = ")
+            .expect("base setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            base_idx < router_idx,
+            "base setter must precede createPageRouter; base at {base_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_emits_empty_base_prefix_when_some_empty_string() {
+        // Root-mounted / no-base build: `base_prefix = Some("")`.
+        // The setter must still be emitted (so clientScript() knows to use
+        // the empty prefix), but the JSON value is `""`.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+                base_prefix: Some(""),
+            },
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb.base = \"\";"),
+            "empty-string base prefix must emit base = \"\"; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn entry_module_omits_base_prefix_when_none() {
+        // Builds without client scripts (`base_prefix = None`) must not emit
+        // the base setter — keeping byte-for-byte parity with pre-#978 builds
+        // (#261 zero-registration parity, #940 byte-identical dev bundle skip).
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                mdx_components_import_spec: None,
+                base_prefix: None,
+            },
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !body.contains("globalThis.__zfb.base"),
+            "base_prefix=None → no base setter; got:\n{body}"
         );
     }
 
@@ -4817,6 +4997,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4871,6 +5052,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4905,6 +5087,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -4946,6 +5129,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -5165,6 +5349,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -5302,6 +5487,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -5329,6 +5515,7 @@ mod tests {
                 site: None,
                 prefetch_disabled: false,
                 mdx_components_import_spec: None,
+                base_prefix: None,
             },
         )
         .unwrap();
@@ -5619,6 +5806,7 @@ mod tests {
             css_module_class_maps: HashMap::new(),
             mdx_components_file: None,
             bundle_exclude: Vec::new(),
+            base_prefix: None,
         };
 
         let out = bundle(input).expect("real esbuild bundle should succeed");
