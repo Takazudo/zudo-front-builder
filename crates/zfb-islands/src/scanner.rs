@@ -1797,10 +1797,18 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                             // `n.orig` — that's what the body-marker
                             // table is keyed on.
                             let local = module_export_name(&n.orig);
-                            let marker = body_markers
-                                .get(&local)
-                                .cloned()
-                                .unwrap_or_else(|| name.clone());
+                            let marker = body_markers.get(&local).cloned().unwrap_or_else(|| {
+                                // `export { Foo as default }` — the exported alias
+                                // is "default" but the SSR side uses
+                                // `displayName ?? name`, which resolves to the
+                                // local identifier ("Foo").  Fall back to `local`
+                                // so the manifest key matches the runtime marker.
+                                if name == "default" {
+                                    local.clone()
+                                } else {
+                                    name.clone()
+                                }
+                            });
                             out.push(IslandRecord {
                                 component_name: name,
                                 marker_name: marker,
@@ -5037,6 +5045,147 @@ mod tests {
         assert_eq!(islands.len(), 1);
         assert_eq!(islands[0].component_name, "default");
         assert_eq!(islands[0].marker_name, "default");
+    }
+
+    // --- export { Foo as default } alias form (#984) --------------------
+
+    #[test]
+    fn marker_name_for_export_alias_as_default_uses_local_identifier() {
+        // Issue #984: tsup/esbuild compiles `export default function Foo()`
+        // to `function Foo() {...}; export { Foo as default }`.
+        // component_name must be "default" (the public export name) but
+        // marker_name must be "Foo" (the local identifier that the SSR side
+        // writes via `displayName ?? name`).
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import SidebarToggle from "../components/sidebar-toggle";
+                export default function Home() { return <SidebarToggle/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/sidebar-toggle.tsx"),
+                r#""use client";
+                function SidebarToggle() { return null; }
+                export { SidebarToggle as default };
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(
+            islands[0].marker_name, "SidebarToggle",
+            "issue #984: marker_name must use the local identifier, not the alias"
+        );
+    }
+
+    #[test]
+    fn marker_name_for_export_string_literal_default_alias_uses_local_identifier() {
+        // String-literal alias form: `export { Foo as "default" }` —
+        // semantically identical to `export { Foo as default }`.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import Counter from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                function Counter() { return null; }
+                export { Counter as "default" };
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(islands.len(), 1);
+        assert_eq!(islands[0].component_name, "default");
+        assert_eq!(
+            islands[0].marker_name, "Counter",
+            "issue #984: string-literal 'default' alias must use the local identifier"
+        );
+    }
+
+    #[test]
+    fn marker_name_for_mixed_named_and_default_alias_export() {
+        // `export { Foo, Foo as default }` — a module that exports the same
+        // function under both its own name and as the default.  The scanner
+        // emits two IslandRecords (component_name "Foo" and "default"), both
+        // with marker_name "Foo".  Manifest::from_islands keys on marker_name
+        // and keeps same-source duplicates silently (no collision), so the
+        // manifest ends up with a single "Foo" entry.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import Foo, { Foo as FooNamed } from "../components/foo";
+                export default function Home() { return <Foo/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/foo.tsx"),
+                r#""use client";
+                function Foo() { return null; }
+                export { Foo, Foo as default };
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        // Both the named and the default export are emitted as separate
+        // IslandRecords (different component_name), but both share
+        // marker_name = "Foo".
+        assert!(
+            islands
+                .iter()
+                .any(|i| i.component_name == "Foo" && i.marker_name == "Foo"),
+            "named export Foo must be emitted with marker_name Foo; got {islands:?}"
+        );
+        assert!(
+            islands
+                .iter()
+                .any(|i| i.component_name == "default" && i.marker_name == "Foo"),
+            "default alias must be emitted with marker_name Foo; got {islands:?}"
+        );
+    }
+
+    #[test]
+    fn marker_name_for_reexport_alias_as_default_defers_to_source_module() {
+        // `export { Foo as default } from './x'` — a re-export from another
+        // module.  collect_import_specifiers DFS-follows './x' and if it
+        // carries "use client" it self-registers there.  The re-export
+        // specifier in the barrel also produces an IslandRecord
+        // (component_name "default", marker_name "Foo") pointing at the
+        // barrel's path, not the source module's path; the manifest will have
+        // two entries (barrel and source) both keyed on "Foo" — the one from
+        // the actual "use client" source wins via insertion order.
+        // This test documents the resulting behavior rather than asserting a
+        // precise number of records; the key invariant is that at least one
+        // island with marker_name "Foo" is emitted.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import Foo from "../components/index";
+                export default function Home() { return <Foo/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/index.tsx"),
+                r#"export { Foo as default } from "./foo";
+                "#,
+            )
+            .with_file(
+                root().join("components/foo.tsx"),
+                r#""use client";
+                export function Foo() { return null; }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.iter().any(|i| i.marker_name == "Foo"),
+            "at least one island with marker_name 'Foo' must be emitted; got {islands:?}"
+        );
     }
 
     #[test]
