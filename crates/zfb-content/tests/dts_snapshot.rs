@@ -30,8 +30,8 @@ fn fixture_dir() -> PathBuf {
 #[test]
 fn snapshot_two_collections_with_schemas() {
     let dir = fixture_dir();
-    let schemas_text = std::fs::read_to_string(dir.join("schemas.json"))
-        .expect("schemas.json fixture must exist");
+    let schemas_text =
+        std::fs::read_to_string(dir.join("schemas.json")).expect("schemas.json fixture must exist");
     // Use BTreeMap so iteration over the schemas is alphabetical and
     // deterministic across runs. The fixture file order is also
     // alphabetical (`blog`, `docs`), but we want to emit in a stable

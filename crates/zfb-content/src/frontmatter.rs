@@ -67,7 +67,9 @@ pub enum FrontmatterError {
     Yaml(#[from] serde_yaml::Error),
     #[error("TSX frontmatter error: {0}")]
     Tsx(#[from] TsxFrontmatterError),
-    #[error("unsupported file extension `.{0}` for frontmatter extraction (expected md, mdx, or tsx)")]
+    #[error(
+        "unsupported file extension `.{0}` for frontmatter extraction (expected md, mdx, or tsx)"
+    )]
     UnsupportedExtension(String),
     #[error("missing file extension; cannot dispatch frontmatter extraction")]
     MissingExtension,

@@ -208,9 +208,7 @@ mod tests {
                 .any(|(k, v)| k == "class" && v.starts_with("syntect-")),
             "pre must have class=\"syntect-…\": {pre_attrs:?}"
         );
-        let code_el = pre_children
-            .first()
-            .expect("pre must have a child <code>");
+        let code_el = pre_children.first().expect("pre must have a child <code>");
         let HastNode::Element {
             tag: code_tag,
             children: code_children,
@@ -232,9 +230,7 @@ mod tests {
             };
             assert_eq!(span_tag, "span", "line {i}: span tag must be span");
             assert!(
-                span_attrs
-                    .iter()
-                    .any(|(k, v)| k == "class" && v == "line"),
+                span_attrs.iter().any(|(k, v)| k == "class" && v == "line"),
                 "line {i}: span must have class=\"line\": {span_attrs:?}"
             );
             assert_eq!(
@@ -355,7 +351,13 @@ mod tests {
             code_children.len()
         );
         for (i, span) in code_children.iter().enumerate() {
-            let HastNode::Element { tag, attrs, children: span_children, .. } = span else {
+            let HastNode::Element {
+                tag,
+                attrs,
+                children: span_children,
+                ..
+            } = span
+            else {
                 panic!("line {i}: expected Element<span>, got {span:?}");
             };
             assert_eq!(tag, "span", "line {i}: wrong tag");

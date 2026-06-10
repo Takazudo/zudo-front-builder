@@ -521,10 +521,7 @@ where
 pub fn emit_types_dts(out_path: &Path, collection_names: &[&str]) -> Result<(), CollectionError> {
     let collections: Vec<CollectionTypeInfo<'_>> = collection_names
         .iter()
-        .map(|name| CollectionTypeInfo {
-            name,
-            schema: None,
-        })
+        .map(|name| CollectionTypeInfo { name, schema: None })
         .collect();
     emit_types_dts_with_schemas(out_path, &collections)
 }
@@ -720,18 +717,18 @@ where
 
     // Dispatch to the unified frontmatter API. YAML for .md/.mdx,
     // `export const frontmatter` for .tsx — both normalised to JSON.
-    let uf = frontmatter::extract(path, &raw).map_err(|e| frontmatter_to_collection_error(path, e))?;
+    let uf =
+        frontmatter::extract(path, &raw).map_err(|e| frontmatter_to_collection_error(path, e))?;
 
     // serde_json::from_value clones the JSON into the typed schema. We
     // route through JSON instead of bypassing it (e.g. via untyped
     // YAML) so schema validation downstream sees the exact same value
     // shape regardless of source kind.
-    let data: T = serde_json::from_value(uf.value.clone()).map_err(|e| {
-        CollectionError::Frontmatter {
+    let data: T =
+        serde_json::from_value(uf.value.clone()).map_err(|e| CollectionError::Frontmatter {
             path: path.to_path_buf(),
             message: e.to_string(),
-        }
-    })?;
+        })?;
 
     data.validate().map_err(|report| CollectionError::Schema {
         path: path.to_path_buf(),
@@ -797,12 +794,10 @@ where
             // emitter entirely. #46 plumbs an optional
             // [`Pipeline`] through; today's callers pass `None`.
             let compiled = compile_mdx_to_jsx_module_cached(&md_body, path, cache, pipeline)
-                .map_err(|e| {
-                CollectionError::Mdx {
+                .map_err(|e| CollectionError::Mdx {
                     path: path.to_path_buf(),
                     message: e.to_string(),
-                }
-            })?;
+                })?;
             // Derive the specifier from THIS entry's file path + the
             // JSX hash rather than reusing `compiled.specifier`
             // directly. The compile cache keys on `sha256(body)` and
@@ -1340,7 +1335,10 @@ declare module \"zfb/content\" {\n\
             s.contains("sidebar_position?: number;"),
             "docs schema (optional number): {s}",
         );
-        assert!(s.contains("draft?: boolean;"), "docs schema (optional boolean): {s}");
+        assert!(
+            s.contains("draft?: boolean;"),
+            "docs schema (optional boolean): {s}"
+        );
         assert!(s.contains("tags?: string[];"), "docs schema (array): {s}");
 
         // blog: no schema → falls back to Record<string, unknown>.
@@ -1571,10 +1569,8 @@ declare module \"zfb/content\" {\n\
     /// scheme + collection + hash bytes untouched.
     #[test]
     fn maybe_strip_specifier_suffix_rewrites_slug_only() {
-        let stripped = maybe_strip_specifier_suffix(
-            "mdx://notes-en/col003-mixers.en#deadbeef",
-            Some(".en"),
-        );
+        let stripped =
+            maybe_strip_specifier_suffix("mdx://notes-en/col003-mixers.en#deadbeef", Some(".en"));
         assert_eq!(stripped, "mdx://notes-en/col003-mixers#deadbeef");
 
         // Non-matching suffix → returned unchanged.
@@ -1613,7 +1609,11 @@ declare module \"zfb/content\" {\n\
         tmp.write("data.toml", "[section]\nkey = \"value\"\n");
 
         let out: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
-        assert_eq!(out.len(), 1, "only entry.md should be returned; data files must be skipped");
+        assert_eq!(
+            out.len(),
+            1,
+            "only entry.md should be returned; data files must be skipped"
+        );
         assert_eq!(out[0].slug, "entry");
     }
 }

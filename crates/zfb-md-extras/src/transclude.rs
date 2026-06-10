@@ -339,10 +339,7 @@ fn resolve_and_expand(
             }
             emit_error(
                 ctx,
-                format!(
-                    "transclude: cannot read \"{}\": {e}",
-                    resolved.display()
-                ),
+                format!("transclude: cannot read \"{}\": {e}", resolved.display()),
             );
             return Vec::new();
         }
@@ -402,10 +399,7 @@ fn resolve_and_expand(
             }
             emit_error(
                 ctx,
-                format!(
-                    "transclude: cannot read \"{}\": {e}",
-                    canonical.display()
-                ),
+                format!("transclude: cannot read \"{}\": {e}", canonical.display()),
             );
             return Vec::new();
         }
@@ -469,10 +463,20 @@ fn resolve_and_expand(
     // directly in the root's children vec rather than being missed by the
     // container-dispatch in `expand_includes_in_node` (which skips Paragraph
     // nodes — the `:::include` pattern appears as a top-level Paragraph).
-    let included_source_dir = canonical.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let included_source_dir = canonical
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
     visited.insert(canonical.clone());
 
-    expand_includes_in_children(&mut nodes, &included_source_dir, env, visited, depth + 1, ctx);
+    expand_includes_in_children(
+        &mut nodes,
+        &included_source_dir,
+        env,
+        visited,
+        depth + 1,
+        ctx,
+    );
 
     visited.remove(&canonical);
 
@@ -535,7 +539,12 @@ fn parse_attrs_from_expression(expr_value: &str) -> Option<IncludeAttrs> {
     let code = attrs.get("code").map(|v| v == "true").unwrap_or(false);
     let lang = attrs.get("lang").cloned().filter(|l| !l.is_empty());
 
-    Some(IncludeAttrs { file, lines, code, lang })
+    Some(IncludeAttrs {
+        file,
+        lines,
+        code,
+        lang,
+    })
 }
 
 /// Parse a key="value" / key=value / key=true / key=false string into a map.
@@ -557,7 +566,9 @@ fn parse_attr_string(s: &str) -> std::collections::HashMap<String, String> {
         }
 
         // Read key
-        let key_end = rest.find(|c: char| c == '=' || c.is_whitespace()).unwrap_or(rest.len());
+        let key_end = rest
+            .find(|c: char| c == '=' || c.is_whitespace())
+            .unwrap_or(rest.len());
         let key = rest[..key_end].to_string();
         rest = &rest[key_end..];
 
@@ -569,20 +580,28 @@ fn parse_attr_string(s: &str) -> std::collections::HashMap<String, String> {
 
         if rest.starts_with('=') {
             rest = &rest[1..]; // consume '='
-            // Read value
+                               // Read value
             if rest.starts_with('"') {
                 // Quoted with "
                 rest = &rest[1..];
                 let end = rest.find('"').unwrap_or(rest.len());
                 let value = rest[..end].to_string();
-                rest = if end < rest.len() { &rest[end + 1..] } else { &rest[end..] };
+                rest = if end < rest.len() {
+                    &rest[end + 1..]
+                } else {
+                    &rest[end..]
+                };
                 map.insert(key, value);
             } else if rest.starts_with('\'') {
                 // Quoted with '
                 rest = &rest[1..];
                 let end = rest.find('\'').unwrap_or(rest.len());
                 let value = rest[..end].to_string();
-                rest = if end < rest.len() { &rest[end + 1..] } else { &rest[end..] };
+                rest = if end < rest.len() {
+                    &rest[end + 1..]
+                } else {
+                    &rest[end..]
+                };
                 map.insert(key, value);
             } else {
                 // Unquoted value (stops at whitespace)
@@ -826,7 +845,8 @@ mod tests {
     #[test]
     fn directive_def_validates_file_attr() {
         let def = include_directive_def();
-        let (result, warnings) = def.validate_attrs(&[("file".to_string(), "./foo.md".to_string())]);
+        let (result, warnings) =
+            def.validate_attrs(&[("file".to_string(), "./foo.md".to_string())]);
         assert!(result.is_ok(), "valid file attr must pass: {result:?}");
         assert!(warnings.is_empty());
     }
@@ -896,9 +916,15 @@ mod tests {
         );
         assert!(diags.is_empty(), "no diagnostics expected: {diags:?}");
 
-        let MdastNode::Root(root) = &tree else { panic!("expected Root") };
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root")
+        };
         // snippet.md has h1 + paragraph → 2 nodes spliced in
-        assert_eq!(root.children.len(), 2, "expected 2 spliced nodes, got: {root:?}");
+        assert_eq!(
+            root.children.len(),
+            2,
+            "expected 2 spliced nodes, got: {root:?}"
+        );
         assert!(matches!(root.children[0], MdastNode::Heading(_)));
         assert!(matches!(root.children[1], MdastNode::Paragraph(_)));
     }
@@ -920,9 +946,13 @@ mod tests {
             TranscludeConfig::default(),
         );
         assert!(diags.is_empty(), "no diagnostics expected: {diags:?}");
-        let MdastNode::Root(root) = &tree else { panic!("expected Root") };
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root")
+        };
         assert_eq!(root.children.len(), 1);
-        let MdastNode::Code(code) = &root.children[0] else { panic!("expected Code, got: {:?}", root.children[0]) };
+        let MdastNode::Code(code) = &root.children[0] else {
+            panic!("expected Code, got: {:?}", root.children[0])
+        };
         assert_eq!(code.lang.as_deref(), Some("rust"));
         assert!(code.value.contains("fn main()"));
     }
@@ -944,8 +974,12 @@ mod tests {
             TranscludeConfig::default(),
         );
         assert!(diags.is_empty(), "no diagnostics: {diags:?}");
-        let MdastNode::Root(root) = &tree else { panic!("expected Root") };
-        let MdastNode::Code(code) = &root.children[0] else { panic!("expected Code") };
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root")
+        };
+        let MdastNode::Code(code) = &root.children[0] else {
+            panic!("expected Code")
+        };
         assert_eq!(code.value, "line2\nline3\nline4");
     }
 
@@ -972,7 +1006,10 @@ mod tests {
                 ..
             } if message.contains("cycle"))
         });
-        assert!(has_cycle_error, "expected cycle error diagnostic: {diags:?}");
+        assert!(
+            has_cycle_error,
+            "expected cycle error diagnostic: {diags:?}"
+        );
     }
 
     #[test]
@@ -1008,7 +1045,12 @@ mod tests {
         let source = dir.path().join("input.md");
         std::fs::write(&source, input).unwrap();
 
-        let (_, diags) = run_transclude(input, source, dir.path().to_path_buf(), TranscludeConfig::default());
+        let (_, diags) = run_transclude(
+            input,
+            source,
+            dir.path().to_path_buf(),
+            TranscludeConfig::default(),
+        );
         let has_err = diags.iter().any(|d| {
             matches!(d, zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic {
                 severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Error,
@@ -1026,17 +1068,28 @@ mod tests {
         // outer/secret.md exists but project_root is inner/
         std::fs::write(outer.path().join("secret.md"), "secret\n").unwrap();
 
-        let input = format!(r#":::include{{file="{}"}}"#, outer.path().join("secret.md").display());
+        let input = format!(
+            r#":::include{{file="{}"}}"#,
+            outer.path().join("secret.md").display()
+        );
         let source = inner.path().join("input.md");
         std::fs::write(&source, &input).unwrap();
 
         // project_root = inner dir, but file resolves to outer dir (absolute → rejected first)
-        let (_, diags) = run_transclude(&input, source, inner.path().to_path_buf(), TranscludeConfig::default());
+        let (_, diags) = run_transclude(
+            &input,
+            source,
+            inner.path().to_path_buf(),
+            TranscludeConfig::default(),
+        );
         let has_err = diags.iter().any(|d| {
-            matches!(d, zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic {
-                severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Error,
-                ..
-            })
+            matches!(
+                d,
+                zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic {
+                    severity: zfb_md_ast::diagnostics::DiagnosticSeverity::Error,
+                    ..
+                }
+            )
         });
         assert!(has_err, "expected path error: {diags:?}");
     }
@@ -1052,9 +1105,16 @@ mod tests {
         let source = dir.path().join("root.md");
         std::fs::write(&source, input).unwrap();
 
-        let (tree, diags) = run_transclude(input, source, dir.path().to_path_buf(), TranscludeConfig::default());
+        let (tree, diags) = run_transclude(
+            input,
+            source,
+            dir.path().to_path_buf(),
+            TranscludeConfig::default(),
+        );
         assert!(diags.is_empty(), "no diagnostics: {diags:?}");
-        let MdastNode::Root(root) = &tree else { panic!("expected Root") };
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root")
+        };
         // a.md inlines b.md which is "From B." → a paragraph
         assert!(!root.children.is_empty(), "expected inlined content");
     }
@@ -1098,8 +1158,7 @@ mod tests {
         let input = r#":::include{file="./snippet.md"}"#;
         std::fs::write(&source, input).unwrap();
 
-        let (_, diags, reads) =
-            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        let (_, diags, reads) = run_transclude_recorded(input, source, dir.path().to_path_buf());
         assert!(diags.is_empty(), "no diagnostics: {diags:?}");
         let canonical = snippet.canonicalize().expect("canonicalize snippet");
         assert_eq!(
@@ -1116,8 +1175,7 @@ mod tests {
         let input = r#":::include{file="./not-yet.md"}"#;
         std::fs::write(&source, input).unwrap();
 
-        let (_, diags, reads) =
-            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        let (_, diags, reads) = run_transclude_recorded(input, source, dir.path().to_path_buf());
         assert!(
             !diags.is_empty(),
             "a missing include must emit a diagnostic"
@@ -1140,13 +1198,18 @@ mod tests {
         let input = r#":::include{file="./b.md"}"#;
         std::fs::write(&source, input).unwrap();
 
-        let (_, diags, reads) =
-            run_transclude_recorded(input, source, dir.path().to_path_buf());
+        let (_, diags, reads) = run_transclude_recorded(input, source, dir.path().to_path_buf());
         assert!(diags.is_empty(), "no diagnostics: {diags:?}");
         let b = dir.path().join("b.md").canonicalize().unwrap();
         let c = dir.path().join("c.md").canonicalize().unwrap();
-        assert!(reads.contains_key(&b), "level-1 include must record: {reads:?}");
-        assert!(reads.contains_key(&c), "level-2 include must record: {reads:?}");
+        assert!(
+            reads.contains_key(&b),
+            "level-1 include must record: {reads:?}"
+        );
+        assert!(
+            reads.contains_key(&c),
+            "level-2 include must record: {reads:?}"
+        );
     }
 
     #[test]

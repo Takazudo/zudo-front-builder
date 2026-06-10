@@ -62,8 +62,8 @@
 //! `AttrType::String` and `required: false`.
 
 use markdown::mdast::{
-    AttributeContent, AttributeValue, AttributeValueExpression, MdxJsxAttribute,
-    MdxJsxFlowElement, Node as MdastNode, Text,
+    AttributeContent, AttributeValue, AttributeValueExpression, MdxJsxAttribute, MdxJsxFlowElement,
+    Node as MdastNode, Text,
 };
 use zfb_md_ast::{AttrSchema, AttrType, DirectiveDef, MdastVisitor};
 
@@ -206,7 +206,9 @@ fn rewrite_code_groups(children: &mut Vec<MdastNode>) {
         let tabs: Vec<String> = codes
             .iter()
             .map(|n| {
-                let MdastNode::Code(c) = n else { unreachable!() };
+                let MdastNode::Code(c) = n else {
+                    unreachable!()
+                };
                 tab_label_for_code(c)
             })
             .collect();
@@ -215,7 +217,9 @@ fn rewrite_code_groups(children: &mut Vec<MdastNode>) {
         let jsx_children: Vec<MdastNode> = codes
             .iter()
             .map(|n| {
-                let MdastNode::Code(c) = n else { unreachable!() };
+                let MdastNode::Code(c) = n else {
+                    unreachable!()
+                };
                 build_pre_element(c)
             })
             .collect();
@@ -627,10 +631,7 @@ mod tests {
     #[test]
     fn unclosed_code_group_is_left_unchanged() {
         // No `:::` closer — opener stays as paragraph.
-        let mut tree = make_root(vec![
-            para(":::code-group"),
-            code_node("ts", "x"),
-        ]);
+        let mut tree = make_root(vec![para(":::code-group"), code_node("ts", "x")]);
         CodeTabsPlugin::new().visit(&mut tree);
 
         let MdastNode::Root(root) = &tree else {
@@ -698,10 +699,7 @@ mod tests {
     fn empty_code_group_is_left_unchanged() {
         // A `:::code-group` with no fenced code blocks between the opener
         // and closer must not be rewritten — the 3 nodes remain as-is.
-        let mut tree = make_root(vec![
-            para(":::code-group"),
-            para(":::"),
-        ]);
+        let mut tree = make_root(vec![para(":::code-group"), para(":::")]);
         CodeTabsPlugin::new().visit(&mut tree);
 
         let MdastNode::Root(root) = &tree else {
@@ -726,7 +724,8 @@ mod tests {
         // `name` attribute on the `:::code-group` directive.
         // validate_attrs returns (Result<..., ...>, Vec<warnings>).
         let def = code_group_directive_def();
-        let (result, warnings) = def.validate_attrs(&[("name".to_string(), "my-group".to_string())]);
+        let (result, warnings) =
+            def.validate_attrs(&[("name".to_string(), "my-group".to_string())]);
         assert!(
             result.is_ok(),
             "valid `name` attribute must pass validation: {result:?}"

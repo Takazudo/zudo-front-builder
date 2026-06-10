@@ -48,6 +48,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic};
+use zfb_md_ast::heading_registry::{HeadingEntry as RegistryHeadingEntry, HeadingRegistry};
 use zfb_md_ast::BuildContext;
 
 use crate::dep_manifest::DependencyManifest;
@@ -246,18 +247,27 @@ fn mdx_to_jsx_module_inner(
     // default), so output is byte-identical for every other plugin.
     // Without armed roots this is all skipped — context-free behaviour,
     // byte-for-byte.
+    //
+    // Cache-safety of anchor verdicts: the per-compile-local registry
+    // (seeded below from `collect_headings`) derives only from the
+    // post-mdast tree of THIS compile — input bytes + config fingerprint
+    // + transcluded content already covered by the read-recorder manifest.
+    // Anchor verdicts are therefore pure functions of the cache key and
+    // replay correctly. BUILD-scoped cross-file registry remains deferred
+    // (#960).
     let context_roots = pipeline_mut.as_deref().and_then(|p| {
         p.build_context_roots()
             .map(|(root, public)| (root.to_path_buf(), public.to_path_buf()))
     });
     let mut context_sink = CollectingSink::new();
+    // Per-compile-local registry for same-file anchor validation (#954).
+    // Cross-file (build-scoped) registry is deferred to #960.
+    let mut local_heading_registry = HeadingRegistry::new();
     let mut build_ctx = context_roots.map(|(project_root, public_dir)| BuildContext {
         source_path: opts.source_path.clone(),
         project_root,
         public_dir,
-        // Per-build orchestration state; cross-file anchor validation
-        // through the compile cache is follow-up work (zfb#944).
-        heading_registry: None,
+        heading_registry: Some(&mut local_heading_registry),
         diagnostics: Some(&mut context_sink),
     });
 
@@ -311,6 +321,34 @@ fn mdx_to_jsx_module_inner(
         nested_slugs,
     } = collect_headings(&children, strategy);
 
+    // Seed the per-compile registry from collect_headings' canonical
+    // walk: it covers JSX-nested headings (rendered ids stamped by
+    // jsx_render_child) that hast-phase HeadingLinksPlugin never sees.
+    // h1 entries are seeded too: a top-level h1 renders NO id, so its
+    // anchor passes silently rather than false-positively (h1 inside a
+    // JSX body DOES render the id, and the slug here matches it).
+    if let Some(ctx) = build_ctx.as_mut() {
+        if let (Some(reg), Some(src)) =
+            (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
+        {
+            for h in &headings {
+                if !h.slug.is_empty() {
+                    reg.insert(
+                        src.clone(),
+                        RegistryHeadingEntry {
+                            id: h.slug.clone(),
+                            text: h.text.clone(),
+                            depth: h.depth,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    // (`headings` is only borrowed above; its later use for the export is unaffected.
+    // HeadingLinksPlugin's `visit_with_context` will ALSO insert top-level h2–h6 entries
+    // during the hast pass — exact duplicates by the slug-lockstep invariant; harmless.)
+
     let (body, html_tags, component_names, hoisted_esm) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
         // recurse through them as a single node — its public signature
@@ -359,7 +397,12 @@ fn mdx_to_jsx_module_inner(
         }
         let mut bridge = HastJsxBridge::new();
         let body = bridge.emit_root(&hast);
-        (body, bridge.html_tags, bridge.component_names, bridge.hoisted_esm)
+        (
+            body,
+            bridge.html_tags,
+            bridge.component_names,
+            bridge.hoisted_esm,
+        )
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
@@ -956,11 +999,7 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 /// ```
 ///
 /// Matches the canonical shape from zfb#136 / issue #193.
-fn emit_table_jsx(
-    emitter: &mut JsxEmitter,
-    rows: &[MdastNode],
-    align: &[AlignKind],
-) -> String {
+fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
     // Build a style attr string for column index `col`.
@@ -1271,16 +1310,52 @@ fn starts_with_block_level_tag(s: &str) -> bool {
     // Block-level elements per HTML5 content model. Conservative list
     // — anything not on it falls through to <span> (the inline default).
     const BLOCK_TAGS: &[&str] = &[
-        "address", "article", "aside", "blockquote", "details", "dialog",
-        "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure",
-        "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
-        "hgroup", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-        "summary", "table", "thead", "tbody", "tfoot", "tr", "td", "th",
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "details",
+        "dialog",
+        "div",
+        "dl",
+        "dt",
+        "dd",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hgroup",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "summary",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "td",
+        "th",
         "ul",
     ];
     let trimmed = s.trim_start();
     let bytes = trimmed.as_bytes();
-    if bytes.first() != Some(&b'<') { return false; }
+    if bytes.first() != Some(&b'<') {
+        return false;
+    }
     let after_lt = &trimmed[1..];
     let tag_end = after_lt
         .find(|c: char| [' ', '>', '/', '\t', '\n', '\r'].contains(&c))
@@ -1661,7 +1736,11 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
                 continue;
             };
             let style = style_attr(col);
-            let inner: String = tc.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+            let inner: String = tc
+                .children
+                .iter()
+                .map(|c| jsx_render_child(c, ctx))
+                .collect();
             out.push_str(&format!(
                 "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
             ));
@@ -1695,7 +1774,10 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
 fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
     format!(
         "<_components.{tag}{attrs}>{}</_components.{tag}>",
-        children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+        children
+            .iter()
+            .map(|c| jsx_render_child(c, ctx))
+            .collect::<String>(),
     )
 }
 
@@ -2631,7 +2713,11 @@ mod tests {
             third.jsx_source, "__SENTINEL__",
             "edited dep must be a cache miss (recompile)"
         );
-        assert_eq!(cache.len(), 1, "recompile overwrites the stale entry in place");
+        assert_eq!(
+            cache.len(),
+            1,
+            "recompile overwrites the stale entry in place"
+        );
 
         // The recompile re-recorded the manifest against v2: with the
         // dep untouched since, the entry must hit again.
@@ -2796,7 +2882,11 @@ mod tests {
             Some(&mut p3),
         )
         .expect("compile c");
-        assert_eq!(cache.len(), 2, "same-dir identical body must not add an entry");
+        assert_eq!(
+            cache.len(),
+            2,
+            "same-dir identical body must not add an entry"
+        );
         assert_eq!(
             third.jsx_source, "__SENTINEL__",
             "same-dir identical body must be served from the shared entry"
@@ -2818,8 +2908,7 @@ mod tests {
             Path::new("/stale/leftover.md"),
             zfb_md_ast::ReadOutcome::Error,
         );
-        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
-            .expect("compile");
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p)).expect("compile");
         assert_eq!(
             cache.len(),
             1,
@@ -2838,10 +2927,7 @@ mod tests {
     /// Feature-config pipeline with context roots armed at `project_root`
     /// (public dir at `<root>/public`). Fresh per compile, mirroring the
     /// dev-tick shape (same config ⇒ same fingerprint).
-    fn fs_features_pipeline(
-        features_json: serde_json::Value,
-        project_root: &Path,
-    ) -> Pipeline {
+    fn fs_features_pipeline(features_json: serde_json::Value, project_root: &Path) -> Pipeline {
         let feats: zfb_md_extras::MarkdownFeaturesConfig =
             serde_json::from_value(features_json).expect("valid features config");
         let mut p = Pipeline::with_defaults_and_full_config(
@@ -2890,9 +2976,8 @@ mod tests {
         let feats = serde_json::json!({ "transclude": {} });
 
         let mut p = fs_features_pipeline(feats.clone(), root);
-        let first_a =
-            compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
-                .expect("compile a");
+        let first_a = compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
+            .expect("compile a");
         assert!(
             first_a.jsx_source.contains("Shared snippet v1."),
             "the transclude plugin must fire on the cached compile path; got: {}",
@@ -2917,9 +3002,8 @@ mod tests {
         // new content); the unrelated file stays a hit (sentinel).
         std::fs::write(root.join("snippet.md"), "Shared snippet v2.\n").expect("edit snippet");
         let mut p = fs_features_pipeline(feats.clone(), root);
-        let fresh_a =
-            compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
-                .expect("recompile a");
+        let fresh_a = compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
+            .expect("recompile a");
         assert!(
             fresh_a.jsx_source.contains("Shared snippet v2."),
             "editing the snippet must recompile its dependent; got: {}",
@@ -3196,13 +3280,17 @@ mod tests {
         let src = "## Intro\n\nhi\n";
         let path = Path::new("/virtual/blog/intro.mdx");
 
-        let plain = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), None)
-            .expect("compile plain");
+        let plain =
+            compile_mdx_to_jsx_module_cached(src, path, Some(&cache), None).expect("compile plain");
         let mut p = full_config_pipeline(None);
         let piped = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
             .expect("compile piped");
 
-        assert_eq!(cache.len(), 2, "no-pipeline and pipeline'd keys must differ");
+        assert_eq!(
+            cache.len(),
+            2,
+            "no-pipeline and pipeline'd keys must differ"
+        );
         assert_ne!(
             plain.jsx_source, piped.jsx_source,
             "sanity: the two paths emit different JSX for a heading"
@@ -3500,9 +3588,18 @@ mod tests {
         let out = emit(src);
 
         // All table-related tags registered in _components map.
-        assert!(out.contains("table: \"table\","), "table tag missing: {out}");
-        assert!(out.contains("thead: \"thead\","), "thead tag missing: {out}");
-        assert!(out.contains("tbody: \"tbody\","), "tbody tag missing: {out}");
+        assert!(
+            out.contains("table: \"table\","),
+            "table tag missing: {out}"
+        );
+        assert!(
+            out.contains("thead: \"thead\","),
+            "thead tag missing: {out}"
+        );
+        assert!(
+            out.contains("tbody: \"tbody\","),
+            "tbody tag missing: {out}"
+        );
         assert!(out.contains("tr: \"tr\","), "tr tag missing: {out}");
         assert!(out.contains("th: \"th\","), "th tag missing: {out}");
         assert!(out.contains("td: \"td\","), "td tag missing: {out}");
@@ -3518,10 +3615,7 @@ mod tests {
             out.contains("<_components.thead>"),
             "missing <thead>: {out}"
         );
-        assert!(
-            out.contains("<_components.th>"),
-            "missing <th>: {out}"
-        );
+        assert!(out.contains("<_components.th>"), "missing <th>: {out}");
         assert!(
             out.contains("{\"Key\"}"),
             "header cell 'Key' missing: {out}"
@@ -3536,10 +3630,7 @@ mod tests {
             out.contains("<_components.tbody>"),
             "missing <tbody>: {out}"
         );
-        assert!(
-            out.contains("<_components.td>"),
-            "missing <td>: {out}"
-        );
+        assert!(out.contains("<_components.td>"), "missing <td>: {out}");
         assert!(
             out.contains("{\"docs\"}"),
             "body cell 'docs' missing: {out}"
@@ -3578,7 +3669,10 @@ mod tests {
         let style_count = out.matches("style=\"text-align:").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
-        assert_eq!(style_count, 6, "expected 6 style attrs (3 cols × 2 rows): {out}");
+        assert_eq!(
+            style_count, 6,
+            "expected 6 style attrs (3 cols × 2 rows): {out}"
+        );
     }
 
     // ─── HastNode::Raw block-aware wrapper tests (#1490) ────────────────────
@@ -3589,9 +3683,7 @@ mod tests {
     #[test]
     fn raw_pre_emits_div_wrapper() {
         let mut bridge = HastJsxBridge::new();
-        let node = HastNode::Raw(
-            r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string(),
-        );
+        let node = HastNode::Raw(r#"<pre class="syntect-x"><code>1</code></pre>"#.to_string());
         let out = bridge.emit_node(&node);
         assert!(
             out.starts_with("<div dangerouslySetInnerHTML"),
@@ -3671,8 +3763,7 @@ mod tests {
         // We rely only on the returned len(), not on map iteration order.
         for i in 0..MDX_MODULE_CACHE_CAP {
             let src = format!("word{i}\n");
-            compile_mdx_to_jsx_module_cached(&src, path, Some(&cache), None)
-                .expect("compile fill");
+            compile_mdx_to_jsx_module_cached(&src, path, Some(&cache), None).expect("compile fill");
         }
         assert_eq!(
             cache.len(),
@@ -3687,6 +3778,155 @@ mod tests {
             cache.len(),
             1,
             "overflow past CAP must clear the map; only the triggering entry remains"
+        );
+    }
+
+    // ── zfb#954: same-file anchor validation ─────────────────────────────────
+
+    // zfb#954: a valid same-file anchor passes; an invalid one is BrokenLink.
+    #[test]
+    fn armed_same_file_anchor_validates_against_local_registry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body = "## Setup\n\n[ok](#setup)\n[bad](#nope)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p = fs_features_pipeline(feats, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile");
+        let diags = p.take_markdown_diagnostics();
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| matches!(d, MarkdownDiagnostic::BrokenLink { .. }))
+                .count(),
+            1,
+            "exactly one BrokenLink expected: {diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| matches!(d, MarkdownDiagnostic::BrokenLink { url, .. } if url == "#nope")),
+            "#nope must be reported as BrokenLink: {diags:?}"
+        );
+    }
+
+    // zfb#954: a heading inside a JSX body has its id rendered and must
+    // NOT produce a false-positive when linked from the same file.
+    #[test]
+    fn armed_same_file_anchor_inside_jsx_body_no_false_positive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // The `<Note>` component is PascalCase — not mapped through
+        // `_components`; it comes from the caller's `components` prop and
+        // triggers a runtime throw if missing, but compile succeeds.
+        let body = "<Note>\n\n## Inside\n\n</Note>\n\n[ok](#inside)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p = fs_features_pipeline(feats, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile");
+        let diags = p.take_markdown_diagnostics();
+        assert!(
+            diags
+                .iter()
+                .all(|d| !matches!(d, MarkdownDiagnostic::BrokenLink { .. })),
+            "JSX-nested heading anchor must not produce BrokenLink: {diags:?}"
+        );
+    }
+
+    // zfb#954: a top-level h1 anchor passes silently even though no id
+    // renders (h1 is intentionally left alone by HeadingLinksPlugin).
+    #[test]
+    fn armed_top_level_h1_anchor_passes_silently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body = "# Title\n\n[top](#title)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p = fs_features_pipeline(feats, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile");
+        let diags = p.take_markdown_diagnostics();
+        assert!(
+            diags
+                .iter()
+                .all(|d| !matches!(d, MarkdownDiagnostic::BrokenLink { .. })),
+            "h1-slug anchor must pass silently: {diags:?}"
+        );
+    }
+
+    // zfb#954: with resolveMarkdownLinks ON, rewritten hrefs become
+    // URL-space and are skipped — zero BrokenLink diagnostics for valid links.
+    #[test]
+    fn armed_url_space_href_no_diagnostic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // Write the target file WITH a heading that can be linked.
+        std::fs::write(root.join("other.md"), "## Existing Heading\n").expect("write other");
+        let body = "[x](./other.md)\n[y](./other.md#existing-heading)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p = fs_features_pipeline(feats, root);
+        // Add ResolveLinksPlugin mapping other.md → a URL-space href.
+        let mut map = HashMap::new();
+        map.insert(root.join("other.md"), "/docs/other/".to_string());
+        p.add_resolve_links(map);
+        p.set_resolve_links_source_dir(root.to_path_buf());
+
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile");
+        let diags = p.take_markdown_diagnostics();
+        assert!(
+            diags
+                .iter()
+                .all(|d| !matches!(d, MarkdownDiagnostic::BrokenLink { .. })),
+            "URL-space hrefs after resolve must not report BrokenLink: {diags:?}"
+        );
+    }
+
+    // zfb#954: same-file anchor verdict replays correctly on a cache hit.
+    #[test]
+    fn armed_same_file_anchor_verdict_replays_on_cache_hit() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body = "## Setup\n\n[bad](#nope)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p1 = fs_features_pipeline(feats.clone(), root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        let fresh = p1.take_markdown_diagnostics();
+        assert!(
+            fresh
+                .iter()
+                .any(|d| matches!(d, MarkdownDiagnostic::BrokenLink { url, .. } if url == "#nope")),
+            "fresh compile must report the broken anchor: {fresh:?}"
+        );
+
+        poke_sentinel(&cache);
+        let mut p2 = fs_features_pipeline(feats, root);
+        let second = compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "must be a true cache hit"
+        );
+        assert_eq!(
+            p2.take_markdown_diagnostics(),
+            fresh,
+            "BrokenLink must replay identically on the cache hit"
         );
     }
 }

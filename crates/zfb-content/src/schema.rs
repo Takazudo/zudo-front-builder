@@ -69,11 +69,7 @@ fn schema_to_ts_inner(schema: &JsonValue, indent: usize) -> String {
     ts_type
 }
 
-fn single_type_to_ts(
-    ty: &str,
-    obj: &serde_json::Map<String, JsonValue>,
-    indent: usize,
-) -> String {
+fn single_type_to_ts(ty: &str, obj: &serde_json::Map<String, JsonValue>, indent: usize) -> String {
     match ty {
         "string" => "string".to_string(),
         "number" | "integer" => "number".to_string(),
@@ -209,12 +205,7 @@ pub fn validate(value: &JsonValue, schema: &JsonValue) -> Vec<SchemaIssue> {
     out
 }
 
-fn validate_inner(
-    value: &JsonValue,
-    schema: &JsonValue,
-    path: &str,
-    out: &mut Vec<SchemaIssue>,
-) {
+fn validate_inner(value: &JsonValue, schema: &JsonValue, path: &str, out: &mut Vec<SchemaIssue>) {
     let JsonValue::Object(schema_obj) = schema else {
         // Non-object schemas (`true`, missing, etc.) accept anything.
         return;
@@ -226,7 +217,11 @@ fn validate_inner(
             let parts: Vec<String> = values.iter().map(literal_to_ts).collect();
             out.push(SchemaIssue {
                 path: path.to_string(),
-                message: format!("expected one of {}, got {}", parts.join(" | "), describe(value)),
+                message: format!(
+                    "expected one of {}, got {}",
+                    parts.join(" | "),
+                    describe(value)
+                ),
             });
         }
         return;
@@ -298,7 +293,8 @@ fn value_matches_type(value: &JsonValue, ty: &str) -> bool {
     match ty {
         "string" => value.is_string(),
         "number" => value.is_number(),
-        "integer" => value.as_i64().is_some()
+        "integer" => {
+            value.as_i64().is_some()
             || value.as_u64().is_some()
             // Also accept JSON `1.0` which is technically integral, but
             // only when it actually fits in an integer lane — otherwise
@@ -312,7 +308,8 @@ fn value_matches_type(value: &JsonValue, ty: &str) -> bool {
                         && f >= i64::MIN as f64
                         && f <= u64::MAX as f64
                 })
-                .unwrap_or(false),
+                .unwrap_or(false)
+        }
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),
         "array" => value.is_array(),

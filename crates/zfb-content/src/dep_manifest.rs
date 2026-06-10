@@ -185,7 +185,10 @@ mod tests {
         let rec = ReadRecorder::new();
         assert_eq!(rec.record_file(&dep), ReadOutcome::Missing);
         let m = manifest_of(&rec);
-        assert!(m.still_valid(), "still-missing dep must keep the entry valid");
+        assert!(
+            m.still_valid(),
+            "still-missing dep must keep the entry valid"
+        );
         std::fs::write(&dep, b"now it exists").expect("create");
         assert!(!m.still_valid(), "created dep must invalidate");
     }

@@ -273,4 +273,3 @@ fn bold_at_cjk_boundary_default() {
     let html = render(input);
     assert_contains(&html, "<strong>強調</strong>するテキスト", input);
 }
-

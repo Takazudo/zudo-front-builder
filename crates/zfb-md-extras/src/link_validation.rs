@@ -4,11 +4,24 @@
 //! validates that:
 //!
 //! - **Bare anchor fragments** (`#section`) match a heading ID in the current
-//!   file's heading-ID registry entry.
+//!   file's heading-ID registry entry. Skipped silently when the registry has
+//!   no entry for the source file (distinguishes "no headings tracked" from
+//!   "file not tracked" — entry-presence contract). Empty and percent-encoded
+//!   fragments (`#`, `#a%20b`) are also skipped (dummy links / undecodable).
 //! - **File-relative links with anchor** (`./other.md#section`) resolve to an
 //!   existing source file whose registry entry contains that heading ID.
+//!   Degrades to existence-only when the registry has no entry for the target
+//!   file (mirrors the bare-anchor contract; kills false positives until a
+//!   build-scoped cross-file registry lands in #960).
 //! - **File-relative links without anchor** (`./other.md`) resolve to an
-//!   existing file on disk (under `project_root`).
+//!   existing file on disk (under `project_root`). Query strings
+//!   (`./other.md?x=1`) are stripped before the path check.
+//! - **URL-space hrefs** — site-absolute paths (`/docs/intro/`),
+//!   protocol-relative URLs (`//host/x`), and bare-query/empty hrefs (`?x=1`,
+//!   ``) — are skipped silently. These are rewrite products of
+//!   `ResolveLinksPlugin` or hand-authored site URLs, never on-disk file
+//!   references. Site-absolute `<img src="/img/x.png">` public-dir assets are
+//!   also skipped — their validation belongs to `imageDimensions`, not here.
 //! - **External URLs** (`http://`, `https://`, `mailto:`, etc.) are always
 //!   skipped silently — network validation is out of scope.
 //!
@@ -92,6 +105,11 @@ fn is_external_url(href: &str) -> bool {
 enum ParsedLink {
     /// External URL — skip validation.
     External,
+    /// URL-space href — site-absolute path (`/docs/intro/`), protocol-relative
+    /// (`//host/x`), or empty-path query-only href. These are rewrite products
+    /// (ResolveLinksPlugin) or hand-authored site URLs, never on-disk file
+    /// references — skip validation.
+    UrlSpace,
     /// Bare anchor fragment (e.g. `#intro`). Path part is empty.
     BareFragment(String),
     /// File path without an anchor (e.g. `./other.md`).
@@ -101,27 +119,43 @@ enum ParsedLink {
 }
 
 fn parse_link(href: &str) -> ParsedLink {
+    // 1. External URL (scheme-prefixed) — skip validation.
     if is_external_url(href) {
         return ParsedLink::External;
     }
+    // 2. URL-space: site-absolute paths (`/docs/x/`) and protocol-relative
+    //    URLs (`//host/x`) can never be on-disk relative references.
+    if href.starts_with('/') {
+        return ParsedLink::UrlSpace;
+    }
+    // 3. Bare fragment — everything after the leading `#` is the fragment.
     if let Some(fragment) = href.strip_prefix('#') {
         return ParsedLink::BareFragment(fragment.to_string());
     }
-    // Split on `#` for file-relative links.
-    if let Some(pos) = href.find('#') {
-        let (path, rest) = href.split_at(pos);
-        let fragment = &rest[1..]; // strip the `#`
-        if path.is_empty() {
-            // Shouldn't happen here (bare `#` already handled above), but
-            // defensively treat empty path as bare fragment.
-            return ParsedLink::BareFragment(fragment.to_string());
-        }
-        return ParsedLink::FileWithFragment {
+    // 4. Split on the first `#` to separate path+query from fragment.
+    let (path_and_query, fragment_opt) = match href.find('#') {
+        Some(pos) => (&href[..pos], Some(&href[pos + 1..])),
+        None => (href, None),
+    };
+    // 5. Strip query from the path part (query is never part of an on-disk path).
+    let path = match path_and_query.find('?') {
+        Some(pos) => &path_and_query[..pos],
+        None => path_and_query,
+    };
+    // 6. Classify by (path, fragment).
+    match (path.is_empty(), fragment_opt) {
+        // Empty path with fragment — defensive bare-fragment (mirrors existing behaviour).
+        (true, Some(f)) => ParsedLink::BareFragment(f.to_string()),
+        // Empty path, no fragment — bare-query href (`?x=1`) or empty href.
+        (true, None) => ParsedLink::UrlSpace,
+        // Non-empty path with fragment.
+        (false, Some(f)) => ParsedLink::FileWithFragment {
             path: path.to_string(),
-            fragment: fragment.to_string(),
-        };
+            fragment: f.to_string(),
+        },
+        // Non-empty path, no fragment.
+        (false, None) => ParsedLink::FilePath(path.to_string()),
     }
-    ParsedLink::FilePath(href.to_string())
 }
 
 // ── Path resolution ───────────────────────────────────────────────────────────
@@ -284,6 +318,12 @@ fn validate_link(href: &str, env: &ValidationEnv<'_>, ctx: &mut BuildContext<'_>
         ParsedLink::External => {
             // External URLs are always skipped — network validation is out of scope.
         }
+        ParsedLink::UrlSpace => {
+            // Site-absolute and protocol-relative hrefs are rewrite products or
+            // hand-authored site URLs — never on-disk references. Site-absolute
+            // img srcs (`/img/x.png`) resolve against `public_dir` in URL space;
+            // their validation is imageDimensions' job, not linkValidation's.
+        }
         ParsedLink::BareFragment(fragment) => {
             if is_img {
                 // Bare fragment on an <img> (e.g. `#icon`) — no file to check,
@@ -324,16 +364,19 @@ fn validate_fragment_in_file(
     env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
 ) {
-    let registry = match ctx.heading_registry.as_ref() {
-        Some(r) => r,
-        None => return, // no registry → skip validation
+    if fragment.is_empty() || fragment.contains('%') {
+        return; // `href="#"` dummy links; percent-encoded fragments (registry stores raw text)
+    }
+    let entries = match ctx
+        .heading_registry
+        .as_ref()
+        .and_then(|r| r.get(env.source_path))
+    {
+        Some(e) => e,
+        None => return, // no registry entry for this file → cannot distinguish
+                        // "file has no headings" from "file not tracked" → skip
     };
-    let known = registry
-        .get(env.source_path)
-        .map(|entries| entries.iter().any(|e| e.id == fragment))
-        .unwrap_or(false);
-
-    if !known {
+    if !entries.iter().any(|e| e.id == fragment) {
         emit_broken_link(raw_href, env, ctx);
     }
 }
@@ -411,15 +454,16 @@ fn validate_file_with_fragment(
         return;
     }
 
-    // Check heading fragment in the target file's registry.
-    let known = ctx
-        .heading_registry
-        .as_ref()
-        .and_then(|r| r.get(&resolved))
-        .map(|entries| entries.iter().any(|e| e.id == fragment))
-        .unwrap_or(false);
-
-    if !known {
+    if fragment.is_empty() || fragment.contains('%') {
+        return; // existence already validated above
+    }
+    let entries = match ctx.heading_registry.as_ref().and_then(|r| r.get(&resolved)) {
+        Some(e) => e,
+        None => return, // no entry for the target file → existence-only
+                        // (mirrors the bare-anchor contract; kills the
+                        // `./other.md#frag` unwrap_or(false) false positive)
+    };
+    if !entries.iter().any(|e| e.id == fragment) {
         emit_broken_link(raw_href, env, ctx);
     }
 }
@@ -659,12 +703,117 @@ mod tests {
             "https://example.com/x",
             "mailto:a@b.com",
             "#fragment-only",
+            "/docs/intro/", // URL-space — never a filesystem read
             "../escape.md", // project-root escape rejected before any fs access
         ] {
             let reads = record_reads_for_href(href, dir.path(), &source);
             assert!(
                 reads.is_empty(),
                 "href {href:?} performs no filesystem read — nothing to record: {reads:?}"
+            );
+        }
+    }
+
+    // ── New tests: URL-space classification ───────────────────────────────
+
+    #[test]
+    fn parse_site_absolute_is_url_space() {
+        assert_eq!(parse_link("/docs/intro/"), ParsedLink::UrlSpace);
+        assert_eq!(parse_link("/docs/intro/#frag"), ParsedLink::UrlSpace);
+        assert_eq!(parse_link("//cdn.example.com/x"), ParsedLink::UrlSpace);
+    }
+
+    #[test]
+    fn parse_strips_query_string() {
+        assert_eq!(
+            parse_link("./other.md?x=1"),
+            ParsedLink::FilePath("./other.md".to_string())
+        );
+        assert_eq!(
+            parse_link("./other.md?x=1#frag"),
+            ParsedLink::FileWithFragment {
+                path: "./other.md".to_string(),
+                fragment: "frag".to_string(),
+            }
+        );
+        // bare-query href → URL-space (no path component)
+        assert_eq!(parse_link("?x=1"), ParsedLink::UrlSpace);
+    }
+
+    // ── New test: cross-file fragment with None registry ──────────────────
+
+    /// `./other.md#frag` with `heading_registry: None` must not report a
+    /// BrokenLink when the target exists (existence-only degradation), but
+    /// MUST report when the target is missing.
+    #[test]
+    fn cross_file_fragment_with_none_registry_checks_existence_only() {
+        use tempdir::TempDir;
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let dir = TempDir::new("lv_none_reg").unwrap();
+        let source_path = dir.path().join("page.md");
+        std::fs::write(&source_path, "").unwrap();
+        let other_path = dir.path().join("other.md");
+        std::fs::write(&other_path, "# Other\n").unwrap();
+
+        // Scenario A: target exists, registry None → no diagnostic (existence-only).
+        {
+            let node = HastNode::Root {
+                children: vec![HastNode::Element {
+                    tag: "a".to_string(),
+                    attrs: vec![("href".to_string(), "./other.md#frag".to_string())],
+                    children: vec![],
+                    void: false,
+                }],
+            };
+            let mut root = node;
+            let mut sink = CollectingSink::new();
+            let mut ctx = BuildContext {
+                source_path: Some(source_path.clone()),
+                project_root: dir.path().to_path_buf(),
+                public_dir: dir.path().to_path_buf(),
+                heading_registry: None,
+                diagnostics: Some(&mut sink),
+            };
+            let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+            plugin.visit_with_context(&mut root, &mut ctx);
+            let diags = sink.take();
+            assert!(
+                diags.is_empty(),
+                "existing target with None registry must not report broken: {diags:?}"
+            );
+        }
+
+        // Scenario B: target missing, registry None → BrokenLink (file not found).
+        {
+            let node = HastNode::Root {
+                children: vec![HastNode::Element {
+                    tag: "a".to_string(),
+                    attrs: vec![("href".to_string(), "./missing.md#frag".to_string())],
+                    children: vec![],
+                    void: false,
+                }],
+            };
+            let mut root = node;
+            let mut sink = CollectingSink::new();
+            let mut ctx = BuildContext {
+                source_path: Some(source_path.clone()),
+                project_root: dir.path().to_path_buf(),
+                public_dir: dir.path().to_path_buf(),
+                heading_registry: None,
+                diagnostics: Some(&mut sink),
+            };
+            let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+            plugin.visit_with_context(&mut root, &mut ctx);
+            let diags = sink.take();
+            assert_eq!(
+                diags.len(),
+                1,
+                "missing target must report BrokenLink: {diags:?}"
+            );
+            assert!(
+                matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "./missing.md#frag"),
+                "url must be the raw href: {diags:?}"
             );
         }
     }

@@ -23,7 +23,10 @@ use zfb_md_extras::{test_harness::run_fixture, DirectiveSpec, MarkdownFeaturesCo
 fn admonition_directives() -> Option<HashMap<String, DirectiveSpec>> {
     let mut m = HashMap::new();
     for (name, component) in [("note", "Note"), ("warning", "Warning")] {
-        m.insert(name.to_string(), DirectiveSpec::Short(component.to_string()));
+        m.insert(
+            name.to_string(),
+            DirectiveSpec::Short(component.to_string()),
+        );
     }
     Some(m)
 }
@@ -39,12 +42,8 @@ fn pipeline_with_alerts(enabled: bool) -> Pipeline {
 
 /// Run a fixture directory against the github_alerts-enabled pipeline.
 fn run(name: &str) {
-    let dir = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/github_alerts/"
-    )
-    .to_string()
-        + name;
+    let dir =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/github_alerts/").to_string() + name;
     run_fixture(&dir, |input| {
         let mut p = pipeline_with_alerts(true);
         let hast = p.run(input).expect("pipeline failed");
@@ -158,7 +157,10 @@ fn parity_with_directives_single_paragraph() {
 
     let directive_html = {
         let mut p = Pipeline::with_defaults_and_features(&directive_features);
-        serialize(&p.run(":::note\n\nnote body\n\n:::").expect("pipeline failed"))
+        serialize(
+            &p.run(":::note\n\nnote body\n\n:::")
+                .expect("pipeline failed"),
+        )
     };
     let alert_html = {
         let mut p = Pipeline::with_defaults_and_features(&alert_features);

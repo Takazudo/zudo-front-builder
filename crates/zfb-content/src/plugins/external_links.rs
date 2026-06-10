@@ -139,9 +139,7 @@ fn extract_origin(url: &str) -> Option<String> {
     // rest starts with `//`; skip it.
     let rest = rest.strip_prefix("//")?;
     // authority ends at the first `/`, `?`, `#`, or end of string.
-    let authority_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     // Strip userinfo (`user:pass@`) if present — origin never includes it.
     let host_and_port = if let Some(at) = authority.rfind('@') {
@@ -165,10 +163,7 @@ fn split_scheme(url: &str) -> Option<(&str, &str)> {
 
 fn is_http_scheme(scheme: &str) -> bool {
     // Case-insensitive per RFC 3986 §3.1.
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "http" | "https"
-    )
+    matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
 }
 
 /// Classify an href as external given an optional site origin.
@@ -298,7 +293,10 @@ mod tests {
         let HastNode::Element { attrs, .. } = node else {
             return None;
         };
-        attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     fn plugin_no_site() -> ExternalLinksPlugin {
@@ -375,7 +373,11 @@ mod tests {
         let mut tree = root(vec![a("https://example.com/foo")]);
         plugin_with_site("https://example.com").visit(&mut tree);
         let link = first_child(&tree);
-        assert_eq!(attr(link, "target"), None, "same-origin must not get target");
+        assert_eq!(
+            attr(link, "target"),
+            None,
+            "same-origin must not get target"
+        );
         assert_eq!(attr(link, "rel"), None, "same-origin must not get rel");
     }
 
@@ -442,10 +444,7 @@ mod tests {
         )]);
         plugin_no_site().visit(&mut tree);
         // Configured tokens already present → no duplication.
-        assert_eq!(
-            attr(first_child(&tree), "rel"),
-            Some("noopener noreferrer")
-        );
+        assert_eq!(attr(first_child(&tree), "rel"), Some("noopener noreferrer"));
     }
 
     // --- origin helpers ----------------------------------------------------
