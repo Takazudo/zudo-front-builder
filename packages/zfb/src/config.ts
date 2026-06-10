@@ -425,6 +425,31 @@ export type ZfbConfig = {
   pluginHookTimeoutSecs?: number;
 
   /**
+   * Whether `copy_public_dir` copies `public/` under the `base`
+   * sub-path segment (`true`, default) or flat to the `dist/` root
+   * (`false`).
+   *
+   * - **`true` (default):** files land at
+   *   `<outDir>/<base-segment>/<rel>`, matching the base-prefixed URLs
+   *   that `withBase()` emits in the rendered HTML. Use this for
+   *   projects served directly at their configured sub-path.
+   * - **`false`:** files land flat at `<outDir>/<rel>` regardless of
+   *   `base`. Use this when the deploy pipeline relocates the entire
+   *   `dist/` tree into the base segment itself (e.g.
+   *   `cp -a dist/. deploy-root/pj/site/`), so putting the files under
+   *   `<outDir>/<base>/...` would result in a double-nested path.
+   *
+   * **Note on `zfb preview`:** with `false`, base-prefixed public-asset
+   * URLs 404 under `zfb preview` because the flat copy lives at the
+   * dist root and `zfb preview` does not simulate deploy-side
+   * relocation. This is a known trade-off of the flat-copy deploy
+   * scheme.
+   *
+   * Mirrors `Config::copy_public_with_base` in crates/zfb/src/config.rs.
+   */
+  copyPublicWithBase?: boolean;
+
+  /**
    * Project output mode. Drives the V8-mode decision the build engine
    * makes right after the no-SSR-without-adapter precondition check
    * (sub-task 4.1b / issue #373):

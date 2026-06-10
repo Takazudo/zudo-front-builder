@@ -1654,19 +1654,28 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         }
     }
 
-    // 4. Copy public/ into out_dir (under the base segment when cfg.base is set).
+    // 4. Copy public/ into out_dir.
     //
     // Static assets in public/ must land in dist/ so they are served
     // verbatim in production. When the project mounts under a sub-path
-    // (cfg.base = "/pj/test/"), files must arrive at
-    // <out_dir>/<base-segment>/... so URLs emitted via withBase()
-    // resolve under the sub-path mount. Missing public/ is silently
-    // ignored — not every project has one.
+    // (cfg.base = "/pj/test/") and `copy_public_with_base` is true
+    // (the default), files arrive at <out_dir>/<base-segment>/... so
+    // URLs emitted via withBase() resolve under the sub-path mount.
+    // When `copy_public_with_base` is false, files land flat at
+    // <out_dir>/<rel> regardless of base — use this when the deploy
+    // pipeline relocates the entire dist/ tree into the base segment
+    // itself (e.g. `cp -a dist/. deploy-root/pj/site/`).
+    // Missing public/ is silently ignored — not every project has one.
+    let effective_base = if config.copy_public_with_base {
+        config.base.as_deref()
+    } else {
+        None
+    };
     copy_public_dir(
         project_root,
         outdir,
         &config.public_dir,
-        config.base.as_deref(),
+        effective_base,
     )
     .context("public dir copy step failed")?;
 
@@ -3960,6 +3969,64 @@ mod tests {
         assert!(
             outdir.join("favicon.ico").is_file(),
             "base='/' must copy under root, not under '/'"
+        );
+    }
+
+    /// With base = "/pj/test/" and copy_public_with_base = false, files
+    /// land flat under out_dir — NOT under the base segment.
+    /// Fixture: issue #932 acceptance criterion (false branch).
+    #[test]
+    fn run_build_copy_public_with_base_false_copies_flat() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+
+        // Stage public/img/logo.svg.
+        std::fs::create_dir_all(project_root.join("public/img")).unwrap();
+        let logo_content = b"<svg id=\"flat-logo\"/>";
+        std::fs::write(project_root.join("public/img/logo.svg"), logo_content).unwrap();
+
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config {
+            base: Some("/pj/test/".to_string()),
+            copy_public_with_base: false,
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // Acceptance: file must land flat at dist/img/logo.svg, NOT
+        // under the base segment (dist/pj/test/img/logo.svg).
+        let flat_dest = outdir.join("img/logo.svg");
+        assert!(
+            flat_dest.is_file(),
+            "copyPublicWithBase:false — public/img/logo.svg must land at dist/img/logo.svg; \
+             not found at {}",
+            flat_dest.display()
+        );
+        assert_eq!(
+            std::fs::read(&flat_dest).unwrap(),
+            logo_content,
+            "file content must be preserved",
+        );
+        let nested_dest = outdir.join("pj/test/img/logo.svg");
+        assert!(
+            !nested_dest.is_file(),
+            "copyPublicWithBase:false — file must NOT appear under base segment at {}",
+            nested_dest.display()
         );
     }
 

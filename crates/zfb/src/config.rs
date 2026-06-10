@@ -511,6 +511,36 @@ pub struct Config {
     /// the JSON / TS form `pluginHookTimeoutSecs` 1:1.
     #[serde(default)]
     pub plugin_hook_timeout_secs: Option<u64>,
+
+    /// Whether `copy_public_dir` copies `public/` under the `base`
+    /// sub-path segment (`true`, default) or flat to the `dist/` root
+    /// (`false`).
+    ///
+    /// **`true` (default):** files land at
+    /// `<outDir>/<base-segment>/<rel>`, matching the base-prefixed URLs
+    /// that `withBase()` emits in the rendered HTML. This is the
+    /// canonical placement for projects served at their configured sub-
+    /// path — a file at `public/img/logo.svg` is reachable at
+    /// `/<base>/img/logo.svg` in production.
+    ///
+    /// **`false`:** files land flat at `<outDir>/<rel>` regardless of
+    /// `base`. Use this when the deploy pipeline relocates the entire
+    /// `dist/` tree into the base segment itself (e.g. `cp -a dist/.
+    /// deploy-root/pj/site/`), so putting the files under
+    /// `<outDir>/<base>/...` would result in a double-nested path. In
+    /// that scheme `public/img/logo.svg` lands at `dist/img/logo.svg`
+    /// and arrives at `/<base>/img/logo.svg` after relocation — the same
+    /// final URL, without the redundant nesting.
+    ///
+    /// **Interaction with `zfb preview`:** with `false`, base-prefixed
+    /// asset URLs 404 under `zfb preview` because the flat copy lives at
+    /// the dist root. This is a known trade-off of the flat-copy deploy
+    /// scheme; `zfb preview` does not simulate deploy-side relocation.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `copyPublicWithBase` 1:1.
+    #[serde(default = "default_true")]
+    pub copy_public_with_base: bool,
 }
 
 impl Default for Config {
@@ -539,6 +569,7 @@ impl Default for Config {
             extra_watch_paths: Vec::new(),
             output: OutputMode::default(),
             plugin_hook_timeout_secs: None,
+            copy_public_with_base: true,
         }
     }
 }
