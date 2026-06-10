@@ -95,6 +95,60 @@ pub enum HastNode {
     Comment(String),
 }
 
+/// A cross-file fragment link (`./other.md#frag`) the per-compile
+/// validator could NOT verify locally and therefore defers to the
+/// post-compile cross-file check (#960 / #977).
+///
+/// `LinkValidationPlugin` records one candidate at its existence-only
+/// degrade branch: the link already passed containment + existence, but
+/// the per-compile-local [`heading_registry::HeadingRegistry`] has no
+/// entry for the target file, so the fragment verdict needs the
+/// build-wide heading map that only exists after every file compiled.
+/// Candidates are a pure function of the compile input (plus
+/// dep-manifest-covered reads), so the compile cache can store and
+/// replay them exactly like markdown diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrossFileLinkCandidate {
+    /// Absolute path of the source file containing the link — diagnostic
+    /// location for the post-compile check (NOT a lookup key).
+    pub source_path: PathBuf,
+    /// Resolved absolute path of the link target, normalised with
+    /// `zfb_types::normalize_path_lexical` — the shared helper the
+    /// post-compile consumer (#980) MUST also apply to its heading-map
+    /// keys so candidate↔headings lookups can never split on path
+    /// spelling.
+    pub target_path: PathBuf,
+    /// The fragment after `#`, exactly as written (non-empty, not
+    /// percent-encoded — those links never degrade).
+    pub fragment: String,
+    /// The original href as authored, for diagnostic messages.
+    pub raw_href: String,
+    /// Severity the recording plugin would have emitted
+    /// (`failOnBroken` ⇒ `Error`, else `Warning`).
+    pub severity: crate::diagnostics::DiagnosticSeverity,
+}
+
+/// The headings of one compiled file, surfaced as a compile side channel
+/// for the post-compile cross-file anchor check (#960 / #977).
+///
+/// Recorded once per context-armed compile from the same canonical
+/// `collect_headings` walk that seeds the per-compile registry
+/// (transclusion-aware and JSX-nested-aware). An entry with an EMPTY
+/// `headings` vec is meaningful: the file compiled and has no
+/// anchor-addressable headings — distinct from "file never compiled".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHeadings {
+    /// Absolute path of the compiled source file, normalised with
+    /// `zfb_types::normalize_path_lexical` (the same shared helper used
+    /// for [`CrossFileLinkCandidate::target_path`] — consumers keying a
+    /// heading map MUST apply that helper, never a near-match).
+    pub source_path: PathBuf,
+    /// Anchor-addressable headings in document order — the exact entry
+    /// set the per-compile registry is seeded with (empty slugs are
+    /// excluded there too).
+    pub headings: Vec<crate::heading_registry::HeadingEntry>,
+}
+
 /// Per-document build context threaded into pipeline visitors when the
 /// orchestrator needs wave-6 features (image dimensions, link validation,
 /// transclusion).
@@ -125,6 +179,14 @@ pub struct BuildContext<'a> {
     /// When `None`, diagnostics are silently discarded (zero cost for callers
     /// that do not collect diagnostics).
     pub diagnostics: Option<&'a mut dyn crate::diagnostics::DiagnosticsSink>,
+    /// Optional per-compile buffer for cross-file fragment-link
+    /// candidates (#960 / #977). `LinkValidationPlugin` pushes a
+    /// [`CrossFileLinkCandidate`] here whenever a `./other.md#frag`
+    /// verdict degrades to existence-only; the orchestrator flushes the
+    /// buffer into the pipeline's side channel so the compile cache can
+    /// store/replay it. When `None`, candidates are silently discarded
+    /// (zero cost for callers that do not run the post-compile check).
+    pub cross_file_links: Option<&'a mut Vec<CrossFileLinkCandidate>>,
 }
 
 impl<'a> BuildContext<'a> {
@@ -142,6 +204,7 @@ impl<'a> BuildContext<'a> {
             public_dir: public_dir.into(),
             heading_registry: None,
             diagnostics: None,
+            cross_file_links: None,
         }
     }
 }

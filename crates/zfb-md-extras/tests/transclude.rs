@@ -63,6 +63,7 @@ fn run_success_fixture(name: &str) {
         public_dir: dir.to_path_buf(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let mut pipeline = pipeline_with_transclude(TranscludeConfig::default());
@@ -114,6 +115,7 @@ fn run_error_fixture(name: &str, config: TranscludeConfig) {
         public_dir: dir.to_path_buf(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let mut pipeline = pipeline_with_transclude(config);
@@ -181,6 +183,7 @@ fn code_block_wraps_in_pre() {
         public_dir: dir.to_path_buf(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let mut pipeline = pipeline_with_transclude(TranscludeConfig::default());
@@ -224,6 +227,7 @@ fn lines_range_slices_content() {
         public_dir: dir.to_path_buf(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let mut pipeline = pipeline_with_transclude(TranscludeConfig::default());

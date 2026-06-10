@@ -52,6 +52,7 @@ fn run(
         public_dir: PathBuf::from("/project/public"),
         heading_registry: Some(registry),
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
     let mut pipeline = make_pipeline(cfg);
     pipeline
@@ -297,6 +298,7 @@ fn feature_disabled_no_diagnostics() {
         public_dir: PathBuf::from("/project/public"),
         heading_registry: Some(&mut registry),
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
     // Pipeline WITHOUT link_validation feature.
     let features = MarkdownFeaturesConfig::default();

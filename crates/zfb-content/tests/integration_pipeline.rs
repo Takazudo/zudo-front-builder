@@ -498,6 +498,7 @@ fn heading_links_populates_registry_when_present() {
         public_dir: PathBuf::from("/project/public"),
         heading_registry: Some(&mut registry),
         diagnostics: None,
+        cross_file_links: None,
     };
 
     let mut pipeline = Pipeline::with_defaults();
@@ -569,6 +570,7 @@ fn diagnostics_sink_smoke_test() {
         public_dir: PathBuf::from("/project/public"),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let mut pipeline = Pipeline::with_mdx();
@@ -621,6 +623,7 @@ fn context_survives_through_pipeline() {
         public_dir: PathBuf::from("/project/public"),
         heading_registry: Some(&mut registry),
         diagnostics: None,
+        cross_file_links: None,
     };
 
     let mut pipeline = Pipeline::with_defaults();

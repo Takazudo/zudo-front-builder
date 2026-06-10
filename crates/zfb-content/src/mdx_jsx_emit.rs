@@ -49,7 +49,8 @@ use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as Mdast
 use sha2::{Digest, Sha256};
 use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic};
 use zfb_md_ast::heading_registry::{HeadingEntry as RegistryHeadingEntry, HeadingRegistry};
-use zfb_md_ast::BuildContext;
+use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
+use zfb_types::normalize_path_lexical;
 
 use crate::dep_manifest::DependencyManifest;
 use crate::pipeline::{
@@ -261,14 +262,21 @@ fn mdx_to_jsx_module_inner(
     });
     let mut context_sink = CollectingSink::new();
     // Per-compile-local registry for same-file anchor validation (#954).
-    // Cross-file (build-scoped) registry is deferred to #960.
+    // Cross-file fragment verdicts degrade to existence-only here and are
+    // recorded as candidates for the post-compile check (#960 / #977).
     let mut local_heading_registry = HeadingRegistry::new();
+    // Per-compile candidate buffer (#977): collected locally and flushed
+    // into the pipeline's side channel after the visitor chains run —
+    // same discipline as `context_sink` — so the compile cache can slice
+    // off exactly what THIS compile recorded.
+    let mut local_cross_file_links: Vec<CrossFileLinkCandidate> = Vec::new();
     let mut build_ctx = context_roots.map(|(project_root, public_dir)| BuildContext {
         source_path: opts.source_path.clone(),
         project_root,
         public_dir,
         heading_registry: Some(&mut local_heading_registry),
         diagnostics: Some(&mut context_sink),
+        cross_file_links: Some(&mut local_cross_file_links),
     });
 
     if let Some(p) = pipeline_mut.as_deref_mut() {
@@ -327,21 +335,44 @@ fn mdx_to_jsx_module_inner(
     // h1 entries are seeded too: a top-level h1 renders NO id, so its
     // anchor passes silently rather than false-positively (h1 inside a
     // JSX body DOES render the id, and the slug here matches it).
+    //
+    // The same canonical entry set is surfaced as the per-file headings
+    // side channel (#960 / #977) so the post-compile cross-file anchor
+    // check sees exactly what a local registry lookup would have seen.
+    // Gated on `linkValidation` being enabled — the channel exists
+    // solely for that check, and configs without it must record nothing.
+    // Recorded even when the file has zero headings: "compiled with zero
+    // headings" is a meaningful verdict, distinct from "never compiled".
+    // The path is normalised with the shared
+    // `zfb_types::normalize_path_lexical` helper — the key contract
+    // `CrossFileLinkCandidate::target_path` documents.
+    let record_file_headings = pipeline_mut
+        .as_deref()
+        .is_some_and(Pipeline::link_validation_enabled);
+    let mut compiled_file_headings: Option<FileHeadings> = None;
     if let Some(ctx) = build_ctx.as_mut() {
         if let (Some(reg), Some(src)) =
             (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
         {
+            let mut channel_entries: Vec<RegistryHeadingEntry> = Vec::new();
             for h in &headings {
                 if !h.slug.is_empty() {
-                    reg.insert(
-                        src.clone(),
-                        RegistryHeadingEntry {
-                            id: h.slug.clone(),
-                            text: h.text.clone(),
-                            depth: h.depth,
-                        },
-                    );
+                    let entry = RegistryHeadingEntry {
+                        id: h.slug.clone(),
+                        text: h.text.clone(),
+                        depth: h.depth,
+                    };
+                    if record_file_headings {
+                        channel_entries.push(entry.clone());
+                    }
+                    reg.insert(src.clone(), entry);
                 }
+            }
+            if record_file_headings {
+                compiled_file_headings = Some(FileHeadings {
+                    source_path: normalize_path_lexical(&src),
+                    headings: channel_entries,
+                });
             }
         }
     }
@@ -412,16 +443,24 @@ fn mdx_to_jsx_module_inner(
         (body, emitter.html_tags, emitter.component_names, Vec::new())
     };
 
-    // Flush context-plugin diagnostics into the pipeline's buffer
-    // (zfb#944) so the compile cache can slice off what THIS compile
-    // appended, and call sites can drain via
-    // `Pipeline::take_markdown_diagnostics`. The explicit drop releases
-    // the sink borrow held by the context.
+    // Flush context-plugin diagnostics — and the #977 side channels
+    // (cross-file link candidates, per-file headings) — into the
+    // pipeline's buffers (zfb#944) so the compile cache can slice off
+    // what THIS compile appended, and call sites can drain via
+    // `Pipeline::take_markdown_diagnostics` /
+    // `take_cross_file_link_candidates` / `take_file_headings`. The
+    // explicit drop releases the sink/buffer borrows held by the context.
     drop(build_ctx);
     let context_diags = context_sink.take();
-    if !context_diags.is_empty() {
-        if let Some(p) = pipeline_mut {
+    if let Some(p) = pipeline_mut {
+        if !context_diags.is_empty() {
             p.extend_markdown_diagnostics(context_diags);
+        }
+        if !local_cross_file_links.is_empty() {
+            p.extend_cross_file_link_candidates(local_cross_file_links);
+        }
+        if let Some(fh) = compiled_file_headings {
+            p.extend_file_headings(vec![fh]);
         }
     }
 
@@ -2132,6 +2171,13 @@ struct CachedMdxModule {
     compiled: CompiledMdx,
     broken_links: Vec<BrokenLinkDiagnostic>,
     markdown_diagnostics: Vec<MarkdownDiagnostic>,
+    /// Cross-file fragment-link candidates this compile recorded
+    /// (#960 / #977) — store/replay symmetric with
+    /// `markdown_diagnostics`. Empty for unarmed pipelines.
+    cross_file_links: Vec<CrossFileLinkCandidate>,
+    /// Per-file heading records this compile surfaced (#960 / #977) —
+    /// at most one for a single compile. Empty for unarmed pipelines.
+    file_headings: Vec<FileHeadings>,
     dependencies: DependencyManifest,
 }
 
@@ -2431,14 +2477,19 @@ pub fn compile_mdx_to_jsx_module_cached(
             // reverse dep→entries graph to update. The empty manifest
             // of a plain pipeline validates trivially.
             if hit.dependencies.still_valid() {
-                // Diagnostics replay (zfb#939/#944): re-inject the stored
-                // broken-link + markdown diagnostics so the caller's
-                // post-compile drains (`take_broken_links()` /
-                // `take_markdown_diagnostics()`) see them despite the
-                // plugins never running on this hit.
+                // Diagnostics replay (zfb#939/#944) + side-channel replay
+                // (#977): re-inject the stored broken-link + markdown
+                // diagnostics and the cross-file link/heading channels so
+                // the caller's post-compile drains (`take_broken_links()`
+                // / `take_markdown_diagnostics()` /
+                // `take_cross_file_link_candidates()` /
+                // `take_file_headings()`) see them despite the plugins
+                // never running on this hit.
                 if let Some(p) = pipeline.as_deref_mut() {
                     p.replay_broken_links(hit.broken_links);
                     p.replay_markdown_diagnostics(hit.markdown_diagnostics);
+                    p.replay_cross_file_link_candidates(hit.cross_file_links);
+                    p.replay_file_headings(hit.file_headings);
                 }
                 return Ok(CompiledMdx {
                     jsx_source: hit.compiled.jsx_source,
@@ -2460,6 +2511,10 @@ pub fn compile_mdx_to_jsx_module_cached(
     let markdown_diagnostics_before = pipeline
         .as_deref()
         .map_or(0, Pipeline::markdown_diagnostics_len);
+    let cross_file_links_before = pipeline
+        .as_deref()
+        .map_or(0, Pipeline::cross_file_link_candidates_len);
+    let file_headings_before = pipeline.as_deref().map_or(0, Pipeline::file_headings_len);
 
     // Scope read recording (zfb#942) to THIS compile: reads left by an
     // earlier compile on the same pipeline (e.g. one that aborted on a
@@ -2493,6 +2548,20 @@ pub fn compile_mdx_to_jsx_module_cached(
             .as_deref()
             .map(|p| p.markdown_diagnostics_since(markdown_diagnostics_before))
             .unwrap_or_default();
+        // Side-channel slicing (#977): same snapshot-before/slice-after
+        // discipline as the diagnostics above — the buffers may still
+        // hold earlier files' undrained entries (the snapshot walker
+        // never drains), and only THIS compile's suffix belongs in the
+        // entry; anything else would leak one file's candidates/headings
+        // into another file's cache-hit replay.
+        let cross_file_links = pipeline
+            .as_deref()
+            .map(|p| p.cross_file_link_candidates_since(cross_file_links_before))
+            .unwrap_or_default();
+        let file_headings = pipeline
+            .as_deref()
+            .map(|p| p.file_headings_since(file_headings_before))
+            .unwrap_or_default();
         // Drain the reads this compile's plugins reported into the
         // entry's manifest (zfb#942). A manifest carrying a read
         // *error* is unstorable: error states cannot be re-validated,
@@ -2517,6 +2586,8 @@ pub fn compile_mdx_to_jsx_module_cached(
                     compiled: compiled.clone(),
                     broken_links,
                     markdown_diagnostics,
+                    cross_file_links,
+                    file_headings,
                     dependencies,
                 },
             );
@@ -3927,6 +3998,212 @@ mod tests {
             p2.take_markdown_diagnostics(),
             fresh,
             "BrokenLink must replay identically on the cache hit"
+        );
+    }
+
+    // ── #977: cross-file anchor side channels ─────────────────────────────
+
+    // #977 acceptance: a cache-hit compile replays IDENTICAL candidates +
+    // headings as a fresh compile of the same input.
+    #[test]
+    fn cross_file_channels_replay_identically_on_cache_hit() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("other.md"), "## Target\n").expect("write target");
+        let body = "## Local\n\n[x](./other.md#target)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p1 = fs_features_pipeline(feats.clone(), root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        let fresh_candidates = p1.take_cross_file_link_candidates();
+        let fresh_headings = p1.take_file_headings();
+        assert_eq!(
+            fresh_candidates.len(),
+            1,
+            "the degrade branch must record the cross-file link: {fresh_candidates:?}"
+        );
+        let c = &fresh_candidates[0];
+        assert_eq!(c.target_path, root.join("other.md"));
+        assert_eq!(c.fragment, "target");
+        assert_eq!(c.raw_href, "./other.md#target");
+        assert_eq!(c.source_path, path);
+        assert_eq!(
+            fresh_headings.len(),
+            1,
+            "one record per compiled file: {fresh_headings:?}"
+        );
+        assert_eq!(
+            fresh_headings[0].source_path,
+            zfb_types::normalize_path_lexical(&path),
+            "headings record is keyed by the shared-helper normal form"
+        );
+        assert!(
+            fresh_headings[0].headings.iter().any(|h| h.id == "local"),
+            "the compiled file's own headings must be surfaced: {fresh_headings:?}"
+        );
+
+        poke_sentinel(&cache);
+        let mut p2 = fs_features_pipeline(feats, root);
+        let second = compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "must be a true cache hit"
+        );
+        assert_eq!(
+            p2.take_cross_file_link_candidates(),
+            fresh_candidates,
+            "candidates must replay IDENTICALLY on the hit"
+        );
+        assert_eq!(
+            p2.take_file_headings(),
+            fresh_headings,
+            "headings must replay IDENTICALLY on the hit"
+        );
+        assert!(
+            p2.take_cross_file_link_candidates().is_empty() && p2.take_file_headings().is_empty(),
+            "drain semantics: a second drain after the hit is empty"
+        );
+    }
+
+    // #977: per-compile buffer slicing — two undrained compiles on ONE
+    // pipeline (the snapshot-walker pattern: it never drains) must store
+    // disjoint per-entry slices; a later hit on either entry replays only
+    // that file's channel data, never the other's.
+    #[test]
+    fn channels_slice_per_compile_without_cross_file_leak() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("other.md"), "plain target\n").expect("write target");
+        let body_a = "## Alpha Heading\n\n[a](./other.md#alpha)\n";
+        let body_b = "## Beta Heading\n\n[b](./other.md#beta)\n";
+        let path_a = root.join("a.mdx");
+        let path_b = root.join("b.mdx");
+        std::fs::write(&path_a, body_a).expect("write a");
+        std::fs::write(&path_b, body_b).expect("write b");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        // ONE pipeline, NO draining between compiles.
+        let mut p = fs_features_pipeline(feats.clone(), root);
+        compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p))
+            .expect("compile a");
+        p.reset_per_entry();
+        compile_mdx_to_jsx_module_cached(body_b, &path_b, Some(&cache), Some(&mut p))
+            .expect("compile b");
+        assert_eq!(
+            p.cross_file_link_candidates_len(),
+            2,
+            "undrained buffer holds both compiles' candidates"
+        );
+        assert_eq!(
+            p.file_headings_len(),
+            2,
+            "undrained buffer holds both compiles' headings records"
+        );
+
+        poke_sentinel(&cache);
+        // Hit on A replays ONLY A's slice.
+        let mut p2 = fs_features_pipeline(feats.clone(), root);
+        let hit_a = compile_mdx_to_jsx_module_cached(body_a, &path_a, Some(&cache), Some(&mut p2))
+            .expect("hit a");
+        assert_eq!(hit_a.jsx_source, "__SENTINEL__", "a must be a true hit");
+        let a_candidates = p2.take_cross_file_link_candidates();
+        let a_headings = p2.take_file_headings();
+        assert_eq!(a_candidates.len(), 1, "{a_candidates:?}");
+        assert_eq!(a_candidates[0].fragment, "alpha");
+        assert_eq!(a_headings.len(), 1, "{a_headings:?}");
+        assert_eq!(
+            a_headings[0].source_path,
+            zfb_types::normalize_path_lexical(&path_a)
+        );
+        assert!(a_headings[0]
+            .headings
+            .iter()
+            .all(|h| h.id != "beta-heading"));
+
+        // Hit on B replays ONLY B's slice.
+        let mut p3 = fs_features_pipeline(feats, root);
+        let hit_b = compile_mdx_to_jsx_module_cached(body_b, &path_b, Some(&cache), Some(&mut p3))
+            .expect("hit b");
+        assert_eq!(hit_b.jsx_source, "__SENTINEL__", "b must be a true hit");
+        let b_candidates = p3.take_cross_file_link_candidates();
+        let b_headings = p3.take_file_headings();
+        assert_eq!(b_candidates.len(), 1, "{b_candidates:?}");
+        assert_eq!(b_candidates[0].fragment, "beta");
+        assert_eq!(b_headings.len(), 1, "{b_headings:?}");
+        assert_eq!(
+            b_headings[0].source_path,
+            zfb_types::normalize_path_lexical(&path_b)
+        );
+    }
+
+    // #977 acceptance: unarmed configs (no linkValidation) record NOTHING
+    // in either channel — for both the truly-unarmed pipeline (no context
+    // roots) and a context-armed pipeline without linkValidation.
+    #[test]
+    fn unarmed_configs_record_no_channel_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("other.md"), "## Target\n").expect("write target");
+        let body = "## Local\n\n[x](./other.md#target)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+
+        // (a) No features at all → context-free emit path.
+        let mut p = full_config_pipeline(None);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile unarmed");
+        assert!(
+            p.take_cross_file_link_candidates().is_empty(),
+            "unarmed: no candidates"
+        );
+        assert!(p.take_file_headings().is_empty(), "unarmed: no headings");
+
+        // (b) Context-armed but transclude-only (no linkValidation) —
+        // the channels exist solely for the cross-file anchor check.
+        let feats = serde_json::json!({ "transclude": {} });
+        let mut p = fs_features_pipeline(feats, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile transclude-only");
+        assert!(
+            p.take_cross_file_link_candidates().is_empty(),
+            "no linkValidation: no candidates"
+        );
+        assert!(
+            p.take_file_headings().is_empty(),
+            "no linkValidation: no headings records"
+        );
+    }
+
+    // #977: a heading-less file still records ONE (empty) headings record
+    // — "compiled with zero headings" is a meaningful verdict for the
+    // post-compile check, distinct from "never compiled".
+    #[test]
+    fn heading_less_file_records_empty_headings_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let body = "plain paragraph, no headings\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": {} });
+
+        let mut p = fs_features_pipeline(feats, root);
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&MdxModuleCache::new()), Some(&mut p))
+            .expect("compile");
+        let headings = p.take_file_headings();
+        assert_eq!(headings.len(), 1, "{headings:?}");
+        assert_eq!(
+            headings[0].source_path,
+            zfb_types::normalize_path_lexical(&path)
+        );
+        assert!(
+            headings[0].headings.is_empty(),
+            "zero headings, but the record itself must exist: {headings:?}"
         );
     }
 }

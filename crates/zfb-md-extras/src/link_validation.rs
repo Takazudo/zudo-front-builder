@@ -75,7 +75,8 @@ use std::sync::Arc;
 
 use zfb_md_ast::{
     diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation},
-    BuildContext, HastNode, HastVisitor, LinkValidationConfig, ReadRecorder,
+    BuildContext, CrossFileLinkCandidate, HastNode, HastVisitor, LinkValidationConfig,
+    ReadRecorder,
 };
 use zfb_types::normalize_path_lexical;
 
@@ -459,9 +460,31 @@ fn validate_file_with_fragment(
     }
     let entries = match ctx.heading_registry.as_ref().and_then(|r| r.get(&resolved)) {
         Some(e) => e,
-        None => return, // no entry for the target file → existence-only
-                        // (mirrors the bare-anchor contract; kills the
-                        // `./other.md#frag` unwrap_or(false) false positive)
+        None => {
+            // No entry for the target file → existence-only degrade
+            // (mirrors the bare-anchor contract; kills the
+            // `./other.md#frag` unwrap_or(false) false positive).
+            //
+            // Cross-file candidate recording (#960 / #977): exactly the
+            // links reaching this branch — FileWithFragment, non-img,
+            // already past containment + existence — are the ones the
+            // post-compile cross-file check can settle once every
+            // file's headings are known. `resolved` is already
+            // normalised by `resolve_relative` with the shared
+            // `zfb_types::normalize_path_lexical` helper; re-applied
+            // here (idempotent) so the candidate-target key contract
+            // survives any refactor of the resolution path.
+            if let Some(out) = ctx.cross_file_links.as_deref_mut() {
+                out.push(CrossFileLinkCandidate {
+                    source_path: env.source_path.to_path_buf(),
+                    target_path: normalize_path_lexical(&resolved),
+                    fragment: fragment.to_string(),
+                    raw_href: raw_href.to_string(),
+                    severity: env.severity,
+                });
+            }
+            return;
+        }
     };
     if !entries.iter().any(|e| e.id == fragment) {
         emit_broken_link(raw_href, env, ctx);
@@ -604,6 +627,7 @@ mod tests {
             public_dir: dir.path().to_path_buf(),
             heading_registry: None, // no headings registered → fragment would fail if checked
             diagnostics: Some(&mut sink),
+            cross_file_links: None,
         };
         let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
         plugin.visit_with_context(&mut root, &mut ctx);
@@ -643,6 +667,7 @@ mod tests {
             public_dir: dir.to_path_buf(),
             heading_registry: None,
             diagnostics: None,
+            cross_file_links: None,
         };
         plugin.visit_with_context(&mut root, &mut ctx);
         recorder.take_reads()
@@ -774,6 +799,7 @@ mod tests {
                 public_dir: dir.path().to_path_buf(),
                 heading_registry: None,
                 diagnostics: Some(&mut sink),
+                cross_file_links: None,
             };
             let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
             plugin.visit_with_context(&mut root, &mut ctx);
@@ -802,6 +828,7 @@ mod tests {
                 public_dir: dir.path().to_path_buf(),
                 heading_registry: None,
                 diagnostics: Some(&mut sink),
+                cross_file_links: None,
             };
             let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
             plugin.visit_with_context(&mut root, &mut ctx);
@@ -816,5 +843,228 @@ mod tests {
                 "url must be the raw href: {diags:?}"
             );
         }
+    }
+
+    // ── Cross-file candidate recording (#960 / #977) ──────────────────────
+
+    /// Run the plugin over a single `<a href>` / `<img src>` with the
+    /// candidates channel wired, returning what it recorded and emitted.
+    fn record_candidates_for_href(
+        href: &str,
+        dir: &Path,
+        source_path: &Path,
+        registry: Option<&mut zfb_md_ast::heading_registry::HeadingRegistry>,
+        config: LinkValidationConfig,
+        is_img: bool,
+    ) -> (Vec<CrossFileLinkCandidate>, Vec<MarkdownDiagnostic>) {
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let mut sink = CollectingSink::new();
+        let mut candidates: Vec<CrossFileLinkCandidate> = Vec::new();
+        let (tag, attr) = if is_img {
+            ("img", "src")
+        } else {
+            ("a", "href")
+        };
+        let mut root = HastNode::Root {
+            children: vec![HastNode::Element {
+                tag: tag.to_string(),
+                attrs: vec![(attr.to_string(), href.to_string())],
+                children: vec![],
+                void: is_img,
+            }],
+        };
+        let mut ctx = BuildContext {
+            source_path: Some(source_path.to_path_buf()),
+            project_root: dir.to_path_buf(),
+            public_dir: dir.to_path_buf(),
+            heading_registry: registry,
+            diagnostics: Some(&mut sink),
+            cross_file_links: Some(&mut candidates),
+        };
+        let mut plugin = LinkValidationPlugin::new(config);
+        plugin.visit_with_context(&mut root, &mut ctx);
+        drop(ctx);
+        (candidates, sink.take())
+    }
+
+    /// The degrade branch — existing target, no registry entry for it —
+    /// must record exactly one candidate carrying the normalised target,
+    /// the fragment, the raw href, and the default Warning severity, and
+    /// must emit NO diagnostic (the verdict is deferred, not broken).
+    #[test]
+    fn degrade_branch_records_cross_file_candidate() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("cand_degrade").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"## Target\n").unwrap();
+        // `sub/..` in the source spelling collapses lexically during
+        // target resolution — the candidate target key must come out in
+        // the shared-helper (`zfb_types::normalize_path_lexical`) form.
+        let source = dir.path().join("sub").join("..").join("page.md");
+
+        let mut registry = zfb_md_ast::heading_registry::HeadingRegistry::new();
+        let (candidates, diags) = record_candidates_for_href(
+            "./other.md#target",
+            dir.path(),
+            &source,
+            Some(&mut registry),
+            LinkValidationConfig::default(),
+            false,
+        );
+        assert!(
+            diags.is_empty(),
+            "deferred verdict must not emit: {diags:?}"
+        );
+        assert_eq!(candidates.len(), 1, "exactly one candidate: {candidates:?}");
+        let c = &candidates[0];
+        assert_eq!(c.target_path, dir.path().join("other.md"));
+        assert_eq!(c.fragment, "target");
+        assert_eq!(c.raw_href, "./other.md#target");
+        assert_eq!(
+            c.source_path, source,
+            "source stays as authored (diagnostic location, not a key)"
+        );
+        assert_eq!(c.severity, DiagnosticSeverity::Warning);
+    }
+
+    /// `failOnBroken: true` must stamp `Error` severity into the
+    /// candidate so the post-compile check can fail the build exactly as
+    /// an in-compile verdict would have.
+    #[test]
+    fn fail_on_broken_candidate_carries_error_severity() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("cand_severity").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
+        let source = dir.path().join("page.md");
+
+        let (candidates, _) = record_candidates_for_href(
+            "./other.md#frag",
+            dir.path(),
+            &source,
+            None,
+            LinkValidationConfig {
+                fail_on_broken: Some(true),
+            },
+            false,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].severity, DiagnosticSeverity::Error);
+    }
+
+    /// A fragment the per-compile registry CAN settle (entry present for
+    /// the target) must not record a candidate — valid and broken alike.
+    #[test]
+    fn locally_settled_fragment_records_no_candidate() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("cand_local").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"## Target\n").unwrap();
+        let source = dir.path().join("page.md");
+
+        let mut registry = zfb_md_ast::heading_registry::HeadingRegistry::new();
+        registry.insert(
+            dir.path().join("other.md"),
+            zfb_md_ast::heading_registry::HeadingEntry {
+                id: "target".to_string(),
+                text: "Target".to_string(),
+                depth: 2,
+            },
+        );
+
+        // Valid fragment → settled locally, silent.
+        let (candidates, diags) = record_candidates_for_href(
+            "./other.md#target",
+            dir.path(),
+            &source,
+            Some(&mut registry),
+            LinkValidationConfig::default(),
+            false,
+        );
+        assert!(candidates.is_empty(), "settled verdict: {candidates:?}");
+        assert!(diags.is_empty(), "valid fragment: {diags:?}");
+
+        // Broken fragment → settled locally as BrokenLink, still no candidate.
+        let (candidates, diags) = record_candidates_for_href(
+            "./other.md#nope",
+            dir.path(),
+            &source,
+            Some(&mut registry),
+            LinkValidationConfig::default(),
+            false,
+        );
+        assert!(candidates.is_empty(), "settled verdict: {candidates:?}");
+        assert_eq!(diags.len(), 1, "broken fragment emits locally: {diags:?}");
+    }
+
+    /// Links that never reach the degrade branch must record nothing:
+    /// missing targets (existence verdict), img sprite fragments, bare
+    /// fragments, fragment-less file links, root-escaping refs, and
+    /// empty / percent-encoded fragments.
+    #[test]
+    fn non_degrading_hrefs_record_no_candidate() {
+        use tempdir::TempDir;
+        let dir = TempDir::new("cand_none").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
+        std::fs::write(dir.path().join("sprite.svg"), b"<svg/>").unwrap();
+        let source = dir.path().join("page.md");
+
+        for (href, is_img) in [
+            ("./missing.md#frag", false),         // existence verdict (BrokenLink)
+            ("./sprite.svg#icon-x", true),        // img sprite fragment
+            ("#local", false),                    // bare fragment (same-file contract)
+            ("./other.md", false),                // no fragment at all
+            ("../escape.md#frag", false),         // containment verdict (BrokenLink)
+            ("./other.md#", false),               // empty fragment (dummy link)
+            ("./other.md#a%20b", false),          // percent-encoded fragment
+            ("https://example.com/#frag", false), // external
+        ] {
+            let (candidates, _) = record_candidates_for_href(
+                href,
+                dir.path(),
+                &source,
+                None,
+                LinkValidationConfig::default(),
+                is_img,
+            );
+            assert!(
+                candidates.is_empty(),
+                "href {href:?} must not record a candidate: {candidates:?}"
+            );
+        }
+    }
+
+    /// A `None` channel keeps the degrade branch a silent no-op — the
+    /// pre-#977 unarmed behaviour, byte-for-byte.
+    #[test]
+    fn missing_channel_keeps_degrade_branch_silent() {
+        use tempdir::TempDir;
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let dir = TempDir::new("cand_no_channel").unwrap();
+        std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
+        let source = dir.path().join("page.md");
+
+        let mut sink = CollectingSink::new();
+        let mut root = HastNode::Root {
+            children: vec![HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "./other.md#frag".to_string())],
+                children: vec![],
+                void: false,
+            }],
+        };
+        let mut ctx = BuildContext {
+            source_path: Some(source),
+            project_root: dir.path().to_path_buf(),
+            public_dir: dir.path().to_path_buf(),
+            heading_registry: None,
+            diagnostics: Some(&mut sink),
+            cross_file_links: None,
+        };
+        let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+        plugin.visit_with_context(&mut root, &mut ctx);
+        assert!(
+            sink.take().is_empty(),
+            "existence-only degrade with no channel must stay silent"
+        );
     }
 }

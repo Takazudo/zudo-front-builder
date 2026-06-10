@@ -45,6 +45,16 @@ pub use zfb_md_extras::{
 pub use dep_manifest::DependencyManifest;
 pub use zfb_md_ast::{ReadOutcome, ReadRecorder};
 
+// Cross-file anchor side channels (#960 / #977): the per-entry types the
+// compile cache stores/replays and `Pipeline::take_cross_file_link_candidates`
+// / `take_file_headings` drain. Re-exported so the post-compile check in
+// `zfb-build` can name them without a direct `zfb-md-ast` dependency.
+// Key contract: both `CrossFileLinkCandidate::target_path` and
+// `FileHeadings::source_path` are normalised with
+// `zfb_types::normalize_path_lexical` — consumers building heading maps
+// MUST apply the same helper, never a near-match.
+pub use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings};
+
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,
