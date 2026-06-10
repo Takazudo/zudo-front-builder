@@ -1042,6 +1042,13 @@ impl Pipeline {
     /// per-build orchestration state; cross-file anchor validation
     /// through the cache is follow-up work. The per-compile context
     /// carries `heading_registry: None`.
+    ///
+    /// Production pipelines (`PipelineSpec::build_pipeline` — bundler,
+    /// snapshot walker, dev loader) do NOT arm this yet: the plugins
+    /// were already inert on the context-free production emit path
+    /// before zfb#944, and wiring real roots through the config surface
+    /// (plus draining `take_markdown_diagnostics` and the
+    /// heading-registry decision) is tracked in zfb#948.
     pub fn set_build_context_roots(
         &mut self,
         project_root: PathBuf,
