@@ -18,7 +18,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 use zfb_build::{
     AssetPipeline, BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook,
-    DiscoveryOutcome, OrchestratorConfig, PageSelection, RebuildPlan, RelDistPath, RenderedPage,
+    DiscoveryOutcome, OrchestratorConfig, PageSelection, RebuildPlan, RefreshOutcome, RelDistPath,
+    RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_watcher::{ChangeKind, Watcher};
@@ -827,7 +828,7 @@ fn ctx_with_route_prune(
                 .drain(..)
                 .map(|rel| dist_for_reload.join(rel))
                 .collect();
-            Ok(paths)
+            Ok(RefreshOutcome::Refreshed { vanished: paths })
         })),
     }
 }
@@ -1233,7 +1234,7 @@ impl ReloadProbe {
             run_islands: None,
             reload_renderer: Some(Arc::new(move || {
                 reload_events.lock().unwrap().push("reload");
-                Ok(vec![])
+                Ok(RefreshOutcome::Refreshed { vanished: vec![] })
             })),
         }
     }
@@ -1481,7 +1482,7 @@ fn ssr_only_project_edit_tick_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
         })),
     };
 
@@ -1540,7 +1541,7 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
         })),
     };
 
@@ -1591,7 +1592,7 @@ fn ssr_only_project_global_change_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
         })),
     };
 
@@ -1660,7 +1661,7 @@ fn removed_stylesheet_only_tick_reruns_css() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
         })),
     };
 
@@ -1714,7 +1715,9 @@ fn removed_islands_module_only_tick_reruns_islands() {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         })),
-        reload_renderer: Some(Arc::new(|| Ok(vec![]))),
+        reload_renderer: Some(Arc::new(|| {
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+        })),
     };
 
     let outcome = orch
@@ -1766,7 +1769,7 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(vec![])
+            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
         })),
     };
 

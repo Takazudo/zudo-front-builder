@@ -81,8 +81,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_build::{
     BuildContext, BuildOrchestrator, DevAssetPipeline, DiscoveryHook, DiscoveryOutcome,
-    OrchestratorConfig,
-    RelDistPath, RenderedPage,
+    OrchestratorConfig, RefreshOutcome, RelDistPath, RenderedPage,
 };
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_server::livereload::ReloadEvent;
@@ -718,7 +717,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
                 let fresh = std::fs::read_to_string(&hello_for_reload)?;
                 *snapshot_for_reload.lock().unwrap() = fresh;
                 reload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(vec![])
+                Ok(RefreshOutcome::Refreshed { vanished: vec![] })
             })),
         }
     };

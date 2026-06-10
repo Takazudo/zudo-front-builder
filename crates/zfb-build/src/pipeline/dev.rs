@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
-use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
+use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 
 /// The default `zfb dev`-mode asset pipeline.
@@ -117,7 +117,13 @@ impl AssetPipeline for DevAssetPipeline {
                 // Vanished paths from an SSR-only reload are appended to
                 // prune_paths below; the pages loop's prune infrastructure
                 // is bypassed here so we handle them in the plan-prune block.
-                let vanished = reload()?;
+                // A `Skipped` outcome (issue #956) means the live host and
+                // route tables were left untouched — nothing vanished,
+                // nothing to prune.
+                let vanished = match reload()? {
+                    RefreshOutcome::Skipped => Vec::new(),
+                    RefreshOutcome::Refreshed { vanished } => vanished,
+                };
                 if !vanished.is_empty() {
                     outcome.pages_pruned.extend(vanished.iter().cloned());
                     for prev in &vanished {
@@ -148,6 +154,21 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
+        // Vanished route output paths consumed by the deferred-prune loop
+        // inside the render block: plan-carried paths (issue #804 P2) plus
+        // whatever the reloader reports. Hoisted out of the render block so
+        // the Skipped path (issue #956) leaves them to the plan-prune block
+        // (1b) below instead.
+        let mut route_vanished: Vec<PathBuf> = plan.prune_paths.clone();
+
+        // True when the reloader reported [`RefreshOutcome::Skipped`]
+        // (issue #956): byte-identical bundle + unchanged route universe.
+        // The render fan-out is bypassed for the tick — re-rendering
+        // against an identical bundle would re-emit identical HTML, the
+        // same determinism assumption the `last_bytes` byte-dedup cache
+        // already makes. CSS, islands, and plan prune paths still run.
+        let mut renderer_refresh_skipped = false;
+
         if !pages.is_empty() {
             // Reload the SSR renderer (embedded V8 host) before rendering
             // pages whenever the dirty set is non-empty — UNLESS the
@@ -166,13 +187,24 @@ impl AssetPipeline for DevAssetPipeline {
             // the discovery hook), reload_renderer is skipped — but the
             // plan may still carry vanished paths from that same discovery
             // refresh via RebuildPlan::prune_paths (issue #804 P2).
-            let mut route_vanished: Vec<PathBuf> = plan.prune_paths.clone();
             if !plan.renderer_fresh {
                 if let Some(reload) = &ctx.reload_renderer {
-                    route_vanished.extend(reload()?);
+                    match reload()? {
+                        RefreshOutcome::Skipped => renderer_refresh_skipped = true,
+                        RefreshOutcome::Refreshed { vanished } => {
+                            route_vanished.extend(vanished);
+                        }
+                    }
                 }
             }
+        }
 
+        // Prune safety on a skipped tick (issue #956 gate (c) / #727): when
+        // the refresh was skipped, the route table did not move, so nothing
+        // vanished this tick. By bypassing this whole block neither the
+        // stale-output candidates nor the live-dests bookkeeping run — an
+        // unrendered URL can never be mistaken for a vanished one.
+        if !pages.is_empty() && !renderer_refresh_skipped {
             let rendered = (ctx.render_pages)(&pages)?;
             outcome.pages_rendered = rendered.len();
 
@@ -325,9 +357,13 @@ impl AssetPipeline for DevAssetPipeline {
         // supplied by the orchestrator from a discovery refresh that already
         // set renderer_fresh (so reload_renderer was skipped and these paths
         // could not be returned through the normal vanished-routes channel).
-        // Only runs when pages was empty — if pages ran, prune_paths were
-        // already included in route_vanished and processed in the loop above.
-        if pages.is_empty() && !plan.prune_paths.is_empty() {
+        // Only runs when the render loop above did not — pages empty, or the
+        // renderer refresh was skipped (issue #956; defensive: a discovery
+        // refresh sets renderer_fresh, so a Skipped reload never coincides
+        // with plan prune paths in practice). If the render loop ran,
+        // prune_paths were already included in route_vanished and processed
+        // there.
+        if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
             for prev in &plan.prune_paths {
                 let _ = std::fs::remove_file(prev);
                 self.last_bytes
@@ -788,5 +824,223 @@ mod tests {
             "dev pipeline must leave hashed_asset_urls empty; got {:?}",
             outcome.hashed_asset_urls,
         );
+    }
+
+    // ── RefreshOutcome::Skipped — render-fan-out bypass (issue #956) ─────
+
+    /// Context whose reload reports the given outcome on every tick and
+    /// counts render invocations.
+    fn ctx_with_reload_outcome(
+        dist_root: PathBuf,
+        rendered: Vec<RenderedPage>,
+        render_calls: Arc<AtomicUsize>,
+        outcome: RefreshOutcome,
+    ) -> BuildContext {
+        BuildContext {
+            dist_root,
+            render_pages: Arc::new(move |_pages: &[PageId]| {
+                render_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(rendered.clone())
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
+        }
+    }
+
+    fn single_page_plan() -> RebuildPlan {
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/a.tsx"));
+        RebuildPlan {
+            pages: PageSelection::Specific(sel),
+            rerun_css: false,
+            rerun_islands: false,
+            renderer_fresh: false,
+            ssr_reload_needed: false,
+            prune_paths: vec![],
+            triggers: vec![],
+        }
+    }
+
+    /// A `Skipped` reload must bypass the render fan-out entirely: the
+    /// render callback is never invoked, no HTML is written, and nothing
+    /// already on disk is pruned (gate (c) — an unrendered URL must not
+    /// be mistaken for a vanished one).
+    #[test]
+    fn skipped_reload_bypasses_render_and_prunes_nothing() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let rendered = vec![RenderedPage {
+            page: pid("/p/a.tsx"),
+            output_path: RelDistPath::new("a/index.html").unwrap(),
+            html: "<h1>A</h1>".into(),
+            content_type: None,
+        }];
+        let plan = single_page_plan();
+
+        // Tick 1: a real refresh renders and writes as usual.
+        let calls1 = Arc::new(AtomicUsize::new(0));
+        let ctx1 = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            rendered.clone(),
+            calls1.clone(),
+            RefreshOutcome::Refreshed { vanished: vec![] },
+        );
+        let first = pipeline.apply(&plan, &ctx1).unwrap();
+        assert_eq!(first.pages_rendered, 1);
+        assert!(dir.path().join("a/index.html").exists());
+
+        // Tick 2: byte-identical bundle → Skipped. No render, no write,
+        // no prune; the existing HTML stays on disk.
+        let calls2 = Arc::new(AtomicUsize::new(0));
+        let ctx2 = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            rendered,
+            calls2.clone(),
+            RefreshOutcome::Skipped,
+        );
+        let second = pipeline.apply(&plan, &ctx2).unwrap();
+        assert_eq!(
+            calls2.load(Ordering::SeqCst),
+            0,
+            "Skipped tick must not invoke the render callback"
+        );
+        assert_eq!(second.pages_rendered, 0, "no pages rendered on skip");
+        assert!(second.pages_written.is_empty(), "no HTML written on skip");
+        assert!(
+            second.pages_pruned.is_empty(),
+            "skip must not treat unrendered URLs as vanished; pruned={:?}",
+            second.pages_pruned,
+        );
+        assert!(
+            dir.path().join("a/index.html").exists(),
+            "existing HTML must survive a skipped tick"
+        );
+    }
+
+    /// A `Skipped` reload bypasses only the render loop — CSS and islands
+    /// requested by the plan must still run.
+    #[test]
+    fn skipped_reload_still_runs_css_and_islands() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls_cb = render_calls.clone();
+        let css_calls = Arc::new(AtomicUsize::new(0));
+        let css_calls_cb = css_calls.clone();
+        let islands_calls = Arc::new(AtomicUsize::new(0));
+        let islands_calls_cb = islands_calls.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_pages: &[PageId]| {
+                render_calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            }),
+            run_css: Some(Arc::new(move || {
+                css_calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })),
+            run_islands: Some(Arc::new(move || {
+                islands_calls_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            })),
+            reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
+        };
+
+        let mut plan = single_page_plan();
+        plan.rerun_css = true;
+        plan.rerun_islands = true;
+
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(render_calls.load(Ordering::SeqCst), 0, "render bypassed");
+        assert!(outcome.css_rerun, "CSS still reruns on a skipped tick");
+        assert_eq!(css_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            outcome.islands_rerun,
+            "islands still rerun on a skipped tick"
+        );
+        assert_eq!(islands_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Plan-carried prune paths (issue #804 P2) are still processed when
+    /// the reload reports `Skipped`. Defensive: a discovery refresh sets
+    /// `renderer_fresh` so the combination cannot occur in production
+    /// wiring, but the pipeline contract is "prune paths always honoured".
+    #[test]
+    fn skipped_reload_still_processes_plan_prune_paths() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let stale = dir.path().join("stale.html");
+        std::fs::write(&stale, "<p>stale</p>").unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let ctx = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            vec![],
+            calls.clone(),
+            RefreshOutcome::Skipped,
+        );
+        let mut plan = single_page_plan();
+        plan.prune_paths = vec![stale.clone()];
+
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "render bypassed");
+        assert!(!stale.exists(), "plan prune path must still be deleted");
+        assert!(
+            outcome.pages_pruned.contains(&stale),
+            "pages_pruned must report the plan prune path; got {:?}",
+            outcome.pages_pruned,
+        );
+    }
+
+    /// SSR-only tick (no SSG pages, `ssr_reload_needed`): a `Skipped`
+    /// reload leaves the dist tree untouched — nothing vanished because
+    /// the route table did not move.
+    #[test]
+    fn ssr_only_skipped_reload_prunes_nothing() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let existing = dir.path().join("page.html");
+        std::fs::write(&existing, "<p>live</p>").unwrap();
+
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
+        };
+        let mut plan = single_page_plan();
+        plan.pages = PageSelection::none();
+        plan.ssr_reload_needed = true;
+
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(outcome.pages_pruned.is_empty(), "nothing vanished on skip");
+        assert!(existing.exists(), "existing output must survive");
+    }
+
+    /// A `Refreshed` reload (even with nothing vanished) renders as
+    /// before — the skip bypass only fires on the explicit `Skipped`
+    /// state.
+    #[test]
+    fn refreshed_reload_renders_as_before() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let ctx = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            vec![RenderedPage {
+                page: pid("/p/a.tsx"),
+                output_path: RelDistPath::new("a/index.html").unwrap(),
+                html: "<h1>A</h1>".into(),
+                content_type: None,
+            }],
+            calls.clone(),
+            RefreshOutcome::Refreshed { vanished: vec![] },
+        );
+        let outcome = pipeline.apply(&single_page_plan(), &ctx).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "render ran");
+        assert_eq!(outcome.pages_rendered, 1);
+        assert!(dir.path().join("a/index.html").exists());
     }
 }
