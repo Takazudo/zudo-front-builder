@@ -117,6 +117,15 @@ const integrationPlugins = [
         },
       ]
     : []),
+  // TRANSITION (#932): Keep until docs pin is bumped to next.37+, which
+  // ships `copyPublicWithBase`. The native knob (set below) handles the
+  // flat copy in next.37+; this plugin is the fallback for next.35.
+  {
+    name: "./plugins/copy-public-plugin.mjs",
+    options: {
+      publicDir: "public",
+    },
+  },
 ];
 
 export default defineConfig({
