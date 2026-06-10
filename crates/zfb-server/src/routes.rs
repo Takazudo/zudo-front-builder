@@ -453,6 +453,16 @@ pub struct AppState {
     /// callers never inject even if they accidentally pass a non-`None`
     /// handle.
     pub css_bundle_url: Option<crate::CssBundleUrl>,
+
+    /// Host-header / Origin allowlist state (issue #931 / #919). Built
+    /// from the listener's actual bound address at serve time —
+    /// loopback binds carry a disabled validator (allow-everything), so
+    /// the default `localhost` setup sees zero behaviour change.
+    /// [`build_router`] applies the Host-header layer from this field
+    /// (covering BOTH the no-base and base-prefixed construction
+    /// branches); [`serve_page`] consults it for the Origin check on
+    /// non-GET requests reaching plugin/embed/SSR dispatch.
+    pub host_validation: crate::host_validation::HostValidation,
 }
 
 /// Build the axum router for the dev server.
@@ -502,50 +512,61 @@ pub struct AppState {
 /// a `/{*path}` catch-all (the very shape we use). Manual prefix
 /// registration is verbose but uniquely well-defined.
 pub fn build_router(state: AppState) -> Router {
+    let host_validation = state.host_validation.clone();
     let prefix = state.base_prefix.clone();
 
-    let Some(prefix) = prefix else {
+    let router = match prefix {
         // No base prefix configured — keep the byte-for-byte
         // pre-`base` route table at the root.
-        return build_core_router(state, "").layer(TraceLayer::new_for_http());
+        None => build_core_router(state, ""),
+        Some(prefix) => {
+            // Prefix is canonical: leading slash, no trailing slash (e.g.
+            // "/foo"). Build the core route table with the prefix folded into
+            // every path, then add the bare `/` redirect and the
+            // outside-base 404 fallback.
+            let redirect_target = format!("{prefix}/");
+            let prefix_for_404 = prefix.clone();
+            let mode_for_404 = state.mode;
+
+            build_core_router(state, &prefix)
+                // Bare `/` lands the developer on the home page — but only `/`
+                // exactly, never `<prefix>/...`, because the prefixed routes
+                // above already catch those and a redirect there would loop.
+                // The Uri is extracted so any query string on `/?x=1` is carried
+                // through to `<prefix>/?x=1` rather than silently dropped.
+                .route(
+                    "/",
+                    get(move |uri: Uri| {
+                        let target = redirect_target.clone();
+                        async move {
+                            let target = match uri.query() {
+                                Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                                _ => target,
+                            };
+                            Redirect::to(&target).into_response()
+                        }
+                    }),
+                )
+                // Any other unprefixed path (e.g. an HTML link that forgot the
+                // base, or a stale browser cache) gets a 404 with a one-line
+                // hint at the configured base. The body is HTML so the
+                // live-reload script can pick it up — the 404 disappears once
+                // the developer follows the hint.
+                .fallback(get(move |uri: Uri| {
+                    let prefix = prefix_for_404.clone();
+                    async move { unprefixed_404_response(&prefix, uri.path(), mode_for_404) }
+                }))
+        }
     };
 
-    // Prefix is canonical: leading slash, no trailing slash (e.g.
-    // "/foo"). Build the core route table with the prefix folded into
-    // every path, then add the bare `/` redirect and the
-    // outside-base 404 fallback.
-    let redirect_target = format!("{prefix}/");
-    let prefix_for_404 = prefix.clone();
-    let mode_for_404 = state.mode;
-
-    build_core_router(state, &prefix)
-        // Bare `/` lands the developer on the home page — but only `/`
-        // exactly, never `<prefix>/...`, because the prefixed routes
-        // above already catch those and a redirect there would loop.
-        // The Uri is extracted so any query string on `/?x=1` is carried
-        // through to `<prefix>/?x=1` rather than silently dropped.
-        .route(
-            "/",
-            get(move |uri: Uri| {
-                let target = redirect_target.clone();
-                async move {
-                    let target = match uri.query() {
-                        Some(q) if !q.is_empty() => format!("{target}?{q}"),
-                        _ => target,
-                    };
-                    Redirect::to(&target).into_response()
-                }
-            }),
-        )
-        // Any other unprefixed path (e.g. an HTML link that forgot the
-        // base, or a stale browser cache) gets a 404 with a one-line
-        // hint at the configured base. The body is HTML so the
-        // live-reload script can pick it up — the 404 disappears once
-        // the developer follows the hint.
-        .fallback(get(move |uri: Uri| {
-            let prefix = prefix_for_404.clone();
-            async move { unprefixed_404_response(&prefix, uri.path(), mode_for_404) }
-        }))
+    // Issue #931: the Host-header allowlist layer is applied HERE,
+    // after the two construction branches merge, so the no-base AND the
+    // base-prefixed route tables are both protected — applying it
+    // inside one branch only would pass the localhost smoke test while
+    // leaving base-prefixed deployments exposed. No-op (router returned
+    // unchanged) when the validator is not enforcing (loopback bind).
+    // TraceLayer wraps outermost so rejected requests still get traced.
+    crate::host_validation::apply_host_validation_layer(router, host_validation)
         .layer(TraceLayer::new_for_http())
 }
 
@@ -776,6 +797,11 @@ async fn serve_page(
     if let Some(set) = state.plugins.as_ref() {
         let path_only = format!("/{trimmed}");
         if let Some(reg) = set.find_match(&path_only) {
+            // Issue #931: cross-origin non-GET requests must not reach
+            // plugin handlers when the server is LAN-exposed.
+            if let Some(resp) = origin_rejection(state, &method, &headers) {
+                return resp;
+            }
             // Path + optional query, with the dev server's mount
             // prefix stripped so the plugin handler sees the URL
             // shape it registered.
@@ -811,6 +837,10 @@ async fn serve_page(
     if let Some(set) = state.embed_handlers.as_ref() {
         let path_only = format!("/{trimmed}");
         if let Some((handler, params)) = set.find_match(&path_only) {
+            // Issue #931: same Origin gate as the plugin leg above.
+            if let Some(resp) = origin_rejection(state, &method, &headers) {
+                return resp;
+            }
             return dispatch_embed_handler(
                 handler,
                 params,
@@ -846,6 +876,10 @@ async fn serve_page(
         if let Some(set) = set_snapshot {
             let path_only = format!("/{trimmed}");
             if set.find_match(&path_only).is_some() {
+                // Issue #931: same Origin gate as the plugin leg above.
+                if let Some(resp) = origin_rejection(state, &method, &headers) {
+                    return resp;
+                }
                 // Strip the dev server's mount prefix from the URL before
                 // dispatching so the SSR handler sees the same shape
                 // Cloudflare delivers in production. Without this fix a
@@ -1506,6 +1540,54 @@ fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) ->
     resp
 }
 
+/// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
+/// surfaces — plugin dev-middleware, embed handlers, request-time SSR
+/// (issue #931 / #919). Returns `Some(403)` when the server is
+/// LAN-exposed (host validation enforced) and the request carries an
+/// `Origin` header whose host fails the same allowlist the Host-header
+/// layer uses. Returns `None` (allow) when:
+///
+/// - the method is GET/HEAD (safe methods rely on the Host check),
+/// - the server is bound to loopback (default — zero behaviour change),
+/// - the `Origin` header is absent (non-browser clients: curl, native
+///   apps; surfaced with a `tracing::warn` in Dev mode so the gap is
+///   visible).
+///
+/// Static read paths (`/assets`, dist/public fallbacks, livereload) are
+/// exempt by construction — this helper is only invoked at the three
+/// dynamic-dispatch sites inside [`serve_page`].
+fn origin_rejection(state: &AppState, method: &Method, headers: &HeaderMap) -> Option<Response> {
+    if matches!(*method, Method::GET | Method::HEAD) {
+        return None;
+    }
+    let validation = &state.host_validation;
+    if !validation.is_enforced() {
+        return None;
+    }
+    let Some(value) = headers.get(header::ORIGIN) else {
+        if matches!(state.mode, crate::ServerMode::Dev) {
+            tracing::warn!(
+                method = %method,
+                "non-GET request without Origin header reached dynamic dispatch on a LAN-exposed server; allowing"
+            );
+        }
+        return None;
+    };
+    // Present-but-unreadable (non-ASCII) and disallowed origins both
+    // fail closed.
+    let allowed = value
+        .to_str()
+        .map(|origin| validation.origin_allowed(origin))
+        .unwrap_or(false);
+    if allowed {
+        return None;
+    }
+    let shown = value.to_str().unwrap_or("<non-ASCII>");
+    Some(crate::host_validation::origin_forbidden_response(
+        shown, state.mode,
+    ))
+}
+
 /// Build the `405 Method Not Allowed` response returned when a non-GET
 /// request reaches the page-cache fallback (i.e. no plugin claimed the
 /// URL or a plugin returned `Passthrough`). Mirrors what axum used to
@@ -1795,6 +1877,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         }
     }
 
@@ -1816,6 +1899,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         }
     }
 
@@ -1893,6 +1977,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         // Cache miss — the fallback must read from html_root.
         let router = test_router(state);
@@ -2307,6 +2392,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
         state
@@ -2375,6 +2461,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: Some(make_islands_bundle_url("/assets/islands.js")),
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         state
             .pages
@@ -2421,6 +2508,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         state
             .pages
@@ -2522,6 +2610,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         }
     }
 
@@ -3359,6 +3448,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 
@@ -3414,6 +3504,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 
@@ -3471,6 +3562,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 
@@ -3522,6 +3614,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 
@@ -3568,6 +3661,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 
@@ -3618,6 +3712,7 @@ mod tests {
             trailing_slash: false,
             islands_bundle_url: None,
             css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
         };
         let router = build_router(state);
 

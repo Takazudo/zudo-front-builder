@@ -226,6 +226,30 @@ pub struct Config {
     #[serde(default)]
     pub port: Option<u16>,
 
+    /// Host header values the dev/preview server accepts when bound to
+    /// a non-localhost interface (`--host 0.0.0.0`, `host` in config) —
+    /// the DNS-rebinding guard from issue #931 / #919, mirroring Vite's
+    /// `server.allowedHosts`.
+    ///
+    /// Only consulted for non-loopback binds; the default `localhost`
+    /// bind skips validation entirely. `localhost`, `127.0.0.1`,
+    /// `[::1]`, and the explicitly bound host are always allowed.
+    ///
+    /// Matching rules (the request Host's port is stripped first and
+    /// comparison is case-insensitive):
+    ///
+    /// - `"example.com"` — matches exactly that host.
+    /// - `".example.com"` (leading dot) — matches `example.com` and
+    ///   every subdomain (`api.example.com`).
+    /// - IPv6 entries may be written with or without brackets
+    ///   (`"[::1]"` / `"::1"`).
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `allowedHosts` into this field. Mirrors
+    /// `allowedHosts` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
     /// JSX framework runtime. Default: `Preact`.
     #[serde(default)]
     pub framework: Framework,
@@ -494,6 +518,7 @@ impl Default for Config {
             public_dir: default_public_dir(),
             host: None,
             port: None,
+            allowed_hosts: Vec::new(),
             framework: Framework::default(),
             collections: Vec::new(),
             tailwind: None,
@@ -1889,6 +1914,19 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             );
         }
     }
+    for (i, h) in cfg.allowed_hosts.iter().enumerate() {
+        // Reject empty entries and a bare "." loudly — a silently dropped
+        // entry would surface much later as a confusing 403 on the LAN.
+        let trimmed = h.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            bail!(
+                "allowedHosts[{i}]: {:?} is not a valid host entry; use a hostname \
+                 (\"example.com\"), a leading-dot subdomain wildcard (\".example.com\"), \
+                 or an IP literal",
+                h
+            );
+        }
+    }
     for (i, p) in cfg.extra_watch_paths.iter().enumerate() {
         if !p.is_absolute() {
             bail!(
@@ -3278,6 +3316,56 @@ mod tests {
                 features: None,
             })
         );
+    }
+
+    // --- allowedHosts field tests (#931) --------------------------------------
+
+    #[tokio::test]
+    async fn allowed_hosts_loads_camel_case_entries() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "allowedHosts": ["example.com", ".sub.example.org", "[::1]"] }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(
+            cfg.allowed_hosts,
+            vec![
+                "example.com".to_string(),
+                ".sub.example.org".to_string(),
+                "[::1]".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_hosts_defaults_to_empty_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.allowed_hosts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn allowed_hosts_rejects_empty_and_bare_dot_entries() {
+        for bad in [r#"{ "allowedHosts": [""] }"#, r#"{ "allowedHosts": ["."] }"#] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(tmp.path().join("zfb.config.json"), bad)
+                .await
+                .unwrap();
+            let err = load_from_dir(tmp.path())
+                .await
+                .expect_err("invalid allowedHosts entry should be rejected");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("allowedHosts"),
+                "expected error mentioning allowedHosts; got: {msg}"
+            );
+        }
     }
 
     // --- site field tests (#254) --------------------------------------------

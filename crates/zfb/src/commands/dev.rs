@@ -960,6 +960,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // rebuild ticks rewrite the inner Option, page responses read it
         // on every served HTML request.
         css_bundle_url: Some(Arc::clone(&css_bundle_url_handle)),
+        // Issue #931: Host-header allowlist for non-localhost binds.
+        // `allowedHosts` config entries plus the explicitly bound host;
+        // the server disables enforcement entirely for loopback binds.
+        allowed_hosts: cfg.allowed_hosts.clone(),
+        bound_host: Some(host.clone()),
     };
 
     // 7. Bind the TCP listener first so the port-in-use error surfaces

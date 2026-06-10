@@ -165,6 +165,29 @@ export type ZfbConfig = {
   host?: string;
   /** Optional dev/preview server port. */
   port?: number;
+  /**
+   * Host header values the dev/preview server accepts when bound to a
+   * non-localhost interface (`--host 0.0.0.0`, the bare `--host` LAN
+   * shortcut, or `host` above) — the DNS-rebinding guard, mirroring
+   * Vite's `server.allowedHosts`.
+   *
+   * Defaults: only consulted for non-loopback binds — the default
+   * `localhost` bind skips validation entirely. `localhost`,
+   * `127.0.0.1`, `[::1]`, and the explicitly bound host are always
+   * allowed; requests with any other Host get a 403.
+   *
+   * Matching rules (the request Host's port is stripped first and
+   * comparison is case-insensitive):
+   *
+   * - `"example.com"` — matches exactly that host.
+   * - `".example.com"` (leading dot) — matches `example.com` and every
+   *   subdomain (`api.example.com`).
+   * - IPv6 entries may be written with or without brackets
+   *   (`"[::1]"` / `"::1"`).
+   *
+   * Mirrors `Config::allowed_hosts` in `crates/zfb/src/config.rs`.
+   */
+  allowedHosts?: string[];
   /** JSX framework runtime. Default: `preact`. */
   framework?: Framework;
   /** Content collections. Mirrors the JSON form one-for-one. */

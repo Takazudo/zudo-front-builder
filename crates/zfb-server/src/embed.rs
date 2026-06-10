@@ -260,6 +260,24 @@ impl Server {
         S: Future<Output = ()> + Send + 'static,
     {
         let base_prefix = zfb_types::dev_mount_prefix(self.base.as_deref());
+        // See the matching expect() in `serve_in_thread` above —
+        // local_addr() against an Ok-bound listener is essentially
+        // infallible, and silently falling back to the requested
+        // `self.bind` (which may carry port 0 for an ephemeral bind)
+        // makes log/metrics noise.
+        let actual = listener
+            .local_addr()
+            .expect("listener.local_addr() must succeed after bind");
+        // Issue #931: embed callers have no `allowedHosts` knob yet —
+        // a non-loopback bind enforces the built-in allowlist
+        // (localhost forms + the bound IP); the default loopback bind
+        // disables validation entirely.
+        let host_validation = crate::host_validation::HostValidation::for_bind(
+            actual.ip(),
+            None,
+            &[],
+            self.mode,
+        );
         let state = AppState {
             mode: self.mode,
             pages: self.pages,
@@ -286,18 +304,11 @@ impl Server {
             // injection; the Dev-mode gate in `page_response_bytes` also
             // enforces this, but `None` keeps the contract explicit.
             css_bundle_url: None,
+            host_validation,
         };
         let router = build_router(state);
         let router = apply_request_extension_layer(router, self.request_extensions);
 
-        // See the matching expect() in `serve_in_thread` above —
-        // local_addr() against an Ok-bound listener is essentially
-        // infallible, and silently falling back to the requested
-        // `self.bind` (which may carry port 0 for an ephemeral bind)
-        // makes log/metrics noise.
-        let actual = listener
-            .local_addr()
-            .expect("listener.local_addr() must succeed after bind");
         info!(
             addr = %actual,
             mode = ?self.mode,

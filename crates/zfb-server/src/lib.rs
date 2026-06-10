@@ -44,6 +44,7 @@
 pub mod assets_containment;
 pub mod embed;
 pub mod embed_handlers;
+pub mod host_validation;
 pub mod injected_routes;
 pub mod inject;
 pub mod livereload;
@@ -99,6 +100,7 @@ pub use embed::{Server, ServerBuilder, ServerHandle, ServerMode};
 pub use embed_handlers::{
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
 };
+pub use host_validation::{apply_host_validation_layer, HostValidation};
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use injected_routes::{pattern_matches, InjectedRouteSet};
 pub use zfb_build::InjectedRoute;
@@ -257,6 +259,19 @@ pub struct ServeOpts {
     /// Dev-only: gated the same way as `islands_bundle_url` — Preview
     /// and Embed callers never inject even if they pass a non-`None` handle.
     pub css_bundle_url: Option<crate::CssBundleUrl>,
+
+    /// User-supplied `allowedHosts` entries from `zfb.config.ts`
+    /// (issue #931 / #919). Only consulted when the server is bound to
+    /// a non-loopback interface — see [`crate::host_validation`] for
+    /// the matching rules (exact, case-insensitive, port-stripped,
+    /// leading-dot suffix). Empty for the default localhost bind.
+    pub allowed_hosts: Vec<String>,
+
+    /// The host string the user explicitly bound (`--host mydev.local`
+    /// / `host` in config), always allowed by the host validator so the
+    /// URL the CLI banner prints never 403s. `None` when the caller has
+    /// no user-supplied host string in scope (tests, embed).
+    pub bound_host: Option<String>,
 }
 
 impl ServeOpts {
@@ -323,6 +338,17 @@ where
     // the server only deals with `Option<String>` of the
     // leading-slash, no-trailing-slash kind.
     let base_prefix = zfb_types::dev_mount_prefix(opts.base.as_deref());
+    // Issue #931: host validation keys off the listener's ACTUAL bound
+    // address (not `opts.addr`, which is ignored by this entry point) —
+    // a loopback bind disables enforcement entirely, anything else
+    // enforces the allowlist.
+    let actual = listener.local_addr().unwrap_or(opts.addr);
+    let host_validation = HostValidation::for_bind(
+        actual.ip(),
+        opts.bound_host.as_deref(),
+        &opts.allowed_hosts,
+        opts.mode,
+    );
     let state = AppState {
         mode: opts.mode,
         pages: opts.pages,
@@ -344,10 +370,10 @@ where
         trailing_slash: opts.trailing_slash,
         islands_bundle_url: opts.islands_bundle_url,
         css_bundle_url: opts.css_bundle_url,
+        host_validation,
     };
     let router = build_router(state);
 
-    let actual = listener.local_addr().unwrap_or(opts.addr);
     info!(
         addr = %actual,
         project_root = %opts.project_root.display(),
