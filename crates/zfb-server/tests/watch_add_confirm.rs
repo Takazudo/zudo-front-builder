@@ -161,7 +161,7 @@ fn seed_graph(project: &Path) -> Arc<Mutex<DependencyGraph>> {
 fn make_ctx(html_root: PathBuf, routes: RouteTable) -> BuildContext {
     BuildContext {
         dist_root: html_root,
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             let table = routes.lock().unwrap();
             let mut out = Vec::new();
             for p in pages {
@@ -692,7 +692,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         let reload_count = reload_count.clone();
         BuildContext {
             dist_root: html_root.clone(),
-            render_pages: Arc::new(move |pages: &[PageId]| {
+            render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
                 let table = routes.lock().unwrap();
                 let body = snapshot_for_render.lock().unwrap().clone();
                 let mut out = Vec::new();
@@ -717,7 +717,10 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
                 let fresh = std::fs::read_to_string(&hello_for_reload)?;
                 *snapshot_for_reload.lock().unwrap() = fresh;
                 reload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![],
+                })
             })),
         }
     };

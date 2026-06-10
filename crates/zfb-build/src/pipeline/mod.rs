@@ -245,7 +245,21 @@ pub struct RenderedPage {
 /// the renderer can decide to render them serially (cheap, dev) or in
 /// parallel (production). Errors abort the tick — the watcher stays
 /// alive but the rebuild is reported as failed.
-pub type PageRenderer = Arc<dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static>;
+///
+/// The second argument is the tick's optional content-narrowing hint
+/// (issue #958, see [`crate::ContentNarrowing`]): when `Some`, the
+/// renderer MAY narrow each dynamic source's route fan-out to the routes
+/// derived from the changed entries — but narrowing only ever removes
+/// routes from the selected render set, never adds. `None` means "render
+/// every selected page fully" (today's behaviour); implementations that
+/// don't narrow simply ignore the argument. The production pipeline
+/// always passes `None`.
+pub type PageRenderer = Arc<
+    dyn Fn(&[PageId], Option<&crate::ContentNarrowing>) -> Result<Vec<RenderedPage>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Function that runs the CSS pipeline once and returns whether the
 /// emitted asset is new (i.e. whether the asset URL changed).
@@ -320,7 +334,16 @@ pub enum RefreshOutcome {
     /// source's new entry set. The dev pipeline prunes those files from
     /// disk and evicts them from the in-memory page cache. An empty
     /// `vanished` means refreshed-no-vanish.
-    Refreshed { vanished: Vec<std::path::PathBuf> },
+    Refreshed {
+        vanished: Vec<std::path::PathBuf>,
+        /// Source [`PageId`]s whose route-entry set changed in this
+        /// tick's route-table rebuild (issue #958). Non-empty means the
+        /// route structure moved — a body edit CAN change `paths()`
+        /// output — so the dev pipeline must disable content narrowing
+        /// for the tick (fallback G5): narrowing against a moved route
+        /// table could orphan a brand-new URL.
+        changed_sources: Vec<PageId>,
+    },
 }
 
 /// Function the dev pipeline calls before re-rendering pages, when

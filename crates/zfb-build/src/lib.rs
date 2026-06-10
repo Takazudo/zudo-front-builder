@@ -83,7 +83,7 @@ pub use pipeline::{
     ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
     ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
 };
-pub use plan::{PageSelection, RebuildPlan};
+pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
     AliasEntry, AliasMap, InjectedRoute, InjectedRouteList, SetupCommand, SetupRegistries,
     SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,

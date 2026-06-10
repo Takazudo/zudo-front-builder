@@ -256,7 +256,9 @@ impl AssetPipeline for ProductionAssetPipeline {
         let rendered = if pages.is_empty() {
             Vec::new()
         } else {
-            (ctx.render_pages)(&pages)?
+            // Production never narrows (issue #958): every selected
+            // page renders in full.
+            (ctx.render_pages)(&pages, None)?
         };
         outcome.pages_rendered = rendered.len();
 
@@ -695,7 +697,9 @@ mod tests {
     fn ctx_with_pages(dist_root: PathBuf, pages: Vec<RenderedPage>) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId]| Ok(pages.clone())),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| Ok(pages.clone()),
+            ),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -715,6 +719,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         }
     }
 
@@ -1020,7 +1025,7 @@ mod tests {
         let calls_cb = bool_runner_calls.clone();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: Some(Arc::new(move || {
                 calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
@@ -1063,7 +1068,7 @@ mod tests {
         let pipeline = ProductionAssetPipeline::empty();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -1076,6 +1081,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
     }

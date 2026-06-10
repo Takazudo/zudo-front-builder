@@ -68,7 +68,7 @@ fn touching_a_md_file_only_rerenders_its_page() {
     let project_path = project.to_path_buf();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_for_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -153,7 +153,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |_| {
+        render_pages: Arc::new(move |_, _| {
             render_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(vec![])
         }),
@@ -228,7 +228,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -333,7 +333,7 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
 
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -515,7 +515,7 @@ fn fanout_ctx(
 ) -> BuildContext {
     BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls.lock().unwrap().push(pages.to_vec());
             let table = routes.lock().unwrap();
             let mut out = Vec::new();
@@ -809,7 +809,7 @@ fn ctx_with_route_prune(
     let vanished_for_reload = vanished.clone();
     BuildContext {
         dist_root: dist,
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             let table = routes_for_render.lock().unwrap();
             let mut out = Vec::new();
             for p in pages {
@@ -836,7 +836,10 @@ fn ctx_with_route_prune(
                 .drain(..)
                 .map(|rel| dist_for_reload.join(rel))
                 .collect();
-            Ok(RefreshOutcome::Refreshed { vanished: paths })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: paths,
+                changed_sources: vec![],
+            })
         })),
     }
 }
@@ -1107,7 +1110,7 @@ fn removed_content_file_drops_graph_edge() {
     let render_calls_cb = render_calls.clone();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(move |pages: &[PageId]| {
+        render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
             render_calls_cb.lock().unwrap().push(pages.to_vec());
             Ok(pages
                 .iter()
@@ -1208,7 +1211,7 @@ impl ReloadProbe {
         let reload_events = self.events.clone();
         BuildContext {
             dist_root: project.join("dist"),
-            render_pages: Arc::new(move |pages: &[PageId]| {
+            render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
                 render_events.lock().unwrap().push("render");
                 Ok(pages
                     .iter()
@@ -1228,7 +1231,10 @@ impl ReloadProbe {
             run_islands: None,
             reload_renderer: Some(Arc::new(move || {
                 reload_events.lock().unwrap().push("reload");
-                Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![],
+                })
             })),
         }
     }
@@ -1471,12 +1477,15 @@ fn ssr_only_project_edit_tick_reloads_renderer() {
     let ctx = BuildContext {
         dist_root: project.join("dist"),
         // SSR-only: render_pages returns nothing (no SSG pages).
-        render_pages: Arc::new(|_pages| Ok(vec![])),
+        render_pages: Arc::new(|_pages, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1527,7 +1536,7 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
     let css_runs_cb = css_runs.clone();
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: Some(Arc::new(move || {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
@@ -1535,7 +1544,10 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1585,12 +1597,15 @@ fn ssr_only_project_global_change_reloads_renderer() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1651,7 +1666,7 @@ fn removed_stylesheet_only_tick_reruns_css() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: Some(Arc::new(move || {
             css_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(true)
@@ -1659,7 +1674,10 @@ fn removed_stylesheet_only_tick_reruns_css() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1707,14 +1725,17 @@ fn removed_islands_module_only_tick_reruns_islands() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: Some(Arc::new(move || {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         })),
         reload_renderer: Some(Arc::new(|| {
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1762,12 +1783,15 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
     );
     let ctx = BuildContext {
         dist_root: project.join("dist"),
-        render_pages: Arc::new(|_| Ok(vec![])),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
