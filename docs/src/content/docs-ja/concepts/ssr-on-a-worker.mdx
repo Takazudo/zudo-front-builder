@@ -78,7 +78,7 @@ Cloudflare Pages サイトへのすべてのリクエストは、まず `_worker
 
 **なぜ POST/PUT/PATCH/DELETE は直接通すのか:** アセットサーバーは定義上リードオンリーです。フォーム送信のためにそれを探っても、常に 404 か 405 を返すだけ — 利益のない不要な往復です。フォーム送信、JSON API 呼び出し、あらゆるミューテーションは直接内側のワーカーへ進みます。
 
-その結果、静的ページは SSR のコストを払いません。`prerender = true` のページは `env.ASSETS` だけで配信され、内側のワーカーの `fetch` ハンドラは呼ばれません。（ただし `_worker.js` がモジュールスコープで内側のバンドルをインポートしているため、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。正確な表現は [What is NOT in the worker output](#what-is-not-in-the-worker-output) を参照してください。）
+その結果、静的ページは SSR のコストを払いません。`prerender = true` のページは `env.ASSETS` だけで配信され、内側のワーカーの `fetch` ハンドラは呼ばれません。（ただし `_worker.js` がモジュールスコープで内側のバンドルをインポートしているため、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。正確な表現は [What is NOT in the worker output](#ワーカー出力に含まれないもの) を参照してください。）
 
 ## `getCloudflareContext()` のトリック
 
