@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+### New features
+
+**`VNode`, `VNodeArray`, `VNodeObject` exported from `"@takazudo/zfb"`** (#972):
+
+The structural JSX-node types are now part of the public API:
+
+```ts
+import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
+```
+
+`VNode` now includes a bare `object` member (matching Preact's own `ComponentChild` design), making Preact's `ComponentChildren`, `VNode<Props>`, `JSX.Element`, and `JSX.Element[]` all assignable at `Island` input boundaries (`children` and `ssrFallback`) with zero `as unknown as` casts.
+
+**Name-collision caveat for Preact consumers:** if a consumer file already has `import { VNode } from "preact"`, use a qualified import to avoid the clash:
+
+```ts
+import type { VNode as ZfbVNode } from "@takazudo/zfb";
+```
+
 ### Breaking changes (pre-1.0)
 
 **`linkValidation.allowExternal` removed** (#925):

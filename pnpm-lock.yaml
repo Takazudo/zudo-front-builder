@@ -139,6 +139,9 @@ importers:
       happy-dom:
         specifier: ^15.7.4
         version: 15.11.7
+      preact:
+        specifier: ^10.29.0
+        version: 10.29.1
       react:
         specifier: ^19.2.3
         version: 19.2.6

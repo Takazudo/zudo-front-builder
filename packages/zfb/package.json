@@ -127,7 +127,7 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "vitest run",
+    "test": "vitest run && tsc -p tsconfig.preact-fixture.json",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
@@ -135,6 +135,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "happy-dom": "^15.7.4",
+    "preact": "^10.29.0",
     "react": "^19.2.3",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9"

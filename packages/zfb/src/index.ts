@@ -22,6 +22,7 @@ export {
   unmountIslands,
 } from "./runtime.js";
 export type { IslandManifest, IslandManifestValue } from "./runtime.js";
+export type { VNode, VNodeArray, VNodeObject } from "./jsx-types.js";
 export { DEFAULT_WHEN, isWhen, WHEN_VALUES, type When } from "./types.js";
 
 // `defaultComponents` (htmlOverrides convention) is re-exported from the

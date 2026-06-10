@@ -69,6 +69,60 @@ export default function Page() {
 
 サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングします。
 
+## VNode 型のエクスポート
+
+`VNode`、`VNodeArray`、`VNodeObject` は `"@takazudo/zfb"` からパブリック型としてエクスポートされます。
+
+```ts
+import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
+```
+
+これらの構造的型はフレームワーク非依存です。`VNode` には素の `object` メンバーが含まれており（Preact 自身の `ComponentChild` 設計と同じパターン）、Preact の `ComponentChildren`・`VNode<Props>`・`JSX.Element`・`JSX.Element[]` は `Island` の入力境界（`children` と `ssrFallback`）に `as unknown as` キャストなしで直接代入できます。
+
+```tsx
+import type { ComponentChildren } from "preact";
+import { Island } from "@takazudo/zfb";
+
+// ComponentChildren を children として転送 — キャスト不要
+function Wrapper({ children }: { children: ComponentChildren }) {
+  return <Island when="load">{children}</Island>;
+}
+
+// ComponentChildren を ssrFallback として転送 — キャスト不要
+function SkipWrapper({ fallback }: { fallback: ComponentChildren }) {
+  return (
+    <Island ssrFallback={fallback}>
+      <HeavyWidget />
+    </Island>
+  );
+}
+```
+
+### スロットを ComponentChildren として型注釈する（返却方向）
+
+スロット変数が `<Island>` の返り値を保持する場合は、型を `IslandElement` ではなく `ComponentChildren` や `JSX.Element` で注釈してください。`IslandElement` は `props.children` を必須とする意図的な狭い構造型であり、Preact の `VNode<{}>` はこれに代入できません。代わりに Preact ネイティブの型を使用してください。
+
+```tsx
+import type { ComponentChildren } from "preact";
+
+function Page() {
+  const slot: ComponentChildren = (
+    <Island when="visible">
+      <Counter />
+    </Island>
+  );
+  return <main>{slot}</main>;
+}
+```
+
+### Preact 利用者向けの名前衝突に関する注意
+
+ファイルがすでに `import { VNode } from "preact"` を持っている場合は、名前の衝突を避けるために修飾インポートを使用してください。
+
+```ts
+import type { VNode as ZfbVNode } from "@takazudo/zfb";
+```
+
 ## エクスポートされる定数とヘルパー
 
 以下は `Island` とともに `"@takazudo/zfb"` からエクスポートされます。
