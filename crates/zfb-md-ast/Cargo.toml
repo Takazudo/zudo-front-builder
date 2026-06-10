@@ -11,5 +11,13 @@ description = "zfb-md-ast: shared MdastVisitor / HastVisitor traits and HastNode
 markdown = { workspace = true }
 serde = { workspace = true }
 
+# Hashing for the read-recorder dependency manifest (zfb#942). Same
+# crate+version pair as `zfb-content` / `zfb-css::pipeline::hash_8` so
+# the project speaks one hashing dialect.
+sha2 = "0.10"
+hex = "0.4"
+
 [dev-dependencies]
 serde_json = { workspace = true }
+# read_recorder unit tests create real files to probe/hash.
+tempfile = { workspace = true }

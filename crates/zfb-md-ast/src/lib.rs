@@ -23,6 +23,7 @@ pub mod directives;
 pub mod features_config;
 pub mod hast_text;
 pub mod heading_registry;
+pub mod read_recorder;
 
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
@@ -37,6 +38,7 @@ pub use features_config::{
     TranscludeConfig, into_directive_def,
 };
 pub use hast_text::extract_text;
+pub use read_recorder::{sha256_hex, ReadOutcome, ReadRecorder};
 
 /// Lightweight HTML AST node.
 ///
