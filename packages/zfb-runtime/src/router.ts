@@ -77,6 +77,12 @@ export interface PageHeading {
  *   for this route template. May be async. Returns an array of
  *   `{ params, props? }` objects identical in shape to the Astro/zfb
  *   `paths()` contract.
+ *   **Evaluated once per router instance** — the result is memoised and
+ *   shared across the `/__paths__` handler and all per-page render
+ *   requests. This matches the build-time-enumerator contract: every
+ *   entry rendered within a single build sees the same paths() snapshot.
+ *   Dev mode is safe because each file-save triggers a fresh bundle,
+ *   which creates a new router instance with a clean memo.
  * - `getStaticProps`: optional async function for static routes that need
  *   to fetch data at build/render time. Called once per request (before
  *   `default`). Must return `{ props: Record<string, unknown> }`. The
@@ -179,6 +185,34 @@ function ensureHtml5Doctype(body: string, contentType: string): string {
 }
 
 /**
+ * Evaluate `pathsFn` once per `routeKey`, sharing the result across all
+ * concurrent and subsequent callers via a Promise stored in `memo`.
+ *
+ * Rejections are evicted from the memo so that a transient paths() failure
+ * does not permanently poison the cache — the next request retries.
+ */
+async function getOrEvalPaths(
+  memo: Map<string, Promise<unknown[]>>,
+  routeKey: string,
+  pathsFn: () => unknown[] | Promise<unknown[]>,
+): Promise<unknown[]> {
+  const existing = memo.get(routeKey);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const promise = Promise.resolve(pathsFn()).then(
+    (v) => v as unknown[],
+    (err) => {
+      // Evict on rejection so the next request retries.
+      memo.delete(routeKey);
+      return Promise.reject(err) as Promise<unknown[]>;
+    },
+  );
+  memo.set(routeKey, promise);
+  return promise;
+}
+
+/**
  * Build a page router for the SSG-first architecture (ADR-005).
  *
  * Side effects:
@@ -207,6 +241,22 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   for (const page of opts.pages) {
     pagesByRoute.set(page.route, page);
   }
+
+  // Per-router-instance memo for paths() results.
+  //
+  // Keyed on page.route (e.g. "/blog/:slug"). Stores the in-flight or
+  // settled Promise so that concurrent requests share one evaluation.
+  // Rejections are NOT cached: if paths() throws the Promise is removed
+  // from the map so the next request retries rather than re-propagating
+  // the same error indefinitely.
+  //
+  // Production SSR isolates evaluate paths() once per isolate, which
+  // matches the documented build-time-enumerator contract. Dev mode is
+  // safe because each re-bundle creates a fresh router instance
+  // (dev.rs reload_renderer), so stale paths() results never persist
+  // across a file-save cycle. Watch-time invalidation is explicitly
+  // out of scope per issue #507.
+  const pathsMemo = new Map<string, Promise<unknown[]>>();
 
   // Sanity check: a user-authored route that happens to start with
   // `/__paths__` (or a top-level catchall like `/:slug{.+}`) would
@@ -269,9 +319,9 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       );
     }
 
-    let result: unknown;
+    let result: unknown[];
     try {
-      result = await mod.paths();
+      result = await getOrEvalPaths(pathsMemo, routeKey, mod.paths);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return c.body(`[zfb-runtime] /__paths__: paths() threw for "${routeKey}": ${msg}`, 500, {
@@ -339,7 +389,7 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
       if (isDynamicRoute && typeof mod.paths === "function") {
         let pathsResult: unknown;
         try {
-          pathsResult = await mod.paths();
+          pathsResult = await getOrEvalPaths(pathsMemo, page.route, mod.paths);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return c.body(`[zfb-runtime] paths() threw for "${page.route}": ${msg}`, 500, {

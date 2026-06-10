@@ -67,4 +67,4 @@ export default function BlogPost({ params }: { params: { slug: string } }) {
 }
 ```
 
-`paths()` はビルド中に組み込みの V8 ホストによって評価されます。`zfb build` は静的・動的・catchall ルートを検出し、各動的・catchall ルートについて `paths()` を評価して、レンダリングすべき具体的な URL を列挙します。静的ルートに `paths()` エクスポートは不要です。
+`paths()` はビルド中に組み込みの V8 ホストによって評価されます。`zfb build` は静的・動的・catchall ルートを検出し、各動的・catchall ルートについて `paths()` を評価して、レンダリングすべき具体的な URL を列挙します。静的ルートに `paths()` エクスポートは不要です。`paths()` はルートごと・ビルドごとに 1 回だけ評価されます — 内部でのエントリごとの処理は安全で、出力 URL ごとに繰り返されることはありません。
