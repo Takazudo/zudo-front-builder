@@ -1152,6 +1152,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     //   is governed by the `failOnBroken` config flag (Warning by default,
     //   Error when set).  This divergence is intentional and permanent; do
     //   not "fix" it to match the original wording (zfb#953).
+    //
+    // Fatal findings from this gate and the broken-links gate (2d) are
+    // accumulated here and bailed on ONCE after both gates have reported,
+    // so a build with both failure classes surfaces the full set in one
+    // pass instead of revealing the second class only after the first is
+    // fixed.
+    let mut fatal_findings: Vec<String> = Vec::new();
     if !all_markdown_diagnostics.is_empty() {
         // Format a location prefix: "path" or "path:line" when available.
         let fmt_location = |d: &MarkdownDiagnostic| -> String {
@@ -1216,7 +1223,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     msg.push_str(&format!("  {loc}: {text}\n"));
                 }
             }
-            bail!("{}", msg.trim_end());
+            fatal_findings.push(msg.trim_end().to_string());
         }
     }
 
@@ -1227,9 +1234,9 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // contract in the issue spec). Warnings are emitted to stderr so they
     // are visible to both the CLI user and CI log scanners.
     //
-    // Ordering note: placed AFTER the markdown-diagnostics gate (2c) so that
-    // transclude/imageDimensions errors are surfaced even when this gate would
-    // bail first (both gates run after all walks, so no findings are missed).
+    // Error-mode findings join `fatal_findings` (declared above 2c) rather
+    // than bailing here, so both this gate and the markdown-diagnostics
+    // gate report before the single combined bail below.
     if !all_broken_links.is_empty() {
         let on_broken = input
             .resolve_markdown_links
@@ -1258,9 +1265,15 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                     "Fix the links or set onBrokenLinks: 'warn' / 'ignore' \
                      in resolveMarkdownLinks config to suppress this error.",
                 );
-                bail!("{}", msg);
+                fatal_findings.push(msg);
             }
         }
+    }
+
+    // Single combined bail for 2c + 2d: every fatal finding from both gates
+    // is in the error, so one failed build shows the complete picture.
+    if !fatal_findings.is_empty() {
+        bail!("{}", fatal_findings.join("\n"));
     }
 
     // 2e. CSS Modules — rewrite every `.module.css` file in the shadow
