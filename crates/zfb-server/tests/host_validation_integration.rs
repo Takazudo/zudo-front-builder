@@ -249,8 +249,14 @@ async fn enforced_bind_rejects_disallowed_host_and_accepts_allowed() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("home"), "body: {body}");
 
-    // Built-in localhost forms always pass.
-    for host in ["localhost:3000", "127.0.0.1:9999"] {
+    // Built-in localhost forms and IP-literal hosts (the LAN URLs the
+    // bind-all startup banner prints) always pass.
+    for host in [
+        "localhost:3000",
+        "127.0.0.1:9999",
+        "192.168.1.9:3000",
+        "[::1]:3000",
+    ] {
         let resp = client()
             .get(local_url(addr, "/"))
             .header(reqwest::header::HOST, host)

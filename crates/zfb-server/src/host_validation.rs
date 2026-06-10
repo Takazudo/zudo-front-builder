@@ -22,10 +22,11 @@
 //!   router unchanged and every Origin is accepted. Zero behaviour
 //!   change for the common `localhost` case.
 //! - **Bound to a non-loopback interface:** enforcement is on. The
-//!   always-allowed set is `localhost`, `127.0.0.1`, `[::1]`, the bound
-//!   IP itself, and the explicitly bound host string (e.g.
-//!   `--host mydev.local`). Additional hosts come from the user's
-//!   `allowedHosts` config entries.
+//!   always-allowed set is `localhost`, the explicitly bound host
+//!   string (e.g. `--host mydev.local`), and any IP-literal host
+//!   (`127.0.0.1`, `[::1]`, the bound IP, the LAN interface URLs the
+//!   startup banner prints — see the matching rules below). Additional
+//!   hosts come from the user's `allowedHosts` config entries.
 //!
 //! ## Matching rules (config entries)
 //!
@@ -38,6 +39,13 @@
 //! - A leading-dot entry (`.example.com`) matches the bare domain AND
 //!   every subdomain (`example.com`, `api.example.com`) — but never a
 //!   non-boundary suffix like `notexample.com`. Mirrors Vite.
+//! - **IP-literal hosts (IPv4 or IPv6) are always allowed.** DNS
+//!   rebinding — the attack this layer exists for — requires a DNS
+//!   *name* the attacker controls; a raw-IP `Host` means the client
+//!   addressed the interface directly, e.g. the LAN URLs the startup
+//!   banner prints for a bind-all `--host`. Mirrors Vite, and without
+//!   it `--host 0.0.0.0` would 403 its own printed
+//!   `http://192.168.x.x:port/` URLs by default.
 //!
 //! Disallowed hosts get a `403` whose body follows the #926 policy:
 //! explanatory in Dev mode, generic in Preview/Embed (detail goes to
@@ -159,6 +167,13 @@ impl HostValidation {
         let Some(host) = host_without_port(host_header) else {
             return false;
         };
+        // IP-literal hosts are always allowed (Vite parity — see the
+        // module docs): rebinding attacks ride on DNS names, and the
+        // bind-all startup banner prints raw-IP LAN URLs that must work
+        // without manual `allowedHosts` entries.
+        if host.parse::<IpAddr>().is_ok() {
+            return true;
+        }
         self.rules.iter().any(|rule| match rule {
             AllowRule::Exact(e) => *e == host,
             AllowRule::Suffix(s) => {
@@ -416,17 +431,34 @@ mod tests {
         assert!(!v.host_allowed("evil.com:3000"));
     }
 
-    // --- matcher: IPv6 literals ---------------------------------------
+    // --- matcher: IP literals (always allowed) --------------------------
 
     #[test]
-    fn ipv6_literals_match_with_or_without_brackets_and_port() {
+    fn ip_literal_hosts_are_always_allowed_when_enforcing() {
+        // Vite parity: raw-IP Hosts can't be DNS-rebound, and the
+        // bind-all startup banner prints exactly these URLs.
+        let v = enforcing(&[]);
+        assert!(v.host_allowed("192.168.1.9"));
+        assert!(v.host_allowed("192.168.1.9:3000"));
+        assert!(v.host_allowed("[2001:db8::1]"));
+        assert!(v.host_allowed("[2001:db8::1]:3000"));
+        // Names still need an allowlist entry.
+        assert!(!v.host_allowed("evil.test:3000"));
+    }
+
+    // --- matcher: IPv6 bracket/port parsing -----------------------------
+
+    #[test]
+    fn ipv6_literals_parse_with_or_without_brackets_and_port() {
+        // Config entries may be spelled with or without brackets; the
+        // Host side may carry a port. (IP literals pass the always-allow
+        // rule anyway — this pins the bracket/port normalisation that
+        // the rule depends on.)
         let v = enforcing(&["[2001:db8::1]"]);
         assert!(v.host_allowed("[2001:db8::1]"));
         assert!(v.host_allowed("[2001:db8::1]:3000"));
-        // Unbracketed config spelling must behave identically.
         let v2 = enforcing(&["2001:db8::1"]);
         assert!(v2.host_allowed("[2001:db8::1]:3000"));
-        assert!(!v2.host_allowed("[2001:db8::2]:3000"));
     }
 
     // --- matcher: case-insensitivity -----------------------------------
@@ -498,10 +530,14 @@ mod tests {
     }
 
     #[test]
-    fn origin_allowed_handles_ipv6_origins() {
+    fn origin_allowed_handles_ipv6_and_ip_literal_origins() {
+        // The Origin gate runs on the same allowlist as the Host check
+        // (#931 spec), so IP-literal origins share the always-allow rule.
         let v = enforcing(&[]);
         assert!(v.origin_allowed("http://[::1]:3000"));
-        assert!(!v.origin_allowed("http://[2001:db8::7]:3000"));
+        assert!(v.origin_allowed("http://[2001:db8::7]:3000"));
+        assert!(v.origin_allowed("http://192.168.1.9:3000"));
+        assert!(!v.origin_allowed("https://evil.test"));
     }
 
     // --- layer behaviour ---------------------------------------------------

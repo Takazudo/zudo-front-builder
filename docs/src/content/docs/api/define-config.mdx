@@ -20,7 +20,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port.
-- `allowedHosts?: string[]` — Host header values the dev/preview server accepts when bound to a non-localhost interface (mirrors Vite's `server.allowedHosts`). Only consulted for non-loopback binds; `localhost`, `127.0.0.1`, `[::1]`, and the explicitly bound host are always allowed. Entries match exactly (case-insensitive, request port stripped); a leading-dot entry like `".example.com"` also matches subdomains.
+- `allowedHosts?: string[]` — Host header values the dev/preview server accepts when bound to a non-localhost interface (mirrors Vite's `server.allowedHosts`). Only consulted for non-loopback binds; `localhost`, the explicitly bound host, and any IP-literal Host (`127.0.0.1`, `[::1]`, the LAN URLs the startup banner prints) are always allowed — DNS rebinding needs a DNS name, so raw IPs are safe. Entries match exactly (case-insensitive, request port stripped); a leading-dot entry like `".example.com"` also matches subdomains.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
 - `collections?: CollectionDef[]` — content collections. Each entry has:
   - `name: string` — identifier used in `getCollection` calls.

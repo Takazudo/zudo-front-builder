@@ -232,8 +232,10 @@ pub struct Config {
     /// `server.allowedHosts`.
     ///
     /// Only consulted for non-loopback binds; the default `localhost`
-    /// bind skips validation entirely. `localhost`, `127.0.0.1`,
-    /// `[::1]`, and the explicitly bound host are always allowed.
+    /// bind skips validation entirely. `localhost`, the explicitly
+    /// bound host, and any IP-literal Host — `127.0.0.1`, `[::1]`, the
+    /// LAN URLs the startup banner prints — are always allowed (DNS
+    /// rebinding needs a DNS name, so raw IPs are safe; Vite parity).
     ///
     /// Matching rules (the request Host's port is stripped first and
     /// comparison is case-insensitive):
