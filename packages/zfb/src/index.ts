@@ -47,6 +47,8 @@ export {
 
 export { slugify, SlugAllocator } from "./slugify.js";
 
+export { clientScript } from "./client-script.js";
+
 export {
   ContentBlockquote,
   ContentCode,
