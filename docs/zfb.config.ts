@@ -140,6 +140,7 @@ export default defineConfig({
   // @ts-expect-error -- copyPublicWithBase is honored by the local engine on main but
   // missing from the pinned @takazudo/zfb 0.1.0-next.35 ZfbConfig type (#946); this
   // directive errors (forcing its removal) once the bump to a typed version lands.
+  // Remove together with the TRANSITION copy-public-plugin.mjs fallback (#932).
   copyPublicWithBase: false,
   collections,
   stripMdExt: true,
