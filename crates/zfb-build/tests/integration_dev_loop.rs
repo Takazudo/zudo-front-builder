@@ -828,7 +828,10 @@ fn ctx_with_route_prune(
                 .drain(..)
                 .map(|rel| dist_for_reload.join(rel))
                 .collect();
-            Ok(RefreshOutcome::Refreshed { vanished: paths, changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: paths,
+                changed_sources: vec![],
+            })
         })),
     }
 }
@@ -1234,7 +1237,10 @@ impl ReloadProbe {
             run_islands: None,
             reload_renderer: Some(Arc::new(move || {
                 reload_events.lock().unwrap().push("reload");
-                Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![],
+                })
             })),
         }
     }
@@ -1482,7 +1488,10 @@ fn ssr_only_project_edit_tick_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1541,7 +1550,10 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1592,7 +1604,10 @@ fn ssr_only_project_global_change_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1661,7 +1676,10 @@ fn removed_stylesheet_only_tick_reruns_css() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1716,7 +1734,10 @@ fn removed_islands_module_only_tick_reruns_islands() {
             Ok(None)
         })),
         reload_renderer: Some(Arc::new(|| {
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 
@@ -1769,7 +1790,10 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
         run_islands: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
-            Ok(RefreshOutcome::Refreshed { vanished: vec![], changed_sources: vec![] })
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            })
         })),
     };
 

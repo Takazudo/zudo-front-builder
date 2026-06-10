@@ -693,9 +693,9 @@ mod tests {
     fn ctx_with_pages(dist_root: PathBuf, pages: Vec<RenderedPage>) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
-                Ok(pages.clone())
-            }),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| Ok(pages.clone()),
+            ),
             run_css: None,
             run_islands: None,
             reload_renderer: None,

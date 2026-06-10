@@ -460,10 +460,12 @@ mod tests {
     ) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
-                invocations.fetch_add(1, Ordering::SeqCst);
-                Ok(rendered.clone())
-            }),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
+                    invocations.fetch_add(1, Ordering::SeqCst);
+                    Ok(rendered.clone())
+                },
+            ),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -872,10 +874,12 @@ mod tests {
     ) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
-                render_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(rendered.clone())
-            }),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
+                    render_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(rendered.clone())
+                },
+            ),
             run_css: None,
             run_islands: None,
             reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
@@ -970,10 +974,12 @@ mod tests {
         let islands_calls_cb = islands_calls.clone();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
-                render_calls_cb.fetch_add(1, Ordering::SeqCst);
-                Ok(vec![])
-            }),
+            render_pages: Arc::new(
+                move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
+                    render_calls_cb.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![])
+                },
+            ),
             run_css: Some(Arc::new(move || {
                 css_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
