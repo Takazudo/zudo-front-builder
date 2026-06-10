@@ -78,10 +78,9 @@ use crate::commands::resolve::{resolve_outdir, validate_outdir_safety, wipe_outd
 use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map, build_route_universe, check_runtime_installed,
-    embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    is_ssr_route, DeferredDynamicRoute, DynamicResolvedEntry,
-    RouteUniversePlan, WorkerDispatch,
+    build_prerender_map, build_route_universe, check_runtime_installed, embedded_binary,
+    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route,
+    DeferredDynamicRoute, DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
 };
 
 /// Entry point for `zfb build`.
@@ -150,8 +149,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 
     // #805 — wipe outdir before preBuild so plugin-emitted files (emitted
     // after this point) always land in a clean directory.
-    validate_outdir_safety(&project_root, &outdir)
-        .context("outdir safety check failed")?;
+    validate_outdir_safety(&project_root, &outdir).context("outdir safety check failed")?;
     wipe_outdir_contents(&outdir)
         .with_context(|| format!("failed to wipe outdir {}", outdir.display()))?;
 
@@ -313,9 +311,7 @@ pub(crate) fn resolve_v8_mode(
             if ssr_routes.is_empty() {
                 Ok(V8Mode::Off)
             } else {
-                let first = ssr_routes
-                    .first()
-                    .expect("checked non-empty above");
+                let first = ssr_routes.first().expect("checked non-empty above");
                 let extra = if ssr_routes.len() > 1 {
                     format!(" (and {} more)", ssr_routes.len() - 1)
                 } else {
@@ -515,9 +511,8 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
-        let factory = crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-            self.v8_plugin_hooks.clone(),
-        );
+        let factory =
+            crate::v8_host_adapter::make_v8_host_factory_with_hooks(self.v8_plugin_hooks.clone());
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
@@ -970,18 +965,14 @@ pub(crate) fn compute_css_module_class_maps(
         return Ok(HashMap::new());
     }
 
-    let scan = zfb_css::scan_css_module_imports(&sources)
-        .context("CSS Modules import scan failed")?;
+    let scan =
+        zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
 
     // Auto-discovered modules: keep only resolved paths that exist on
     // disk — mirrors `CssPipeline::collect_modules`. Bare specifiers
     // (`@org/pkg/x.module.css`) cannot be compiled by lightningcss and
     // are dropped here too.
-    let module_files: Vec<PathBuf> = scan
-        .modules
-        .into_iter()
-        .filter(|m| m.exists())
-        .collect();
+    let module_files: Vec<PathBuf> = scan.modules.into_iter().filter(|m| m.exists()).collect();
     if module_files.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1337,6 +1328,179 @@ pub(crate) fn build_default_client_scripts_payloads(
         .collect())
 }
 
+/// Discover, bundle (dev mode — no minification), and write all
+/// `*.client.{ts,tsx,js,jsx}` entries to `dist_root/assets/client/<name>.js`.
+///
+/// This is the **dev-path** equivalent of [`build_default_client_scripts_payloads`]:
+/// it writes stable (un-hashed) files directly to disk so the dev server's
+/// `ServeDir` can serve `GET /assets/client/<name>.js` immediately.
+///
+/// ## Stale-file pruning
+///
+/// `prev_entry_names` is the set of entry names written by the *previous*
+/// call. Any name present in `prev_entry_names` but absent from the
+/// newly-discovered set has its on-disk file deleted. Pass an empty set on
+/// the first call (boot); update the tracker with the returned set on each
+/// subsequent call.
+///
+/// ## Return value
+///
+/// Returns `(changed, current_names)` where:
+/// - `changed` is `true` when at least one file was written with new or
+///   changed bytes (or any stale file was pruned). The dev-server wires
+///   this to a `ReloadEvent::Page`.
+/// - `current_names` is the set of entry names that were just written —
+///   pass it as `prev_entry_names` on the next call.
+pub(crate) fn build_dev_client_scripts_to_disk(
+    project_root: &Path,
+    dist_root: &Path,
+    framework: crate::config::Framework,
+    prev_entry_names: &std::collections::HashSet<String>,
+) -> Result<(bool, std::collections::HashSet<String>)> {
+    let (entries, collisions) =
+        discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // Non-fatal collision warning (dev mode is lenient — the user sees
+    // the first winning entry rather than a hard build failure, matching
+    // the behaviour of not-yet-deployed production builds during active
+    // development).
+    if !collisions.is_empty() {
+        for c in &collisions {
+            output::warn(format!(
+                "client-script name collision: `{}` is claimed by both {} and {} \
+                 — only {} will be bundled",
+                c.name,
+                c.kept_path.display(),
+                c.dropped_path.display(),
+                c.kept_path.display(),
+            ));
+        }
+    }
+
+    let client_dir = dist_root
+        .join(zfb_types::DIST_ASSETS_DIR)
+        .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
+
+    // Prune stale files first (entries that existed in the previous run
+    // but are absent now — renamed or deleted client scripts). Do this
+    // before writing so a rename whose new name arrives in the same tick
+    // lands cleanly.
+    let current_names: std::collections::HashSet<String> =
+        entries.iter().map(|e| e.entry_name.clone()).collect();
+    let mut any_changed = false;
+    for stale_name in prev_entry_names.difference(&current_names) {
+        let stale_path = client_dir.join(zfb_types::stable_client_script_filename(stale_name));
+        if stale_path.exists() {
+            if let Err(e) = std::fs::remove_file(&stale_path) {
+                output::warn(format!(
+                    "client-scripts dev: failed to prune stale file {}: {e}",
+                    stale_path.display()
+                ));
+            } else {
+                any_changed = true;
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        return Ok((any_changed, current_names));
+    }
+
+    // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
+    // but using `BundleConfig::dev()` (no minification, sourcemaps on).
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for client-script bundler \
+                     ({e}); falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
+    }
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    let jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_cfg = BundleConfig::dev()
+        .with_outdir(dist_root.to_path_buf())
+        .with_jsx_import_source(jsx_import_source);
+
+    if let Some(parent) = client_dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "client-scripts dev: failed to create parent dir {}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::create_dir_all(&client_dir).with_context(|| {
+        format!(
+            "client-scripts dev: failed to create client dir {}",
+            client_dir.display()
+        )
+    })?;
+
+    for entry in &entries {
+        let js = bundler
+            .bundle_client_script_file(&entry.entry_name, &entry.source_path, &bundle_cfg)
+            .with_context(|| {
+                format!(
+                    "client-scripts dev: bundler failed for entry `{}` ({})",
+                    entry.entry_name,
+                    entry.source_path.display()
+                )
+            })?;
+
+        let out_path = client_dir.join(zfb_types::stable_client_script_filename(&entry.entry_name));
+
+        // Only write (and signal changed) when the bytes differ from
+        // what's already on disk — avoids spurious page reloads on
+        // no-op saves.
+        let new_bytes = js.as_bytes();
+        let existing = std::fs::read(&out_path).unwrap_or_default();
+        if existing != new_bytes {
+            std::fs::write(&out_path, new_bytes).with_context(|| {
+                format!("client-scripts dev: failed to write {}", out_path.display())
+            })?;
+            any_changed = true;
+        }
+    }
+
+    Ok((any_changed, current_names))
+}
+
 /// Drive the build for a fully-resolved input set. Returns the number
 /// of pages written and the postBuild route manifest (#262).
 fn run_build<R: BuildRunner, A: AdapterRunner>(
@@ -1401,8 +1565,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // (see `expand_dynamic_routes` in render_pipeline.rs): without one the
     // route produces no pages and would silently 404 at serve time.
     let mut paths_cache = PathsCache::new();
-    let expansion =
-        expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
+    let expansion = expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
     static_routes.extend(expansion.resolved);
     let still_deferred = expansion.deferred;
 
@@ -1753,10 +1916,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the runtime-narrowed one reaches the adapter (and therefore `dist/`).
     if !adapter.is_none() {
         let mut runtime_bundler_input = bundler_input_for_runtime;
-        runtime_bundler_input.worker_only_routes =
-            Some(ssr_route_keys_for_runtime_bundle);
-        runtime_bundler_input.bundle_basename =
-            Some("bundle-runtime.mjs".to_string());
+        runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
+        runtime_bundler_input.bundle_basename = Some("bundle-runtime.mjs".to_string());
         let runtime_bundler_out = runner
             .bundle(runtime_bundler_input)
             .context("runtime-only bundler step (for deploy adapter) failed")?;
@@ -1802,13 +1963,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } else {
         None
     };
-    copy_public_dir(
-        project_root,
-        outdir,
-        &config.public_dir,
-        effective_base,
-    )
-    .context("public dir copy step failed")?;
+    copy_public_dir(project_root, outdir, &config.public_dir, effective_base)
+        .context("public dir copy step failed")?;
 
     // Build the postBuild route manifest (#262). Combines:
     // - static routes from the router scan (no params),
@@ -1902,9 +2058,7 @@ fn build_post_build_manifest(
             .into_owned();
 
         // Build the params map only when there are bindings.
-        let params = if dyn_entry.params.scalars.is_empty()
-            && dyn_entry.params.arrays.is_empty()
-        {
+        let params = if dyn_entry.params.scalars.is_empty() && dyn_entry.params.arrays.is_empty() {
             None
         } else {
             let mut map: BTreeMap<String, PostBuildParamValue> = BTreeMap::new();
@@ -2237,9 +2391,7 @@ fn build_resolve_source_map_for_snapshot(
     project_root: &Path,
     config: &Config,
 ) -> Option<std::collections::HashMap<std::path::PathBuf, String>> {
-    use zfb_content::plugins::util::source_map::{
-        build_docs_source_map, DocsSourceMapOptions,
-    };
+    use zfb_content::plugins::util::source_map::{build_docs_source_map, DocsSourceMapOptions};
     let routes = resolve_links_routes_from_config(project_root, config)?;
     let map = build_docs_source_map(DocsSourceMapOptions {
         collections: routes,
@@ -2364,15 +2516,16 @@ fn copy_public_dir(
         outdir.join(&base_segment)
     };
 
-    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|r| match r {
-        Ok(e) => Some(e),
-        Err(err) => {
-            output::warn(format!(
-                "public dir copy: skipping unreadable entry: {err}"
-            ));
-            None
-        }
-    }) {
+    for entry in walkdir::WalkDir::new(&src)
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(e) => Some(e),
+            Err(err) => {
+                output::warn(format!("public dir copy: skipping unreadable entry: {err}"));
+                None
+            }
+        })
+    {
         let rel = entry
             .path()
             .strip_prefix(&src)
@@ -3073,7 +3226,10 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3109,7 +3265,10 @@ mod tests {
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("   ".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("   ".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -3141,8 +3300,8 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             static_route(vec!["about"], "pages/about.tsx"),
         ];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3435,8 +3594,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3534,8 +3693,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3801,7 +3960,9 @@ mod tests {
         };
         let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
             .expect("should not error")
-            .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
+            .expect(
+                "expected Some payload: authored CSS + module must ship even with tailwind off",
+            );
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -3908,8 +4069,14 @@ mod tests {
             ".keep { color: blue; }\n",
         );
         let out = strip_tailwind_imports(input);
-        assert!(!out.contains("tailwindcss"), "all tailwind imports gone; got:\n{out}");
-        assert!(out.contains("@import \"./vendor.css\""), "vendor import kept");
+        assert!(
+            !out.contains("tailwindcss"),
+            "all tailwind imports gone; got:\n{out}"
+        );
+        assert!(
+            out.contains("@import \"./vendor.css\""),
+            "vendor import kept"
+        );
         assert!(out.contains(".keep"), "authored rule kept");
     }
 
@@ -3919,7 +4086,10 @@ mod tests {
         let out = strip_tailwind_imports(input);
         // A commented-out import is inert; leaving it is harmless and the
         // trimmed line starts with `/*`, not `@import`.
-        assert!(out.contains("/* @import \"tailwindcss\"; */"), "commented import kept");
+        assert!(
+            out.contains("/* @import \"tailwindcss\"; */"),
+            "commented import kept"
+        );
         assert!(out.contains(".keep"), "authored rule kept");
     }
 
@@ -4301,7 +4471,10 @@ mod tests {
 
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { base: Some("/pj/test/".to_string()), ..Config::default() };
+        let cfg = Config {
+            base: Some("/pj/test/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
 
         run_build(BuildArgsResolved {
@@ -4353,10 +4526,7 @@ mod tests {
         use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
 
         let mut params = BTreeMap::new();
-        params.insert(
-            "slug".into(),
-            PostBuildParamValue::Scalar("hello".into()),
-        );
+        params.insert("slug".into(), PostBuildParamValue::Scalar("hello".into()));
 
         PostBuildRouteManifest {
             routes: vec![
@@ -4506,8 +4676,7 @@ mod tests {
     /// V8-off (no SSR routes → no V8 needed in the future-runtime sense).
     #[test]
     fn resolve_v8_mode_auto_on_pure_ssg_is_off() {
-        let mode = resolve_v8_mode(OutputMode::Auto, &[])
-            .expect("auto + no SSR routes resolves");
+        let mode = resolve_v8_mode(OutputMode::Auto, &[]).expect("auto + no SSR routes resolves");
         assert_eq!(mode, V8Mode::Off);
     }
 
@@ -4516,8 +4685,7 @@ mod tests {
     #[test]
     fn resolve_v8_mode_auto_with_ssr_routes_is_on() {
         let routes = [ssr_route("/api/me", "/api/me")];
-        let mode = resolve_v8_mode(OutputMode::Auto, &routes)
-            .expect("auto + SSR route resolves");
+        let mode = resolve_v8_mode(OutputMode::Auto, &routes).expect("auto + SSR route resolves");
         assert_eq!(mode, V8Mode::On);
     }
 
@@ -4525,15 +4693,15 @@ mod tests {
     /// V8-on regardless of detection.
     #[test]
     fn resolve_v8_mode_hybrid_on_pure_ssg_forces_on() {
-        let mode = resolve_v8_mode(OutputMode::Hybrid, &[])
-            .expect("hybrid + no SSR routes resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Hybrid, &[]).expect("hybrid + no SSR routes resolves");
         assert_eq!(mode, V8Mode::On);
         // Mirror with a project that already has SSR routes — same
         // result, just confirming hybrid is "always on" not "on when
         // SSR routes happen to be present".
         let routes = [ssr_route("/api/me", "/api/me")];
-        let mode = resolve_v8_mode(OutputMode::Hybrid, &routes)
-            .expect("hybrid + SSR route resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Hybrid, &routes).expect("hybrid + SSR route resolves");
         assert_eq!(mode, V8Mode::On);
     }
 
@@ -4542,8 +4710,8 @@ mod tests {
     /// from auto is that the user has declared intent.
     #[test]
     fn resolve_v8_mode_static_on_pure_ssg_is_off() {
-        let mode = resolve_v8_mode(OutputMode::Static, &[])
-            .expect("static + no SSR routes resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Static, &[]).expect("static + no SSR routes resolves");
         assert_eq!(mode, V8Mode::Off);
     }
 
@@ -4689,7 +4857,11 @@ mod tests {
             static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), output: OutputMode::Static, ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            output: OutputMode::Static,
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -4760,7 +4932,10 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -4864,7 +5039,10 @@ mod tests {
         // catch-all route. We use FakeRunner which records its inputs;
         // the SSR route must NOT appear in the deferred slice.
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
