@@ -15,11 +15,11 @@
 // The runtime is a single module loaded via:
 //   <script type="module" src="…runtime.js" data-zfb-bundle="…/islands-{hash}.js"></script>
 // It walks every [data-zfb-island] element, decodes data-props, dispatches on
-// data-when (load|idle|visible), and calls the adapter shim's hydrateIsland.
+// data-when (load|idle|visible|media), and calls the adapter shim's hydrateIsland.
 //
 // The data-when dispatch is delegated to scheduleHydrate from "@takazudo/zfb/runtime"
 // so the wrapper (Sub 4) and the runtime (Sub 3) share one source of truth
-// for visible|idle|load semantics.
+// for visible|idle|load|media semantics.
 // =============================================================================
 
 import { scheduleHydrate } from "@takazudo/zfb/runtime";
@@ -116,6 +116,7 @@ function hydrateOne(bundle: IslandsBundle, el: Element): void {
  *   load    → run synchronously (immediate)
  *   idle    → requestIdleCallback (fallback: setTimeout 0)
  *   visible → IntersectionObserver
+ *   media   → matchMedia (query read off the element's data-media attribute)
  *
  * The dispatch table lives in scheduleHydrate from "zfb/runtime" so this
  * runtime and the <Island> wrapper share the same When semantics. We just

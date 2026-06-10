@@ -10,12 +10,15 @@
 //   "visible" → IntersectionObserver, threshold 0.0, hydrate on first
 //                intersection, then disconnect.
 //   "idle"    → requestIdleCallback if available, otherwise setTimeout(0).
+//   "media"   → matchMedia(target's data-media), hydrate when the query
+//                first matches (now or on a later change event), then
+//                remove the listener.
 //   "load"    → immediate, synchronous fire.
 //
 // Anything else is treated as "load" (with a console.warn in development).
 // The helper is environment-tolerant: callers can run it in jsdom /
 // happy-dom or bare Node, and the absence of `IntersectionObserver` /
-// `requestIdleCallback` is handled gracefully.
+// `requestIdleCallback` / `matchMedia` is handled gracefully.
 
 import { resolveWhen, type When } from "./types.js";
 
@@ -315,7 +318,8 @@ const pending = new WeakSet<Element>();
 // captured-manifest pattern keeps the package boundary clean.
 let capturedManifest: IslandManifest | null = null;
 
-// Map of element → cancel-function for deferred-hydration islands (data-when="idle"|"visible").
+// Map of element → cancel-function for deferred-hydration islands
+// (data-when="idle"|"visible"|"media").
 // Populated in scheduleMount; consulted on `zfb:before-swap` so deferred fires do not run
 // against orphan elements after a body swap. (W1B §12.5)
 const pendingCancels = new Map<Element, () => void>();
