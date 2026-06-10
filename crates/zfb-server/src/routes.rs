@@ -790,6 +790,7 @@ async fn serve_page(
                 method.as_str(),
                 plugin_headers,
                 plugin_body,
+                state.mode,
             )
             .await
             {
@@ -819,6 +820,7 @@ async fn serve_page(
                 &extensions,
                 body.clone(),
                 state.base_prefix.as_deref(),
+                state.mode,
             )
             .await;
         }
@@ -1197,6 +1199,7 @@ async fn dispatch_plugin(
     method: &str,
     headers: HashMap<String, String>,
     body: Option<String>,
+    mode: crate::ServerMode,
 ) -> PluginDispatchAttempt {
     let req = PluginRequest {
         method: method.to_string(),
@@ -1227,7 +1230,7 @@ async fn dispatch_plugin(
                                 "plugin `{}` returned an invalid base64 body: {}",
                                 reg.plugin, e
                             );
-                            return PluginDispatchAttempt::Errored(plugin_error_response(&msg));
+                            return PluginDispatchAttempt::Errored(plugin_error_response(&msg, mode));
                         }
                     }
                 }
@@ -1259,14 +1262,14 @@ async fn dispatch_plugin(
                 Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
                     "failed to build response from plugin `{}`: {e}",
                     reg.plugin,
-                ))),
+                ), mode)),
             }
         }
         Ok(PluginDispatchOutcome::Passthrough) => PluginDispatchAttempt::Passthrough,
         Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
             "plugin `{}` dev-middleware failed: {}",
             err.plugin, err.message,
-        ))),
+        ), mode)),
     }
 }
 
@@ -1315,7 +1318,7 @@ async fn dispatch_ssr(
     let resp = match set.dispatcher.dispatch(req).await {
         Ok(r) => r,
         Err(e) => {
-            return ssr_error_response(url_path, &e.message);
+            return ssr_error_response(url_path, &e.message, mode);
         }
     };
     // Pick the content-type from the SSR response headers (case-
@@ -1399,6 +1402,7 @@ async fn dispatch_embed_handler(
     extensions: &Extensions,
     body: Bytes,
     base_prefix: Option<&str>,
+    mode: crate::ServerMode,
 ) -> Response {
     // Rebuild the inbound request so the handler sees a plain
     // `http::Request<Body>` — no axum-specific extractors required.
@@ -1421,7 +1425,7 @@ async fn dispatch_embed_handler(
         Err(e) => {
             return embed_handler_error_response(&format!(
                 "failed to rebuild request for embed handler: {e}"
-            ));
+            ), mode);
         }
     };
     *req.extensions_mut() = extensions.clone();
@@ -1434,11 +1438,18 @@ async fn dispatch_embed_handler(
 /// inbound request was already a valid axum request — but the explicit
 /// fallback avoids a panic if some future header/value combination
 /// trips the `http::Request::builder` checks.
-fn embed_handler_error_response(message: &str) -> Response {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} handler error</title></head><body><h1>Handler dispatch error</h1><pre>{}</pre></body></html>",
-        escape_html(message),
-    );
+fn embed_handler_error_response(message: &str, mode: crate::ServerMode) -> Response {
+    // Dev mode: verbose body with the error detail. Preview/Embed: generic body
+    // only; full detail is logged server-side so clients never see internal info.
+    let body = if matches!(mode, crate::ServerMode::Dev) {
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} handler error</title></head><body><h1>Handler dispatch error</h1><pre>{}</pre></body></html>",
+            escape_html(message),
+        )
+    } else {
+        tracing::error!(message, "embed handler dispatch error");
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Internal Server Error</title></head><body><h1>Internal Server Error</h1></body></html>".to_string()
+    };
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
         [(
@@ -1456,12 +1467,19 @@ fn embed_handler_error_response(message: &str) -> Response {
 /// Build the HTML 5xx response served when [`SsrDispatcher::dispatch`]
 /// returns an error. Surfaces the underlying message so the developer
 /// sees the V8 stack trace instead of an empty 500.
-fn ssr_error_response(url_path: &str, message: &str) -> Response {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} ssr error</title></head><body><h1>SSR error at <code>{}</code></h1><pre>{}</pre></body></html>",
-        escape_html(url_path),
-        escape_html(message),
-    );
+fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) -> Response {
+    // Dev mode: verbose body with path + V8 detail. Preview/Embed: generic body
+    // only; full detail is logged server-side so clients never see internal info.
+    let body = if matches!(mode, crate::ServerMode::Dev) {
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev \u{2014} ssr error</title></head><body><h1>SSR error at <code>{}</code></h1><pre>{}</pre></body></html>",
+            escape_html(url_path),
+            escape_html(message),
+        )
+    } else {
+        tracing::error!(url_path, message, "SSR dispatch error");
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Internal Server Error</title></head><body><h1>Internal Server Error</h1></body></html>".to_string()
+    };
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
         [(
@@ -1519,11 +1537,18 @@ fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
     std::str::from_utf8(body).ok().map(|s| s.to_string())
 }
 
-fn plugin_error_response(message: &str) -> Response {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
-        escape_html(message),
-    );
+fn plugin_error_response(message: &str, mode: crate::ServerMode) -> Response {
+    // Dev mode: verbose body with the plugin error detail. Preview/Embed: generic
+    // body only; full detail is logged server-side so clients never see internal info.
+    let body = if matches!(mode, crate::ServerMode::Dev) {
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
+            escape_html(message),
+        )
+    } else {
+        tracing::error!(message, "plugin dev-middleware error");
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Internal Server Error</title></head><body><h1>Internal Server Error</h1></body></html>".to_string()
+    };
     let mut resp = (
         StatusCode::INTERNAL_SERVER_ERROR,
         [(
