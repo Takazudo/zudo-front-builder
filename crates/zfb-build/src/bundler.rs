@@ -114,15 +114,19 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use walkdir::WalkDir;
-use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic};
+
+use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 use zfb_content::frontmatter as zfb_frontmatter;
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
-use zfb_content::{compile_mdx_to_jsx_module_cached, MdxModuleCache};
+use zfb_content::{
+    compile_mdx_to_jsx_module_cached, CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
+};
 use zfb_render::adapters::{make_adapter, Framework};
-use zfb_types::{json_string as json_str, path_to_posix_string};
+use zfb_types::{json_string as json_str, normalize_path_lexical, path_to_posix_string};
 
 use crate::adapter::run_capturing;
 
@@ -880,6 +884,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // complete — mirroring the broken-links gate above (zfb#953).
     let mut all_markdown_diagnostics: Vec<MarkdownDiagnostic> = Vec::new();
 
+    // Cross-file anchor-check side channels (#980): cross-file fragment-link
+    // candidates and per-file heading records drained from every materialise
+    // call. Checked build-wide after ALL walks complete (gate 2c-anchor),
+    // immediately before the markdown-diagnostics gate (2c).
+    let mut all_cross_file_links: Vec<CrossFileLinkCandidate> = Vec::new();
+    let mut all_file_headings: Vec<FileHeadings> = Vec::new();
+
     // Compile `bundle.exclude` once and share it across every
     // `materialise_shadow` call (pages / content / components / layouts /
     // extra top-level dirs). Empty patterns → a matcher that never matches,
@@ -924,6 +935,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     {
         let mut broken = Vec::new();
         let mut md_diags = Vec::new();
+        let mut cfl = Vec::new();
+        let mut fh = Vec::new();
         materialise_shadow(
             &pages_dir,
             &shadow_pages,
@@ -931,6 +944,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &mat_ctx,
             &mut broken,
             &mut md_diags,
+            &mut cfl,
+            &mut fh,
         )
         .with_context(|| {
             format!(
@@ -940,6 +955,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         })?;
         all_broken_links.extend(broken);
         all_markdown_diagnostics.extend(md_diags);
+        all_cross_file_links.extend(cfl);
+        all_file_headings.extend(fh);
     }
 
     // Per-collection content materialisation (#506).
@@ -961,6 +978,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             let dest = shadow_content.join(&col.name);
             let mut broken = Vec::new();
             let mut md_diags = Vec::new();
+            let mut cfl = Vec::new();
+            let mut fh = Vec::new();
             materialise_collection(
                 &col_root,
                 &dest,
@@ -972,6 +991,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 col.id_strip_suffix.as_deref(),
                 &mut broken,
                 &mut md_diags,
+                &mut cfl,
+                &mut fh,
             )
             .with_context(|| {
                 format!(
@@ -982,6 +1003,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             })?;
             all_broken_links.extend(broken);
             all_markdown_diagnostics.extend(md_diags);
+            all_cross_file_links.extend(cfl);
+            all_file_headings.extend(fh);
         }
         // Deterministic ordering — keys are `(collection, rel_path)`
         // so the emitted import indices match the underlying file
@@ -990,6 +1013,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     } else {
         let mut broken = Vec::new();
         let mut md_diags = Vec::new();
+        let mut cfl = Vec::new();
+        let mut fh = Vec::new();
         materialise_shadow(
             &content_dir,
             &shadow_content,
@@ -997,6 +1022,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &mat_ctx,
             &mut broken,
             &mut md_diags,
+            &mut cfl,
+            &mut fh,
         )
         .with_context(|| {
             format!(
@@ -1006,11 +1033,15 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         })?;
         all_broken_links.extend(broken);
         all_markdown_diagnostics.extend(md_diags);
+        all_cross_file_links.extend(cfl);
+        all_file_headings.extend(fh);
     }
 
     {
         let mut broken = Vec::new();
         let mut md_diags = Vec::new();
+        let mut cfl = Vec::new();
+        let mut fh = Vec::new();
         materialise_shadow(
             &components_dir,
             &shadow_components,
@@ -1018,6 +1049,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &mat_ctx,
             &mut broken,
             &mut md_diags,
+            &mut cfl,
+            &mut fh,
         )
         .with_context(|| {
             format!(
@@ -1027,10 +1060,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         })?;
         all_broken_links.extend(broken);
         all_markdown_diagnostics.extend(md_diags);
+        all_cross_file_links.extend(cfl);
+        all_file_headings.extend(fh);
     }
     {
         let mut broken = Vec::new();
         let mut md_diags = Vec::new();
+        let mut cfl = Vec::new();
+        let mut fh = Vec::new();
         materialise_shadow(
             &layouts_dir,
             &shadow_layouts,
@@ -1038,6 +1075,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &mat_ctx,
             &mut broken,
             &mut md_diags,
+            &mut cfl,
+            &mut fh,
         )
         .with_context(|| {
             format!(
@@ -1047,6 +1086,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         })?;
         all_broken_links.extend(broken);
         all_markdown_diagnostics.extend(md_diags);
+        all_cross_file_links.extend(cfl);
+        all_file_headings.extend(fh);
     }
 
     // 2a-extra. Materialise any *other* directories at the project root
@@ -1085,6 +1126,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             let dst_dir = shadow.join(&name);
             let mut broken = Vec::new();
             let mut md_diags = Vec::new();
+            let mut cfl = Vec::new();
+            let mut fh = Vec::new();
             materialise_shadow(
                 &src_dir,
                 &dst_dir,
@@ -1092,6 +1135,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &mat_ctx,
                 &mut broken,
                 &mut md_diags,
+                &mut cfl,
+                &mut fh,
             )
             .with_context(|| {
                 format!(
@@ -1101,6 +1146,8 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             })?;
             all_broken_links.extend(broken);
             all_markdown_diagnostics.extend(md_diags);
+            all_cross_file_links.extend(cfl);
+            all_file_headings.extend(fh);
         }
     }
 
@@ -1125,6 +1172,68 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             fs::create_dir_all(&shadow_nm).with_context(|| {
                 format!("bundler: failed to create node_modules dir in shadow tree")
             })?;
+        }
+    }
+
+    // 2c-anchor. Post-compile cross-file anchor check (#980).
+    //
+    // After ALL materialise walks ran, assemble a build-scoped heading map
+    // from the per-file heading records collected above, then verify every
+    // cross-file fragment-link candidate against it.  Target files that
+    // produced no `FileHeadings` entry (out-of-build targets — excluded files,
+    // non-walked dirs) are SKIPPED: same existence-only degrade as before,
+    // narrowed to genuinely-out-of-build targets.
+    //
+    // Synthesised `BrokenLink` findings are pushed into `all_markdown_diagnostics`
+    // so the existing severity-routing gate (2c below) handles them: the
+    // `CrossFileLinkCandidate::severity` field already encodes the
+    // `failOnBroken` → `Error` / else `Warning` decision the recording plugin
+    // made at compile time, so we re-use it directly.
+    //
+    // Key-normalization contract: both heading-map keys and candidate target
+    // keys go through `zfb_types::normalize_path_lexical` (imported above) —
+    // the shared helper applied at record time.  Using the same helper here is
+    // the grep-verifiable guarantee the two lookup sides agree on path spelling
+    // (zfb#980 acceptance criterion).
+    {
+        // Build a HashMap<normalized_path, HashSet<id>> from the collected
+        // per-file heading records.  A file present in the map but with an
+        // empty heading set is meaningful: it compiled and has no
+        // anchor-addressable headings.  A file absent from the map was never
+        // compiled by the bundler (out-of-build) → skip, not fail.
+        let heading_map: HashMap<PathBuf, HashSet<String>> = {
+            let mut map: HashMap<PathBuf, HashSet<String>> =
+                HashMap::with_capacity(all_file_headings.len());
+            for fh in &all_file_headings {
+                // source_path is already normalised at record time (#977);
+                // apply again (idempotent) so any future refactor of the
+                // recording path cannot silently break the lookup.
+                let key = normalize_path_lexical(&fh.source_path);
+                let ids: HashSet<String> = fh.headings.iter().map(|h| h.id.clone()).collect();
+                // If two walks produced an entry for the same file (e.g. via
+                // the cache-hit replay path), merge the id sets rather than
+                // overwriting — both are ground-truth from the same source.
+                map.entry(key).or_default().extend(ids);
+            }
+            map
+        };
+        for candidate in &all_cross_file_links {
+            // target_path is already normalised at record time (#977); apply
+            // again for the same idempotence reason as the heading-map keys.
+            let target_key = normalize_path_lexical(&candidate.target_path);
+            let Some(ids) = heading_map.get(&target_key) else {
+                // Target file was never compiled by the bundler → out-of-build
+                // target → skip (existence-only degrade, zfb#980 contract).
+                continue;
+            };
+            if !ids.contains(&candidate.fragment) {
+                // Target compiled but the fragment is absent → broken anchor.
+                all_markdown_diagnostics.push(MarkdownDiagnostic::BrokenLink {
+                    severity: candidate.severity,
+                    url: candidate.raw_href.clone(),
+                    location: Some(SourceLocation::from_path(candidate.source_path.clone())),
+                });
+            }
         }
     }
 
@@ -1682,6 +1791,7 @@ struct MaterialiseCtx<'a> {
 /// content/components/layouts the caller passes a throwaway vec.
 /// Detected routes are recorded in WalkDir traversal order, then sorted
 /// by route string later so the manifest is deterministic.
+#[allow(clippy::too_many_arguments)] // 8 params: 2 added by #980 side channels; grouping into a struct would obscure the drain contract
 fn materialise_shadow(
     src: &Path,
     dest: &Path,
@@ -1689,6 +1799,8 @@ fn materialise_shadow(
     ctx: &MaterialiseCtx<'_>,
     broken_links_out: &mut Vec<(String, String)>,
     markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
+    cross_file_links_out: &mut Vec<CrossFileLinkCandidate>,
+    file_headings_out: &mut Vec<FileHeadings>,
 ) -> Result<()> {
     if !src.exists() {
         // A missing source dir is non-fatal — not every project has e.g.
@@ -1884,6 +1996,11 @@ fn materialise_shadow(
             // to the broken-links drain so all pipeline output is collected
             // before the shadow write (zfb#953).
             markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
+            // Drain cross-file anchor-check side channels (#980): candidates
+            // and per-file heading records are buffered here and checked
+            // build-wide after ALL walks complete (gate 2c-anchor).
+            cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
+            file_headings_out.extend(pipeline.take_file_headings());
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
         } else if is_md && is_pages_dir {
@@ -1937,6 +2054,9 @@ fn materialise_shadow(
             // Drain generic markdown diagnostics adjacent to broken-links
             // drain (zfb#953).
             markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
+            // Drain cross-file anchor-check side channels (#980).
+            cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
+            file_headings_out.extend(pipeline.take_file_headings());
             // Derive slug from the relative path so the title fallback matches
             // the URL: `about.md` → "about", `index.md` → "index",
             // `blog/post.md` → "post".
@@ -2278,6 +2398,8 @@ fn materialise_collection(
     id_strip_suffix: Option<&str>,
     broken_links_out: &mut Vec<(String, String)>,
     markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
+    cross_file_links_out: &mut Vec<CrossFileLinkCandidate>,
+    file_headings_out: &mut Vec<FileHeadings>,
 ) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -2457,6 +2579,9 @@ fn materialise_collection(
             // Drain generic markdown diagnostics adjacent to broken-links
             // drain (zfb#953).
             markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
+            // Drain cross-file anchor-check side channels (#980).
+            cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
+            file_headings_out.extend(pipeline.take_file_headings());
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
 
@@ -5023,6 +5148,8 @@ mod tests {
             None,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -5109,6 +5236,8 @@ mod tests {
             None,
             None,
             None,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -5276,6 +5405,8 @@ mod tests {
             None,
             None,
             None,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -5862,6 +5993,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -5936,6 +6069,8 @@ mod tests {
             &shadow_pages_dest,
             &mut routes,
             &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -6155,6 +6290,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
         err.to_string()
@@ -6356,6 +6493,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -6427,6 +6566,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -6459,6 +6600,8 @@ mod tests {
             &dest,
             &mut routes,
             &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -6509,6 +6652,8 @@ mod tests {
             &dest,
             &mut routes,
             &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -6586,6 +6731,8 @@ mod tests {
                 &ctx,
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
             )
             .unwrap();
 
@@ -6612,6 +6759,8 @@ mod tests {
                 None,
                 None,
                 None,
+                &mut Vec::new(),
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
             )
@@ -6655,6 +6804,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -6688,6 +6839,8 @@ mod tests {
             &dest,
             &mut Vec::new(),
             &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -6940,6 +7093,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -6998,6 +7153,8 @@ mod tests {
             None,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -7052,6 +7209,8 @@ mod tests {
                 dest_tmp.path(),
                 &mut Vec::new(),
                 &ctx,
+                &mut Vec::new(),
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
             )
@@ -7220,6 +7379,8 @@ mod tests {
             &ctx,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -7248,6 +7409,8 @@ mod tests {
             &dest,
             &mut Vec::new(),
             &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
         )
