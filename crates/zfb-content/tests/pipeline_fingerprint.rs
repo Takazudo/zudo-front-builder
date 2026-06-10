@@ -4,8 +4,11 @@
 //! bar is: **every config knob that can change emitted JSX for the same
 //! input must change the fingerprint** (a missed knob silently serves
 //! stale JSX), and pipelines whose visitor chain cannot be derived from
-//! config (manual mutation, per-file state, filesystem-reading feature
-//! plugins) must have NO fingerprint at all.
+//! config (manual mutation) must have NO fingerprint at all. Per-file
+//! resolve-links state is keyed by the compile cache itself (zfb#939)
+//! rather than invalidating here; filesystem-reading feature plugins
+//! keep their fingerprint since zfb#944 — their per-file reads are
+//! validated through the read-recorder dependency manifest instead.
 
 use std::collections::HashSet;
 
@@ -343,21 +346,135 @@ fn canonical_features_json_covers_every_field() {
 }
 
 #[test]
-fn resolve_links_invalidates_the_fingerprint() {
-    // ResolveLinksPlugin output depends on the per-file source_dir (set
-    // between compiles) and drains broken-link diagnostics — both
-    // incompatible with input-keyed caching.
+fn resolve_links_keeps_the_pipeline_cacheable() {
+    // zfb#939 contract (replaces the pre-#939 "resolve-links
+    // invalidates" pin): the plugin resolves against a prebuilt
+    // source_map — it never reads the filesystem at compile time — so
+    // wiring it EXTENDS the fingerprint with a digest of the map. The
+    // remaining per-file state (source_dir, broken-link diagnostics) is
+    // handled by the compile cache itself (per-call key context +
+    // diagnostics replay).
     let mut p = baseline();
-    assert!(p.config_fingerprint().is_some());
+    let without = p.config_fingerprint().expect("baseline is fingerprinted");
     p.add_resolve_links(std::collections::HashMap::new());
-    assert!(p.config_fingerprint().is_none());
+    let with = p
+        .config_fingerprint()
+        .expect("resolveMarkdownLinks wired => fingerprint must stay Some (zfb#939)");
+    assert_ne!(
+        without, with,
+        "wiring resolve-links changes emitted JSX for md links — the          fingerprint must move"
+    );
 }
 
 #[test]
-fn filesystem_reading_features_invalidate_the_fingerprint() {
-    // These plugins read OTHER files at compile time, so their output
-    // cannot be keyed on the input string — a cached entry could go
-    // stale when the referenced file changes between dev ticks.
+fn resolve_links_source_map_content_changes_the_fingerprint() {
+    // The source map is rebuilt from the content tree each dev tick; a
+    // content add/remove/rename must change the digest so stale link
+    // resolutions can never be served from the cache.
+    fn fp(entries: &[(&str, &str)]) -> String {
+        let map: std::collections::HashMap<std::path::PathBuf, String> = entries
+            .iter()
+            .map(|(p, u)| (std::path::PathBuf::from(p), (*u).to_string()))
+            .collect();
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+
+    let base = fp(&[("/c/docs/a.mdx", "/docs/a/"), ("/c/docs/b.mdx", "/docs/b/")]);
+
+    // Same map, different construction order → identical fingerprint
+    // (entries are sorted before digesting; HashMap order is random
+    // anyway, so this pins determinism across rebuilds).
+    let same = fp(&[("/c/docs/b.mdx", "/docs/b/"), ("/c/docs/a.mdx", "/docs/a/")]);
+    assert_eq!(base, same, "equal maps must share one fingerprint");
+
+    // File added.
+    let added = fp(&[
+        ("/c/docs/a.mdx", "/docs/a/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+        ("/c/docs/c.mdx", "/docs/c/"),
+    ]);
+    // File removed.
+    let removed = fp(&[("/c/docs/a.mdx", "/docs/a/")]);
+    // File renamed (path key changes, URL follows).
+    let renamed = fp(&[
+        ("/c/docs/a2.mdx", "/docs/a2/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+    ]);
+    // URL remapped (same paths, different route).
+    let remapped = fp(&[
+        ("/c/docs/a.mdx", "/elsewhere/a/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+    ]);
+
+    let all = [&base, &added, &removed, &renamed, &remapped];
+    for (i, a) in all.iter().enumerate() {
+        for b in all.iter().skip(i + 1) {
+            assert_ne!(a, b, "distinct source maps must never share a fingerprint");
+        }
+    }
+}
+
+#[test]
+fn resolve_links_source_map_digest_has_no_record_ambiguity() {
+    // Length-delimited records: entry boundaries cannot be forged by
+    // moving characters between a path and its URL (the classic
+    // `key=value\n` concatenation ambiguity).
+    fn fp(entries: &[(&str, &str)]) -> String {
+        let map: std::collections::HashMap<std::path::PathBuf, String> = entries
+            .iter()
+            .map(|(p, u)| (std::path::PathBuf::from(p), (*u).to_string()))
+            .collect();
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+    assert_ne!(
+        fp(&[("/a/bc.mdx", "/x/")]),
+        fp(&[("/a/b", "c.mdx/x/")]),
+        "shifting bytes across the path/URL boundary must change the digest"
+    );
+}
+
+#[test]
+fn resolve_links_path_spelling_does_not_split_the_fingerprint() {
+    // The digest normalises map keys with the shared lexical helper,
+    // whose canonical form mirrors `Path` equality — i.e. exactly the
+    // runtime `HashMap<PathBuf, _>` lookup semantics. Spellings the
+    // lookup merges must digest identically (a split costs every cache
+    // hit), while spellings the lookup DISTINGUISHES (`..`) must stay
+    // distinct — collapsing them would let two maps that resolve links
+    // differently share a fingerprint and serve a stale hit.
+    fn fp(path: &str) -> String {
+        let mut map = std::collections::HashMap::new();
+        map.insert(std::path::PathBuf::from(path), "/docs/a/".to_string());
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+    let canonical = fp("/c/docs/a.mdx");
+    assert_eq!(canonical, fp("/c/./docs/a.mdx"));
+    assert_eq!(canonical, fp("/c//docs/a.mdx"));
+    assert_eq!(canonical, fp("/c/docs/a.mdx/."));
+    // `..` keys are runtime-distinct (Path equality keeps them), so the
+    // digest must keep them distinct too.
+    assert_ne!(canonical, fp("/c/x/../docs/a.mdx"));
+    assert_ne!(canonical, fp("/c/docs2/a.mdx"));
+}
+
+#[test]
+fn filesystem_reading_features_keep_the_pipeline_cacheable() {
+    // zfb#944 contract (replaces the pre-#944 "filesystem features
+    // invalidate" pin): these plugins read OTHER files at compile time,
+    // but every read is reported through the per-pipeline ReadRecorder
+    // the constructor now wires, and the compile cache validates the
+    // recorded dependency manifest before serving any hit — so the
+    // pipeline keeps a config fingerprint. Each feature must still
+    // SPLIT the fingerprint (the canonical features JSON covers it),
+    // and the recorder must actually be attached.
+    let baseline_fp = baseline().config_fingerprint().expect("fingerprinted");
+    let mut fps = vec![baseline_fp];
     for (label, value) in [
         ("transclude", json!({ "transclude": {} })),
         ("imageDimensions", json!({ "imageDimensions": {} })),
@@ -371,11 +488,72 @@ fn filesystem_reading_features_invalidate_the_fingerprint() {
             false,
             Some(&feats),
         );
+        let fp = p.config_fingerprint().unwrap_or_else(|| {
+            panic!("features.{label} must keep a config fingerprint (zfb#944)")
+        });
         assert!(
-            p.config_fingerprint().is_none(),
-            "features.{label} reads the filesystem — the pipeline must be uncacheable"
+            p.read_recorder().is_some(),
+            "features.{label} must wire a read-recorder so its reads join \
+             the dependency manifest (zfb#944)"
         );
+        fps.push(fp);
     }
+    let distinct: HashSet<&String> = fps.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        fps.len(),
+        "baseline + each filesystem feature must produce pairwise distinct \
+         fingerprints: {fps:?}"
+    );
+}
+
+#[test]
+fn non_filesystem_features_do_not_wire_a_read_recorder() {
+    // The recorder (and the per-source-dir cache-key segment that comes
+    // with it) is reserved for pipelines whose plugins actually read
+    // other files — a plain feature set keeps the pre-#942 key shape.
+    let p = baseline();
+    assert!(p.read_recorder().is_none());
+    let feats = features(json!({ "githubAlerts": true }));
+    let p = full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        true,
+        false,
+        Some(&feats),
+    );
+    assert!(p.read_recorder().is_none());
+}
+
+#[test]
+fn build_context_roots_join_the_fingerprint() {
+    // zfb#944: the BuildContext roots shape emitted JSX (containment
+    // checks, `/`-absolute image resolution), so arming them must split
+    // the fingerprint — and equal roots must agree across constructions.
+    let unarmed = baseline().config_fingerprint().expect("fingerprinted");
+
+    let mut a = baseline();
+    a.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let a = a.config_fingerprint().expect("armed pipeline stays fingerprinted");
+
+    let mut b = baseline();
+    b.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let b = b.config_fingerprint().expect("fingerprinted");
+    assert_eq!(a, b, "equal roots must share one fingerprint");
+    assert_ne!(a, unarmed, "arming context roots must split the fingerprint");
+
+    let mut c = baseline();
+    c.set_build_context_roots("/other".into(), "/other/public".into());
+    let c = c.config_fingerprint().expect("fingerprinted");
+    assert_ne!(a, c, "different roots must split the fingerprint");
+
+    // A second call REPLACES the roots and the segment — no stale
+    // segment may linger (mirrors the add_resolve_links contract).
+    let mut d = baseline();
+    d.set_build_context_roots("/other".into(), "/other/public".into());
+    d.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let d = d.config_fingerprint().expect("fingerprinted");
+    assert_eq!(a, d, "re-arming must replace the previous roots segment");
 }
 
 #[test]

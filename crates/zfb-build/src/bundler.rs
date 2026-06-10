@@ -1725,9 +1725,12 @@ fn materialise_shadow(
             let body = strip_yaml_frontmatter(&raw);
             // Process-global compile cache (zfb#905): unchanged files
             // recompile for free on later dev ticks / sibling walks. The
-            // cache keys on (input, pipeline-config fingerprint), so a
-            // manually-extended or per-file-stateful pipeline (e.g. with
-            // resolveMarkdownLinks wired) transparently bypasses it.
+            // cache keys on (input, pipeline-config fingerprint, per-file
+            // resolve-links source_dir — zfb#939), so resolveMarkdownLinks
+            // workloads cache too; broken-link diagnostics are stored
+            // with the entry and replayed on hits, so the drain below
+            // sees them either way. A manually-extended pipeline still
+            // transparently bypasses the cache.
             let compiled = compile_mdx_to_jsx_module_cached(
                 body,
                 from,

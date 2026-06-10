@@ -19,13 +19,16 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
-use zfb_md_ast::HeadingIdStrategy;
+use zfb_md_ast::diagnostics::MarkdownDiagnostic;
+use zfb_md_ast::{HeadingIdStrategy, ReadRecorder};
 
+use crate::dep_manifest::DependencyManifest;
+use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
     BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
     ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin, MermaidPlugin, ResolveLinksPlugin,
@@ -244,9 +247,12 @@ fn features_fingerprint_segment(
 ///   `tests/pipeline_fingerprint.rs` pins the serialized key set as a
 ///   second line of defense);
 /// - a feature whose plugin reads OTHER files at compile time must ALSO
-///   join the `filesystem_dependent_feature` gate in
-///   [`Pipeline::with_defaults_and_full_config`] so the pipeline becomes
-///   uncacheable — a cached entry cannot see the referenced files change.
+///   record every read through the [`zfb_md_ast::ReadRecorder`]
+///   (constructor clone wired in `register_features_config_derived`,
+///   zfb#944) AND join the recorder-creation condition in
+///   [`Pipeline::with_defaults_and_full_config`] — the compile cache
+///   validates the recorded dependency manifest before serving a hit,
+///   which is what lets such features stay cacheable.
 ///
 /// All bindings are deliberately discarded; the function exists purely to
 /// break the build on config drift (the optimizer removes it entirely).
@@ -426,9 +432,7 @@ pub struct Pipeline {
     /// `None` means "uncacheable": the pipeline's visitor chain can no
     /// longer be derived from config alone — a raw trait-object visitor
     /// was appended via [`Pipeline::add_mdast_visitor`] /
-    /// [`Pipeline::add_hast_visitor`], or an output-affecting knob that
-    /// cannot be keyed (per-file `ResolveLinksPlugin` state,
-    /// filesystem-reading feature plugins) is in play.
+    /// [`Pipeline::add_hast_visitor`].
     config_fingerprint_base: Option<String>,
     /// Descriptor segments appended by the named config-driven mutators
     /// ([`Pipeline::add_toc`], [`Pipeline::add_strip_md_ext`],
@@ -438,6 +442,28 @@ pub struct Pipeline {
     /// (which produces the identical effective visitor chain — `add_toc`
     /// inserts at a fixed position) yields the same fingerprint.
     config_fingerprint_extras: Vec<String>,
+    /// Optional read-recorder shared with filesystem-reading feature
+    /// plugins (zfb#942). When set, `compile_mdx_to_jsx_module_cached`
+    /// clears it before each compile and drains the recorded reads into
+    /// the cache entry's [`DependencyManifest`] afterwards. See
+    /// [`Pipeline::set_read_recorder`].
+    read_recorder: Option<Arc<ReadRecorder>>,
+    /// Project-level roots for the per-file `BuildContext` the JSX-emit
+    /// path builds when compiling through
+    /// `compile_mdx_to_jsx_module_cached` (zfb#944): `(project_root,
+    /// public_dir)`. `None` (the default) keeps the context-free emit
+    /// path — context-aware feature plugins (transclude,
+    /// imageDimensions, linkValidation) stay no-ops there. See
+    /// [`Pipeline::set_build_context_roots`].
+    build_context_roots: Option<(PathBuf, PathBuf)>,
+    /// Markdown diagnostics emitted by context-aware feature plugins
+    /// through the per-file `BuildContext` sink during JSX-emit compiles
+    /// (zfb#944) — e.g. linkValidation broken-link findings. Buffered
+    /// here (mirroring the resolve-links `broken_links` side channel)
+    /// so the compile cache can store the slice one compile appended
+    /// and replay it on a hit; call sites drain via
+    /// [`Pipeline::take_markdown_diagnostics`].
+    markdown_diagnostics: Vec<MarkdownDiagnostic>,
 }
 
 impl Default for Pipeline {
@@ -511,6 +537,9 @@ impl Pipeline {
                 gfm_fingerprint_segment(resolved)
             )),
             config_fingerprint_extras: Vec::new(),
+            read_recorder: None,
+            build_context_roots: None,
+            markdown_diagnostics: Vec::new(),
         }
     }
 
@@ -526,11 +555,14 @@ impl Pipeline {
     /// toggles, the full `markdown.features` config (canonical JSON,
     /// map keys sorted), plus any named config-driven mutators applied
     /// after construction (`add_toc`, `add_strip_md_ext`,
-    /// `add_external_links`, `set_heading_id_strategy`).
+    /// `add_external_links`, `add_resolve_links`,
+    /// `set_heading_id_strategy`).
     ///
     /// [`compile_mdx_to_jsx_module_cached`] combines this fingerprint
-    /// with `sha256(input)` to form its cache key, so two pipelines
-    /// built from different configs can never alias one cache entry.
+    /// with `sha256(input)` (plus the per-call
+    /// [`Pipeline::cache_key_context`], when present) to form its cache
+    /// key, so two pipelines built from different configs can never
+    /// alias one cache entry.
     ///
     /// `None` (uncacheable — the compile cache is bypassed) when:
     ///
@@ -540,17 +572,15 @@ impl Pipeline {
     ///   `register_post_syntect_features` helpers when called manually
     ///   after construction) — an arbitrary `Box<dyn …Visitor>` cannot
     ///   be fingerprinted reliably;
-    /// - [`Pipeline::add_resolve_links`] wired a `ResolveLinksPlugin` —
-    ///   its per-file `source_dir` makes output path-dependent and its
-    ///   broken-link diagnostics are a side channel a cache hit would
-    ///   silently skip;
-    /// - `markdown.features` enables a plugin that reads **other files**
-    ///   at compile time (`transclude`, `imageDimensions`,
-    ///   `linkValidation`) — their effect cannot be keyed on the input
-    ///   string, so a cached entry could go stale when the referenced
-    ///   file changes;
     /// - a `themesDir` was configured but became unreadable while
     ///   computing the fingerprint.
+    ///
+    /// Filesystem-reading feature plugins (`transclude`,
+    /// `imageDimensions`, `linkValidation`) no longer bail (the pre-#944
+    /// gate): their config is covered by the canonical features JSON,
+    /// and their per-file reads are validated through the read-recorder
+    /// dependency manifest ([`Pipeline::set_read_recorder`], zfb#942/#944)
+    /// before any cache hit is honoured.
     ///
     /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
     #[must_use]
@@ -735,23 +765,62 @@ impl Pipeline {
     /// calls [`Pipeline::set_resolve_links_source_dir`] per file.
     ///
     /// Call at most once per pipeline instance — a second call
-    /// replaces the previous plugin.
+    /// replaces the previous plugin (and its fingerprint segment).
     ///
-    /// Wiring this plugin makes the pipeline **uncacheable**
-    /// ([`Pipeline::config_fingerprint`] → `None`): the per-file
-    /// `source_dir` makes the emitted JSX depend on the source file's
-    /// directory (not just its contents), and the broken-link
-    /// diagnostics drained via [`Pipeline::take_broken_links`] are a
-    /// side channel a compile-cache hit would silently skip.
+    /// **Cacheable (zfb#939).** The plugin never reads the filesystem at
+    /// compile time — it resolves against this prebuilt `source_map`
+    /// plus the per-file `source_dir` — so wiring it **extends** the
+    /// config fingerprint with a digest of the map instead of
+    /// invalidating. The map is rebuilt from the content tree each dev
+    /// tick, so a content add/remove/rename changes the digest and
+    /// correctly invalidates every cached entry whose links could now
+    /// resolve differently. The two remaining per-file dependencies are
+    /// handled by [`compile_mdx_to_jsx_module_cached`]:
+    ///
+    /// - the per-file `source_dir` joins the cache key as a per-call
+    ///   context segment ([`Pipeline::cache_key_context`]);
+    /// - broken-link diagnostics are stored with the cached entry and
+    ///   replayed into this plugin on a hit, so draining
+    ///   [`Pipeline::take_broken_links`] after a hit observes exactly
+    ///   what a fresh compile would have produced.
+    ///
+    /// Digest canonicalisation: entries are sorted and hashed as
+    /// length-delimited records (no separator/`=` ambiguity), with the
+    /// path keys normalised by the shared lexical helper
+    /// (`path_norm::normalize_path_lexically`), whose canonical form
+    /// mirrors `Path` equality — exactly the spellings the runtime
+    /// `HashMap<PathBuf, _>` lookup merges digest identically, and the
+    /// ones it distinguishes (`..`, leading `./`) stay distinct.
+    ///
+    /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
     pub fn add_resolve_links(
         &mut self,
         source_map: std::collections::HashMap<std::path::PathBuf, String>,
     ) -> &mut Self {
+        let mut records: Vec<(String, &str)> = source_map
+            .iter()
+            .map(|(path, url)| (normalize_path_lexically(path), url.as_str()))
+            .collect();
+        records.sort();
+        let mut hasher = Sha256::new();
+        for (path, url) in &records {
+            hasher.update((path.len() as u64).to_le_bytes());
+            hasher.update(path.as_bytes());
+            hasher.update((url.len() as u64).to_le_bytes());
+            hasher.update(url.as_bytes());
+        }
+        let digest = hex::encode(hasher.finalize());
+
         self.resolve_links = Some(ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
             source_map,
             source_dir: None,
         }));
-        self.invalidate_config_fingerprint();
+        // A second call REPLACES the plugin (doc contract above), so any
+        // previously-pushed segment must go too — a stale map digest
+        // lingering in the extras would split the fingerprint.
+        self.config_fingerprint_extras
+            .retain(|s| !s.starts_with("resolve_links;"));
+        self.extend_config_fingerprint(format!("resolve_links;source_map_sha256={digest}"));
         self
     }
 
@@ -814,6 +883,256 @@ impl Pipeline {
             .as_mut()
             .map(|p| p.take_broken_links())
             .unwrap_or_default()
+    }
+
+    /// Per-call cache-key context for `compile_mdx_to_jsx_module_cached`
+    /// (zfb#939).
+    ///
+    /// [`Pipeline::config_fingerprint`] covers construction-time config
+    /// only; this surfaces the per-FILE pipeline state that also shapes
+    /// the emitted JSX — today exactly the wired `ResolveLinksPlugin`'s
+    /// `source_dir` (set between compiles via
+    /// [`Pipeline::set_resolve_links_source_dir`]; it changes how
+    /// relative `./other.mdx` links resolve). `None` when no per-file
+    /// state is in play, keeping the cache key byte-identical to the
+    /// pre-#939 two-part shape for every other pipeline.
+    ///
+    /// The dir is normalised with the same lexical helper as the
+    /// source-map digest in [`Pipeline::add_resolve_links`]: spellings
+    /// the runtime lookup treats as one dir (`Path` equality) key
+    /// identically, while dirs whose lookups can differ never collide.
+    /// An unset dir maps to a distinct `none` token —
+    /// `source_dir = None` only performs absolute lookups, which is
+    /// observably different from any set dir (the empty path included).
+    pub(crate) fn cache_key_context(&self) -> Option<String> {
+        self.resolve_links.as_ref().map(|p| match p.source_dir() {
+            Some(dir) => format!(
+                "resolve_links_source_dir=some:{}",
+                normalize_path_lexically(dir)
+            ),
+            None => "resolve_links_source_dir=none".to_string(),
+        })
+    }
+
+    /// Number of broken-link diagnostics currently buffered (not yet
+    /// drained). The compile cache snapshots this before a compile so it
+    /// can slice off exactly the diagnostics that compile appended
+    /// (zfb#939) — the buffer may still hold earlier files' diagnostics
+    /// when the caller drains lazily (the snapshot walker never drains).
+    pub(crate) fn broken_links_len(&self) -> usize {
+        self.resolve_links
+            .as_ref()
+            .map_or(0, ResolveLinksPlugin::broken_links_len)
+    }
+
+    /// Clone the broken-link diagnostics buffered at index `from`
+    /// onward, without draining (zfb#939 — see
+    /// [`Pipeline::broken_links_len`]).
+    pub(crate) fn broken_links_since(&self, from: usize) -> Vec<BrokenLinkDiagnostic> {
+        self.resolve_links
+            .as_ref()
+            .map(|p| p.broken_links_since(from))
+            .unwrap_or_default()
+    }
+
+    /// Cache-hit replay (zfb#939): re-inject diagnostics stored with a
+    /// cached compile so call sites draining
+    /// [`Pipeline::take_broken_links`] after a hit observe exactly what
+    /// the fresh compile produced. No-op when the plugin is not wired —
+    /// unreachable in practice, because entries carrying diagnostics are
+    /// only ever keyed under a resolve-links fingerprint.
+    pub(crate) fn replay_broken_links(&mut self, diags: Vec<BrokenLinkDiagnostic>) {
+        if diags.is_empty() {
+            return;
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.replay_broken_links(diags);
+        }
+    }
+
+    /// Attach the read-recorder filesystem-reading feature plugins
+    /// report their external reads through (zfb#942).
+    ///
+    /// The caller wires the SAME `Arc` into the plugins (they receive a
+    /// clone at construction) and into the pipeline here, so the
+    /// compile-cache choke point (`compile_mdx_to_jsx_module_cached`)
+    /// can scope the recording per compile: it clears the recorder
+    /// before each compile and drains the recorded reads into the
+    /// cache entry's [`DependencyManifest`] afterwards. Because of that
+    /// clear/drain cycle, a recorder instance must serve exactly ONE
+    /// pipeline — sharing it across pipelines would interleave reads
+    /// from unrelated compiles.
+    ///
+    /// **Fingerprint-neutral.** The recorder is observational: it never
+    /// changes the JSX a given input emits, so attaching it does NOT
+    /// invalidate [`Pipeline::config_fingerprint`]. (Since zfb#944 the
+    /// recording plugins ARE fingerprintable — the old
+    /// `filesystem_dependent_feature` gate in
+    /// [`Pipeline::with_defaults_and_full_config`] is flipped, and that
+    /// constructor wires one recorder per pipeline whenever a
+    /// filesystem-reading feature is enabled.)
+    ///
+    /// **Cache-key effect.** Because recording plugins may resolve
+    /// reads relative to the file being compiled, a recorder-armed
+    /// pipeline makes `compile_mdx_to_jsx_module_cached` append the
+    /// source file's parent directory to the cache key — identical
+    /// bodies in different directories stop sharing an entry (their
+    /// relative reads can differ), while same-directory bodies still
+    /// dedupe. See the key-shape docs on that function.
+    pub fn set_read_recorder(&mut self, recorder: Arc<ReadRecorder>) -> &mut Self {
+        self.read_recorder = Some(recorder);
+        self
+    }
+
+    /// The attached read-recorder, if any (see
+    /// [`Pipeline::set_read_recorder`]).
+    #[must_use]
+    pub fn read_recorder(&self) -> Option<&Arc<ReadRecorder>> {
+        self.read_recorder.as_ref()
+    }
+
+    /// Discard reads left in the recorder by an earlier compile (e.g.
+    /// one that aborted on a parse error), so they cannot leak into
+    /// the next entry's manifest. Called by
+    /// `compile_mdx_to_jsx_module_cached` before every compile. No-op
+    /// without a recorder.
+    pub(crate) fn clear_recorded_reads(&self) {
+        if let Some(r) = &self.read_recorder {
+            r.clear();
+        }
+    }
+
+    /// Drain the reads recorded since the last clear into the
+    /// [`DependencyManifest`] stored with the cache entry, normalising
+    /// each path via the shared `path_norm` helper. Empty manifest
+    /// without a recorder (the shape of every plain pipeline).
+    pub(crate) fn take_dependency_manifest(&self) -> DependencyManifest {
+        self.read_recorder
+            .as_ref()
+            .map(|r| DependencyManifest::from_recorded_reads(r.take_reads()))
+            .unwrap_or_default()
+    }
+
+    /// Arm per-file `BuildContext` threading on the JSX-emit path
+    /// (zfb#944): `compile_mdx_to_jsx_module_cached` builds a
+    /// `BuildContext { source_path: <the compiled file>, project_root,
+    /// public_dir, .. }` for every compile and applies the visitor
+    /// chains through their `*_with_context` variants, so the
+    /// context-aware feature plugins (transclude, imageDimensions,
+    /// linkValidation) actually fire — and record their reads — instead
+    /// of no-opping. Without this call the emit path stays context-free
+    /// and byte-identical to before.
+    ///
+    /// **Fingerprint-extending.** Both roots shape the emitted JSX
+    /// (containment checks, `/`-absolute image resolution), so they join
+    /// the config fingerprint as a normalised segment — two pipelines
+    /// armed with different roots can never alias one compile-cache
+    /// entry. A second call replaces the roots AND the segment.
+    ///
+    /// **Cache-key effect.** A roots-armed pipeline additionally keys
+    /// every compile-cache entry by the full normalised source PATH (not
+    /// just the recorder's parent-dir segment): context-aware plugins
+    /// observe the source path itself (transclude seeds its cycle
+    /// detection with it; linkValidation stamps it into diagnostic
+    /// locations), so identical bodies in one directory may legitimately
+    /// produce different output/diagnostics per file. See the key-shape
+    /// docs on `compile_mdx_to_jsx_module_cached`.
+    ///
+    /// The heading registry is deliberately NOT threaded here — it is
+    /// per-build orchestration state; cross-file anchor validation
+    /// through the cache is follow-up work. The per-compile context
+    /// carries `heading_registry: None`.
+    ///
+    /// Production pipelines (`PipelineSpec::build_pipeline` — bundler,
+    /// snapshot walker, dev loader) do NOT arm this yet: the plugins
+    /// were already inert on the context-free production emit path
+    /// before zfb#944, and wiring real roots through the config surface
+    /// (plus draining `take_markdown_diagnostics` and the
+    /// heading-registry decision) is tracked in zfb#948.
+    pub fn set_build_context_roots(
+        &mut self,
+        project_root: PathBuf,
+        public_dir: PathBuf,
+    ) -> &mut Self {
+        let segment = format!(
+            "build_context_roots;project_root={};public_dir={}",
+            normalize_path_lexically(&project_root),
+            normalize_path_lexically(&public_dir),
+        );
+        self.build_context_roots = Some((project_root, public_dir));
+        // A second call REPLACES the roots, so the previous segment must
+        // go too (mirrors `add_resolve_links`).
+        self.config_fingerprint_extras
+            .retain(|s| !s.starts_with("build_context_roots;"));
+        self.extend_config_fingerprint(segment);
+        self
+    }
+
+    /// The armed `(project_root, public_dir)` pair, if any (see
+    /// [`Pipeline::set_build_context_roots`]).
+    #[must_use]
+    pub fn build_context_roots(&self) -> Option<(&Path, &Path)> {
+        self.build_context_roots
+            .as_ref()
+            .map(|(root, public)| (root.as_path(), public.as_path()))
+    }
+
+    /// Drain the markdown diagnostics context-aware feature plugins
+    /// emitted during JSX-emit compiles since the last drain (zfb#944) —
+    /// e.g. linkValidation broken-link findings, transclude read
+    /// errors. Mirrors [`Pipeline::take_broken_links`]; empty unless
+    /// [`Pipeline::set_build_context_roots`] armed context threading.
+    pub fn take_markdown_diagnostics(&mut self) -> Vec<MarkdownDiagnostic> {
+        std::mem::take(&mut self.markdown_diagnostics)
+    }
+
+    /// Number of buffered (not yet drained) markdown diagnostics. The
+    /// compile cache snapshots this before a compile so it can slice
+    /// off exactly the diagnostics that compile appended (zfb#944,
+    /// mirroring [`Pipeline::broken_links_len`]).
+    pub(crate) fn markdown_diagnostics_len(&self) -> usize {
+        self.markdown_diagnostics.len()
+    }
+
+    /// Clone the markdown diagnostics buffered at index `from` onward,
+    /// without draining (zfb#944 — see
+    /// [`Pipeline::markdown_diagnostics_len`]).
+    pub(crate) fn markdown_diagnostics_since(&self, from: usize) -> Vec<MarkdownDiagnostic> {
+        self.markdown_diagnostics
+            .get(from..)
+            .unwrap_or_default()
+            .to_vec()
+    }
+
+    /// Append diagnostics collected by the JSX-emit path's per-file
+    /// context sink (zfb#944). Internal — the emit path flushes its
+    /// `CollectingSink` here after the visitor chains run.
+    pub(crate) fn extend_markdown_diagnostics(&mut self, diags: Vec<MarkdownDiagnostic>) {
+        self.markdown_diagnostics.extend(diags);
+    }
+
+    /// Cache-hit replay (zfb#944): re-inject markdown diagnostics stored
+    /// with a cached compile so call sites draining
+    /// [`Pipeline::take_markdown_diagnostics`] after a hit observe
+    /// exactly what the fresh compile produced (the sibling of
+    /// [`Pipeline::replay_broken_links`]).
+    pub(crate) fn replay_markdown_diagnostics(&mut self, diags: Vec<MarkdownDiagnostic>) {
+        self.extend_markdown_diagnostics(diags);
+    }
+
+    /// Test seam (zfb#942): push an mdast visitor WITHOUT invalidating
+    /// the config fingerprint, so the synthetic-recorder cache tests in
+    /// `mdx_jsx_emit` can make a cacheable pipeline record reads during
+    /// compile — standing in for the config-derived feature plugins
+    /// that will record for real in zfb#944. Production code must use
+    /// [`Pipeline::add_mdast_visitor`] (invalidating) or the private
+    /// config-derived helpers (see their invalidation-rule docs).
+    #[cfg(test)]
+    pub(crate) fn push_mdast_visitor_preserving_fingerprint_for_tests(
+        &mut self,
+        v: Box<dyn MdastVisitor>,
+    ) {
+        self.push_config_derived_mdast_visitor(v);
     }
 
     /// New pipeline preloaded with the project's default plugin chain.
@@ -1184,12 +1503,22 @@ impl Pipeline {
         p.set_heading_id_strategy(strategy);
         p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
         p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        // One read-recorder per pipeline (zfb#942/#944), created iff a
+        // filesystem-reading feature plugin will be wired: the plugins
+        // receive clones at construction (inside
+        // `register_features_config_derived`) and the SAME `Arc` goes on
+        // the pipeline below, so the compile-cache choke point can scope
+        // the recorded reads per compile.
+        let filesystem_dependent_feature = features.transclude.is_some()
+            || features.image_dimensions.is_some()
+            || features.link_validation.is_some();
+        let read_recorder = filesystem_dependent_feature.then(|| Arc::new(ReadRecorder::new()));
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
         // mermaid; after for post-syntect). The `_config_derived` variant
         // does not invalidate — the final base descriptor below covers the
         // whole `features` value.
-        register_features_config_derived(&mut p, features);
+        register_features_config_derived(&mut p, features, read_recorder.as_ref());
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
         // extras visitors (mermaid, …) run first.
         let syntect = if let Some(t) = theme {
@@ -1208,31 +1537,33 @@ impl Pipeline {
         // (constructor obligation of the invalidation rule — see
         // `push_config_derived_mdast_visitor`).
         //
-        // Plugins that read OTHER files at compile time make the JSX
-        // output depend on filesystem state the cache key cannot see
-        // (`transclude` splices referenced file contents,
-        // `imageDimensions` reads image headers, `linkValidation`
-        // emits cross-file diagnostics) — a cached entry could go
-        // stale when a referenced file changes between dev ticks, so
-        // their presence marks the pipeline uncacheable.
-        let filesystem_dependent_feature = features.transclude.is_some()
-            || features.image_dimensions.is_some()
-            || features.link_validation.is_some();
-        let base = if filesystem_dependent_feature {
-            None
-        } else {
-            match (
-                themes_dir_fingerprint_segment(themes_dir),
-                features_fingerprint_segment(features),
-            ) {
-                (Some(themes_seg), Some(features_seg)) => Some(format!(
-                    "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
-                    gfm = gfm_fingerprint_segment(resolved),
-                )),
-                _ => None,
-            }
+        // Plugins that read OTHER files at compile time (`transclude`,
+        // `imageDimensions`, `linkValidation`) no longer bail out of the
+        // fingerprint (the pre-#944 `filesystem_dependent_feature` gate):
+        // their CONFIG is covered by the canonical features JSON below,
+        // and their per-file reads are covered by the read-recorder wired
+        // above — `compile_mdx_to_jsx_module_cached` stores the recorded
+        // reads as a `DependencyManifest` with every entry and re-probes
+        // them before honouring a hit, so a cached entry can no longer go
+        // stale when a referenced file changes between dev ticks.
+        let base = match (
+            themes_dir_fingerprint_segment(themes_dir),
+            features_fingerprint_segment(features),
+        ) {
+            (Some(themes_seg), Some(features_seg)) => Some(format!(
+                "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
+                gfm = gfm_fingerprint_segment(resolved),
+            )),
+            _ => None,
         };
         p.set_config_fingerprint_base(base);
+        // Attach AFTER the base descriptor: `set_read_recorder` is
+        // fingerprint-neutral, but the recorder must survive the
+        // `set_config_fingerprint_base` extras reset regardless of order
+        // — it lives in its own field. One recorder per pipeline.
+        if let Some(recorder) = read_recorder {
+            p.set_read_recorder(recorder);
+        }
         Ok(p)
     }
 
@@ -1467,7 +1798,10 @@ pub fn register_features(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
-    register_features_config_derived(p, features);
+    // No read-recorder on this path: the manual registration makes the
+    // pipeline uncacheable anyway, so there is no dependency manifest to
+    // feed (the compile cache never stores entries for it).
+    register_features_config_derived(p, features, None);
     p.invalidate_config_fingerprint();
 }
 
@@ -1475,9 +1809,16 @@ pub fn register_features(
 /// called from [`Pipeline::with_defaults_and_full_config`], whose final base
 /// descriptor covers the whole `features` value (invalidation rule — see
 /// `Pipeline::push_config_derived_mdast_visitor`).
+///
+/// `read_recorder` (zfb#944): when `Some`, the filesystem-reading feature
+/// plugins (transclude, imageDimensions, linkValidation) receive a clone
+/// at construction so every external read they perform is reported for
+/// the compile cache's dependency manifest. The caller owns putting the
+/// SAME `Arc` on the pipeline via [`Pipeline::set_read_recorder`].
 fn register_features_config_derived(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
+    read_recorder: Option<&Arc<ReadRecorder>>,
 ) {
     // Wave 3 (#570): conditionally wire the four opt-in framework features.
     //
@@ -1505,9 +1846,11 @@ fn register_features_config_derived(
     // (source_path + project_root) to resolve file paths. When the pipeline
     // is driven via `run_with_context`, the context is automatically threaded.
     if let Some(cfg) = &features.transclude {
-        p.push_config_derived_mdast_visitor(Box::new(
-            zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone()),
-        ));
+        let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone());
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_mdast_visitor(Box::new(plugin));
     }
 
     // code_tabs MUST run BEFORE the directives step and github_alerts so that
@@ -1611,9 +1954,11 @@ fn register_features_config_derived(
     // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
     // Uses visit_with_context — pipeline must call run_with_context for this to fire.
     if let Some(cfg) = features.image_dimensions.clone() {
-        p.push_config_derived_hast_visitor(Box::new(
-            zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg),
-        ));
+        let mut plugin = zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg);
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 
     // Wave 6 (#580): link_validation — validate internal links + anchor
@@ -1622,9 +1967,11 @@ fn register_features_config_derived(
     // current file are already populated by HeadingLinksPlugin. Gated on
     // `is_some()` (uses a rich options struct, not a FeatureToggle).
     if let Some(cfg) = &features.link_validation {
-        p.push_config_derived_hast_visitor(Box::new(
-            zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone()),
-        ));
+        let mut plugin = zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone());
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 }
 
@@ -2553,6 +2900,53 @@ mod tests {
         assert_eq!(
             html1, html2,
             "with_defaults() and with_defaults_and_theme(None) must produce identical output"
+        );
+    }
+
+    // 18. Per-call cache-key context (zfb#939): only resolve-links
+    // pipelines carry one; an unset source_dir is distinct from every
+    // set dir (the empty path included — None resolves only absolute
+    // lookups); spelling differences of one dir do not split the key.
+    #[test]
+    fn cache_key_context_keys_the_resolve_links_source_dir() {
+        let mut p = Pipeline::with_defaults();
+        assert!(
+            p.cache_key_context().is_none(),
+            "no resolve-links plugin => no per-call context (key shape unchanged)"
+        );
+
+        p.add_resolve_links(std::collections::HashMap::new());
+        let unset = p.cache_key_context().expect("wired => context");
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from(""));
+        let empty = p.cache_key_context().expect("wired => context");
+        assert_ne!(unset, empty, "unset dir must never alias an empty dir");
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/./y/"));
+        let spelled = p.cache_key_context().expect("wired => context");
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/y"));
+        let canonical = p.cache_key_context().expect("wired => context");
+        assert_eq!(
+            spelled, canonical,
+            "two spellings of one dir must share a cache key"
+        );
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/z"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            canonical,
+            "different dirs must never share a cache key"
+        );
+
+        // `..` spellings are runtime-distinct (`Path` equality keeps
+        // them, and so do the map lookups joined from this dir), so
+        // they must key separately — merging them could serve a stale
+        // hit.
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/a/../y"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            canonical,
+            "a `..` spelling can look up differently — it must key separately"
         );
     }
 }

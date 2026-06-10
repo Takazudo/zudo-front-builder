@@ -4,9 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "vendor:zudo-doc": "node scripts/vendor-zudo-doc-dist.mjs",
-    "dev": "node scripts/vendor-zudo-doc-dist.mjs && zfb dev",
-    "build": "node scripts/vendor-zudo-doc-dist.mjs && zfb build",
+    "dev": "zfb dev",
+    "build": "zfb build",
     "preview": "zfb preview",
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",
@@ -17,7 +16,7 @@
     "@takazudo/zfb": "0.1.0-next.35",
     "@takazudo/zfb-runtime": "0.1.0-next.35",
     "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.35",
-    "@takazudo/zudo-doc": "^0.2.0-next.7",
+    "@takazudo/zudo-doc": "^0.2.0",
     "zod": "^4.0.0",
     "preact": "^10.29.1",
     "preact-render-to-string": "^6.6.6",
@@ -32,7 +31,7 @@
     "katex": "^0.16.38",
     "minisearch": "^7.2.0",
     "diff": "^8.0.3",
-    "@takazudo/zudo-doc-history-server": "^0.2.0-next.7"
+    "@takazudo/zudo-doc-history-server": "^0.2.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.0",

@@ -271,3 +271,240 @@ fn cache_clear_drops_all_entries() {
     cache.clear();
     assert!(cache.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// resolveMarkdownLinks caching (zfb#939)
+//
+// Pre-#939, wiring `ResolveLinksPlugin` invalidated the config
+// fingerprint and every compile bypassed the cache. The plugin never
+// reads the filesystem at compile time, so the map is digested into the
+// fingerprint, the per-file `source_dir` joins the key as a per-call
+// context segment, and broken-link diagnostics are stored with the
+// entry and replayed on hits.
+// ---------------------------------------------------------------------------
+
+/// Build a default pipeline with `ResolveLinksPlugin` wired from the
+/// given `(absolute path, url)` entries.
+fn resolve_links_pipeline(entries: &[(&str, &str)]) -> Pipeline {
+    let map: std::collections::HashMap<PathBuf, String> = entries
+        .iter()
+        .map(|(p, u)| (PathBuf::from(p), (*u).to_string()))
+        .collect();
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.add_resolve_links(map);
+    pipeline
+}
+
+#[test]
+fn resolve_links_unchanged_file_recompile_is_a_cache_hit() {
+    // zfb#939 acceptance: with resolveMarkdownLinks wired, recompiling
+    // an unchanged file under an identically-configured pipeline (the
+    // dev-tick shape: fresh pipeline per tick, same config + map) is a
+    // cache hit, not a recompile-and-overwrite.
+    let cache = MdxModuleCache::new();
+    let src = "[good](./other.mdx)\n";
+    let path = PathBuf::from("/content/docs/index.mdx");
+
+    let mut p1 = resolve_links_pipeline(&[("/content/docs/other.mdx", "/docs/other/")]);
+    p1.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let first = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut p1)).unwrap();
+    assert_eq!(
+        cache.len(),
+        1,
+        "resolve-links pipeline must populate the cache"
+    );
+    assert!(
+        first.jsx_source.contains("/docs/other/"),
+        "link must resolve via the source map; got: {}",
+        first.jsx_source
+    );
+
+    let mut p2 = resolve_links_pipeline(&[("/content/docs/other.mdx", "/docs/other/")]);
+    p2.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let second = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut p2)).unwrap();
+    assert_eq!(
+        cache.len(),
+        1,
+        "unchanged file + same config must hit, not re-insert"
+    );
+    assert_eq!(first, second, "cached value must match the original");
+}
+
+#[test]
+fn resolve_links_broken_link_diagnostics_replay_on_cache_hit() {
+    // zfb#939 acceptance (explicit): diagnostics are a side channel —
+    // call sites compile, then drain `take_broken_links`. On a hit the
+    // plugin never runs, so the cache must replay the stored vec or
+    // the bundler's onBrokenLinks policy silently stops firing for
+    // every cached file.
+    let cache = MdxModuleCache::new();
+    let src = "[good](./other.mdx)\n\n[broken](./missing.mdx)\n";
+    let path = PathBuf::from("/content/docs/index.mdx");
+    let map: &[(&str, &str)] = &[("/content/docs/other.mdx", "/docs/other/")];
+
+    let mut p1 = resolve_links_pipeline(map);
+    p1.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let _ = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut p1)).unwrap();
+    let fresh_diags: Vec<String> = p1.take_broken_links().into_iter().map(|d| d.url).collect();
+    assert_eq!(
+        fresh_diags,
+        vec!["./missing.mdx".to_string()],
+        "precondition: fresh compile reports the broken link"
+    );
+    assert_eq!(cache.len(), 1);
+
+    let mut p2 = resolve_links_pipeline(map);
+    p2.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let _ = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut p2)).unwrap();
+    assert_eq!(cache.len(), 1, "second compile must be a hit");
+    let replayed: Vec<String> = p2.take_broken_links().into_iter().map(|d| d.url).collect();
+    assert_eq!(
+        replayed, fresh_diags,
+        "cache hit must replay the same broken-link diagnostics a fresh compile produces"
+    );
+    assert!(
+        p2.take_broken_links().is_empty(),
+        "drain semantics unchanged: a second drain after the hit is empty"
+    );
+}
+
+#[test]
+fn resolve_links_source_map_change_invalidates_the_entry() {
+    // zfb#939 acceptance: the map is rebuilt from the content tree each
+    // tick — renaming/removing a file changes the digest, so the same
+    // input recompiles under a new key instead of serving the stale
+    // resolution.
+    let cache = MdxModuleCache::new();
+    let src = "[link](./other.mdx)\n";
+    let path = PathBuf::from("/content/docs/index.mdx");
+
+    let mut before = resolve_links_pipeline(&[("/content/docs/other.mdx", "/docs/other/")]);
+    before.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let resolved =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut before)).unwrap();
+    assert!(resolved.jsx_source.contains("/docs/other/"));
+    assert!(before.take_broken_links().is_empty());
+    assert_eq!(cache.len(), 1);
+
+    // `other.mdx` renamed away: the link is now broken. A stale hit
+    // would still emit `/docs/other/` and report nothing.
+    let mut after = resolve_links_pipeline(&[("/content/docs/renamed.mdx", "/docs/renamed/")]);
+    after.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let broken =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut after)).unwrap();
+    assert_eq!(cache.len(), 2, "changed map => new key => fresh compile");
+    assert!(
+        !broken.jsx_source.contains("/docs/other/"),
+        "stale resolution must not be served; got: {}",
+        broken.jsx_source
+    );
+    let diags: Vec<String> = after
+        .take_broken_links()
+        .into_iter()
+        .map(|d| d.url)
+        .collect();
+    assert_eq!(diags, vec!["./other.mdx".to_string()]);
+
+    // Same file remapped to a new route: also a fresh compile with the
+    // new URL.
+    let mut remapped = resolve_links_pipeline(&[("/content/docs/other.mdx", "/v2/other/")]);
+    remapped.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let rerouted =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut remapped)).unwrap();
+    assert_eq!(cache.len(), 3);
+    assert!(rerouted.jsx_source.contains("/v2/other/"));
+}
+
+#[test]
+fn resolve_links_source_dir_separates_cache_entries() {
+    // zfb#939 acceptance: the per-file source_dir changes how relative
+    // links resolve, so two files with identical BODIES but different
+    // dirs must never share an entry — a shared one would hand file B
+    // file A's resolved URLs.
+    let cache = MdxModuleCache::new();
+    let src = "[link](./other.mdx)\n";
+    let map: &[(&str, &str)] = &[
+        ("/content/a/other.mdx", "/a-route/other/"),
+        ("/content/b/other.mdx", "/b-route/other/"),
+    ];
+
+    let mut in_a = resolve_links_pipeline(map);
+    in_a.set_resolve_links_source_dir(PathBuf::from("/content/a"));
+    let from_a = compile_mdx_to_jsx_module_cached(
+        src,
+        &PathBuf::from("/content/a/index.mdx"),
+        Some(&cache),
+        Some(&mut in_a),
+    )
+    .unwrap();
+    assert!(from_a.jsx_source.contains("/a-route/other/"));
+    assert_eq!(cache.len(), 1);
+
+    let mut in_b = resolve_links_pipeline(map);
+    in_b.set_resolve_links_source_dir(PathBuf::from("/content/b"));
+    let from_b = compile_mdx_to_jsx_module_cached(
+        src,
+        &PathBuf::from("/content/b/index.mdx"),
+        Some(&cache),
+        Some(&mut in_b),
+    )
+    .unwrap();
+    assert_eq!(
+        cache.len(),
+        2,
+        "different source_dir must compile into a separate entry"
+    );
+    assert!(
+        from_b.jsx_source.contains("/b-route/other/"),
+        "file in /content/b must get ITS dir's resolution, not /content/a's; got: {}",
+        from_b.jsx_source
+    );
+
+    // Different SPELLING of an already-cached dir is the same key: a
+    // re-walk that spells the dir with a redundant `./` must hit.
+    let mut respelled = resolve_links_pipeline(map);
+    respelled.set_resolve_links_source_dir(PathBuf::from("/content/./a/"));
+    let hit = compile_mdx_to_jsx_module_cached(
+        src,
+        &PathBuf::from("/content/a/index.mdx"),
+        Some(&cache),
+        Some(&mut respelled),
+    )
+    .unwrap();
+    assert_eq!(cache.len(), 2, "respelled dir must hit the existing entry");
+    assert_eq!(hit, from_a);
+}
+
+#[test]
+fn resolve_links_unset_source_dir_does_not_alias_a_set_one() {
+    // With source_dir unset the plugin only performs direct map
+    // lookups, so `./other.mdx` is broken; with the dir set it
+    // resolves. The two compiles must key separately or whichever runs
+    // second silently inherits the other's output.
+    let cache = MdxModuleCache::new();
+    let src = "[link](./other.mdx)\n";
+    let path = PathBuf::from("/content/docs/index.mdx");
+    let map: &[(&str, &str)] = &[("/content/docs/other.mdx", "/docs/other/")];
+
+    let mut without_dir = resolve_links_pipeline(map);
+    let unresolved =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut without_dir)).unwrap();
+    assert!(!unresolved.jsx_source.contains("/docs/other/"));
+    assert_eq!(
+        without_dir.take_broken_links().len(),
+        1,
+        "no source_dir => relative link cannot resolve"
+    );
+
+    let mut with_dir = resolve_links_pipeline(map);
+    with_dir.set_resolve_links_source_dir(PathBuf::from("/content/docs"));
+    let resolved =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut with_dir)).unwrap();
+    assert_eq!(
+        cache.len(),
+        2,
+        "unset vs set source_dir must not share a key"
+    );
+    assert!(resolved.jsx_source.contains("/docs/other/"));
+    assert!(with_dir.take_broken_links().is_empty());
+}

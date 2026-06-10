@@ -280,4 +280,36 @@ mod tests {
         assert!(a.is_some());
         assert_eq!(a, b);
     }
+
+    /// zfb#939: the production resolveMarkdownLinks wiring path — a spec
+    /// carrying `resolve_source_map` — must build a CACHEABLE pipeline
+    /// (fingerprint `Some`), and two ticks deriving the same map must
+    /// agree so unchanged files hit the compile cache.
+    #[test]
+    fn resolve_source_map_spec_builds_a_fingerprinted_pipeline() {
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/content/docs/other.mdx"),
+            "/docs/other/".to_string(),
+        );
+        let spec = PipelineSpec {
+            resolve_source_map: Some(map),
+            ..Default::default()
+        };
+        let a = spec.build_pipeline().expect("builds").config_fingerprint();
+        let b = spec.build_pipeline().expect("builds").config_fingerprint();
+        assert!(
+            a.is_some(),
+            "resolveMarkdownLinks wired => config_fingerprint() must be Some (zfb#939)"
+        );
+        assert_eq!(a, b, "same map across ticks must share one fingerprint");
+        assert_ne!(
+            a,
+            PipelineSpec::default()
+                .build_pipeline()
+                .expect("builds")
+                .config_fingerprint(),
+            "resolve-links output differs from the default shape — keys must split"
+        );
+    }
 }

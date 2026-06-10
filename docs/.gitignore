@@ -17,8 +17,3 @@ src/content/docs/claude-agents/
 # scripts/setup-zfb-wisdom.sh (they hold absolute paths). SKILL.md is tracked.
 .claude/skills/zfb-wisdom/docs
 .claude/skills/zfb-wisdom/docs-ja
-
-# Build-time copy of @takazudo/zudo-doc's dist, vendored by
-# scripts/vendor-zudo-doc-dist.mjs so Tailwind can scan it for the package's
-# component utility classes (it won't scan node_modules). Regenerated each build.
-.zudo-doc-tw/

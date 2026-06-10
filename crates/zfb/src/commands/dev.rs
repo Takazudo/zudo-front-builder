@@ -84,6 +84,8 @@ use zfb_build::{
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
+#[cfg(feature = "embed_v8")]
+use sha2::{Digest as _, Sha256};
 use zfb_server::{
     outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
     SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
@@ -1272,6 +1274,55 @@ struct DevRenderInner {
     /// populates it on the V8 path.
     #[cfg(feature = "embed_v8")]
     rebuild_inputs: DevRebuildInputs,
+
+    /// Skip key from the last SUCCESSFUL `refresh_bundle_and_routes` call
+    /// (issue #940 — Phase B). Hashes bundle bytes + the router scan's
+    /// sorted source paths + route templates so a no-op tick (identical
+    /// bundle, identical route universe) skips V8 host boot + swap and
+    /// the `paths()` re-expansion. Stored only after ALL of: host boot,
+    /// swap, AND route-table rebuild succeed — a failed refresh must NOT
+    /// poison this field so the next byte-identical tick can retry.
+    ///
+    /// `None` on first tick (cold start) — forces a full refresh.
+    /// Wrapped in a `Mutex` so `&self.refresh_bundle_and_routes` can
+    /// update it without `&mut self`.
+    #[cfg(feature = "embed_v8")]
+    last_successful_skip_key: Mutex<Option<[u8; 32]>>,
+}
+
+#[cfg(feature = "embed_v8")]
+impl DevRenderInner {
+    /// Phase B (issue #940) — true when `new_key` matches the skip key of
+    /// the last SUCCESSFUL refresh, i.e. the refresh may legally skip the
+    /// V8 host boot + swap and the `paths()` re-expansion. `new_key =
+    /// None` (key not computable) never skips.
+    fn should_skip_refresh(&self, new_key: Option<[u8; 32]>) -> bool {
+        let prev = *self
+            .last_successful_skip_key
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        new_key.is_some() && prev == new_key
+    }
+
+    /// Phase B (issue #940) — record the refresh tick's skip key after a
+    /// FULLY successful refresh (host boot + swap + route-table rebuild).
+    ///
+    /// Must NOT be called on a failed refresh — the previous successful
+    /// key has to survive so the next byte-identical tick retries in full
+    /// (Correctness Req 1: a failed refresh never poisons the key).
+    ///
+    /// Passing `None` (key was not computable this tick) CLEARS the stored
+    /// key: a stale key no longer describes the live renderer's bundle,
+    /// and a later tick matching it would skip against the wrong host
+    /// state. Clearing forces the next tick to refresh fully (safe
+    /// direction: false-invalidate, never false-reuse).
+    fn commit_skip_key(&self, new_key: Option<[u8; 32]>) {
+        let mut stored = self
+            .last_successful_skip_key
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *stored = new_key;
+    }
 }
 
 impl DevRenderSession {
@@ -1548,6 +1599,35 @@ impl DevRenderSession {
         )
         .context("dev refresh: re-bundle failed")?;
 
+        // Phase B (issue #940) — skip key check.
+        //
+        // Compute a digest over bundle bytes + the router-scan signature
+        // (sorted source paths + route templates). If the new key matches
+        // the previous SUCCESSFUL tick's key, nothing observable changed:
+        // - bundle bytes ≡ snapshot unchanged ≡ V8 host would observe
+        //   identical globals,
+        // - router signature unchanged ≡ pages/ universe identical.
+        // Return early with empty (changed, vanished) — the caller treats
+        // this as a completed refresh (Inv 3: renderer_reloaded=true via
+        // the DiscoveryOutcome path above us).
+        //
+        // Key is stored only AFTER the full success path below (host swap +
+        // route rebuild). A failed refresh — e.g. host start error — must
+        // NOT update last_successful_skip_key so the next byte-identical
+        // tick retries in full (Correctness Req 1, issue #940).
+        let new_skip_key = compute_bundle_skip_key(&bundler_out, router.routes());
+        if self.inner.should_skip_refresh(new_skip_key) {
+            tracing::debug!(
+                site = "refresh_bundle_and_routes",
+                "bundle skip: byte-identical bundle + unchanged route universe; \
+                 skipping V8 host boot and paths() re-expansion"
+            );
+            // Early return — behaves as a completed refresh with empty
+            // change/vanish sets (Inv 3).  The skip key is already
+            // stored from the last successful tick; no update needed.
+            return Ok((Vec::new(), Vec::new()));
+        }
+
         // 2. Start a NEW embedded V8 host against the rebuilt bundle,
         //    swap it into the existing mutex (the render callback + SSR
         //    adapter share this exact Arc), and shut the old host down
@@ -1586,6 +1666,18 @@ impl DevRenderSession {
                 }
             }
         }
+
+        // Phase B (issue #940, review fix) — the live renderer just
+        // diverged from whatever the stored skip key described. Invalidate
+        // it NOW, before the fallible route-table rebuild below: if that
+        // rebuild fails, the error `?`-returns without committing, and a
+        // stale key from the pre-swap bundle could otherwise match a later
+        // tick (e.g. the user undoing the edit) and skip — freezing the
+        // failed tick's host in place. Note this is distinct from a
+        // host-START failure, which `?`-returns ABOVE the swap and
+        // correctly keeps the previous key (the live renderer was never
+        // touched, so the old key still describes it).
+        self.inner.commit_skip_key(None);
 
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
@@ -1637,6 +1729,16 @@ impl DevRenderSession {
             tables.routes_by_source = new_routes_by_source;
             tables.ssr_routes = new_ssr_routes;
         }
+
+        // Phase B (issue #940) — commit-after-success.
+        //
+        // Store the skip key only here, after ALL of: host boot, swap, and
+        // route-table rebuild have succeeded.  Any failure above returns via
+        // `?` without reaching this point, leaving last_successful_skip_key
+        // at its previous value so the next byte-identical tick rebuilds
+        // fully (Correctness Req 1). See `commit_skip_key` for the
+        // `None`-clears-the-key rationale.
+        self.inner.commit_skip_key(new_skip_key);
 
         Ok((changed, vanished_output_paths))
     }
@@ -1712,6 +1814,78 @@ fn assemble_and_bundle_dev(
 
     let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
     Ok(bundler_out)
+}
+
+/// Compute the Phase-B skip key for a single dev refresh tick (issue #940).
+///
+/// The key is a SHA-256 digest of:
+///
+/// 1. **Bundle bytes** — the full content of `BundlerOutput.bundle_path` on
+///    disk.  The content snapshot JSON is baked into the bundle by
+///    `assemble_and_bundle_dev`, so identical bytes imply the snapshot (and
+///    therefore everything the V8 host and `paths()` can observe) is
+///    unchanged.
+///
+/// 2. **Router-scan signature** — a sorted list of
+///    `(source_path, template)` pairs derived from `router.routes()`.
+///    This defeats any `pages/` change that leaves bundle bytes identical
+///    (e.g. a `.tsx` page added with no JS-visible impact on the snapshot),
+///    satisfying Inv 2 (§3 of the roadmap, issue #935).
+///
+/// Returns `None` if the bundle file cannot be read — the caller treats
+/// that as a forced full refresh (safe direction: false-invalidate, never
+/// false-reuse).
+#[cfg(feature = "embed_v8")]
+fn compute_bundle_skip_key(
+    bundler_out: &BundlerOutput,
+    routes: &[zfb_router::Route],
+) -> Option<[u8; 32]> {
+    let bundle_bytes = match std::fs::read(&bundler_out.bundle_path) {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::warn!(
+                site = "compute_bundle_skip_key",
+                path = %bundler_out.bundle_path.display(),
+                error = %err,
+                "could not read bundle file for skip-key; will perform full refresh"
+            );
+            return None;
+        }
+    };
+
+    let mut hasher = Sha256::new();
+
+    // Part 1: bundle bytes.
+    hasher.update(b"bundle:");
+    hasher.update((bundle_bytes.len() as u64).to_le_bytes());
+    hasher.update(b":");
+    hasher.update(&bundle_bytes);
+    hasher.update(b"\n");
+
+    // Part 2: router-scan signature — sorted (source_path, template) pairs.
+    // Sorting by source_path gives a deterministic order regardless of the
+    // filesystem walk order.
+    let mut pairs: Vec<(String, String)> = routes
+        .iter()
+        .map(|r| {
+            (
+                r.source_path.to_string_lossy().into_owned(),
+                r.template(),
+            )
+        })
+        .collect();
+    pairs.sort_unstable();
+    hasher.update(b"routes:");
+    hasher.update((pairs.len() as u64).to_le_bytes());
+    hasher.update(b":");
+    for (src, tpl) in &pairs {
+        hasher.update(src.as_bytes());
+        hasher.update(b"=");
+        hasher.update(tpl.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    Some(hasher.finalize().into())
 }
 
 /// `(routes_by_source, ssr_routes)` — the pair [`build_dev_route_tables`]
@@ -2015,6 +2189,8 @@ fn boot_dev_renderer(
             renderer,
             project_root: project_root.to_path_buf(),
             rebuild_inputs,
+            // No successful refresh yet — first tick always runs fully.
+            last_successful_skip_key: Mutex::new(None),
         }),
     })
 }
@@ -2332,6 +2508,7 @@ mod tests {
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
             },
+            last_successful_skip_key: Mutex::new(None),
         }
     }
 
@@ -2856,5 +3033,268 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ── Phase B skip-key tests (issue #940) ─────────────────────────────────
+    //
+    // All `embed_v8`-gated: `compute_bundle_skip_key` and the
+    // `last_successful_skip_key` seams only exist on the V8 path.
+
+    /// Helper: write `bytes` to a temp file and return its path.
+    #[cfg(feature = "embed_v8")]
+    fn write_temp_bundle(dir: &tempfile::TempDir, bytes: &[u8]) -> PathBuf {
+        let p = dir.path().join("bundle.js");
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    /// Build a minimal `BundlerOutput` pointing at an existing file.
+    #[cfg(feature = "embed_v8")]
+    fn make_bundler_out(bundle_path: PathBuf) -> BundlerOutput {
+        use zfb_build::bundler::BundleManifest;
+        BundlerOutput {
+            bundle_path: bundle_path.clone(),
+            sourcemap_path: bundle_path.with_extension("js.map"),
+            manifest: BundleManifest {
+                framework: "preact".into(),
+                jsx_import_source: "preact".into(),
+                hydrate_shim_specifier: "zfb:internal/hydrate".into(),
+                bundle_basename: "bundle.js".into(),
+                routes: Vec::new(),
+            },
+        }
+    }
+
+    /// `compute_bundle_skip_key` returns `Some` for a valid bundle file.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_returns_some_for_readable_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"bundle-content"));
+        let key = compute_bundle_skip_key(&out, &[]);
+        assert!(key.is_some(), "should produce a key for a readable bundle");
+    }
+
+    /// `compute_bundle_skip_key` returns `None` when the bundle path does not
+    /// exist — the caller must treat this as a forced full refresh.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_returns_none_for_missing_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(dir.path().join("nonexistent.js"));
+        let key = compute_bundle_skip_key(&out, &[]);
+        assert!(key.is_none(), "missing bundle must yield None (no skip)");
+    }
+
+    /// Same bundle bytes + same routes → identical keys.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_identical_for_same_bundle_and_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"same-bytes"));
+        let k1 = compute_bundle_skip_key(&out, &[]);
+        let k2 = compute_bundle_skip_key(&out, &[]);
+        assert_eq!(k1, k2, "identical inputs must produce identical keys");
+    }
+
+    /// Different bundle bytes → different keys (real edit defeats skip).
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_changes_on_different_bundle_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let out1 = make_bundler_out(write_temp_bundle(&dir, b"bundle-v1"));
+        let k1 = compute_bundle_skip_key(&out1, &[]);
+
+        // Overwrite same file with different content.
+        std::fs::write(&out1.bundle_path, b"bundle-v2").unwrap();
+        let k2 = compute_bundle_skip_key(&out1, &[]);
+
+        assert_ne!(k1, k2, "changed bundle bytes must change the skip key");
+    }
+
+    /// A `pages/` route change (different source paths) defeats the skip even
+    /// when bundle bytes are identical — satisfies Inv 2 (issue #935 §3).
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_changes_on_route_universe_change() {
+        use zfb_router::Route;
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"identical-bundle"));
+
+        // Build two Route slices with different source paths.
+        let make_route = |src: &str, segs: Vec<zfb_router::Segment>| Route {
+            source_path: PathBuf::from(src),
+            segments: segs,
+            kind: zfb_router::RouteKind::Static,
+            specificity: 1,
+            output_extension: None,
+            static_html: false,
+        };
+
+        let routes_a = vec![make_route("pages/index.tsx", vec![])];
+        let routes_b = vec![
+            make_route("pages/index.tsx", vec![]),
+            make_route(
+                "pages/about.tsx",
+                vec![zfb_router::Segment::Static("about".into())],
+            ),
+        ];
+
+        let k_a = compute_bundle_skip_key(&out, &routes_a);
+        let k_b = compute_bundle_skip_key(&out, &routes_b);
+
+        assert!(k_a.is_some());
+        assert!(k_b.is_some());
+        assert_ne!(
+            k_a, k_b,
+            "different route universe must change the skip key \
+             even when bundle bytes are identical"
+        );
+    }
+
+    /// Phase B — the first tick after boot must never skip: a fresh
+    /// `DevRenderInner` holds no skip key, so `should_skip_refresh` is
+    /// false for any computed key.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn fresh_dev_inner_never_skips() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        assert!(
+            !inner.should_skip_refresh(Some([0x11u8; 32])),
+            "a freshly-constructed DevRenderInner must not skip — \
+             the first tick always runs fully"
+        );
+    }
+
+    /// Phase B — a no-op tick skips: after a successful refresh committed
+    /// key K, the next tick computing the same K skips host boot +
+    /// `paths()` re-expansion. A different key (real edit) does not skip.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn identical_key_skips_after_successful_commit_and_real_edit_does_not() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        let key_k = [0xAAu8; 32];
+        let key_edit = [0xBBu8; 32];
+
+        // Tick 1: full refresh succeeds → commit K.
+        inner.commit_skip_key(Some(key_k));
+
+        // Tick 2: byte-identical bundle + unchanged routes → same key → skip.
+        assert!(
+            inner.should_skip_refresh(Some(key_k)),
+            "an identical skip key after a successful commit must skip"
+        );
+
+        // Tick 3: real edit → different key → full refresh.
+        assert!(
+            !inner.should_skip_refresh(Some(key_edit)),
+            "a different skip key (real edit) must defeat the skip"
+        );
+    }
+
+    /// Phase B / Correctness Req 1 — a FAILED refresh must not poison the
+    /// skip key: the failure path never calls `commit_skip_key`, so the
+    /// next byte-identical tick still rebuilds fully.
+    ///
+    /// This drives the exact seam `refresh_bundle_and_routes` uses:
+    /// `should_skip_refresh` at the top, `commit_skip_key` only on the
+    /// all-steps-succeeded path (a host-start error `?`-returns before
+    /// reaching it).
+    ///
+    /// Falsifiability: if the production code committed the key right
+    /// after bundling (before host start), the failed tick here would
+    /// have stored `key_k` and the second `should_skip_refresh(key_k)`
+    /// would return true — freezing the stale renderer in place.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn failed_refresh_does_not_poison_skip_key() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        let key_k = [0xCCu8; 32];
+
+        // Tick A: bundle computed key K, skip check says "no skip" (fresh
+        // state) → full refresh attempted → host start FAILS. The error
+        // propagates via `?` and commit_skip_key is never reached.
+        assert!(!inner.should_skip_refresh(Some(key_k)));
+        // (no commit — simulates the host-start failure)
+
+        // Tick B: byte-identical bundle → same key K. MUST still rebuild
+        // fully (no skip), because tick A never succeeded.
+        assert!(
+            !inner.should_skip_refresh(Some(key_k)),
+            "a failed refresh must not poison the skip key — the next \
+             byte-identical tick must rebuild fully"
+        );
+
+        // Tick B succeeds this time → commit. Now tick C may skip.
+        inner.commit_skip_key(Some(key_k));
+        assert!(
+            inner.should_skip_refresh(Some(key_k)),
+            "after the retry tick succeeds, the skip key is live again"
+        );
+    }
+
+    /// Phase B (codex review fix) — a refresh that swapped the live host
+    /// but then failed the route-table rebuild must invalidate the stored
+    /// key at swap time. Otherwise a later tick that restores the OLD
+    /// bundle (e.g. the user undoing the edit) would match the stale key
+    /// and skip — freezing the failed tick's host in place.
+    ///
+    /// Drives the same seam sequence `refresh_bundle_and_routes` executes:
+    /// `commit_skip_key(None)` immediately after the swap, final
+    /// `commit_skip_key(Some(...))` never reached on the failure path.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn route_rebuild_failure_after_swap_invalidates_skip_key() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        let key_old = [0x11u8; 32]; // tick N's bundle
+        let key_new = [0x22u8; 32]; // tick N+1's edited bundle
+
+        // Tick N: full refresh succeeds → commit old key.
+        inner.commit_skip_key(Some(key_old));
+
+        // Tick N+1: edit → new key, no skip → host start OK → SWAP →
+        // invalidate-at-swap → route-table rebuild FAILS (final commit
+        // never reached).
+        assert!(!inner.should_skip_refresh(Some(key_new)));
+        inner.commit_skip_key(None); // the swap-time invalidation
+                                     // (route rebuild fails here — no final commit)
+
+        // Tick N+2: user undoes the edit → old bundle bytes → old key.
+        // MUST NOT skip: the live host is tick N+1's renderer, not the
+        // one key_old describes.
+        assert!(
+            !inner.should_skip_refresh(Some(key_old)),
+            "a post-swap failure must invalidate the stored key so a \
+             restored old bundle cannot skip against the wrong live host"
+        );
+    }
+
+    /// Phase B — an uncomputable key (`None`) never skips, and committing
+    /// `None` (successful refresh whose bundle could not be hashed) CLEARS
+    /// a previously-stored key so a later matching tick cannot skip
+    /// against the wrong host state.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn uncomputable_key_never_skips_and_clears_stored_key() {
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        let key_k = [0xDDu8; 32];
+
+        // None never skips, even against a stored key.
+        inner.commit_skip_key(Some(key_k));
+        assert!(
+            !inner.should_skip_refresh(None),
+            "an uncomputable key must force a full refresh"
+        );
+
+        // A successful refresh that could not hash its bundle clears the
+        // stored key — the old key no longer describes the live renderer.
+        inner.commit_skip_key(None);
+        assert!(
+            !inner.should_skip_refresh(Some(key_k)),
+            "committing None must clear the stored key so a later tick \
+             with the old key cannot skip against the wrong host state"
+        );
     }
 }
