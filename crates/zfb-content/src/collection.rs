@@ -14,6 +14,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
+use zfb_types::path_to_posix_string;
 
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
 use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
@@ -268,19 +269,6 @@ fn compile_globset(patterns: Option<&[String]>) -> Result<Option<GlobSet>, Colle
     Ok(Some(set))
 }
 
-/// Render a relative path as a forward-slash POSIX string. The walker
-/// emits paths in `std::path::PathBuf` shape; globset patterns are
-/// authored against POSIX-style relative paths so a single pattern
-/// like `subdir/*.mdx` works portably across operating systems.
-fn rel_to_posix(rel: &Path) -> String {
-    let lossy = rel.to_string_lossy();
-    if std::path::MAIN_SEPARATOR == '/' {
-        lossy.into_owned()
-    } else {
-        lossy.replace(std::path::MAIN_SEPARATOR, "/")
-    }
-}
-
 /// Apply [`CollectionFilter::id_strip_suffix`] to a slug, returning the
 /// stripped slug when the suffix matches and the original otherwise.
 /// Pure helper — shared between the walker and the bundler's parallel
@@ -434,7 +422,7 @@ where
     if filter.include.is_some() || filter.exclude.is_some() {
         files.retain(|p| {
             let rel = p.strip_prefix(dir).unwrap_or(p);
-            filter.matches(&rel_to_posix(rel))
+            filter.matches(&path_to_posix_string(rel))
         });
     }
 

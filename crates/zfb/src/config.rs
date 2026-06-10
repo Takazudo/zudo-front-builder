@@ -54,6 +54,12 @@ use std::ffi::OsString;
 //   - slim (no embed_v8): esbuild + node spawns in load_ts_via_subprocess
 use tokio::process::Command;
 
+// Canonical default slot path — defined once in zfb-build, imported here so
+// tests can reference it without repeating the string literal. Only the
+// no-embed_v8 test items use it, so the import is gated the same way.
+#[cfg(all(test, not(feature = "embed_v8")))]
+use zfb_build::DEFAULT_ESBUILD_SLOT;
+
 // --- JsonSchema newtype --------------------------------------------------------
 
 /// A validated JSON Schema document for a content collection.
@@ -1243,19 +1249,13 @@ const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 /// esbuild time so either spelling works without installing the npm package.
 const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
 
-/// Default location of the staged esbuild CLI, mirroring
-/// `zfb_build::bundler::DEFAULT_ESBUILD_SLOT`. Resolved relative to the
-/// process working directory; release packaging stages the real binary
-/// here.
-const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
-
 /// Knobs that tweak loader behaviour. Public so build/dev/preview can
 /// thread an explicit esbuild override through if they ever need to;
 /// `Default` is the production path.
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
     /// Override the esbuild binary path. `None` falls back to
-    /// `ZFB_ESBUILD_BIN`, then [`DEFAULT_ESBUILD_SLOT`].
+    /// `ZFB_ESBUILD_BIN`, then `zfb_build::DEFAULT_ESBUILD_SLOT`.
     pub esbuild_binary: Option<PathBuf>,
     /// Override the `node` binary. `None` uses `node` from `PATH`.
     pub node_binary: Option<OsString>,
@@ -1659,15 +1659,9 @@ fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
-/// Resolve the esbuild binary path using the same precedence the
-/// build-time bundler uses:
-/// 1. explicit `LoadOptions::esbuild_binary` override
-/// 2. `ZFB_ESBUILD_BIN` env
-/// 3. embedded extraction from the `EMBEDDED_VENDOR` snapshot (sub #212 —
-///    the consumer-friendly path: works on a machine that has no
-///    `crates/zfb/binaries/` workspace dir)
-/// 4. the staged slot under `crates/zfb/binaries/esbuild/` (in-workspace
-///    dev fallback)
+/// Resolve the esbuild binary path using the shared resolver from
+/// `zfb_build`, which covers the full four-tier lookup order documented on
+/// [`resolve_esbuild_binary_with_handle`].
 ///
 /// Returns the resolved path. Most callers should use
 /// [`resolve_esbuild_binary_with_handle`] instead — the embedded tier
@@ -1683,57 +1677,38 @@ fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Variant of [`resolve_esbuild_binary`] that also returns the
-/// [`tempfile::TempDir`] handle backing the embedded extraction tier.
-/// The caller MUST hold the handle alive for as long as the returned
-/// `PathBuf` is referenced by a running subprocess — dropping the handle
-/// removes the tempdir and the binary along with it.
+/// Resolve the esbuild binary path, delegating to the shared resolver in
+/// `zfb_build`. Lookup order (superset — see
+/// [`zfb_build::resolve_esbuild_binary_with_env`] for the canonical
+/// documentation):
+///
+/// 1. `LoadOptions::esbuild_binary` explicit override
+/// 2. `ZFB_ESBUILD_BIN` environment variable
+/// 3. Embedded extraction from the `EMBEDDED_VENDOR` snapshot (sub #212 —
+///    the consumer-friendly path: works on a machine that has no
+///    `crates/zfb/binaries/` workspace dir)
+/// 4. The staged slot under `crates/zfb/binaries/esbuild/` (in-workspace
+///    dev fallback)
+///
+/// The caller MUST hold the returned `TempDir` handle alive for as long as
+/// the returned `PathBuf` is referenced by a running subprocess — dropping
+/// the handle removes the tempdir and the binary along with it.
 fn resolve_esbuild_binary_with_handle(
     opts: &LoadOptions,
 ) -> Result<(Option<tempfile::TempDir>, PathBuf)> {
-    if let Some(p) = opts.esbuild_binary.as_deref() {
-        if !p.exists() {
-            bail!(
-                "config loader: esbuild binary not found at explicit path {}",
-                p.display()
-            );
-        }
-        return Ok((None, p.to_path_buf()));
-    }
-    if let Some(env) = std::env::var_os("ZFB_ESBUILD_BIN") {
-        let p = PathBuf::from(env);
-        if !p.exists() {
-            bail!(
-                "config loader: esbuild binary not found at ZFB_ESBUILD_BIN={}",
-                p.display()
-            );
-        }
-        return Ok((None, p));
-    }
-    // Embedded extraction tier (sub #212). We try this BEFORE the
-    // workspace-relative slot so consumers running `zfb build` from a
-    // project that doesn't ship `crates/zfb/binaries/` still resolve a
-    // working binary. The TempDir is propagated to the caller so the
-    // extracted file outlives the subprocess invocation.
-    match crate::render_pipeline::embedded_binary("esbuild") {
-        Ok((handle, path)) => return Ok((Some(handle), path)),
-        Err(_embed_err) => {
-            // Fall through to the workspace-relative slot. The embedded
-            // path is the expected production resolution for cargo-installed
-            // binaries; failure here is normal during in-workspace dev (and
-            // the slot fallback below covers that).
-        }
-    }
-    let slot = PathBuf::from(DEFAULT_ESBUILD_SLOT);
-    if !slot.exists() {
-        return Err(anyhow!(
-            "config loader: esbuild binary not found at default slot {}. \
-             Either set ZFB_ESBUILD_BIN to a usable esbuild CLI, or stage \
-             the binary at the slot path. (See crates/zfb/binaries/esbuild/README.md.)",
-            slot.display()
-        ));
-    }
-    Ok((None, slot))
+    // Delegate to the single shared resolver in zfb-build.  The embedded
+    // extraction tier (tier 3) is passed as a closure so zfb-build's resolver
+    // can slot it in between the env tier (2) and the workspace slot tier (4)
+    // without depending on the EMBEDDED_VENDOR snapshot that lives only in this
+    // crate.  A failed extraction (Err) is treated as a miss — the resolver
+    // falls through to the workspace slot tier, which is the expected path
+    // during in-workspace development where no vendor snapshot was staged.
+    zfb_build::resolve_esbuild_binary_with_env(
+        opts.esbuild_binary.as_deref(),
+        |name| std::env::var_os(name),
+        Some(|| crate::render_pipeline::embedded_binary("esbuild").ok()),
+        None,
+    )
 }
 
 /// Run esbuild + node to compile `ts_path` to ESM and pull the default

@@ -66,17 +66,16 @@
         }
       }
     }
-    // Dynamic import — supported in modern dev browsers. Compiled
-    // through new Function so this file stays parseable as a classic
-    // script (no top-level `import` keyword); the returned module's
-    // top-level hydration code re-runs on import.
-    try {
-      new Function("u", "return import(u)")(swapUrl);
-    } catch (e) {
+    // Dynamic import — valid in classic scripts in all evergreen browsers
+    // (ES2020). No new Function wrapper needed; this file is served as-is
+    // via include_str! with no bundler or parser pass that would reject it.
+    // import() failures arrive as a rejected promise, not a sync throw —
+    // a .catch() is required or the warning below would never fire.
+    import(swapUrl).catch(function (e) {
       if (typeof console !== "undefined" && console.warn) {
         console.warn("[zfb] livereload: dynamic import failed", e);
       }
-    }
+    });
   });
   src.addEventListener("error", function (ev) {
     // EventSource auto-reconnects; surface the event for visibility.

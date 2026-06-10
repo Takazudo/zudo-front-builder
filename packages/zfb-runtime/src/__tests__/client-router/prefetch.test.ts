@@ -409,3 +409,153 @@ describe("fetch failure handling", () => {
     }
   });
 });
+
+describe("focusout cancel", () => {
+  it("16. focusin queues a prefetch but focusout before idle fires cancels it", () => {
+    // Deferred requestIdleCallback so the callback doesn't fire immediately.
+    const deferred = new Map<number, IdleCallback>();
+    let h = 0;
+    globalThis.requestIdleCallback = (cb: IdleCallback): number => {
+      const id = ++h;
+      deferred.set(id, cb);
+      return id; // NOT fired yet
+    };
+    globalThis.cancelIdleCallback = (id: number): void => {
+      deferred.delete(id);
+    };
+
+    init();
+    const link = createLink(sameOriginUrl("/focus-page"), "hover");
+
+    link.dispatchEvent(new Event("focusin", { bubbles: true }));
+    expect(deferred.size).toBe(1);
+
+    // Simulate focusout before idle fires — should cancel the pending prefetch.
+    link.dispatchEvent(new Event("focusout", { bubbles: true }));
+    expect(deferred.size).toBe(0);
+
+    // Manually drain any remaining deferred callbacks — none should trigger a fetch.
+    deferred.forEach((cb) => cb({ didTimeout: false, timeRemaining: () => 50 }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("17. focusin without focusout still issues the prefetch (sanity check)", async () => {
+    init();
+    const link = createLink(sameOriginUrl("/focus-ok"), "hover");
+
+    link.dispatchEvent(new Event("focusin", { bubbles: true }));
+    // requestIdleCallback fires synchronously in our default stub.
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(sameOriginUrl("/focus-ok"));
+  });
+});
+
+describe("link method retry after error", () => {
+  it("18. link error event does not mark href as prefetched, allowing a retry", async () => {
+    stubLinkPrefetchSupport(true);
+    init();
+    const url = sameOriginUrl("/link-retry");
+
+    // Intercept appendChild to capture the link element and fire error instead of load.
+    const origAppendChild = document.head.appendChild.bind(document.head);
+    let appendCount = 0;
+    vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
+      const result = origAppendChild(node);
+      appendCount++;
+      if (appendCount === 1) {
+        // First append: fire error to simulate a failed prefetch link.
+        (node as HTMLLinkElement).dispatchEvent(new Event("error"));
+      } else {
+        // Second append: fire load to simulate success.
+        (node as HTMLLinkElement).dispatchEvent(new Event("load"));
+      }
+      return result;
+    });
+
+    try {
+      // First call: link fires error → prefetch fails, href NOT added to prefetched.
+      prefetch(url);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(appendCount).toBe(1);
+
+      // Second call: should reach the network (href not in prefetched).
+      prefetch(url);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(appendCount).toBe(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("link method settle timeout", () => {
+  it("20. a link that never fires load/error settles via the timeout instead of hanging in-flight", async () => {
+    stubLinkPrefetchSupport(true);
+    vi.useFakeTimers();
+    init();
+    const url = sameOriginUrl("/link-silent");
+
+    // appendChild stub that fires NEITHER load NOR error — Safari-style
+    // rel=prefetch silence.
+    const origAppendChild = document.head.appendChild.bind(document.head);
+    let appendCount = 0;
+    vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
+      appendCount++;
+      return origAppendChild(node);
+    });
+
+    try {
+      prefetch(url);
+      expect(appendCount).toBe(1);
+
+      // Re-prefetch while still in flight: deduped, no second append.
+      prefetch(url);
+      expect(appendCount).toBe(1);
+
+      // Advance past the settle timeout — the promise resolves, the href
+      // leaves inFlight and is marked prefetched (counts as success).
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      // A later prefetch must not hang or re-append: href is settled.
+      prefetch(url);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(appendCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("viewport observer reset on SPA swap", () => {
+  it("19. zfb:after-swap disconnects old observer and creates a fresh one for the new body", () => {
+    // Create an old-body link and observe it.
+    const oldLink = createLink(sameOriginUrl("/old-page"), "viewport");
+    init();
+
+    const firstIo = lastIo as StubIntersectionObserver;
+    expect(firstIo).not.toBeNull();
+    expect(firstIo.hasObserved(oldLink)).toBe(true);
+
+    // Simulate SPA swap: replace body, insert a new link in the new body.
+    const newBody = document.createElement("body");
+    document.documentElement.replaceChild(newBody, document.body);
+    const newLink = createLink(sameOriginUrl("/new-page"), "viewport");
+
+    // Dispatch after-swap — should disconnect old observer and create a new one.
+    document.dispatchEvent(new Event("zfb:after-swap"));
+
+    // A new observer should have been created (lastIo changes after disconnect+reinit).
+    const secondIo = lastIo as StubIntersectionObserver;
+    expect(secondIo).not.toBeNull();
+    expect(secondIo).not.toBe(firstIo);
+
+    // Old observer no longer tracks the old link (it was disconnected).
+    expect(firstIo.hasObserved(oldLink)).toBe(false);
+
+    // New observer tracks the new link.
+    expect(secondIo.hasObserved(newLink)).toBe(true);
+  });
+});

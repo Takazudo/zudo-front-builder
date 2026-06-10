@@ -5563,6 +5563,7 @@ dependencies = [
  "zfb-graph",
  "zfb-islands",
  "zfb-md-ast",
+ "zfb-plugin-resolver",
  "zfb-render",
  "zfb-router",
  "zfb-server",
@@ -5625,6 +5626,7 @@ dependencies = [
  "zfb-md-ast",
  "zfb-md-extras",
  "zfb-render",
+ "zfb-types",
 ]
 
 [[package]]
@@ -5681,6 +5683,7 @@ dependencies = [
  "walkdir",
  "zfb-plugin-resolver",
  "zfb-test-utils",
+ "zfb-toolchain-pins",
  "zfb-types",
 ]
 
@@ -5704,6 +5707,7 @@ dependencies = [
  "zfb-content",
  "zfb-md-ast",
  "zfb-test-utils",
+ "zfb-types",
 ]
 
 [[package]]
@@ -5711,7 +5715,9 @@ name = "zfb-plugin-resolver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "tempfile",
+ "zfb-types",
 ]
 
 [[package]]
@@ -5760,6 +5766,7 @@ dependencies = [
  "http-body-util",
  "lol_html",
  "mime_guess",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
@@ -5769,6 +5776,7 @@ dependencies = [
  "tokio-stream",
  "tower",
  "tower-http",
+ "tower-service",
  "tracing",
  "zfb-build",
  "zfb-graph",

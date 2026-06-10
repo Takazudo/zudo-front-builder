@@ -41,6 +41,7 @@
 //! a different runtime (Cloudflare Workers, an edge CDN, …) and must
 //! not pull in `zfb-server`.
 
+pub mod assets_containment;
 pub mod embed;
 pub mod embed_handlers;
 pub mod injected_routes;
@@ -99,9 +100,8 @@ pub use embed_handlers::{
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
 };
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
-pub use injected_routes::{
-    pattern_matches, InjectedRouteRecord, InjectedRouteSet,
-};
+pub use injected_routes::{pattern_matches, InjectedRouteSet};
+pub use zfb_build::InjectedRoute;
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use plugin_middleware::{
     path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,

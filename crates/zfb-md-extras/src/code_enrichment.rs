@@ -201,18 +201,17 @@ fn try_strip_whole_span(html: &str, marker: &str, prefixes: &[&str]) -> Option<S
     // Walk backwards from `marker_start` to find the opening `<span` tag.
     // We look for `>PREFIX` immediately before `marker_start`.
     for &prefix in prefixes {
-        let _full_text = format!("{}{}", prefix, marker);
         if !html[marker_start..].starts_with(marker) {
             continue;
         }
-        // Check that the text before the marker (within the same span) is exactly `prefix`.
-        let text_start = marker_start.saturating_sub(prefix.len());
-        if text_start + prefix.len() != marker_start {
+        // Check that the text before the marker (within the same span) is
+        // exactly `prefix`. `ends_with` avoids slicing at a byte offset that
+        // may fall inside a multi-byte character directly before the marker
+        // (e.g. CJK text preceding a bare marker), which would panic.
+        if !html[..marker_start].ends_with(prefix) {
             continue;
         }
-        if &html[text_start..marker_start] != prefix {
-            continue;
-        }
+        let text_start = marker_start - prefix.len();
         // `text_start` is just after `>`. Find the `>` character.
         if text_start == 0 || html.as_bytes()[text_start - 1] != b'>' {
             continue;
@@ -571,6 +570,19 @@ mod tests {
             detect_and_strip_marker(html).is_none(),
             "bare [!code ++] without comment prefix must not be detected"
         );
+    }
+
+    /// A multi-byte (CJK) character directly before a bare marker literal
+    /// must not panic the prefix check (regression: slicing at
+    /// `marker_start - prefix.len()` landed mid-character and panicked).
+    #[test]
+    fn cjk_before_bare_marker_does_not_panic() {
+        // The first marker occurrence is prefix-less and preceded by a
+        // 3-byte CJK char; the real commented marker comes later, so the
+        // line is still detected via the fallback path.
+        let html = "あ[!code ++] // [!code ++]";
+        let (diff, _stripped) = detect_and_strip_marker(html).unwrap();
+        assert_eq!(diff, LineDiff::Added);
     }
 
     /// Hash-style comment prefix (`# `) is also recognised — covers Python,

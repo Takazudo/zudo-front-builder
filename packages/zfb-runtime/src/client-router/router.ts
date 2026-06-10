@@ -477,8 +477,11 @@ async function transition(
       //
       // Note: getNamedItem can return null in real life, even if TypeScript doesn't think so, hence
       // the ?.
+      // `form` can be null (closest() miss, or a form-less form-associated
+      // element) — `!= null` covers both null and undefined so Reflect.get
+      // is never invoked on a non-element receiver ("Illegal invocation").
       init.body =
-        form !== undefined &&
+        form != null &&
         Reflect.get(HTMLFormElement.prototype, "attributes", form).getNamedItem("enctype")
           ?.value === "application/x-www-form-urlencoded"
           ? new URLSearchParams(preparationEvent.formData as any)

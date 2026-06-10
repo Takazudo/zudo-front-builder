@@ -37,6 +37,10 @@ const prefetched = new Set<string>();
 // Map of in-flight prefetch promises for dedup (also used as the concurrent short-circuit guard).
 const inFlight = new Map<string, Promise<void>>();
 
+// How long to wait for a <link rel=prefetch>'s load/error before treating
+// the prefetch as settled anyway (see executePrefetch).
+const LINK_SETTLE_TIMEOUT_MS = 10_000;
+
 // The viewport observer — retained across post-swap re-scans so new elements
 // can be observed without recreating the observer.
 let viewportObserver: IntersectionObserver | null = null;
@@ -44,6 +48,10 @@ let viewportObserver: IntersectionObserver | null = null;
 // Hover cancel handle — set when a pointerenter idle-callback fires, cleared on
 // pointerleave before the callback executes.
 const hoverCancelHandles = new Map<Element, ReturnType<typeof setTimeout> | number>();
+
+// Focus cancel handle — set when a focusin idle-callback fires, cleared on
+// focusout before the callback executes.
+const focusCancelHandles = new Map<Element, ReturnType<typeof setTimeout> | number>();
 
 /**
  * Reset all module-level state. Exported for test isolation only — not part of
@@ -60,6 +68,7 @@ export function __resetForTests(): void {
     viewportObserver = null;
   }
   hoverCancelHandles.clear();
+  focusCancelHandles.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +124,36 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
         const link = document.createElement("link");
         link.rel = "prefetch";
         link.href = href;
-        document.head.appendChild(link);
+        // Wait for load/error so we only mark success on actual load and allow
+        // retry after error — inserting without waiting would mark success
+        // immediately even on failure. (Bug: Takazudo/zudo-front-builder#896)
+        // Some browsers (e.g. Safari) never fire load/error on rel=prefetch
+        // links; without the settle timeout the href would sit in inFlight
+        // forever and block every future retry. Timing out counts as
+        // success — the resource was requested, which is all prefetch needs.
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(), LINK_SETTLE_TIMEOUT_MS);
+          link.addEventListener(
+            "load",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+          link.addEventListener(
+            "error",
+            () => {
+              clearTimeout(timer);
+              // Remove the failed element so retries don't accumulate
+              // dead <link> nodes in <head>.
+              link.remove();
+              reject(new Error(`prefetch link error: ${href}`));
+            },
+            { once: true },
+          );
+          document.head.appendChild(link);
+        });
       } else {
         await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
       }
@@ -144,43 +182,71 @@ export function prefetch(url: string, opts: PrefetchOptions = {}): void {
 }
 
 // ---------------------------------------------------------------------------
-// Trigger: hover (pointerenter / focusin with cancel on pointerleave)
+// Shared enter/leave handler factory
 // ---------------------------------------------------------------------------
 
-function onPointerEnter(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
-  if (!shouldPrefetchLink(link, "hover")) return;
+type CancelHandleMap = Map<Element, ReturnType<typeof setTimeout> | number>;
 
-  // Use requestIdleCallback if available, else a small timeout.
-  const fire = () => {
-    hoverCancelHandles.delete(link);
-    prefetch(link.href);
-  };
+/**
+ * Returns a pair of [enterHandler, leaveHandler] that queue and cancel an idle
+ * prefetch callback, keyed on the supplied per-trigger cancel-handle map.
+ *
+ * Both the pointer (hover) and focus triggers use identical queue/cancel logic;
+ * the only difference between them is which map tracks their pending handles.
+ * Parameterising by the map eliminates that duplication.
+ */
+function makeEnterLeaveHandlers(
+  cancelHandles: CancelHandleMap,
+): [enterHandler: (e: Event) => void, leaveHandler: (e: Event) => void] {
+  function enterHandler(e: Event): void {
+    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    if (!link) return;
+    if (!shouldPrefetchLink(link, "hover")) return;
 
-  if (typeof requestIdleCallback !== "undefined") {
-    const handle = requestIdleCallback(fire);
-    hoverCancelHandles.set(link, handle);
-  } else {
-    const handle = setTimeout(fire, 100);
-    hoverCancelHandles.set(link, handle);
+    // Use requestIdleCallback if available, else a small timeout.
+    const fire = () => {
+      cancelHandles.delete(link);
+      prefetch(link.href);
+    };
+
+    if (typeof requestIdleCallback !== "undefined") {
+      const handle = requestIdleCallback(fire);
+      cancelHandles.set(link, handle);
+    } else {
+      const handle = setTimeout(fire, 100);
+      cancelHandles.set(link, handle);
+    }
   }
+
+  function leaveHandler(e: Event): void {
+    const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
+    if (!link) return;
+
+    const handle = cancelHandles.get(link);
+    if (handle === undefined) return;
+
+    if (typeof cancelIdleCallback !== "undefined") {
+      cancelIdleCallback(handle as number);
+    } else {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    }
+    cancelHandles.delete(link);
+  }
+
+  return [enterHandler, leaveHandler];
 }
 
-function onPointerLeave(e: Event): void {
-  const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
-  if (!link) return;
+// ---------------------------------------------------------------------------
+// Trigger: hover (pointerenter / pointerleave)
+// ---------------------------------------------------------------------------
 
-  const handle = hoverCancelHandles.get(link);
-  if (handle === undefined) return;
+const [onPointerEnter, onPointerLeave] = makeEnterLeaveHandlers(hoverCancelHandles);
 
-  if (typeof cancelIdleCallback !== "undefined") {
-    cancelIdleCallback(handle as number);
-  } else {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
-  }
-  hoverCancelHandles.delete(link);
-}
+// ---------------------------------------------------------------------------
+// Trigger: focus (focusin / focusout with cancel on focusout)
+// ---------------------------------------------------------------------------
+
+const [onFocusIn, onFocusOut] = makeEnterLeaveHandlers(focusCancelHandles);
 
 // ---------------------------------------------------------------------------
 // Trigger: tap (touchstart / mousedown)
@@ -286,6 +352,13 @@ function shouldPrefetchLink(link: HTMLAnchorElement, triggerStrategy: PrefetchSt
 // ---------------------------------------------------------------------------
 
 function onAfterSwap(): void {
+  // Disconnect the existing observer before re-scanning so detached anchors from
+  // the old body are unobserved and don't accumulate across SPA swaps.
+  // (Bug: Takazudo/zudo-front-builder#896 — observer leak across SPA swaps)
+  if (viewportObserver) {
+    viewportObserver.disconnect();
+    viewportObserver = null;
+  }
   observeViewportLinks();
   prefetchLoadLinks();
 }
@@ -317,8 +390,10 @@ export function init(options?: PrefetchInitOptions): void {
 
   // Hover + tap — document delegation, picks up SPA-inserted links automatically.
   document.addEventListener("pointerenter", onPointerEnter, { capture: true });
-  document.addEventListener("focusin", onPointerEnter, { capture: true });
   document.addEventListener("pointerleave", onPointerLeave, { capture: true });
+  // Focus — separate cancel map so hover and focus don't share handles.
+  document.addEventListener("focusin", onFocusIn, { capture: true });
+  document.addEventListener("focusout", onFocusOut, { capture: true });
   document.addEventListener("touchstart", onTap, { capture: true, passive: true });
   document.addEventListener("mousedown", onTap, { capture: true });
 

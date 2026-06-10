@@ -89,17 +89,22 @@
 //!
 //! ## Esbuild binary resolution
 //!
-//! Same precedence as `zfb_islands::EsbuildSubprocessConfig`:
+//! Handled by the shared resolver [`resolve_esbuild_binary_with_env`], which
+//! is also used by `zfb::config` (the config-loader). The lookup order for
+//! this (bundler) call site is:
 //!
 //! 1. [`BundlerInput::esbuild_binary`] (explicit override).
 //! 2. `ZFB_ESBUILD_BIN` environment variable.
-//! 3. `crates/zfb/binaries/esbuild/esbuild` (release-tarball slot — see
-//!    that directory's README).
+//! 3. `crates/zfb/binaries/esbuild/esbuild` ([`DEFAULT_ESBUILD_SLOT`] —
+//!    release-tarball slot; see that directory's README).
+//!
+//! The config-loader call site additionally inserts an embedded-extraction
+//! tier (tier 3 of 4) between the env var and the slot; see
+//! [`resolve_esbuild_binary_with_env`] for the full superset documentation.
 //!
 //! If the resolved path does not exist, [`bundle`] returns a clear error
 //! instructing the operator to either set the env var or stage the
-//! binary in the slot. The release-engineering epic that downloads the
-//! binary into the slot has not landed yet (parent: issue #5).
+//! binary in the slot.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -110,12 +115,13 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
-use zfb_content::compile_mdx_to_jsx_module_cached;
 use zfb_content::frontmatter as zfb_frontmatter;
+use zfb_content::{compile_mdx_to_jsx_module_cached, MdxModuleCache};
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
 use zfb_render::adapters::{make_adapter, Framework};
+use zfb_types::{json_string as json_str, path_to_posix_string};
 
 use crate::adapter::run_capturing;
 
@@ -401,69 +407,44 @@ pub struct BundlerInput {
     ///    `0.1.0-next.2` when this flag was made unconditional.
     pub node_modules_preserve_symlinks: bool,
 
-    /// When `true`, append [`zfb_content::pipeline::Pipeline::add_strip_md_ext`]
-    /// to the hoisted MDX pre-compile pipeline at every call site so
-    /// internal `[link](other.md)` style hrefs are rewritten to
-    /// `other/` (with a trailing slash, matching the JS engine's
-    /// `rehypeStripMdExtension`). Mirrors [`zfb::config::Config::strip_md_ext`]
-    /// in `crates/zfb/src/config.rs` — the CLI threads the resolved
-    /// config flag here. Default: `false` (opt-in feature).
+    /// The shared markdown-pipeline knob set (zfb#917). This is the SAME
+    /// [`zfb_content::PipelineSpec`] type the snapshot walker
+    /// (`zfb_content::build_snapshot_with_config`) accepts, and both
+    /// surfaces build their pipelines through the single
+    /// [`zfb_content::PipelineSpec::build_pipeline`] path — which is what
+    /// keeps the JSX `content_hash` baked into compiled MDX modules
+    /// byte-identical to the snapshot's `module_specifier` hashes
+    /// (zfb#187 / #188).
+    ///
+    /// One field is special: `pipeline_spec.resolve_source_map` is
+    /// derivation-owned by [`bundle`] — it is ALWAYS overwritten from
+    /// [`Self::resolve_markdown_links`] (built when `Some`, cleared when
+    /// `None`), so callers cannot desync the map from the route spec.
+    /// Set every other knob here; leave the map alone.
     ///
     /// The dev loader at `crates/zfb-render/src/loader.rs` honours the
-    /// same flag via [`zfb_render::loader::ModuleLoader::with_strip_md_ext`]
-    /// so `zfb dev` and `zfb build` produce the same href shape.
-    pub strip_md_ext: bool,
-
-    /// Optional syntect highlight theme name.  When `Some`, the hoisted
-    /// MDX pre-compile pipeline uses
-    /// [`zfb_content::pipeline::Pipeline::with_defaults_and_theme`] so
-    /// every fenced code block is highlighted with the named built-in
-    /// syntect theme instead of the default `base16-ocean.dark`.
-    ///
-    /// Theme names are syntect's built-in set (`"InspiredGitHub"`,
-    /// `"Solarized (light)"`, etc.). Custom themes are loaded via
-    /// `code_highlight_themes_dir`. Mirrors
-    /// `zfb::config::Config::code_highlight.theme`. Default: `None`.
-    pub code_highlight_theme: Option<String>,
-
-    /// Optional absolute path to a directory of `.tmTheme` files.
-    ///
-    /// When `Some`, the hoisted MDX pre-compile pipeline loads every
-    /// `.tmTheme` file in the directory so custom themes (e.g. Dracula)
-    /// become addressable by name in `code_highlight_theme`.
-    ///
-    /// Mirrors `zfb::config::Config::code_highlight.themes_dir` (resolved
-    /// to an absolute path by the command layer before being stored here).
-    /// Default: `None` — bundled themes only.
-    ///
-    /// MUST be kept in sync with
-    /// `zfb_content::SnapshotPipelineConfig::code_highlight_themes_dir`
-    /// so the snapshot ↔ bundler `content_hash` stays byte-identical.
-    pub code_highlight_themes_dir: Option<PathBuf>,
+    /// same knobs via its own `with_*` builders so `zfb dev` and
+    /// `zfb build` produce the same output shape.
+    pub pipeline_spec: zfb_content::PipelineSpec,
 
     /// Optional markdown link resolver. When `Some`, the bundler builds a
     /// source map from [`ResolveMarkdownLinksSpec::docs_dir`], appends
     /// [`zfb_content::plugins::ResolveLinksPlugin`] to the MDX pipeline,
     /// and handles broken links per [`ResolveMarkdownLinksSpec::on_broken_links`].
     ///
+    /// **Shape decision (zfb#917):** this stays a bundler-side INPUT —
+    /// separate from the pipeline-visible knob
+    /// (`pipeline_spec.resolve_source_map`) — because relative
+    /// [`ResolveMarkdownLinksSpec::docs_dir`] entries need the bundler's
+    /// [`PathResolver`] and `on_broken_links` is a build policy, not a
+    /// pipeline-shape knob. [`bundle`] derives the source-map knob from
+    /// this spec via the same `build_docs_source_map` helper the
+    /// snapshot path uses, so both surfaces resolve identical URL
+    /// strings.
+    ///
     /// Mirrors `zfb::config::Config::resolve_markdown_links`. Default: `None`
     /// (pass-through — links are not rewritten).
     pub resolve_markdown_links: Option<ResolveMarkdownLinksSpec>,
-
-    /// Resolved per-construct GFM flags. Threaded into the hoisted MDX
-    /// pre-compile pipeline at every `materialise_*` call site so the
-    /// JSX `content_hash` baked into each compiled module agrees with
-    /// what the snapshot walker (`zfb_content::build_snapshot_with_config`)
-    /// produces. Divergence here is the snapshot ↔ bundler hash
-    /// land mine documented at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
-    ///
-    /// Mirrors `zfb::config::resolve_gfm_constructs(config.markdown)`.
-    /// `Default` is [`ResolvedGfmConstructs::CONSERVATIVE`] so call
-    /// sites that don't construct this struct manually (the test
-    /// builders in `crates/zfb-build/tests/` etc.) keep the same
-    /// effective parser behaviour.
-    pub gfm_constructs: zfb_content::ResolvedGfmConstructs,
 
     /// Canonical origin URL for the site, threaded from
     /// `zfb::config::Config::site`. When `Some`, the bundler emits
@@ -483,72 +464,6 @@ pub struct BundlerInput {
     ///
     /// Mirrors `zfb::config::Config::prefetch.disabled`. Default: `false`.
     pub prefetch_disabled: bool,
-
-    /// Optional TOC config. When `Some`, a [`TocPlugin`] is appended to
-    /// the hast phase immediately after `HeadingLinksPlugin` so it reads
-    /// final deduplicated `id` attributes. `None` (the default) leaves
-    /// the build byte-for-byte identical to the pre-TOC build.
-    ///
-    /// Mirrors `zfb::config::Config::markdown.toc`. Threaded alongside
-    /// `gfm_constructs` so the snapshot walker and bundler agree on the
-    /// same pipeline shape and produce byte-identical JSX `content_hash`
-    /// values.
-    pub toc: Option<zfb_content::TocConfig>,
-    /// External-link rewriter config. When `Some`, the bundler's MDX
-    /// pre-compile pipeline appends [`ExternalLinksPlugin`] so external
-    /// `<a>` elements are annotated with `target` / `rel`. `None` (the
-    /// default) keeps prior behaviour unchanged.
-    ///
-    /// Mirrors `markdown.externalLinks` in `zfb.config.ts`. MUST match
-    /// what [`zfb_content::SnapshotPipelineConfig::external_links`] is
-    /// set to — divergence shifts the JSX `content_hash` and breaks the
-    /// snapshot ↔ bundler bridge lookup (the land mine at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`).
-    pub external_links: Option<(zfb_content::ExternalLinksConfig, Option<String>)>,
-    /// Whether to include [`CjkFriendlyPlugin`] in the mdast phase.
-    /// Mirrors `zfb::config::resolve_cjk_friendly(config.markdown)`.
-    /// Default: `true` (plugin on). Set to `false` only when the user
-    /// wrote `markdown: { cjkFriendly: false }` in `zfb.config.ts`.
-    ///
-    /// Must match the `SnapshotPipelineConfig::cjk_friendly` value used
-    /// by the snapshot walker — otherwise the `content_hash` baked into
-    /// every compiled MDX module diverges and every
-    /// `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
-    pub cjk_friendly: bool,
-
-    /// Whether to include [`HardBreaksPlugin`] in the mdast phase.
-    /// Mirrors `zfb::config::resolve_hard_breaks(config.markdown)`.
-    /// Default: `false` (plugin off). Set to `true` only when the user
-    /// wrote `markdown: { hardBreaks: true }` in `zfb.config.ts`.
-    ///
-    /// Must match the `SnapshotPipelineConfig::hard_breaks` value used
-    /// by the snapshot walker — otherwise the `content_hash` baked into
-    /// every compiled MDX module diverges and every
-    /// `<Content />` lookup falls back to
-    /// `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`HardBreaksPlugin`]: zfb_content::plugins::HardBreaksPlugin
-    pub hard_breaks: bool,
-
-    /// `markdown.features` from `zfb.config.ts`. When `Some`, the MDX
-    /// pipeline is built via the feature-aware
-    /// [`Pipeline::with_defaults_and_full_config`] path so opt-in plugins
-    /// (mermaid, directives, …) fire per the configured
-    /// toggles. When `None` (the default), it is treated as an empty feature
-    /// set: the former-Core framework features (mermaid,
-    /// directives, heading-marker TOC) are OFF — the post-epic opt-in
-    /// default (#583 / #586), NOT the pre-features always-on behaviour.
-    ///
-    /// Must match the `SnapshotPipelineConfig::features` value used by the
-    /// snapshot walker — otherwise the `content_hash` baked into every
-    /// compiled MDX module diverges and every `<Content />` lookup falls back
-    /// to `<pre data-zfb-content-fallback>`.
-    ///
-    /// [`Pipeline::with_defaults_and_full_config`]: zfb_content::pipeline::Pipeline::with_defaults_and_full_config
-    pub markdown_features: Option<zfb_content::MarkdownFeaturesConfig>,
 
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
@@ -740,18 +655,10 @@ impl BundlerInput {
             content_snapshot_json,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -894,7 +801,10 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
 /// sync deliberately, both crates resolve the same slot.
-const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
+///
+/// This is the canonical definition; `crates/zfb/src/config.rs` formerly
+/// kept a private duplicate that has been removed in favour of this one.
+pub const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
 
 /// Bundle the user's source tree into a single ESM file.
 ///
@@ -933,17 +843,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // 1b. Build the resolve-links source map when the feature is enabled.
     //
     // The map is built once here (before the shadow walk) from every
-    // configured route and shared across all materialise calls via a
-    // reference. An empty map is used when the feature is disabled so
-    // the materialise helpers can always receive a reference without
-    // conditional logic at each call site.
+    // configured route, then stored into the effective `PipelineSpec`
+    // shared by all materialise calls (see the `mat_ctx` construction
+    // below). This derivation step is why `resolve_markdown_links` stays
+    // a separate bundler-side input rather than living on the spec: the
+    // route dirs may be relative (resolved against `project_root` here)
+    // and the spec only carries the pipeline-visible RESULT (zfb#917).
     //
     // Multi-route shape (sub #234) lets locale mirrors map to distinct
     // route prefixes — required for any project with EN+JA mirrors, or
     // any other multi-collection layout, so each mirror dir resolves
     // under its own route prefix (`/docs/` vs `/ja/docs/`).
-    let resolve_source_map: HashMap<std::path::PathBuf, String> =
-        if let Some(spec) = &input.resolve_markdown_links {
+    let resolve_source_map: Option<HashMap<std::path::PathBuf, String>> =
+        input.resolve_markdown_links.as_ref().map(|spec| {
             let collections: Vec<CollectionRoute> = spec
                 .routes
                 .iter()
@@ -955,10 +867,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 })
                 .collect();
             build_docs_source_map(DocsSourceMapOptions { collections })
-        } else {
-            HashMap::new()
-        };
-    let resolve_links_enabled = input.resolve_markdown_links.is_some();
+        });
 
     // Accumulated broken links across all materialise calls.
     // After the walk completes, handled according to `on_broken_links`.
@@ -970,6 +879,27 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // so an unset `bundle.exclude` is byte-identical to a build without the
     // knob. An invalid glob is a hard, clearly-named build error.
     let bundle_exclude = BundleExcludeMatcher::new(&input.bundle_exclude)?;
+
+    // Build the shared materialisation context from the fields of `input`
+    // that are invariant across every materialise_shadow / materialise_collection
+    // call in this bundle() invocation.
+    //
+    // The effective `PipelineSpec` is the input spec with its
+    // `resolve_source_map` knob ALWAYS rewritten from the derivation
+    // above (`Some(map)` when `resolve_markdown_links` is configured,
+    // `None` otherwise) — the bundler owns that knob, so a caller-set
+    // value on `input.pipeline_spec` can never desync from the route
+    // spec (zfb#917).
+    let mat_ctx = MaterialiseCtx {
+        pipeline_spec: {
+            let mut spec = input.pipeline_spec.clone();
+            spec.resolve_source_map = resolve_source_map;
+            spec
+        },
+        copy_mode,
+        bundle_exclude: &bundle_exclude,
+        project_root: &input.project_root,
+    };
 
     // 2. Materialise the shadow tree.
     let work = tempfile::Builder::new()
@@ -990,23 +920,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &pages_dir,
             &shadow_pages,
             &mut routes,
-            &input.project_root,
-            input.strip_md_ext,
-            input.code_highlight_theme.as_deref(),
-            input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled {
-                Some(&resolve_source_map)
-            } else {
-                None
-            },
-            input.gfm_constructs,
-            input.toc.clone(),
-            input.external_links.as_ref(),
-            input.cjk_friendly,
-            input.hard_breaks,
-            input.markdown_features.as_ref(),
-            &bundle_exclude,
-            copy_mode,
+            &mat_ctx,
             &mut broken,
         )
         .with_context(|| {
@@ -1041,24 +955,10 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &dest,
                 &col.name,
                 &mut content_imports,
-                input.strip_md_ext,
-                input.code_highlight_theme.as_deref(),
-                input.code_highlight_themes_dir.as_deref(),
-                if resolve_links_enabled {
-                    Some(&resolve_source_map)
-                } else {
-                    None
-                },
-                input.gfm_constructs,
-                input.toc.clone(),
-                input.external_links.as_ref(),
-                input.cjk_friendly,
-                input.hard_breaks,
-                input.markdown_features.as_ref(),
+                &mat_ctx,
                 col.include.as_deref(),
                 col.exclude.as_deref(),
                 col.id_strip_suffix.as_deref(),
-                copy_mode,
                 &mut broken,
             )
             .with_context(|| {
@@ -1080,23 +980,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &content_dir,
             &shadow_content,
             &mut Vec::new(),
-            &input.project_root,
-            input.strip_md_ext,
-            input.code_highlight_theme.as_deref(),
-            input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled {
-                Some(&resolve_source_map)
-            } else {
-                None
-            },
-            input.gfm_constructs,
-            input.toc.clone(),
-            input.external_links.as_ref(),
-            input.cjk_friendly,
-            input.hard_breaks,
-            input.markdown_features.as_ref(),
-            &bundle_exclude,
-            copy_mode,
+            &mat_ctx,
             &mut broken,
         )
         .with_context(|| {
@@ -1114,23 +998,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &components_dir,
             &shadow_components,
             &mut Vec::new(),
-            &input.project_root,
-            input.strip_md_ext,
-            input.code_highlight_theme.as_deref(),
-            input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled {
-                Some(&resolve_source_map)
-            } else {
-                None
-            },
-            input.gfm_constructs,
-            input.toc.clone(),
-            input.external_links.as_ref(),
-            input.cjk_friendly,
-            input.hard_breaks,
-            input.markdown_features.as_ref(),
-            &bundle_exclude,
-            copy_mode,
+            &mat_ctx,
             &mut broken,
         )
         .with_context(|| {
@@ -1147,23 +1015,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             &layouts_dir,
             &shadow_layouts,
             &mut Vec::new(),
-            &input.project_root,
-            input.strip_md_ext,
-            input.code_highlight_theme.as_deref(),
-            input.code_highlight_themes_dir.as_deref(),
-            if resolve_links_enabled {
-                Some(&resolve_source_map)
-            } else {
-                None
-            },
-            input.gfm_constructs,
-            input.toc.clone(),
-            input.external_links.as_ref(),
-            input.cjk_friendly,
-            input.hard_breaks,
-            input.markdown_features.as_ref(),
-            &bundle_exclude,
-            copy_mode,
+            &mat_ctx,
             &mut broken,
         )
         .with_context(|| {
@@ -1214,23 +1066,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 &src_dir,
                 &dst_dir,
                 &mut Vec::new(),
-                &input.project_root,
-                input.strip_md_ext,
-                input.code_highlight_theme.as_deref(),
-                input.code_highlight_themes_dir.as_deref(),
-                if resolve_links_enabled {
-                    Some(&resolve_source_map)
-                } else {
-                    None
-                },
-                input.gfm_constructs,
-                input.toc.clone(),
-                input.external_links.as_ref(),
-                input.cjk_friendly,
-                input.hard_breaks,
-                input.markdown_features.as_ref(),
-                &bundle_exclude,
-                copy_mode,
+                &mat_ctx,
                 &mut broken,
             )
             .with_context(|| {
@@ -1669,6 +1505,39 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Shared context passed to [`materialise_shadow`] and
+/// [`materialise_collection`].  All fields are invariant across every call
+/// within a single [`bundle`] invocation — they come from [`BundlerInput`]
+/// fields that never change between the pages / content / components /
+/// layouts / extra-dirs walks.  Per-call-varying data (source dir, dest
+/// dir, routes vec, collection name, etc.) is still passed as explicit
+/// parameters.
+///
+/// Lifetime `'a` is the lifetime of the references borrowed from the
+/// [`bundle`] stack frame (i.e. `&BundlerInput` fields and the
+/// `bundle_exclude` local).
+struct MaterialiseCtx<'a> {
+    /// Effective pipeline knob set shared by all MDX compile calls —
+    /// `input.pipeline_spec` with `resolve_source_map` rewritten from
+    /// `input.resolve_markdown_links` (see [`bundle`]). Both walkers
+    /// construct their pipelines via the single
+    /// [`zfb_content::PipelineSpec::build_pipeline`] path — the same one
+    /// the snapshot walker uses — which structurally guarantees
+    /// byte-identical MDX-cache fingerprints and `content_hash` values
+    /// across all surfaces (zfb#910 / #917).
+    pipeline_spec: zfb_content::PipelineSpec,
+    /// Whether to materialise non-MDX source files as real copies rather
+    /// than symlinks (required when esbuild runs without
+    /// `--preserve-symlinks`).
+    copy_mode: bool,
+    /// Shared across every `materialise_shadow` call; `materialise_collection`
+    /// does not use it (collections have no `bundle.exclude` filter).
+    bundle_exclude: &'a BundleExcludeMatcher,
+    /// Project root — used by `materialise_shadow` for the `bundle.exclude`
+    /// relativisation step.
+    project_root: &'a Path,
+}
+
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
 /// [`compile_mdx_to_jsx_module_cached`] so esbuild can parse them as
 /// JSX (the `.mdx` extension is preserved; the bundler uses
@@ -1679,24 +1548,11 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// content/components/layouts the caller passes a throwaway vec.
 /// Detected routes are recorded in WalkDir traversal order, then sorted
 /// by route string later so the manifest is deterministic.
-#[allow(clippy::too_many_arguments)]
 fn materialise_shadow(
     src: &Path,
     dest: &Path,
     routes: &mut Vec<RouteEntry>,
-    project_root: &Path,
-    strip_md_ext: bool,
-    code_highlight_theme: Option<&str>,
-    code_highlight_themes_dir: Option<&Path>,
-    resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
-    gfm_constructs: zfb_content::ResolvedGfmConstructs,
-    toc: Option<zfb_content::TocConfig>,
-    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
-    cjk_friendly: bool,
-    hard_breaks: bool,
-    markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
-    bundle_exclude: &BundleExcludeMatcher,
-    copy_mode: bool,
+    ctx: &MaterialiseCtx<'_>,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -1726,7 +1582,7 @@ fn materialise_shadow(
     // `is_excluded` predicate, per the #665 contract) and relativises it
     // against `project_root` internally. When `bundle.exclude` is empty the
     // matcher never matches, so this is always-false → skip nothing.
-    let is_excluded = |abs: &Path| bundle_exclude.is_excluded(abs, project_root);
+    let is_excluded = |abs: &Path| ctx.bundle_exclude.is_excluded(abs, ctx.project_root);
 
     // Hoist a single feature-aware pipeline outside the
     // walk loop so the always-on Core plugins (CJK-friendly
@@ -1749,41 +1605,7 @@ fn materialise_shadow(
     // also wired into the mdast phase after the directives step so
     // author-written `[label](./other.mdx)` links rewrite to the
     // rendered route URL. The `source_dir` is updated per-file below.
-    // Single feature-aware entry point — MUST match the snapshot walker's
-    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the former-Core framework features are off
-    // (the post-epic opt-in default).
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
-        code_highlight_theme,
-        gfm_constructs,
-        code_highlight_themes_dir,
-        cjk_friendly,
-        hard_breaks,
-        markdown_features,
-    )
-    .with_context(|| {
-        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
-        // so the `unwrap_or_default()` empty-string branch is unreachable.
-        format!(
-            "codeHighlight.themesDir: failed to load themes from {}",
-            code_highlight_themes_dir
-                .map(|d| d.display().to_string())
-                .unwrap_or_default()
-        )
-    })?;
-    if let Some(toc_cfg) = toc {
-        pipeline.add_toc(toc_cfg);
-    }
-    if strip_md_ext {
-        pipeline.add_strip_md_ext();
-    }
-    if let Some(map) = resolve_source_map {
-        pipeline.add_resolve_links(map.clone());
-    }
-    if let Some((cfg, site)) = external_links {
-        pipeline.add_external_links(cfg.clone(), site.as_deref());
-    }
+    let mut pipeline = ctx.pipeline_spec.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
@@ -1831,7 +1653,7 @@ fn materialise_shadow(
             // canonicalise it back out, defeating the in-shadow transforms).
             // Explicitly copy the symlinked subtree as real files in that
             // mode. Low-frequency, but a hole otherwise.
-            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+            if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
                 copy_dir_recursive(from, &to).with_context(|| {
                     format!(
                         "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
@@ -1872,7 +1694,7 @@ fn materialise_shadow(
             if let Some(route) = derive_route(rel) {
                 let abs_src = from.to_path_buf();
                 let project_rel = abs_src
-                    .strip_prefix(project_root)
+                    .strip_prefix(ctx.project_root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or(abs_src);
                 routes.push(RouteEntry {
@@ -1893,7 +1715,7 @@ fn materialise_shadow(
             pipeline.reset_per_entry();
             // Update per-file source_dir for ResolveLinksPlugin so
             // relative links like `./other.mdx` resolve correctly.
-            if resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -1901,8 +1723,18 @@ fn materialise_shadow(
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
             let body = strip_yaml_frontmatter(&raw);
-            let compiled = compile_mdx_to_jsx_module_cached(body, from, None, Some(&mut pipeline))
-                .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Process-global compile cache (zfb#905): unchanged files
+            // recompile for free on later dev ticks / sibling walks. The
+            // cache keys on (input, pipeline-config fingerprint), so a
+            // manually-extended or per-file-stateful pipeline (e.g. with
+            // resolveMarkdownLinks wired) transparently bypasses it.
+            let compiled = compile_mdx_to_jsx_module_cached(
+                body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile mdx {}", from.display()))?;
             // Drain broken-link diagnostics and record them with the file path.
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
@@ -1916,7 +1748,7 @@ fn materialise_shadow(
             // original `.md` shadow path becomes the page module esbuild
             // bundles and the router serves.
             pipeline.reset_per_entry();
-            if resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -1945,9 +1777,15 @@ fn materialise_shadow(
                     )
                 }
             };
-            let compiled =
-                compile_mdx_to_jsx_module_cached(&md_body, from, None, Some(&mut pipeline))
-                    .with_context(|| format!("compile md page {}", from.display()))?;
+            // Same process-global compile cache as the `.mdx` branch
+            // above (zfb#905).
+            let compiled = compile_mdx_to_jsx_module_cached(
+                &md_body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile md page {}", from.display()))?;
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
             }
@@ -1984,7 +1822,7 @@ fn materialise_shadow(
             // threaded into the glob expansion (#665's `is_excluded` seam) so
             // an excluded file is never emitted as a static import — which
             // would otherwise make esbuild error on the generated import.
-            materialise_source_file(from, &to, &is_excluded, copy_mode)?;
+            materialise_source_file(from, &to, &is_excluded, ctx.copy_mode)?;
         }
 
         // Routes only collected from the pages root.
@@ -1992,7 +1830,7 @@ fn materialise_shadow(
             if let Some(route) = derive_route(rel) {
                 let abs_src = from.to_path_buf();
                 let project_rel = abs_src
-                    .strip_prefix(project_root)
+                    .strip_prefix(ctx.project_root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or(abs_src);
                 routes.push(RouteEntry {
@@ -2286,20 +2124,10 @@ fn materialise_collection(
     dest: &Path,
     collection_name: &str,
     imports: &mut Vec<ContentImport>,
-    strip_md_ext: bool,
-    code_highlight_theme: Option<&str>,
-    code_highlight_themes_dir: Option<&Path>,
-    resolve_source_map: Option<&HashMap<std::path::PathBuf, String>>,
-    gfm_constructs: zfb_content::ResolvedGfmConstructs,
-    toc: Option<zfb_content::TocConfig>,
-    external_links: Option<&(zfb_content::ExternalLinksConfig, Option<String>)>,
-    cjk_friendly: bool,
-    hard_breaks: bool,
-    markdown_features: Option<&zfb_content::MarkdownFeaturesConfig>,
+    ctx: &MaterialiseCtx<'_>,
     include: Option<&[String]>,
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
-    copy_mode: bool,
     broken_links_out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     if !src.exists() {
@@ -2342,41 +2170,7 @@ fn materialise_collection(
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired after the directives step in the mdast phase. The
     // `source_dir` is updated per-file inside the walk loop.
-    // Single feature-aware entry point — MUST match the snapshot walker's
-    // dispatch (`SnapshotPipelineConfig::build_pipeline`) so the JSX
-    // `content_hash` stays byte-identical. `markdown_features = None` is an
-    // empty feature set: the three former-Core framework features are off
-    // (the post-epic opt-in default).
-    let mut pipeline = zfb_content::pipeline::Pipeline::with_defaults_and_full_config(
-        code_highlight_theme,
-        gfm_constructs,
-        code_highlight_themes_dir,
-        cjk_friendly,
-        hard_breaks,
-        markdown_features,
-    )
-    .with_context(|| {
-        // `Err` only occurs when `themes_dir` is `Some` (theme-file load),
-        // so the `unwrap_or_default()` empty-string branch is unreachable.
-        format!(
-            "codeHighlight.themesDir: failed to load themes from {}",
-            code_highlight_themes_dir
-                .map(|d| d.display().to_string())
-                .unwrap_or_default()
-        )
-    })?;
-    if let Some(toc_cfg) = toc {
-        pipeline.add_toc(toc_cfg);
-    }
-    if strip_md_ext {
-        pipeline.add_strip_md_ext();
-    }
-    if let Some(map) = resolve_source_map {
-        pipeline.add_resolve_links(map.clone());
-    }
-    if let Some((cfg, site)) = external_links {
-        pipeline.add_external_links(cfg.clone(), site.as_deref());
-    }
+    let mut pipeline = ctx.pipeline_spec.build_pipeline()?;
 
     // sort_by_file_name() gives lexicographic order within each directory
     // level, matching walk_collection's explicit files.sort() contract so
@@ -2407,7 +2201,7 @@ fn materialise_collection(
             // Symlinked subdir under copy_mode — copy the real subtree so it
             // stays mirrored in the shadow (see the matching block in
             // `materialise_shadow`).
-            if copy_mode && entry.path_is_symlink() && from.is_dir() {
+            if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
                 copy_dir_recursive(from, &to).with_context(|| {
                     format!(
                         "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
@@ -2450,7 +2244,7 @@ fn materialise_collection(
             // counter) before each new MDX file (zfb#187).
             pipeline.reset_per_entry();
             // Update per-file source_dir for ResolveLinksPlugin.
-            if resolve_source_map.is_some() {
+            if ctx.pipeline_spec.resolve_source_map.is_some() {
                 if let Some(parent) = from.parent() {
                     pipeline.set_resolve_links_source_dir(parent.to_path_buf());
                 }
@@ -2495,8 +2289,18 @@ fn materialise_collection(
             // the bridge map. Mismatch here would make every bridge
             // lookup miss and silently fall back to the
             // raw-markdown <pre> block.
-            let compiled = compile_mdx_to_jsx_module_cached(&body, from, None, Some(&mut pipeline))
-                .with_context(|| format!("compile mdx {}", from.display()))?;
+            // Process-global compile cache (zfb#905) — see the matching
+            // comment in `materialise_shadow`. Safe to share with the
+            // snapshot walker: the key includes the pipeline-config
+            // fingerprint and the specifier below is re-derived from
+            // THIS file's path on every hit.
+            let compiled = compile_mdx_to_jsx_module_cached(
+                &body,
+                from,
+                Some(MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+            )
+            .with_context(|| format!("compile mdx {}", from.display()))?;
             // Drain broken-link diagnostics and record them with the file path.
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
@@ -2547,7 +2351,7 @@ fn materialise_collection(
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
-            materialise_source_file(from, &to, &|_| false, copy_mode)?;
+            materialise_source_file(from, &to, &|_| false, ctx.copy_mode)?;
         }
     }
     Ok(())
@@ -3148,20 +2952,6 @@ fn glob_match_relative(
     Ok(out)
 }
 
-/// Convert a relative `Path` to a forward-slash-separated string. We
-/// emit Posix separators unconditionally so the resulting `import`
-/// statements are valid on every platform — esbuild on Windows would
-/// otherwise reject backslash-bearing module specifiers.
-fn path_to_posix_string(p: &Path) -> String {
-    p.components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str().map(str::to_owned),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 /// Compiled matcher for `BundlerInput::bundle_exclude`.
 ///
 /// Patterns are project-relative gitignore-style globs (e.g.
@@ -3745,10 +3535,6 @@ fn route_path_under_pages(source_path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn json_str(s: &str) -> String {
-    serde_json::Value::String(s.to_string()).to_string()
-}
-
 /// Render the TSX shell module for a `.md` page.
 ///
 /// Returns a complete TSX module that:
@@ -4180,28 +3966,54 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 }
 
 fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
-    resolve_esbuild_binary_with_env(explicit, |name| std::env::var_os(name), None)
+    let (_handle, path) = resolve_esbuild_binary_with_env(
+        explicit,
+        |name| std::env::var_os(name),
+        None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
+        None,
+    )?;
+    Ok(path)
 }
 
-/// Same as [`resolve_esbuild_binary`] but the env lookup is delegated to
-/// a getter closure and the default slot path is overridable. Tests use
-/// these escape hatches to drive the `ZFB_ESBUILD_BIN` resolution path
-/// without mutating the real process environment or chdir-ing
-/// (`std::env::set_var` is `unsafe` under Rust 2024 because it races
-/// other threads reading the env table, and our test suite is
-/// multi-threaded; chdir has the same problem).
+/// Shared esbuild binary resolver used by both the bundler and the config
+/// loader. Home crate: `zfb-build` (lowest crate that both consumers depend
+/// on; `zfb-types` is excluded because it is a zero-dep leaf).
 ///
-/// `slot_override` lets tests point the slot at a path inside a tempdir
-/// instead of relying on the real `DEFAULT_ESBUILD_SLOT` happening to
-/// be absent in CWD.
-fn resolve_esbuild_binary_with_env<F>(
+/// ## Lookup order (documented superset)
+///
+/// 1. **Explicit path** (`explicit`) — if `Some`, validated and returned
+///    immediately; an absent file is a hard error.
+/// 2. **`ZFB_ESBUILD_BIN` env var** — read via `env_getter("ZFB_ESBUILD_BIN")`.
+///    Injected as a closure so tests can drive this tier without mutating
+///    `std::env` (which is `unsafe` in a multi-threaded test runner under
+///    Rust 2024).
+/// 3. **Embedded extraction** (`embedded_getter`) — optional callback tried
+///    *before* the workspace slot. The config-loader caller (`zfb` crate)
+///    passes `Some(|| crate::render_pipeline::embedded_binary("esbuild"))` so
+///    a `cargo install`-ed binary (which has no workspace) still resolves.
+///    The bundler passes `None` here because it has no access to the
+///    `EMBEDDED_VENDOR` snapshot that lives in the `zfb` crate.
+/// 4. **Workspace slot** — `slot_override.unwrap_or(DEFAULT_ESBUILD_SLOT)`.
+///    `slot_override` is an escape hatch for unit tests that need to point the
+///    slot at a tempdir without chdir-ing.
+///
+/// ## Return value
+///
+/// `(Option<tempfile::TempDir>, PathBuf)` — the `TempDir` is `Some` only when
+/// the embedded extraction tier was taken. The caller **must** hold the handle
+/// alive for the lifetime of any subprocess that references the returned
+/// `PathBuf`; dropping the handle removes the tempdir and the binary.
+pub fn resolve_esbuild_binary_with_env<F, E>(
     explicit: Option<&Path>,
     env_getter: F,
+    embedded_getter: Option<E>,
     slot_override: Option<&Path>,
-) -> Result<PathBuf>
+) -> Result<(Option<tempfile::TempDir>, PathBuf)>
 where
     F: Fn(&str) -> Option<std::ffi::OsString>,
+    E: FnOnce() -> Option<(tempfile::TempDir, PathBuf)>,
 {
+    // Tier 1: explicit path override.
     if let Some(p) = explicit {
         if !p.exists() {
             bail!(
@@ -4209,8 +4021,9 @@ where
                 p.display()
             );
         }
-        return Ok(p.to_path_buf());
+        return Ok((None, p.to_path_buf()));
     }
+    // Tier 2: ZFB_ESBUILD_BIN env var.
     if let Some(env) = env_getter("ZFB_ESBUILD_BIN") {
         let p = PathBuf::from(env);
         if !p.exists() {
@@ -4219,8 +4032,16 @@ where
                 p.display()
             );
         }
-        return Ok(p);
+        return Ok((None, p));
     }
+    // Tier 3: embedded extraction (config-loader caller only; None for bundler).
+    if let Some(getter) = embedded_getter {
+        if let Some((handle, path)) = getter() {
+            return Ok((Some(handle), path));
+        }
+        // getter returned None → fall through to the workspace slot.
+    }
+    // Tier 4: workspace-relative staging slot.
     let slot = slot_override
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ESBUILD_SLOT));
@@ -4234,7 +4055,7 @@ where
             slot.display(),
         ));
     }
-    Ok(slot)
+    Ok((None, slot))
 }
 
 #[cfg(test)]
@@ -4394,18 +4215,10 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: None,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -5047,25 +4860,17 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("docs");
         let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_collection(
             &src,
             &dest,
             "docs",
             &mut imports,
-            false,
+            &ctx,
             None,
             None,
             None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            None,
-            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5142,25 +4947,17 @@ mod tests {
 
         let dest = tmp.path().join("shadow_content").join("posts");
         let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_collection(
             &src,
             &dest,
             "posts",
             &mut imports,
-            false,
+            &ctx,
             None,
             None,
             None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            None,
-            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5316,25 +5113,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("shadow_content").join("ghost");
         let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_collection(
             &tmp.path().join("does-not-exist"),
             &dest,
             "ghost",
             &mut imports,
-            false,
+            &ctx,
             None,
             None,
             None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            None,
-            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5666,18 +5455,10 @@ mod tests {
             content_snapshot_json: None,
             node_modules_dir: nm_dir,
             node_modules_preserve_symlinks: false,
-            strip_md_ext: false,
-            code_highlight_theme: None,
-            code_highlight_themes_dir: None,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
             resolve_markdown_links: None,
-            gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
             site: None,
             prefetch_disabled: false,
-            toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -5808,7 +5589,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing_slot = tmp.path().join("crates/zfb/binaries/esbuild/esbuild");
 
-        let err = resolve_esbuild_binary_with_env(None, |_| None, Some(&missing_slot)).unwrap_err();
+        let err = resolve_esbuild_binary_with_env(
+            None,
+            |_| None,
+            None::<fn() -> Option<(tempfile::TempDir, PathBuf)>>,
+            Some(&missing_slot),
+        )
+        .unwrap_err();
         let msg = format!("{err}");
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
@@ -5912,23 +5699,13 @@ mod tests {
         let mut routes = Vec::new();
         // dest must be named "pages" for is_pages_dir detection in materialise_shadow
         let shadow_pages_dest = root.join("shadow").join("pages");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&root, &exclude);
         materialise_shadow(
             &pages,
             &shadow_pages_dest,
             &mut routes,
-            &root,
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -5997,23 +5774,13 @@ mod tests {
         }
         let mut routes = Vec::new();
         let shadow_pages_dest = root.join("shadow").join("pages");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&root, &exclude);
         materialise_shadow(
             &pages,
             &shadow_pages_dest,
             &mut routes,
-            &root,
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6223,23 +5990,13 @@ mod tests {
     fn assert_route_collision(pages_dir: &Path, root: &Path) -> String {
         let shadow_pages_dest = root.join("shadow_coll").join("pages");
         let mut routes = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(root, &exclude);
         let err = materialise_shadow(
             pages_dir,
             &shadow_pages_dest,
             &mut routes,
-            root,
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
@@ -6433,23 +6190,13 @@ mod tests {
 
         let dest = tmp.path().join("shadow").join("pages");
         let mut routes = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut routes,
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6513,23 +6260,13 @@ mod tests {
 
         let dest = tmp.path().join("shadow").join("pages");
         let mut routes = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut routes,
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6556,23 +6293,13 @@ mod tests {
 
         let dest = tmp.path().join("shadow").join("content");
         let mut routes = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut routes,
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6615,23 +6342,13 @@ mod tests {
 
         let dest = tmp.path().join("shadow").join("pages");
         let mut routes = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut routes,
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6699,23 +6416,13 @@ mod tests {
 
             // --- materialise_shadow ---
             let dest_shadow = tmp.path().join("shadow");
+            let exclude = no_bundle_exclude();
+            let ctx = default_mat_ctx(tmp.path(), &exclude);
             materialise_shadow(
                 &src,
                 &dest_shadow,
                 &mut Vec::new(),
-                tmp.path(),
-                false,
-                None,
-                None,
-                None,
-                zfb_content::ResolvedGfmConstructs::default(),
-                None,
-                None,
-                true,
-                false,
-                None,
-                &no_bundle_exclude(),
-                false,
+                &ctx,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6739,20 +6446,10 @@ mod tests {
                 &dest_coll,
                 "test",
                 &mut Vec::new(),
-                false,
+                &ctx,
                 None,
                 None,
                 None,
-                zfb_content::ResolvedGfmConstructs::default(),
-                None,
-                None,
-                true,
-                false,
-                None,
-                None,
-                None,
-                None,
-                false,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6786,23 +6483,13 @@ mod tests {
         fs::write(src.join("subdir/.cache/inner.json"), "{}\n").unwrap();
 
         let dest = tmp.path().join("shadow");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut Vec::new(),
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -6830,23 +6517,13 @@ mod tests {
         fs::write(src.join("page.tsx"), "export default () => null;\n").unwrap();
 
         let dest = tmp.path().join("shadow");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut Vec::new(),
-            tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -7089,23 +6766,13 @@ mod tests {
         .unwrap();
 
         let dest = dest_tmp.path().join("shadow");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(src_tmp.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut Vec::new(),
-            src_tmp.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -7152,25 +6819,17 @@ mod tests {
 
         let dest = tmp.path().join("shadow");
         let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
         materialise_collection(
             &src,
             &dest,
             "docs",
             &mut imports,
-            false,
+            &ctx,
             None,
             None,
             None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            None,
-            false,
             &mut Vec::new(),
         )
         .unwrap();
@@ -7219,23 +6878,13 @@ mod tests {
         {
             // Materialise into a separate tempdir and then drop it.
             let dest_tmp = tempfile::tempdir().unwrap();
+            let exclude = no_bundle_exclude();
+            let ctx = default_mat_ctx(src_tmp.path(), &exclude);
             materialise_shadow(
                 &src,
                 dest_tmp.path(),
                 &mut Vec::new(),
-                src_tmp.path(),
-                false,
-                None,
-                None,
-                None,
-                zfb_content::ResolvedGfmConstructs::default(),
-                None,
-                None,
-                true,
-                false,
-                None,
-                &no_bundle_exclude(),
-                false,
+                &ctx,
                 &mut Vec::new(),
             )
             .unwrap();
@@ -7268,6 +6917,21 @@ mod tests {
     /// test calls behave exactly as they did before the knob existed.
     fn no_bundle_exclude() -> BundleExcludeMatcher {
         BundleExcludeMatcher::new(&[]).expect("empty bundle.exclude compiles")
+    }
+
+    /// Convenience constructor for test call sites: all pipeline options at
+    /// their default / disabled state, no `bundle.exclude`, and the supplied
+    /// `project_root`.  The `exclude` is kept alive by the caller.
+    fn default_mat_ctx<'a>(
+        project_root: &'a Path,
+        exclude: &'a BundleExcludeMatcher,
+    ) -> MaterialiseCtx<'a> {
+        MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: false,
+            bundle_exclude: exclude,
+            project_root,
+        }
     }
 
     /// Create a tempdir, write `(rel, body)` files (creating parent dirs),
@@ -7378,23 +7042,12 @@ mod tests {
         let dest = root.path().join("shadow").join("components");
         let matcher =
             BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        let ctx = default_mat_ctx(root.path(), &matcher);
         materialise_shadow(
             &src,
             &dest,
             &mut Vec::new(),
-            root.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &matcher,
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();
@@ -7417,23 +7070,13 @@ mod tests {
         fs::write(src.join("Story.stories.tsx"), "export const s = 1;").unwrap();
 
         let dest = root.path().join("shadow").join("components");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(root.path(), &exclude);
         materialise_shadow(
             &src,
             &dest,
             &mut Vec::new(),
-            root.path(),
-            false,
-            None,
-            None,
-            None,
-            zfb_content::ResolvedGfmConstructs::default(),
-            None,
-            None,
-            true,
-            false,
-            None,
-            &no_bundle_exclude(),
-            false,
+            &ctx,
             &mut Vec::new(),
         )
         .unwrap();

@@ -78,6 +78,7 @@ test-utils = ["dep:zfb-test-utils", "dep:tempdir"]
 markdown = { workspace = true }
 anyhow = { workspace = true }
 zfb-md-ast = { path = "../zfb-md-ast" }
+zfb-types = { path = "../zfb-types" }
 # Header-only image dimension probing for the image_dimensions feature (Wave 6 #579).
 imagesize = { workspace = true }
 # Optional: compiled when `features = ["test-utils"]` is requested by a

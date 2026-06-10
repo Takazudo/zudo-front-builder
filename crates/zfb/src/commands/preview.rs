@@ -262,6 +262,28 @@ fn resolve_static(dist_root: &Path, url_path: &str) -> Resolution {
     Resolution::NotFound
 }
 
+/// Resolve `path` (following symlinks) and require the result to live
+/// inside `root` (also symlink-resolved). Returns the canonical path on
+/// success — callers MUST read the returned canonical path, not the
+/// original: re-reading the original would reopen a check-then-use
+/// window where a symlink swapped between check and read escapes the
+/// root (TOCTOU).
+///
+/// Returning `None` on any canonicalize error (e.g. the file does not
+/// exist yet) is intentional: callers treat a failed containment check
+/// as not-found, so a missing symlink target is a safe 404.
+///
+/// Deliberately sync (`std::fs`) — the preview server's request volume
+/// is tiny and the syscall is cheap; the dev server's async twin lives
+/// in `zfb-server::routes`.
+fn resolve_within_root(path: &Path, root: &Path) -> Option<std::path::PathBuf> {
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_path = std::fs::canonicalize(path).ok()?;
+    canonical_path
+        .starts_with(&canonical_root)
+        .then_some(canonical_path)
+}
+
 /// Reject path traversal and Windows-style absolute components.
 ///
 /// Empty / root paths are accepted and routed by the caller. We only
@@ -300,12 +322,22 @@ fn is_safe_path(url_path: &str) -> bool {
 /// Read `path` from disk and turn it into an `OK` response with a
 /// derived `Content-Type`. On read failure we fall through to the 404
 /// path so a vanished file behaves like a missing one.
+///
+/// Before reading, we canonicalize `path` and verify it still lives
+/// inside `dist_root` — a symlink planted inside dist that points
+/// outside the root would otherwise be followed silently. Canonicalize
+/// errors (broken symlink, missing file) are treated as not-found. The
+/// read and content-type derivation use the canonical path so a symlink
+/// swap between check and read cannot escape the root.
 async fn serve_file(path: &Path, dist_root: &Path) -> Response {
-    let bytes = match tokio::fs::read(path).await {
+    let Some(resolved) = resolve_within_root(path, dist_root) else {
+        return not_found_response(dist_root).await;
+    };
+    let bytes = match tokio::fs::read(&resolved).await {
         Ok(b) => b,
         Err(_) => return not_found_response(dist_root).await,
     };
-    let ct = content_type_for_path(path);
+    let ct = content_type_for_path(&resolved);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ct)
@@ -1217,5 +1249,81 @@ mod tests {
             !env_truthy(key, |_| None),
             "unset env var must be falsy",
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #899 — symlink-containment: symlinks pointing outside the
+    // preview dist root must be blocked; legitimate in-root symlinks
+    // must keep working.
+    // -------------------------------------------------------------------
+
+    /// A symlink inside `dist/` pointing OUTSIDE it must produce a 404
+    /// response from the preview server — not serve the target file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preview_rejects_out_of_root_symlink_in_dist() {
+        use std::os::unix::fs::symlink;
+
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let dist = TempDir::new().unwrap();
+        symlink(
+            outside.path().join("secret.txt"),
+            dist.path().join("escape.txt"),
+        )
+        .unwrap();
+
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/escape.txt")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "out-of-root symlink in preview dist must not be served (got {:?})",
+            resp.status()
+        );
+    }
+
+    /// A symlink inside `dist/` that points to another file WITHIN `dist/`
+    /// must be served — legitimate in-root symlinks must keep working.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preview_serves_in_root_symlink_in_dist() {
+        use std::os::unix::fs::symlink;
+
+        let dist = TempDir::new().unwrap();
+        fs::write(dist.path().join("real.html"), b"<h1>real</h1>").unwrap();
+        // Symlink inside dist pointing at another file inside dist.
+        symlink(dist.path().join("real.html"), dist.path().join("alias.html")).unwrap();
+
+        let router = build_static_router(dist.path().to_path_buf());
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/alias.html")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "in-root symlink in preview dist must be served"
+        );
+        let body = body_string(resp).await;
+        assert!(body.contains("real"), "served body must match the symlink target");
     }
 }

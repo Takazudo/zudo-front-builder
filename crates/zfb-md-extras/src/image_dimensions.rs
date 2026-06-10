@@ -45,7 +45,7 @@ use std::time::SystemTime;
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
 use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
 
-use crate::link_validation::normalize_path;
+use zfb_types::normalize_path_lexical;
 
 /// Cached entry: `(mtime, width, height)`.
 type CacheEntry = (SystemTime, u32, u32);
@@ -188,7 +188,7 @@ fn try_inject_dimensions(
     } else {
         &ctx.project_root
     };
-    let normalized = normalize_path(&abs_path);
+    let normalized = normalize_path_lexical(&abs_path);
     if !normalized.starts_with(expected_root) {
         emit_warning(
             ctx,
@@ -264,8 +264,17 @@ fn probe_dimensions(
     let size = imagesize::size(path)
         .map_err(|e| format!("cannot probe dimensions of '{}': {e}", path.display()))?;
 
-    let w = size.width as u32;
-    let h = size.height as u32;
+    // `imagesize` reports `usize` dimensions straight from the (untrusted)
+    // file header — reject out-of-range values instead of truncating to
+    // silently wrong width/height attributes.
+    let (Ok(w), Ok(h)) = (u32::try_from(size.width), u32::try_from(size.height)) else {
+        return Err(format!(
+            "image dimensions of '{}' out of range: {}x{}",
+            path.display(),
+            size.width,
+            size.height
+        ));
+    };
 
     // Store in cache.
     {

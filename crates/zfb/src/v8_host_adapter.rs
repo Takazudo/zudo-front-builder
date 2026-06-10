@@ -82,11 +82,12 @@ pub struct ThreadedV8Host {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-// SAFETY: `ThreadedV8Host` contains only a `SyncSender` (inherently `Send`)
-// and a `JoinHandle` (inherently `Send`). The `!Send` V8 isolate lives on the
-// dedicated thread and is never exposed to other threads. The channel ensures
-// strict single-caller access to the isolate.
-unsafe impl Send for ThreadedV8Host {}
+// `ThreadedV8Host` is `Send` automatically: it contains only a `SyncSender`
+// and a `JoinHandle`, both `Send`. The `!Send` V8 isolate lives on the
+// dedicated thread and is never exposed to other threads; the channel
+// ensures strict single-caller access to the isolate. No manual
+// `unsafe impl Send` is needed — keeping it auto-derived lets the compiler
+// re-verify per-field `Send`-ness on every future refactor.
 
 impl Drop for ThreadedV8Host {
     /// Close the request channel first (so the V8 thread's receive loop

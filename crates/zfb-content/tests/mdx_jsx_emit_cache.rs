@@ -161,54 +161,105 @@ fn cache_opt_out_recompiles_every_call() {
 }
 
 #[test]
-fn cache_is_bypassed_when_pipeline_is_supplied() {
-    // Contract: when both `Some(&cache)` and `Some(&mut pipeline)` are
-    // passed to `compile_mdx_to_jsx_module_cached`, the cache MUST NOT
-    // grow. The simple `sha256(input)` cache key cannot distinguish
-    // identical inputs run through different pipelines, so the
-    // implementation deliberately bypasses the cache when a pipeline
-    // is supplied (see `crates/zfb-content/src/mdx_jsx_emit.rs`
-    // around the `cache_for_lookup` setup). This test pins that
-    // behaviour so a future refactor cannot silently start caching
-    // pipeline-transformed output keyed only on input.
-    //
-    // Source: zfb#128 acceptance criteria — "verify
-    // `Some(&cache) + Some(&mut pipeline)` does not grow the cache."
+fn config_built_pipeline_uses_the_cache() {
+    // zfb#905 contract (replaces the pre-#905 "pipeline bypasses the
+    // cache" pin): a pipeline built from config carries a fingerprint
+    // that joins the cache key, so `Some(&cache) + Some(&mut pipeline)`
+    // caches — and a SECOND pipeline built from the SAME config hits
+    // the entry the first one wrote.
     let cache = MdxModuleCache::new();
-    let mut pipeline = Pipeline::with_defaults();
     assert!(cache.is_empty(), "precondition: empty cache");
 
     let src = "# heading\n\nbody\n";
     let path = fixture_path("with-pipeline");
 
-    let _ =
+    let mut pipeline = Pipeline::with_defaults();
+    let first =
         compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
-    assert_eq!(
-        cache.len(),
-        0,
-        "cache must NOT grow when a pipeline is supplied (was {})",
-        cache.len()
-    );
-
-    // Repeat: the second call also bypasses the cache.
-    let _ =
-        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
-    assert_eq!(
-        cache.len(),
-        0,
-        "second call must also leave the cache untouched (was {})",
-        cache.len()
-    );
-
-    // Sanity: the same call WITHOUT a pipeline DOES grow the cache.
-    // This guards against a degenerate "cache never grows" failure
-    // mode where the assertion above passes for the wrong reason.
-    let _ = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), None).unwrap();
     assert_eq!(
         cache.len(),
         1,
-        "control: dropping the pipeline must let the cache grow"
+        "config-built pipeline must populate the cache (zfb#905)"
     );
+
+    let mut equally_configured = Pipeline::with_defaults();
+    let second =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut equally_configured))
+            .unwrap();
+    assert_eq!(cache.len(), 1, "same config + same input must hit, not re-insert");
+    assert_eq!(first, second, "cached value must match the original");
+}
+
+#[test]
+fn manually_mutated_pipeline_bypasses_cache() {
+    // zfb#905 contract: appending a raw trait-object visitor after
+    // construction invalidates the config fingerprint — the cache can
+    // no longer tell this pipeline apart from any other manual wiring,
+    // so the compile must bypass the cache entirely (never grow it,
+    // never read from it).
+    struct NoopHastVisitor;
+    impl zfb_content::pipeline::HastVisitor for NoopHastVisitor {
+        fn visit(&mut self, _node: &mut zfb_content::pipeline::HastNode) {}
+    }
+
+    let cache = MdxModuleCache::new();
+    let mut pipeline = Pipeline::with_defaults();
+    assert!(
+        pipeline.config_fingerprint().is_some(),
+        "precondition: config-built pipeline is fingerprinted"
+    );
+    pipeline.add_hast_visitor(Box::new(NoopHastVisitor));
+    assert!(
+        pipeline.config_fingerprint().is_none(),
+        "manual mutation must invalidate the fingerprint"
+    );
+
+    let src = "# heading\n\nbody\n";
+    let path = fixture_path("mutated-pipeline");
+
+    let _ =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
+    assert_eq!(
+        cache.len(),
+        0,
+        "mutated pipeline must NOT grow the cache (was {})",
+        cache.len()
+    );
+    let _ =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut pipeline)).unwrap();
+    assert_eq!(cache.len(), 0, "second call must also bypass the cache");
+
+    // Control: an un-mutated pipeline DOES grow the cache, guarding
+    // against a degenerate "cache never grows" failure mode.
+    let mut fresh = Pipeline::with_defaults();
+    let _ = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut fresh)).unwrap();
+    assert_eq!(
+        cache.len(),
+        1,
+        "control: a config-built pipeline must let the cache grow"
+    );
+}
+
+#[test]
+fn different_pipeline_configs_do_not_alias_one_entry() {
+    // zfb#905 acceptance: same input compiled under two different
+    // configs must produce two distinct cache entries with distinct
+    // JSX — a shared entry would serve stale strikethrough markup to
+    // whichever config compiled second.
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    let cache = MdxModuleCache::new();
+    let src = "plain ~~gone~~ here\n";
+    let path = fixture_path("gfm-split");
+
+    let mut all_on = Pipeline::with_defaults_and_gfm(ResolvedGfmConstructs::ALL_ON);
+    let on = compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut all_on)).unwrap();
+    let mut all_off = Pipeline::with_defaults_and_gfm(ResolvedGfmConstructs::ALL_OFF);
+    let off =
+        compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut all_off)).unwrap();
+
+    assert_eq!(cache.len(), 2, "two configs → two entries");
+    assert_ne!(on.jsx_source, off.jsx_source, "two configs → two outputs");
 }
 
 #[test]

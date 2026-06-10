@@ -22,14 +22,15 @@
 //!
 //! ## Version / SHA-256 pins
 //!
-//! esbuild version : pinned in `crates/zfb-islands/src/esbuild.rs`
-//!                   (`EXPECTED_ESBUILD_VERSION`).  **Must be kept in sync
-//!                   with the constants in this file.**
+//! esbuild version : single source of truth is `crates/zfb-toolchain-pins/src/lib.rs`
+//!                   (`EXPECTED_ESBUILD_VERSION`). Consumed here via the
+//!                   `zfb-toolchain-pins` build-dependency — no local copy.
 //! tailwindcss ver : pinned in `scripts/fetch-tailwind.mjs` (`TAILWIND_VERSION`).
 //!                   **Must be kept in sync with the constants in this file.**
 //!
-//! When bumping either pin, update both the source-of-truth file and the
-//! corresponding SHA-256 constant table below in the same commit.
+//! When bumping the esbuild pin, update `crates/zfb-toolchain-pins/src/lib.rs`
+//! and the SHA-256 table below in the same commit. For tailwindcss, update the
+//! source-of-truth file and the SHA-256 table below in the same commit.
 
 use std::fs;
 use std::io::{self, Read};
@@ -39,12 +40,13 @@ use std::path::{Path, PathBuf};
 // Version pins
 // ---------------------------------------------------------------------------
 
-/// Pinned esbuild version.  Mirror of `EXPECTED_ESBUILD_VERSION` in
-/// `crates/zfb-islands/src/esbuild.rs` — must be bumped in lock-step.
-const ESBUILD_VERSION: &str = "0.25.12";
+/// Pinned esbuild version. Imported from `zfb-toolchain-pins`, the single
+/// source of truth for all external tool version pins. To bump, update
+/// `crates/zfb-toolchain-pins/src/lib.rs` and the SHA-256 table below.
+use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 
 /// Pinned tailwindcss v4 version.  Mirror of `TAILWIND_VERSION` in
-/// `scripts/fetch-tailwind.mjs` — must be bumped in lock-step.
+/// `scripts/fetch-tailwind.mjs` — must be kept in sync.
 const TAILWIND_VERSION: &str = "4.2.0";
 
 // ---------------------------------------------------------------------------
@@ -332,8 +334,8 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
         return Ok(());
     }
 
-    let url = esbuild_tarball_url(meta.npm_pkg, ESBUILD_VERSION);
-    println!("cargo:warning=Downloading esbuild {ESBUILD_VERSION} from {url} ...");
+    let url = esbuild_tarball_url(meta.npm_pkg, EXPECTED_ESBUILD_VERSION);
+    println!("cargo:warning=Downloading esbuild {EXPECTED_ESBUILD_VERSION} from {url} ...");
 
     let tgz_bytes = fetch_bytes(&url)?;
     let binary_bytes = extract_from_tgz(&tgz_bytes, meta.tarball_binary_path)?;
@@ -359,7 +361,7 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
     })?;
 
     println!(
-        "cargo:warning=✓ esbuild {ESBUILD_VERSION} installed at {} (sha256 {actual_sha})",
+        "cargo:warning=✓ esbuild {EXPECTED_ESBUILD_VERSION} installed at {} (sha256 {actual_sha})",
         slot_path.display()
     );
     Ok(())

@@ -458,10 +458,29 @@ fn make_full_fixture_input(
             ContentCollectionSpec::new("blog", PathBuf::from("content/blog")),
             ContentCollectionSpec::new("blog2", PathBuf::from("content/blog2")),
         ],
-        strip_md_ext: false,
-        // InspiredGitHub theme — exercises sub #194 / #188.
-        code_highlight_theme: Some("InspiredGitHub".to_string()),
-        code_highlight_themes_dir: None,
+        pipeline_spec: zfb_content::PipelineSpec {
+            // InspiredGitHub theme — exercises sub #194 / #188.
+            code_highlight_theme: Some("InspiredGitHub".to_string()),
+            // Register the `note`/`tip` directive names the fixture exercises.
+            // Core seeds zero directive vocabulary, so the `:::note[World]` /
+            // `:::tip` blocks only transform when supplied via `features.directives`.
+            features: Some({
+                let mut directives = HashMap::new();
+                directives.insert(
+                    "note".to_string(),
+                    zfb_content::DirectiveSpec::Short("Note".to_string()),
+                );
+                directives.insert(
+                    "tip".to_string(),
+                    zfb_content::DirectiveSpec::Short("Tip".to_string()),
+                );
+                zfb_content::MarkdownFeaturesConfig {
+                    directives: Some(directives),
+                    ..Default::default()
+                }
+            }),
+            ..Default::default()
+        },
         // Warn on broken links — exercises sub #196 / #185 Gap 1.
         resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
             routes: vec![ResolveMarkdownLinksRoute {
@@ -470,31 +489,8 @@ fn make_full_fixture_input(
             }],
             on_broken_links: OnBrokenLinks::Warn,
         }),
-        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         prefetch_disabled: false,
-        toc: None,
-        external_links: None,
-        cjk_friendly: true,
-        hard_breaks: false,
-        // Register the `note`/`tip` directive names the fixture exercises.
-        // Core seeds zero directive vocabulary, so the `:::note[World]` /
-        // `:::tip` blocks only transform when supplied via `features.directives`.
-        markdown_features: Some({
-            let mut directives = HashMap::new();
-            directives.insert(
-                "note".to_string(),
-                zfb_content::DirectiveSpec::Short("Note".to_string()),
-            );
-            directives.insert(
-                "tip".to_string(),
-                zfb_content::DirectiveSpec::Short("Tip".to_string()),
-            );
-            zfb_content::MarkdownFeaturesConfig {
-                directives: Some(directives),
-                ..Default::default()
-            }
-        }),
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
@@ -846,7 +842,7 @@ fn zzmod_all_five_migration_fixes_compose() {
     input.esbuild_binary = Some(esbuild);
     input.node_modules_dir = Some(root.join("node_modules"));
     input.tsconfig_paths = paths; // #666 — non-empty → branch 4 (copy_mode + rebase)
-    input.hard_breaks = true; // #662
+    input.pipeline_spec.hard_breaks = true; // #662
     input.bundle_exclude = vec!["src/lib/bad.story.tsx".to_string()]; // #664
     let mut class_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
