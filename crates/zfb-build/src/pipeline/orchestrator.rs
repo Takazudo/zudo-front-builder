@@ -81,11 +81,14 @@ pub struct AssetEmitterPayload {
 
 /// Inputs to [`apply_prod_asset_pipeline`].
 ///
-/// Both slots are independently optional — a project may have CSS
-/// without islands (or vice versa), and dropping a slot to `None`
-/// silently skips emission for that asset kind. The pipeline still
-/// runs (so HTML is round-tripped through the rewrite step) but no
-/// hashed file lands on disk for the missing slot.
+/// Both optional single-asset slots (`css`, `islands`) and the
+/// `client_scripts` Vec are independently optional / independently empty —
+/// dropping a slot to `None` / leaving the Vec empty silently skips emission
+/// for that asset kind. The pipeline still runs (HTML is round-tripped through
+/// the rewrite step) but no hashed file lands on disk for the missing slot.
+///
+/// A project with no CSS, no islands, and no client-script entries sees
+/// byte-identical output to a pre-client-script build.
 #[derive(Debug, Default)]
 pub struct ProdAssetEmitterInputs {
     /// Bytes-only payload for the CSS asset. `None` ⇒ skip CSS emit.
@@ -93,6 +96,11 @@ pub struct ProdAssetEmitterInputs {
     /// Bytes-only payload for the islands asset. `None` ⇒ skip islands
     /// emit (e.g. project has no `"use client"` components).
     pub islands: Option<AssetEmitterPayload>,
+    /// Zero or more bytes-only payloads for per-entry client-script bundles.
+    /// Empty ⇒ no client scripts to emit (project has no
+    /// `*.client.{ts,tsx,js,jsx}` entries). Each element produces one
+    /// `dist/assets/client/<name>-<hash>.js` and one HTML rewrite entry.
+    pub client_scripts: Vec<AssetEmitterPayload>,
 }
 
 /// One HTML file the renderer wrote during the prod build.
@@ -218,6 +226,11 @@ fn build_emitters(inputs: ProdAssetEmitterInputs) -> ProductionEmitters {
     ProductionEmitters {
         css: inputs.css.map(payload_to_emitter),
         islands: inputs.islands.map(payload_to_emitter),
+        client_scripts: inputs
+            .client_scripts
+            .into_iter()
+            .map(payload_to_emitter)
+            .collect(),
     }
 }
 
@@ -289,6 +302,7 @@ mod tests {
                 companions: Vec::new(),
             }),
             islands: None,
+            ..Default::default()
         };
 
         let outcome = apply_prod_asset_pipeline(dist, pages, inputs).unwrap();
@@ -348,6 +362,7 @@ mod tests {
                 companions: Vec::new(),
             }),
             islands: None,
+            ..Default::default()
         };
 
         let outcome = apply_prod_asset_pipeline(dist, pages, inputs).unwrap();
@@ -386,6 +401,7 @@ mod tests {
                 stable_url: "/assets/islands.js".to_string(),
                 companions: Vec::new(),
             }),
+            ..Default::default()
         };
 
         let outcome = apply_prod_asset_pipeline(dist, pages, inputs).unwrap();
@@ -428,6 +444,7 @@ mod tests {
                 companions: Vec::new(),
             }),
             islands: None,
+            ..Default::default()
         };
         let err = apply_prod_asset_pipeline(dist, pages, inputs).unwrap_err();
         let msg = format!("{err:#}");
@@ -451,6 +468,7 @@ mod tests {
                 companions: Vec::new(),
             }),
             islands: None,
+            ..Default::default()
         };
         let outcome = apply_prod_asset_pipeline(dist, Vec::new(), inputs).unwrap();
         assert_eq!(outcome.hashed_asset_urls.len(), 1);

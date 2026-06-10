@@ -1052,6 +1052,39 @@ pub(crate) fn build_esbuild_args(
     entry_path: &Path,
     splitting: bool,
 ) -> Vec<OsString> {
+    // The entry-name template must produce exactly `STABLE_ISLANDS_FILENAME`
+    // (esbuild appends `.js`), or the read-back won't recognise the entry.
+    // Assert the two stay in sync.
+    debug_assert_eq!(
+        format!("{ESBUILD_ENTRY_NAME_TEMPLATE}.js"),
+        zfb_types::STABLE_ISLANDS_FILENAME,
+        "entry-name template must match STABLE_ISLANDS_FILENAME stem"
+    );
+    build_esbuild_args_with_entry_name(
+        config,
+        extra_args,
+        out_dir,
+        entry_path,
+        splitting,
+        ESBUILD_ENTRY_NAME_TEMPLATE,
+    )
+}
+
+/// Like [`build_esbuild_args`] but with a caller-supplied entry name
+/// template for `--entry-names`. Used by the client-script bundling path
+/// where the stable output filename must match `<entry_name>.js` rather
+/// than the shared-bundle `islands.js`.
+///
+/// When `entry_name_template == ESBUILD_ENTRY_NAME_TEMPLATE` the output
+/// is byte-identical to `build_esbuild_args`.
+pub(crate) fn build_esbuild_args_with_entry_name(
+    config: &BundleConfig,
+    extra_args: &[OsString],
+    out_dir: &Path,
+    entry_path: &Path,
+    splitting: bool,
+    entry_name_template: &str,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     args.push(OsString::from("--bundle"));
     args.push(OsString::from("--format=esm"));
@@ -1127,29 +1160,19 @@ pub(crate) fn build_esbuild_args(
     // Directory-mode output: esbuild writes the entry (and, when splitting is
     // on, any chunks) into the *staging* `out_dir` (a throwaway tempdir —
     // NOT `dist/assets/`). `--outdir` is always present — the read-back
-    // walks this dir for the `islands.js` entry regardless of splitting.
-    // `--entry-names` pins the entry's basename to `islands` (esbuild
-    // appends `.js`) so `read_back_outdir` can identify it by name and
-    // return it as `OneEntryOutput::js`; the caller (`bundle()`) packages
-    // those bytes into `BundleOutput::bytes` — no write to `dist/`.
+    // walks this dir for the `<entry_name_template>.js` entry regardless of
+    // splitting. `--entry-names` pins the entry's basename to `entry_name_template`
+    // (esbuild appends `.js`) so the read-back can identify it by name.
     // `--chunk-names` (splitting only) self-content-hashes each chunk FLAT
     // in the same dir (`islands-chunk-<hash>.js`); esbuild bakes relative
     // `import("./...")` references between them, so names must never be
-    // renamed downstream. Omitted without `--splitting` (per-island path).
+    // renamed downstream. Omitted without `--splitting`.
     // See `ESBUILD_ENTRY_NAME_TEMPLATE` / `ESBUILD_CHUNK_NAME_TEMPLATE` and
     // the `BundleOutput::chunks` contract for the full rationale.
     // Flag spellings verified against the pinned esbuild 0.25.x CLI.
-    // The entry-name template must produce exactly `STABLE_ISLANDS_FILENAME`
-    // (esbuild appends `.js`), or the read-back won't recognise the entry.
-    // Assert the two stay in sync.
-    debug_assert_eq!(
-        format!("{ESBUILD_ENTRY_NAME_TEMPLATE}.js"),
-        zfb_types::STABLE_ISLANDS_FILENAME,
-        "entry-name template must match STABLE_ISLANDS_FILENAME stem"
-    );
     args.push(OsString::from(format!("--outdir={}", out_dir.display())));
     args.push(OsString::from(format!(
-        "--entry-names={ESBUILD_ENTRY_NAME_TEMPLATE}"
+        "--entry-names={entry_name_template}"
     )));
     if splitting {
         args.push(OsString::from(format!(
@@ -1607,6 +1630,161 @@ impl ClientBundler for EsbuildSubprocessBundler {
             asset_url,
             module_ids,
             chunks,
+        })
+    }
+}
+
+impl EsbuildSubprocessBundler {
+    /// Bundle a single client-script file (`.client.{ts,tsx,js,jsx}`) directly.
+    ///
+    /// Unlike the shared-islands path (which synthesises a virtual entry that
+    /// imports all islands), a client-script file IS the entry — no synthetic
+    /// wrapper is generated. The file is bundled with `--splitting=false` so any
+    /// dynamic `import()` calls are inlined into the single output file (identical
+    /// rationale to the per-island path at line 619-628).
+    ///
+    /// `entry_name` is the logical name for this bundle — typically the file stem
+    /// minus the `.client` suffix (e.g. `"search-widget"` for
+    /// `search-widget.client.ts`). It is used as `--entry-names=<entry_name>` so
+    /// the read-back function can find the output file by name.
+    ///
+    /// `entry_path` is the absolute path to the `.client.{ts,tsx,js,jsx}` source
+    /// file. Because the file already exists on disk, esbuild's upward
+    /// `node_modules` resolution walk starts from its directory — no temp entry
+    /// file is needed. This means bare imports in the file resolve against
+    /// `node_modules/` in the same directory or any ancestor, including the
+    /// project root.
+    ///
+    /// Returns the bundled JS string.
+    pub fn bundle_client_script_file(
+        &self,
+        entry_name: &str,
+        entry_path: &Path,
+        config: &BundleConfig,
+    ) -> Result<String> {
+        if self.config.mock_subprocess {
+            if !self.config.mock_output.is_empty() {
+                return Ok(self.config.mock_output.clone());
+            }
+            // In mock mode with no canned output, read the file off disk and
+            // return its source text (same convention as `bundle_one_entry`'s
+            // mock path: return what was given so callers can assert the shape).
+            return std::fs::read_to_string(entry_path).with_context(|| {
+                format!("mock: failed to read entry file {}", entry_path.display())
+            });
+        }
+
+        ensure_binary_verified(&self.config.binary_path, false)?;
+
+        // Staging output directory — same pattern as `bundle_one_entry`.
+        // A system tempdir is fine for the output because esbuild's
+        // `node_modules` upward-walk starts from the actual entry file's
+        // directory (not the outdir), so bare imports resolve against the
+        // project's `node_modules/` naturally.
+        let out_dir = tempfile::Builder::new()
+            .prefix("zfb-esbuild-client-out-")
+            .tempdir()
+            .context("failed to allocate out temp dir for client script bundling")?;
+
+        let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+            &self.config.alias_entries,
+            &self.config.virtual_modules,
+            &self.config.working_dir,
+        )
+        .context("zfb-islands: failed materializing plugin resolver inputs for client script")?;
+
+        let plugin_tsconfig: Option<tempfile::NamedTempFile> = if resolver_inputs
+            .paths_entries
+            .is_empty()
+        {
+            None
+        } else {
+            let mut paths_map: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            zfb_plugin_resolver::merge_into_tsconfig_paths(
+                &mut paths_map,
+                &resolver_inputs.paths_entries,
+            );
+            let json = serde_json::json!({
+                "//": "Synthetic tsconfig generated by zfb-islands::esbuild (client-script path). \
+                       Drives plugin-registered alias / virtual-module \
+                       exact-match resolution through compilerOptions.paths.",
+                "compilerOptions": {
+                    "baseUrl": ".",
+                    "paths": paths_map,
+                },
+            });
+            let tmp = if self.config.working_dir.is_dir() {
+                tempfile::Builder::new()
+                    .prefix(".zfb-client-script-tsconfig-")
+                    .suffix(".json")
+                    .tempfile_in(&self.config.working_dir)
+                    .context(
+                        "failed to allocate client-script tsconfig temp file inside working_dir",
+                    )?
+            } else {
+                tempfile::Builder::new()
+                    .prefix("zfb-client-script-tsconfig-")
+                    .suffix(".json")
+                    .tempfile()
+                    .context("failed to allocate client-script tsconfig temp file")?
+            };
+            std::fs::write(tmp.path(), serde_json::to_vec_pretty(&json)?)
+                .context("failed to write client-script synthetic tsconfig")?;
+            Some(tmp)
+        };
+
+        // Build the esbuild args reusing the shared arg-builder. Pass
+        // `splitting = false` — client-script bundles inline all dynamic
+        // imports (same rationale as per-island path; no chunk shipping in v1).
+        let args = build_esbuild_args_with_entry_name(
+            config,
+            &self.config.extra_args,
+            out_dir.path(),
+            entry_path,
+            false, // splitting = false
+            entry_name,
+        );
+
+        let mut cmd = Command::new(&self.config.binary_path);
+        cmd.current_dir(&self.config.working_dir);
+        for (key, value) in &self.config.env_vars {
+            cmd.env(key, value);
+        }
+        if let Some(ref tsconfig_tmp) = plugin_tsconfig {
+            cmd.arg(OsString::from(format!(
+                "--tsconfig={}",
+                tsconfig_tmp.path().display()
+            )));
+        }
+        for arg in &args {
+            cmd.arg(arg);
+        }
+
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
+
+        drop(resolver_inputs);
+        drop(plugin_tsconfig);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "esbuild exited with status {} bundling client script {:?}: {}",
+                output.status,
+                entry_path,
+                stderr.trim()
+            ));
+        }
+
+        // Read back the single output file named `<entry_name>.js`.
+        let expected_filename = format!("{entry_name}.js");
+        let expected_path = out_dir.path().join(&expected_filename);
+        std::fs::read_to_string(&expected_path).with_context(|| {
+            format!(
+                "esbuild produced no `{expected_filename}` for client-script entry `{entry_name}`"
+            )
         })
     }
 }

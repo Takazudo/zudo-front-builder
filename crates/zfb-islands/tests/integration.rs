@@ -518,6 +518,79 @@ fn no_dynamic_import_yields_single_file() {
 }
 
 // -----------------------------------------------------------------------------
+// Client-script entries (#976) — real-esbuild integration
+// -----------------------------------------------------------------------------
+
+/// End-to-end for the client-script path against the real esbuild binary:
+/// discover a staged `pages/search-widget.client.ts`, bundle it via
+/// `build_production_client_scripts`, and assert the production asset
+/// carries the stable URL/relative-path shape with every dynamic import
+/// inlined (`--splitting=false` — no chunk shipping in v1).
+#[test]
+#[ignore = "Requires the real esbuild binary. Run locally with \
+            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+fn client_script_real_esbuild_bundles_discovered_entry() {
+    use zfb_islands::{build_production_client_scripts, discover_client_scripts};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    // A lazily-imported sibling module proves splitting=false: its body
+    // must be INLINED into the single output (no chunk emitted).
+    let pages = root.join("pages");
+    std::fs::create_dir_all(&pages).expect("mkdir pages");
+    std::fs::write(
+        pages.join("lazy-part.ts"),
+        "export const LAZY_MARKER = \"zfb_client_inline_marker\";\n",
+    )
+    .expect("write lazy module");
+    std::fs::write(
+        pages.join("search-widget.client.ts"),
+        "const q: string = \"zfb_client_entry_marker\";\n\
+         import(\"./lazy-part.ts\").then((m) => console.log(q, m.LAZY_MARKER));\n",
+    )
+    .expect("write client entry");
+
+    let (entries, collisions) = discover_client_scripts(root).expect("discovery");
+    assert!(collisions.is_empty(), "no collisions: {collisions:?}");
+    assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
+    assert_eq!(entries[0].entry_name, "search-widget");
+
+    let bundler =
+        EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_working_dir(root));
+    let cfg = BundleConfig::production()
+        .with_outdir(root.join("dist"))
+        .with_minify(false);
+
+    let assets =
+        build_production_client_scripts(&bundler, &entries, &cfg).expect("real esbuild bundle");
+    assert_eq!(assets.len(), 1);
+    let asset = &assets[0];
+
+    assert_eq!(asset.entry_name, "search-widget");
+    assert_eq!(asset.stable_url, "/assets/client/search-widget.js");
+    assert_eq!(
+        asset.relative_path,
+        PathBuf::from("assets/client/search-widget.js")
+    );
+
+    let js = String::from_utf8(asset.bytes.clone()).expect("bundle is valid UTF-8");
+    assert!(
+        js.contains("zfb_client_entry_marker"),
+        "entry body missing from bundle:\n{js}"
+    );
+    assert!(
+        js.contains("zfb_client_inline_marker"),
+        "dynamic import must be INLINED (splitting=false) — marker missing:\n{js}"
+    );
+    // TypeScript annotations must be stripped by esbuild's ts loader.
+    assert!(
+        !js.contains(": string"),
+        "TS annotation survived bundling:\n{js}"
+    );
+}
+
+// -----------------------------------------------------------------------------
 // Sub-task 3 — manifest emission (acceptance)
 //
 // The 2-island fixture under `fixtures/two-islands/` is the smallest realistic
