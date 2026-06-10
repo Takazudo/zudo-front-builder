@@ -844,6 +844,23 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
 /// kept a private duplicate that has been removed in favour of this one.
 pub const DEFAULT_ESBUILD_SLOT: &str = "crates/zfb/binaries/esbuild/esbuild";
 
+/// `ZFB_DEV_TIMING` gate for the per-call [`bundle`] phase-split line
+/// (issue #993 Step 0 — extends the #991 instrumentation INSIDE the
+/// bundler). Same env var and truthy parser as the dev-tick timing in
+/// `crates/zfb/src/commands/dev.rs::dev_timing_enabled` so one flag turns
+/// on the whole timing story. Unset/empty/unrecognized → off, and every
+/// `Instant::now()` in [`bundle`] is behind the flag (zero hot-path cost).
+fn bundler_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 /// Bundle the user's source tree into a single ESM file.
 ///
 /// See the module-level documentation for the full pipeline.
@@ -952,7 +969,21 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         project_root: &input.project_root,
     };
 
+    // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
+    // `materialise` (tempdir alloc + every materialise walk + diagnostics
+    // gates + css rewrite + entry/shim/tsconfig writes), `esbuild` (the
+    // subprocess), `post` (manifest assembly after the subprocess), and
+    // `teardown` (the shadow TempDir's recursive delete, timed via an
+    // explicit drop). One stderr line per successful call; error paths
+    // print nothing (the failed tick is reported by the caller anyway).
+    let timing_enabled = bundler_timing_enabled();
+
     // 2. Materialise the shadow tree.
+    let materialise_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let work = tempfile::Builder::new()
         .prefix("zfb-bundler-")
         .tempdir()
@@ -1522,8 +1553,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         },
     )
     .context("bundler: failed writing entry.mjs")?;
+    let materialise_ms = materialise_start.map(|t| t.elapsed().as_millis());
 
     // 6. Resolve and run esbuild (or the mock).
+    let esbuild_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     fs::create_dir_all(&outdir)
         .with_context(|| format!("bundler: failed to create outdir {}", outdir.display()))?;
     // Bundle filename — `bundle_basename` lets callers run two bundle()
@@ -1542,7 +1579,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     } else {
         run_esbuild(&input, shadow, &bundle_path)?;
     }
+    let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
 
+    let post_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let manifest = BundleManifest {
         framework: adapter.name().to_string(),
         jsx_import_source: adapter.jsx_import_source().to_string(),
@@ -1554,6 +1597,28 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             .to_string(),
         routes,
     };
+    let post_ms = post_start.map(|t| t.elapsed().as_millis());
+
+    // Teardown — the shadow TempDir's recursive delete. Dropped explicitly
+    // here (instead of implicitly at scope exit) so the unlink storm is
+    // measurable; behavior is identical (this is already the last use).
+    let teardown_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+    drop(work);
+    let teardown_ms = teardown_start.map(|t| t.elapsed().as_millis());
+
+    if timing_enabled {
+        eprintln!(
+            "[zfb-timing] bundle(): materialise={}ms esbuild={}ms post={}ms teardown={}ms",
+            materialise_ms.unwrap_or(0),
+            esbuild_ms.unwrap_or(0),
+            post_ms.unwrap_or(0),
+            teardown_ms.unwrap_or(0),
+        );
+    }
 
     Ok(BundlerOutput {
         bundle_path,
