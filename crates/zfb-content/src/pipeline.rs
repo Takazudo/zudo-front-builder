@@ -19,11 +19,12 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
+use zfb_md_ast::diagnostics::MarkdownDiagnostic;
 use zfb_md_ast::{HeadingIdStrategy, ReadRecorder};
 
 use crate::dep_manifest::DependencyManifest;
@@ -246,9 +247,12 @@ fn features_fingerprint_segment(
 ///   `tests/pipeline_fingerprint.rs` pins the serialized key set as a
 ///   second line of defense);
 /// - a feature whose plugin reads OTHER files at compile time must ALSO
-///   join the `filesystem_dependent_feature` gate in
-///   [`Pipeline::with_defaults_and_full_config`] so the pipeline becomes
-///   uncacheable — a cached entry cannot see the referenced files change.
+///   record every read through the [`zfb_md_ast::ReadRecorder`]
+///   (constructor clone wired in `register_features_config_derived`,
+///   zfb#944) AND join the recorder-creation condition in
+///   [`Pipeline::with_defaults_and_full_config`] — the compile cache
+///   validates the recorded dependency manifest before serving a hit,
+///   which is what lets such features stay cacheable.
 ///
 /// All bindings are deliberately discarded; the function exists purely to
 /// break the build on config drift (the optimizer removes it entirely).
@@ -428,8 +432,7 @@ pub struct Pipeline {
     /// `None` means "uncacheable": the pipeline's visitor chain can no
     /// longer be derived from config alone — a raw trait-object visitor
     /// was appended via [`Pipeline::add_mdast_visitor`] /
-    /// [`Pipeline::add_hast_visitor`], or an output-affecting knob that
-    /// cannot be keyed (filesystem-reading feature plugins) is in play.
+    /// [`Pipeline::add_hast_visitor`].
     config_fingerprint_base: Option<String>,
     /// Descriptor segments appended by the named config-driven mutators
     /// ([`Pipeline::add_toc`], [`Pipeline::add_strip_md_ext`],
@@ -445,6 +448,22 @@ pub struct Pipeline {
     /// the cache entry's [`DependencyManifest`] afterwards. See
     /// [`Pipeline::set_read_recorder`].
     read_recorder: Option<Arc<ReadRecorder>>,
+    /// Project-level roots for the per-file `BuildContext` the JSX-emit
+    /// path builds when compiling through
+    /// `compile_mdx_to_jsx_module_cached` (zfb#944): `(project_root,
+    /// public_dir)`. `None` (the default) keeps the context-free emit
+    /// path — context-aware feature plugins (transclude,
+    /// imageDimensions, linkValidation) stay no-ops there. See
+    /// [`Pipeline::set_build_context_roots`].
+    build_context_roots: Option<(PathBuf, PathBuf)>,
+    /// Markdown diagnostics emitted by context-aware feature plugins
+    /// through the per-file `BuildContext` sink during JSX-emit compiles
+    /// (zfb#944) — e.g. linkValidation broken-link findings. Buffered
+    /// here (mirroring the resolve-links `broken_links` side channel)
+    /// so the compile cache can store the slice one compile appended
+    /// and replay it on a hit; call sites drain via
+    /// [`Pipeline::take_markdown_diagnostics`].
+    markdown_diagnostics: Vec<MarkdownDiagnostic>,
 }
 
 impl Default for Pipeline {
@@ -519,6 +538,8 @@ impl Pipeline {
             )),
             config_fingerprint_extras: Vec::new(),
             read_recorder: None,
+            build_context_roots: None,
+            markdown_diagnostics: Vec::new(),
         }
     }
 
@@ -551,13 +572,15 @@ impl Pipeline {
     ///   `register_post_syntect_features` helpers when called manually
     ///   after construction) — an arbitrary `Box<dyn …Visitor>` cannot
     ///   be fingerprinted reliably;
-    /// - `markdown.features` enables a plugin that reads **other files**
-    ///   at compile time (`transclude`, `imageDimensions`,
-    ///   `linkValidation`) — their effect cannot be keyed on the input
-    ///   string, so a cached entry could go stale when the referenced
-    ///   file changes;
     /// - a `themesDir` was configured but became unreadable while
     ///   computing the fingerprint.
+    ///
+    /// Filesystem-reading feature plugins (`transclude`,
+    /// `imageDimensions`, `linkValidation`) no longer bail (the pre-#944
+    /// gate): their config is covered by the canonical features JSON,
+    /// and their per-file reads are validated through the read-recorder
+    /// dependency manifest ([`Pipeline::set_read_recorder`], zfb#942/#944)
+    /// before any cache hit is honoured.
     ///
     /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
     #[must_use]
@@ -942,12 +965,12 @@ impl Pipeline {
     ///
     /// **Fingerprint-neutral.** The recorder is observational: it never
     /// changes the JSX a given input emits, so attaching it does NOT
-    /// invalidate [`Pipeline::config_fingerprint`]. (Whether the
-    /// *plugins that record* are fingerprintable is a separate,
-    /// pre-existing decision — today the `filesystem_dependent_feature`
-    /// gate in [`Pipeline::with_defaults_and_full_config`] still marks
-    /// such pipelines uncacheable; flipping that gate once the plugins
-    /// actually record is zfb#944.)
+    /// invalidate [`Pipeline::config_fingerprint`]. (Since zfb#944 the
+    /// recording plugins ARE fingerprintable — the old
+    /// `filesystem_dependent_feature` gate in
+    /// [`Pipeline::with_defaults_and_full_config`] is flipped, and that
+    /// constructor wires one recorder per pipeline whenever a
+    /// filesystem-reading feature is enabled.)
     ///
     /// **Cache-key effect.** Because recording plugins may resolve
     /// reads relative to the file being compiled, a recorder-armed
@@ -988,6 +1011,106 @@ impl Pipeline {
             .as_ref()
             .map(|r| DependencyManifest::from_recorded_reads(r.take_reads()))
             .unwrap_or_default()
+    }
+
+    /// Arm per-file `BuildContext` threading on the JSX-emit path
+    /// (zfb#944): `compile_mdx_to_jsx_module_cached` builds a
+    /// `BuildContext { source_path: <the compiled file>, project_root,
+    /// public_dir, .. }` for every compile and applies the visitor
+    /// chains through their `*_with_context` variants, so the
+    /// context-aware feature plugins (transclude, imageDimensions,
+    /// linkValidation) actually fire — and record their reads — instead
+    /// of no-opping. Without this call the emit path stays context-free
+    /// and byte-identical to before.
+    ///
+    /// **Fingerprint-extending.** Both roots shape the emitted JSX
+    /// (containment checks, `/`-absolute image resolution), so they join
+    /// the config fingerprint as a normalised segment — two pipelines
+    /// armed with different roots can never alias one compile-cache
+    /// entry. A second call replaces the roots AND the segment.
+    ///
+    /// **Cache-key effect.** A roots-armed pipeline additionally keys
+    /// every compile-cache entry by the full normalised source PATH (not
+    /// just the recorder's parent-dir segment): context-aware plugins
+    /// observe the source path itself (transclude seeds its cycle
+    /// detection with it; linkValidation stamps it into diagnostic
+    /// locations), so identical bodies in one directory may legitimately
+    /// produce different output/diagnostics per file. See the key-shape
+    /// docs on `compile_mdx_to_jsx_module_cached`.
+    ///
+    /// The heading registry is deliberately NOT threaded here — it is
+    /// per-build orchestration state; cross-file anchor validation
+    /// through the cache is follow-up work. The per-compile context
+    /// carries `heading_registry: None`.
+    pub fn set_build_context_roots(
+        &mut self,
+        project_root: PathBuf,
+        public_dir: PathBuf,
+    ) -> &mut Self {
+        let segment = format!(
+            "build_context_roots;project_root={};public_dir={}",
+            normalize_path_lexically(&project_root),
+            normalize_path_lexically(&public_dir),
+        );
+        self.build_context_roots = Some((project_root, public_dir));
+        // A second call REPLACES the roots, so the previous segment must
+        // go too (mirrors `add_resolve_links`).
+        self.config_fingerprint_extras
+            .retain(|s| !s.starts_with("build_context_roots;"));
+        self.extend_config_fingerprint(segment);
+        self
+    }
+
+    /// The armed `(project_root, public_dir)` pair, if any (see
+    /// [`Pipeline::set_build_context_roots`]).
+    #[must_use]
+    pub fn build_context_roots(&self) -> Option<(&Path, &Path)> {
+        self.build_context_roots
+            .as_ref()
+            .map(|(root, public)| (root.as_path(), public.as_path()))
+    }
+
+    /// Drain the markdown diagnostics context-aware feature plugins
+    /// emitted during JSX-emit compiles since the last drain (zfb#944) —
+    /// e.g. linkValidation broken-link findings, transclude read
+    /// errors. Mirrors [`Pipeline::take_broken_links`]; empty unless
+    /// [`Pipeline::set_build_context_roots`] armed context threading.
+    pub fn take_markdown_diagnostics(&mut self) -> Vec<MarkdownDiagnostic> {
+        std::mem::take(&mut self.markdown_diagnostics)
+    }
+
+    /// Number of buffered (not yet drained) markdown diagnostics. The
+    /// compile cache snapshots this before a compile so it can slice
+    /// off exactly the diagnostics that compile appended (zfb#944,
+    /// mirroring [`Pipeline::broken_links_len`]).
+    pub(crate) fn markdown_diagnostics_len(&self) -> usize {
+        self.markdown_diagnostics.len()
+    }
+
+    /// Clone the markdown diagnostics buffered at index `from` onward,
+    /// without draining (zfb#944 — see
+    /// [`Pipeline::markdown_diagnostics_len`]).
+    pub(crate) fn markdown_diagnostics_since(&self, from: usize) -> Vec<MarkdownDiagnostic> {
+        self.markdown_diagnostics
+            .get(from..)
+            .unwrap_or_default()
+            .to_vec()
+    }
+
+    /// Append diagnostics collected by the JSX-emit path's per-file
+    /// context sink (zfb#944). Internal — the emit path flushes its
+    /// `CollectingSink` here after the visitor chains run.
+    pub(crate) fn extend_markdown_diagnostics(&mut self, diags: Vec<MarkdownDiagnostic>) {
+        self.markdown_diagnostics.extend(diags);
+    }
+
+    /// Cache-hit replay (zfb#944): re-inject markdown diagnostics stored
+    /// with a cached compile so call sites draining
+    /// [`Pipeline::take_markdown_diagnostics`] after a hit observe
+    /// exactly what the fresh compile produced (the sibling of
+    /// [`Pipeline::replay_broken_links`]).
+    pub(crate) fn replay_markdown_diagnostics(&mut self, diags: Vec<MarkdownDiagnostic>) {
+        self.extend_markdown_diagnostics(diags);
     }
 
     /// Test seam (zfb#942): push an mdast visitor WITHOUT invalidating
@@ -1373,12 +1496,22 @@ impl Pipeline {
         p.set_heading_id_strategy(strategy);
         p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::with_strategy(strategy)));
         p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
+        // One read-recorder per pipeline (zfb#942/#944), created iff a
+        // filesystem-reading feature plugin will be wired: the plugins
+        // receive clones at construction (inside
+        // `register_features_config_derived`) and the SAME `Arc` goes on
+        // the pipeline below, so the compile-cache choke point can scope
+        // the recorded reads per compile.
+        let filesystem_dependent_feature = features.transclude.is_some()
+            || features.image_dimensions.is_some()
+            || features.link_validation.is_some();
+        let read_recorder = filesystem_dependent_feature.then(|| Arc::new(ReadRecorder::new()));
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
         // mermaid; after for post-syntect). The `_config_derived` variant
         // does not invalidate — the final base descriptor below covers the
         // whole `features` value.
-        register_features_config_derived(&mut p, features);
+        register_features_config_derived(&mut p, features, read_recorder.as_ref());
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
         // extras visitors (mermaid, …) run first.
         let syntect = if let Some(t) = theme {
@@ -1397,31 +1530,33 @@ impl Pipeline {
         // (constructor obligation of the invalidation rule — see
         // `push_config_derived_mdast_visitor`).
         //
-        // Plugins that read OTHER files at compile time make the JSX
-        // output depend on filesystem state the cache key cannot see
-        // (`transclude` splices referenced file contents,
-        // `imageDimensions` reads image headers, `linkValidation`
-        // emits cross-file diagnostics) — a cached entry could go
-        // stale when a referenced file changes between dev ticks, so
-        // their presence marks the pipeline uncacheable.
-        let filesystem_dependent_feature = features.transclude.is_some()
-            || features.image_dimensions.is_some()
-            || features.link_validation.is_some();
-        let base = if filesystem_dependent_feature {
-            None
-        } else {
-            match (
-                themes_dir_fingerprint_segment(themes_dir),
-                features_fingerprint_segment(features),
-            ) {
-                (Some(themes_seg), Some(features_seg)) => Some(format!(
-                    "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
-                    gfm = gfm_fingerprint_segment(resolved),
-                )),
-                _ => None,
-            }
+        // Plugins that read OTHER files at compile time (`transclude`,
+        // `imageDimensions`, `linkValidation`) no longer bail out of the
+        // fingerprint (the pre-#944 `filesystem_dependent_feature` gate):
+        // their CONFIG is covered by the canonical features JSON below,
+        // and their per-file reads are covered by the read-recorder wired
+        // above — `compile_mdx_to_jsx_module_cached` stores the recorded
+        // reads as a `DependencyManifest` with every entry and re-probes
+        // them before honouring a hit, so a cached entry can no longer go
+        // stale when a referenced file changes between dev ticks.
+        let base = match (
+            themes_dir_fingerprint_segment(themes_dir),
+            features_fingerprint_segment(features),
+        ) {
+            (Some(themes_seg), Some(features_seg)) => Some(format!(
+                "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
+                gfm = gfm_fingerprint_segment(resolved),
+            )),
+            _ => None,
         };
         p.set_config_fingerprint_base(base);
+        // Attach AFTER the base descriptor: `set_read_recorder` is
+        // fingerprint-neutral, but the recorder must survive the
+        // `set_config_fingerprint_base` extras reset regardless of order
+        // — it lives in its own field. One recorder per pipeline.
+        if let Some(recorder) = read_recorder {
+            p.set_read_recorder(recorder);
+        }
         Ok(p)
     }
 
@@ -1656,7 +1791,10 @@ pub fn register_features(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
-    register_features_config_derived(p, features);
+    // No read-recorder on this path: the manual registration makes the
+    // pipeline uncacheable anyway, so there is no dependency manifest to
+    // feed (the compile cache never stores entries for it).
+    register_features_config_derived(p, features, None);
     p.invalidate_config_fingerprint();
 }
 
@@ -1664,9 +1802,16 @@ pub fn register_features(
 /// called from [`Pipeline::with_defaults_and_full_config`], whose final base
 /// descriptor covers the whole `features` value (invalidation rule — see
 /// `Pipeline::push_config_derived_mdast_visitor`).
+///
+/// `read_recorder` (zfb#944): when `Some`, the filesystem-reading feature
+/// plugins (transclude, imageDimensions, linkValidation) receive a clone
+/// at construction so every external read they perform is reported for
+/// the compile cache's dependency manifest. The caller owns putting the
+/// SAME `Arc` on the pipeline via [`Pipeline::set_read_recorder`].
 fn register_features_config_derived(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
+    read_recorder: Option<&Arc<ReadRecorder>>,
 ) {
     // Wave 3 (#570): conditionally wire the four opt-in framework features.
     //
@@ -1694,9 +1839,11 @@ fn register_features_config_derived(
     // (source_path + project_root) to resolve file paths. When the pipeline
     // is driven via `run_with_context`, the context is automatically threaded.
     if let Some(cfg) = &features.transclude {
-        p.push_config_derived_mdast_visitor(Box::new(
-            zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone()),
-        ));
+        let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone());
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_mdast_visitor(Box::new(plugin));
     }
 
     // code_tabs MUST run BEFORE the directives step and github_alerts so that
@@ -1800,9 +1947,11 @@ fn register_features_config_derived(
     // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
     // Uses visit_with_context — pipeline must call run_with_context for this to fire.
     if let Some(cfg) = features.image_dimensions.clone() {
-        p.push_config_derived_hast_visitor(Box::new(
-            zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg),
-        ));
+        let mut plugin = zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg);
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 
     // Wave 6 (#580): link_validation — validate internal links + anchor
@@ -1811,9 +1960,11 @@ fn register_features_config_derived(
     // current file are already populated by HeadingLinksPlugin. Gated on
     // `is_some()` (uses a rich options struct, not a FeatureToggle).
     if let Some(cfg) = &features.link_validation {
-        p.push_config_derived_hast_visitor(Box::new(
-            zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone()),
-        ));
+        let mut plugin = zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone());
+        if let Some(recorder) = read_recorder {
+            plugin = plugin.with_recorder(Arc::clone(recorder));
+        }
+        p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 }
 

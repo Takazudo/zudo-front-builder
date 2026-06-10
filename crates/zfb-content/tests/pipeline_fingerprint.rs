@@ -4,9 +4,11 @@
 //! bar is: **every config knob that can change emitted JSX for the same
 //! input must change the fingerprint** (a missed knob silently serves
 //! stale JSX), and pipelines whose visitor chain cannot be derived from
-//! config (manual mutation, filesystem-reading feature plugins) must
-//! have NO fingerprint at all. Per-file resolve-links state is keyed by
-//! the compile cache itself (zfb#939) rather than invalidating here.
+//! config (manual mutation) must have NO fingerprint at all. Per-file
+//! resolve-links state is keyed by the compile cache itself (zfb#939)
+//! rather than invalidating here; filesystem-reading feature plugins
+//! keep their fingerprint since zfb#944 — their per-file reads are
+//! validated through the read-recorder dependency manifest instead.
 
 use std::collections::HashSet;
 
@@ -462,10 +464,17 @@ fn resolve_links_path_spelling_does_not_split_the_fingerprint() {
 }
 
 #[test]
-fn filesystem_reading_features_invalidate_the_fingerprint() {
-    // These plugins read OTHER files at compile time, so their output
-    // cannot be keyed on the input string — a cached entry could go
-    // stale when the referenced file changes between dev ticks.
+fn filesystem_reading_features_keep_the_pipeline_cacheable() {
+    // zfb#944 contract (replaces the pre-#944 "filesystem features
+    // invalidate" pin): these plugins read OTHER files at compile time,
+    // but every read is reported through the per-pipeline ReadRecorder
+    // the constructor now wires, and the compile cache validates the
+    // recorded dependency manifest before serving any hit — so the
+    // pipeline keeps a config fingerprint. Each feature must still
+    // SPLIT the fingerprint (the canonical features JSON covers it),
+    // and the recorder must actually be attached.
+    let baseline_fp = baseline().config_fingerprint().expect("fingerprinted");
+    let mut fps = vec![baseline_fp];
     for (label, value) in [
         ("transclude", json!({ "transclude": {} })),
         ("imageDimensions", json!({ "imageDimensions": {} })),
@@ -479,11 +488,72 @@ fn filesystem_reading_features_invalidate_the_fingerprint() {
             false,
             Some(&feats),
         );
+        let fp = p.config_fingerprint().unwrap_or_else(|| {
+            panic!("features.{label} must keep a config fingerprint (zfb#944)")
+        });
         assert!(
-            p.config_fingerprint().is_none(),
-            "features.{label} reads the filesystem — the pipeline must be uncacheable"
+            p.read_recorder().is_some(),
+            "features.{label} must wire a read-recorder so its reads join \
+             the dependency manifest (zfb#944)"
         );
+        fps.push(fp);
     }
+    let distinct: HashSet<&String> = fps.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        fps.len(),
+        "baseline + each filesystem feature must produce pairwise distinct \
+         fingerprints: {fps:?}"
+    );
+}
+
+#[test]
+fn non_filesystem_features_do_not_wire_a_read_recorder() {
+    // The recorder (and the per-source-dir cache-key segment that comes
+    // with it) is reserved for pipelines whose plugins actually read
+    // other files — a plain feature set keeps the pre-#942 key shape.
+    let p = baseline();
+    assert!(p.read_recorder().is_none());
+    let feats = features(json!({ "githubAlerts": true }));
+    let p = full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        true,
+        false,
+        Some(&feats),
+    );
+    assert!(p.read_recorder().is_none());
+}
+
+#[test]
+fn build_context_roots_join_the_fingerprint() {
+    // zfb#944: the BuildContext roots shape emitted JSX (containment
+    // checks, `/`-absolute image resolution), so arming them must split
+    // the fingerprint — and equal roots must agree across constructions.
+    let unarmed = baseline().config_fingerprint().expect("fingerprinted");
+
+    let mut a = baseline();
+    a.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let a = a.config_fingerprint().expect("armed pipeline stays fingerprinted");
+
+    let mut b = baseline();
+    b.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let b = b.config_fingerprint().expect("fingerprinted");
+    assert_eq!(a, b, "equal roots must share one fingerprint");
+    assert_ne!(a, unarmed, "arming context roots must split the fingerprint");
+
+    let mut c = baseline();
+    c.set_build_context_roots("/other".into(), "/other/public".into());
+    let c = c.config_fingerprint().expect("fingerprinted");
+    assert_ne!(a, c, "different roots must split the fingerprint");
+
+    // A second call REPLACES the roots and the segment — no stale
+    // segment may linger (mirrors the add_resolve_links contract).
+    let mut d = baseline();
+    d.set_build_context_roots("/other".into(), "/other/public".into());
+    d.set_build_context_roots("/proj".into(), "/proj/public".into());
+    let d = d.config_fingerprint().expect("fingerprinted");
+    assert_eq!(a, d, "re-arming must replace the previous roots segment");
 }
 
 #[test]
