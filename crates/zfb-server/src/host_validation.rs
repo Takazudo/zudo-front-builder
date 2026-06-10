@@ -221,6 +221,17 @@ fn host_without_port(raw: &str) -> Option<String> {
         if inner.is_empty() {
             return None;
         }
+        // Fail closed on trailing bytes after `]`: only an empty remainder
+        // or a `:port` suffix is a well-formed bracketed authority.
+        // Accepting `[::1]evil.test` would hand the trailing garbage a free
+        // pass through the always-allowed IP-literal rule.
+        let after = &rest[end + 1..];
+        let valid_port = after.strip_prefix(':').is_some_and(|p| {
+            !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
+        });
+        if !(after.is_empty() || valid_port) {
+            return None;
+        }
         return Some(inner.to_ascii_lowercase());
     }
     // More than one colon without brackets = a bare IPv6 literal (which
@@ -405,6 +416,20 @@ mod tests {
         assert!(v.host_allowed("[::1]"));
         assert!(v.host_allowed("[::1]:3000"));
         assert!(!v.host_allowed("evil.test"));
+    }
+
+    #[test]
+    fn malformed_bracketed_authorities_fail_closed() {
+        let v = enforcing(&[]);
+        // Trailing garbage after `]` must not ride the IP-literal allow rule.
+        assert!(!v.host_allowed("[::1]evil.test"));
+        assert!(!v.host_allowed("[2001:db8::1]anything"));
+        assert!(!v.host_allowed("[::1]:"));
+        assert!(!v.host_allowed("[::1]:80x"));
+        assert!(!v.host_allowed("[::1]:8080extra"));
+        // Well-formed shapes keep working.
+        assert!(v.host_allowed("[::1]:8080"));
+        assert!(v.host_allowed("[::1]"));
     }
 
     // --- matcher: dot-suffix entries ---------------------------------
