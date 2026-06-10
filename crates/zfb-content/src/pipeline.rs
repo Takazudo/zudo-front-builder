@@ -756,8 +756,10 @@ impl Pipeline {
     /// Digest canonicalisation: entries are sorted and hashed as
     /// length-delimited records (no separator/`=` ambiguity), with the
     /// path keys normalised by the shared lexical helper
-    /// (`path_norm::normalize_path_lexically`) so two spellings of one
-    /// path digest identically.
+    /// (`path_norm::normalize_path_lexically`), whose canonical form
+    /// mirrors `Path` equality — exactly the spellings the runtime
+    /// `HashMap<PathBuf, _>` lookup merges digest identically, and the
+    /// ones it distinguishes (`..`, leading `./`) stay distinct.
     ///
     /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
     pub fn add_resolve_links(
@@ -865,9 +867,10 @@ impl Pipeline {
     /// pre-#939 two-part shape for every other pipeline.
     ///
     /// The dir is normalised with the same lexical helper as the
-    /// source-map digest in [`Pipeline::add_resolve_links`], so two
-    /// spellings of one dir key identically while two different dirs
-    /// never collide. An unset dir maps to a distinct `none` token —
+    /// source-map digest in [`Pipeline::add_resolve_links`]: spellings
+    /// the runtime lookup treats as one dir (`Path` equality) key
+    /// identically, while dirs whose lookups can differ never collide.
+    /// An unset dir maps to a distinct `none` token —
     /// `source_dir = None` only performs absolute lookups, which is
     /// observably different from any set dir (the empty path included).
     pub(crate) fn cache_key_context(&self) -> Option<String> {
@@ -2689,6 +2692,17 @@ mod tests {
             p.cache_key_context().expect("wired => context"),
             canonical,
             "different dirs must never share a cache key"
+        );
+
+        // `..` spellings are runtime-distinct (`Path` equality keeps
+        // them, and so do the map lookups joined from this dir), so
+        // they must key separately — merging them could serve a stale
+        // hit.
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/a/../y"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            canonical,
+            "a `..` spelling can look up differently — it must key separately"
         );
     }
 }

@@ -437,11 +437,13 @@ fn resolve_links_source_map_digest_has_no_record_ambiguity() {
 
 #[test]
 fn resolve_links_path_spelling_does_not_split_the_fingerprint() {
-    // The digest normalises map keys with the shared lexical helper:
-    // two spellings of the same path must digest identically (a split
-    // here costs every cache hit whenever a caller spells dirs
-    // differently across surfaces), while genuinely different paths
-    // must stay distinct.
+    // The digest normalises map keys with the shared lexical helper,
+    // whose canonical form mirrors `Path` equality — i.e. exactly the
+    // runtime `HashMap<PathBuf, _>` lookup semantics. Spellings the
+    // lookup merges must digest identically (a split costs every cache
+    // hit), while spellings the lookup DISTINGUISHES (`..`) must stay
+    // distinct — collapsing them would let two maps that resolve links
+    // differently share a fingerprint and serve a stale hit.
     fn fp(path: &str) -> String {
         let mut map = std::collections::HashMap::new();
         map.insert(std::path::PathBuf::from(path), "/docs/a/".to_string());
@@ -452,7 +454,10 @@ fn resolve_links_path_spelling_does_not_split_the_fingerprint() {
     let canonical = fp("/c/docs/a.mdx");
     assert_eq!(canonical, fp("/c/./docs/a.mdx"));
     assert_eq!(canonical, fp("/c//docs/a.mdx"));
-    assert_eq!(canonical, fp("/c/x/../docs/a.mdx"));
+    assert_eq!(canonical, fp("/c/docs/a.mdx/."));
+    // `..` keys are runtime-distinct (Path equality keeps them), so the
+    // digest must keep them distinct too.
+    assert_ne!(canonical, fp("/c/x/../docs/a.mdx"));
     assert_ne!(canonical, fp("/c/docs2/a.mdx"));
 }
 
