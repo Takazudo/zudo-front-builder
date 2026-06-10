@@ -214,6 +214,124 @@ describe("hydrateAll — data-when=idle", () => {
   });
 });
 
+describe("hydrateAll — data-when=media", () => {
+  /** Build a controllable fake MediaQueryList. */
+  function fakeMql(matches: boolean) {
+    const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+    return {
+      matches,
+      addEventListener: vi.fn((_type: string, h: (e: MediaQueryListEvent) => void) => {
+        listeners.push(h);
+      }),
+      removeEventListener: vi.fn((_type: string, h: (e: MediaQueryListEvent) => void) => {
+        const i = listeners.indexOf(h);
+        if (i !== -1) listeners.splice(i, 1);
+      }),
+      dispatchChange(m: boolean) {
+        for (const l of [...listeners]) l({ matches: m } as MediaQueryListEvent);
+      },
+    };
+  }
+
+  it("does not hydrate before the media query matches", async () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-props="{}" data-when="media" data-media="(max-width: 768px)"></div>
+    `;
+    const mql = fakeMql(false);
+    (globalThis as unknown as { matchMedia: unknown }).matchMedia = vi.fn(() => mql);
+
+    const { bundle, calls } = makeBundle();
+    await hydrateAll({
+      bundleUrl: "/x.js",
+      importBundle: async () => bundle,
+    });
+
+    expect(mql.addEventListener).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    delete (globalThis as unknown as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it("fires once when the query matches", async () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-props="{}" data-when="media" data-media="(max-width: 768px)"></div>
+    `;
+    const mql = fakeMql(false);
+    (globalThis as unknown as { matchMedia: unknown }).matchMedia = vi.fn(() => mql);
+
+    const { bundle, calls } = makeBundle();
+    await hydrateAll({
+      bundleUrl: "/x.js",
+      importBundle: async () => bundle,
+    });
+
+    expect(calls).toHaveLength(0);
+
+    // Simulate query match.
+    mql.dispatchChange(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.name).toBe("Counter");
+
+    // Listener removed after first match.
+    expect(mql.removeEventListener).toHaveBeenCalledTimes(1);
+    delete (globalThis as unknown as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it("ignores un-match change events", async () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-props="{}" data-when="media" data-media="(max-width: 768px)"></div>
+    `;
+    const mql = fakeMql(false);
+    (globalThis as unknown as { matchMedia: unknown }).matchMedia = vi.fn(() => mql);
+
+    const { bundle, calls } = makeBundle();
+    await hydrateAll({
+      bundleUrl: "/x.js",
+      importBundle: async () => bundle,
+    });
+
+    mql.dispatchChange(false); // un-match — must be ignored
+    expect(calls).toHaveLength(0);
+    delete (globalThis as unknown as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it("fires synchronously when the query already matches at boot (no listener registered)", async () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-props="{}" data-when="media" data-media="(min-width: 0px)"></div>
+    `;
+    const mql = fakeMql(true); // already matches
+    (globalThis as unknown as { matchMedia: unknown }).matchMedia = vi.fn(() => mql);
+
+    const { bundle, calls } = makeBundle();
+    await hydrateAll({
+      bundleUrl: "/x.js",
+      importBundle: async () => bundle,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(mql.addEventListener).not.toHaveBeenCalled();
+    delete (globalThis as unknown as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it("npm lazy-props: data-props is NOT read until the query matches", async () => {
+    // Use non-matching query so the fire closure is deferred.
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-props='NOT_JSON' data-when="media" data-media="(max-width: 768px)"></div>
+    `;
+    const mql = fakeMql(false);
+    (globalThis as unknown as { matchMedia: unknown }).matchMedia = vi.fn(() => mql);
+
+    const { bundle } = makeBundle();
+    // hydrateAll completes without parsing props (query not yet matched).
+    await hydrateAll({
+      bundleUrl: "/x.js",
+      importBundle: async () => bundle,
+    });
+    // No error thrown — props not yet parsed. Good.
+    delete (globalThis as unknown as { matchMedia?: unknown }).matchMedia;
+  });
+});
+
 describe("hydrateAll — data-when=visible", () => {
   it("waits for IntersectionObserver intersection before hydrating", async () => {
     document.body.innerHTML = `

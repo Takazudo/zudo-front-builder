@@ -31,24 +31,34 @@ SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="
 ```ts
 interface IslandProps {
   when?: When;
+  media?: string;
   ssrFallback?: VNode;
   children?: VNode;
 }
 ```
 
 - `when` — ハイドレーション戦略。デフォルトは `"load"`。後述の [ハイドレーション戦略](#ハイドレーション戦略) を参照してください。
+- `media` — `when="media"` 島用の CSS メディアクエリ文字列。このクエリが最初にマッチしたとき（リサイズや回転による後続のビューポート変更を含む）にハイドレートします。`when="media"` のときに必須で、他の戦略には無視されます（開発時に警告が出ます）。
 - `ssrFallback` — SSR スキップモードを有効にします（Astro の `client:only` に相当）。指定すると、重い `children` はサーバーサイドで評価され**ません**。代わりに `ssrFallback` がレンダリングされ、クライアントはハイドレーション時に本物のコンポーネントに差し替えます。
 - `children` — ハイドレートするコンポーネント。
 
 ## ハイドレーション戦略
 
-`when` プロップは 3 つの値を受け付けます。いずれも現在出荷済みです。
+`when` プロップは 4 つの値を受け付けます。いずれも現在出荷済みです。
 
 | 値 | 振る舞い |
 | --- | --- |
 | `"load"` | ページの JavaScript が実行されたら即座にハイドレートします。`when` を省略した場合のデフォルトです。 |
 | `"visible"` | 島のルート要素がビューポートに入ったときにハイドレートします（IntersectionObserver、しきい値 0）。画面外コンテンツに対して最も低コストの遅延手段です。 |
 | `"idle"` | ブラウザの次のアイドルコールバック時にハイドレートします。`requestIdleCallback` がないプラットフォームでは `setTimeout(0)` にフォールバックします。 |
+| `"media"` | CSS メディアクエリが最初にマッチしたときにハイドレートします（`window.matchMedia`）。同伴の `media` プロップが必要です。後続のビューポート変更（リサイズ、画面向き変更）にも対応します。`matchMedia` が使用できない場合は即座にハイドレートにフォールバックします。**注意:** SSR スキップ（`ssrFallback`）島は `when` を完全に無視し、即座にレンダリングします。 |
+
+```tsx
+// 狭いビューポート（例: モバイルメニュー）でのみハイドレートする
+<Island when="media" media="(max-width: 768px)">
+  <MobileMenu />
+</Island>
+```
 
 ## SSR スキップモード
 

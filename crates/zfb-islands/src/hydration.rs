@@ -82,19 +82,19 @@ use crate::html_tree::HtmlTree;
 /// | `Visible` | `"visible"` |
 /// | `Idle` | `"idle"` |
 /// | `Load` | `"load"` |
+/// | `Media(query)` | `"media"` (+ separate `data-media` attribute) |
 ///
 /// Using an enum instead of a bare `String` means the rewriter and its
 /// callers cannot accidentally pass an unrecognised hint — unknown values
 /// fail at construction time (or static analysis) rather than silently
 /// round-tripping into the HTML.
 ///
-/// Media-query-gated hydration (a `Media(query)` variant emitting
-/// `data-when="media(<q>)"`) is a deliberate future feature: it is omitted
-/// here because the client hydration runtime (`packages/zfb/src/runtime.ts`)
-/// has no `window.matchMedia` dispatch branch yet, so emitting such a hint
-/// would silently fall back to immediate (`"load"`) hydration. The variant
-/// will be reintroduced together with the runtime support so callers cannot
-/// construct a no-op hint.
+/// The `Media(query)` variant emits `data-when="media"` plus a separate
+/// `data-media="<query>"` attribute (NOT the packed `data-when="media(<q>)"`
+/// shape). The client runtime reads `data-media` via `getAttribute("data-media")`
+/// and passes it to `window.matchMedia`. The two-attribute shape was chosen
+/// so each attribute is orthogonal and attribute escaping is handled
+/// uniformly by the existing `escape_attr` helper.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhenHint {
@@ -109,6 +109,10 @@ pub enum WhenHint {
     /// unambiguous about intent without relying on the absent-attribute
     /// default.
     Load,
+    /// Hydrate when the given CSS media query first matches (`matchMedia`).
+    /// The query string is emitted as a separate `data-media` attribute;
+    /// `data-when` is set to `"media"`.
+    Media(String),
 }
 
 impl WhenHint {
@@ -118,12 +122,14 @@ impl WhenHint {
     /// use zfb_islands::hydration::WhenHint;
     /// assert_eq!(WhenHint::Visible.as_str(), "visible");
     /// assert_eq!(WhenHint::Idle.as_str(), "idle");
+    /// assert_eq!(WhenHint::Media("(max-width: 768px)".to_string()).as_str(), "media");
     /// ```
     pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
         match self {
             WhenHint::Visible => std::borrow::Cow::Borrowed("visible"),
             WhenHint::Idle => std::borrow::Cow::Borrowed("idle"),
             WhenHint::Load => std::borrow::Cow::Borrowed("load"),
+            WhenHint::Media(_) => std::borrow::Cow::Borrowed("media"),
         }
     }
 }
@@ -680,6 +686,11 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
         s.push_str(" data-when=\"");
         s.push_str(&escape_attr(&when.as_str()));
         s.push('"');
+        if let WhenHint::Media(query) = when {
+            s.push_str(" data-media=\"");
+            s.push_str(&escape_attr(query));
+            s.push('"');
+        }
     }
     s.push('>');
     s.push_str(inner);
@@ -802,6 +813,10 @@ mod tests {
         assert_eq!(WhenHint::Visible.as_str(), "visible");
         assert_eq!(WhenHint::Idle.as_str(), "idle");
         assert_eq!(WhenHint::Load.as_str(), "load");
+        assert_eq!(
+            WhenHint::Media("(max-width: 768px)".to_string()).as_str(),
+            "media"
+        );
     }
 
     #[test]
@@ -811,6 +826,49 @@ mod tests {
         let d = IslandDescriptor::new("Foo", json!({}), "k").with_when(WhenHint::Idle);
         rewrite_islands(&mut tree, &[d]).unwrap();
         assert!(tree.serialize().contains(r#"data-when="idle""#));
+    }
+
+    #[test]
+    fn when_hint_media_emits_both_data_when_and_data_media_attributes() {
+        let inner = wrap_with_markers("k", "<x/>");
+        let mut tree = page_with(&inner);
+        let d = IslandDescriptor::new("Foo", json!({}), "k")
+            .with_when(WhenHint::Media("(max-width: 768px)".to_string()));
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        let out = tree.serialize();
+        assert!(
+            out.contains(r#"data-when="media""#),
+            "missing data-when=media: {out}"
+        );
+        assert!(
+            out.contains(r#"data-media="(max-width: 768px)""#),
+            "missing data-media attribute: {out}"
+        );
+    }
+
+    #[test]
+    fn when_hint_media_escapes_query_in_attribute() {
+        let inner = wrap_with_markers("k", "<x/>");
+        let mut tree = page_with(&inner);
+        // Query contains double-quote which must be HTML-escaped.
+        let d = IslandDescriptor::new("Foo", json!({}), "k").with_when(WhenHint::Media(
+            r#"screen and (min-width: "640px")"#.to_string(),
+        ));
+        rewrite_islands(&mut tree, &[d]).unwrap();
+        let out = tree.serialize();
+        // The double-quote inside the value must be escaped as &quot;
+        assert!(
+            out.contains("data-media="),
+            "data-media attribute missing: {out}"
+        );
+        assert!(
+            !out.contains(r#"data-media="screen and (min-width: ""#),
+            "unescaped double-quote in attribute: {out}"
+        );
+        assert!(
+            out.contains("&quot;"),
+            "expected HTML-escaped &quot; in output: {out}"
+        );
     }
 
     #[test]
