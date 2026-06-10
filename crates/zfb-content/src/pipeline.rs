@@ -309,11 +309,7 @@ fn assert_features_fingerprint_covers_every_field(
         Some(ImageDimensionsConfig { skip_remote: _ }) | None => {}
     }
     match link_validation {
-        Some(LinkValidationConfig {
-            fail_on_broken: _,
-            allow_external: _,
-        })
-        | None => {}
+        Some(LinkValidationConfig { fail_on_broken: _ }) | None => {}
     }
     match transclude {
         Some(TranscludeConfig { max_depth: _ }) | None => {}

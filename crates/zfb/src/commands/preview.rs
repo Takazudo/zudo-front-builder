@@ -119,7 +119,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .context("invalid adapter in zfb.config.json")?;
 
     match adapter {
-        AdapterChoice::None => run_static(&outdir, &host, port).await,
+        AdapterChoice::None => run_static(&outdir, &host, port, &cfg.allowed_hosts).await,
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
             run_via_wrangler(&project_root, &outdir, &host, port).await
         }
@@ -134,10 +134,27 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Bind the static preview server and run it until Ctrl+C.
-async fn run_static(dist_root: &Path, host: &str, port: u16) -> Result<()> {
+async fn run_static(
+    dist_root: &Path,
+    host: &str,
+    port: u16,
+    allowed_hosts: &[String],
+) -> Result<()> {
     let app = build_static_router(dist_root.to_path_buf());
 
     let addr: SocketAddr = resolve_addr(host, port)?;
+
+    // Issue #931: the preview server gets the same Host-header
+    // allowlist guard as `zfb dev` — a no-op for the default loopback
+    // bind, enforced (with Preview-mode generic 403 bodies) when the
+    // user exposes the built site to the LAN.
+    let host_validation = zfb_server::HostValidation::for_bind(
+        addr.ip(),
+        Some(host),
+        allowed_hosts,
+        zfb_server::ServerMode::Preview,
+    );
+    let app = zfb_server::apply_host_validation_layer(app, host_validation);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind preview server to {addr}"))?;

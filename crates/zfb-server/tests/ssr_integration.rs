@@ -104,6 +104,20 @@ async fn boot_with_base(
     tokio::task::JoinHandle<anyhow::Result<()>>,
     tempfile::TempDir,
 ) {
+    boot_with_opts(ssr_routes, plugin_set, base, zfb_server::ServerMode::Dev).await
+}
+
+async fn boot_with_opts(
+    ssr_routes: Option<SsrRouteSet>,
+    plugin_set: Option<DevMiddlewareSet>,
+    base: Option<String>,
+    mode: zfb_server::ServerMode,
+) -> (
+    SocketAddr,
+    PageCache,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist_root = tmp.path().join("dist");
     let public_root = tmp.path().join("public");
@@ -134,9 +148,11 @@ async fn boot_with_base(
         ssr_routes: ssr_handle,
         base,
         trailing_slash: false,
-        mode: zfb_server::ServerMode::Dev,
+        mode,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -465,6 +481,8 @@ async fn boot_with_live_handle(
         mode: zfb_server::ServerMode::Dev,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -656,6 +674,69 @@ async fn ssr_route_update_does_not_break_static_pages() {
     );
     let body = r3.text().await.unwrap();
     assert!(body.contains("static"), "static page body must be unchanged");
+
+    server.abort();
+}
+
+// -------------------------------------------------------------------
+// Issue #926 — error-body gating: Dev vs Preview/Embed
+// -------------------------------------------------------------------
+
+/// In Dev mode, an SSR dispatch error must return a 500 whose body
+/// contains the underlying error message (V8 stack trace visible to
+/// the developer in the browser).
+#[tokio::test]
+async fn ssr_error_body_is_verbose_in_dev_mode() {
+    let set = ssr_set(
+        "/dynamic",
+        Arc::new(FailingSsrDispatcher) as Arc<dyn SsrDispatcher>,
+    );
+    let (addr, _pages, server, _tmp) =
+        boot_with_opts(Some(set), None, None, zfb_server::ServerMode::Dev).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/dynamic"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 500);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("simulated SSR failure"),
+        "Dev mode must include the error detail in the body; got: {body}"
+    );
+
+    server.abort();
+}
+
+/// In Preview mode, an SSR dispatch error must return a 500 with a
+/// generic body — the V8/internal detail must not leak to the client.
+#[tokio::test]
+async fn ssr_error_body_is_generic_in_preview_mode() {
+    let set = ssr_set(
+        "/dynamic",
+        Arc::new(FailingSsrDispatcher) as Arc<dyn SsrDispatcher>,
+    );
+    let (addr, _pages, server, _tmp) =
+        boot_with_opts(Some(set), None, None, zfb_server::ServerMode::Preview).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/dynamic"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 500);
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("simulated SSR failure"),
+        "Preview mode must not leak the error detail in the body; got: {body}"
+    );
+    assert!(
+        body.contains("Internal Server Error"),
+        "Preview mode must return a generic error body; got: {body}"
+    );
 
     server.abort();
 }

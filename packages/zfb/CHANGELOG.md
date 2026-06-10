@@ -2,6 +2,14 @@
 
 > **Newer releases:** see https://takazudomodular.com/pj/zudo-front-builder/docs/changelog/ for v0.1.0-next.5 and later. Entries below are historical (kept for npm readers).
 
+## Unreleased
+
+### Breaking changes (pre-1.0)
+
+**`linkValidation.allowExternal` removed** (#925):
+
+The `allowExternal` config knob has been removed. It was accepted but never did anything — external URL network validation is out of scope. Migration: delete `allowExternal` from your `linkValidation` config; external URLs continue to be silently skipped (unchanged runtime behaviour).
+
 ## 0.1.0-next.4
 
 ### Bug fixes

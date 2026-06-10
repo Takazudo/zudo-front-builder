@@ -226,6 +226,32 @@ pub struct Config {
     #[serde(default)]
     pub port: Option<u16>,
 
+    /// Host header values the dev/preview server accepts when bound to
+    /// a non-localhost interface (`--host 0.0.0.0`, `host` in config) —
+    /// the DNS-rebinding guard from issue #931 / #919, mirroring Vite's
+    /// `server.allowedHosts`.
+    ///
+    /// Only consulted for non-loopback binds; the default `localhost`
+    /// bind skips validation entirely. `localhost`, the explicitly
+    /// bound host, and any IP-literal Host — `127.0.0.1`, `[::1]`, the
+    /// LAN URLs the startup banner prints — are always allowed (DNS
+    /// rebinding needs a DNS name, so raw IPs are safe; Vite parity).
+    ///
+    /// Matching rules (the request Host's port is stripped first and
+    /// comparison is case-insensitive):
+    ///
+    /// - `"example.com"` — matches exactly that host.
+    /// - `".example.com"` (leading dot) — matches `example.com` and
+    ///   every subdomain (`api.example.com`).
+    /// - IPv6 entries may be written with or without brackets
+    ///   (`"[::1]"` / `"::1"`).
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `allowedHosts` into this field. Mirrors
+    /// `allowedHosts` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
     /// JSX framework runtime. Default: `Preact`.
     #[serde(default)]
     pub framework: Framework,
@@ -485,6 +511,36 @@ pub struct Config {
     /// the JSON / TS form `pluginHookTimeoutSecs` 1:1.
     #[serde(default)]
     pub plugin_hook_timeout_secs: Option<u64>,
+
+    /// Whether `copy_public_dir` copies `public/` under the `base`
+    /// sub-path segment (`true`, default) or flat to the `dist/` root
+    /// (`false`).
+    ///
+    /// **`true` (default):** files land at
+    /// `<outDir>/<base-segment>/<rel>`, matching the base-prefixed URLs
+    /// that `withBase()` emits in the rendered HTML. This is the
+    /// canonical placement for projects served at their configured sub-
+    /// path — a file at `public/img/logo.svg` is reachable at
+    /// `/<base>/img/logo.svg` in production.
+    ///
+    /// **`false`:** files land flat at `<outDir>/<rel>` regardless of
+    /// `base`. Use this when the deploy pipeline relocates the entire
+    /// `dist/` tree into the base segment itself (e.g. `cp -a dist/.
+    /// deploy-root/pj/site/`), so putting the files under
+    /// `<outDir>/<base>/...` would result in a double-nested path. In
+    /// that scheme `public/img/logo.svg` lands at `dist/img/logo.svg`
+    /// and arrives at `/<base>/img/logo.svg` after relocation — the same
+    /// final URL, without the redundant nesting.
+    ///
+    /// **Interaction with `zfb preview`:** with `false`, base-prefixed
+    /// asset URLs 404 under `zfb preview` because the flat copy lives at
+    /// the dist root. This is a known trade-off of the flat-copy deploy
+    /// scheme; `zfb preview` does not simulate deploy-side relocation.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `copyPublicWithBase` 1:1.
+    #[serde(default = "default_true")]
+    pub copy_public_with_base: bool,
 }
 
 impl Default for Config {
@@ -494,6 +550,7 @@ impl Default for Config {
             public_dir: default_public_dir(),
             host: None,
             port: None,
+            allowed_hosts: Vec::new(),
             framework: Framework::default(),
             collections: Vec::new(),
             tailwind: None,
@@ -512,6 +569,7 @@ impl Default for Config {
             extra_watch_paths: Vec::new(),
             output: OutputMode::default(),
             plugin_hook_timeout_secs: None,
+            copy_public_with_base: true,
         }
     }
 }
@@ -1886,6 +1944,19 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             bail!(
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
                 b
+            );
+        }
+    }
+    for (i, h) in cfg.allowed_hosts.iter().enumerate() {
+        // Reject empty entries and a bare "." loudly — a silently dropped
+        // entry would surface much later as a confusing 403 on the LAN.
+        let trimmed = h.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            bail!(
+                "allowedHosts[{i}]: {:?} is not a valid host entry; use a hostname \
+                 (\"example.com\"), a leading-dot subdomain wildcard (\".example.com\"), \
+                 or an IP literal",
+                h
             );
         }
     }
@@ -3278,6 +3349,56 @@ mod tests {
                 features: None,
             })
         );
+    }
+
+    // --- allowedHosts field tests (#931) --------------------------------------
+
+    #[tokio::test]
+    async fn allowed_hosts_loads_camel_case_entries() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "allowedHosts": ["example.com", ".sub.example.org", "[::1]"] }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(
+            cfg.allowed_hosts,
+            vec![
+                "example.com".to_string(),
+                ".sub.example.org".to_string(),
+                "[::1]".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_hosts_defaults_to_empty_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.allowed_hosts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn allowed_hosts_rejects_empty_and_bare_dot_entries() {
+        for bad in [r#"{ "allowedHosts": [""] }"#, r#"{ "allowedHosts": ["."] }"#] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(tmp.path().join("zfb.config.json"), bad)
+                .await
+                .unwrap();
+            let err = load_from_dir(tmp.path())
+                .await
+                .expect_err("invalid allowedHosts entry should be rejected");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("allowedHosts"),
+                "expected error mentioning allowedHosts; got: {msg}"
+            );
+        }
     }
 
     // --- site field tests (#254) --------------------------------------------

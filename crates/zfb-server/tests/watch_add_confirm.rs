@@ -317,6 +317,8 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         mode: zfb_server::ServerMode::Dev,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -561,6 +563,8 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         mode: zfb_server::ServerMode::Dev,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -758,6 +762,8 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         mode: zfb_server::ServerMode::Dev,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

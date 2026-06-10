@@ -32,6 +32,12 @@
 
 name: Node-free smoke
 
+# Cancel previous runs on the same ref — smoke artifacts are consumed only
+# within the same run, so cancellation is safe and prevents artifact churn.
+concurrency:
+  group: node-free-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
   push:

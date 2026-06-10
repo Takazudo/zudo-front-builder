@@ -71,6 +71,8 @@ impl Harness {
             mode,
             islands_bundle_url,
             css_bundle_url: None,
+            allowed_hosts: Vec::new(),
+            bound_host: None,
         };
 
         let server = tokio::spawn(async move {

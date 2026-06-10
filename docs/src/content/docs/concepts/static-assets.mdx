@@ -126,6 +126,21 @@ export default defineConfig({
 
 Default: `"public"`. The path is resolved relative to the project root. A missing directory is a silent no-op — not every project needs one.
 
+### Flat copy for deploy-relocation pipelines
+
+When a deploy pipeline relocates the entire `dist/` tree into the base sub-path — for example, a workflow that runs `cp -a dist/. deploy-root/pj/site/` — placing public assets under `dist/<base>/...` would produce a double-nested path (`deploy-root/pj/site/pj/site/img/logo.svg`). Set `copyPublicWithBase: false` to copy public assets flat to `dist/` root instead:
+
+```ts
+export default defineConfig({
+  base: "/pj/site/",
+  copyPublicWithBase: false,
+});
+```
+
+With this setting `public/img/logo.svg` lands at `dist/img/logo.svg`. After `cp -a dist/. deploy-root/pj/site/` it arrives at `deploy-root/pj/site/img/logo.svg`, served at `/pj/site/img/logo.svg` — the same URL your pages reference via `withBase()`, without double-nesting.
+
+**`zfb preview` caveat:** with `copyPublicWithBase: false`, base-prefixed public-asset URLs 404 under `zfb preview` because the flat copy lives at the dist root and `zfb preview` does not simulate deploy-side relocation. This is an expected trade-off of the flat-copy scheme. The production deploy is unaffected.
+
 ## What does NOT go in `public/`
 
 `public/` is the right home for:

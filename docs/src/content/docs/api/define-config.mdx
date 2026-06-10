@@ -20,6 +20,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port.
+- `allowedHosts?: string[]` — Host header values the dev/preview server accepts when bound to a non-localhost interface (mirrors Vite's `server.allowedHosts`). Only consulted for non-loopback binds; `localhost`, the explicitly bound host, and any IP-literal Host (`127.0.0.1`, `[::1]`, the LAN URLs the startup banner prints) are always allowed — DNS rebinding needs a DNS name, so raw IPs are safe. Entries match exactly (case-insensitive, request port stripped); a leading-dot entry like `".example.com"` also matches subdomains.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
 - `collections?: CollectionDef[]` — content collections. Each entry has:
   - `name: string` — identifier used in `getCollection` calls.
@@ -36,6 +37,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `output?: "static" | "hybrid" | "auto"` — project output mode. `"static"` errors at build start if any route exports `prerender = false`; `"hybrid"` always enables V8/SSR even if no SSR routes currently exist; `"auto"` (default) detects from the route set.
 - `site?: string` — canonical origin URL (e.g. `"https://example.com"`). When set, exposes `globalThis.__zfb.site` so layouts can build canonical `<link>` tags, OpenGraph meta, sitemap absolute hrefs, and hreflang alternates. Must be an absolute HTTP/HTTPS URL; omit for builds that do not need server-side canonical URL construction. Distinct from `base` — see below.
 - `base?: string` — public URL prefix for asset URLs. Use when the site is deployed under a sub-path (e.g. `"/pj/my-site/"`). Distinct from `site`: `base` prefixes asset URLs; `site` is the full canonical origin used in metadata.
+- `copyPublicWithBase?: boolean` — whether `public/` assets are copied under the `base` sub-path segment (default `true`) or flat to the `dist/` root (`false`). Set `false` when the deploy pipeline relocates the entire `dist/` tree into the base path (e.g. `cp -a dist/. deploy-root/pj/site/`) to avoid a double-nested `dist/<base>/<base>/...` path. See [Static Assets — flat copy for deploy-relocation pipelines](../concepts/static-assets.mdx).
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
 - `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
 - `markdown?: MarkdownConfig` — Markdown/MDX parsing options (e.g. GFM toggle). See the [Markdown Features](../markdown-features/index.mdx) section.

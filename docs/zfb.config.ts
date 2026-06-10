@@ -117,6 +117,9 @@ const integrationPlugins = [
         },
       ]
     : []),
+  // TRANSITION (#932): Keep until docs pin is bumped to next.37+, which
+  // ships `copyPublicWithBase`. The native knob (set below) handles the
+  // flat copy in next.37+; this plugin is the fallback for next.35.
   {
     name: "./plugins/copy-public-plugin.mjs",
     options: {
@@ -128,6 +131,13 @@ const integrationPlugins = [
 export default defineConfig({
   framework: "preact",
   tailwind: { enabled: true },
+  // Docs site deploys under base "/pj/zudo-front-builder/" via
+  // `cp -a docs/dist/. deploy-root/pj/zudo-front-builder/` — the
+  // deploy workflow relocates the entire dist/ tree, so flat-copying
+  // public/ to dist/ (not to dist/pj/zudo-front-builder/) is the
+  // correct placement. copyPublicWithBase:false replaces the old
+  // copy-public-plugin.mjs that did the same thing manually.
+  copyPublicWithBase: false,
   collections,
   stripMdExt: true,
   resolveMarkdownLinks: {

@@ -20,6 +20,7 @@ defineConfig(config: ZfbConfig): ZfbConfig
 - `publicDir?: string` — 静的アセットのディレクトリ。そのままコピーされます。デフォルト: `"public"`。
 - `host?: string` — dev / preview サーバーがバインドするホスト。
 - `port?: number` — dev / preview サーバーのポート。
+- `allowedHosts?: string[]` — 非 localhost インターフェースにバインドしたときに dev / preview サーバーが受け付ける Host ヘッダー値（Vite の `server.allowedHosts` に相当）。非ループバックバインドのときだけ参照されます。`localhost`・明示的にバインドしたホスト・IP リテラルの Host（`127.0.0.1`・`[::1]`・起動バナーが表示する LAN URL など）は常に許可されます（DNS リバインディングには DNS 名が必要なため、生の IP は安全です）。エントリは完全一致（大文字小文字を区別せず、リクエスト側のポートは除去して比較）。`".example.com"` のような先頭ドット付きエントリはサブドメインにもマッチします。
 - `framework?: "preact" | "react"` — JSX フレームワークのランタイム。デフォルト: `"preact"`。
 - `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは以下を持ちます。
   - `name: string` — `getCollection` 呼び出しで使う識別子。

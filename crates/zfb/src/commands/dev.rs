@@ -448,10 +448,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Eager initial bundle. Failures are non-fatal — we warn and let the
     // dev server boot anyway. The hot-rebuild path will retry on the next
     // file change so a transient esbuild hiccup at boot doesn't strand the
-    // user. Pre-existing islands assets on disk from a previous build are
-    // also overwritten by this call (the bundler always writes to the
-    // stable path), keeping dev's view of `/assets/islands.js` consistent
-    // with the source tree.
+    // user.
+    // Unlike the production path (which only emits a hashed file), the dev
+    // server must write the stable `dist/assets/islands.js` explicitly so
+    // `ServeDir` can serve `GET /assets/islands.js` (mirrors the CSS path
+    // below — the bundler carries bytes in memory only; disk writes belong
+    // to the caller).
     // Small helper closure to translate a stable_url into the prefixed
     // form the dev server actually serves it at (`/assets/islands.js`
     // for no-base, `/foo/assets/islands.js` for `base: "/foo/"`, plain
@@ -472,15 +474,38 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &islands_plugin_config,
     ) {
         Ok(Some(payload)) => {
-            let url = prefixed_islands_url(payload.stable_url);
-            if let Ok(mut guard) = islands_bundle_url_handle.write() {
-                *guard = Some(url);
+            // Write the stable `islands.js` bytes to disk so the dev
+            // server's `ServeDir` can handle `GET /assets/islands.js`.
+            // The bundler no longer writes to disk itself — the caller
+            // owns the disk write (same pattern as the CSS path below).
+            // Only publish the bundle URL when the write succeeded —
+            // setting it on a failed write would inject a `<script>` tag
+            // pointing at a file that 404s (mirrors the pre-change
+            // behaviour where a bundler write failure produced no URL).
+            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
+            if let Some(parent) = islands_out_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&islands_out_path, &payload.bytes) {
+                Ok(()) => {
+                    let url = prefixed_islands_url(payload.stable_url);
+                    if let Ok(mut guard) = islands_bundle_url_handle.write() {
+                        *guard = Some(url);
+                    }
+                }
+                Err(e) => {
+                    output::warn(format!(
+                        "initial islands bundle write failed (no <script \
+                         type=\"module\"> will be injected until the next \
+                         successful rebuild): {e:#}"
+                    ));
+                }
             }
             // Write chunk companions alongside islands.js and seed the
             // live-chunk tracker. Boot failures here are non-fatal —
             // the server still comes up; the next successful rebuild
             // will retry.
-            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
             match refresh_dev_island_chunks(&assets_dir, &payload.companions, &HashSet::new()) {
                 Ok(names) => {
                     if let Ok(mut guard) = live_chunk_filenames.lock() {
@@ -568,6 +593,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
                 return Ok(None);
             };
+            // Write the stable `islands.js` bytes to disk so ServeDir can
+            // serve `GET /assets/islands.js`. The bundler carries bytes in
+            // memory only — the dev caller owns the disk write (same
+            // pattern as the CSS path).
+            {
+                let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
+                let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
+                if let Some(parent) = islands_out_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&islands_out_path, &payload.bytes) {
+                    return Err(anyhow::anyhow!(
+                        "dev islands: failed to write islands.js to disk: {e:#}"
+                    ));
+                }
+            }
             let bundle_url = if url_prefix.is_empty() {
                 payload.stable_url
             } else {
@@ -919,6 +960,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // rebuild ticks rewrite the inner Option, page responses read it
         // on every served HTML request.
         css_bundle_url: Some(Arc::clone(&css_bundle_url_handle)),
+        // Issue #931: Host-header allowlist for non-localhost binds.
+        // `allowedHosts` config entries plus the explicitly bound host;
+        // the server disables enforcement entirely for loopback binds.
+        allowed_hosts: cfg.allowed_hosts.clone(),
+        bound_host: Some(host.clone()),
     };
 
     // 7. Bind the TCP listener first so the port-in-use error surfaces

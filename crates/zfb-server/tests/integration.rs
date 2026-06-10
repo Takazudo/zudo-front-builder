@@ -80,6 +80,8 @@ impl Harness {
             mode: zfb_server::ServerMode::Dev,
             islands_bundle_url: None,
             css_bundle_url: None,
+            allowed_hosts: Vec::new(),
+            bound_host: None,
         };
 
         let server = tokio::spawn(async move {
@@ -528,6 +530,8 @@ async fn serve_returns_error_when_port_is_occupied() {
         mode: zfb_server::ServerMode::Dev,
         islands_bundle_url: None,
         css_bundle_url: None,
+        allowed_hosts: Vec::new(),
+        bound_host: None,
     };
 
     let result = serve(opts, std::future::ready(())).await;

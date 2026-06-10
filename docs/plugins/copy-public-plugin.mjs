@@ -1,9 +1,14 @@
 // zfb plugin module: copy-public.
 //
-// Workaround for upstream zfb gap — `zfb build` does not copy `public/`
-// contents to `outDir`. See: zudolab/zudo-doc#1394;
-// upstream issue: https://github.com/Takazudo/zudo-front-builder/issues/158
+// TRANSITION NOTE (#932): This plugin is kept while the docs pin uses
+// @takazudo/zfb@0.1.0-next.35, which pre-dates the `copyPublicWithBase`
+// knob added in this change. The new knob (`copyPublicWithBase: false` in
+// docs/zfb.config.ts) handles the flat copy natively in next.37+, but the
+// released binary doesn't know it yet so silently ignores it. Remove this
+// plugin when the docs dependency pin is bumped to the version that ships
+// `copyPublicWithBase` (i.e. when docs/package.json references next.37+).
 //
+// Original rationale (still accurate):
 // postBuild — recursively copies `<projectRoot>/public/` directly into
 //             `<outDir>/` (FLAT, matching zfb's own dist/ convention —
 //             zfb emits dist/index.html, dist/assets/..., NOT

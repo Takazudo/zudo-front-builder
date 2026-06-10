@@ -130,6 +130,7 @@ async fn boot_with_plugins(
         trailing_slash: false,
         islands_bundle_url: None,
         css_bundle_url: None,
+        host_validation: zfb_server::HostValidation::disabled(),
     };
     let router = build_router(state);
 

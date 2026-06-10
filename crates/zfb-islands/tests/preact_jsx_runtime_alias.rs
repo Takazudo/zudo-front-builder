@@ -143,11 +143,9 @@ fn preact_client_router_islands_bundle_resolves_react_jsx_runtime() {
              react/jsx-runtime via the preact alias and succeed",
         );
 
-    let body = fs::read_to_string(&out.asset_path).expect("read bundle");
-    assert!(
-        !body.is_empty(),
-        "bundle output should be non-empty (client-router side-effect import + island)"
-    );
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.bytes.is_empty(), "bundle output should be non-empty");
+    let body = String::from_utf8(out.bytes).expect("bundled bytes are valid UTF-8");
     // Prove the alias actually rewrote the target (not just that the build
     // succeeded): the stub's `react/jsx-runtime` import surfaces in the output
     // as the externalized `preact/jsx-runtime`. NB: a naive
