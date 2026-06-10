@@ -53,6 +53,7 @@ use crate::pipeline::{
     PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
+use crate::plugins::BrokenLinkDiagnostic;
 
 /// Options controlling the emitted JSX module.
 #[derive(Debug, Clone)]
@@ -1955,8 +1956,24 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
 /// worst-case accumulation from edit churn across a large content tree.
 const MDX_MODULE_CACHE_CAP: usize = 4_096;
 
+/// One cache slot: the compiled output plus the broken-link
+/// diagnostics that compile produced (zfb#939).
+///
+/// Diagnostics are a side channel — call sites compile, then drain
+/// [`Pipeline::take_broken_links`] — so a cache hit must replay the
+/// stored vec back into the pipeline's `ResolveLinksPlugin`; without
+/// that, every hit would silently swallow the file's broken-link
+/// reports. Pipelines without a wired plugin always store an empty vec.
+#[derive(Debug, Clone)]
+struct CachedMdxModule {
+    compiled: CompiledMdx,
+    broken_links: Vec<BrokenLinkDiagnostic>,
+}
+
 /// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
-/// raw input source plus the supplied pipeline's config fingerprint.
+/// raw input source plus the supplied pipeline's config fingerprint
+/// (plus, for resolve-links pipelines, a per-call `source_dir` context
+/// segment — see [`Pipeline::cache_key_context`]).
 ///
 /// **Opt-in.** Callers that don't pass a `&MdxModuleCache` to
 /// [`compile_mdx_to_jsx_module_cached`] get a fresh compilation every
@@ -1971,11 +1988,12 @@ const MDX_MODULE_CACHE_CAP: usize = 4_096;
 /// [`Pipeline::config_fingerprint`] of the supplied pipeline (or a
 /// fixed `no-pipeline` token), so identical inputs compiled under
 /// different pipeline configs never alias one entry. Pipelines without
-/// a fingerprint (manually mutated / per-file-stateful — see
-/// [`Pipeline::config_fingerprint`]) bypass the cache entirely.
+/// a fingerprint (manually mutated / carrying filesystem-reading
+/// feature plugins — see [`Pipeline::config_fingerprint`]) bypass the
+/// cache entirely.
 #[derive(Debug, Default)]
 pub struct MdxModuleCache {
-    inner: Mutex<HashMap<String, CompiledMdx>>,
+    inner: Mutex<HashMap<String, CachedMdxModule>>,
 }
 
 /// Process-wide cache instance backing [`MdxModuleCache::process_global`].
@@ -2029,7 +2047,7 @@ impl MdxModuleCache {
 
     /// Lock-or-recover: a poisoned mutex still yields a valid guard via
     /// `into_inner`, so cache reads do not panic on a prior writer crash.
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, CompiledMdx>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, CachedMdxModule>> {
         match self.inner.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -2061,10 +2079,13 @@ pub fn compile_mdx_to_jsx_module(
 /// invoking the emitter. When `cache` is `None`, every call compiles
 /// fresh.
 ///
-/// # Cache keying (zfb#905)
+/// # Cache keying (zfb#905, context segment zfb#939)
 ///
-/// The key is `"{sha256(input)};{fingerprint}"` where the fingerprint
-/// component is:
+/// The key is `"{sha256(input)};{fingerprint}"` — extended to
+/// `"{sha256(input)};{fingerprint};{context}"` when the pipeline
+/// carries per-call state ([`Pipeline::cache_key_context`], today
+/// exactly the resolve-links per-file `source_dir`) — where the
+/// fingerprint component is:
 ///
 /// - the fixed token `no-pipeline` when `pipeline` is `None` (the
 ///   no-pipeline emit path produces different JSX than any pipeline'd
@@ -2074,17 +2095,27 @@ pub fn compile_mdx_to_jsx_module(
 ///   not manually mutated.
 ///
 /// Pipelines whose fingerprint is `None` — manually mutated via
-/// [`Pipeline::add_mdast_visitor`] / [`Pipeline::add_hast_visitor`],
-/// wired with `ResolveLinksPlugin`, or carrying a filesystem-reading
-/// feature plugin (see [`Pipeline::config_fingerprint`]) — **bypass the
-/// cache entirely**: every call compiles fresh, exactly as if `cache`
-/// were `None`.
+/// [`Pipeline::add_mdast_visitor`] / [`Pipeline::add_hast_visitor`], or
+/// carrying a filesystem-reading feature plugin (see
+/// [`Pipeline::config_fingerprint`]) — **bypass the cache entirely**:
+/// every call compiles fresh, exactly as if `cache` were `None`.
 ///
 /// The `mdx://<collection>/<slug>#<hash>` specifier is re-derived from
 /// THIS call's `file_path` even on a cache hit: two files with
 /// byte-identical bodies share the (expensive) compiled JSX but each
 /// receives a specifier matching its own path, so a hit can never leak
 /// another file's collection/slug.
+///
+/// # Broken-link diagnostics replay (zfb#939)
+///
+/// A pipeline wired with `ResolveLinksPlugin` accumulates
+/// [`BrokenLinkDiagnostic`]s as a compile side channel, drained by call
+/// sites via [`Pipeline::take_broken_links`] AFTER each compile. The
+/// cache preserves that contract across hits: a miss stores the
+/// diagnostics the compile appended alongside the JSX; a hit replays
+/// the stored vec back into the pipeline's plugin before returning, so
+/// the caller's drain observes exactly what a fresh compile would have
+/// produced.
 ///
 /// The on-miss insert is best-effort: if two threads race on the same
 /// key they may both compile (and the second insert simply overwrites
@@ -2099,13 +2130,13 @@ pub fn compile_mdx_to_jsx_module(
 /// When a `pipeline` carries per-document state (accumulated diagnostics,
 /// heading registries, …), the caller must reset it (`reset_per_entry()`
 /// or equivalent) before each call — the cache key covers input + config
-/// fingerprint only, not visitor state. All production call sites do
-/// this today.
+/// fingerprint + per-call context only, not visitor state. All
+/// production call sites do this today.
 pub fn compile_mdx_to_jsx_module_cached(
     input: &str,
     file_path: &Path,
     cache: Option<&MdxModuleCache>,
-    pipeline: Option<&mut Pipeline>,
+    mut pipeline: Option<&mut Pipeline>,
 ) -> Result<CompiledMdx, PipelineError> {
     let (collection, slug) = collection_and_slug(file_path);
 
@@ -2119,34 +2150,59 @@ pub fn compile_mdx_to_jsx_module_cached(
     };
     let cache_for_lookup = if fingerprint.is_some() { cache } else { None };
 
-    // `sha256(input)` (full hex) + fingerprint is the key. The full
-    // input digest, not the 8-char prefix, so distinct sources that
-    // happen to share an 8-hex prefix on their *output* don't clobber
-    // each other in the cache.
+    // `sha256(input)` (full hex) + fingerprint (+ per-call context) is
+    // the key. The full input digest, not the 8-char prefix, so distinct
+    // sources that happen to share an 8-hex prefix on their *output*
+    // don't clobber each other in the cache.
     let cache_key = match (cache_for_lookup, fingerprint.as_deref()) {
         (Some(_), Some(fp)) => {
             let mut h = Sha256::new();
             h.update(input.as_bytes());
-            Some(format!("{input_hash};{fp}", input_hash = hex::encode(h.finalize())))
+            let input_hash = hex::encode(h.finalize());
+            // Per-call context segment (zfb#939): per-FILE pipeline
+            // state that shapes the output but is invisible to the
+            // construction-time config fingerprint — today the
+            // resolve-links `source_dir`. Absent context keeps the
+            // pre-#939 two-part key shape byte-for-byte.
+            Some(
+                match pipeline.as_deref().and_then(Pipeline::cache_key_context) {
+                    Some(ctx) => format!("{input_hash};{fp};{ctx}"),
+                    None => format!("{input_hash};{fp}"),
+                },
+            )
         }
         _ => None,
     };
 
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key.as_ref()) {
-        if let Some(hit) = c.lock().get(key) {
+        let hit = c.lock().get(key).cloned();
+        if let Some(hit) = hit {
+            // Diagnostics replay (zfb#939): re-inject the stored
+            // broken-link diagnostics so the caller's post-compile
+            // `take_broken_links()` drain sees them despite the plugin
+            // never running on this hit.
+            if let Some(p) = pipeline.as_deref_mut() {
+                p.replay_broken_links(hit.broken_links);
+            }
             return Ok(CompiledMdx {
-                jsx_source: hit.jsx_source.clone(),
-                content_hash: hit.content_hash.clone(),
+                jsx_source: hit.compiled.jsx_source,
+                content_hash: hit.compiled.content_hash.clone(),
                 // Path-derived, so NOT taken from the cached entry: an
                 // identical body first compiled at another path must
                 // not hand this file the other file's collection/slug.
-                specifier: format!("mdx://{collection}/{slug}#{}", hit.content_hash),
+                specifier: format!("mdx://{collection}/{slug}#{}", hit.compiled.content_hash),
             });
         }
     }
 
+    // Snapshot the diagnostic count BEFORE compiling: the buffer may
+    // still hold earlier files' not-yet-drained diagnostics (the
+    // snapshot walker never drains), and only the suffix THIS compile
+    // appends belongs in the cached entry.
+    let broken_links_before = pipeline.as_deref().map_or(0, Pipeline::broken_links_len);
+
     let opts = MdxJsxOptions::default().with_filename(file_path.display().to_string());
-    let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline)?;
+    let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
     let content_hash = hash_8(&jsx_source);
     let specifier = format!("mdx://{collection}/{slug}#{content_hash}");
 
@@ -2157,6 +2213,10 @@ pub fn compile_mdx_to_jsx_module_cached(
     };
 
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key) {
+        let broken_links = pipeline
+            .as_deref()
+            .map(|p| p.broken_links_since(broken_links_before))
+            .unwrap_or_default();
         let mut guard = c.lock();
         // Clear-on-overflow: if inserting this entry would push the map
         // past the cap, evict everything first.  Simple and correct —
@@ -2165,7 +2225,13 @@ pub fn compile_mdx_to_jsx_module_cached(
         if guard.len() >= MDX_MODULE_CACHE_CAP {
             guard.clear();
         }
-        guard.insert(key, compiled.clone());
+        guard.insert(
+            key,
+            CachedMdxModule {
+                compiled: compiled.clone(),
+                broken_links,
+            },
+        );
     }
 
     Ok(compiled)
@@ -2209,7 +2275,7 @@ mod tests {
         assert_eq!(cache.len(), 1, "pipeline'd compile must populate the cache");
 
         for entry in cache.lock().values_mut() {
-            entry.jsx_source = "__SENTINEL__".to_string();
+            entry.compiled.jsx_source = "__SENTINEL__".to_string();
         }
 
         let mut p2 = full_config_pipeline(None);
@@ -2231,6 +2297,48 @@ mod tests {
             "a different pipeline config must not alias the cached entry"
         );
         assert_eq!(cache.len(), 2, "different config must add its own entry");
+    }
+
+    // zfb#939: a resolve-links pipeline must also actually USE the
+    // cache (pre-#939 it invalidated the fingerprint and bypassed).
+    // Same sentinel poke as above — a true hit returns the sentinel,
+    // an accidental recompile would return real JSX.
+    #[test]
+    fn resolve_links_recompile_is_served_from_the_cache() {
+        let cache = MdxModuleCache::new();
+        let src = "[good](./other.mdx)\n";
+        let path = Path::new("/content/docs/index.mdx");
+        let mut map = HashMap::new();
+        map.insert(
+            std::path::PathBuf::from("/content/docs/other.mdx"),
+            "/docs/other/".to_string(),
+        );
+
+        let mut p1 = full_config_pipeline(None);
+        p1.add_resolve_links(map.clone());
+        p1.set_resolve_links_source_dir(std::path::PathBuf::from("/content/docs"));
+        let first = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert!(first.jsx_source.contains("/docs/other/"));
+        assert_eq!(
+            cache.len(),
+            1,
+            "resolve-links pipeline must populate the cache"
+        );
+
+        for entry in cache.lock().values_mut() {
+            entry.compiled.jsx_source = "__SENTINEL__".to_string();
+        }
+
+        let mut p2 = full_config_pipeline(None);
+        p2.add_resolve_links(map);
+        p2.set_resolve_links_source_dir(std::path::PathBuf::from("/content/docs"));
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "unchanged file + same map + same source_dir must be a true cache hit"
+        );
     }
 
     // zfb#905: identical bodies at different paths share the compiled

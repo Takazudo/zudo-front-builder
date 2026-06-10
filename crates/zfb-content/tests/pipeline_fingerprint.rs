@@ -4,8 +4,9 @@
 //! bar is: **every config knob that can change emitted JSX for the same
 //! input must change the fingerprint** (a missed knob silently serves
 //! stale JSX), and pipelines whose visitor chain cannot be derived from
-//! config (manual mutation, per-file state, filesystem-reading feature
-//! plugins) must have NO fingerprint at all.
+//! config (manual mutation, filesystem-reading feature plugins) must
+//! have NO fingerprint at all. Per-file resolve-links state is keyed by
+//! the compile cache itself (zfb#939) rather than invalidating here.
 
 use std::collections::HashSet;
 
@@ -343,14 +344,116 @@ fn canonical_features_json_covers_every_field() {
 }
 
 #[test]
-fn resolve_links_invalidates_the_fingerprint() {
-    // ResolveLinksPlugin output depends on the per-file source_dir (set
-    // between compiles) and drains broken-link diagnostics — both
-    // incompatible with input-keyed caching.
+fn resolve_links_keeps_the_pipeline_cacheable() {
+    // zfb#939 contract (replaces the pre-#939 "resolve-links
+    // invalidates" pin): the plugin resolves against a prebuilt
+    // source_map — it never reads the filesystem at compile time — so
+    // wiring it EXTENDS the fingerprint with a digest of the map. The
+    // remaining per-file state (source_dir, broken-link diagnostics) is
+    // handled by the compile cache itself (per-call key context +
+    // diagnostics replay).
     let mut p = baseline();
-    assert!(p.config_fingerprint().is_some());
+    let without = p.config_fingerprint().expect("baseline is fingerprinted");
     p.add_resolve_links(std::collections::HashMap::new());
-    assert!(p.config_fingerprint().is_none());
+    let with = p
+        .config_fingerprint()
+        .expect("resolveMarkdownLinks wired => fingerprint must stay Some (zfb#939)");
+    assert_ne!(
+        without, with,
+        "wiring resolve-links changes emitted JSX for md links — the          fingerprint must move"
+    );
+}
+
+#[test]
+fn resolve_links_source_map_content_changes_the_fingerprint() {
+    // The source map is rebuilt from the content tree each dev tick; a
+    // content add/remove/rename must change the digest so stale link
+    // resolutions can never be served from the cache.
+    fn fp(entries: &[(&str, &str)]) -> String {
+        let map: std::collections::HashMap<std::path::PathBuf, String> = entries
+            .iter()
+            .map(|(p, u)| (std::path::PathBuf::from(p), (*u).to_string()))
+            .collect();
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+
+    let base = fp(&[("/c/docs/a.mdx", "/docs/a/"), ("/c/docs/b.mdx", "/docs/b/")]);
+
+    // Same map, different construction order → identical fingerprint
+    // (entries are sorted before digesting; HashMap order is random
+    // anyway, so this pins determinism across rebuilds).
+    let same = fp(&[("/c/docs/b.mdx", "/docs/b/"), ("/c/docs/a.mdx", "/docs/a/")]);
+    assert_eq!(base, same, "equal maps must share one fingerprint");
+
+    // File added.
+    let added = fp(&[
+        ("/c/docs/a.mdx", "/docs/a/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+        ("/c/docs/c.mdx", "/docs/c/"),
+    ]);
+    // File removed.
+    let removed = fp(&[("/c/docs/a.mdx", "/docs/a/")]);
+    // File renamed (path key changes, URL follows).
+    let renamed = fp(&[
+        ("/c/docs/a2.mdx", "/docs/a2/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+    ]);
+    // URL remapped (same paths, different route).
+    let remapped = fp(&[
+        ("/c/docs/a.mdx", "/elsewhere/a/"),
+        ("/c/docs/b.mdx", "/docs/b/"),
+    ]);
+
+    let all = [&base, &added, &removed, &renamed, &remapped];
+    for (i, a) in all.iter().enumerate() {
+        for b in all.iter().skip(i + 1) {
+            assert_ne!(a, b, "distinct source maps must never share a fingerprint");
+        }
+    }
+}
+
+#[test]
+fn resolve_links_source_map_digest_has_no_record_ambiguity() {
+    // Length-delimited records: entry boundaries cannot be forged by
+    // moving characters between a path and its URL (the classic
+    // `key=value\n` concatenation ambiguity).
+    fn fp(entries: &[(&str, &str)]) -> String {
+        let map: std::collections::HashMap<std::path::PathBuf, String> = entries
+            .iter()
+            .map(|(p, u)| (std::path::PathBuf::from(p), (*u).to_string()))
+            .collect();
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+    assert_ne!(
+        fp(&[("/a/bc.mdx", "/x/")]),
+        fp(&[("/a/b", "c.mdx/x/")]),
+        "shifting bytes across the path/URL boundary must change the digest"
+    );
+}
+
+#[test]
+fn resolve_links_path_spelling_does_not_split_the_fingerprint() {
+    // The digest normalises map keys with the shared lexical helper:
+    // two spellings of the same path must digest identically (a split
+    // here costs every cache hit whenever a caller spells dirs
+    // differently across surfaces), while genuinely different paths
+    // must stay distinct.
+    fn fp(path: &str) -> String {
+        let mut map = std::collections::HashMap::new();
+        map.insert(std::path::PathBuf::from(path), "/docs/a/".to_string());
+        let mut p = baseline();
+        p.add_resolve_links(map);
+        p.config_fingerprint().expect("fingerprinted")
+    }
+    let canonical = fp("/c/docs/a.mdx");
+    assert_eq!(canonical, fp("/c/./docs/a.mdx"));
+    assert_eq!(canonical, fp("/c//docs/a.mdx"));
+    assert_eq!(canonical, fp("/c/x/../docs/a.mdx"));
+    assert_ne!(canonical, fp("/c/docs2/a.mdx"));
 }
 
 #[test]
