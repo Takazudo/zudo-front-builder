@@ -26,6 +26,7 @@ use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 use zfb_md_ast::HeadingIdStrategy;
 
+use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
     BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
     ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin, MermaidPlugin, ResolveLinksPlugin,
@@ -427,8 +428,7 @@ pub struct Pipeline {
     /// longer be derived from config alone — a raw trait-object visitor
     /// was appended via [`Pipeline::add_mdast_visitor`] /
     /// [`Pipeline::add_hast_visitor`], or an output-affecting knob that
-    /// cannot be keyed (per-file `ResolveLinksPlugin` state,
-    /// filesystem-reading feature plugins) is in play.
+    /// cannot be keyed (filesystem-reading feature plugins) is in play.
     config_fingerprint_base: Option<String>,
     /// Descriptor segments appended by the named config-driven mutators
     /// ([`Pipeline::add_toc`], [`Pipeline::add_strip_md_ext`],
@@ -526,11 +526,14 @@ impl Pipeline {
     /// toggles, the full `markdown.features` config (canonical JSON,
     /// map keys sorted), plus any named config-driven mutators applied
     /// after construction (`add_toc`, `add_strip_md_ext`,
-    /// `add_external_links`, `set_heading_id_strategy`).
+    /// `add_external_links`, `add_resolve_links`,
+    /// `set_heading_id_strategy`).
     ///
     /// [`compile_mdx_to_jsx_module_cached`] combines this fingerprint
-    /// with `sha256(input)` to form its cache key, so two pipelines
-    /// built from different configs can never alias one cache entry.
+    /// with `sha256(input)` (plus the per-call
+    /// [`Pipeline::cache_key_context`], when present) to form its cache
+    /// key, so two pipelines built from different configs can never
+    /// alias one cache entry.
     ///
     /// `None` (uncacheable — the compile cache is bypassed) when:
     ///
@@ -540,10 +543,6 @@ impl Pipeline {
     ///   `register_post_syntect_features` helpers when called manually
     ///   after construction) — an arbitrary `Box<dyn …Visitor>` cannot
     ///   be fingerprinted reliably;
-    /// - [`Pipeline::add_resolve_links`] wired a `ResolveLinksPlugin` —
-    ///   its per-file `source_dir` makes output path-dependent and its
-    ///   broken-link diagnostics are a side channel a cache hit would
-    ///   silently skip;
     /// - `markdown.features` enables a plugin that reads **other files**
     ///   at compile time (`transclude`, `imageDimensions`,
     ///   `linkValidation`) — their effect cannot be keyed on the input
@@ -735,23 +734,62 @@ impl Pipeline {
     /// calls [`Pipeline::set_resolve_links_source_dir`] per file.
     ///
     /// Call at most once per pipeline instance — a second call
-    /// replaces the previous plugin.
+    /// replaces the previous plugin (and its fingerprint segment).
     ///
-    /// Wiring this plugin makes the pipeline **uncacheable**
-    /// ([`Pipeline::config_fingerprint`] → `None`): the per-file
-    /// `source_dir` makes the emitted JSX depend on the source file's
-    /// directory (not just its contents), and the broken-link
-    /// diagnostics drained via [`Pipeline::take_broken_links`] are a
-    /// side channel a compile-cache hit would silently skip.
+    /// **Cacheable (zfb#939).** The plugin never reads the filesystem at
+    /// compile time — it resolves against this prebuilt `source_map`
+    /// plus the per-file `source_dir` — so wiring it **extends** the
+    /// config fingerprint with a digest of the map instead of
+    /// invalidating. The map is rebuilt from the content tree each dev
+    /// tick, so a content add/remove/rename changes the digest and
+    /// correctly invalidates every cached entry whose links could now
+    /// resolve differently. The two remaining per-file dependencies are
+    /// handled by [`compile_mdx_to_jsx_module_cached`]:
+    ///
+    /// - the per-file `source_dir` joins the cache key as a per-call
+    ///   context segment ([`Pipeline::cache_key_context`]);
+    /// - broken-link diagnostics are stored with the cached entry and
+    ///   replayed into this plugin on a hit, so draining
+    ///   [`Pipeline::take_broken_links`] after a hit observes exactly
+    ///   what a fresh compile would have produced.
+    ///
+    /// Digest canonicalisation: entries are sorted and hashed as
+    /// length-delimited records (no separator/`=` ambiguity), with the
+    /// path keys normalised by the shared lexical helper
+    /// (`path_norm::normalize_path_lexically`), whose canonical form
+    /// mirrors `Path` equality — exactly the spellings the runtime
+    /// `HashMap<PathBuf, _>` lookup merges digest identically, and the
+    /// ones it distinguishes (`..`, leading `./`) stay distinct.
+    ///
+    /// [`compile_mdx_to_jsx_module_cached`]: crate::mdx_jsx_emit::compile_mdx_to_jsx_module_cached
     pub fn add_resolve_links(
         &mut self,
         source_map: std::collections::HashMap<std::path::PathBuf, String>,
     ) -> &mut Self {
+        let mut records: Vec<(String, &str)> = source_map
+            .iter()
+            .map(|(path, url)| (normalize_path_lexically(path), url.as_str()))
+            .collect();
+        records.sort();
+        let mut hasher = Sha256::new();
+        for (path, url) in &records {
+            hasher.update((path.len() as u64).to_le_bytes());
+            hasher.update(path.as_bytes());
+            hasher.update((url.len() as u64).to_le_bytes());
+            hasher.update(url.as_bytes());
+        }
+        let digest = hex::encode(hasher.finalize());
+
         self.resolve_links = Some(ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
             source_map,
             source_dir: None,
         }));
-        self.invalidate_config_fingerprint();
+        // A second call REPLACES the plugin (doc contract above), so any
+        // previously-pushed segment must go too — a stale map digest
+        // lingering in the extras would split the fingerprint.
+        self.config_fingerprint_extras
+            .retain(|s| !s.starts_with("resolve_links;"));
+        self.extend_config_fingerprint(format!("resolve_links;source_map_sha256={digest}"));
         self
     }
 
@@ -814,6 +852,71 @@ impl Pipeline {
             .as_mut()
             .map(|p| p.take_broken_links())
             .unwrap_or_default()
+    }
+
+    /// Per-call cache-key context for `compile_mdx_to_jsx_module_cached`
+    /// (zfb#939).
+    ///
+    /// [`Pipeline::config_fingerprint`] covers construction-time config
+    /// only; this surfaces the per-FILE pipeline state that also shapes
+    /// the emitted JSX — today exactly the wired `ResolveLinksPlugin`'s
+    /// `source_dir` (set between compiles via
+    /// [`Pipeline::set_resolve_links_source_dir`]; it changes how
+    /// relative `./other.mdx` links resolve). `None` when no per-file
+    /// state is in play, keeping the cache key byte-identical to the
+    /// pre-#939 two-part shape for every other pipeline.
+    ///
+    /// The dir is normalised with the same lexical helper as the
+    /// source-map digest in [`Pipeline::add_resolve_links`]: spellings
+    /// the runtime lookup treats as one dir (`Path` equality) key
+    /// identically, while dirs whose lookups can differ never collide.
+    /// An unset dir maps to a distinct `none` token —
+    /// `source_dir = None` only performs absolute lookups, which is
+    /// observably different from any set dir (the empty path included).
+    pub(crate) fn cache_key_context(&self) -> Option<String> {
+        self.resolve_links.as_ref().map(|p| match p.source_dir() {
+            Some(dir) => format!(
+                "resolve_links_source_dir=some:{}",
+                normalize_path_lexically(dir)
+            ),
+            None => "resolve_links_source_dir=none".to_string(),
+        })
+    }
+
+    /// Number of broken-link diagnostics currently buffered (not yet
+    /// drained). The compile cache snapshots this before a compile so it
+    /// can slice off exactly the diagnostics that compile appended
+    /// (zfb#939) — the buffer may still hold earlier files' diagnostics
+    /// when the caller drains lazily (the snapshot walker never drains).
+    pub(crate) fn broken_links_len(&self) -> usize {
+        self.resolve_links
+            .as_ref()
+            .map_or(0, ResolveLinksPlugin::broken_links_len)
+    }
+
+    /// Clone the broken-link diagnostics buffered at index `from`
+    /// onward, without draining (zfb#939 — see
+    /// [`Pipeline::broken_links_len`]).
+    pub(crate) fn broken_links_since(&self, from: usize) -> Vec<BrokenLinkDiagnostic> {
+        self.resolve_links
+            .as_ref()
+            .map(|p| p.broken_links_since(from))
+            .unwrap_or_default()
+    }
+
+    /// Cache-hit replay (zfb#939): re-inject diagnostics stored with a
+    /// cached compile so call sites draining
+    /// [`Pipeline::take_broken_links`] after a hit observe exactly what
+    /// the fresh compile produced. No-op when the plugin is not wired —
+    /// unreachable in practice, because entries carrying diagnostics are
+    /// only ever keyed under a resolve-links fingerprint.
+    pub(crate) fn replay_broken_links(&mut self, diags: Vec<BrokenLinkDiagnostic>) {
+        if diags.is_empty() {
+            return;
+        }
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.replay_broken_links(diags);
+        }
     }
 
     /// New pipeline preloaded with the project's default plugin chain.
@@ -2553,6 +2656,53 @@ mod tests {
         assert_eq!(
             html1, html2,
             "with_defaults() and with_defaults_and_theme(None) must produce identical output"
+        );
+    }
+
+    // 18. Per-call cache-key context (zfb#939): only resolve-links
+    // pipelines carry one; an unset source_dir is distinct from every
+    // set dir (the empty path included — None resolves only absolute
+    // lookups); spelling differences of one dir do not split the key.
+    #[test]
+    fn cache_key_context_keys_the_resolve_links_source_dir() {
+        let mut p = Pipeline::with_defaults();
+        assert!(
+            p.cache_key_context().is_none(),
+            "no resolve-links plugin => no per-call context (key shape unchanged)"
+        );
+
+        p.add_resolve_links(std::collections::HashMap::new());
+        let unset = p.cache_key_context().expect("wired => context");
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from(""));
+        let empty = p.cache_key_context().expect("wired => context");
+        assert_ne!(unset, empty, "unset dir must never alias an empty dir");
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/./y/"));
+        let spelled = p.cache_key_context().expect("wired => context");
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/y"));
+        let canonical = p.cache_key_context().expect("wired => context");
+        assert_eq!(
+            spelled, canonical,
+            "two spellings of one dir must share a cache key"
+        );
+
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/z"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            canonical,
+            "different dirs must never share a cache key"
+        );
+
+        // `..` spellings are runtime-distinct (`Path` equality keeps
+        // them, and so do the map lookups joined from this dir), so
+        // they must key separately — merging them could serve a stale
+        // hit.
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/a/../y"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            canonical,
+            "a `..` spelling can look up differently — it must key separately"
         );
     }
 }

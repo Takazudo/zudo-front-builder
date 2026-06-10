@@ -92,6 +92,35 @@ impl ResolveLinksPlugin {
         self.options.source_dir = Some(dir);
     }
 
+    /// Current per-file source directory (`None` until
+    /// [`Self::set_source_dir`] is called). Read by the compile-cache
+    /// keying surface (`Pipeline::cache_key_context`, zfb#939).
+    pub(crate) fn source_dir(&self) -> Option<&Path> {
+        self.options.source_dir.as_deref()
+    }
+
+    /// Number of diagnostics currently buffered (i.e. accumulated and
+    /// not yet drained via [`Self::take_broken_links`]).
+    pub(crate) fn broken_links_len(&self) -> usize {
+        self.broken_links.len()
+    }
+
+    /// Clone the diagnostics buffered at index `from` onward, without
+    /// draining. The compile cache uses this to slice off exactly the
+    /// diagnostics ONE compile appended (zfb#939) — the buffer may still
+    /// hold earlier files' diagnostics when the caller drains lazily.
+    pub(crate) fn broken_links_since(&self, from: usize) -> Vec<BrokenLinkDiagnostic> {
+        self.broken_links.get(from..).unwrap_or_default().to_vec()
+    }
+
+    /// Cache-hit replay (zfb#939): re-append diagnostics recorded by an
+    /// earlier compile of the same `(input, config, source_dir)` so call
+    /// sites draining [`Self::take_broken_links`] after a compile-cache
+    /// hit observe exactly what a fresh compile would have produced.
+    pub(crate) fn replay_broken_links(&mut self, diags: Vec<BrokenLinkDiagnostic>) {
+        self.broken_links.extend(diags);
+    }
+
     /// Resolve a link URL against the source map.
     ///
     /// Returns `Ok(Some(rewritten))` when the URL resolved successfully,

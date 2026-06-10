@@ -272,10 +272,11 @@ pub fn build_snapshot_with_config(
         // every tick) AND shared with the bundler's `materialise_*`
         // passes, which compile the same bodies through identically
         // configured pipelines. The cache keys on
-        // (input, pipeline-config fingerprint) and re-derives the
+        // (input, pipeline-config fingerprint, per-file context — the
+        // resolve-links source_dir, zfb#939) and re-derives the
         // specifier per path, so cross-config or cross-file aliasing is
-        // impossible; uncacheable pipelines (resolve-links wired,
-        // filesystem-reading features) transparently bypass it.
+        // impossible; uncacheable pipelines (filesystem-reading
+        // features) transparently bypass it.
         let entries: Vec<Entry<UntypedFrontmatter>> = walk_collection_with_cache_and_filter(
             &cfg.root,
             Some(crate::mdx_jsx_emit::MdxModuleCache::process_global()),

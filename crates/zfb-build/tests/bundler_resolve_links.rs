@@ -313,3 +313,49 @@ fn resolve_links_disabled_preserves_raw_mdx_hrefs() {
         &body[..body.len().min(800)]
     );
 }
+
+/// (e) zfb#939 — error mode must STILL fail when every MDX compile is a
+///     process-global cache hit.
+///
+/// Resolve-links pipelines join the MDX compile cache as of zfb#939
+/// (pre-#939 they bypassed it). Broken-link diagnostics are drained from
+/// the pipeline AFTER each compile — on a hit the plugin never runs, so
+/// the cached entry's stored diagnostics must be replayed into the
+/// pipeline. Without replay, the first bundle fails but every warm
+/// rebuild of the same tree (the dev-loop shape) silently succeeds.
+#[test]
+fn resolve_links_error_mode_still_fails_when_compiles_hit_the_cache() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root);
+
+    // Cold bundle: populates the process-global compile cache, then
+    // fails on the broken link (policy applies after the walk).
+    let cold = bundle(make_input_with_resolve(
+        &root,
+        &esbuild,
+        "dist-e1",
+        OnBrokenLinks::Error,
+    ));
+    assert!(cold.is_err(), "cold bundle must fail in error mode");
+
+    // Warm bundle: identical tree + config → identical cache keys →
+    // every compile is a hit. The failure must survive the hits.
+    let warm_err = bundle(make_input_with_resolve(
+        &root,
+        &esbuild,
+        "dist-e2",
+        OnBrokenLinks::Error,
+    ))
+    .expect_err("warm bundle (all compiles cache hits) must still fail in error mode");
+    let msg = format!("{warm_err:#}");
+    assert!(
+        msg.contains("missing.mdx"),
+        "replayed diagnostics must still name the broken link URL; got: {msg}"
+    );
+}
