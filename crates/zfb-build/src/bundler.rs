@@ -116,10 +116,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use zfb_content::frontmatter as zfb_frontmatter;
-use zfb_content::{compile_mdx_to_jsx_module_cached, MdxModuleCache};
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
+use zfb_content::{compile_mdx_to_jsx_module_cached, MdxModuleCache};
 use zfb_render::adapters::{make_adapter, Framework};
 use zfb_types::{json_string as json_str, path_to_posix_string};
 
@@ -1062,19 +1062,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             let name = src_dir.file_name().unwrap_or_default().to_os_string();
             let dst_dir = shadow.join(&name);
             let mut broken = Vec::new();
-            materialise_shadow(
-                &src_dir,
-                &dst_dir,
-                &mut Vec::new(),
-                &mat_ctx,
-                &mut broken,
-            )
-            .with_context(|| {
-                format!(
-                    "bundler: failed materialising extra dir {} into shadow",
-                    src_dir.display()
-                )
-            })?;
+            materialise_shadow(&src_dir, &dst_dir, &mut Vec::new(), &mat_ctx, &mut broken)
+                .with_context(|| {
+                    format!(
+                        "bundler: failed materialising extra dir {} into shadow",
+                        src_dir.display()
+                    )
+                })?;
             all_broken_links.extend(broken);
         }
     }
@@ -1588,18 +1582,20 @@ fn materialise_shadow(
     // walk loop so the always-on Core plugins (CJK-friendly
     // emphasis, heading-links, code-title, syntect) plus the opt-in
     // feature visitors (mermaid, directives, …) all fire on every MDX file
-    // the walker visits. The dev loader at `crates/zfb-render/src/loader.rs`
-    // reuses one pipeline for the same reason — constructing a `Highlighter`
-    // and the boxed visitors per file would be wasteful. Borrow is linear (`&mut`), so
+    // the walker visits.  Constructing a `Highlighter` and the boxed
+    // visitors per file would be wasteful. Borrow is linear (`&mut`), so
     // a single hoisted pipeline serves every MDX file sequentially.
     // See zfb#127 / #128.
+    //
+    // Note: `zfb dev` is the bundler in Development mode — it also goes
+    // through this path.  The `zfb-render ModuleLoader` is a separate
+    // library/embedder path not used by the `zfb` CLI at all.
     //
     // The opt-in `StripMdExtensionPlugin` is appended here when the
     // user enabled `stripMdExt` in `zfb.config.ts` (zfb#127 / #129).
     // The plugin is intentionally NOT in `with_defaults()` because it
     // only makes sense for sites whose authors hand-write
-    // `[label](other.md)` style references. The dev loader honours the
-    // same flag so dev preview matches built dist.
+    // `[label](other.md)` style references.
     //
     // When `resolve_source_map` is `Some`, the `ResolveLinksPlugin` is
     // also wired into the mdast phase after the directives step so
@@ -2582,8 +2578,10 @@ fn parse_import_meta_glob_call(
     // Second arg MUST be `{ eager: true }`. Vite's DEFAULT (no options) is
     // LAZY, so a missing options object is also unsupported here.
     let Some(opts_arg) = call.args.get(1) else {
-        return unsupported("missing `{ eager: true }` options object (the \
-                            default lazy form is not supported)");
+        return unsupported(
+            "missing `{ eager: true }` options object (the \
+                            default lazy form is not supported)",
+        );
     };
     if opts_arg.spread.is_some() {
         return unsupported("spread in options argument");
@@ -2686,9 +2684,7 @@ fn materialise_source_file(
             if source.contains("import.meta.glob") {
                 let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
                 let expanded = expand_import_meta_glob(&source, file_dir, is_excluded)
-                    .with_context(|| {
-                        format!("expand import.meta.glob in {}", from.display())
-                    })?;
+                    .with_context(|| format!("expand import.meta.glob in {}", from.display()))?;
                 // Remove any pre-existing entry (e.g. a stale symlink from a
                 // prior persistent-shadow pass) before writing the real file.
                 let _ = fs::remove_file(to);
@@ -2761,10 +2757,7 @@ fn expand_import_meta_glob(
     }
 
     let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(
-        FileName::Anon.into(),
-        source.to_string(),
-    );
+    let fm = cm.new_source_file(FileName::Anon.into(), source.to_string());
     // Base offset for converting global `BytePos` → 0-based string index.
     let base = fm.start_pos.0;
 
@@ -2907,9 +2900,7 @@ fn glob_match_relative(
     let glob = globset::GlobBuilder::new(pattern)
         .literal_separator(true)
         .build()
-        .map_err(|e| {
-            anyhow!("zfb bundler: invalid import.meta.glob pattern {pattern:?}: {e}")
-        })?
+        .map_err(|e| anyhow!("zfb bundler: invalid import.meta.glob pattern {pattern:?}: {e}"))?
         .compile_matcher();
 
     let mut out: Vec<String> = Vec::new();
@@ -3948,8 +3939,8 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     cmd.arg(OsString::from(entry));
 
-    let output = run_capturing(&mut cmd)
-        .with_context(|| format!("failed to spawn {}", bin.display()))?;
+    let output =
+        run_capturing(&mut cmd).with_context(|| format!("failed to spawn {}", bin.display()))?;
     // Drop `resolver_inputs` now — the subprocess has finished and
     // esbuild no longer needs the virtual-module `.mjs` temp files.
     // Explicit drop makes the lifetime intent visible; the
@@ -4077,7 +4068,10 @@ mod tests {
         // subdir alias
         paths.insert("@lib/*".to_string(), vec!["/proj/src/lib/*".to_string()]);
         // single-file bare-specifier remap (no `/*` suffix)
-        paths.insert("msw".to_string(), vec!["/proj/src/mocks/msw.ts".to_string()]);
+        paths.insert(
+            "msw".to_string(),
+            vec!["/proj/src/mocks/msw.ts".to_string()],
+        );
         // external target (not under project_root) — must pass through unchanged
         paths.insert("@ext/*".to_string(), vec!["/other/pkg/*".to_string()]);
 
@@ -5569,7 +5563,8 @@ mod tests {
 
         // The bundle must succeed: both `import "./mdx-components.tsx"` and
         // its transitive `import "./components/MyH2"` resolved in-shadow.
-        let out = bundle(input).expect("real esbuild bundle with mdx-components.tsx should succeed");
+        let out =
+            bundle(input).expect("real esbuild bundle with mdx-components.tsx should succeed");
         let body = fs::read_to_string(&out.bundle_path).unwrap();
         // The installer must be present in the final bundle.
         assert!(
@@ -6195,14 +6190,7 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut routes,
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
 
         // Route is detected for /about.
         assert_eq!(routes.len(), 1, "expected one route; got {routes:?}");
@@ -6265,14 +6253,7 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut routes,
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
 
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].route, "/");
@@ -6298,14 +6279,7 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut routes,
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
 
         // In non-pages dir: post.md copied verbatim (not compiled into shell).
         let shadow_file = dest.join("post.md");
@@ -6347,14 +6321,7 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut routes,
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
 
         let body = fs::read_to_string(dest.join("_zfb_md_body_about.jsx")).unwrap();
 
@@ -6421,14 +6388,7 @@ mod tests {
             let dest_shadow = tmp.path().join("shadow");
             let exclude = no_bundle_exclude();
             let ctx = default_mat_ctx(tmp.path(), &exclude);
-            materialise_shadow(
-                &src,
-                &dest_shadow,
-                &mut Vec::new(),
-                &ctx,
-                &mut Vec::new(),
-            )
-            .unwrap();
+            materialise_shadow(&src, &dest_shadow, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
             let shadow_files = collect_dest_files(&dest_shadow);
             assert!(
@@ -6488,14 +6448,7 @@ mod tests {
         let dest = tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut Vec::new(),
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
         let files = collect_dest_files(&dest);
         assert!(
@@ -6522,14 +6475,7 @@ mod tests {
         let dest = tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut Vec::new(),
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
         let files = collect_dest_files(&dest);
         assert!(
@@ -6771,14 +6717,7 @@ mod tests {
         let dest = dest_tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(src_tmp.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut Vec::new(),
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
         for filename in &["style.css", "image.png"] {
             let dest_file = dest.join(filename);
@@ -6964,7 +6903,10 @@ mod tests {
             !out.contains("import.meta.glob("),
             "macro must be removed even with zero matches:\n{out}"
         );
-        assert!(out.contains("{}"), "zero matches must expand to `{{}}`:\n{out}");
+        assert!(
+            out.contains("{}"),
+            "zero matches must expand to `{{}}`:\n{out}"
+        );
         // No `import * as` declarations when there are no matches.
         assert!(
             !out.contains("import * as __glob_"),
@@ -7043,17 +6985,9 @@ mod tests {
         fs::write(src.join("Drop.stories.tsx"), "export const drop = 1;").unwrap();
 
         let dest = root.path().join("shadow").join("components");
-        let matcher =
-            BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
+        let matcher = BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
         let ctx = default_mat_ctx(root.path(), &matcher);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut Vec::new(),
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
         assert!(dest.join("Keep.tsx").exists(), "non-matching file kept");
         assert!(
@@ -7075,16 +7009,12 @@ mod tests {
         let dest = root.path().join("shadow").join("components");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(root.path(), &exclude);
-        materialise_shadow(
-            &src,
-            &dest,
-            &mut Vec::new(),
-            &ctx,
-            &mut Vec::new(),
-        )
-        .unwrap();
+        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
 
-        assert!(dest.join("Keep.tsx").exists(), "Keep present with empty exclude");
+        assert!(
+            dest.join("Keep.tsx").exists(),
+            "Keep present with empty exclude"
+        );
         assert!(
             dest.join("Story.stories.tsx").exists(),
             "with empty bundle.exclude nothing is skipped (byte-identical to today)"
@@ -7107,7 +7037,10 @@ mod tests {
         let b = out.find("./widgets/b.tsx").expect("b present");
         let c = out.find("./widgets/c.tsx").expect("c present");
         assert!(a < b && b < c, "keys must be sorted a<b<c:\n{out}");
-        assert!(!out.contains("readme.md"), ".md must not match *.tsx:\n{out}");
+        assert!(
+            !out.contains("readme.md"),
+            ".md must not match *.tsx:\n{out}"
+        );
         // Three distinct namespace identifiers, dense from 0.
         assert!(out.contains("__glob_0"));
         assert!(out.contains("__glob_1"));
@@ -7217,9 +7150,18 @@ mod tests {
             "the real call must be expanded:\n{out}"
         );
         // The decoys are NOT among the expanded files (only the real glob ran).
-        assert!(!out.contains("./x.tsx\": __glob"), "decoy x not expanded:\n{out}");
-        assert!(!out.contains("./y.tsx\": __glob"), "decoy y not expanded:\n{out}");
-        assert!(!out.contains("./z.tsx\": __glob"), "decoy z not expanded:\n{out}");
+        assert!(
+            !out.contains("./x.tsx\": __glob"),
+            "decoy x not expanded:\n{out}"
+        );
+        assert!(
+            !out.contains("./y.tsx\": __glob"),
+            "decoy y not expanded:\n{out}"
+        );
+        assert!(
+            !out.contains("./z.tsx\": __glob"),
+            "decoy z not expanded:\n{out}"
+        );
     }
 
     #[test]
@@ -7232,9 +7174,7 @@ mod tests {
             ("widgets/b.tsx", "export const b = 1;"),
         ]);
         let src = r#"export const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
-        let exclude = |p: &Path| {
-            p.file_name().and_then(|s| s.to_str()) == Some("b.tsx")
-        };
+        let exclude = |p: &Path| p.file_name().and_then(|s| s.to_str()) == Some("b.tsx");
         let out = expand_import_meta_glob(src, dir.path(), &exclude).unwrap();
         assert!(out.contains("./widgets/a.tsx"), "a kept:\n{out}");
         assert!(
@@ -7268,7 +7208,10 @@ mod tests {
         "#;
         let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
 
-        assert!(!out.contains("import.meta.glob("), "both calls removed:\n{out}");
+        assert!(
+            !out.contains("import.meta.glob("),
+            "both calls removed:\n{out}"
+        );
         // First call → __glob_0 (./x/one.tsx).
         assert!(
             out.contains(r#"import * as __glob_0 from "./x/one.tsx";"#),
@@ -7285,9 +7228,18 @@ mod tests {
             "second call's second match is __glob_2:\n{out}"
         );
         // Both object literals keep their own keys (splice didn't cross-wire).
-        assert!(out.contains(r#""./x/one.tsx": __glob_0"#), "obj a key:\n{out}");
-        assert!(out.contains(r#""./y/three.tsx": __glob_1"#), "obj b key 1:\n{out}");
-        assert!(out.contains(r#""./y/two.tsx": __glob_2"#), "obj b key 2:\n{out}");
+        assert!(
+            out.contains(r#""./x/one.tsx": __glob_0"#),
+            "obj a key:\n{out}"
+        );
+        assert!(
+            out.contains(r#""./y/three.tsx": __glob_1"#),
+            "obj b key 1:\n{out}"
+        );
+        assert!(
+            out.contains(r#""./y/two.tsx": __glob_2"#),
+            "obj b key 2:\n{out}"
+        );
         // x file must NOT appear in the y object and vice-versa: the `a`
         // assignment's object must contain only the x key.
         let a_obj_start = out.find("export const a =").expect("a decl");
@@ -7326,6 +7278,9 @@ mod tests {
         let err = expand_import_meta_glob(src, dir.path(), &no_exclude)
             .expect_err("../ pattern must error");
         let msg = format!("{err:#}");
-        assert!(msg.contains("parent-directory") || msg.contains(".."), "names the limit: {msg}");
+        assert!(
+            msg.contains("parent-directory") || msg.contains(".."),
+            "names the limit: {msg}"
+        );
     }
 }

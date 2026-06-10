@@ -204,10 +204,7 @@ size, not unique tokenization edge cases.\n\n";
 /// connector prose and inline-code spans. Result is one `- ` line
 /// followed by a single newline so markdown parses it as a single
 /// list item with one paragraph child.
-fn build_long_single_line_bullet(
-    html_spans: &[&str],
-    brace_spans: &[&str],
-) -> String {
+fn build_long_single_line_bullet(html_spans: &[&str], brace_spans: &[&str]) -> String {
     const CONNECTOR: &str = " — and combined with this connector phrase the surrounding prose grows long enough to push the bullet over the kilobyte mark while still mixing inline code with explanatory text — ";
     let mut bullet = String::with_capacity(1500);
     bullet.push_str("- ");
@@ -299,10 +296,7 @@ fn heuristic_says_jsx_breaks(jsx: &str) -> bool {
             if j < bytes.len() && bytes[j] == b'-' {
                 j += 1;
             }
-            if j + 1 < bytes.len()
-                && bytes[j] == b'\\'
-                && bytes[j + 1].is_ascii_alphabetic()
-            {
+            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
                 return true;
             }
         }
@@ -383,12 +377,11 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
         cjk_friendly: true,
         hard_breaks: false,
         features: None,
+        build_context_roots: None,
     };
-    let snap = build_snapshot_with_config(
-        &[CollectionConfig::new("docs", &root)],
-        &pipeline_config,
-    )
-    .expect("build_snapshot must succeed");
+    let snap =
+        build_snapshot_with_config(&[CollectionConfig::new("docs", &root)], &pipeline_config)
+            .expect("build_snapshot must succeed");
     let docs = snap.collections.get("docs").expect("docs collection");
     assert_eq!(docs.len(), 1, "exactly one entry in fixture");
     let entry = &docs[0];
@@ -397,9 +390,8 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
     let mut pipeline = Pipeline::with_defaults();
     pipeline.add_strip_md_ext();
     pipeline.reset_per_entry();
-    let compiled =
-        compile_mdx_to_jsx_module_cached(&body, &path, None, Some(&mut pipeline))
-            .expect("independent compile must succeed");
+    let compiled = compile_mdx_to_jsx_module_cached(&body, &path, None, Some(&mut pipeline))
+        .expect("independent compile must succeed");
 
     // (a) Heuristic must NOT flag the compiled JSX. A trip here
     // would mean the bundler skips this file in the bridge map and
@@ -418,12 +410,13 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
     );
 
     // (b) Snapshot hash must equal bundler-side hash.
-    let snap_spec = parse_mdx_specifier(&entry.module_specifier)
-        .expect("snapshot specifier parses");
-    let bundle_spec = parse_mdx_specifier(&compiled.specifier)
-        .expect("bundler-style specifier parses");
+    let snap_spec =
+        parse_mdx_specifier(&entry.module_specifier).expect("snapshot specifier parses");
+    let bundle_spec =
+        parse_mdx_specifier(&compiled.specifier).expect("bundler-style specifier parses");
     assert_eq!(
-        snap_spec.content_hash, bundle_spec.content_hash,
+        snap_spec.content_hash,
+        bundle_spec.content_hash,
         "snapshot module_specifier hash ({snap}) must equal bundler bridge-key hash ({bundle}). \
          A divergence here means `bridge.get(specifier)` will miss and the page will fall \
          back to <pre data-zfb-content-fallback>. This is a pipeline-shape mismatch in the \

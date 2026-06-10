@@ -79,6 +79,29 @@ pub(crate) fn pipeline_spec_from_config(
         hard_breaks: crate::config::resolve_hard_breaks(config.markdown.as_ref()),
         // `markdown.features` (#586) — opt-in feature plugins (mermaid, …).
         features: config.markdown.as_ref().and_then(|m| m.features.clone()),
+        // Arm build-context roots iff a filesystem-dependent feature is enabled
+        // (transclude / imageDimensions / linkValidation).  Gating rationale:
+        // (a) unarmed projects keep byte-identical fingerprints; (b) roots and
+        // the #942 ReadRecorder then always co-occur — arming without a recorder
+        // stores an empty DependencyManifest and stale-cache hazards follow
+        // (zfb#952).
+        build_context_roots: {
+            let has_fs_feature = config
+                .markdown
+                .as_ref()
+                .and_then(|m| m.features.as_ref())
+                .map(|f| {
+                    f.transclude.is_some()
+                        || f.image_dimensions.is_some()
+                        || f.link_validation.is_some()
+                })
+                .unwrap_or(false);
+            has_fs_feature.then(|| {
+                let public_dir =
+                    crate::commands::resolve::resolve_under_root(project_root, &config.public_dir);
+                (project_root.to_path_buf(), public_dir)
+            })
+        },
     }
 }
 
@@ -195,8 +218,7 @@ pub(crate) fn assemble_bundler_input(
         }
     }
 
-    bundler_input.tsconfig_paths =
-        crate::commands::build::read_tsconfig_paths(project_root);
+    bundler_input.tsconfig_paths = crate::commands::build::read_tsconfig_paths(project_root);
 
     // Per-collection content materialisation feeds the MDX content bridge
     // (#506) — without this every doc page would render as raw markdown text
@@ -272,17 +294,16 @@ pub(crate) fn assemble_bundler_input(
             crate::config::OnBrokenLinks::Error => zfb_build::bundler::OnBrokenLinks::Error,
             crate::config::OnBrokenLinks::Ignore => zfb_build::bundler::OnBrokenLinks::Ignore,
         };
-        bundler_input.resolve_markdown_links =
-            Some(zfb_build::bundler::ResolveMarkdownLinksSpec {
-                routes: routes
-                    .into_iter()
-                    .map(|r| zfb_build::bundler::ResolveMarkdownLinksRoute {
-                        docs_dir: r.dir,
-                        route_prefix: r.route_prefix,
-                    })
-                    .collect(),
-                on_broken_links,
-            });
+        bundler_input.resolve_markdown_links = Some(zfb_build::bundler::ResolveMarkdownLinksSpec {
+            routes: routes
+                .into_iter()
+                .map(|r| zfb_build::bundler::ResolveMarkdownLinksRoute {
+                    docs_dir: r.dir,
+                    route_prefix: r.route_prefix,
+                })
+                .collect(),
+            on_broken_links,
+        });
     }
 
     // Thread the optional `site` canonical-origin URL from `zfb.config.ts`
@@ -302,19 +323,19 @@ pub(crate) fn assemble_bundler_input(
     // #664 / #672 — thread `bundle.exclude` so the bundler keeps the listed
     // project-relative globs out of the esbuild graph (both the shadow-tree
     // copy and the #665 import.meta.glob expansion).  Empty → skip nothing.
-    bundler_input.bundle_exclude =
-        crate::config::resolve_bundle_exclude(config.bundle.as_ref());
+    bundler_input.bundle_exclude = crate::config::resolve_bundle_exclude(config.bundle.as_ref());
 
     // #676 — thread `bundle.mainFields` / `bundle.external` so hosts can make
     // the `--platform=neutral` page/SSR pass resolve (or externalize)
     // CJS-main-only deps (e.g. `msw` -> `path-to-regexp@6`).  main_fields
     // applies to every framework when set; external is APPENDED so any
     // framework-required externals are preserved.  Empty → byte-identical.
-    bundler_input.main_fields =
-        crate::config::resolve_bundle_main_fields(config.bundle.as_ref());
+    bundler_input.main_fields = crate::config::resolve_bundle_main_fields(config.bundle.as_ref());
     bundler_input
         .external
-        .extend(crate::config::resolve_bundle_external(config.bundle.as_ref()));
+        .extend(crate::config::resolve_bundle_external(
+            config.bundle.as_ref(),
+        ));
 
     // #268 — thread plugin-registered aliases and virtual modules into the
     // main bundler's esbuild invocation so page / layout / shared SSR-only
@@ -355,4 +376,3 @@ pub(crate) fn assemble_bundler_input(
         _esbuild_handle,
     })
 }
-
