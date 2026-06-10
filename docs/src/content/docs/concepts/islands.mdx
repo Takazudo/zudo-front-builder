@@ -97,7 +97,7 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 </div>
 ```
 
-The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. Only `"visible"` (hydrate when the element enters the viewport) and `"idle"` (hydrate during the browser's next idle period) emit a `data-when` attribute:
+The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attribute; `"media"` also emits a companion `data-media` attribute carrying the CSS query string:
 
 ```html
 <!-- visible timing -->
@@ -105,6 +105,9 @@ The `data-when` attribute controls hydration timing and is only emitted when you
 
 <!-- idle timing -->
 <div data-zfb-island="Counter" data-props="{}" data-when="idle">…</div>
+
+<!-- media timing — hydrates when (max-width: 768px) first matches -->
+<div data-zfb-island="MobileMenu" data-props="{}" data-when="media" data-media="(max-width: 768px)">…</div>
 ```
 
 On builds that include at least one island, **one `<script>` tag** is injected project-wide into `<head>`:
